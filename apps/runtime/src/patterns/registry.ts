@@ -1,5 +1,5 @@
 import type { CoordinationPattern } from "@ora/shared";
-import { MemorySaver } from "@langchain/langgraph";
+import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { createGeneratorVerifierGraph } from "./generator-verifier.js";
 import { createOrchestratorSubagentGraph } from "./orchestrator-subagent.js";
 import { createAgentTeamsGraph } from "./agent-teams.js";
@@ -19,14 +19,16 @@ export function createPatternGraph(pattern: CoordinationPattern) {
   }
 }
 
-export function createPatternGraphWithCheckpointer(pattern: CoordinationPattern) {
-  const checkpointer = new MemorySaver();
+export function createPatternGraphWithCheckpointer(
+  pattern: CoordinationPattern,
+  checkpointer: BaseCheckpointSaver | false = false
+) {
   switch (pattern) {
     case "generator_verifier":
-      return { graph: createGeneratorVerifierGraph(), checkpointer };
+      return { graph: createGeneratorVerifierGraph(checkpointer), checkpointer };
     case "orchestrator_subagent":
-      return { graph: createOrchestratorSubagentGraph(), checkpointer };
+      return { graph: createOrchestratorSubagentGraph(checkpointer), checkpointer };
     case "agent_teams":
-      return { graph: createAgentTeamsGraph(), checkpointer };
+      return { graph: createAgentTeamsGraph(checkpointer), checkpointer };
   }
 }

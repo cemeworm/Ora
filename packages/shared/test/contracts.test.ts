@@ -16,6 +16,8 @@ import {
   ProjectConfigSchema,
   ProviderConfigSchema,
   ProviderRegistrySchema,
+  ProviderSecretStatusSchema,
+  ProviderSecretWriteSchema,
   ResourceBudgetSchema,
   RunConfigSchema,
   RunEventStreamSchema,
@@ -44,6 +46,7 @@ describe("Ora shared contracts", () => {
 
     expect(config.pattern).toBe("orchestrator_subagent");
     expect(config.modelRef).toBe("local/smoke-model");
+    expect(config.providerId).toBeUndefined();
   });
 
   it("validates capability records and event envelopes", () => {
@@ -239,6 +242,29 @@ describe("ProviderRegistrySchema", () => {
         defaultProviderId: ""
       })
     ).toThrow();
+  });
+});
+
+describe("ProviderSecret schemas", () => {
+  it("accepts keychain-backed provider secret status", () => {
+    const parsed = ProviderSecretStatusSchema.parse({
+      providerId: "openai-gpt",
+      hasSecret: true,
+      storage: "keychain",
+      keychainService: "ora.provider.openai-gpt",
+      detail: "Stored in macOS Keychain."
+    });
+
+    expect(parsed.hasSecret).toBe(true);
+  });
+
+  it("accepts provider secret write payloads without exposing the secret shape elsewhere", () => {
+    const parsed = ProviderSecretWriteSchema.parse({
+      providerId: "anthropic-claude",
+      secret: "sk-test"
+    });
+
+    expect(parsed.providerId).toBe("anthropic-claude");
   });
 });
 

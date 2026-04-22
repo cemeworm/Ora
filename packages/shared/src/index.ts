@@ -135,6 +135,7 @@ export type UserTaskInput = z.infer<typeof UserTaskInputSchema>;
 export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
   profileIds: z.array(z.string().min(1)).default([]),
+  providerId: z.string().min(1).optional(),
   modelRef: z.string().min(1).default("local/smoke-model"),
   budget: ResourceBudgetSchema.optional(),
   metadata: z.record(z.unknown()).default({}),
@@ -313,6 +314,7 @@ export const JsonRpcIdSchema = z.union([z.string(), z.number().int()]);
 export const RuntimeJsonRpcMethodSchema = z.enum([
   "runtime.health",
   "patterns.list",
+  "providers.list",
   "runs.start",
   "runs.list",
   "runs.stream",
@@ -590,6 +592,24 @@ export const ProviderRegistrySchema = z.object({
   defaultProviderId: z.string().min(1),
 });
 export type ProviderRegistry = z.infer<typeof ProviderRegistrySchema>;
+
+export const ProviderSecretStorageSchema = z.enum(["keychain", "unavailable"]);
+export type ProviderSecretStorage = z.infer<typeof ProviderSecretStorageSchema>;
+
+export const ProviderSecretStatusSchema = z.object({
+  providerId: z.string().min(1),
+  hasSecret: z.boolean(),
+  storage: ProviderSecretStorageSchema,
+  keychainService: z.string().min(1).optional(),
+  detail: z.string().min(1),
+});
+export type ProviderSecretStatus = z.infer<typeof ProviderSecretStatusSchema>;
+
+export const ProviderSecretWriteSchema = z.object({
+  providerId: z.string().min(1),
+  secret: z.string().min(1),
+});
+export type ProviderSecretWrite = z.infer<typeof ProviderSecretWriteSchema>;
 
 // ---------------------------------------------------------------------------
 // Tool Descriptor Schemas

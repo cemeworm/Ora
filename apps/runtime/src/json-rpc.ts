@@ -7,6 +7,7 @@ import {
 import { ZodError } from "zod";
 import { LocalRunStore, OraRuntimeError } from "./run-store.js";
 import { SessionManager } from "./session/session-manager.js";
+import { createDefaultProviderRegistry } from "./providers/index.js";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
 
@@ -20,9 +21,14 @@ export function createRuntimeMethodHandler(
         return store.health();
       case "patterns.list":
         return store.listPatterns();
+      case "providers.list":
+        return createDefaultProviderRegistry().config;
       case "runs.start":
-        // When LangGraph is enabled, SessionManager handles the graph invocation.
-        // For now, always delegates to the deterministic LocalRunStore.
+        if (sessionManager.isEnabled()) {
+          return store.startRunWithSnapshot(request.params, (runId, input, config) =>
+            sessionManager.startRun(runId, input, config)
+          ).then((handle) => handle ?? store.startRun(request.params));
+        }
         return store.startRun(request.params);
       case "runs.list":
         return store.listRuns(request.params);

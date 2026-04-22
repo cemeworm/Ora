@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ActionRecordSchema,
   ArtifactRefSchema,
+  ProviderRegistrySchema,
   getPatternDefinition,
   MemoryRecordSchema,
   PlanItemSchema,
@@ -281,6 +282,18 @@ describe("AgentProfileRegistry", () => {
 // ---------------------------------------------------------------------------
 
 describe("LocalRunStore", () => {
+  it("exposes provider settings through the runtime contract", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const registry = ProviderRegistrySchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "providers.list"
+    }));
+
+    expect(registry.defaultProviderId).toBe("local-smoke");
+    expect(registry.providers.map((provider) => provider.id)).toContain("openai-gpt");
+  });
+
   it("creates a run with valid StateSnapshot", async () => {
     const handle = createRuntimeMethodHandler(createStore());
     const result = await handle({

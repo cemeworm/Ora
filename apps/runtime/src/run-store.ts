@@ -254,6 +254,34 @@ export class LocalRunStore {
     return this.toRunHandle(run);
   }
 
+  async startRunWithSnapshot(
+    params: unknown,
+    createSnapshot: (
+      runId: string,
+      input: UserTaskInput,
+      config: RunConfig
+    ) => Promise<StateSnapshot | undefined>
+  ): Promise<RunHandle | undefined> {
+    const parsed = StartRunParamsSchema.parse(params);
+    const config = RunConfigSchema.parse(parsed.config ?? {});
+    const input = UserTaskInputSchema.parse({
+      ...parsed.input,
+      createdAt: parsed.input.createdAt ?? this.now()
+    });
+    const fullConfig = RunConfigSchema.parse({
+      ...config,
+      budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
+    });
+    const runId = this.nextRunId();
+    const snapshot = await createSnapshot(runId, input, fullConfig);
+    if (!snapshot) {
+      return undefined;
+    }
+
+    this.persistRun(StateSnapshotSchema.parse(snapshot));
+    return this.toRunHandle(snapshot);
+  }
+
   streamRun(params: unknown): RunEventStream {
     const parsed = RunStreamParamsSchema.parse(params);
     const snapshot = this.getRunOrThrow(parsed.runId);
