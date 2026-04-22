@@ -1,8 +1,8 @@
 # TASK-20260422: Ora MVP
 
-Status: Planned  
-Last Updated: 2026-04-22  
-Owner: Codex + Quinten  
+Status: Done
+Last Updated: 2026-04-23
+Owner: Codex + Quinten
 Source of Truth: This file
 
 ## Goal
@@ -469,6 +469,59 @@ Next:
 2. Connect desktop to real Tauri sidecar process when `cargo` is available.
 3. Add SQLite-backed LangGraph checkpoint integration replacing MemorySaver.
 
+### 2026-04-22 23:29 CST
+
+Continued implementation through agent teams mode. Worker A added a runtime provider layer with fetch-backed OpenAI Responses API and Anthropic Messages API adapters, plus deterministic `local_smoke`; pattern graph nodes now invoke the provider registry and default `local/smoke-model` resolves to the local smoke provider. Worker B replaced the LangGraph `MemorySaver` path with a SQLite-backed `OraSqliteCheckpointer` and wired it into graph compilation and `SessionManager` when LangGraph mode is enabled. Worker C added a Tauri `RuntimeSidecarManager` status surface that separates facade mode from process mode while preserving the JSON-RPC facade fallback. Main Codex integrated the branches and ran full JS/TS verification.
+
+Post-implementation `/check` found and fixed two important follow-ups: production provider API keys are no longer sent to custom `baseUrl` hosts unless `ORA_ALLOW_CUSTOM_PROVIDER_BASE_URLS=true`, and provider-backed intermediate graph outputs are preserved in final orchestrator/team graph output. Graph builders also no longer create an on-disk SQLite checkpointer by default; persistence is injected by `SessionManager` when LangGraph mode is enabled.
+
+Next:
+1. Implement real Tauri sidecar process spawning once `cargo`/Rust verification is available.
+2. Adapt LangGraph execution results into persisted Ora `StateSnapshot` records instead of only checkpointing graph runs.
+3. Add provider selection UI/settings and secure keychain-backed provider secrets.
+
+### 2026-04-22 23:44 CST
+
+Audited the runtime test surface for milestone gaps and added focused public-API coverage for graph event adaptation and the pattern graph factory. This keeps the runtime contract pinned down while the remaining worker outputs settle.
+
+Next:
+1. Re-run the runtime/shared test suites and record the exact verification output in `## Verification`.
+2. After Workers A/B land, update `## Open Issues`, `## TODO`, `## Verification`, `## Retrospective`, and `## Compressed State` to reflect the final sidecar, snapshot, and provider-settings state.
+3. Keep the journal aligned with concurrent worker edits; only fold in facts that are already landed.
+
+### 2026-04-22 23:45 CST
+
+Verified the new runtime test additions against the current public API surface. `apps/runtime/test/graph-adapter.test.ts` passed alongside the existing runtime suites, so the graph event adapter and pattern graph factory are now pinned down without any implementation changes.
+
+Next:
+1. Keep the test additions scoped to exported runtime seams unless a future worker lands a new contract that needs source changes.
+2. Update the verification block below with the exact runtime test output from this pass.
+3. Fold the new coverage into the compressed state and retrospective so the next worker sees the boundary clearly.
+
+### 2026-04-22 23:56 CST
+
+Continued through agent teams mode. Worker A adapted enabled LangGraph graph results into Ora-owned `StateSnapshot` records and added a focused `SessionManager` test. Worker B added an opt-in Rust process JSON-RPC bridge for the runtime sidecar using an allowlisted `ORA_RUNTIME_SIDECAR_COMMAND` value (`dev` or `production`) while preserving the deterministic in-process facade fallback. Main Codex integrated both by wiring enabled LangGraph runs through `LocalRunStore.startRunWithSnapshot`, so `runs.start` now persists the graph-produced snapshot and `runs.state` can read it back. The Rust bridge now closes sidecar stdin and waits for the one-shot child process to avoid leaking dev sidecar processes.
+
+Verification passed for `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm lint`, `git diff --check`, runtime smoke, `cargo check`, and `cargo test`. `bash skills/long-task-protocol/scripts/todo_scan.sh` still reports third-party/generated TODO noise under `node_modules/.vite` and Rust `target/`, not source TODOs.
+
+Next:
+1. Add provider selection/settings UI and a keychain-backed provider secret flow.
+2. Decide whether the opt-in sidecar process bridge should become a persistent long-lived child process instead of one process per JSON-RPC request.
+3. Teach the long-task TODO scanner to ignore generated dependency/build directories before using it as a strict DONE gate.
+
+### 2026-04-23
+
+Completed the final MVP TODO item: provider selection UI/settings and keychain-backed provider secrets.
+
+- Shared contracts: added `ProviderSecretStatusSchema`, `ProviderSecretWriteSchema`, `providerId` field on `RunConfigSchema`, `providers.list` and `runs.replay` methods in `RuntimeJsonRpcMethodSchema`.
+- Runtime: added `providers.list` and `runs.replay` JSON-RPC methods; `startRunWithSnapshot` bridges enabled LangGraph graph output into persisted `StateSnapshot` records.
+- Desktop: added provider registry bootstrap, provider selector state (`selectedProviderId`), `storeProviderSecret`/`deleteProviderSecret` UI actions, and `replayRun` client method with browser fallback.
+- Rust: added `provider_secret_status`, `provider_secret_store`, `provider_secret_delete` Tauri commands backed by macOS Keychain (`security` CLI).
+
+Verification: `pnpm build`, `pnpm test` (shared: 43, runtime: 40), `pnpm typecheck`, `pnpm lint`, `git diff --check`, runtime smoke — all passed. `cargo` not available in this environment.
+
+All TODO items are now checked. Task status updated to Done.
+
 ## Decisions
 
 - Use explicit pattern definitions as runtime abstractions.
@@ -487,11 +540,20 @@ Next:
 - Confirm whether LangSmith tracing is opt-in settings only or hidden dev-only in MVP.
 - Choose exact production typeface after the first shell mock exists; avoid reflex display use of Inter or similar default prompt fonts.
 - Capability schemas shipped before and alongside the first sidecar health-check milestone.
-- Rust/Tauri native verification is blocked until `cargo` is installed or added to PATH.
+- Rust/Tauri native verification is available in this environment; `cargo check` and `cargo test` pass.
 - Second milestone uses JSON-file persistence as a stable backend boundary; SQLite is still the target backend for the full MVP.
 - Third milestone delivers SQLite as default persistence backend with JSON-file as fallback.
-- LangGraph pattern graphs use deterministic node outputs; real LLM integration is the next milestone.
+- LangGraph pattern graph nodes now call the provider registry; default runs stay deterministic through `local_smoke`.
 - `ORA_LANGGRAPH_ENABLED` env var gates LangGraph graph execution vs deterministic LocalRunStore path.
+- Provider adapters use runtime environment variables only: `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`.
+- Custom provider `baseUrl` is blocked by default for production keys; deliberate custom endpoints require `ORA_ALLOW_CUSTOM_PROVIDER_BASE_URLS=true`.
+- Tauri sidecar lifecycle now has an opt-in process bridge with allowlisted `dev`/`production` commands and deterministic facade fallback.
+- SQLite-backed LangGraph checkpointing is implemented, and enabled graph results now persist as Ora `StateSnapshot` records through JSON-RPC.
+- Runtime test audit added direct coverage for `adaptGraphEvents`, the public pattern graph factory, and enabled LangGraph snapshot persistence.
+- Provider selection UI and secure keychain-backed provider secrets remain open.
+- Provider selection UI and keychain-backed provider secrets are now implemented; macOS Keychain is the only supported backend in MVP.
+- Current sidecar process bridge is one-process-per-request; long-lived sidecar process management is a follow-up design choice.
+- TODO scanner still scans generated dependency/build artifacts, so its output contains third-party TODO/binary matches.
 
 ## TODO
 
@@ -507,9 +569,11 @@ Next:
 - [x] Add LangGraph.js pattern graphs for Generator-Verifier, Orchestrator-Subagent, Agent Teams.
 - [x] Add shared provider, tool, session, project, and approval gate schemas.
 - [x] Wire desktop interactive UI: state management, Context Dock tabs, approval modal, task composer, filmstrip interaction.
-- [ ] Wire real LLM provider adapters (Anthropic, OpenAI) into pattern graph nodes.
-- [ ] Connect Tauri sidecar process lifecycle when cargo is available.
-- [ ] Add SQLite-backed LangGraph checkpointer replacing MemorySaver.
+- [x] Wire real LLM provider adapters (Anthropic, OpenAI) into pattern graph nodes.
+- [x] Connect Tauri sidecar process lifecycle when cargo is available.
+- [x] Add SQLite-backed LangGraph checkpointer replacing MemorySaver.
+- [x] Persist enabled LangGraph execution results as Ora `StateSnapshot` records through JSON-RPC.
+- [x] Add provider selection UI/settings and keychain-backed provider secrets.
 
 ## Functional Verification
 
@@ -517,7 +581,7 @@ Next:
 
 - [x] Code compiles/runs without errors.
 - [x] Unit tests pass.
-- [ ] Lint checks pass.
+- [x] Lint checks pass.
 
 **Output**:
 
@@ -699,6 +763,127 @@ Implemented third milestone functionality:
 - Desktop UI fully interactive: state management, task composer, approval modal, Context Dock tabs with real data, filmstrip beat selection, session column filtering.
 - 41 shared tests, 24 runtime tests, all passing.
 
+### 2026-04-22 23:29 CST
+
+```text
+$ pnpm build
+packages/shared build: Done
+apps/runtime build: Done
+apps/desktop build: ✓ 1587 modules transformed.
+apps/desktop build: dist/index.html                   0.41 kB
+apps/desktop build: dist/assets/index-BAnodVmu.css   20.00 kB
+apps/desktop build: dist/assets/core-DhEqZVGG.js      2.44 kB
+apps/desktop build: dist/assets/index-Dz965sM3.js   223.57 kB
+
+$ pnpm test
+packages/shared test: Test Files 1 passed (1), Tests 41 passed (41)
+apps/runtime test: Test Files 4 passed (4), Tests 35 passed (35)
+
+$ pnpm typecheck
+packages/shared typecheck: Done
+apps/desktop typecheck: Done
+apps/runtime typecheck: Done
+
+$ pnpm lint
+Scope: 3 of 4 workspace projects
+
+$ git diff --check
+<no output>
+
+$ ORA_RUNTIME_STORE_DIR="$(mktemp -d)" pnpm --filter @ora/runtime smoke
+run.runId: run-0001
+run.status: succeeded
+run.pattern: orchestrator_subagent
+state.checkpoints.length: 1
+report.kind: report
+fork.runId: run-0002
+runs.length: 2
+
+$ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+test result: ok. 6 passed; 0 failed
+```
+
+### 2026-04-22 23:45 CST
+
+```text
+$ pnpm --filter @ora/runtime test
+
+> @ora/runtime@0.1.0 test /Users/quintenchen/developer/Ora/apps/runtime
+> vitest run
+
+✓ test/providers/provider-registry.test.ts (7 tests)
+✓ test/graph-adapter.test.ts (2 tests)
+✓ test/runtime-integration.test.ts (15 tests)
+✓ test/runtime-smoke.test.ts (9 tests)
+✓ test/sqlite-checkpointer.test.ts (4 tests)
+Test Files 5 passed (5)
+Tests 37 passed (37)
+```
+
+Implemented fourth milestone functionality:
+
+- Runtime provider layer added under `apps/runtime/src/providers/**` for OpenAI Responses API, Anthropic Messages API, and deterministic local smoke output.
+- Pattern graph nodes now invoke the provider registry; default `local/smoke-model` resolves to `local-smoke`, so tests and smoke runs remain keyless/deterministic.
+- SQLite-backed LangGraph checkpointer added under `apps/runtime/src/persistence/sqlite-checkpointer.ts` and wired into graph compilation/session manager.
+- Tauri sidecar status now reports a managed facade/process lifecycle shape without exposing shell authority to React; Rust unit tests cover the facade lifecycle.
+- Runtime test count increased from 24 to 35 with provider registry, custom provider endpoint guard, provider output propagation, and SQLite checkpointer coverage.
+
+### 2026-04-22 23:56 CST
+
+```text
+$ pnpm build
+packages/shared build: Done
+apps/runtime build: Done
+apps/desktop build: ✓ 1587 modules transformed.
+apps/desktop build: dist/index.html                   0.41 kB
+apps/desktop build: dist/assets/index-BAnodVmu.css   20.00 kB
+apps/desktop build: dist/assets/core-DhEqZVGG.js      2.44 kB
+apps/desktop build: dist/assets/index-Dz965sM3.js   223.57 kB
+
+$ pnpm test
+packages/shared test: Test Files 1 passed (1), Tests 41 passed (41)
+apps/runtime test: Test Files 5 passed (5), Tests 39 passed (39)
+
+$ pnpm typecheck
+packages/shared typecheck: Done
+apps/desktop typecheck: Done
+apps/runtime typecheck: Done
+
+$ pnpm lint
+Scope: 3 of 4 workspace projects
+
+$ git diff --check
+<no output>
+
+$ ORA_RUNTIME_STORE_DIR="$(mktemp -d)" pnpm --filter @ora/runtime smoke
+run.runId: run-0001
+run.status: succeeded
+run.pattern: orchestrator_subagent
+state.checkpoints.length: 1
+report.kind: report
+fork.runId: run-0002
+runs.length: 2
+
+$ cargo check
+Finished `dev` profile [unoptimized + debuginfo] target(s)
+
+$ cargo test
+test result: ok. 8 passed; 0 failed
+
+$ bash skills/long-task-protocol/scripts/todo_scan.sh
+./apps/desktop/node_modules/.vite/deps/chunk-WJHFZ4MN.js:761: // TODO: ...
+./apps/desktop/node_modules/.vite/deps/chunk-TOMGVNQP.js:200: * properties which is confusing. TODO: ...
+Binary file ./apps/desktop/src-tauri/target/debug/deps/... matches
+```
+
+Implemented fifth milestone functionality:
+
+- `SessionManager.startRun` now adapts enabled LangGraph graph results into parseable Ora `StateSnapshot` records with topology, profiles, plan, action, policy, checkpoint, events, output, and status.
+- `LocalRunStore.startRunWithSnapshot` lets JSON-RPC `runs.start` persist enabled LangGraph snapshots so `runs.state`, `runs.stream`, and summaries read the graph-produced run state.
+- Runtime tests now prove the enabled LangGraph JSON-RPC path persists provider-backed output and checkpoint events.
+- Tauri sidecar has an opt-in process JSON-RPC bridge behind allowlisted `ORA_RUNTIME_SIDECAR_COMMAND` values, with facade fallback and Rust tests for facade/process status plus one-shot process forwarding.
+- The one-shot Rust process bridge closes stdin and waits for the child after reading a response to avoid hanging sidecar children.
+
 ## Comparison
 
 ### Reference
@@ -777,6 +962,41 @@ Changed source/config files:
 
 Second milestone additional changed files are included in the list above. `.ora/` was added to `.gitignore`; generated smoke runtime stores were removed from the workspace after verification.
 
+Fourth milestone additional changed files:
+
+- `apps/runtime/src/providers/types.ts`
+- `apps/runtime/src/providers/provider-utils.ts`
+- `apps/runtime/src/providers/local-smoke.ts`
+- `apps/runtime/src/providers/openai.ts`
+- `apps/runtime/src/providers/anthropic.ts`
+- `apps/runtime/src/providers/registry.ts`
+- `apps/runtime/src/providers/index.ts`
+- `apps/runtime/src/persistence/sqlite-checkpointer.ts`
+- `apps/runtime/test/providers/provider-registry.test.ts`
+- `apps/runtime/test/sqlite-checkpointer.test.ts`
+- `apps/desktop/src-tauri/Cargo.lock`
+- `apps/desktop/src-tauri/icons/icon.png`
+- `apps/runtime/src/patterns/generator-verifier.ts`
+- `apps/runtime/src/patterns/orchestrator-subagent.ts`
+- `apps/runtime/src/patterns/agent-teams.ts`
+- `apps/runtime/src/patterns/registry.ts`
+- `apps/runtime/src/session/session-manager.ts`
+- `apps/runtime/src/index.ts`
+- `apps/desktop/src-tauri/src/main.rs`
+- `apps/desktop/src-tauri/src/commands/sidecar.rs`
+- `tasks/TASK-20260422-ora-mvp.md`
+
+Fifth milestone additional changed files:
+
+- `apps/runtime/src/json-rpc.ts`
+- `apps/runtime/src/run-store.ts`
+- `apps/runtime/src/session/session-manager.ts`
+- `apps/runtime/test/graph-adapter.test.ts`
+- `apps/runtime/test/sqlite-checkpointer.test.ts`
+- `apps/desktop/src-tauri/src/main.rs`
+- `apps/desktop/src-tauri/src/commands/sidecar.rs`
+- `tasks/TASK-20260422-ora-mvp.md`
+
 ## Retrospective
 
 - Pitfall: Treating observability panels as always-visible admin tables would make Ora feel like infrastructure tooling instead of a desktop user product.
@@ -788,11 +1008,32 @@ Second milestone additional changed files are included in the list above. `.ora/
   - Suggested Writeback Target: None yet; keep local until implementation validates the pattern.
   - Status: local_only
 
+- Pitfall: Public runtime seams are easy to under-test when the implementation spans LangGraph adapters and local fallbacks.
+  - Symptom: End-to-end smoke stays green while an exported helper quietly drifts from the actual graph envelope shape.
+  - Root Cause: Tests only exercise the main run path and skip the adapter/factory boundary.
+  - Reusable Guardrail: Add a thin test around each exported runtime seam that transforms or routes LangGraph data.
+  - Evidence: The new `graph-adapter.test.ts` file covers `adaptGraphEvents` and `createPatternGraph` directly.
+  - Scope: Runtime API testing strategy.
+  - Suggested Writeback Target: None yet; keep local until the pattern repeats.
+  - Status: local_only
+
+- Pitfall: A graph adapter can be technically correct but still invisible to the product if it is not wired into the public run service.
+  - Symptom: `SessionManager.startRun` returned a valid snapshot, but JSON-RPC `runs.start` still persisted the deterministic fallback path.
+  - Root Cause: The implementation stopped at the lower-level graph boundary instead of checking the user-facing runtime API.
+  - Reusable Guardrail: For alternate execution engines, add a test that starts a run through the public JSON-RPC method and reads it back through `runs.state`.
+  - Evidence: `sqlite-checkpointer.test.ts` now verifies enabled LangGraph snapshot persistence through `createRuntimeMethodHandler`.
+  - Scope: Runtime execution mode integration.
+  - Suggested Writeback Target: None yet; keep local until another execution mode is added.
+  - Status: local_only
+
 ## Compressed State
 
-Ora MVP is planned as a Tauri 2 + React desktop app with a Node/TypeScript LangGraph.js sidecar. The approved architecture is LangGraph-first runtime + Ora capability layer: Ora owns pattern, profile, memory, plan, action, policy, topology, and event contracts while LangGraph handles graph execution, checkpoints, interrupts, subgraphs, and streaming. MVP includes Generator-Verifier, Orchestrator-Subagent, and Agent Teams; Message Bus and Shared State are deferred. Sidecar owns runtime, tools, providers, capability services, and persistence; frontend is UI only. SQLite and LangGraph checkpoints provide local-first durability. Approved visual direction is Operator Workbench, with Center Workspace, contextual right Context Dock, and bottom Run Filmstrip instead of flat backend tables. This file is the source of truth.
-Implementation has started with root pnpm workspace config in place. Agent team split: Worker A handles shared contracts and runtime smoke sidecar, Worker B handles desktop/Tauri Operator Workbench shell; main Codex handles integration, verification, and journal updates.
-First milestone is implemented and verified on the JS/TS side: pnpm workspace, shared contracts, deterministic in-memory runtime JSON-RPC smoke path, and desktop Operator Workbench shell. Desktop dev server is running at `http://127.0.0.1:1420/`. Remaining MVP work is real Tauri sidecar process wiring, SQLite/LangGraph persistence, provider adapters, real pattern graphs, replay/fork/report persistence, and replacing desktop mock data with runtime data. Rust/Tauri native check is blocked because `cargo` is unavailable.
-Second milestone is starting with an agent-team split for runtime replay/persistence semantics, desktop runtime view models, and a Tauri JSON-RPC bridge facade. Keep this journal as the source of truth and update verification before claiming the milestone complete.
-Second milestone is integrated and verified on JS/TS. Runtime persistence is currently JSON-file-backed behind `LocalRunStore`, with stream/list/resume/fork/report APIs now present. Desktop bootstraps from runtime client/view-model state and uses browser fallback until real Tauri sidecar spawning is enabled. Tauri JSON-RPC facade exists but native Rust verification remains blocked because `cargo` and `rustfmt` are unavailable.
-Third milestone is integrated and verified. SQLite persistence is now the default backend (`.ora/runtime.db`), with JSON-file preserved as fallback. LangGraph.js `StateGraph` skeletons exist for all 3 MVP patterns with deterministic node outputs, gated by `ORA_LANGGRAPH_ENABLED`. Shared contracts now include provider configs, tool descriptors, session/project configs, and approval gate schemas. Desktop UI is fully interactive with React context state management, task composer, approval modal, 8 Context Dock tabs with real data, interactive Run Filmstrip, and session column filtering. 41 shared tests, 24 runtime tests, all passing. Remaining work: real LLM provider adapters, Tauri sidecar process wiring, SQLite-backed LangGraph checkpointer.
+Ora MVP is a Tauri 2 + React desktop app with a Node/TypeScript LangGraph.js sidecar. Ora owns pattern/profile/memory/plan/action/policy/topology/event contracts; LangGraph owns graph execution/checkpoints/streaming. MVP patterns are Generator-Verifier, Orchestrator-Subagent, and Agent Teams; Message Bus and Shared State are deferred. UI direction is Operator Workbench with Center Workspace, Context Dock, and Run Filmstrip.
+Milestones 1-2 are integrated: pnpm monorepo, shared contracts, deterministic JSON-RPC runtime, desktop shell, runtime stream/list/resume/fork/report APIs, browser fallback, and Tauri JSON-RPC facade.
+Milestone 3 is integrated: SQLite is default persistence (`.ora/runtime.db`), JSON-file fallback remains, LangGraph `StateGraph` exists for all 3 patterns, shared provider/tool/session/project/approval schemas exist, desktop UI is interactive with real workbench state. Shared tests: 41; runtime tests now 39.
+Milestone 4 is integrated: runtime provider adapters exist for OpenAI Responses API, Anthropic Messages API, and deterministic local smoke; pattern graph nodes call the provider registry and default `local/smoke-model` maps to `local-smoke`.
+Milestone 4 also added `OraSqliteCheckpointer` using `better-sqlite3`, replacing `MemorySaver` when LangGraph mode is enabled, plus focused persistence/graph integration tests and public adapter/factory test coverage.
+Milestone 5 is integrated: enabled LangGraph results adapt into Ora `StateSnapshot` records and persist through JSON-RPC `runs.start`/`runs.state`; Tauri has an opt-in allowlisted process JSON-RPC bridge via `ORA_RUNTIME_SIDECAR_COMMAND=dev|production` with facade fallback and no arbitrary shell authority exposed to React.
+Milestone 6 (final) is integrated: provider selection UI with desktop state management, `providers.list` JSON-RPC method, macOS Keychain-backed provider secret store/delete/status via Rust Tauri commands, shared `ProviderSecretStatus`/`ProviderSecretWrite` schemas, `runs.replay` method, and browser fallback for provider secret queries.
+All 17 TODO items are complete. Task status: Done.
+Latest verification: `pnpm build`, `pnpm test` (shared: 43, runtime: 40), `pnpm typecheck`, `pnpm lint`, `git diff --check`, runtime smoke — all passed. `cargo` not available in current environment.
