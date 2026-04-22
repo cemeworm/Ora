@@ -1,0 +1,4 @@
+interface:
+  display_name: "Long Task Protocol"
+  short_description: "Resumable journal workflow with retrospective closeout"
+  default_prompt: "Use $long-task-protocol to execute this complex task with savepoints, retrospective extraction, and strict DONE verification."
