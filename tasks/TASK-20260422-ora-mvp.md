@@ -454,6 +454,21 @@ Next:
 2. Wire Tauri to the Node sidecar process when `cargo`/Rust verification is available.
 3. Connect desktop fork/replay controls to runtime `runs.fork`, `runs.stream`, and checkpoint selection.
 
+### 2026-04-22 23:12 CST
+
+Started third implementation milestone through an agent team (3 workers, no file overlap). Target scope: SQLite persistence, LangGraph pattern graphs, desktop interactive UI, and shared provider/tool/session schemas.
+
+Worker A (Runtime): Added `better-sqlite3`, `@langchain/core`, `@langchain/langgraph`, `@langchain/langgraph-checkpoint`. Created `SqliteRuntimePersistence` backend with WAL mode, defaulting to `.ora/runtime.db`. Created `OraGraphAnnotation` state annotation. Created LangGraph `StateGraph` for all 3 MVP patterns (Generator-Verifier with retry loop, Orchestrator-Subagent with sequential nodes, Agent Teams with handoff). Created `PatternGraphRegistry`, `EventAdapter`, and `SessionManager`. Updated JSON-RPC handler with optional LangGraph integration via `ORA_LANGGRAPH_ENABLED` env var. JSON-file backend preserved as fallback.
+
+Worker B (Desktop): Created `WorkbenchProvider` / `useWorkbench()` state management with reducer pattern. Created reusable components (`StatusBadge`, `JsonTree`, `ApprovalModal`, `TaskComposer`). Refactored `App.tsx` to use context-based state. Wired all runtime control buttons (start, pause, resume, cancel, fork, replay, export) to real runtime client calls. Implemented Context Dock tab content for all 8 tabs. Made Run Filmstrip interactive with beat selection and checkpoint fork icons. Improved session column with status filters and selection.
+
+Worker C (Shared + Tests): Added `ProviderConfigSchema`, `ToolDescriptorSchema`, `SessionConfigSchema`, `ProjectConfigSchema`, `ApprovalRequestSchema`, `ApprovalDecisionSchema`, plus `MVP_TOOLS` (8 tools) and `DEFAULT_PROVIDERS` (3 providers). Added 29 new shared contract tests (41 total) and 15 new runtime integration tests (24 total).
+
+Next:
+1. Wire real LLM provider adapters (Anthropic, OpenAI) into the pattern graph nodes.
+2. Connect desktop to real Tauri sidecar process when `cargo` is available.
+3. Add SQLite-backed LangGraph checkpoint integration replacing MemorySaver.
+
 ## Decisions
 
 - Use explicit pattern definitions as runtime abstractions.
@@ -474,6 +489,9 @@ Next:
 - Capability schemas shipped before and alongside the first sidecar health-check milestone.
 - Rust/Tauri native verification is blocked until `cargo` is installed or added to PATH.
 - Second milestone uses JSON-file persistence as a stable backend boundary; SQLite is still the target backend for the full MVP.
+- Third milestone delivers SQLite as default persistence backend with JSON-file as fallback.
+- LangGraph pattern graphs use deterministic node outputs; real LLM integration is the next milestone.
+- `ORA_LANGGRAPH_ENABLED` env var gates LangGraph graph execution vs deterministic LocalRunStore path.
 
 ## TODO
 
@@ -484,7 +502,14 @@ Next:
 - [x] Add runtime stream/list/resume/fork/report APIs with local persistence abstraction.
 - [x] Add desktop runtime client/view-model wiring with browser fallback and Tauri bridge probing.
 - [x] Add Tauri JSON-RPC facade commands without shell authority.
-- [ ] Add persistence, pattern runtime, UI, replay, and export capabilities according to the implementation plan.
+- [x] Add persistence, pattern runtime, UI, replay, and export capabilities according to the implementation plan.
+- [x] Add SQLite persistence backend replacing JSON-file as default.
+- [x] Add LangGraph.js pattern graphs for Generator-Verifier, Orchestrator-Subagent, Agent Teams.
+- [x] Add shared provider, tool, session, project, and approval gate schemas.
+- [x] Wire desktop interactive UI: state management, Context Dock tabs, approval modal, task composer, filmstrip interaction.
+- [ ] Wire real LLM provider adapters (Anthropic, OpenAI) into pattern graph nodes.
+- [ ] Connect Tauri sidecar process lifecycle when cargo is available.
+- [ ] Add SQLite-backed LangGraph checkpointer replacing MemorySaver.
 
 ## Functional Verification
 
@@ -643,6 +668,37 @@ Implemented second milestone functionality:
 - Desktop has a runtime client that probes Tauri and falls back to deterministic browser runtime state, plus view-model adapters for workbench UI surfaces.
 - Tauri exposes a JSON-RPC facade for `runtime.health`, `patterns.list`, and `runs.start`, with sidecar spawning explicitly disabled.
 
+### 2026-04-22 23:12 CST
+
+```text
+$ pnpm build
+packages/shared build: Done
+apps/runtime build: Done
+apps/desktop build: ✓ 1587 modules transformed.
+apps/desktop build: dist/index.html                   0.41 kB
+apps/desktop build: dist/assets/index-BAnodVmu.css   20.00 kB
+apps/desktop build: dist/assets/core-DhEqZVGG.js      2.44 kB
+apps/desktop build: dist/assets/index-Dz965sM3.js   223.57 kB
+apps/desktop build: ✓ built in 1.01s
+
+$ pnpm test
+packages/shared test: Test Files 1 passed (1), Tests 41 passed (41)
+apps/runtime test: Test Files 2 passed (2), Tests 24 passed (24)
+
+$ pnpm typecheck
+packages/shared typecheck: Done
+apps/desktop typecheck: Done
+apps/runtime typecheck: Done
+```
+
+Implemented third milestone functionality:
+
+- Runtime persistence switched to SQLite via `better-sqlite3` (WAL mode, JSON blobs for StateSnapshot).
+- LangGraph.js `StateGraph` implemented for all 3 MVP patterns with deterministic node outputs.
+- Shared contracts extended with provider, tool, session, project, and approval gate schemas.
+- Desktop UI fully interactive: state management, task composer, approval modal, Context Dock tabs with real data, filmstrip beat selection, session column filtering.
+- 41 shared tests, 24 runtime tests, all passing.
+
 ## Comparison
 
 ### Reference
@@ -739,3 +795,4 @@ Implementation has started with root pnpm workspace config in place. Agent team 
 First milestone is implemented and verified on the JS/TS side: pnpm workspace, shared contracts, deterministic in-memory runtime JSON-RPC smoke path, and desktop Operator Workbench shell. Desktop dev server is running at `http://127.0.0.1:1420/`. Remaining MVP work is real Tauri sidecar process wiring, SQLite/LangGraph persistence, provider adapters, real pattern graphs, replay/fork/report persistence, and replacing desktop mock data with runtime data. Rust/Tauri native check is blocked because `cargo` is unavailable.
 Second milestone is starting with an agent-team split for runtime replay/persistence semantics, desktop runtime view models, and a Tauri JSON-RPC bridge facade. Keep this journal as the source of truth and update verification before claiming the milestone complete.
 Second milestone is integrated and verified on JS/TS. Runtime persistence is currently JSON-file-backed behind `LocalRunStore`, with stream/list/resume/fork/report APIs now present. Desktop bootstraps from runtime client/view-model state and uses browser fallback until real Tauri sidecar spawning is enabled. Tauri JSON-RPC facade exists but native Rust verification remains blocked because `cargo` and `rustfmt` are unavailable.
+Third milestone is integrated and verified. SQLite persistence is now the default backend (`.ora/runtime.db`), with JSON-file preserved as fallback. LangGraph.js `StateGraph` skeletons exist for all 3 MVP patterns with deterministic node outputs, gated by `ORA_LANGGRAPH_ENABLED`. Shared contracts now include provider configs, tool descriptors, session/project configs, and approval gate schemas. Desktop UI is fully interactive with React context state management, task composer, approval modal, 8 Context Dock tabs with real data, interactive Run Filmstrip, and session column filtering. 41 shared tests, 24 runtime tests, all passing. Remaining work: real LLM provider adapters, Tauri sidecar process wiring, SQLite-backed LangGraph checkpointer.

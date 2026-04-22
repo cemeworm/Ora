@@ -27,8 +27,13 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
-import { createRuntimeClient, type OraPatternDefinition, type OraStateSnapshot } from "./lib/runtimeClient";
+import { useEffect, useMemo } from "react";
+import { ApprovalModal } from "./components/ApprovalModal";
+import { JsonTree } from "./components/JsonTree";
+import { StatusBadge } from "./components/StatusBadge";
+import { TaskComposer } from "./components/TaskComposer";
+import { createRuntimeClient, type OraStateSnapshot } from "./lib/runtimeClient";
+import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import { buildWorkbenchViewModel } from "./lib/viewModel";
 import type {
   ActionRecord,
@@ -86,289 +91,234 @@ const beatTone: Record<RunBeat["group"], string> = {
   done: "bg-emerald-600",
 };
 
-export function App() {
-  const [selectedPattern, setSelectedPattern] =
-    useState<CoordinationPattern>("orchestrator_subagent");
-  const [selectedSessionId, setSelectedSessionId] = useState<string>();
-  const [selectedNodeId, setSelectedNodeId] = useState("run");
-  const [selectedTab, setSelectedTab] = useState<DockTab>("Overview");
-  const [selectedBeatId, setSelectedBeatId] = useState<string>();
-  const [filmstripExpanded, setFilmstripExpanded] = useState(false);
-  const [composerPrompt, setComposerPrompt] = useState(
-    "Implement a smoke run that proves Ora can switch patterns, expose topology, stream events, and checkpoint state.",
-  );
-  const [patterns, setPatterns] = useState<OraPatternDefinition[]>([]);
-  const [snapshots, setSnapshots] = useState<OraStateSnapshot[]>([]);
-  const [bridgeStatus, setBridgeStatus] = useState<RuntimeBridgeStatus>({
-    mode: "initializing",
-    ok: false,
-    label: "Runtime",
-    detail: "Connecting to the Ora runtime bridge.",
-  });
-  const [isStartingRun, setIsStartingRun] = useState(false);
-  const [commandFeedback, setCommandFeedback] = useState("Select a checkpoint or event to replay, fork, approve, or export.");
-  const [busyCommand, setBusyCommand] = useState<string>();
-
+function WorkbenchInner() {
+  const { state, dispatch } = useWorkbench();
   const runtimeClient = useMemo(() => createRuntimeClient(), []);
 
   useEffect(() => {
     let cancelled = false;
-
     runtimeClient
       .bootstrap()
       .then((bootstrap) => {
-        if (cancelled) {
-          return;
-        }
-        setPatterns(bootstrap.patterns);
-        setSnapshots([bootstrap.snapshot]);
-        setSelectedSessionId(bootstrap.snapshot.runId);
-        setSelectedPattern(bootstrap.snapshot.pattern);
-        setSelectedNodeId(bootstrap.snapshot.topology.nodes[1]?.id ?? bootstrap.snapshot.topology.nodes[0]?.id ?? "run");
-        setSelectedBeatId(bootstrap.snapshot.events[2]?.id ?? bootstrap.snapshot.events[0]?.id);
-        setBridgeStatus({
-          mode: bootstrap.health.mode,
-          ok: bootstrap.health.ok,
-          label: bootstrap.health.service,
-          detail: bootstrap.health.detail,
-        });
+        if (cancelled) return;
+        dispatch({ type: "BOOTSTRAP", patterns: bootstrap.patterns, snapshot: bootstrap.snapshot, health: bootstrap.health });
       })
       .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-        setBridgeStatus({
-          mode: "error",
-          ok: false,
-          label: "Runtime error",
-          detail: error instanceof Error ? error.message : "Runtime bridge failed to initialize.",
+        if (cancelled) return;
+        dispatch({
+          type: "SET_BRIDGE_STATUS",
+          status: {
+            mode: "error",
+            ok: false,
+            label: "Runtime error",
+            detail: error instanceof Error ? error.message : "Runtime bridge failed to initialize.",
+          },
         });
       });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [runtimeClient]);
+    return () => { cancelled = true; };
+  }, [runtimeClient, dispatch]);
 
   const viewModel = useMemo(() => {
-    if (patterns.length === 0 || snapshots.length === 0) {
-      return undefined;
-    }
-    return buildWorkbenchViewModel(patterns, snapshots, selectedPattern, selectedSessionId);
-  }, [patterns, snapshots, selectedPattern, selectedSessionId]);
+    if (state.patterns.length === 0 || state.sessions.length === 0) return undefined;
+    return buildWorkbenchViewModel(state.patterns, state.sessions, state.selectedPattern, state.selectedSessionId);
+  }, [state.patterns, state.sessions, state.selectedPattern, state.selectedSessionId]);
 
-  const selectedSession = viewModel?.sessions.find((session) => session.id === selectedSessionId) ?? viewModel?.sessions[0];
-  const selectedNode = viewModel?.topologyNodes.find((node) => node.id === selectedNodeId) ?? viewModel?.topologyNodes[0];
-  const selectedBeat = viewModel?.beats.find((beat) => beat.id === selectedBeatId) ?? viewModel?.beats[0];
+  const selectedSession = viewModel?.sessions.find((s) => s.id === state.selectedSessionId) ?? viewModel?.sessions[0];
+  const selectedNode = viewModel?.topologyNodes.find((n) => n.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
+  const selectedBeat = viewModel?.beats.find((b) => b.id === state.selectedBeatId) ?? viewModel?.beats[0];
   const selectedAgent =
-    viewModel?.agents.find((agent) => agent.id === selectedNode?.agentId) ??
-    viewModel?.agents.find((agent) => agent.id === selectedBeat?.agentId) ??
+    viewModel?.agents.find((a) => a.id === selectedNode?.agentId) ??
+    viewModel?.agents.find((a) => a.id === selectedBeat?.agentId) ??
     viewModel?.agents[0];
   const selectedCheckpoint =
-    viewModel?.checkpoints.find((checkpoint) => checkpoint.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0];
-
-  function replaceSnapshot(snapshot: OraStateSnapshot) {
-    setSnapshots((current) => [snapshot, ...current.filter((item) => item.runId !== snapshot.runId)]);
-    setSelectedSessionId(snapshot.runId);
-  }
+    viewModel?.checkpoints.find((c) => c.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0];
 
   async function startRun() {
-    setIsStartingRun(true);
+    dispatch({ type: "SET_LOADING", loading: true });
     try {
       const snapshot = await runtimeClient.startRun(
-        {
-          prompt: composerPrompt,
-          projectId: "ora-mvp",
-          context: { source: "desktop-workbench" },
-        },
-        { pattern: selectedPattern },
+        { prompt: state.promptText, projectId: "ora-mvp", context: { source: "desktop-workbench" } },
+        { pattern: state.selectedPattern },
       );
-      replaceSnapshot(snapshot);
-      setSelectedNodeId(snapshot.topology.nodes[1]?.id ?? snapshot.topology.nodes[0]?.id ?? "run");
-      setSelectedBeatId(snapshot.events[0]?.id);
-      setCommandFeedback("Started a contract-backed smoke run and refreshed workbench state.");
+      dispatch({ type: "RUN_STARTED", snapshot });
       const health = runtimeClient.getHealth();
       if (health) {
-        setBridgeStatus({
-          mode: health.mode,
-          ok: health.ok,
-          label: health.service,
-          detail: health.detail,
-        });
+        dispatch({ type: "SET_BRIDGE_STATUS", status: { mode: health.mode, ok: health.ok, label: health.service, detail: health.detail } });
       }
     } catch (error) {
-      setBridgeStatus({
-        mode: "error",
-        ok: false,
-        label: "Run failed",
-        detail: error instanceof Error ? error.message : "Unable to start run.",
+      dispatch({
+        type: "SET_BRIDGE_STATUS",
+        status: { mode: "error", ok: false, label: "Run failed", detail: error instanceof Error ? error.message : "Unable to start run." },
       });
-    } finally {
-      setIsStartingRun(false);
-    }
-  }
-
-  async function runSnapshotCommand(command: string, action: () => Promise<OraStateSnapshot>) {
-    setBusyCommand(command);
-    try {
-      const snapshot = await action();
-      replaceSnapshot(snapshot);
-      setSelectedBeatId(snapshot.events.at(-1)?.id ?? selectedBeatId);
-      setCommandFeedback(`${command} completed against ${snapshot.runId}.`);
-    } catch (error) {
-      setCommandFeedback(error instanceof Error ? error.message : `${command} failed.`);
-    } finally {
-      setBusyCommand(undefined);
+      dispatch({ type: "SET_LOADING", loading: false });
     }
   }
 
   async function interruptRun() {
-    if (!selectedSession) {
-      return;
+    if (!selectedSession) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Interrupt" });
+    try {
+      const snapshot = await runtimeClient.interruptRun(selectedSession.id, "Interrupted from Operator Workbench.");
+      dispatch({ type: "RUN_UPDATED", snapshot });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Interrupt completed against ${snapshot.runId}.` });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Interrupt failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
-    await runSnapshotCommand("Interrupt", () => runtimeClient.interruptRun(selectedSession.id, "Interrupted from Operator Workbench."));
   }
 
   async function resumeRun() {
-    if (!selectedSession) {
-      return;
+    if (!selectedSession) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Approve" });
+    try {
+      const snapshot = await runtimeClient.resumeRun(
+        selectedSession.id,
+        "Approved sidecar action from Context Dock.",
+        { approvedActionIds: viewModel?.actions.filter((a) => a.state === "approval_required").map((a) => a.id) ?? [] },
+      );
+      dispatch({ type: "RUN_UPDATED", snapshot });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Approve completed against ${snapshot.runId}.` });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Approve failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
-    await runSnapshotCommand("Approve", () =>
-      runtimeClient.resumeRun(selectedSession.id, "Approved sidecar action from Context Dock.", {
-        approvedActionIds: viewModel?.actions.filter((action) => action.state === "approval_required").map((action) => action.id) ?? [],
-      }),
-    );
   }
 
   async function cancelRun() {
-    if (!selectedSession) {
-      return;
+    if (!selectedSession) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Cancel" });
+    try {
+      const snapshot = await runtimeClient.cancelRun(selectedSession.id);
+      dispatch({ type: "RUN_UPDATED", snapshot });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Cancel completed against ${snapshot.runId}.` });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Cancel failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
-    await runSnapshotCommand("Cancel", () => runtimeClient.cancelRun(selectedSession.id));
   }
 
   async function forkRun() {
     if (!selectedSession || !selectedCheckpoint) {
-      setCommandFeedback("Select a checkpoint before forking.");
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Select a checkpoint before forking." });
       return;
     }
-    await runSnapshotCommand("Fork", () =>
-      runtimeClient.forkRun(
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Fork" });
+    try {
+      const snapshot = await runtimeClient.forkRun(
         selectedSession.id,
         selectedCheckpoint.id,
-        { pattern: selectedPattern, metadata: { source: "desktop-workbench" } },
+        { pattern: state.selectedPattern, metadata: { source: "desktop-workbench" } },
         { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } },
-      ),
-    );
+      );
+      dispatch({ type: "RUN_ADDED", snapshot });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Fork completed against ${snapshot.runId}.` });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Fork failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
   }
 
   async function replaySelection() {
-    if (!selectedSession || !selectedBeat) {
-      return;
-    }
-    setBusyCommand("Replay");
+    if (!selectedSession || !selectedBeat) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Replay" });
     try {
       const stream = await runtimeClient.streamRun(selectedSession.id, Math.max(0, selectedBeat.eventSeq - 1));
       const firstEvent = stream.events[0];
-      if (firstEvent) {
-        setSelectedBeatId(firstEvent.id);
-      }
-      setCommandFeedback(`Replay loaded ${stream.events.length} event${stream.events.length === 1 ? "" : "s"} from ${selectedBeat.label}.`);
+      if (firstEvent) dispatch({ type: "SELECT_BEAT", beatId: firstEvent.id });
+      dispatch({
+        type: "SET_COMMAND_FEEDBACK",
+        feedback: `Replay loaded ${stream.events.length} event${stream.events.length === 1 ? "" : "s"} from ${selectedBeat.label}.`,
+      });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
-      setCommandFeedback(error instanceof Error ? error.message : "Replay failed.");
-    } finally {
-      setBusyCommand(undefined);
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Replay failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
   }
 
   async function exportReport() {
-    if (!selectedSession) {
-      return;
-    }
-    setBusyCommand("Report");
+    if (!selectedSession) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Report" });
     try {
       const { artifact, snapshot } = await runtimeClient.exportReport(selectedSession.id);
-      replaceSnapshot(snapshot);
-      setSelectedBeatId(snapshot.events.at(-1)?.id ?? selectedBeatId);
-      setCommandFeedback(`Exported ${artifact.label} as ${artifact.mimeType}.`);
+      dispatch({ type: "RUN_UPDATED", snapshot });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Exported ${artifact.label} as ${artifact.mimeType}.` });
     } catch (error) {
-      setCommandFeedback(error instanceof Error ? error.message : "Report export failed.");
-    } finally {
-      setBusyCommand(undefined);
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Report export failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
   }
 
-  if (!viewModel || !selectedSession || !selectedNode || !selectedBeat || !selectedAgent) {
+  if (!viewModel || !selectedSession || !selectedNode || !selectedBeat || !selectedAgent || !state.bridgeStatus) {
     return (
       <main className="flex h-screen min-h-[760px] items-center justify-center bg-bench-100 text-bench-900 antialiased">
         <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-          <p className="text-sm font-semibold">{bridgeStatus.label}</p>
-          <p className="mt-2 max-w-sm text-xs leading-5 text-bench-700">{bridgeStatus.detail}</p>
+          <p className="text-sm font-semibold">{state.bridgeStatus?.label ?? "Loading"}</p>
+          <p className="mt-2 max-w-sm text-xs leading-5 text-bench-700">{state.bridgeStatus?.detail ?? "Connecting..."}</p>
         </div>
       </main>
     );
   }
 
-  const {
-    actions,
-    agents,
-    artifacts,
-    beats,
-    checkpoints,
-    memoryRecords,
-    patternCards,
-    planItems,
-    sessions,
-    streamLines,
-    topologyEdges,
-    topologyNodes,
-    activePattern,
-  } = viewModel;
+  const { actions, agents, artifacts, beats, checkpoints, memoryRecords, patternCards, planItems, sessions, streamLines, topologyEdges, topologyNodes, activePattern } = viewModel;
+  const isRunning = selectedSession.status === "running";
+  const isApprovalRequired = selectedSession.status === "approval_required";
+  const pendingApprovals = actions.filter((a) => a.state === "approval_required");
+  const nextApproval = pendingApprovals[0];
 
   return (
     <main className="flex h-screen min-h-[760px] bg-bench-100 text-bench-900 antialiased">
+      {isApprovalRequired && nextApproval && (
+        <ApprovalModal action={nextApproval} onResume={resumeRun} onCancel={cancelRun} disabled={state.busyCommand !== undefined} />
+      )}
       <LeftRail />
       <section
         className={`grid min-w-0 flex-1 grid-cols-[280px_minmax(540px,1fr)_360px] gap-px bg-bench-200 ${
-          filmstripExpanded ? "grid-rows-[minmax(0,1fr)_220px]" : "grid-rows-[minmax(0,1fr)_132px]"
+          state.filmstripExpanded ? "grid-rows-[minmax(0,1fr)_220px]" : "grid-rows-[minmax(0,1fr)_132px]"
         }`}
       >
         <SessionColumn
           sessions={sessions}
-          selectedSessionId={selectedSessionId}
-          onSelectSession={setSelectedSessionId}
+          selectedSessionId={state.selectedSessionId}
+          onSelectSession={(id) => dispatch({ type: "SELECT_SESSION", sessionId: id })}
+          selectedStatus={selectedSession.status}
         />
         <Workspace
           activePattern={activePattern}
-          bridgeStatus={bridgeStatus}
-          busyCommand={busyCommand}
-          commandFeedback={commandFeedback}
-          composerPrompt={composerPrompt}
-          isStartingRun={isStartingRun}
+          bridgeStatus={state.bridgeStatus}
+          busyCommand={state.busyCommand}
+          commandFeedback={state.commandFeedback}
+          composerPrompt={state.promptText}
           patternCards={patternCards}
-          selectedPattern={selectedPattern}
-          selectedNodeId={selectedNodeId}
+          selectedPattern={state.selectedPattern}
+          selectedNodeId={state.selectedNodeId}
           streamLines={streamLines}
           topologyEdges={topologyEdges}
           topologyNodes={topologyNodes}
+          isRunning={isRunning}
+          isApprovalRequired={isApprovalRequired}
+          hasCheckpoint={!!selectedCheckpoint}
+          hasEvents={state.activeSnapshot ? state.activeSnapshot.events.length > 0 : false}
           onCancelRun={cancelRun}
-          onComposerPromptChange={setComposerPrompt}
+          onComposerPromptChange={(text) => dispatch({ type: "SET_PROMPT", text })}
           onExportReport={exportReport}
           onForkRun={forkRun}
           onInterruptRun={interruptRun}
           onReplaySelection={replaySelection}
           onResumeRun={resumeRun}
-          onSelectPattern={setSelectedPattern}
-          onSelectNode={setSelectedNodeId}
+          onSelectPattern={(pattern) => dispatch({ type: "SET_PATTERN", pattern })}
+          onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
           onStartRun={startRun}
+          isLoading={state.isLoading}
         />
         <ContextDock
           actions={actions}
           agents={agents}
           artifacts={artifacts}
-          busyCommand={busyCommand}
+          activeSnapshot={state.activeSnapshot}
+          busyCommand={state.busyCommand}
           checkpoints={checkpoints}
-          commandFeedback={commandFeedback}
+          commandFeedback={state.commandFeedback}
           memoryRecords={memoryRecords}
           planItems={planItems}
           selectedAgent={selectedAgent}
@@ -376,23 +326,31 @@ export function App() {
           selectedCheckpoint={selectedCheckpoint}
           selectedNode={selectedNode}
           selectedSession={selectedSession}
-          selectedTab={selectedTab}
+          selectedTab={state.selectedDockTab}
           onCancelRun={cancelRun}
           onExportReport={exportReport}
           onForkRun={forkRun}
           onReplaySelection={replaySelection}
           onResumeRun={resumeRun}
-          onSelectTab={setSelectedTab}
+          onSelectTab={(tab) => dispatch({ type: "SELECT_TAB", tab })}
         />
         <RunFilmstrip
           beats={beats}
-          expanded={filmstripExpanded}
-          selectedBeatId={selectedBeatId}
-          onSelectBeat={setSelectedBeatId}
-          onToggleExpanded={() => setFilmstripExpanded((expanded) => !expanded)}
+          expanded={state.filmstripExpanded}
+          selectedBeatId={state.selectedBeatId}
+          onSelectBeat={(id) => dispatch({ type: "SELECT_BEAT", beatId: id })}
+          onToggleExpanded={() => dispatch({ type: "TOGGLE_FILMSTRIP" })}
         />
       </section>
     </main>
+  );
+}
+
+export function App() {
+  return (
+    <WorkbenchProvider>
+      <WorkbenchInner />
+    </WorkbenchProvider>
   );
 }
 
@@ -435,11 +393,22 @@ function SessionColumn({
   sessions,
   selectedSessionId,
   onSelectSession,
+  selectedStatus,
 }: {
   sessions: SessionRun[];
   selectedSessionId?: string;
   onSelectSession: (id: string) => void;
+  selectedStatus: RunStatus;
 }) {
+  const statusFilters = ["All", "Running", "Blocked", "Done", "Failed"] as const;
+  const filterMap: Record<string, RunStatus | "all"> = {
+    All: "all",
+    Running: "running",
+    Blocked: "approval_required",
+    Done: "done",
+    Failed: "failed",
+  };
+
   return (
     <aside className="row-span-2 flex min-w-0 flex-col bg-bench-50">
       <div className="border-b border-bench-200 px-4 py-4">
@@ -460,18 +429,24 @@ function SessionColumn({
 
       <div className="border-b border-bench-200 px-4 py-3">
         <div className="flex flex-wrap gap-2">
-          {["All", "Running", "Blocked", "Forkable"].map((filter, index) => (
-            <button
-              key={filter}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
-                index === 1
-                  ? "bg-bench-900 text-bench-50"
-                  : "bg-white text-bench-700 ring-1 ring-inset ring-bench-200 hover:text-bench-900"
-              }`}
-            >
-              {filter}
-            </button>
-          ))}
+          {statusFilters.map((filter) => {
+            const isActive =
+              (filter === "All" && selectedStatus === undefined) ||
+              filterMap[filter] === selectedStatus ||
+              (filter === "All");
+            return (
+              <button
+                key={filter}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
+                  filter === "All"
+                    ? "bg-bench-900 text-bench-50"
+                    : "bg-white text-bench-700 ring-1 ring-inset ring-bench-200 hover:text-bench-900"
+                }`}
+              >
+                {filter}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -503,10 +478,7 @@ function SessionColumn({
                 <span>{session.updatedAt}</span>
               </div>
               <div className="mt-3 h-1.5 rounded-full bg-bench-200">
-                <div
-                  className="h-1.5 rounded-full bg-signal-acid"
-                  style={{ width: `${session.health}%` }}
-                />
+                <div className="h-1.5 rounded-full bg-signal-acid" style={{ width: `${session.health}%` }} />
               </div>
             </button>
           ))}
@@ -535,13 +507,16 @@ function Workspace({
   busyCommand,
   commandFeedback,
   composerPrompt,
-  isStartingRun,
   patternCards,
   selectedPattern,
   selectedNodeId,
   streamLines,
   topologyEdges,
   topologyNodes,
+  isRunning,
+  isApprovalRequired,
+  hasCheckpoint,
+  hasEvents,
   onCancelRun,
   onComposerPromptChange,
   onExportReport,
@@ -552,19 +527,23 @@ function Workspace({
   onSelectPattern,
   onSelectNode,
   onStartRun,
+  isLoading,
 }: {
   activePattern: PatternCard;
   bridgeStatus: RuntimeBridgeStatus;
   busyCommand?: string;
   commandFeedback: string;
   composerPrompt: string;
-  isStartingRun: boolean;
   patternCards: PatternCard[];
   selectedPattern: CoordinationPattern;
   selectedNodeId: string;
   streamLines: StreamLine[];
   topologyEdges: TopologyEdge[];
   topologyNodes: TopologyNode[];
+  isRunning: boolean;
+  isApprovalRequired: boolean;
+  hasCheckpoint: boolean;
+  hasEvents: boolean;
   onCancelRun: () => void;
   onComposerPromptChange: (prompt: string) => void;
   onExportReport: () => void;
@@ -575,6 +554,7 @@ function Workspace({
   onSelectPattern: (pattern: CoordinationPattern) => void;
   onSelectNode: (id: string) => void;
   onStartRun: () => void;
+  isLoading: boolean;
 }) {
   return (
     <section className="flex min-w-0 flex-col bg-bench-100">
@@ -589,7 +569,7 @@ function Workspace({
           <div className="flex items-center gap-2">
             <button
               onClick={onInterruptRun}
-              disabled={busyCommand !== undefined}
+              disabled={!isRunning || busyCommand !== undefined}
               className="inline-flex items-center gap-2 rounded-md border border-bench-200 bg-white px-3 py-2 text-sm font-medium shadow-sm transition hover:shadow-pane active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Pause size={16} />
@@ -597,41 +577,27 @@ function Workspace({
             </button>
             <button
               onClick={onStartRun}
-              disabled={isStartingRun || busyCommand !== undefined}
+              disabled={isLoading || busyCommand !== undefined}
               className="inline-flex items-center gap-2 rounded-md bg-bench-900 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:shadow-pane active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Play size={16} />
-              {isStartingRun ? "Starting" : "Start run"}
+              {isLoading ? "Starting" : "Start run"}
             </button>
           </div>
         </div>
 
-        <div className="mt-4 rounded-lg bg-white p-3 shadow-pane ring-1 ring-inset ring-bench-200">
-          <div className="flex items-start gap-3">
-            <div className="mt-1 rounded-md bg-bench-100 p-2 text-bench-700">
-              <FileText size={17} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <label htmlFor="task-composer" className="text-xs font-semibold text-bench-700">
-                Task composer
-              </label>
-              <textarea
-                id="task-composer"
-                className="mt-1 min-h-[66px] w-full resize-none border-0 bg-transparent text-sm leading-6 outline-none placeholder:text-bench-700"
-                value={composerPrompt}
-                onChange={(event) => onComposerPromptChange(event.target.value)}
-              />
-            </div>
-          </div>
-        </div>
+        <TaskComposer
+          prompt={composerPrompt}
+          selectedPattern={selectedPattern}
+          isLoading={isLoading}
+          onPromptChange={onComposerPromptChange}
+          onStartRun={onStartRun}
+        />
+
         <div className="mt-3 flex items-center gap-2 text-xs text-bench-700">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              bridgeStatus.ok ? "bg-signal-acid" : "bg-signal-red"
-            }`}
-          />
+          <span className={`h-2 w-2 rounded-full ${bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500"}`} />
           <span className="font-semibold">{bridgeStatus.label}</span>
-            <span className="truncate">{bridgeStatus.detail}</span>
+          <span className="truncate">{bridgeStatus.detail}</span>
         </div>
         <div className="mt-2 rounded-md bg-bench-100 px-3 py-2 text-xs text-bench-700">
           {busyCommand ? `${busyCommand} in progress.` : commandFeedback}
@@ -701,24 +667,26 @@ function Workspace({
           <div className="rounded-lg bg-white p-4 shadow-pane ring-1 ring-inset ring-bench-200">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold">Run controls</h3>
-              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-bench-900 ring-1 ring-inset ring-amber-200">
-                1 approval
-              </span>
+              {isApprovalRequired && (
+                <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-bench-900 ring-1 ring-inset ring-amber-200">
+                  1 approval
+                </span>
+              )}
             </div>
             <div className="mt-4 grid grid-cols-2 gap-2">
               {[
-                { label: "Pause", icon: Pause, action: onInterruptRun },
-                { label: "Cancel", icon: Square, action: onCancelRun },
-                { label: "Fork", icon: GitFork, action: onForkRun },
-                { label: "Replay", icon: RotateCcw, action: onReplaySelection },
-                { label: "Approve", icon: ShieldCheck, action: onResumeRun },
-                { label: "Report", icon: Download, action: onExportReport },
-              ].map(({ label, icon: Icon, action }) => (
+                { label: "Pause", icon: Pause, action: onInterruptRun, enabled: isRunning },
+                { label: "Cancel", icon: Square, action: onCancelRun, enabled: isRunning || isApprovalRequired },
+                { label: "Fork", icon: GitFork, action: onForkRun, enabled: hasCheckpoint },
+                { label: "Replay", icon: RotateCcw, action: onReplaySelection, enabled: hasEvents },
+                { label: "Approve", icon: ShieldCheck, action: onResumeRun, enabled: isApprovalRequired },
+                { label: "Report", icon: Download, action: onExportReport, enabled: hasEvents },
+              ].map(({ label, icon: Icon, action, enabled }) => (
                 <button
                   key={label}
                   onClick={action}
-                  disabled={busyCommand !== undefined}
-                  className="flex h-16 flex-col items-center justify-center gap-1 rounded-md border border-bench-200 bg-bench-50 text-xs font-semibold transition hover:bg-white hover:shadow-sm active:scale-95"
+                  disabled={!enabled || busyCommand !== undefined}
+                  className="flex h-16 flex-col items-center justify-center gap-1 rounded-md border border-bench-200 bg-bench-50 text-xs font-semibold transition hover:bg-white hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Icon size={17} />
                   {label}
@@ -856,6 +824,7 @@ function ContextDock({
   actions,
   agents,
   artifacts,
+  activeSnapshot,
   busyCommand,
   checkpoints,
   commandFeedback,
@@ -877,6 +846,7 @@ function ContextDock({
   actions: ActionRecord[];
   agents: AgentProfile[];
   artifacts: ArtifactRecord[];
+  activeSnapshot: OraStateSnapshot | undefined;
   busyCommand?: string;
   checkpoints: CheckpointRecord[];
   commandFeedback: string;
@@ -953,10 +923,18 @@ function ContextDock({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {selectedTab === "Overview" ? (
           <div className="space-y-3">
-            <MetricRow label="Run" value={selectedSession.title} />
+            <MetricRow label="Run ID" value={selectedSession.id} />
+            <MetricRow label="Status" value={statusLabels[selectedSession.status]} />
             <MetricRow label="Pattern" value={selectedSession.pattern.replace(/_/g, " ")} />
+            <MetricRow label="Prompt" value={activeSnapshot?.input.prompt ?? selectedSession.title} />
+            <MetricRow
+              label="Started"
+              value={activeSnapshot?.input.createdAt ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(activeSnapshot.input.createdAt)) : selectedSession.updatedAt}
+            />
+            <MetricRow label="Events" value={String(activeSnapshot?.events.length ?? 0)} />
+            <MetricRow label="Checkpoints" value={String(activeSnapshot?.checkpoints.length ?? 0)} />
+            <MetricRow label="Artifacts" value={String(activeSnapshot?.artifacts.length ?? 0)} />
             <MetricRow label="Health" value={`${selectedSession.health}%`} />
-            <MetricRow label="Selected beat" value={`${selectedBeat.label} · ${selectedBeat.time}`} />
             <DockCard title="Control result" icon={<Activity size={16} />}>
               <p>{commandFeedback}</p>
             </DockCard>
@@ -965,38 +943,54 @@ function ContextDock({
 
         {selectedTab === "State" ? (
           <div className="space-y-3">
-            <DockCard title={selectedNode.label} icon={<CircleDot size={16} />}>
-              <p>{selectedNode.role}</p>
-              <p className="mt-2 font-mono text-[11px]">node:{selectedNode.id}</p>
-              <p className="mt-1 font-mono text-[11px]">status:{selectedNode.status}</p>
-            </DockCard>
-            <DockCard title={selectedBeat.label} icon={<Layers3 size={16} />}>
-              <p>{selectedBeat.detail}</p>
-              <p className="mt-2 font-mono text-[11px]">
-                seq:{selectedBeat.eventSeq} type:{selectedBeat.eventType}
-              </p>
+            <DockCard title="Run snapshot" icon={<CircleDot size={16} />}>
+              <div className="max-h-[400px] overflow-y-auto">
+                <JsonTree data={activeSnapshot ?? {}} defaultExpanded={2} />
+              </div>
             </DockCard>
           </div>
         ) : null}
 
         {selectedTab === "Profile" ? (
           <div className="space-y-3">
-            <DockCard title={selectedAgent.label} icon={<Bot size={16} />}>
-              <p>{selectedAgent.role}</p>
-              <p className="mt-2 font-mono text-[11px]">{selectedAgent.model}</p>
-            </DockCard>
-            <DockCard title="Tools" icon={<Wrench size={16} />}>
-              <div className="flex flex-wrap gap-2">
-                {selectedAgent.tools.map((tool) => (
-                  <span key={tool} className="rounded-full bg-bench-100 px-2 py-1 font-mono text-[11px]">
-                    {tool}
-                  </span>
-                ))}
+            {agents.map((agent) => (
+              <div
+                key={agent.id}
+                className={`rounded-lg bg-white p-3 text-xs leading-5 shadow-sm ring-1 ring-inset ${
+                  agent.id === selectedAgent.id ? "ring-bench-900" : "ring-bench-200"
+                }`}
+              >
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-bench-900">
+                  <Bot size={16} />
+                  {agent.label}
+                </div>
+                <p className="text-bench-700">{agent.role}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span className="rounded-full bg-bench-100 px-2 py-0.5 font-mono text-[11px]">{agent.model}</span>
+                  <span className="rounded-full bg-bench-100 px-2 py-0.5 font-mono text-[11px]">{agent.budget}</span>
+                </div>
+                <div className="mt-2">
+                  <p className="text-[11px] font-semibold text-bench-700">Memory scopes</p>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {agent.memoryScopes.map((scope) => (
+                      <span key={scope} className="rounded-full bg-bench-100 px-2 py-0.5 font-mono text-[11px]">
+                        {scope}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-2">
+                  <p className="text-[11px] font-semibold text-bench-700">Tools</p>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {agent.tools.map((tool) => (
+                      <span key={tool} className="rounded-full bg-bench-100 px-2 py-0.5 font-mono text-[11px]">
+                        {tool}
+                      </span>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </DockCard>
-            <DockCard title="Budget" icon={<SlidersHorizontal size={16} />}>
-              <p>{selectedAgent.budget}</p>
-            </DockCard>
+            ))}
           </div>
         ) : null}
 
@@ -1005,7 +999,7 @@ function ContextDock({
             {(scopedMemory.length > 0 ? scopedMemory : memoryRecords).map((record) => (
               <DockCard key={record.id} title={record.namespace} icon={<Brain size={16} />}>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="rounded-full bg-bench-100 px-2 py-0.5 font-mono text-[11px]">{record.kind}</span>
+                  <StatusBadge status={record.kind} size="sm" />
                   <span className="font-mono text-[11px]">{record.updatedAt}</span>
                 </div>
                 <p className="mt-2">{record.value}</p>
@@ -1020,15 +1014,19 @@ function ContextDock({
               <div key={item.id} className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-inset ring-bench-200">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-semibold leading-5">{item.title}</p>
-                  <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold">
-                    {item.status}
-                  </span>
+                  <StatusBadge status={item.status} size="sm" />
                 </div>
                 <p className="mt-2 text-xs text-bench-700">
-                  {item.owner} · {item.checkpoint}
+                  {item.owner} &middot; {item.checkpoint}
                 </p>
                 {item.linkedActions.length > 0 ? (
-                  <p className="mt-1 font-mono text-[11px] text-bench-700">{item.linkedActions.join(", ")}</p>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {item.linkedActions.map((actionId) => (
+                      <span key={actionId} className="rounded-full bg-bench-100 px-2 py-0.5 font-mono text-[11px]">
+                        {actionId}
+                      </span>
+                    ))}
+                  </div>
                 ) : null}
               </div>
             ))}
@@ -1048,9 +1046,20 @@ function ContextDock({
               >
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-semibold">{action.label}</p>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold shadow-sm">
-                    {action.state}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        action.risk === "high"
+                          ? "bg-red-100 text-red-800 ring-1 ring-inset ring-red-300"
+                          : action.risk === "medium"
+                            ? "bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300"
+                            : "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200"
+                      }`}
+                    >
+                      {action.risk}
+                    </span>
+                    <StatusBadge status={action.state} size="sm" />
+                  </div>
                 </div>
                 <p className="mt-2 text-xs leading-5 text-bench-700">{action.consequence}</p>
                 <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-bench-700">
@@ -1087,39 +1096,10 @@ function ContextDock({
 
         {selectedTab === "Checkpoints" ? (
           <div className="space-y-3">
-            <DockCard title={selectedCheckpoint?.label ?? selectedBeat.label} icon={<Clock3 size={16} />}>
-              <p>{selectedBeat.detail}</p>
-              <p className="mt-2 font-mono text-[11px]">
-                {selectedCheckpoint ? `checkpoint:${selectedCheckpoint.id}` : `event:${selectedBeat.id}`}
-              </p>
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                <button
-                  onClick={onForkRun}
-                  disabled={busyCommand !== undefined || !selectedCheckpoint}
-                  className="rounded-md bg-bench-900 px-3 py-2 text-xs font-semibold text-white transition active:scale-95 disabled:opacity-60"
-                >
-                  Fork
-                </button>
-                <button
-                  onClick={onReplaySelection}
-                  disabled={busyCommand !== undefined}
-                  className="rounded-md border border-bench-200 bg-white px-3 py-2 text-xs font-semibold transition active:scale-95 disabled:opacity-60"
-                >
-                  Replay
-                </button>
-                <button
-                  onClick={onExportReport}
-                  disabled={busyCommand !== undefined}
-                  className="rounded-md border border-bench-200 bg-white px-3 py-2 text-xs font-semibold transition active:scale-95 disabled:opacity-60"
-                >
-                  Report
-                </button>
-              </div>
-            </DockCard>
             {checkpoints.map((checkpoint) => (
               <div
                 key={checkpoint.id}
-                className={`rounded-lg bg-white p-3 text-xs shadow-sm ring-1 ring-inset ${
+                className={`rounded-lg bg-white p-3 shadow-sm ring-1 ring-inset ${
                   checkpoint.id === selectedCheckpoint?.id ? "ring-bench-900" : "ring-bench-200"
                 }`}
               >
@@ -1128,6 +1108,16 @@ function ContextDock({
                   <span className="font-mono text-bench-700">seq:{checkpoint.eventSeq}</span>
                 </div>
                 <p className="mt-2 font-mono text-[11px] text-bench-700">{checkpoint.stateHash ?? "state hash pending"}</p>
+                <div className="mt-3">
+                  <button
+                    onClick={onForkRun}
+                    disabled={busyCommand !== undefined}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-bench-900 px-3 py-2 text-xs font-semibold text-white transition active:scale-95 disabled:opacity-60"
+                  >
+                    <GitFork size={13} />
+                    Fork from here
+                  </button>
+                </div>
               </div>
             ))}
             {artifacts.length > 0 ? (
@@ -1172,7 +1162,7 @@ function RunFilmstrip({
           <Layers3 size={17} />
           <h2 className="text-sm font-semibold">Run Filmstrip</h2>
           <span className="rounded-full bg-bench-100 px-2 py-0.5 text-xs text-bench-700">
-            grouped beats
+            {beats.length} beats
           </span>
         </div>
         <button
@@ -1193,9 +1183,14 @@ function RunFilmstrip({
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className={`h-2.5 w-2.5 rounded-full ${beatTone[beat.group]}`} />
+                <span className="flex items-center gap-1.5">
+                  {beat.group === "checkpoint" ? (
+                    <GitFork size={10} className="text-signal-acid" />
+                  ) : null}
+                  <span className={`h-2.5 w-2.5 rounded-full ${beatTone[beat.group]}`} />
+                </span>
                 <span className="font-mono text-[11px] text-bench-700">
-                  {beat.time} · #{beat.eventSeq}
+                  {beat.time} &middot; #{beat.eventSeq}
                 </span>
               </div>
               <p className="mt-2 text-sm font-semibold">{beat.label}</p>

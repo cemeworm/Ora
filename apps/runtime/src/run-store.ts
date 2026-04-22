@@ -39,6 +39,8 @@ import {
   PlanService,
   PolicyService
 } from "./capabilities.js";
+import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
+import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -71,12 +73,7 @@ interface PersistedArtifact {
   payload: unknown;
 }
 
-interface RuntimePersistenceBackend {
-  load(): { manifest: StoreManifest; runs: StoredRun[] };
-  saveManifest(manifest: StoreManifest): void;
-  saveRun(run: StoredRun): void;
-  saveArtifact(artifact: PersistedArtifact): ArtifactRef;
-}
+// RuntimePersistenceBackend is imported from ./persistence/sqlite-backend.js
 
 export class OraRuntimeError extends Error {
   constructor(
@@ -203,14 +200,21 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
 export class LocalRunStore {
   private readonly backend: RuntimePersistenceBackend;
   private readonly clock: () => number;
+  private readonly persistenceType: "sqlite" | "json-file";
   private runs = new Map<string, StoredRun>();
   private manifest: StoreManifest;
 
   constructor(options: LocalRunStoreOptions = {}) {
     this.clock = options.clock ?? Date.now;
-    this.backend = new JsonFileRuntimePersistenceBackend(
-      options.dataDir ?? process.env.ORA_RUNTIME_STORE_DIR ?? path.join(process.cwd(), ".ora", "runtime-store")
-    );
+    const dataDir = options.dataDir ?? process.env.ORA_RUNTIME_STORE_DIR ?? path.join(process.cwd(), ".ora", "runtime.db");
+
+    if (dataDir.endsWith(".db")) {
+      this.persistenceType = "sqlite";
+      this.backend = new SqliteRuntimePersistence(dataDir);
+    } else {
+      this.persistenceType = "json-file";
+      this.backend = new JsonFileRuntimePersistenceBackend(dataDir);
+    }
     const loaded = this.backend.load();
     this.manifest = loaded.manifest;
     this.runs = new Map(loaded.runs.map((run) => [run.runId, run]));
@@ -223,7 +227,7 @@ export class LocalRunStore {
       service: "ora-runtime",
       version: "0.1.0",
       deterministic: true,
-      persistence: "json-file"
+      persistence: this.persistenceType
     };
   }
 
@@ -925,5 +929,5 @@ export class LocalRunStore {
 export class InMemoryRunStore extends LocalRunStore {}
 
 export function defaultRuntimeStoreDir(): string {
-  return fileURLToPath(pathToFileURL(path.join(process.cwd(), ".ora", "runtime-store")));
+  return fileURLToPath(pathToFileURL(path.join(process.cwd(), ".ora", "runtime.db")));
 }

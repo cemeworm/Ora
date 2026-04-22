@@ -1,0 +1,192 @@
+import { createContext, useContext, useReducer, useMemo, type Dispatch, type ReactNode } from "react";
+import type { CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
+import type { OraPatternDefinition, OraStateSnapshot, RuntimeHealth } from "./runtimeClient";
+
+export interface WorkbenchState {
+  selectedPattern: CoordinationPattern;
+  selectedSessionId: string | undefined;
+  selectedDockTab: DockTab;
+  selectedBeatId: string | undefined;
+  selectedNodeId: string;
+  sessions: OraStateSnapshot[];
+  activeSnapshot: OraStateSnapshot | undefined;
+  patterns: OraPatternDefinition[];
+  bridgeStatus: RuntimeBridgeStatus | undefined;
+  promptText: string;
+  isLoading: boolean;
+  busyCommand: string | undefined;
+  commandFeedback: string;
+  filmstripExpanded: boolean;
+}
+
+export type WorkbenchAction =
+  | { type: "BOOTSTRAP"; patterns: OraPatternDefinition[]; snapshot: OraStateSnapshot; health: RuntimeHealth }
+  | { type: "SET_PATTERN"; pattern: CoordinationPattern }
+  | { type: "SELECT_SESSION"; sessionId: string }
+  | { type: "SELECT_TAB"; tab: DockTab }
+  | { type: "SELECT_BEAT"; beatId: string | undefined }
+  | { type: "SELECT_NODE"; nodeId: string }
+  | { type: "SET_PROMPT"; text: string }
+  | { type: "SET_LOADING"; loading: boolean }
+  | { type: "SET_BUSY_COMMAND"; command: string | undefined }
+  | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
+  | { type: "SET_BRIDGE_STATUS"; status: RuntimeBridgeStatus }
+  | { type: "TOGGLE_FILMSTRIP" }
+  | { type: "RUN_STARTED"; snapshot: OraStateSnapshot }
+  | { type: "RUN_UPDATED"; snapshot: OraStateSnapshot }
+  | { type: "RUN_ADDED"; snapshot: OraStateSnapshot };
+
+const initialState: WorkbenchState = {
+  selectedPattern: "orchestrator_subagent",
+  selectedSessionId: undefined,
+  selectedDockTab: "Overview",
+  selectedBeatId: undefined,
+  selectedNodeId: "run",
+  sessions: [],
+  activeSnapshot: undefined,
+  patterns: [],
+  bridgeStatus: {
+    mode: "initializing",
+    ok: false,
+    label: "Runtime",
+    detail: "Connecting to the Ora runtime bridge.",
+  },
+  promptText:
+    "Implement a smoke run that proves Ora can switch patterns, expose topology, stream events, and checkpoint state.",
+  isLoading: false,
+  busyCommand: undefined,
+  commandFeedback: "Select a checkpoint or event to replay, fork, approve, or export.",
+  filmstripExpanded: false,
+};
+
+function replaceSession(sessions: OraStateSnapshot[], snapshot: OraStateSnapshot): OraStateSnapshot[] {
+  return [snapshot, ...sessions.filter((item) => item.runId !== snapshot.runId)];
+}
+
+function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
+  switch (action.type) {
+    case "BOOTSTRAP": {
+      const snapshot = action.snapshot;
+      return {
+        ...state,
+        patterns: action.patterns,
+        sessions: [snapshot],
+        activeSnapshot: snapshot,
+        selectedSessionId: snapshot.runId,
+        selectedPattern: snapshot.pattern,
+        selectedNodeId: snapshot.topology.nodes[1]?.id ?? snapshot.topology.nodes[0]?.id ?? "run",
+        selectedBeatId: snapshot.events[2]?.id ?? snapshot.events[0]?.id,
+        bridgeStatus: {
+          mode: action.health.mode,
+          ok: action.health.ok,
+          label: action.health.service,
+          detail: action.health.detail,
+        },
+        isLoading: false,
+      };
+    }
+
+    case "SET_PATTERN":
+      return { ...state, selectedPattern: action.pattern };
+
+    case "SELECT_SESSION": {
+      const selected = state.sessions.find((s) => s.runId === action.sessionId);
+      return {
+        ...state,
+        selectedSessionId: action.sessionId,
+        activeSnapshot: selected ?? state.activeSnapshot,
+      };
+    }
+
+    case "SELECT_TAB":
+      return { ...state, selectedDockTab: action.tab };
+
+    case "SELECT_BEAT":
+      return { ...state, selectedBeatId: action.beatId };
+
+    case "SELECT_NODE":
+      return { ...state, selectedNodeId: action.nodeId };
+
+    case "SET_PROMPT":
+      return { ...state, promptText: action.text };
+
+    case "SET_LOADING":
+      return { ...state, isLoading: action.loading };
+
+    case "SET_BUSY_COMMAND":
+      return { ...state, busyCommand: action.command };
+
+    case "SET_COMMAND_FEEDBACK":
+      return { ...state, commandFeedback: action.feedback };
+
+    case "SET_BRIDGE_STATUS":
+      return { ...state, bridgeStatus: action.status };
+
+    case "TOGGLE_FILMSTRIP":
+      return { ...state, filmstripExpanded: !state.filmstripExpanded };
+
+    case "RUN_STARTED": {
+      const sessions = replaceSession(state.sessions, action.snapshot);
+      return {
+        ...state,
+        sessions,
+        activeSnapshot: action.snapshot,
+        selectedSessionId: action.snapshot.runId,
+        selectedNodeId: action.snapshot.topology.nodes[1]?.id ?? action.snapshot.topology.nodes[0]?.id ?? "run",
+        selectedBeatId: action.snapshot.events[0]?.id,
+        isLoading: false,
+        busyCommand: undefined,
+        commandFeedback: "Started a contract-backed smoke run and refreshed workbench state.",
+      };
+    }
+
+    case "RUN_UPDATED": {
+      const sessions = replaceSession(state.sessions, action.snapshot);
+      return {
+        ...state,
+        sessions,
+        activeSnapshot: action.snapshot,
+        selectedBeatId: action.snapshot.events.at(-1)?.id ?? state.selectedBeatId,
+        isLoading: false,
+        busyCommand: undefined,
+      };
+    }
+
+    case "RUN_ADDED": {
+      const sessions = replaceSession(state.sessions, action.snapshot);
+      return {
+        ...state,
+        sessions,
+        activeSnapshot: action.snapshot,
+        selectedSessionId: action.snapshot.runId,
+        selectedBeatId: action.snapshot.events.at(-1)?.id ?? state.selectedBeatId,
+        isLoading: false,
+        busyCommand: undefined,
+      };
+    }
+
+    default:
+      return state;
+  }
+}
+
+interface WorkbenchContextValue {
+  state: WorkbenchState;
+  dispatch: Dispatch<WorkbenchAction>;
+}
+
+const WorkbenchContext = createContext<WorkbenchContextValue | null>(null);
+
+export function WorkbenchProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(workbenchReducer, initialState);
+  const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
+  return <WorkbenchContext.Provider value={value}>{children}</WorkbenchContext.Provider>;
+}
+
+export function useWorkbench() {
+  const context = useContext(WorkbenchContext);
+  if (!context) {
+    throw new Error("useWorkbench must be used within a WorkbenchProvider");
+  }
+  return context;
+}

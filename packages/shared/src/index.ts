@@ -565,3 +565,127 @@ export const MVP_PATTERNS = Object.values(MVP_PATTERN_DEFINITIONS);
 export function getPatternDefinition(pattern: CoordinationPattern): PatternDefinition {
   return MVP_PATTERN_DEFINITIONS[pattern];
 }
+
+// ---------------------------------------------------------------------------
+// Provider Config Schemas
+// ---------------------------------------------------------------------------
+
+export const ProviderTypeSchema = z.enum(["anthropic", "openai", "local_smoke"]);
+export type ProviderType = z.infer<typeof ProviderTypeSchema>;
+
+export const ProviderConfigSchema = z.object({
+  id: z.string().min(1),
+  type: ProviderTypeSchema,
+  label: z.string().min(1),
+  modelId: z.string().min(1),
+  baseUrl: z.string().url().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+});
+export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
+
+export const ProviderRegistrySchema = z.object({
+  providers: z.array(ProviderConfigSchema),
+  defaultProviderId: z.string().min(1),
+});
+export type ProviderRegistry = z.infer<typeof ProviderRegistrySchema>;
+
+// ---------------------------------------------------------------------------
+// Tool Descriptor Schemas
+// ---------------------------------------------------------------------------
+
+export const ToolDescriptorSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  category: z.enum(["file", "shell", "network", "mcp", "model", "export", "internal"]),
+  riskLevel: z.enum(["safe", "low_risk", "requires_approval"]),
+  parameters: z.record(z.unknown()).default({}),
+  requiresApproval: z.boolean().default(false),
+  allowedForProfiles: z.array(z.string().min(1)).default([]),
+});
+export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
+
+export const ToolRegistrySchema = z.object({
+  tools: z.array(ToolDescriptorSchema),
+  defaultPolicyId: z.string().min(1),
+});
+export type ToolRegistry = z.infer<typeof ToolRegistrySchema>;
+
+// ---------------------------------------------------------------------------
+// Session Config Schemas
+// ---------------------------------------------------------------------------
+
+export const SessionConfigSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  projectId: z.string().min(1).optional(),
+  defaultPattern: CoordinationPatternSchema.default("orchestrator_subagent"),
+  defaultProviderId: z.string().min(1).optional(),
+  defaultBudget: ResourceBudgetSchema.optional(),
+  approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
+  tools: z.array(z.string().min(1)).default([]),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type SessionConfig = z.infer<typeof SessionConfigSchema>;
+
+export const ProjectConfigSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  rootPath: z.string().min(1).optional(),
+  sessions: z.array(SessionConfigSchema).default([]),
+  memoryNamespaces: z.array(z.string().min(1)).default([]),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
+
+// ---------------------------------------------------------------------------
+// Approval Gate Schemas
+// ---------------------------------------------------------------------------
+
+export const ApprovalRequestSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  actionId: z.string().min(1),
+  agentId: z.string().min(1).optional(),
+  toolId: z.string().min(1).optional(),
+  riskLevel: ActionRiskLevelSchema,
+  reason: z.string().min(1),
+  input: z.unknown(),
+  createdAt: z.number().int().nonnegative(),
+  deadlineMs: z.number().int().positive().optional(),
+});
+export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
+
+export const ApprovalDecisionSchema = z.object({
+  requestId: z.string().min(1),
+  decision: z.enum(["approved", "denied", "deferred"]),
+  reason: z.string().min(1).optional(),
+  decidedAt: z.number().int().nonnegative(),
+  decidedBy: z.enum(["operator", "auto_policy", "timeout"]).default("operator"),
+});
+export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
+
+// ---------------------------------------------------------------------------
+// Default Definitions
+// ---------------------------------------------------------------------------
+
+export const MVP_TOOLS: ToolDescriptor[] = [
+  { id: "file.read", label: "Read File", description: "Read file contents from local filesystem.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "file.write", label: "Write File", description: "Write content to a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
+  { id: "file.delete", label: "Delete File", description: "Delete a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
+  { id: "shell.execute", label: "Execute Command", description: "Run a shell command.", category: "shell", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
+  { id: "web.fetch", label: "Fetch URL", description: "Fetch content from a URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "mcp.call", label: "MCP Tool Call", description: "Invoke an MCP tool.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "model.handoff", label: "Model Handoff", description: "Delegate to another model.", category: "model", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "export.report", label: "Export Report", description: "Export a run report.", category: "export", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+];
+
+export const DEFAULT_PROVIDERS: ProviderConfig[] = [
+  { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", maxTokens: 8192 },
+  { id: "openai-gpt", type: "openai", label: "GPT", modelId: "gpt-4o", maxTokens: 8192 },
+  { id: "local-smoke", type: "local_smoke", label: "Smoke Model", modelId: "smoke-model", maxTokens: 1024 },
+];

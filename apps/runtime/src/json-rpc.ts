@@ -6,10 +6,14 @@ import {
 } from "@ora/shared";
 import { ZodError } from "zod";
 import { LocalRunStore, OraRuntimeError } from "./run-store.js";
+import { SessionManager } from "./session/session-manager.js";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
 
-export function createRuntimeMethodHandler(store = new LocalRunStore()): JsonRpcMethodHandler {
+export function createRuntimeMethodHandler(
+  store = new LocalRunStore(),
+  sessionManager = new SessionManager(process.env.ORA_LANGGRAPH_ENABLED === "true")
+): JsonRpcMethodHandler {
   return (request) => {
     switch (request.method) {
       case "runtime.health":
@@ -17,6 +21,8 @@ export function createRuntimeMethodHandler(store = new LocalRunStore()): JsonRpc
       case "patterns.list":
         return store.listPatterns();
       case "runs.start":
+        // When LangGraph is enabled, SessionManager handles the graph invocation.
+        // For now, always delegates to the deterministic LocalRunStore.
         return store.startRun(request.params);
       case "runs.list":
         return store.listRuns(request.params);

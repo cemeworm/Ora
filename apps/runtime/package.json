@@ -13,10 +13,15 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@langchain/core": "^1.1.40",
+    "@langchain/langgraph": "^1.2.9",
+    "@langchain/langgraph-checkpoint": "^1.0.1",
     "@ora/shared": "workspace:*",
+    "better-sqlite3": "^12.9.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "tsx": "^4.16.2",
     "vitest": "^2.0.5"
   }
