@@ -27,12 +27,17 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { JsonTree } from "./components/JsonTree";
 import { StatusBadge } from "./components/StatusBadge";
 import { TaskComposer } from "./components/TaskComposer";
-import { createRuntimeClient, type OraStateSnapshot } from "./lib/runtimeClient";
+import {
+  createRuntimeClient,
+  type OraProviderConfig,
+  type OraProviderSecretStatus,
+  type OraStateSnapshot,
+} from "./lib/runtimeClient";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import { buildWorkbenchViewModel } from "./lib/viewModel";
 import type {
@@ -101,7 +106,14 @@ function WorkbenchInner() {
       .bootstrap()
       .then((bootstrap) => {
         if (cancelled) return;
-        dispatch({ type: "BOOTSTRAP", patterns: bootstrap.patterns, snapshot: bootstrap.snapshot, health: bootstrap.health });
+        dispatch({
+          type: "BOOTSTRAP",
+          patterns: bootstrap.patterns,
+          providerRegistry: bootstrap.providerRegistry,
+          providerSecretStatuses: bootstrap.providerSecretStatuses,
+          snapshot: bootstrap.snapshot,
+          health: bootstrap.health,
+        });
       })
       .catch((error) => {
         if (cancelled) return;
@@ -135,10 +147,16 @@ function WorkbenchInner() {
 
   async function startRun() {
     dispatch({ type: "SET_LOADING", loading: true });
+    const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     try {
       const snapshot = await runtimeClient.startRun(
         { prompt: state.promptText, projectId: "ora-mvp", context: { source: "desktop-workbench" } },
-        { pattern: state.selectedPattern },
+        {
+          pattern: state.selectedPattern,
+          providerId: state.selectedProviderId,
+          modelRef: provider?.modelId ?? "local/smoke-model",
+          metadata: { providerId: state.selectedProviderId },
+        },
       );
       dispatch({ type: "RUN_STARTED", snapshot });
       const health = runtimeClient.getHealth();
@@ -222,12 +240,12 @@ function WorkbenchInner() {
     if (!selectedSession || !selectedBeat) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Replay" });
     try {
-      const stream = await runtimeClient.streamRun(selectedSession.id, Math.max(0, selectedBeat.eventSeq - 1));
+      const stream = await runtimeClient.replayRun(selectedSession.id, selectedBeat.checkpointId);
       const firstEvent = stream.events[0];
       if (firstEvent) dispatch({ type: "SELECT_BEAT", beatId: firstEvent.id });
       dispatch({
         type: "SET_COMMAND_FEEDBACK",
-        feedback: `Replay loaded ${stream.events.length} event${stream.events.length === 1 ? "" : "s"} from ${selectedBeat.label}.`,
+        feedback: `Replay restored ${stream.events.length} event${stream.events.length === 1 ? "" : "s"} from ${selectedBeat.label}.`,
       });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
@@ -245,6 +263,32 @@ function WorkbenchInner() {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Exported ${artifact.label} as ${artifact.mimeType}.` });
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Report export failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function storeProviderSecret(providerId: string, secret: string) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Save provider key" });
+    try {
+      const status = await runtimeClient.storeProviderSecret(providerId, secret);
+      dispatch({ type: "SET_PROVIDER_SECRET_STATUS", status });
+      const statuses = await runtimeClient.refreshProviderSecretStatuses(state.providerRegistry?.providers ?? []);
+      dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider key save failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function deleteProviderSecret(providerId: string) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Remove provider key" });
+    try {
+      const status = await runtimeClient.deleteProviderSecret(providerId);
+      dispatch({ type: "SET_PROVIDER_SECRET_STATUS", status });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider key removal failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
   }
@@ -290,7 +334,10 @@ function WorkbenchInner() {
           commandFeedback={state.commandFeedback}
           composerPrompt={state.promptText}
           patternCards={patternCards}
+          providerSecretStatuses={state.providerSecretStatuses}
+          providers={state.providerRegistry?.providers ?? []}
           selectedPattern={state.selectedPattern}
+          selectedProviderId={state.selectedProviderId}
           selectedNodeId={state.selectedNodeId}
           streamLines={streamLines}
           topologyEdges={topologyEdges}
@@ -306,8 +353,11 @@ function WorkbenchInner() {
           onInterruptRun={interruptRun}
           onReplaySelection={replaySelection}
           onResumeRun={resumeRun}
+          onDeleteProviderSecret={deleteProviderSecret}
           onSelectPattern={(pattern) => dispatch({ type: "SET_PATTERN", pattern })}
+          onSelectProvider={(providerId) => dispatch({ type: "SET_PROVIDER", providerId })}
           onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
+          onStoreProviderSecret={storeProviderSecret}
           onStartRun={startRun}
           isLoading={state.isLoading}
         />
@@ -508,7 +558,10 @@ function Workspace({
   commandFeedback,
   composerPrompt,
   patternCards,
+  providerSecretStatuses,
+  providers,
   selectedPattern,
+  selectedProviderId,
   selectedNodeId,
   streamLines,
   topologyEdges,
@@ -524,8 +577,11 @@ function Workspace({
   onInterruptRun,
   onReplaySelection,
   onResumeRun,
+  onDeleteProviderSecret,
   onSelectPattern,
+  onSelectProvider,
   onSelectNode,
+  onStoreProviderSecret,
   onStartRun,
   isLoading,
 }: {
@@ -535,7 +591,10 @@ function Workspace({
   commandFeedback: string;
   composerPrompt: string;
   patternCards: PatternCard[];
+  providerSecretStatuses: OraProviderSecretStatus[];
+  providers: OraProviderConfig[];
   selectedPattern: CoordinationPattern;
+  selectedProviderId: string;
   selectedNodeId: string;
   streamLines: StreamLine[];
   topologyEdges: TopologyEdge[];
@@ -551,8 +610,11 @@ function Workspace({
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onDeleteProviderSecret: (providerId: string) => void;
   onSelectPattern: (pattern: CoordinationPattern) => void;
+  onSelectProvider: (providerId: string) => void;
   onSelectNode: (id: string) => void;
+  onStoreProviderSecret: (providerId: string, secret: string) => void;
   onStartRun: () => void;
   isLoading: boolean;
 }) {
@@ -592,6 +654,16 @@ function Workspace({
           isLoading={isLoading}
           onPromptChange={onComposerPromptChange}
           onStartRun={onStartRun}
+        />
+
+        <ProviderSettings
+          busyCommand={busyCommand}
+          providerSecretStatuses={providerSecretStatuses}
+          providers={providers}
+          selectedProviderId={selectedProviderId}
+          onDeleteProviderSecret={onDeleteProviderSecret}
+          onSelectProvider={onSelectProvider}
+          onStoreProviderSecret={onStoreProviderSecret}
         />
 
         <div className="mt-3 flex items-center gap-2 text-xs text-bench-700">
@@ -724,6 +796,110 @@ function Workspace({
           </div>
         </section>
       </div>
+    </section>
+  );
+}
+
+function ProviderSettings({
+  busyCommand,
+  providerSecretStatuses,
+  providers,
+  selectedProviderId,
+  onDeleteProviderSecret,
+  onSelectProvider,
+  onStoreProviderSecret,
+}: {
+  busyCommand?: string;
+  providerSecretStatuses: OraProviderSecretStatus[];
+  providers: OraProviderConfig[];
+  selectedProviderId: string;
+  onDeleteProviderSecret: (providerId: string) => void;
+  onSelectProvider: (providerId: string) => void;
+  onStoreProviderSecret: (providerId: string, secret: string) => void;
+}) {
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0];
+  const selectedStatus = providerSecretStatuses.find((status) => status.providerId === selectedProvider?.id);
+  const secretInputRef = useRef<HTMLInputElement>(null);
+  const needsSecret = selectedProvider && selectedProvider.type !== "local_smoke";
+
+  function saveSecret() {
+    if (!selectedProvider || !secretInputRef.current) return;
+    const secret = secretInputRef.current.value.trim();
+    if (!secret) return;
+    onStoreProviderSecret(selectedProvider.id, secret);
+    secretInputRef.current.value = "";
+  }
+
+  if (!selectedProvider) {
+    return null;
+  }
+
+  return (
+    <section className="mt-3 rounded-lg bg-white p-3 shadow-sm ring-1 ring-inset ring-bench-200">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Provider settings</h3>
+          <p className="text-xs text-bench-700">Model choice is sent as Ora run config; secrets stay behind Rust Keychain commands.</p>
+        </div>
+        <span
+          className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${
+            selectedStatus?.hasSecret || !needsSecret
+              ? "bg-lime-50 text-bench-900 ring-lime-200"
+              : "bg-amber-50 text-bench-900 ring-amber-200"
+          }`}
+        >
+          {needsSecret ? (selectedStatus?.hasSecret ? "Key ready" : "Key needed") : "Local"}
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {providers.map((provider) => {
+          const status = providerSecretStatuses.find((entry) => entry.providerId === provider.id);
+          const selected = provider.id === selectedProvider.id;
+          return (
+            <button
+              key={provider.id}
+              onClick={() => onSelectProvider(provider.id)}
+              className={`rounded-md px-3 py-2 text-left ring-1 ring-inset transition active:scale-[0.99] ${
+                selected ? "bg-bench-900 text-white ring-bench-900" : "bg-bench-50 text-bench-900 ring-bench-200 hover:bg-white"
+              }`}
+            >
+              <span className="block truncate text-xs font-semibold">{provider.label}</span>
+              <span className={`mt-1 block truncate font-mono text-[11px] ${selected ? "text-bench-200" : "text-bench-700"}`}>
+                {provider.modelId}
+              </span>
+              <span className={`mt-1 block text-[11px] ${selected ? "text-bench-200" : "text-bench-700"}`}>
+                {provider.type === "local_smoke" ? "deterministic" : status?.hasSecret ? "keychain ready" : "needs key"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2">
+        <input
+          ref={secretInputRef}
+          type="password"
+          disabled={!needsSecret || busyCommand !== undefined}
+          placeholder={needsSecret ? `${selectedProvider.label} API key` : "No key required for local smoke"}
+          className="h-9 min-w-0 rounded-md border border-bench-200 bg-bench-50 px-3 text-xs outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        <button
+          onClick={saveSecret}
+          disabled={!needsSecret || busyCommand !== undefined}
+          className="h-9 rounded-md bg-bench-900 px-3 text-xs font-semibold text-white transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Save key
+        </button>
+        <button
+          onClick={() => onDeleteProviderSecret(selectedProvider.id)}
+          disabled={!needsSecret || busyCommand !== undefined || !selectedStatus?.hasSecret}
+          className="h-9 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Remove
+        </button>
+      </div>
+      <p className="mt-2 truncate text-xs text-bench-700">{selectedStatus?.detail ?? "Provider status pending."}</p>
     </section>
   );
 }

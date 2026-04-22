@@ -3,9 +3,13 @@ mod commands;
 fn main() {
     tauri::Builder::default()
         .manage(commands::sidecar::RuntimeFacade::default())
+        .manage(commands::sidecar::RuntimeSidecarManager::default())
         .invoke_handler(tauri::generate_handler![
             commands::sidecar::runtime_sidecar_status,
             commands::sidecar::preview_sidecar_command,
+            commands::sidecar::provider_secret_status,
+            commands::sidecar::provider_secret_store,
+            commands::sidecar::provider_secret_delete,
             commands::sidecar::runtime_json_rpc,
             commands::sidecar::runtime_start_run,
             commands::sidecar::runtime_stream_run,

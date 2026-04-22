@@ -10,6 +10,9 @@ import type {
   OraEventEnvelope,
   PatternDefinition as OraPatternDefinition,
   PlanItem as OraPlanItem,
+  ProviderConfig as OraProviderConfig,
+  ProviderRegistry as OraProviderRegistry,
+  ProviderSecretStatus as OraProviderSecretStatus,
   ResourceBudget as OraResourceBudget,
   RunConfig as OraRunConfig,
   RunEventStream as OraRunEventStream,
@@ -20,6 +23,7 @@ import type {
   TopologyNode as OraTopologyNode,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
+import { DEFAULT_PROVIDERS } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -29,6 +33,9 @@ export type {
   OraEventEnvelope,
   OraMemoryRecord,
   OraPatternDefinition,
+  OraProviderConfig,
+  OraProviderRegistry,
+  OraProviderSecretStatus,
   OraPlanItem,
   OraResourceBudget,
   OraRunConfig,
@@ -50,6 +57,8 @@ export interface RuntimeHealth {
 export interface RuntimeBootstrap {
   health: RuntimeHealth;
   patterns: OraPatternDefinition[];
+  providerRegistry: OraProviderRegistry;
+  providerSecretStatuses: OraProviderSecretStatus[];
   snapshot: OraStateSnapshot;
 }
 
@@ -101,6 +110,8 @@ export function createRuntimeClient() {
       sidecarSpawnEnabled = Boolean(sidecarStatus?.sidecar_spawn_enabled);
       const health = await call<Omit<RuntimeHealth, "mode" | "detail">>("runtime.health");
       const patterns = await call<OraPatternDefinition[]>("patterns.list");
+      const providerRegistry = await call<OraProviderRegistry>("providers.list");
+      const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
       const snapshot = local.previewState("orchestrator_subagent", DEFAULT_PROMPT);
 
       return {
@@ -113,6 +124,8 @@ export function createRuntimeClient() {
             : "Browser dev fallback is serving deterministic Ora JSON-RPC.",
         },
         patterns,
+        providerRegistry,
+        providerSecretStatuses,
         snapshot,
       };
     },
@@ -135,6 +148,9 @@ export function createRuntimeClient() {
     async streamRun(runId: string, afterSeq?: number): Promise<OraRunEventStream> {
       return call<OraRunEventStream>("runs.stream", { runId, afterSeq });
     },
+    async replayRun(runId: string, checkpointId?: string): Promise<OraRunEventStream> {
+      return call<OraRunEventStream>("runs.replay", { runId, checkpointId });
+    },
     async forkRun(
       runId: string,
       checkpointId: string,
@@ -151,6 +167,15 @@ export function createRuntimeClient() {
     },
     getHealth(): RuntimeHealth | undefined {
       return lastHealth;
+    },
+    async refreshProviderSecretStatuses(providers: OraProviderConfig[]): Promise<OraProviderSecretStatus[]> {
+      return getProviderSecretStatuses(providers);
+    },
+    async storeProviderSecret(providerId: string, secret: string): Promise<OraProviderSecretStatus> {
+      return writeProviderSecret(providerId, secret);
+    },
+    async deleteProviderSecret(providerId: string): Promise<OraProviderSecretStatus> {
+      return removeProviderSecret(providerId);
     },
   };
 }
@@ -186,6 +211,63 @@ async function readTauriSidecarStatus(): Promise<Record<string, unknown> | undef
   }
 }
 
+async function getProviderSecretStatuses(providers: OraProviderConfig[]): Promise<OraProviderSecretStatus[]> {
+  if (!isTauriAvailable()) {
+    return providers.map((provider) => ({
+      providerId: provider.id,
+      hasSecret: provider.type === "local_smoke",
+      storage: "unavailable",
+      detail: provider.type === "local_smoke"
+        ? "Local smoke provider does not require a secret."
+        : "Open the Tauri desktop shell to store this provider key in Keychain.",
+    }));
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<OraProviderSecretStatus[]>("provider_secret_status", {
+      providerIds: providers.map((provider) => provider.id),
+    });
+  } catch (error) {
+    return providers.map((provider) => ({
+      providerId: provider.id,
+      hasSecret: false,
+      storage: "unavailable",
+      detail: error instanceof Error ? error.message : "Provider secret status is unavailable.",
+    }));
+  }
+}
+
+async function writeProviderSecret(providerId: string, secret: string): Promise<OraProviderSecretStatus> {
+  if (!isTauriAvailable()) {
+    return {
+      providerId,
+      hasSecret: false,
+      storage: "unavailable",
+      detail: "Keychain writes require the Tauri desktop shell.",
+    };
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<OraProviderSecretStatus>("provider_secret_store", {
+    payload: { providerId, secret },
+  });
+}
+
+async function removeProviderSecret(providerId: string): Promise<OraProviderSecretStatus> {
+  if (!isTauriAvailable()) {
+    return {
+      providerId,
+      hasSecret: false,
+      storage: "unavailable",
+      detail: "Keychain deletes require the Tauri desktop shell.",
+    };
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<OraProviderSecretStatus>("provider_secret_delete", { providerId });
+}
+
 function isTauriAvailable(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in (window as TauriWindow);
 }
@@ -219,7 +301,10 @@ class LocalJsonRpcRuntime {
   }
 
   previewState(pattern: CoordinationPattern, prompt: string): OraStateSnapshot {
-    return this.createSnapshot("run-preview", pattern, prompt, 0, "running");
+    return this.createSnapshot("run-preview", pattern, prompt, 0, "running", undefined, {
+      providerId: "local-smoke",
+      modelRef: "local/smoke-model",
+    });
   }
 
   private dispatch(method: string, params: unknown): unknown {
@@ -233,6 +318,11 @@ class LocalJsonRpcRuntime {
         };
       case "patterns.list":
         return PATTERN_DEFINITIONS;
+      case "providers.list":
+        return {
+          providers: DEFAULT_PROVIDERS,
+          defaultProviderId: "local-smoke",
+        };
       case "runs.start":
         return this.startRun(params);
       case "runs.state":
@@ -247,10 +337,31 @@ class LocalJsonRpcRuntime {
         return this.getRunState(params).checkpoints;
       case "runs.stream": {
         const snapshot = this.getRunState(params);
+        const afterSeq = typeof params === "object" && params !== null && "afterSeq" in params
+          ? (params as { afterSeq?: unknown }).afterSeq
+          : undefined;
+        const fromSeq = typeof afterSeq === "number" ? afterSeq + 1 : 0;
+        const events = snapshot.events.filter((event) => event.seq >= fromSeq);
+        return {
+          runId: snapshot.runId,
+          fromSeq,
+          events,
+          nextSeq: snapshot.events.length,
+        };
+      }
+      case "runs.replay": {
+        const parsed = asReplayRunParams(params);
+        const snapshot = this.getRunState({ runId: parsed.runId });
+        const checkpoint = parsed.checkpointId
+          ? snapshot.checkpoints.find((item) => item.id === parsed.checkpointId)
+          : snapshot.checkpoints.at(-1);
+        if (!checkpoint) {
+          throw new Error("Checkpoint not found for replay.");
+        }
         return {
           runId: snapshot.runId,
           fromSeq: 0,
-          events: snapshot.events,
+          events: snapshot.events.filter((event) => event.seq <= checkpoint.eventSeq),
           nextSeq: snapshot.events.length,
         };
       }
@@ -291,11 +402,22 @@ class LocalJsonRpcRuntime {
         const pattern = parsed.config?.pattern ?? source.pattern;
         const prompt = parsed.input?.prompt ?? `${source.input.prompt} (forked from ${checkpoint.label})`;
         const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
-        const snapshot = this.createSnapshot(runId, pattern, prompt, Date.now(), "succeeded", {
-          runId: source.runId,
-          checkpointId: checkpoint.id,
-          eventSeq: checkpoint.eventSeq,
-        });
+        const snapshot = this.createSnapshot(
+          runId,
+          pattern,
+          prompt,
+          Date.now(),
+          "succeeded",
+          {
+            runId: source.runId,
+            checkpointId: checkpoint.id,
+            eventSeq: checkpoint.eventSeq,
+          },
+          {
+            providerId: parsed.config?.providerId ?? source.config.providerId ?? "local-smoke",
+            modelRef: parsed.config?.modelRef ?? source.config.modelRef,
+          },
+        );
         this.runs.set(runId, snapshot);
         return {
           runId,
@@ -314,7 +436,10 @@ class LocalJsonRpcRuntime {
     const pattern = parsed.config?.pattern ?? "orchestrator_subagent";
     const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
     const startedAt = Date.now();
-    const snapshot = this.createSnapshot(runId, pattern, parsed.input.prompt, startedAt, "succeeded");
+    const snapshot = this.createSnapshot(runId, pattern, parsed.input.prompt, startedAt, "succeeded", undefined, {
+      providerId: parsed.config?.providerId ?? "local-smoke",
+      modelRef: parsed.config?.modelRef ?? "local/smoke-model",
+    });
     this.runs.set(runId, snapshot);
 
     return {
@@ -397,6 +522,7 @@ class LocalJsonRpcRuntime {
     startedAt: number,
     status: OraRunStatus,
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number },
+    provider?: { providerId?: string; modelRef?: string },
   ): OraStateSnapshot {
     const definition = getPatternDefinition(pattern);
     const eventBase = startedAt || Date.parse("2026-04-22T13:00:00.000Z");
@@ -456,9 +582,10 @@ class LocalJsonRpcRuntime {
       config: {
         pattern,
         profileIds: definition.profiles.map((profile) => profile.id),
-        modelRef: "local/smoke-model",
+        providerId: provider?.providerId ?? "local-smoke",
+        modelRef: provider?.modelRef ?? "local/smoke-model",
         budget: definition.defaultBudget,
-        metadata: { source: "desktop-smoke" },
+        metadata: { source: "desktop-smoke", providerId: provider?.providerId ?? "local-smoke" },
         deterministicSeed: "ora-smoke",
       },
       topology: {
@@ -590,6 +717,15 @@ function asForkRunParams(params: unknown): {
     input?: Partial<OraUserTaskInput>;
     config?: Partial<OraRunConfig>;
   };
+}
+
+function asReplayRunParams(params: unknown): { runId: string; checkpointId?: string } {
+  const runId = asRunId(params);
+  if (typeof params !== "object" || params === null || !("checkpointId" in params)) {
+    return { runId };
+  }
+  const checkpointId = (params as { checkpointId?: unknown }).checkpointId;
+  return typeof checkpointId === "string" && checkpointId.length > 0 ? { runId, checkpointId } : { runId };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

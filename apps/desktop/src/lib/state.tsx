@@ -1,6 +1,12 @@
 import { createContext, useContext, useReducer, useMemo, type Dispatch, type ReactNode } from "react";
 import type { CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
-import type { OraPatternDefinition, OraStateSnapshot, RuntimeHealth } from "./runtimeClient";
+import type {
+  OraPatternDefinition,
+  OraProviderRegistry,
+  OraProviderSecretStatus,
+  OraStateSnapshot,
+  RuntimeHealth,
+} from "./runtimeClient";
 
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
@@ -11,6 +17,9 @@ export interface WorkbenchState {
   sessions: OraStateSnapshot[];
   activeSnapshot: OraStateSnapshot | undefined;
   patterns: OraPatternDefinition[];
+  providerRegistry: OraProviderRegistry | undefined;
+  providerSecretStatuses: OraProviderSecretStatus[];
+  selectedProviderId: string;
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
   isLoading: boolean;
@@ -20,8 +29,18 @@ export interface WorkbenchState {
 }
 
 export type WorkbenchAction =
-  | { type: "BOOTSTRAP"; patterns: OraPatternDefinition[]; snapshot: OraStateSnapshot; health: RuntimeHealth }
+  | {
+      type: "BOOTSTRAP";
+      patterns: OraPatternDefinition[];
+      providerRegistry: OraProviderRegistry;
+      providerSecretStatuses: OraProviderSecretStatus[];
+      snapshot: OraStateSnapshot;
+      health: RuntimeHealth;
+    }
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
+  | { type: "SET_PROVIDER"; providerId: string }
+  | { type: "SET_PROVIDER_SECRET_STATUS"; status: OraProviderSecretStatus }
+  | { type: "SET_PROVIDER_SECRET_STATUSES"; statuses: OraProviderSecretStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TAB"; tab: DockTab }
   | { type: "SELECT_BEAT"; beatId: string | undefined }
@@ -45,6 +64,9 @@ const initialState: WorkbenchState = {
   sessions: [],
   activeSnapshot: undefined,
   patterns: [],
+  providerRegistry: undefined,
+  providerSecretStatuses: [],
+  selectedProviderId: "local-smoke",
   bridgeStatus: {
     mode: "initializing",
     ok: false,
@@ -70,6 +92,9 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       return {
         ...state,
         patterns: action.patterns,
+        providerRegistry: action.providerRegistry,
+        providerSecretStatuses: action.providerSecretStatuses,
+        selectedProviderId: action.providerRegistry.defaultProviderId,
         sessions: [snapshot],
         activeSnapshot: snapshot,
         selectedSessionId: snapshot.runId,
@@ -88,6 +113,30 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
 
     case "SET_PATTERN":
       return { ...state, selectedPattern: action.pattern };
+
+    case "SET_PROVIDER": {
+      const provider = state.providerRegistry?.providers.find((entry) => entry.id === action.providerId);
+      return {
+        ...state,
+        selectedProviderId: action.providerId,
+        commandFeedback: provider
+          ? `${provider.label} selected for the next run.`
+          : `Provider ${action.providerId} selected for the next run.`,
+      };
+    }
+
+    case "SET_PROVIDER_SECRET_STATUS":
+      return {
+        ...state,
+        providerSecretStatuses: [
+          action.status,
+          ...state.providerSecretStatuses.filter((status) => status.providerId !== action.status.providerId),
+        ],
+        commandFeedback: action.status.detail,
+      };
+
+    case "SET_PROVIDER_SECRET_STATUSES":
+      return { ...state, providerSecretStatuses: action.statuses };
 
     case "SELECT_SESSION": {
       const selected = state.sessions.find((s) => s.runId === action.sessionId);

@@ -1,16 +1,43 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::env;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 const JSON_RPC_VERSION: &str = "2.0";
-const RUNTIME_COMMAND: &str = "ora-runtime-sidecar";
-const BRIDGE_MODE: &str = "in-process-facade";
-const STATUS_REASON: &str =
+const RUNTIME_COMMAND_ENV: &str = "ORA_RUNTIME_SIDECAR_COMMAND";
+const KEYCHAIN_ACCOUNT: &str = "Ora";
+const KEYCHAIN_SERVICE_PREFIX: &str = "ora.provider.";
+const BRIDGE_MODE_FACADE: &str = "in-process-facade";
+const BRIDGE_MODE_PROCESS: &str = "process-json-rpc";
+const RUNTIME_MODE_FACADE: &str = "facade";
+const RUNTIME_MODE_PROCESS: &str = "process";
+const STATUS_REASON_FACADE: &str =
     "Runtime process spawning is disabled; Rust is serving deterministic Ora facade responses.";
+const STATUS_REASON_PROCESS: &str =
+    "Runtime sidecar process bridge is enabled; Rust is forwarding JSON-RPC over stdio.";
+const STATUS_REASON_UNAVAILABLE: &str =
+    "Runtime sidecar command is configured but unavailable; Rust is falling back to deterministic Ora facade responses.";
 const DEFAULT_PATTERN: &str = "orchestrator_subagent";
+const DEV_RUNTIME_COMMAND: RuntimeCommandSpec = RuntimeCommandSpec {
+    display: "pnpm --filter @ora/runtime start",
+    parts: &["pnpm", "--filter", "@ora/runtime", "start"],
+};
+const PROD_RUNTIME_COMMAND: RuntimeCommandSpec = RuntimeCommandSpec {
+    display: "ora-runtime-sidecar --transport stdio --event-format ora-envelope-v1",
+    parts: &[
+        "ora-runtime-sidecar",
+        "--transport",
+        "stdio",
+        "--event-format",
+        "ora-envelope-v1",
+    ],
+};
 
 #[derive(Default)]
 pub struct RuntimeFacade {
@@ -24,21 +51,150 @@ struct FacadeState {
     next_run_number: u64,
 }
 
+pub struct RuntimeSidecarManager {
+    configured_command: Option<RuntimeCommandSpec>,
+    process_spawn_available: Mutex<bool>,
+    configured_from_env: bool,
+}
+
+impl Default for RuntimeSidecarManager {
+    fn default() -> Self {
+        let configured_command = resolve_runtime_command();
+        let process_spawn_available = configured_command
+            .map(|command| command_is_available(command.executable()))
+            .unwrap_or(false);
+        Self {
+            configured_command,
+            process_spawn_available: Mutex::new(process_spawn_available),
+            configured_from_env: configured_command.is_some(),
+        }
+    }
+}
+
+impl RuntimeSidecarManager {
+    #[cfg(test)]
+    fn with_process_bridge(
+        command: Option<RuntimeCommandSpec>,
+        process_spawn_available: bool,
+    ) -> Self {
+        Self {
+            configured_command: command,
+            process_spawn_available: Mutex::new(process_spawn_available),
+            configured_from_env: command.is_some(),
+        }
+    }
+
+    fn status(&self) -> SidecarStatus {
+        let configured_command = self.configured_command;
+        let active_process = self
+            .process_spawn_available
+            .lock()
+            .map(|available| *available)
+            .unwrap_or(false);
+        SidecarStatus {
+            configured: true,
+            sidecar_configured: self.configured_from_env,
+            json_rpc_facade_enabled: true,
+            runtime_mode: if active_process {
+                RUNTIME_MODE_PROCESS
+            } else {
+                RUNTIME_MODE_FACADE
+            },
+            transport: if active_process {
+                BRIDGE_MODE_PROCESS
+            } else {
+                "in-process-json-rpc-facade"
+            },
+            command: configured_command.map_or(PROD_RUNTIME_COMMAND.display, |spec| spec.display),
+            bridge_mode: if active_process {
+                RUNTIME_MODE_PROCESS
+            } else {
+                BRIDGE_MODE_FACADE
+            },
+            sidecar_spawn_enabled: true,
+            sidecar_process_spawn_enabled: active_process,
+            process_spawn_available: active_process,
+            shell_authority_exposed: false,
+            reason: if active_process {
+                STATUS_REASON_PROCESS
+            } else if self.configured_from_env && self.configured_command.is_some() {
+                STATUS_REASON_UNAVAILABLE
+            } else {
+                STATUS_REASON_FACADE
+            },
+        }
+    }
+
+    fn preview_command(&self) -> Vec<&'static str> {
+        self.configured_command
+            .map(RuntimeCommandSpec::parts)
+            .unwrap_or_else(|| PROD_RUNTIME_COMMAND.parts())
+            .to_vec()
+    }
+
+    fn try_process_json_rpc(
+        &self,
+        request: &RuntimeJsonRpcRequest,
+    ) -> Option<RuntimeJsonRpcResponse> {
+        if !self
+            .process_spawn_available
+            .lock()
+            .map(|available| *available)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        let command = self.configured_command?;
+        match run_process_json_rpc(command, request) {
+            Ok(response) => Some(response),
+            Err(_) => {
+                self.disable_process_bridge();
+                None
+            }
+        }
+    }
+
+    fn disable_process_bridge(&self) {
+        if let Ok(mut process_spawn_available) = self.process_spawn_available.lock() {
+            *process_spawn_available = false;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeCommandSpec {
+    display: &'static str,
+    parts: &'static [&'static str],
+}
+
+impl RuntimeCommandSpec {
+    fn executable(self) -> &'static str {
+        self.parts[0]
+    }
+
+    fn parts(self) -> &'static [&'static str] {
+        self.parts
+    }
+}
+
 #[derive(Serialize)]
 pub struct SidecarStatus {
     configured: bool,
     sidecar_configured: bool,
     json_rpc_facade_enabled: bool,
+    runtime_mode: &'static str,
     transport: &'static str,
     command: &'static str,
     bridge_mode: &'static str,
     sidecar_spawn_enabled: bool,
     sidecar_process_spawn_enabled: bool,
+    process_spawn_available: bool,
     shell_authority_exposed: bool,
     reason: &'static str,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimeJsonRpcRequest {
     #[serde(default)]
     pub jsonrpc: Option<String>,
@@ -49,9 +205,9 @@ pub struct RuntimeJsonRpcRequest {
     pub params: Option<Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimeJsonRpcResponse {
-    pub jsonrpc: &'static str,
+    pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,7 +216,7 @@ pub struct RuntimeJsonRpcResponse {
     pub error: Option<RuntimeJsonRpcError>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimeJsonRpcError {
     pub code: i64,
     pub message: String,
@@ -68,81 +224,211 @@ pub struct RuntimeJsonRpcError {
     pub data: Option<Value>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderSecretWrite {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    secret: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderSecretStatus {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "hasSecret")]
+    has_secret: bool,
+    storage: &'static str,
+    #[serde(rename = "keychainService", skip_serializing_if = "Option::is_none")]
+    keychain_service: Option<String>,
+    detail: String,
+}
+
 #[tauri::command]
-pub fn runtime_sidecar_status() -> SidecarStatus {
-    SidecarStatus {
-        configured: true,
-        sidecar_configured: false,
-        json_rpc_facade_enabled: true,
-        transport: "in-process-json-rpc-facade",
-        command: RUNTIME_COMMAND,
-        bridge_mode: BRIDGE_MODE,
-        sidecar_spawn_enabled: true,
-        sidecar_process_spawn_enabled: false,
-        shell_authority_exposed: false,
-        reason: STATUS_REASON,
+// The webview only receives lifecycle metadata here; shell access stays out of React.
+pub fn runtime_sidecar_status(manager: State<'_, RuntimeSidecarManager>) -> SidecarStatus {
+    manager.status()
+}
+
+#[tauri::command]
+pub fn preview_sidecar_command(manager: State<'_, RuntimeSidecarManager>) -> Vec<&'static str> {
+    manager.preview_command()
+}
+
+#[tauri::command]
+pub fn provider_secret_status(provider_ids: Vec<String>) -> Vec<ProviderSecretStatus> {
+    provider_ids
+        .into_iter()
+        .map(|provider_id| provider_secret_status_for(&provider_id))
+        .collect()
+}
+
+#[tauri::command]
+pub fn provider_secret_store(
+    payload: ProviderSecretWrite,
+) -> Result<ProviderSecretStatus, String> {
+    let service = provider_keychain_service(&payload.provider_id)?;
+    if payload.secret.trim().is_empty() {
+        return Err("Provider secret cannot be empty.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("security")
+            .args([
+                "add-generic-password",
+                "-a",
+                KEYCHAIN_ACCOUNT,
+                "-s",
+                service.as_str(),
+                "-w",
+                payload.secret.as_str(),
+                "-U",
+            ])
+            .status()
+            .map_err(|error| format!("Unable to write provider key to Keychain: {error}"))?;
+
+        if !status.success() {
+            return Err("macOS Keychain rejected the provider secret write.".to_string());
+        }
+
+        Ok(ProviderSecretStatus {
+            provider_id: payload.provider_id,
+            has_secret: true,
+            storage: "keychain",
+            keychain_service: Some(service),
+            detail: "Provider key is stored in macOS Keychain.".to_string(),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = service;
+        Err("Provider Keychain storage is only implemented for macOS in this MVP.".to_string())
     }
 }
 
 #[tauri::command]
-pub fn preview_sidecar_command() -> Vec<&'static str> {
-    vec![
-        "ora-runtime-sidecar",
-        "--transport",
-        "stdio",
-        "--event-format",
-        "ora-envelope-v1",
-    ]
+pub fn provider_secret_delete(provider_id: String) -> Result<ProviderSecretStatus, String> {
+    let service = provider_keychain_service(&provider_id)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("security")
+            .args([
+                "delete-generic-password",
+                "-a",
+                KEYCHAIN_ACCOUNT,
+                "-s",
+                service.as_str(),
+            ])
+            .status()
+            .map_err(|error| format!("Unable to delete provider key from Keychain: {error}"))?;
+
+        if !status.success() && keychain_has_secret(&service) {
+            return Err("macOS Keychain rejected the provider secret delete.".to_string());
+        }
+    }
+
+    Ok(ProviderSecretStatus {
+        provider_id,
+        has_secret: false,
+        storage: keychain_storage_kind(),
+        keychain_service: Some(service),
+        detail: "Provider key is not stored.".to_string(),
+    })
 }
 
 #[tauri::command]
 pub fn runtime_json_rpc(
     request: RuntimeJsonRpcRequest,
+    manager: State<'_, RuntimeSidecarManager>,
     facade: State<'_, RuntimeFacade>,
 ) -> RuntimeJsonRpcResponse {
-    facade.handle_runtime_json_rpc(request)
+    if let Some(response) = manager.try_process_json_rpc(&request) {
+        response
+    } else {
+        facade.handle_runtime_json_rpc(request)
+    }
 }
 
 #[tauri::command]
-pub fn runtime_start_run(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.start", params).map_err(|error| error.message)
+pub fn runtime_start_run(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.start", params)
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_stream_run(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.stream", params).map_err(|error| error.message)
+pub fn runtime_stream_run(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.stream", params)
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_list_runs(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.list", params).map_err(|error| error.message)
+pub fn runtime_list_runs(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.list", params)
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_fork_run(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.fork", params).map_err(|error| error.message)
+pub fn runtime_fork_run(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.fork", params)
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_resume_run(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.resume", params).map_err(|error| error.message)
+pub fn runtime_resume_run(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.resume", params)
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_cancel_run(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.cancel", params).map_err(|error| error.message)
+pub fn runtime_cancel_run(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.cancel", params)
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_export_report(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
+pub fn runtime_export_report(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
     facade
         .handle_method("runs.exportReport", params)
         .map_err(|error| error.message)
 }
 
 #[tauri::command]
-pub fn runtime_run_status(params: Option<Value>, facade: State<'_, RuntimeFacade>) -> Result<Value, String> {
-    facade.handle_method("runs.state", params).map_err(|error| error.message)
+pub fn runtime_run_status(
+    params: Option<Value>,
+    facade: State<'_, RuntimeFacade>,
+) -> Result<Value, String> {
+    facade
+        .handle_method("runs.state", params)
+        .map_err(|error| error.message)
 }
 
 impl RuntimeFacade {
@@ -165,7 +451,7 @@ impl RuntimeFacade {
         match self.handle_method(request.method.as_str(), request.params) {
             Ok(result) => json_rpc_result(request.id, result),
             Err(error) => RuntimeJsonRpcResponse {
-                jsonrpc: JSON_RPC_VERSION,
+                jsonrpc: JSON_RPC_VERSION.to_string(),
                 id: request.id,
                 result: None,
                 error: Some(error),
@@ -173,10 +459,15 @@ impl RuntimeFacade {
         }
     }
 
-    fn handle_method(&self, method: &str, params: Option<Value>) -> Result<Value, RuntimeJsonRpcError> {
+    fn handle_method(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, RuntimeJsonRpcError> {
         match method {
             "runtime.health" => Ok(runtime_health()),
             "patterns.list" => Ok(patterns_list()),
+            "providers.list" => Ok(providers_list()),
             "runs.start" => self.runs_start(params.as_ref()),
             "runs.list" => self.runs_list(params.as_ref()),
             "runs.stream" => self.runs_stream(params.as_ref()),
@@ -192,8 +483,8 @@ impl RuntimeFacade {
                 -32601,
                 "Method not found",
                 Some(json!({
-                    "method": method,
-                    "bridge_mode": BRIDGE_MODE,
+                "method": method,
+                    "bridge_mode": BRIDGE_MODE_FACADE,
                     "reason": "The in-process facade implements Ora MVP runtime methods without exposing shell authority."
                 })),
             )),
@@ -203,11 +494,21 @@ impl RuntimeFacade {
     fn runs_start(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
         let prompt = start_prompt(params)?;
         let pattern = start_pattern(params)?;
+        let provider_id = start_provider_id(params);
+        let model_ref = start_model_ref(params);
         let started_at = now_ms();
         let mut state = self.lock_state()?;
         state.next_run_number += 1;
         let run_id = format!("run-{:04}", state.next_run_number);
-        let snapshot = create_snapshot(&run_id, pattern, &prompt, started_at, None);
+        let snapshot = create_snapshot(
+            &run_id,
+            pattern,
+            &prompt,
+            started_at,
+            None,
+            provider_id.as_deref(),
+            model_ref.as_deref(),
+        );
         state.runs.insert(run_id.clone(), snapshot.clone());
         state.run_order.push(run_id.clone());
 
@@ -278,7 +579,12 @@ impl RuntimeFacade {
             .and_then(|value| value.get("reason"))
             .and_then(Value::as_str)
             .unwrap_or("Interrupted by caller.");
-        self.transition_run(params, "interrupted", "run.interrupted", json!({ "reason": reason }))
+        self.transition_run(
+            params,
+            "interrupted",
+            "run.interrupted",
+            json!({ "reason": reason }),
+        )
     }
 
     fn runs_resume(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -293,7 +599,12 @@ impl RuntimeFacade {
             .unwrap_or_else(|| json!({}));
         let mut state = self.lock_state()?;
         let snapshot = get_run_mut(&mut state, &run_id)?;
-        append_event(snapshot, "run.resumed", json!({ "reason": reason, "patch": patch }), None);
+        append_event(
+            snapshot,
+            "run.resumed",
+            json!({ "reason": reason, "patch": patch }),
+            None,
+        );
         set_snapshot_status(snapshot, "running");
         set_topology_status(snapshot, "running");
         set_plan_status(snapshot, "running");
@@ -377,7 +688,11 @@ impl RuntimeFacade {
         Ok(artifact)
     }
 
-    fn create_child_run(&self, params: Option<&Value>, is_fork: bool) -> Result<Value, RuntimeJsonRpcError> {
+    fn create_child_run(
+        &self,
+        params: Option<&Value>,
+        is_fork: bool,
+    ) -> Result<Value, RuntimeJsonRpcError> {
         let source_run_id = require_run_id(params)?;
         let checkpoint_id = require_checkpoint_id(params)?;
         let mut state = self.lock_state()?;
@@ -412,6 +727,18 @@ impl RuntimeFacade {
             .or_else(|| source["input"]["prompt"].as_str())
             .unwrap_or("Replay Ora run")
             .to_string();
+        let provider_id = params
+            .and_then(|value| value.get("config"))
+            .and_then(|config| config.get("providerId"))
+            .and_then(Value::as_str)
+            .or_else(|| source["config"]["providerId"].as_str())
+            .map(str::to_string);
+        let model_ref = params
+            .and_then(|value| value.get("config"))
+            .and_then(|config| config.get("modelRef"))
+            .and_then(Value::as_str)
+            .or_else(|| source["config"]["modelRef"].as_str())
+            .map(str::to_string);
         let started_at = now_ms();
         state.next_run_number += 1;
         let child_run_id = format!("run-{:04}", state.next_run_number);
@@ -427,6 +754,8 @@ impl RuntimeFacade {
             &prompt,
             started_at,
             Some(forked_from),
+            provider_id.as_deref(),
+            model_ref.as_deref(),
         );
         state.runs.insert(child_run_id.clone(), snapshot.clone());
         state.run_order.push(child_run_id.clone());
@@ -461,9 +790,83 @@ impl RuntimeFacade {
     }
 }
 
+fn provider_secret_status_for(provider_id: &str) -> ProviderSecretStatus {
+    match provider_keychain_service(provider_id) {
+        Ok(service) => {
+            let has_secret = keychain_has_secret(&service);
+            ProviderSecretStatus {
+                provider_id: provider_id.to_string(),
+                has_secret,
+                storage: keychain_storage_kind(),
+                keychain_service: Some(service),
+                detail: if has_secret {
+                    "Provider key is stored in macOS Keychain.".to_string()
+                } else if cfg!(target_os = "macos") {
+                    "Provider key is not stored.".to_string()
+                } else {
+                    "Provider Keychain storage is only implemented for macOS in this MVP."
+                        .to_string()
+                },
+            }
+        }
+        Err(error) => ProviderSecretStatus {
+            provider_id: provider_id.to_string(),
+            has_secret: false,
+            storage: "unavailable",
+            keychain_service: None,
+            detail: error,
+        },
+    }
+}
+
+fn provider_keychain_service(provider_id: &str) -> Result<String, String> {
+    let clean = provider_id.trim();
+    if clean.is_empty() {
+        return Err("Provider id is required.".to_string());
+    }
+    if !clean
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err("Provider id contains unsupported characters.".to_string());
+    }
+    Ok(format!("{KEYCHAIN_SERVICE_PREFIX}{clean}"))
+}
+
+fn keychain_storage_kind() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "keychain"
+    } else {
+        "unavailable"
+    }
+}
+
+fn keychain_has_secret(service: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("security")
+            .args([
+                "find-generic-password",
+                "-a",
+                KEYCHAIN_ACCOUNT,
+                "-s",
+                service,
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = service;
+        false
+    }
+}
+
 fn json_rpc_result(id: Option<Value>, result: Value) -> RuntimeJsonRpcResponse {
     RuntimeJsonRpcResponse {
-        jsonrpc: JSON_RPC_VERSION,
+        jsonrpc: JSON_RPC_VERSION.to_string(),
         id,
         result: Some(result),
         error: None,
@@ -477,7 +880,7 @@ fn json_rpc_error(
     data: Option<Value>,
 ) -> RuntimeJsonRpcResponse {
     RuntimeJsonRpcResponse {
-        jsonrpc: JSON_RPC_VERSION,
+        jsonrpc: JSON_RPC_VERSION.to_string(),
         id,
         result: None,
         error: Some(runtime_error(code, message, data)),
@@ -500,13 +903,191 @@ fn runtime_health() -> Value {
         "deterministic": true,
         "configured": true,
         "sidecar_configured": false,
-        "bridge_mode": BRIDGE_MODE,
+        "runtime_mode": RUNTIME_MODE_FACADE,
+        "bridge_mode": BRIDGE_MODE_FACADE,
         "transport": "in-process-json-rpc-facade",
+        "command": PROD_RUNTIME_COMMAND.display,
         "sidecar_spawn_enabled": true,
         "sidecar_process_spawn_enabled": false,
+        "process_spawn_available": false,
         "shell_authority_exposed": false,
-        "reason": STATUS_REASON
+        "reason": STATUS_REASON_FACADE
     })
+}
+
+fn resolve_runtime_command() -> Option<RuntimeCommandSpec> {
+    let command = env::var(RUNTIME_COMMAND_ENV).ok()?;
+    match command.trim().to_ascii_lowercase().as_str() {
+        "dev" | "development" => Some(DEV_RUNTIME_COMMAND),
+        "prod" | "production" => Some(PROD_RUNTIME_COMMAND),
+        _ => None,
+    }
+}
+
+fn command_is_available(executable: &str) -> bool {
+    let candidate = Path::new(executable);
+    if candidate.components().count() > 1 {
+        return candidate.is_file();
+    }
+
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+
+    for directory in env::split_paths(&paths) {
+        let resolved = directory.join(executable);
+        if resolved.is_file() {
+            return true;
+        }
+
+        #[cfg(windows)]
+        {
+            if let Some(pathext) = env::var_os("PATHEXT") {
+                for extension in env::split_paths(&pathext) {
+                    let extension = extension.to_string_lossy();
+                    let resolved_with_extension =
+                        directory.join(format!("{}{}", executable, extension));
+                    if resolved_with_extension.is_file() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn run_process_json_rpc(
+    command: RuntimeCommandSpec,
+    request: &RuntimeJsonRpcRequest,
+) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+    let mut child = Command::new(command.executable())
+        .args(command.parts().iter().skip(1))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| {
+            runtime_error(
+                -32050,
+                "Runtime sidecar process spawn failed",
+                Some(json!({
+                    "command": command.display,
+                    "error": error.to_string()
+                })),
+            )
+        })?;
+
+    {
+        let request_json = serde_json::to_string(request).map_err(|error| {
+            runtime_error(
+                -32051,
+                "Runtime sidecar request serialization failed",
+                Some(json!({ "error": error.to_string() })),
+            )
+        })?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            runtime_error(
+                -32052,
+                "Runtime sidecar stdin unavailable",
+                Some(json!({ "command": command.display })),
+            )
+        })?;
+        stdin.write_all(request_json.as_bytes()).map_err(|error| {
+            runtime_error(
+                -32053,
+                "Runtime sidecar write failed",
+                Some(json!({
+                    "command": command.display,
+                    "error": error.to_string()
+                })),
+            )
+        })?;
+        stdin.write_all(b"\n").map_err(|error| {
+            runtime_error(
+                -32053,
+                "Runtime sidecar write failed",
+                Some(json!({
+                    "command": command.display,
+                    "error": error.to_string()
+                })),
+            )
+        })?;
+        stdin.flush().map_err(|error| {
+            runtime_error(
+                -32053,
+                "Runtime sidecar write failed",
+                Some(json!({
+                    "command": command.display,
+                    "error": error.to_string()
+                })),
+            )
+        })?;
+    }
+
+    let stdout = child.stdout.take().ok_or_else(|| {
+        runtime_error(
+            -32054,
+            "Runtime sidecar stdout unavailable",
+            Some(json!({ "command": command.display })),
+        )
+    })?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let bytes_read = reader.read_line(&mut line).map_err(|error| {
+        runtime_error(
+            -32055,
+            "Runtime sidecar read failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })?;
+
+    if bytes_read == 0 {
+        return Err(runtime_error(
+            -32056,
+            "Runtime sidecar returned no JSON-RPC response",
+            Some(json!({ "command": command.display })),
+        ));
+    }
+
+    let response = serde_json::from_str(line.trim()).map_err(|error| {
+        runtime_error(
+            -32057,
+            "Runtime sidecar response parse failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string(),
+                "response": line.trim()
+            })),
+        )
+    })?;
+
+    let status = child.wait().map_err(|error| {
+        runtime_error(
+            -32058,
+            "Runtime sidecar wait failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })?;
+    if !status.success() {
+        return Err(runtime_error(
+            -32059,
+            "Runtime sidecar exited unsuccessfully",
+            Some(json!({
+                "command": command.display,
+                "status": status.code()
+            })),
+        ));
+    }
+
+    Ok(response)
 }
 
 fn patterns_list() -> Value {
@@ -517,16 +1098,50 @@ fn patterns_list() -> Value {
     ])
 }
 
+fn providers_list() -> Value {
+    json!({
+        "providers": [
+            {
+                "id": "anthropic-claude",
+                "type": "anthropic",
+                "label": "Claude",
+                "modelId": "claude-sonnet-4-20250514",
+                "maxTokens": 8192
+            },
+            {
+                "id": "openai-gpt",
+                "type": "openai",
+                "label": "GPT",
+                "modelId": "gpt-4o",
+                "maxTokens": 8192
+            },
+            {
+                "id": "local-smoke",
+                "type": "local_smoke",
+                "label": "Smoke Model",
+                "modelId": "smoke-model",
+                "maxTokens": 1024
+            }
+        ],
+        "defaultProviderId": "local-smoke"
+    })
+}
+
 fn create_snapshot(
     run_id: &str,
     pattern: &str,
     prompt: &str,
     started_at: u64,
     forked_from: Option<Value>,
+    provider_id: Option<&str>,
+    model_ref: Option<&str>,
 ) -> Value {
     let definition = pattern_definition(pattern);
     let topology = definition["topology"].clone();
-    let plan_template = definition["planTemplate"].as_array().cloned().unwrap_or_default();
+    let plan_template = definition["planTemplate"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut events = Vec::new();
 
     events.push(create_event(
@@ -684,9 +1299,10 @@ fn create_snapshot(
             "profileIds": definition["profiles"].as_array().map(|profiles| {
                 profiles.iter().filter_map(|profile| profile["id"].as_str()).collect::<Vec<&str>>()
             }).unwrap_or_default(),
-            "modelRef": "local/smoke-model",
+            "providerId": provider_id.unwrap_or("local-smoke"),
+            "modelRef": model_ref.unwrap_or("local/smoke-model"),
             "budget": definition["defaultBudget"],
-            "metadata": { "source": "tauri-facade" },
+            "metadata": { "source": "tauri-facade", "providerId": provider_id.unwrap_or("local-smoke") },
             "deterministicSeed": "ora-smoke"
         },
         "topology": {
@@ -746,12 +1362,28 @@ fn create_event(
     Value::Object(event)
 }
 
-fn append_event(snapshot: &mut Value, event_type: &str, payload: Value, checkpoint_id: Option<&str>) {
+fn append_event(
+    snapshot: &mut Value,
+    event_type: &str,
+    payload: Value,
+    checkpoint_id: Option<&str>,
+) {
     let seq = snapshot["events"].as_array().map_or(0, Vec::len) as u64;
-    let pattern = snapshot["pattern"].as_str().unwrap_or(DEFAULT_PATTERN).to_string();
+    let pattern = snapshot["pattern"]
+        .as_str()
+        .unwrap_or(DEFAULT_PATTERN)
+        .to_string();
     let run_id = snapshot["runId"].as_str().unwrap_or("run").to_string();
     let updated_at = now_ms();
-    let event = create_event(&run_id, seq, event_type, payload, &pattern, updated_at, checkpoint_id);
+    let event = create_event(
+        &run_id,
+        seq,
+        event_type,
+        payload,
+        &pattern,
+        updated_at,
+        checkpoint_id,
+    );
     push_array_item(snapshot, "events", event);
     set_object_value(snapshot, "updatedAt", json!(updated_at));
 }
@@ -771,26 +1403,20 @@ fn run_summary(snapshot: &Value) -> Value {
 }
 
 fn get_run<'a>(state: &'a FacadeState, run_id: &str) -> Result<&'a Value, RuntimeJsonRpcError> {
-    state.runs.get(run_id).ok_or_else(|| {
-        runtime_error(
-            -32004,
-            "Run not found",
-            Some(json!({ "runId": run_id })),
-        )
-    })
+    state
+        .runs
+        .get(run_id)
+        .ok_or_else(|| runtime_error(-32004, "Run not found", Some(json!({ "runId": run_id }))))
 }
 
 fn get_run_mut<'a>(
     state: &'a mut FacadeState,
     run_id: &str,
 ) -> Result<&'a mut Value, RuntimeJsonRpcError> {
-    state.runs.get_mut(run_id).ok_or_else(|| {
-        runtime_error(
-            -32004,
-            "Run not found",
-            Some(json!({ "runId": run_id })),
-        )
-    })
+    state
+        .runs
+        .get_mut(run_id)
+        .ok_or_else(|| runtime_error(-32004, "Run not found", Some(json!({ "runId": run_id }))))
 }
 
 fn require_run_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
@@ -827,10 +1453,30 @@ fn start_pattern(params: Option<&Value>) -> Result<&str, RuntimeJsonRpcError> {
         .and_then(|value| value.get("config"))
         .and_then(|config| config.get("pattern"))
         .and_then(Value::as_str)
-        .or_else(|| params.and_then(|value| value.get("pattern")).and_then(Value::as_str))
+        .or_else(|| {
+            params
+                .and_then(|value| value.get("pattern"))
+                .and_then(Value::as_str)
+        })
         .unwrap_or(DEFAULT_PATTERN);
     ensure_pattern(pattern)?;
     Ok(pattern)
+}
+
+fn start_provider_id(params: Option<&Value>) -> Option<String> {
+    params
+        .and_then(|value| value.get("config"))
+        .and_then(|config| config.get("providerId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn start_model_ref(params: Option<&Value>) -> Option<String> {
+    params
+        .and_then(|value| value.get("config"))
+        .and_then(|config| config.get("modelRef"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn ensure_pattern(pattern: &str) -> Result<(), RuntimeJsonRpcError> {
@@ -1060,6 +1706,13 @@ mod tests {
         }
     }
 
+    fn process_bridge_manager(
+        command: RuntimeCommandSpec,
+        available: bool,
+    ) -> RuntimeSidecarManager {
+        RuntimeSidecarManager::with_process_bridge(Some(command), available)
+    }
+
     #[test]
     fn runtime_health_returns_facade_status() {
         let facade = RuntimeFacade::default();
@@ -1069,8 +1722,56 @@ mod tests {
         assert_eq!(response.id, Some(json!(1)));
         assert_eq!(
             response.result.unwrap().get("bridge_mode").unwrap(),
-            &json!(BRIDGE_MODE)
+            &json!(BRIDGE_MODE_FACADE)
         );
+    }
+
+    #[test]
+    fn sidecar_manager_reports_facade_mode_without_process_spawn() {
+        let manager = RuntimeSidecarManager::default();
+        let status = manager.status();
+
+        assert_eq!(status.runtime_mode, RUNTIME_MODE_FACADE);
+        assert_eq!(status.command, PROD_RUNTIME_COMMAND.display);
+        assert!(!status.process_spawn_available);
+        assert!(!status.sidecar_process_spawn_enabled);
+        assert!(status.sidecar_spawn_enabled);
+    }
+
+    #[test]
+    fn sidecar_manager_reports_process_mode_when_bridge_is_enabled() {
+        let manager = process_bridge_manager(DEV_RUNTIME_COMMAND, true);
+        let status = manager.status();
+
+        assert_eq!(status.runtime_mode, RUNTIME_MODE_PROCESS);
+        assert_eq!(status.bridge_mode, RUNTIME_MODE_PROCESS);
+        assert_eq!(status.transport, BRIDGE_MODE_PROCESS);
+        assert_eq!(status.command, DEV_RUNTIME_COMMAND.display);
+        assert!(status.process_spawn_available);
+        assert!(status.sidecar_process_spawn_enabled);
+    }
+
+    #[test]
+    fn runtime_json_rpc_uses_process_bridge_when_available() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec {
+                display: "sh -c one-shot-json-rpc",
+                parts: &[
+                    "sh",
+                    "-c",
+                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'",
+                ],
+            },
+            true,
+        );
+        let facade = RuntimeFacade::default();
+        let response = manager
+            .try_process_json_rpc(&request("runtime.health", None))
+            .unwrap_or_else(|| facade.handle_runtime_json_rpc(request("runtime.health", None)));
+
+        assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
+        assert_eq!(response.id, Some(json!(1)));
+        assert_eq!(response.result.unwrap()["bridge"], json!("process"));
     }
 
     #[test]
@@ -1080,7 +1781,20 @@ mod tests {
 
         let result = response.result.unwrap();
         assert_eq!(result.as_array().unwrap().len(), 3);
-        assert_eq!(result[0].get("id").unwrap(), &json!("orchestrator_subagent"));
+        assert_eq!(
+            result[0].get("id").unwrap(),
+            &json!("orchestrator_subagent")
+        );
+    }
+
+    #[test]
+    fn provider_keychain_service_rejects_unsanitized_ids() {
+        assert_eq!(
+            provider_keychain_service("openai-gpt").unwrap(),
+            "ora.provider.openai-gpt"
+        );
+        assert!(provider_keychain_service("openai/gpt").is_err());
+        assert!(provider_keychain_service("").is_err());
     }
 
     #[test]
@@ -1101,12 +1815,18 @@ mod tests {
         assert_eq!(state["pattern"], json!("agent_teams"));
 
         let stream = facade
-            .handle_method("runs.stream", Some(json!({ "runId": run_id.clone(), "afterSeq": 2 })))
+            .handle_method(
+                "runs.stream",
+                Some(json!({ "runId": run_id.clone(), "afterSeq": 2 })),
+            )
             .unwrap();
         assert_eq!(stream["fromSeq"], json!(3));
 
         let artifact = facade
-            .handle_method("runs.exportReport", Some(json!({ "runId": run_id.clone() })))
+            .handle_method(
+                "runs.exportReport",
+                Some(json!({ "runId": run_id.clone() })),
+            )
             .unwrap();
         assert_eq!(artifact["kind"], json!("report"));
 
@@ -1126,7 +1846,10 @@ mod tests {
         ));
         let source_run_id = start.result.unwrap()["runId"].as_str().unwrap().to_string();
         let checkpoints = facade
-            .handle_method("runs.checkpoints", Some(json!({ "runId": source_run_id.clone() })))
+            .handle_method(
+                "runs.checkpoints",
+                Some(json!({ "runId": source_run_id.clone() })),
+            )
             .unwrap();
         let checkpoint_id = checkpoints[0]["id"].as_str().unwrap().to_string();
         let fork = facade
