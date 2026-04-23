@@ -41,6 +41,7 @@ import {
 } from "./capabilities.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
+import { recordLangfuseSnapshotTrace } from "./telemetry/langfuse.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -250,6 +251,7 @@ export class LocalRunStore {
       input: parsed.input,
       config: parsed.config
     });
+    recordLangfuseSnapshotTrace(run);
     this.persistRun(run);
     return this.toRunHandle(run);
   }

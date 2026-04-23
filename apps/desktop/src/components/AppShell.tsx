@@ -1,18 +1,19 @@
 import { Sidebar } from "./Sidebar";
 import { useWorkbench } from "../lib/state";
+import { SidebarInset, SidebarProvider } from "./ui/sidebar";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { state } = useWorkbench();
+  const { state, dispatch } = useWorkbench();
 
   return (
-    <div className="flex h-screen min-h-[760px] bg-bench-100 text-bench-900 antialiased">
+    <SidebarProvider
+      open={!state.sidebarCollapsed}
+      onOpenChange={() => dispatch({ type: "TOGGLE_SIDEBAR" })}
+    >
       <Sidebar />
-      <main
-        className="min-w-0 flex-1 transition-all duration-200"
-        style={{ marginLeft: state.sidebarCollapsed ? 0 : 0 }}
-      >
+      <SidebarInset className="h-screen min-h-[720px] overflow-hidden antialiased">
         {children}
-      </main>
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

@@ -1,4 +1,5 @@
 import { createRuntimeMethodHandler } from "./json-rpc.js";
+import { shutdownLangfuseTelemetry } from "./telemetry/langfuse.js";
 
 async function main() {
   if (!process.argv.includes("--smoke")) {
@@ -76,6 +77,7 @@ async function main() {
   });
 
   process.stdout.write(`${JSON.stringify({ run, state, stream, report, fork, replay, runs }, null, 2)}\n`);
+  await shutdownLangfuseTelemetry();
 }
 
 main().catch((error) => {

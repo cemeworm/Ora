@@ -2,21 +2,14 @@ import { StateGraph, START, END } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
-import { createDefaultProviderRegistry } from "../providers/index.js";
+import { invokeRunProvider } from "../providers/index.js";
 
 // Deterministic agent-teams pattern graph.
 // Nodes: triage -> build -> check -> handoff -> END
 // Worker memory is namespaced by worker ID.
 
-const providerRegistry = createDefaultProviderRegistry();
-
-function configuredProviderId(state: OraGraphState): string | undefined {
-  const providerId = state.config.providerId ?? state.config.metadata.providerId;
-  return typeof providerId === "string" ? providerId : state.config.modelRef;
-}
-
 async function triageNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Triage this work into a team backlog: ${state.input.prompt}`,
     system: "You are Ora's team lead. Keep ownership explicit.",
     maxTokens: state.config.budget?.maxTokens
@@ -34,7 +27,7 @@ async function triageNode(state: OraGraphState): Promise<Partial<OraGraphState>>
 
 async function buildNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const output = state.output as Record<string, unknown>;
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Complete the builder assignment for: ${state.input.prompt}`,
     system: "You are Ora's persistent builder teammate.",
     maxTokens: state.config.budget?.maxTokens
@@ -53,7 +46,7 @@ async function buildNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
 
 async function checkNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const output = state.output as Record<string, unknown>;
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Validate the builder output for: ${state.input.prompt}`,
     system: "You are Ora's persistent checker teammate.",
     maxTokens: state.config.budget?.maxTokens

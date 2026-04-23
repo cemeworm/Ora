@@ -92,6 +92,7 @@ function WorkbenchInner() {
           busyCommand={state.busyCommand}
           chatMessages={chatMessages}
           checkpoints={checkpoints}
+          patternCards={patternCards}
           composerPrompt={state.promptText}
           isLoading={state.isLoading}
           isRunning={isRunning}

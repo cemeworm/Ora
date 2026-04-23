@@ -1,6 +1,8 @@
-import { Download, Info, Pause, Play } from "lucide-react";
+import { Download, Files, Pause, PanelRightOpen } from "lucide-react";
+import { Button } from "./ui/button";
 import { StatusBadge } from "./StatusBadge";
 import type { RuntimeBridgeStatus, SessionRun } from "../types";
+import { cn } from "../lib/utils";
 
 interface ChatHeaderProps {
   bridgeStatus: RuntimeBridgeStatus;
@@ -26,47 +28,42 @@ export function ChatHeader({
   detailDrawerOpen,
 }: ChatHeaderProps) {
   return (
-    <header className="flex items-center justify-between border-b border-bench-200 bg-bench-50 px-5 py-3">
-      <div className="flex items-center gap-3 min-w-0">
-        <h2 className="truncate text-sm font-semibold">{selectedSession.title}</h2>
+    <header
+      className={cn(
+        "absolute left-0 right-0 top-0 z-30 flex h-12 shrink-0 items-center justify-between bg-background/80 px-4 shadow-xs backdrop-blur",
+        isApprovalRequired && "bg-amber-50/80",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-medium">{selectedSession.title}</h2>
+        </div>
         <StatusBadge status={selectedSession.status} size="sm" />
-        <div className="flex items-center gap-1.5 text-xs text-bench-700">
-          <span className={`h-2 w-2 rounded-full ${bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500"}`} />
-          <span className="font-semibold">{bridgeStatus.label}</span>
+        <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
+          <span className={cn("h-2 w-2 rounded-full", bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500")} />
+          <span>{bridgeStatus.label}</span>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         {isRunning && (
-          <button
-            onClick={onInterruptRun}
-            disabled={busyCommand !== undefined}
-            className="inline-flex items-center gap-1.5 rounded-md border border-bench-200 bg-white px-3 py-1.5 text-xs font-medium shadow-sm transition hover:shadow-pane active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
-          >
+          <Button variant="ghost" size="sm" onClick={onInterruptRun} disabled={busyCommand !== undefined}>
             <Pause size={14} />
-            Pause
-          </button>
+            <span className="hidden sm:inline">Pause</span>
+          </Button>
         )}
-        <button
-          onClick={onExportReport}
-          disabled={busyCommand !== undefined}
-          className="inline-flex items-center gap-1.5 rounded-md border border-bench-200 bg-white px-3 py-1.5 text-xs font-medium shadow-sm transition hover:shadow-pane active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
-          title="Export report"
-        >
+        <Button variant="ghost" size="sm" onClick={onExportReport} disabled={busyCommand !== undefined} title="Export report">
           <Download size={14} />
-          Export
-        </button>
-        <button
+          <span className="hidden sm:inline">Export</span>
+        </Button>
+        <Button
+          variant={detailDrawerOpen ? "secondary" : "ghost"}
+          size="sm"
           onClick={onToggleDetailDrawer}
-          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
-            detailDrawerOpen
-              ? "bg-bench-900 text-white"
-              : "border border-bench-200 bg-white shadow-sm hover:shadow-pane"
-          }`}
-          title="Toggle detail drawer"
+          title="Toggle details"
         >
-          <Info size={14} />
-          Details
-        </button>
+          {detailDrawerOpen ? <Files size={14} /> : <PanelRightOpen size={14} />}
+          <span className="hidden sm:inline">Details</span>
+        </Button>
       </div>
     </header>
   );

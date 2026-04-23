@@ -2,6 +2,7 @@ import { createContext, useContext, useReducer, useMemo, type Dispatch, type Rea
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import type {
   OraPatternDefinition,
+  OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
   OraStateSnapshot,
@@ -29,6 +30,8 @@ export interface WorkbenchState {
   activeView: AppView;
   sidebarCollapsed: boolean;
   detailDrawerOpen: boolean;
+  artifactPanelOpen: boolean;
+  inputMode: "flash" | "thinking" | "pro" | "ultra";
 }
 
 export type WorkbenchAction =
@@ -42,6 +45,9 @@ export type WorkbenchAction =
     }
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
   | { type: "SET_PROVIDER"; providerId: string }
+  | { type: "SET_PROVIDER_REGISTRY"; providerRegistry: OraProviderRegistry }
+  | { type: "UPSERT_PROVIDER"; provider: OraProviderConfig }
+  | { type: "DELETE_PROVIDER"; providerId: string }
   | { type: "SET_PROVIDER_SECRET_STATUS"; status: OraProviderSecretStatus }
   | { type: "SET_PROVIDER_SECRET_STATUSES"; statuses: OraProviderSecretStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
@@ -59,7 +65,9 @@ export type WorkbenchAction =
   | { type: "RUN_ADDED"; snapshot: OraStateSnapshot }
   | { type: "SET_VIEW"; view: AppView }
   | { type: "TOGGLE_SIDEBAR" }
-  | { type: "TOGGLE_DETAIL_DRAWER" };
+  | { type: "TOGGLE_DETAIL_DRAWER" }
+  | { type: "TOGGLE_ARTIFACT_PANEL" }
+  | { type: "SET_INPUT_MODE"; mode: WorkbenchState["inputMode"] };
 
 const initialState: WorkbenchState = {
   selectedPattern: "orchestrator_subagent",
@@ -88,6 +96,8 @@ const initialState: WorkbenchState = {
   activeView: "chat",
   sidebarCollapsed: false,
   detailDrawerOpen: false,
+  artifactPanelOpen: false,
+  inputMode: "pro",
 };
 
 function replaceSession(sessions: OraStateSnapshot[], snapshot: OraStateSnapshot): OraStateSnapshot[] {
@@ -131,6 +141,51 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         commandFeedback: provider
           ? `${provider.label} selected for the next run.`
           : `Provider ${action.providerId} selected for the next run.`,
+      };
+    }
+
+    case "SET_PROVIDER_REGISTRY": {
+      const selectedProvider = action.providerRegistry.providers.some((provider) => provider.id === state.selectedProviderId)
+        ? state.selectedProviderId
+        : action.providerRegistry.defaultProviderId;
+      return {
+        ...state,
+        providerRegistry: action.providerRegistry,
+        selectedProviderId: selectedProvider,
+      };
+    }
+
+    case "UPSERT_PROVIDER": {
+      const providers = state.providerRegistry?.providers ?? [];
+      const nextProviders = [
+        action.provider,
+        ...providers.filter((provider) => provider.id !== action.provider.id),
+      ];
+      return {
+        ...state,
+        providerRegistry: {
+          providers: nextProviders,
+          defaultProviderId: state.providerRegistry?.defaultProviderId ?? action.provider.id,
+        },
+        selectedProviderId: action.provider.id,
+        commandFeedback: `${action.provider.label} saved for future runs.`,
+      };
+    }
+
+    case "DELETE_PROVIDER": {
+      const providers = state.providerRegistry?.providers.filter((provider) => provider.id !== action.providerId) ?? [];
+      const defaultProviderId = state.providerRegistry?.defaultProviderId ?? "local-smoke";
+      const selectedProviderId = state.selectedProviderId === action.providerId
+        ? defaultProviderId
+        : state.selectedProviderId;
+      return {
+        ...state,
+        providerRegistry: state.providerRegistry
+          ? { providers, defaultProviderId }
+          : state.providerRegistry,
+        selectedProviderId,
+        providerSecretStatuses: state.providerSecretStatuses.filter((status) => status.providerId !== action.providerId),
+        commandFeedback: `Removed provider ${action.providerId}.`,
       };
     }
 
@@ -231,6 +286,12 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
 
     case "TOGGLE_DETAIL_DRAWER":
       return { ...state, detailDrawerOpen: !state.detailDrawerOpen };
+
+    case "TOGGLE_ARTIFACT_PANEL":
+      return { ...state, artifactPanelOpen: !state.artifactPanelOpen, detailDrawerOpen: !state.artifactPanelOpen };
+
+    case "SET_INPUT_MODE":
+      return { ...state, inputMode: action.mode };
 
     default:
       return state;

@@ -2,20 +2,13 @@ import { StateGraph, START, END } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
-import { createDefaultProviderRegistry } from "../providers/index.js";
+import { invokeRunProvider } from "../providers/index.js";
 
 // Deterministic orchestrator-subagent pattern graph.
 // Nodes: decompose -> research -> review -> synthesize -> END
 
-const providerRegistry = createDefaultProviderRegistry();
-
-function configuredProviderId(state: OraGraphState): string | undefined {
-  const providerId = state.config.providerId ?? state.config.metadata.providerId;
-  return typeof providerId === "string" ? providerId : state.config.modelRef;
-}
-
 async function decomposeNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Decompose this task into research, review, and synthesize work: ${state.input.prompt}`,
     system: "You are Ora's orchestrator. Keep the plan short and inspectable.",
     maxTokens: state.config.budget?.maxTokens
@@ -33,7 +26,7 @@ async function decomposeNode(state: OraGraphState): Promise<Partial<OraGraphStat
 
 async function researchNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const output = state.output as Record<string, unknown>;
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Gather focused context for: ${state.input.prompt}`,
     system: "You are Ora's research subagent. Return concise findings.",
     maxTokens: state.config.budget?.maxTokens
@@ -50,7 +43,7 @@ async function researchNode(state: OraGraphState): Promise<Partial<OraGraphState
 
 async function reviewNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const output = state.output as Record<string, unknown>;
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Review completeness and risks for: ${state.input.prompt}`,
     system: "You are Ora's review subagent. Return risks and gaps.",
     maxTokens: state.config.budget?.maxTokens

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry } from "../../src/providers/index.js";
+import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, invokeRunProvider } from "../../src/providers/index.js";
 
 describe("provider adapters", () => {
   it("builds a deterministic local smoke response", async () => {
@@ -71,6 +71,65 @@ describe("provider adapters", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(response.text).toBe("OpenAI says hello.");
     expect(response.raw).toMatchObject({ output_text: "OpenAI says hello." });
+  });
+
+  it("sends an OpenAI-compatible chat completions request", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://openrouter.ai/api/v1/chat/completions");
+
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer test-openrouter-key");
+      expect(headers.get("content-type")).toBe("application/json");
+
+      const body = JSON.parse(String(init?.body)) as {
+        model: string;
+        messages: Array<{ role: string; content: string }>;
+        max_tokens?: number;
+        temperature?: number;
+      };
+
+      expect(body.model).toBe("anthropic/claude-sonnet-4.5");
+      expect(body.max_tokens).toBe(128);
+      expect(body.temperature).toBeUndefined();
+      expect(body.messages).toEqual([
+        { role: "system", content: "Stay brief." },
+        { role: "user", content: "Say hello." },
+      ]);
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Compatible hello." } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "anthropic/claude-sonnet-4.5",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        maxTokens: 128,
+        temperature: 0.2,
+        dropParams: ["temperature"],
+      },
+      {
+        env: { OPENROUTER_API_KEY: "test-openrouter-key" },
+        fetchImpl,
+      }
+    );
+
+    const response = await provider({
+      prompt: "Say hello.",
+      system: "Stay brief.",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(response.providerType).toBe("openai_compatible");
+    expect(response.text).toBe("Compatible hello.");
   });
 
   it("blocks custom provider base URLs unless explicitly enabled", async () => {
@@ -184,5 +243,44 @@ describe("provider adapters", () => {
 
     expect(response.providerId).toBe("local-smoke");
     expect(response.text).toContain("prompt=Resolve model ref.");
+  });
+
+  it("invokes a run-scoped custom provider config", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "Run-scoped compatible output." } }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const response = await invokeRunProvider(
+      {
+        pattern: "orchestrator_subagent",
+        profileIds: [],
+        providerId: "custom-compatible",
+        providerConfig: {
+          id: "custom-compatible",
+          type: "openai_compatible",
+          label: "Custom Compatible",
+          modelId: "custom-model",
+          baseUrl: "http://localhost:11434/v1",
+          apiKeyEnv: "CUSTOM_COMPATIBLE_API_KEY",
+          enabled: true,
+          capabilities: ["chat"],
+          dropParams: [],
+        },
+        modelRef: "custom-model",
+        metadata: {},
+        deterministicSeed: "test-seed",
+      },
+      { prompt: "Use the run provider." },
+      {
+        env: { CUSTOM_COMPATIBLE_API_KEY: "local-key" },
+        fetchImpl,
+      }
+    );
+
+    expect(response.providerId).toBe("custom-compatible");
+    expect(response.text).toBe("Run-scoped compatible output.");
   });
 });

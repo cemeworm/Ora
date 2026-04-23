@@ -136,6 +136,7 @@ export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
   profileIds: z.array(z.string().min(1)).default([]),
   providerId: z.string().min(1).optional(),
+  providerConfig: z.lazy(() => ProviderConfigSchema).optional(),
   modelRef: z.string().min(1).default("local/smoke-model"),
   budget: ResourceBudgetSchema.optional(),
   metadata: z.record(z.unknown()).default({}),
@@ -572,17 +573,31 @@ export function getPatternDefinition(pattern: CoordinationPattern): PatternDefin
 // Provider Config Schemas
 // ---------------------------------------------------------------------------
 
-export const ProviderTypeSchema = z.enum(["anthropic", "openai", "local_smoke"]);
+export const ProviderTypeSchema = z.enum(["anthropic", "openai", "openai_compatible", "local_smoke"]);
 export type ProviderType = z.infer<typeof ProviderTypeSchema>;
+
+export const ProviderCapabilitySchema = z.enum([
+  "chat",
+  "tool_use",
+  "image_input",
+  "json_mode",
+  "reasoning"
+]);
+export type ProviderCapability = z.infer<typeof ProviderCapabilitySchema>;
 
 export const ProviderConfigSchema = z.object({
   id: z.string().min(1),
   type: ProviderTypeSchema,
   label: z.string().min(1),
   modelId: z.string().min(1),
+  enabled: z.boolean().default(true),
   baseUrl: z.string().url().optional(),
+  apiKeyEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
+  contextWindow: z.number().int().positive().optional(),
+  capabilities: z.array(ProviderCapabilitySchema).default(["chat"]),
+  dropParams: z.array(z.string().min(1)).default([]),
   timeoutMs: z.number().int().positive().optional(),
 });
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
@@ -705,7 +720,7 @@ export const MVP_TOOLS: ToolDescriptor[] = [
 ];
 
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
-  { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", maxTokens: 8192 },
-  { id: "openai-gpt", type: "openai", label: "GPT", modelId: "gpt-4o", maxTokens: 8192 },
-  { id: "local-smoke", type: "local_smoke", label: "Smoke Model", modelId: "smoke-model", maxTokens: 1024 },
+  { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use"], dropParams: [] },
+  { id: "openai-gpt", type: "openai", label: "GPT", modelId: "gpt-4o", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use", "image_input", "json_mode"], dropParams: [] },
+  { id: "local-smoke", type: "local_smoke", label: "Smoke Model", modelId: "smoke-model", enabled: true, maxTokens: 1024, capabilities: ["chat"], dropParams: [] },
 ];

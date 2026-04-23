@@ -23,7 +23,7 @@ import type {
   TopologyNode as OraTopologyNode,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS } from "@ora/shared";
+import { DEFAULT_PROVIDERS, ProviderConfigSchema } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -66,6 +66,7 @@ type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown };
 
 const DEFAULT_PROMPT =
   "Implement a smoke run that proves Ora can switch patterns, expose topology, stream events, and checkpoint state.";
+const CUSTOM_PROVIDER_STORAGE_KEY = "ora.customProviders.v1";
 
 export function createRuntimeClient() {
   const local = new LocalJsonRpcRuntime();
@@ -110,7 +111,7 @@ export function createRuntimeClient() {
       sidecarSpawnEnabled = Boolean(sidecarStatus?.sidecar_spawn_enabled);
       const health = await call<Omit<RuntimeHealth, "mode" | "detail">>("runtime.health");
       const patterns = await call<OraPatternDefinition[]>("patterns.list");
-      const providerRegistry = await call<OraProviderRegistry>("providers.list");
+      const providerRegistry = mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
       const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
       const snapshot = local.previewState("orchestrator_subagent", DEFAULT_PROMPT);
 
@@ -177,7 +178,66 @@ export function createRuntimeClient() {
     async deleteProviderSecret(providerId: string): Promise<OraProviderSecretStatus> {
       return removeProviderSecret(providerId);
     },
+    async upsertCustomProvider(provider: OraProviderConfig): Promise<OraProviderRegistry> {
+      const parsed = ProviderConfigSchema.parse(provider) as OraProviderConfig;
+      const providers = readCustomProviders();
+      writeCustomProviders([
+        parsed,
+        ...providers.filter((entry) => entry.id !== parsed.id),
+      ]);
+      return mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
+    },
+    async deleteCustomProvider(providerId: string): Promise<OraProviderRegistry> {
+      writeCustomProviders(readCustomProviders().filter((provider) => provider.id !== providerId));
+      return mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
+    },
   };
+}
+
+function mergeCustomProviders(registry: OraProviderRegistry): OraProviderRegistry {
+  const merged = new Map<string, OraProviderConfig>();
+  for (const provider of registry.providers) {
+    merged.set(provider.id, provider);
+  }
+  for (const provider of readCustomProviders()) {
+    merged.set(provider.id, provider);
+  }
+
+  return {
+    providers: [...merged.values()],
+    defaultProviderId: merged.has(registry.defaultProviderId)
+      ? registry.defaultProviderId
+      : registry.providers[0]?.id ?? "local-smoke",
+  };
+}
+
+function readCustomProviders(): OraProviderConfig[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_PROVIDER_STORAGE_KEY);
+    const decoded = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(decoded)) {
+      return [];
+    }
+
+    return decoded.flatMap((entry) => {
+      const parsed = ProviderConfigSchema.safeParse(entry);
+      return parsed.success ? [parsed.data as OraProviderConfig] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeCustomProviders(providers: OraProviderConfig[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(CUSTOM_PROVIDER_STORAGE_KEY, JSON.stringify(providers));
 }
 
 async function tryTauriJsonRpc(request: JsonRpcRequest): Promise<

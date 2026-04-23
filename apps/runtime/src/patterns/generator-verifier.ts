@@ -2,21 +2,14 @@ import { StateGraph, START, END } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
-import { createDefaultProviderRegistry } from "../providers/index.js";
+import { invokeRunProvider } from "../providers/index.js";
 
 // Deterministic generator-verifier pattern graph.
 // Nodes: draft -> verify -> decide (conditional to END or retry draft, max 3)
 
-const providerRegistry = createDefaultProviderRegistry();
-
-function configuredProviderId(state: OraGraphState): string | undefined {
-  const providerId = state.config.providerId ?? state.config.metadata.providerId;
-  return typeof providerId === "string" ? providerId : state.config.modelRef;
-}
-
 async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const retryCount = (state.output as Record<string, number> | undefined)?.retryCount ?? 0;
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Draft a candidate answer for: ${state.input.prompt}`,
     system: "You are the generator in Ora's Generator-Verifier pattern.",
     maxTokens: state.config.budget?.maxTokens
@@ -40,7 +33,7 @@ async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>>
   const output = state.output as Record<string, unknown>;
   const candidate = (output?.candidate as string) ?? "no candidate";
   const retryCount = (output?.retryCount as number) ?? 0;
-  const model = await providerRegistry.invoke(configuredProviderId(state), {
+  const model = await invokeRunProvider(state.config, {
     prompt: `Verify this candidate against the prompt "${state.input.prompt}":\n\n${candidate}`,
     system: "You are the verifier in Ora's Generator-Verifier pattern. Return concise rubric findings.",
     maxTokens: state.config.budget?.maxTokens

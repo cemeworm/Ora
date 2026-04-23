@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "@ora/shared";
-import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, resolveProviderEndpoint, splitInstructionMessages, toInputText } from "./provider-utils.js";
+import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages, toInputText } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 
 function createError(status: number, body: string, providerId: string) {
@@ -14,7 +14,7 @@ export function createOpenAIProvider(
   const env = options.env ?? process.env;
 
   return async (request) => {
-    const apiKey = env.OPENAI_API_KEY;
+    const apiKey = readProviderApiKey(config, "OPENAI_API_KEY", env);
     if (!apiKey) {
       throw failMissingApiKey(config.id, "OPENAI_API_KEY");
     }

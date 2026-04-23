@@ -47,6 +47,24 @@ describe("Ora shared contracts", () => {
     expect(config.pattern).toBe("orchestrator_subagent");
     expect(config.modelRef).toBe("local/smoke-model");
     expect(config.providerId).toBeUndefined();
+    expect(config.providerConfig).toBeUndefined();
+  });
+
+  it("accepts a run-scoped custom provider config", () => {
+    const config = RunConfigSchema.parse({
+      providerId: "openrouter",
+      providerConfig: {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "anthropic/claude-sonnet-4.5",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+    });
+
+    expect(config.providerConfig?.type).toBe("openai_compatible");
+    expect(config.providerConfig?.capabilities).toEqual(["chat"]);
   });
 
   it("validates capability records and event envelopes", () => {
@@ -198,12 +216,33 @@ describe("ProviderConfigSchema", () => {
     const parsed = ProviderConfigSchema.parse({
       ...validProvider,
       baseUrl: "https://api.anthropic.com",
+      apiKeyEnv: "ANTHROPIC_API_KEY",
       temperature: 0.7,
+      contextWindow: 200000,
+      capabilities: ["chat", "tool_use"],
+      dropParams: ["stop"],
       timeoutMs: 30000
     });
     expect(parsed.baseUrl).toBe("https://api.anthropic.com");
+    expect(parsed.apiKeyEnv).toBe("ANTHROPIC_API_KEY");
     expect(parsed.temperature).toBe(0.7);
+    expect(parsed.capabilities).toEqual(["chat", "tool_use"]);
+    expect(parsed.dropParams).toEqual(["stop"]);
     expect(parsed.timeoutMs).toBe(30000);
+  });
+
+  it("accepts an OpenAI-compatible custom provider", () => {
+    const parsed = ProviderConfigSchema.parse({
+      id: "openrouter",
+      type: "openai_compatible",
+      label: "OpenRouter",
+      modelId: "openai/gpt-4o-mini",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+    });
+
+    expect(parsed.enabled).toBe(true);
+    expect(parsed.capabilities).toEqual(["chat"]);
   });
 
   it("rejects an invalid provider type", () => {

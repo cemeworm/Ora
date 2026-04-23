@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "@ora/shared";
-import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
+import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 
 function createError(status: number, body: string, providerId: string) {
@@ -14,7 +14,7 @@ export function createAnthropicProvider(
   const env = options.env ?? process.env;
 
   return async (request) => {
-    const apiKey = env.ANTHROPIC_API_KEY;
+    const apiKey = readProviderApiKey(config, "ANTHROPIC_API_KEY", env);
     if (!apiKey) {
       throw failMissingApiKey(config.id, "ANTHROPIC_API_KEY");
     }

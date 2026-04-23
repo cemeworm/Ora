@@ -36,11 +36,15 @@ export {
 // Providers
 export {
   createAnthropicProvider,
+  configuredProviderId,
   createDefaultProviderRegistry,
   createLocalSmokeProvider,
   createModelProvider,
+  createOpenAICompatibleProvider,
   createOpenAIProvider,
-  createProviderRegistry
+  createProviderRegistry,
+  createProviderRegistryForRun,
+  invokeRunProvider
 } from "./providers/index.js";
 export type {
   FetchLike,
@@ -51,6 +55,17 @@ export type {
   ProviderRegistry,
   ProviderRuntimeOptions
 } from "./providers/index.js";
+
+export {
+  ORA_MANAGED_LANGFUSE,
+  initLangfuseTelemetry,
+  managedLangfuseBootstrapEnv,
+  managedLangfuseRuntimeEnv,
+  recordLangfuseSnapshotTrace,
+  shutdownLangfuseTelemetry,
+  traceLangfuseGeneration,
+  withLangfuseRunTrace
+} from "./telemetry/langfuse.js";
 
 // Session manager
 export { SessionManager } from "./session/session-manager.js";

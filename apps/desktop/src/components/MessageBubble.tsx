@@ -1,4 +1,6 @@
+import { Bot, UserRound } from "lucide-react";
 import type { ChatMessage } from "../types";
+import { cn } from "../lib/utils";
 
 interface MessageBubbleProps {
   role: ChatMessage["role"];
@@ -7,33 +9,40 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ role, content, timestamp }: MessageBubbleProps) {
-  if (role === "user") {
+  const isUser = role === "user";
+
+  if (role === "system") {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[70%] rounded-2xl rounded-br-sm bg-bench-900 px-4 py-2.5 text-bench-50 shadow-sm">
-          <p className="text-sm leading-6 whitespace-pre-wrap">{content}</p>
-          <p className="mt-1 text-right text-[11px] text-bench-300">{timestamp}</p>
+      <div className="flex w-full justify-center">
+        <div className="rounded-full border border-border bg-background/80 px-3 py-1 text-xs text-muted-foreground shadow-xs backdrop-blur">
+          {content}
         </div>
       </div>
     );
   }
 
-  if (role === "assistant") {
-    return (
-      <div className="flex justify-start">
-        <div className="max-w-[70%] rounded-2xl rounded-bl-sm bg-bench-100 px-4 py-2.5 ring-1 ring-inset ring-bench-200">
-          <p className="text-sm leading-6 whitespace-pre-wrap">{content}</p>
-          <p className="mt-1 text-[11px] text-bench-700">{timestamp}</p>
-        </div>
-      </div>
-    );
-  }
-
-  // system messages - centered, muted
   return (
-    <div className="flex justify-center">
-      <div className="max-w-[80%] rounded-full bg-bench-100 px-4 py-1.5 text-center ring-1 ring-inset ring-bench-200">
-        <p className="text-xs text-bench-700">{content}</p>
+    <div className={cn("group relative flex w-full flex-col gap-2", isUser ? "items-end" : "items-start")}>
+      <div className={cn("flex max-w-full gap-3", isUser ? "flex-row-reverse" : "flex-row")}>
+        <div
+          className={cn(
+            "mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs",
+            isUser && "bg-secondary text-foreground",
+          )}
+        >
+          {isUser ? <UserRound size={14} /> : <Bot size={14} />}
+        </div>
+        <div
+          className={cn(
+            "min-w-0 max-w-full text-sm leading-6",
+            isUser
+              ? "w-fit max-w-[min(72ch,calc(100vw-6rem))] rounded-lg bg-secondary px-4 py-3 text-foreground"
+              : "w-full text-foreground",
+          )}
+        >
+          <p className="whitespace-pre-wrap break-words">{content}</p>
+          <p className={cn("mt-2 text-[11px] text-muted-foreground", isUser && "text-right")}>{timestamp}</p>
+        </div>
       </div>
     </div>
   );

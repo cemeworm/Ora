@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { createRuntimeClient } from "./runtimeClient";
+import { createRuntimeClient, type OraProviderConfig } from "./runtimeClient";
 import { useWorkbench } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
@@ -31,6 +31,7 @@ export function useRunActions() {
         {
           pattern: state.selectedPattern,
           providerId: state.selectedProviderId,
+          providerConfig: provider,
           modelRef: provider?.modelId ?? "local/smoke-model",
           metadata: { providerId: state.selectedProviderId },
         },
@@ -170,6 +171,38 @@ export function useRunActions() {
     }
   }
 
+  async function upsertCustomProvider(provider: OraProviderConfig) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Save provider" });
+    try {
+      const registry = await runtimeClient.upsertCustomProvider(provider);
+      dispatch({ type: "SET_PROVIDER_REGISTRY", providerRegistry: registry });
+      dispatch({ type: "SET_PROVIDER", providerId: provider.id });
+      const statuses = await runtimeClient.refreshProviderSecretStatuses(registry.providers);
+      dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${provider.label} is ready to configure.` });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider save failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function deleteCustomProvider(providerId: string) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Remove provider" });
+    try {
+      await runtimeClient.deleteProviderSecret(providerId);
+      const registry = await runtimeClient.deleteCustomProvider(providerId);
+      dispatch({ type: "DELETE_PROVIDER", providerId });
+      dispatch({ type: "SET_PROVIDER_REGISTRY", providerRegistry: registry });
+      const statuses = await runtimeClient.refreshProviderSecretStatuses(registry.providers);
+      dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider removal failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
   return {
     runtimeClient,
     viewModel,
@@ -188,6 +221,8 @@ export function useRunActions() {
       exportReport,
       storeProviderSecret,
       deleteProviderSecret,
+      upsertCustomProvider,
+      deleteCustomProvider,
     },
   };
 }

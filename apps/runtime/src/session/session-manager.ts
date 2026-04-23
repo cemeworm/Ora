@@ -11,6 +11,7 @@ import {
 import { ActionLedger, AgentProfileRegistry, PlanService, PolicyService } from "../capabilities.js";
 import { createPatternGraphWithCheckpointer } from "../patterns/registry.js";
 import { createOraSqliteCheckpointer } from "../persistence/sqlite-checkpointer.js";
+import { withLangfuseRunTrace } from "../telemetry/langfuse.js";
 
 /**
  * Manages active LangGraph runs.
@@ -42,6 +43,16 @@ export class SessionManager {
       return undefined;
     }
 
+    return withLangfuseRunTrace({ runId, input, config }, () =>
+      this.startTracedRun(runId, input, config)
+    );
+  }
+
+  private async startTracedRun(
+    runId: string,
+    input: UserTaskInput,
+    config: RunConfig
+  ): Promise<StateSnapshot> {
     const definition = getPatternDefinition(config.pattern);
     const profiles = new AgentProfileRegistry(definition).list(config.profileIds);
     const planService = new PlanService(runId, definition);
