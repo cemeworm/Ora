@@ -136,3 +136,13 @@ export interface RuntimeBridgeStatus {
   label: string;
   detail: string;
 }
+
+export type AppView = "chat" | "settings";
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  metadata?: { eventType?: string; agentId?: string; beatId?: string };
+}

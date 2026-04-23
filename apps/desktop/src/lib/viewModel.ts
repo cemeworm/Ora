@@ -2,6 +2,7 @@ import type {
   ActionRecord,
   AgentProfile,
   ArtifactRecord,
+  ChatMessage,
   CheckpointRecord,
   CoordinationPattern,
   MemoryRecord,
@@ -555,4 +556,98 @@ function formatElapsed(start: number, timestamp: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+export function adaptChatMessages(
+  events: OraEventEnvelope[],
+  promptText: string,
+  selectedSnapshot?: OraStateSnapshot,
+): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+
+  // User prompt as first message
+  if (promptText) {
+    messages.push({
+      id: "user-prompt",
+      role: "user",
+      content: promptText,
+      timestamp: selectedSnapshot?.input.createdAt
+        ? formatClock(selectedSnapshot.input.createdAt)
+        : new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date()),
+    });
+  }
+
+  // Adapt events to chat messages
+  for (const event of events) {
+    switch (event.type) {
+      case "message.delta": {
+        const content = eventText(event);
+        if (content && content !== "Runtime event received.") {
+          messages.push({
+            id: event.id,
+            role: "assistant",
+            content,
+            timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
+            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
+          });
+        }
+        break;
+      }
+      case "plan.updated":
+      case "action.updated": {
+        messages.push({
+          id: event.id,
+          role: "system",
+          content: `${beatLabel(event)}: ${eventText(event)}`,
+          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
+          metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
+        });
+        break;
+      }
+      case "approval.required": {
+        messages.push({
+          id: event.id,
+          role: "system",
+          content: `Approval required: ${eventText(event)}`,
+          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
+          metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
+        });
+        break;
+      }
+      case "checkpoint.created": {
+        messages.push({
+          id: event.id,
+          role: "system",
+          content: `Checkpoint created: ${eventText(event)}`,
+          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
+          metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
+        });
+        break;
+      }
+      case "run.done": {
+        messages.push({
+          id: event.id,
+          role: "system",
+          content: "Run completed successfully.",
+          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
+          metadata: { eventType: event.type },
+        });
+        break;
+      }
+      case "run.failed": {
+        messages.push({
+          id: event.id,
+          role: "system",
+          content: `Run failed: ${eventText(event)}`,
+          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
+          metadata: { eventType: event.type },
+        });
+        break;
+      }
+    }
+  }
+
+  return messages.length > 0
+    ? messages
+    : [{ id: "empty", role: "system", content: "Start a conversation to interact with the agent.", timestamp: "now" }];
 }

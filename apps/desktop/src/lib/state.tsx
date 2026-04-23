@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useMemo, type Dispatch, type ReactNode } from "react";
-import type { CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
+import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import type {
   OraPatternDefinition,
   OraProviderRegistry,
@@ -26,6 +26,9 @@ export interface WorkbenchState {
   busyCommand: string | undefined;
   commandFeedback: string;
   filmstripExpanded: boolean;
+  activeView: AppView;
+  sidebarCollapsed: boolean;
+  detailDrawerOpen: boolean;
 }
 
 export type WorkbenchAction =
@@ -53,7 +56,10 @@ export type WorkbenchAction =
   | { type: "TOGGLE_FILMSTRIP" }
   | { type: "RUN_STARTED"; snapshot: OraStateSnapshot }
   | { type: "RUN_UPDATED"; snapshot: OraStateSnapshot }
-  | { type: "RUN_ADDED"; snapshot: OraStateSnapshot };
+  | { type: "RUN_ADDED"; snapshot: OraStateSnapshot }
+  | { type: "SET_VIEW"; view: AppView }
+  | { type: "TOGGLE_SIDEBAR" }
+  | { type: "TOGGLE_DETAIL_DRAWER" };
 
 const initialState: WorkbenchState = {
   selectedPattern: "orchestrator_subagent",
@@ -79,6 +85,9 @@ const initialState: WorkbenchState = {
   busyCommand: undefined,
   commandFeedback: "Select a checkpoint or event to replay, fork, approve, or export.",
   filmstripExpanded: false,
+  activeView: "chat",
+  sidebarCollapsed: false,
+  detailDrawerOpen: false,
 };
 
 function replaceSession(sessions: OraStateSnapshot[], snapshot: OraStateSnapshot): OraStateSnapshot[] {
@@ -213,6 +222,15 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         busyCommand: undefined,
       };
     }
+
+    case "SET_VIEW":
+      return { ...state, activeView: action.view };
+
+    case "TOGGLE_SIDEBAR":
+      return { ...state, sidebarCollapsed: !state.sidebarCollapsed };
+
+    case "TOGGLE_DETAIL_DRAWER":
+      return { ...state, detailDrawerOpen: !state.detailDrawerOpen };
 
     default:
       return state;
