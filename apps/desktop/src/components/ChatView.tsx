@@ -2,7 +2,7 @@ import { Sparkles } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, PlanItem, RuntimeBridgeStatus, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode, PatternCard } from "../types";
+import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, PlanItem, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode, PatternCard } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
@@ -12,7 +12,6 @@ interface ChatViewProps {
   patternCards: PatternCard[];
   activeSnapshot?: OraStateSnapshot;
   agents: AgentProfile[];
-  bridgeStatus: RuntimeBridgeStatus;
   busyCommand?: string;
   chatMessages: ChatMessage[];
   checkpoints: CheckpointRecord[];
@@ -48,7 +47,6 @@ export function ChatView({
   activePattern,
   patternCards,
   agents,
-  bridgeStatus,
   busyCommand,
   chatMessages,
   composerPrompt,
@@ -89,7 +87,6 @@ export function ChatView({
   return (
     <div className="relative flex h-full min-h-0 w-full bg-transparent">
       <ChatHeader
-        bridgeStatus={bridgeStatus}
         busyCommand={busyCommand}
         isRunning={isRunning}
         isApprovalRequired={isApprovalRequired}

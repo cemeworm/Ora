@@ -7,7 +7,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "package:sidecar": "node scripts/package-sidecar.mjs",
+    "package:sidecar": "pnpm --filter @ora/shared build && node scripts/package-sidecar.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "tsx src/sidecar-entry.ts",
     "smoke": "tsx src/cli.ts --smoke",

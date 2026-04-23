@@ -1,11 +1,9 @@
 import { Download, Files, Pause, PanelRightOpen } from "lucide-react";
 import { Button } from "./ui/button";
-import { StatusBadge } from "./StatusBadge";
-import type { RuntimeBridgeStatus, SessionRun, SessionTurnItem } from "../types";
+import type { SessionRun, SessionTurnItem } from "../types";
 import { cn } from "../lib/utils";
 
 interface ChatHeaderProps {
-  bridgeStatus: RuntimeBridgeStatus;
   busyCommand?: string;
   isRunning: boolean;
   isApprovalRequired: boolean;
@@ -20,7 +18,6 @@ interface ChatHeaderProps {
 }
 
 export function ChatHeader({
-  bridgeStatus,
   busyCommand,
   isRunning,
   isApprovalRequired,
@@ -40,18 +37,8 @@ export function ChatHeader({
         isApprovalRequired && "bg-amber-50/90",
       )}
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-medium">{selectedSession.title}</h2>
-          <p className="truncate text-[11px] text-muted-foreground">
-            {selectedSession.turnCount} turn{selectedSession.turnCount === 1 ? "" : "s"} in this session
-          </p>
-        </div>
-        <StatusBadge status={selectedSession.status} size="sm" />
-        <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-          <span className={cn("h-2 w-2 rounded-full", bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500")} />
-          <span>{bridgeStatus.label}</span>
-        </div>
+      <div className="min-w-0">
+        <h2 className="truncate text-sm font-medium">{selectedSession.title}</h2>
       </div>
       <div className="hidden min-w-0 flex-1 items-center justify-center px-4 lg:flex">
         <div className="flex max-w-full items-center gap-1 overflow-x-auto">

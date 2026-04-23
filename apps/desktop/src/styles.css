@@ -30,9 +30,9 @@
     --ring: transparent;
     --sidebar: oklch(0.976 0.0075 87.2);
     --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-accent: oklch(0.949 0.0098 86.8);
+    --sidebar-accent: oklch(0.962 0.0085 86.8);
     --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.904 0.0098 85.2);
+    --sidebar-border: oklch(0.918 0.0088 85.2);
     --container-width-sm: 36rem;
     --container-width-md: 51rem;
     --container-width-lg: 64rem;

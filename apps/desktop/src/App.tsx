@@ -209,7 +209,6 @@ function WorkbenchInner() {
             selectedCustomAgentId={state.selectedCustomAgentId}
             activeSnapshot={state.activeSnapshot}
             agents={agents}
-            bridgeStatus={state.bridgeStatus}
             busyCommand={state.busyCommand}
             chatMessages={chatMessages}
             checkpoints={checkpoints}

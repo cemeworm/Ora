@@ -10,13 +10,12 @@ type SettingsSection = "providers" | "runtime" | "tools" | "skills";
 const settingsSections: Array<{
   id: SettingsSection;
   label: string;
-  description: string;
   icon: typeof Settings;
 }> = [
-  { id: "providers", label: "Providers", description: "Model providers and keys", icon: Bot },
-  { id: "runtime", label: "Runtime", description: "Bridge health and status", icon: Activity },
-  { id: "tools", label: "Tools", description: "Available tool registry", icon: Wrench },
-  { id: "skills", label: "Skills", description: "Installed skill registry", icon: Sparkles },
+  { id: "providers", label: "Providers", icon: Bot },
+  { id: "runtime", label: "Runtime", icon: Activity },
+  { id: "tools", label: "Tools", icon: Wrench },
+  { id: "skills", label: "Skills", icon: Sparkles },
 ];
 
 interface SettingsViewProps {
@@ -81,11 +80,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
       <DialogContent className="flex h-[min(88vh,860px)] w-[min(1120px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[28px] border border-black/[0.03] bg-background p-0 shadow-lift">
         <div className="flex items-start justify-between gap-4 border-b border-border/80 bg-sidebar/90 px-6 py-5">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Settings</p>
-            <h2 className="mt-1 text-[22px] font-semibold tracking-[-0.012em] text-bench-900">Provider & Runtime Configuration</h2>
-            <p className="mt-2 max-w-2xl text-sm text-bench-700">
-              Tune Ora&apos;s provider, runtime, tool, and skill settings without leaving the current workspace.
-            </p>
+            <h2 className="text-[22px] font-semibold uppercase tracking-[0.12em] text-bench-700">Settings</h2>
           </div>
           <button
             type="button"
@@ -126,9 +121,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                       </span>
                       <span className="min-w-0">
                         <span className="block text-sm font-semibold">{section.label}</span>
-                        <span className={cn("mt-0.5 block text-xs", active ? "text-bench-200" : "text-bench-700")}>
-                          {section.description}
-                        </span>
                       </span>
                     </button>
                   );
@@ -144,12 +136,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                   <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                     <div className="mb-4 flex items-center gap-2">
                       <Settings size={18} />
-                      <div>
-                        <h3 className="text-sm font-semibold">Provider Settings</h3>
-                        <p className="mt-1 text-xs text-bench-700">
-                          Model choice is sent as Ora run config; secrets stay behind Rust Keychain commands.
-                        </p>
-                      </div>
+                      <h3 className="text-sm font-semibold">Provider Settings</h3>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -188,12 +175,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
 
                   <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                     <div className="mb-4 flex items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-sm font-semibold">Add OpenAI-Compatible Provider</h3>
-                        <p className="mt-1 text-xs text-bench-700">
-                          Add custom chat-completions endpoints without exposing API keys to the React app.
-                        </p>
-                      </div>
+                      <h3 className="text-sm font-semibold">Add OpenAI-Compatible Provider</h3>
                       <span className="rounded-full bg-bench-50 px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
                         chat completions
                       </span>
@@ -246,10 +228,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                   {selectedProvider && (
                     <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                       <div className="mb-4 flex items-center justify-between gap-3">
-                        <div>
-                          <h3 className="text-sm font-semibold">API Key — {selectedProvider.label}</h3>
-                          <p className="mt-1 text-xs text-bench-700">Secrets are saved through the platform keychain bridge.</p>
-                        </div>
+                        <h3 className="text-sm font-semibold">API Key — {selectedProvider.label}</h3>
                         <span
                           className={cn(
                             "rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset",
@@ -301,7 +280,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
               {activeSection === "runtime" && state.bridgeStatus && (
                 <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                   <h3 className="text-sm font-semibold">Runtime Status</h3>
-                  <p className="mt-1 text-xs text-bench-700">Monitor the runtime bridge before you start a new turn.</p>
                   <div className="mt-5 rounded-2xl bg-bench-50 p-4 ring-1 ring-inset ring-bench-200">
                     <div className="flex items-center gap-2 text-sm">
                       <span className={cn("h-2.5 w-2.5 rounded-full", state.bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500")} />
@@ -318,7 +296,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
               {activeSection === "tools" && state.toolRegistry && (
                 <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                   <h3 className="text-sm font-semibold">Tool Registry</h3>
-                  <p className="mt-1 text-xs text-bench-700">Inspect the tools that the runtime advertises to the desktop workbench.</p>
                   <div className="mt-5 grid gap-2 md:grid-cols-2">
                     {state.toolRegistry.tools.map((tool) => (
                       <div key={tool.id} className="rounded-2xl bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">
@@ -339,7 +316,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
               {activeSection === "skills" && state.skillRegistry && (
                 <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                   <h3 className="text-sm font-semibold">Skill Registry</h3>
-                  <p className="mt-1 text-xs text-bench-700">Review installed skills and the coordination patterns they support.</p>
                   <div className="mt-5 space-y-2">
                     {state.skillRegistry.skills.map((skill) => (
                       <div key={skill.id} className="rounded-2xl bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">

@@ -58,6 +58,7 @@ export function TrailsDrawer({
   onCancelRun,
 }: TrailsDrawerProps) {
   const nodeLabel = selectedNode?.label ?? activeSnapshot?.pattern.replace(/_/g, " ") ?? "No active run selected";
+  const subtitle = nodeLabel.trim().toLowerCase() === "run" ? "" : nodeLabel;
 
   return (
     <aside className={cn("flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent", !open && "hidden")} aria-hidden={!open}>
@@ -66,7 +67,7 @@ export function TrailsDrawer({
           <GitBranch size={16} className="text-muted-foreground" />
           <div className="min-w-0">
             <h2 className="truncate text-sm font-medium">Trails</h2>
-            <p className="truncate text-[11px] text-muted-foreground">{nodeLabel}</p>
+            {subtitle ? <p className="truncate text-[11px] text-muted-foreground">{subtitle}</p> : null}
           </div>
         </div>
         <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close trails">

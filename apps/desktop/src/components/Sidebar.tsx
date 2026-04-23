@@ -1,8 +1,7 @@
+import { useState, type ReactNode } from "react";
 import {
   Bot,
   ChartNoAxesColumn,
-  ChevronDown,
-  ChevronRight,
   Folder,
   FolderOpen,
   MessageSquarePlus,
@@ -15,7 +14,9 @@ import { useRunActions } from "../lib/useRunActions";
 import { cn } from "../lib/utils";
 import type { RunStatus } from "../types";
 import { SidebarTrigger, useSidebar } from "./ui/sidebar";
-import { StatusPill } from "./StatusPill";
+
+const MAX_VISIBLE_PROJECT_SESSIONS = 4;
+const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
 function statusFromSession(status: string | undefined): RunStatus {
   if (status === "interrupted") return "approval_required";
@@ -24,10 +25,100 @@ function statusFromSession(status: string | undefined): RunStatus {
   return "done";
 }
 
+function SidebarSectionHeader({
+  title,
+  action,
+}: {
+  title: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between px-2 pb-2 pt-1">
+      <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">{title}</span>
+      {action}
+    </div>
+  );
+}
+
+function SessionStatusBadge({ status }: { status: RunStatus }) {
+  if (status === "running") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-emerald-100/85 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
+        Awaiting reply
+      </span>
+    );
+  }
+
+  if (status === "approval_required") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-amber-100/75 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+        Needs approval
+      </span>
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-rose-100/75 px-2 py-0.5 text-[10px] font-medium text-rose-700">
+        Failed
+      </span>
+    );
+  }
+
+  return null;
+}
+
+function SessionLeadingIndicator({ status }: { status: RunStatus }) {
+  if (status === "running") {
+    return <span className="h-3 w-3 shrink-0 rounded-full border border-muted-foreground/15 border-t-muted-foreground/55 animate-spin" />;
+  }
+
+  if (status === "approval_required") {
+    return <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500/80" />;
+  }
+
+  if (status === "failed") {
+    return <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500/75" />;
+  }
+
+  return null;
+}
+
+function SessionRow({
+  title,
+  status,
+  selected,
+  onClick,
+}: {
+  title: string;
+  status: RunStatus;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors",
+        selected
+          ? "bg-sidebar-accent/95 text-sidebar-accent-foreground"
+          : "text-sidebar-foreground hover:bg-sidebar-accent/45",
+      )}
+    >
+      {status !== "done" && <SessionLeadingIndicator status={status} />}
+      <div className="min-w-0 flex-1">
+        <div className={cn("truncate font-medium", !selected && "text-foreground/88")}>{title}</div>
+      </div>
+      <SessionStatusBadge status={status} />
+    </button>
+  );
+}
+
 export function Sidebar() {
   const { state, dispatch } = useWorkbench();
   const { actions } = useRunActions();
   const { open } = useSidebar();
+  const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
   const projects = state.projects.map((project) => ({
     ...project,
     expanded: state.expandedProjectIds[project.projectId] ?? true,
@@ -48,13 +139,14 @@ export function Sidebar() {
       title: session.title,
       status: statusFromSession(session.status),
     }));
+  const showSectionDivider = projects.length > 0 && recentChats.length > 0;
 
   return (
     <aside
       data-state={open ? "expanded" : "collapsed"}
       className={cn(
         "hidden h-screen shrink-0 bg-background text-sidebar-foreground transition-[width] duration-200 ease-linear md:flex md:flex-col",
-        open ? "w-72" : "w-12",
+        open ? "w-60" : "w-12",
       )}
     >
       <div className="flex h-12 shrink-0 flex-col justify-center px-2">
@@ -90,16 +182,17 @@ export function Sidebar() {
 
       <div className="min-h-0 flex-1 overflow-hidden">
         <div className="px-2 pb-2">
-          {open && (
-            <button
-              type="button"
-              className="flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              title="Search"
-            >
-              <Search size={14} />
-              <span>Search</span>
-            </button>
-          )}
+          <button
+            type="button"
+            className={cn(
+              "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              !open && "justify-center px-0",
+            )}
+            title="Search"
+          >
+            <Search size={14} />
+            {open && <span>Search</span>}
+          </button>
           <button
             onClick={() => dispatch({ type: "SET_VIEW", view: "agents" })}
             className={cn(
@@ -130,23 +223,28 @@ export function Sidebar() {
           <div className="flex h-full min-h-0 flex-col overflow-hidden px-2 pb-2">
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <section>
-                <div className="flex items-center justify-between px-2 pb-2 pt-1">
-                  <span className="text-xs font-medium text-muted-foreground">Projects</span>
-                  <button
-                    type="button"
-                    onClick={() => void actions.addProjectFromDialog()}
-                    className="rounded-md p-1 text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                    title="Select folder"
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-                <div className="flex flex-col gap-1">
+                <SidebarSectionHeader
+                  title="Projects"
+                  action={(
+                    <button
+                      type="button"
+                      onClick={() => void actions.addProjectFromDialog()}
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground"
+                      title="Select folder"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  )}
+                />
+                <div className="flex flex-col gap-0.5">
                   {projects.map((project) => {
                     const selectedProject = state.selectedProjectId === project.projectId;
+                    const showAllSessions = expandedSessionLists[project.projectId] ?? false;
+                    const visibleSessions = showAllSessions ? project.sessions : project.sessions.slice(0, MAX_VISIBLE_PROJECT_SESSIONS);
+                    const hiddenSessionCount = Math.max(0, project.sessions.length - visibleSessions.length);
                     return (
-                      <div key={project.projectId} className="rounded-md">
-                        <div className="flex items-center gap-1">
+                      <div key={project.projectId} className="group/project rounded-lg px-2">
+                        <div className="flex items-center gap-1.5">
                           <button
                             type="button"
                             onClick={() => {
@@ -154,47 +252,75 @@ export function Sidebar() {
                               dispatch({ type: "TOGGLE_PROJECT_SECTION", projectId: project.projectId });
                             }}
                             className={cn(
-                              "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition",
-                              selectedProject ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/70",
+                              "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors",
+                              selectedProject
+                                ? "bg-sidebar-accent/95 text-sidebar-accent-foreground"
+                                : "text-sidebar-foreground hover:bg-sidebar-accent/45",
                             )}
                             title={project.rootPath}
                           >
-                            {project.expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                            {project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[13px] font-medium">{project.label}</div>
-                              <div className="truncate text-[11px] text-muted-foreground">{project.sessions.length} session{project.sessions.length === 1 ? "" : "s"}</div>
-                            </div>
+                            <span className={cn("text-muted-foreground/85", selectedProject && "text-sidebar-accent-foreground/70")}>
+                              {project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
+                            </span>
+                            <div className="min-w-0 flex-1 truncate font-medium">{project.label}</div>
                           </button>
                           <button
                             type="button"
                             onClick={() => void actions.createProjectSession(project.projectId)}
-                            className="rounded-md p-1.5 text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground group-hover/project:opacity-100 focus-visible:opacity-100"
                             title="New project session"
                           >
-                            <MessageSquarePlus size={14} />
+                            <Plus size={14} />
                           </button>
                         </div>
-                        {project.expanded && project.sessions.length > 0 && (
-                          <div className="mt-1 flex flex-col gap-1 pl-8">
-                            {project.sessions.map((session) => {
-                              const selected = session.id === state.selectedSessionId;
-                              return (
-                                <button
-                                  key={session.id}
-                                  onClick={() => void actions.selectSession(session.id)}
-                                  className={cn(
-                                    "flex min-h-[40px] w-full items-center rounded-md px-2 py-2 text-left text-sm transition",
-                                    selected ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/70",
-                                  )}
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <div className="truncate text-[13px] font-medium">{session.title}</div>
-                                  </div>
-                                  <StatusPill status={session.status} />
-                                </button>
-                              );
-                            })}
+                        {project.expanded && (
+                          <div className={cn(SESSION_COLUMN_INDENT, "pt-0")}>
+                            {project.sessions.length === 0 ? (
+                              <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                            ) : (
+                              <div className="flex flex-col gap-0">
+                                {visibleSessions.map((session) => {
+                                  const selected = session.id === state.selectedSessionId;
+                                  return (
+                                    <SessionRow
+                                      key={session.id}
+                                      title={session.title}
+                                      status={session.status}
+                                      selected={selected}
+                                      onClick={() => void actions.selectSession(session.id)}
+                                    />
+                                  );
+                                })}
+                                {hiddenSessionCount > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setExpandedSessionLists((current) => ({
+                                        ...current,
+                                        [project.projectId]: true,
+                                      }));
+                                    }}
+                                    className="flex min-h-[32px] items-center px-2.5 text-left text-[12px] text-muted-foreground transition hover:text-foreground"
+                                  >
+                                    Show {hiddenSessionCount} more
+                                  </button>
+                                )}
+                                {showAllSessions && project.sessions.length > MAX_VISIBLE_PROJECT_SESSIONS && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setExpandedSessionLists((current) => ({
+                                        ...current,
+                                        [project.projectId]: false,
+                                      }));
+                                    }}
+                                    className="flex min-h-[32px] items-center px-2.5 text-left text-[12px] text-muted-foreground transition hover:text-foreground"
+                                  >
+                                    Show less
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -204,31 +330,38 @@ export function Sidebar() {
               </section>
 
               {recentChats.length > 0 && (
-                <section className="mt-4">
-                  <div className="px-2 pb-2 pt-1 text-xs font-medium text-muted-foreground">Recent Chats</div>
-                  <div className="flex flex-col gap-1">
-                    {recentChats.map((session) => {
-                      const selected = session.id === state.selectedSessionId;
-                      return (
-                        <button
-                          key={session.id}
-                          onClick={() => void actions.selectSession(session.id)}
-                          className={cn(
-                            "group relative flex min-h-[44px] w-full items-center rounded-md px-2 py-2 text-left text-sm transition",
-                            selected ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/70",
-                          )}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-[13px] font-medium">{session.title}</div>
-                            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                              <span className="truncate">Recent chat</span>
-                              <span>·</span>
-                              <StatusPill status={session.status} />
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
+                <section className={cn("mt-4", showSectionDivider && "border-t border-sidebar-border/70 pt-4")}>
+                  <SidebarSectionHeader
+                    title="Recent Chats"
+                    action={(
+                      <button
+                        type="button"
+                        onClick={() => {
+                          dispatch({ type: "SET_VIEW", view: "chat" });
+                          void actions.createSession();
+                        }}
+                        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground"
+                        title="New chat"
+                      >
+                        <Plus size={14} />
+                      </button>
+                    )}
+                  />
+                  <div className="px-2">
+                    <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
+                      {recentChats.map((session) => {
+                        const selected = session.id === state.selectedSessionId;
+                        return (
+                          <SessionRow
+                            key={session.id}
+                            title={session.title}
+                            status={session.status}
+                            selected={selected}
+                            onClick={() => void actions.selectSession(session.id)}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
                 </section>
               )}
