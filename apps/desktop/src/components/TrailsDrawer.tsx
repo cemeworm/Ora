@@ -1,11 +1,20 @@
-import { FilesIcon, X } from "lucide-react";
-import { DetailTabs } from "./DetailTabs";
+import { GitBranch, X } from "lucide-react";
+import { TrailsTabs } from "./TrailsTabs";
 import { Button } from "./ui/button";
-import type { ActionRecord, AgentProfile, ArtifactRecord, CheckpointRecord, MemoryRecord, PlanItem, RunBeat, SessionRun, TopologyNode } from "../types";
+import type {
+  ActionRecord,
+  AgentProfile,
+  ArtifactRecord,
+  CheckpointRecord,
+  PlanItem,
+  RunBeat,
+  SessionRun,
+  TopologyNode,
+} from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 
-interface DetailDrawerProps {
+interface TrailsDrawerProps {
   open: boolean;
   onClose: () => void;
   actions: ActionRecord[];
@@ -15,7 +24,6 @@ interface DetailDrawerProps {
   busyCommand?: string;
   checkpoints: CheckpointRecord[];
   commandFeedback: string;
-  memoryRecords: MemoryRecord[];
   planItems: PlanItem[];
   selectedAgent?: AgentProfile;
   selectedBeat?: RunBeat;
@@ -24,12 +32,11 @@ interface DetailDrawerProps {
   selectedSession: SessionRun;
   onExportReport: () => void;
   onForkRun: () => void;
-  onReplaySelection: () => void;
   onResumeRun: () => void;
   onCancelRun: () => void;
 }
 
-export function DetailDrawer({
+export function TrailsDrawer({
   open,
   onClose,
   actions,
@@ -39,7 +46,6 @@ export function DetailDrawer({
   busyCommand,
   checkpoints,
   commandFeedback,
-  memoryRecords,
   planItems,
   selectedAgent,
   selectedBeat,
@@ -48,30 +54,29 @@ export function DetailDrawer({
   selectedSession,
   onExportReport,
   onForkRun,
-  onReplaySelection,
   onResumeRun,
   onCancelRun,
-}: DetailDrawerProps) {
-  const nodeLabel = selectedNode?.label ?? "No runtime detail selected yet";
+}: TrailsDrawerProps) {
+  const nodeLabel = selectedNode?.label ?? activeSnapshot?.pattern.replace(/_/g, " ") ?? "No active run selected";
 
   return (
-    <aside className={cn("flex h-full min-h-0 flex-col bg-transparent", !open && "hidden")} aria-hidden={!open}>
+    <aside className={cn("flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent", !open && "hidden")} aria-hidden={!open}>
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/74 px-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-2">
-          <FilesIcon size={16} className="text-muted-foreground" />
+          <GitBranch size={16} className="text-muted-foreground" />
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-medium">Details</h2>
+            <h2 className="truncate text-sm font-medium">Trails</h2>
             <p className="truncate text-[11px] text-muted-foreground">{nodeLabel}</p>
           </div>
         </div>
-        <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close details">
+        <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close trails">
           <X size={16} />
         </Button>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {selectedAgent && selectedBeat && selectedNode ? (
-          <DetailTabs
+        {activeSnapshot ? (
+          <TrailsTabs
             actions={actions}
             agents={agents}
             artifacts={artifacts}
@@ -79,7 +84,6 @@ export function DetailDrawer({
             busyCommand={busyCommand}
             checkpoints={checkpoints}
             commandFeedback={commandFeedback}
-            memoryRecords={memoryRecords}
             planItems={planItems}
             selectedAgent={selectedAgent}
             selectedBeat={selectedBeat}
@@ -88,13 +92,12 @@ export function DetailDrawer({
             selectedSession={selectedSession}
             onExportReport={onExportReport}
             onForkRun={onForkRun}
-            onReplaySelection={onReplaySelection}
             onResumeRun={onResumeRun}
             onCancelRun={onCancelRun}
           />
         ) : (
           <div className="rounded-2xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">Runtime details will appear here.</p>
+            <p className="font-medium text-foreground">Trails will appear here.</p>
             <p className="mt-2 leading-6">{commandFeedback}</p>
           </div>
         )}

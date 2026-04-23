@@ -11,6 +11,7 @@ import {
   EvaluationRunDetailSchema,
   EvaluationRunSchema,
   ProviderRegistrySchema,
+  RunTrailSchema,
   getPatternDefinition,
   MemoryRecordSchema,
   PlanItemSchema,
@@ -24,6 +25,7 @@ import {
   PlanService,
   PolicyService
 } from "../src/capabilities.js";
+import { shutdownLangfuseTelemetry } from "../src/telemetry/langfuse.js";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
 // Fixed clock for deterministic assertions
@@ -37,7 +39,8 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-integration-"));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownLangfuseTelemetry();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -328,6 +331,83 @@ describe("LocalRunStore", () => {
     expect(state.events.length).toBeGreaterThan(0);
     expect(state.profiles.length).toBeGreaterThan(0);
     expect(state.actions.length).toBeGreaterThan(0);
+  });
+
+  it("returns a disabled trail when Langfuse tracing is off", async () => {
+    const previous = process.env.ORA_LANGFUSE_ENABLED;
+    process.env.ORA_LANGFUSE_ENABLED = "false";
+    try {
+      const handle = createRuntimeMethodHandler(createStore());
+      const result = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Trail disabled test." },
+          config: { pattern: "generator_verifier" }
+        }
+      }) as { runId: string };
+
+      const trail = RunTrailSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.trail",
+        params: { runId: result.runId }
+      }));
+
+      expect(trail.trace.enabled).toBe(false);
+      expect(trail.trace.source).toBe("disabled");
+      expect(trail.observations).toEqual([]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORA_LANGFUSE_ENABLED;
+      } else {
+        process.env.ORA_LANGFUSE_ENABLED = previous;
+      }
+    }
+  });
+
+  it("returns locally synthesized trail observations when remote Langfuse fetch is unavailable", async () => {
+    const previous = process.env.ORA_LANGFUSE_ENABLED;
+    process.env.ORA_LANGFUSE_ENABLED = "true";
+    try {
+      const handle = createRuntimeMethodHandler(createStore());
+      const result = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Trail synthesis test." },
+          config: { pattern: "orchestrator_subagent" }
+        }
+      }) as { runId: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: result.runId }
+      }));
+      expect(state.trace?.traceId).toBeTruthy();
+
+      const trail = RunTrailSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.trail",
+        params: { runId: result.runId }
+      }));
+
+      expect(trail.trace.traceId).toBe(state.trace?.traceId);
+      expect(["managed_local", "local_synthesized", "degraded"]).toContain(trail.trace.source);
+      expect(trail.observations.length).toBeGreaterThan(0);
+      expect(trail.liveMetrics.eventCount).toBe(state.events.length);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORA_LANGFUSE_ENABLED;
+      } else {
+        process.env.ORA_LANGFUSE_ENABLED = previous;
+      }
+    }
   });
 
   it("persists and reloads runs from disk", async () => {

@@ -1,0 +1,193 @@
+import fs from "node:fs";
+import path from "node:path";
+import {
+  CustomAgentCheckNameParamsSchema,
+  CustomAgentCheckNameResultSchema,
+  CustomAgentCreateParamsSchema,
+  CustomAgentDeleteParamsSchema,
+  CustomAgentDetailSchema,
+  CustomAgentGetParamsSchema,
+  CustomAgentSummarySchema,
+  CustomAgentUpdateParamsSchema,
+  type CustomAgentCheckNameResult,
+  type CustomAgentCreateParams,
+  type CustomAgentDeleteParams,
+  type CustomAgentDetail,
+  type CustomAgentGetParams,
+  type CustomAgentSummary,
+  type CustomAgentUpdateParams,
+} from "@ora/shared";
+
+interface PersistedCustomAgentConfig {
+  name: string;
+  description?: string;
+  model?: string;
+  tool_groups?: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+export class CustomAgentFileStore {
+  constructor(
+    private readonly rootDir: string,
+    private readonly clock: () => number = Date.now,
+  ) {}
+
+  list(): CustomAgentSummary[] {
+    fs.mkdirSync(this.rootDir, { recursive: true });
+
+    const agents = fs.readdirSync(this.rootDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .flatMap((entry) => {
+        try {
+          return [this.readAgent(entry.name)];
+        } catch {
+          return [];
+        }
+      })
+      .map((agent) => CustomAgentSummarySchema.parse({
+        name: agent.name,
+        description: agent.description,
+        model: agent.model,
+        toolGroups: agent.toolGroups,
+        createdAt: agent.createdAt,
+        updatedAt: agent.updatedAt,
+      }));
+
+    return agents.sort((left, right) => right.updatedAt - left.updatedAt || left.name.localeCompare(right.name));
+  }
+
+  get(params: CustomAgentGetParams | unknown): CustomAgentDetail {
+    const parsed = CustomAgentGetParamsSchema.parse(params);
+    return this.readAgent(normalizeAgentName(parsed.name));
+  }
+
+  create(params: CustomAgentCreateParams | unknown): CustomAgentDetail {
+    const parsed = CustomAgentCreateParamsSchema.parse(params);
+    const name = normalizeAgentName(parsed.name);
+    const agentDir = this.agentDir(name);
+    if (fs.existsSync(agentDir)) {
+      throw new Error(`Custom agent '${name}' already exists.`);
+    }
+
+    const now = this.clock();
+    const detail = CustomAgentDetailSchema.parse({
+      name,
+      description: parsed.description,
+      model: parsed.model,
+      toolGroups: parsed.toolGroups,
+      soul: parsed.soul,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    this.writeAgent(detail);
+    return detail;
+  }
+
+  update(params: CustomAgentUpdateParams | unknown): CustomAgentDetail {
+    const parsed = CustomAgentUpdateParamsSchema.parse(params);
+    const existing = this.get({ name: parsed.name });
+    const detail = CustomAgentDetailSchema.parse({
+      ...existing,
+      description: parsed.description ?? existing.description,
+      model: parsed.model === null ? undefined : parsed.model ?? existing.model,
+      toolGroups: parsed.toolGroups === null ? undefined : parsed.toolGroups ?? existing.toolGroups,
+      soul: parsed.soul ?? existing.soul,
+      updatedAt: this.clock(),
+    });
+
+    this.writeAgent(detail);
+    return detail;
+  }
+
+  delete(params: CustomAgentDeleteParams | unknown): { deleted: true; name: string } {
+    const parsed = CustomAgentDeleteParamsSchema.parse(params);
+    const name = normalizeAgentName(parsed.name);
+    const agentDir = this.agentDir(name);
+    if (!fs.existsSync(agentDir)) {
+      throw new Error(`Custom agent '${name}' not found.`);
+    }
+
+    fs.rmSync(agentDir, { recursive: true, force: true });
+    return { deleted: true, name };
+  }
+
+  checkName(params: unknown): CustomAgentCheckNameResult {
+    const parsed = CustomAgentCheckNameParamsSchema.parse(params);
+    const name = normalizeAgentName(parsed.name);
+    return CustomAgentCheckNameResultSchema.parse({
+      available: !fs.existsSync(this.agentDir(name)),
+      name,
+    });
+  }
+
+  personaOverlay(agentId: string | undefined): string | undefined {
+    if (!agentId) {
+      return undefined;
+    }
+
+    const agent = this.get({ name: agentId });
+    const sections = [
+      `Custom Agent Persona: ${agent.name}`,
+      agent.description.trim() ? `Description:\n${agent.description.trim()}` : "",
+      agent.soul.trim() ? `SOUL:\n${agent.soul.trim()}` : "",
+      agent.model ? `Preferred model hint: ${agent.model}` : "",
+      agent.toolGroups && agent.toolGroups.length > 0 ? `Preferred tool groups: ${agent.toolGroups.join(", ")}` : "",
+    ].filter(Boolean);
+
+    return sections.length > 0 ? sections.join("\n\n") : undefined;
+  }
+
+  private readAgent(name: string): CustomAgentDetail {
+    const agentDir = this.agentDir(name);
+    const configPath = path.join(agentDir, "config.yaml");
+    const soulPath = path.join(agentDir, "SOUL.md");
+
+    if (!fs.existsSync(configPath)) {
+      throw new Error(`Custom agent '${name}' is missing config.yaml.`);
+    }
+
+    const rawConfig = fs.readFileSync(configPath, "utf8").trim();
+    const decoded = rawConfig ? JSON.parse(rawConfig) as PersistedCustomAgentConfig : undefined;
+    if (!decoded) {
+      throw new Error(`Custom agent '${name}' has an empty config.yaml.`);
+    }
+
+    const soul = fs.existsSync(soulPath) ? fs.readFileSync(soulPath, "utf8") : "";
+    return CustomAgentDetailSchema.parse({
+      name: decoded.name,
+      description: decoded.description ?? "",
+      model: decoded.model,
+      toolGroups: decoded.tool_groups,
+      soul,
+      createdAt: decoded.created_at,
+      updatedAt: decoded.updated_at,
+    });
+  }
+
+  private writeAgent(agent: CustomAgentDetail): void {
+    const agentDir = this.agentDir(agent.name);
+    fs.mkdirSync(agentDir, { recursive: true });
+
+    const config: PersistedCustomAgentConfig = {
+      name: agent.name,
+      description: agent.description,
+      model: agent.model,
+      tool_groups: agent.toolGroups,
+      created_at: agent.createdAt,
+      updated_at: agent.updatedAt,
+    };
+
+    fs.writeFileSync(path.join(agentDir, "config.yaml"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    fs.writeFileSync(path.join(agentDir, "SOUL.md"), agent.soul, "utf8");
+  }
+
+  private agentDir(name: string): string {
+    return path.join(this.rootDir, name);
+  }
+}
+
+function normalizeAgentName(name: string): string {
+  return CustomAgentCheckNameResultSchema.shape.name.parse(name.trim().toLowerCase());
+}

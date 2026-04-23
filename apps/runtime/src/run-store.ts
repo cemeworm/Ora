@@ -7,6 +7,11 @@ import {
   ArtifactRefSchema,
   CheckpointMeta,
   CoordinationPattern,
+  CustomAgentCheckNameResult,
+  CustomAgentCreateParams,
+  CustomAgentDetail,
+  CustomAgentSummary,
+  CustomAgentUpdateParams,
   DEFAULT_RESOURCE_BUDGETS,
   getPatternDefinition,
   MVP_PATTERNS,
@@ -14,6 +19,13 @@ import {
   OraEventEnvelopeSchema,
   PatternDefinition,
   PolicyDecision,
+  ProjectCreateParamsSchema,
+  ProjectDetail,
+  ProjectDetailSchema,
+  ProjectGetParamsSchema,
+  ProjectListParamsSchema,
+  ProjectSummary,
+  ProjectSummarySchema,
   RunConfig,
   RunConfigSchema,
   RunEventStream,
@@ -23,6 +35,11 @@ import {
   RunHandle,
   RunHandleSchema,
   RunResumeParamsSchema,
+  RunTraceMetadata,
+  RunTrail,
+  RunTrailMetrics,
+  RunTrailParamsSchema,
+  RunTrailSchema,
   RunStreamParamsSchema,
   RunSummary,
   RunSummarySchema,
@@ -31,6 +48,7 @@ import {
   SessionDetail,
   SessionDetailSchema,
   SessionGetParamsSchema,
+  SessionListParamsSchema,
   SessionSummary,
   SessionSummarySchema,
   SessionTranscriptMessage,
@@ -49,11 +67,18 @@ import {
   PlanService,
   PolicyService
 } from "./capabilities.js";
+import { CustomAgentFileStore } from "./custom-agents.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
 import type { ModelMessage } from "./providers/index.js";
-import { recordLangfuseSnapshotTrace } from "./telemetry/langfuse.js";
+import {
+  getLangfuseRunTraceMetadata,
+  getLangfuseRunTraceObservations,
+  readLangfuseRunTrace,
+  recordLangfuseSnapshotTrace,
+  withLangfuseRunTrace
+} from "./telemetry/langfuse.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
 
 const StartRunParamsSchema = z.object({
@@ -71,14 +96,16 @@ const InterruptParamsSchema = RunIdParamsSchema.extend({
 });
 
 const StoreManifestSchema = z.object({
-  schemaVersion: z.literal(2).default(2),
+  schemaVersion: z.literal(3).default(3),
   nextRunNumber: z.number().int().positive(),
   nextSessionNumber: z.number().int().positive().default(1),
+  nextProjectNumber: z.number().int().positive().default(1),
 });
 
 type StoreManifest = z.infer<typeof StoreManifestSchema>;
 type StoredRun = StateSnapshot;
 type StoredSession = SessionSummary;
+type StoredProject = ProjectSummary;
 
 export interface LocalRunStoreOptions {
   dataDir?: string;
@@ -105,29 +132,37 @@ export class OraRuntimeError extends Error {
 class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
   private readonly manifestPath: string;
   private readonly sessionsDir: string;
+  private readonly projectsDir: string;
   private readonly runsDir: string;
   private readonly artifactsDir: string;
 
   constructor(private readonly dataDir: string) {
     this.manifestPath = path.join(dataDir, "manifest.json");
     this.sessionsDir = path.join(dataDir, "sessions");
+    this.projectsDir = path.join(dataDir, "projects");
     this.runsDir = path.join(dataDir, "runs");
     this.artifactsDir = path.join(dataDir, "artifacts");
   }
 
-  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[] } {
+  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] } {
     this.ensureDirs();
 
     const manifest = this.readJsonFile(this.manifestPath, StoreManifestSchema, StoreManifestSchema.parse({
-      schemaVersion: 2,
+      schemaVersion: 3,
       nextRunNumber: 1,
       nextSessionNumber: 1,
+      nextProjectNumber: 1,
     }));
     const sessions: StoredSession[] = fs
       .readdirSync(this.sessionsDir)
       .filter((name) => name.endsWith(".json"))
       .map((name) => this.readJsonFile(path.join(this.sessionsDir, name), SessionSummarySchema))
       .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
+    const projects: StoredProject[] = fs
+      .readdirSync(this.projectsDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => this.readJsonFile(path.join(this.projectsDir, name), ProjectSummarySchema))
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId));
     const runs: StoredRun[] = fs
       .readdirSync(this.runsDir)
       .filter((name) => name.endsWith(".json"))
@@ -139,9 +174,11 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
         ...manifest,
         nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(runs)),
         nextSessionNumber: Math.max(manifest.nextSessionNumber, this.nextSessionNumberAfter(sessions)),
+        nextProjectNumber: Math.max(manifest.nextProjectNumber, this.nextProjectNumberAfter(projects)),
       },
       runs,
       sessions,
+      projects,
     };
   }
 
@@ -158,6 +195,11 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
   saveSession(session: StoredSession): void {
     this.ensureDirs();
     this.writeJsonFile(path.join(this.sessionsDir, `${this.fileSafeId(session.sessionId)}.json`), session);
+  }
+
+  saveProject(project: StoredProject): void {
+    this.ensureDirs();
+    this.writeJsonFile(path.join(this.projectsDir, `${this.fileSafeId(project.projectId)}.json`), project);
   }
 
   saveArtifact(artifact: PersistedArtifact): ArtifactRef {
@@ -177,6 +219,7 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
 
   private ensureDirs(): void {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
+    fs.mkdirSync(this.projectsDir, { recursive: true });
     fs.mkdirSync(this.runsDir, { recursive: true });
     fs.mkdirSync(this.artifactsDir, { recursive: true });
   }
@@ -234,6 +277,15 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
     );
   }
 
+  private nextProjectNumberAfter(projects: StoredProject[]): number {
+    return (
+      projects.reduce((max, project) => {
+        const match = /^project-(\d+)$/.exec(project.projectId);
+        return match ? Math.max(max, Number(match[1])) : max;
+      }, 0) + 1
+    );
+  }
+
   private fileSafeId(id: string): string {
     return encodeURIComponent(id);
   }
@@ -244,6 +296,8 @@ export class LocalRunStore {
   private readonly clock: () => number;
   private readonly persistenceType: "sqlite" | "json-file";
   private readonly evaluationStore: LocalEvaluationStore;
+  private readonly customAgentStore: CustomAgentFileStore;
+  private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
   private manifest: StoreManifest;
@@ -259,12 +313,18 @@ export class LocalRunStore {
       this.persistenceType = "json-file";
       this.backend = new JsonFileRuntimePersistenceBackend(dataDir);
     }
+    this.customAgentStore = new CustomAgentFileStore(defaultCustomAgentsDir(dataDir), this.clock);
     this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
+    this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
     this.sessions = new Map(loaded.sessions.map((session) => [session.sessionId, session]));
     this.runs = new Map(loaded.runs.map((run) => [run.runId, run]));
     this.migrateLegacyRunsIntoSessions();
+    this.migrateLegacyOraMvpProjectPlaceholder();
+    for (const projectId of this.projects.keys()) {
+      this.syncProjectSummary(projectId);
+    }
     this.backend.saveManifest(this.manifest);
   }
 
@@ -282,8 +342,49 @@ export class LocalRunStore {
     return MVP_PATTERNS;
   }
 
+  createProject(params: unknown = {}): ProjectSummary {
+    const parsed = ProjectCreateParamsSchema.parse(params ?? {});
+    const normalizedRootPath = this.normalizeProjectRootPath(parsed.rootPath);
+    const existing = [...this.projects.values()].find((project) => project.rootPath === normalizedRootPath);
+    if (existing) {
+      return ProjectSummarySchema.parse(existing);
+    }
+
+    const now = this.now();
+    const project = ProjectSummarySchema.parse({
+      projectId: this.nextProjectId(),
+      label: parsed.label?.trim() || path.basename(normalizedRootPath) || normalizedRootPath,
+      rootPath: normalizedRootPath,
+      sessionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.persistProject(project);
+    return project;
+  }
+
+  listProjects(params: unknown = {}): ProjectSummary[] {
+    const parsed = ProjectListParamsSchema.parse(params ?? {});
+    return [...this.projects.values()]
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId))
+      .slice(0, parsed.limit)
+      .map((project) => ProjectSummarySchema.parse(project));
+  }
+
+  getProject(params: unknown): ProjectDetail {
+    const parsed = ProjectGetParamsSchema.parse(params);
+    const project = this.getProjectOrThrow(parsed.projectId);
+    return ProjectDetailSchema.parse({
+      project,
+      sessions: this.listSessions({ projectId: parsed.projectId }),
+    });
+  }
+
   createSession(params: unknown = {}): SessionSummary {
     const parsed = SessionCreateParamsSchema.parse(params ?? {});
+    if (parsed.projectId) {
+      this.getProjectOrThrow(parsed.projectId);
+    }
     const now = this.now();
     const session = SessionSummarySchema.parse({
       sessionId: this.nextSessionId(),
@@ -298,10 +399,7 @@ export class LocalRunStore {
   }
 
   listSessions(params: unknown = {}): SessionSummary[] {
-    const parsed = z.object({
-      projectId: z.string().min(1).optional(),
-      limit: z.number().int().positive().max(500).optional(),
-    }).parse(params ?? {});
+    const parsed = SessionListParamsSchema.parse(params ?? {});
     return [...this.sessions.values()]
       .filter((session) => (parsed.projectId ? session.projectId === parsed.projectId : true))
       .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
@@ -312,9 +410,9 @@ export class LocalRunStore {
   getSession(params: unknown): SessionDetail {
     const parsed = SessionGetParamsSchema.parse(params);
     const session = this.getSessionOrThrow(parsed.sessionId);
-    const turns = this.runsForSession(parsed.sessionId).map((run) => this.toSessionTurn(run));
+    const turns = this.runsForSession(parsed.sessionId).map((run) => this.toSessionTurn(this.attachTraceMetadata(run)));
     const latestSnapshot = turns.length > 0
-      ? this.getRunOrThrow(turns.at(-1)!.runId)
+      ? this.attachTraceMetadata(this.getRunOrThrow(turns.at(-1)!.runId))
       : undefined;
     return SessionDetailSchema.parse({
       session,
@@ -334,6 +432,30 @@ export class LocalRunStore {
       .map((run) => this.toRunSummary(run));
   }
 
+  listAgents(): CustomAgentSummary[] {
+    return this.customAgentStore.list();
+  }
+
+  getAgent(params: unknown): CustomAgentDetail {
+    return this.customAgentStore.get(params);
+  }
+
+  createAgent(params: CustomAgentCreateParams | unknown): CustomAgentDetail {
+    return this.customAgentStore.create(params);
+  }
+
+  updateAgent(params: CustomAgentUpdateParams | unknown): CustomAgentDetail {
+    return this.customAgentStore.update(params);
+  }
+
+  deleteAgent(params: unknown): { deleted: true; name: string } {
+    return this.customAgentStore.delete(params);
+  }
+
+  checkAgentName(params: unknown): CustomAgentCheckNameResult {
+    return this.customAgentStore.checkName(params);
+  }
+
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
@@ -348,8 +470,9 @@ export class LocalRunStore {
         session,
       });
       recordLangfuseSnapshotTrace(run);
-      this.persistRun(run);
-      return this.toRunHandle(run);
+      const tracedRun = this.attachTraceMetadata(run);
+      this.persistRun(tracedRun);
+      return this.toRunHandle(tracedRun);
     }
 
     const config = RunConfigSchema.parse(parsed.config ?? {});
@@ -363,18 +486,24 @@ export class LocalRunStore {
     });
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
-    const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
-      clock: this.clock,
-      conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
-    });
-    const sessionBoundSnapshot = StateSnapshotSchema.parse({
-      ...snapshot,
-      sessionId: session.sessionId,
-      turnIndex,
-    });
-    recordLangfuseSnapshotTrace(sessionBoundSnapshot);
-    this.persistRun(sessionBoundSnapshot);
-    return this.toRunHandle(sessionBoundSnapshot);
+    const sessionBoundSnapshot = await withLangfuseRunTrace(
+      { runId, input, config: fullConfig },
+      async () => {
+        const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
+          clock: this.clock,
+          customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+          conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
+        });
+        return StateSnapshotSchema.parse({
+          ...snapshot,
+          sessionId: session.sessionId,
+          turnIndex,
+        });
+      },
+    );
+    const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
+    this.persistRun(tracedSnapshot);
+    return this.toRunHandle(tracedSnapshot);
   }
 
   async startRunWithKernel(
@@ -394,18 +523,25 @@ export class LocalRunStore {
     });
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
-    const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
-      clock: this.clock,
-      forkedFrom,
-      conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
-    });
-    const sessionBoundSnapshot = StateSnapshotSchema.parse({
-      ...snapshot,
-      sessionId: session.sessionId,
-      turnIndex,
-    });
-    this.persistRun(sessionBoundSnapshot);
-    return this.toRunHandle(sessionBoundSnapshot);
+    const sessionBoundSnapshot = await withLangfuseRunTrace(
+      { runId, input, config: fullConfig },
+      async () => {
+        const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
+          clock: this.clock,
+          customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+          forkedFrom,
+          conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
+        });
+        return StateSnapshotSchema.parse({
+          ...snapshot,
+          sessionId: session.sessionId,
+          turnIndex,
+        });
+      },
+    );
+    const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
+    this.persistRun(tracedSnapshot);
+    return this.toRunHandle(tracedSnapshot);
   }
 
   async startRunWithSnapshot(
@@ -445,11 +581,11 @@ export class LocalRunStore {
       return undefined;
     }
 
-    const sessionBoundSnapshot = StateSnapshotSchema.parse({
+    const sessionBoundSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
       ...snapshot,
       sessionId: session.sessionId,
       turnIndex,
-    });
+    }));
     this.persistRun(sessionBoundSnapshot);
     return this.toRunHandle(sessionBoundSnapshot);
   }
@@ -595,7 +731,19 @@ export class LocalRunStore {
   }
 
   getRunState(params: unknown): StateSnapshot {
-    return this.getRunOrThrow(this.requireRunId(params));
+    return this.attachTraceMetadata(this.getRunOrThrow(this.requireRunId(params)));
+  }
+
+  async getRunTrail(params: unknown): Promise<RunTrail> {
+    const parsed = RunTrailParamsSchema.parse(params);
+    const snapshot = this.getRunOrThrow(parsed.runId);
+    const { trace, observations } = await readLangfuseRunTrace(snapshot.runId, snapshot.trace);
+    return RunTrailSchema.parse({
+      run: this.toRunSummary(snapshot),
+      trace,
+      observations,
+      liveMetrics: this.buildRunTrailMetrics(snapshot, trace),
+    });
   }
 
   listCheckpoints(params: unknown): CheckpointMeta[] {
@@ -1198,7 +1346,54 @@ export class LocalRunStore {
       eventCount: snapshot.events.length,
       checkpointCount: snapshot.checkpoints.length,
       artifactCount: snapshot.artifacts.length,
+      trace: snapshot.trace,
     });
+  }
+
+  private attachTraceMetadata(snapshot: StateSnapshot): StateSnapshot {
+    const trace = this.mergeTraceMetadata(snapshot.runId, snapshot.trace);
+    if (!trace) {
+      return snapshot;
+    }
+    return StateSnapshotSchema.parse({
+      ...snapshot,
+      trace,
+    });
+  }
+
+  private mergeTraceMetadata(runId: string, current?: RunTraceMetadata): RunTraceMetadata | undefined {
+    const registered = getLangfuseRunTraceMetadata(runId);
+    if (!registered) {
+      return current;
+    }
+    if (!current) {
+      return registered;
+    }
+    return {
+      ...current,
+      ...registered,
+      generationRefs: registered.generationRefs.length > 0 ? registered.generationRefs : current.generationRefs,
+    };
+  }
+
+  private buildRunTrailMetrics(snapshot: StateSnapshot, trace: RunTraceMetadata): RunTrailMetrics {
+    const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt));
+    const topologyChangeCount = snapshot.events.filter((event) => event.type === "topology.updated").length;
+    const messageCount = snapshot.events.filter((event) => event.type === "message.delta").length;
+    const warningCount = getLangfuseRunTraceObservations(snapshot.runId).filter((observation) => observation.level === "WARNING").length;
+    const errorCount = getLangfuseRunTraceObservations(snapshot.runId).filter((observation) => observation.level === "ERROR").length;
+    const tracedCost = trace.generationRefs.reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0);
+    return {
+      runtimeMs,
+      eventCount: snapshot.events.length,
+      checkpointCount: snapshot.checkpoints.length,
+      topologyChangeCount,
+      messageCount,
+      activeAgentCount: snapshot.activeAgents.length,
+      warningCount,
+      errorCount,
+      estimatedCostUsd: Number((tracedCost > 0 ? tracedCost : snapshot.events.length * 0.0002).toFixed(4)),
+    };
   }
 
   private persistRun(snapshot: StateSnapshot): void {
@@ -1229,6 +1424,15 @@ export class LocalRunStore {
     return sessionId;
   }
 
+  private nextProjectId(): string {
+    const projectId = `project-${String(this.manifest.nextProjectNumber).padStart(4, "0")}`;
+    this.manifest = {
+      ...this.manifest,
+      nextProjectNumber: this.manifest.nextProjectNumber + 1,
+    };
+    return projectId;
+  }
+
   private requireRunId(params: unknown): string {
     return RunIdParamsSchema.parse(params).runId;
   }
@@ -1249,9 +1453,26 @@ export class LocalRunStore {
     return session;
   }
 
+  private getProjectOrThrow(projectId: string): ProjectSummary {
+    const project = this.projects.get(projectId);
+    if (!project) {
+      throw new OraRuntimeError(`Project not found: ${projectId}`, -32004, { projectId });
+    }
+    return project;
+  }
+
   private persistSession(session: SessionSummary): void {
     this.sessions.set(session.sessionId, session);
     this.backend.saveSession(session);
+    if (session.projectId) {
+      this.syncProjectSummary(session.projectId);
+    }
+    this.backend.saveManifest(this.manifest);
+  }
+
+  private persistProject(project: ProjectSummary): void {
+    this.projects.set(project.projectId, project);
+    this.backend.saveProject(project);
     this.backend.saveManifest(this.manifest);
   }
 
@@ -1301,6 +1522,26 @@ export class LocalRunStore {
   private defaultSessionTitle(prompt: string): string {
     const trimmed = prompt.trim();
     return trimmed.length > 0 ? trimmed.slice(0, 120) : "New Chat";
+  }
+
+  private normalizeProjectRootPath(rootPath: string): string {
+    return path.resolve(rootPath.trim());
+  }
+
+  private syncProjectSummary(projectId: string): void {
+    const existing = this.projects.get(projectId);
+    if (!existing) {
+      return;
+    }
+    const sessions = [...this.sessions.values()].filter((session) => session.projectId === projectId);
+    const updatedAt = sessions.reduce((max, session) => Math.max(max, session.updatedAt), existing.createdAt);
+    const nextProject = ProjectSummarySchema.parse({
+      ...existing,
+      sessionCount: sessions.length,
+      updatedAt,
+    });
+    this.projects.set(projectId, nextProject);
+    this.backend.saveProject(nextProject);
   }
 
   private buildConversationMessages(sessionId: string, currentPrompt: string): ModelMessage[] {
@@ -1418,6 +1659,46 @@ export class LocalRunStore {
     }
   }
 
+  private migrateLegacyOraMvpProjectPlaceholder(): void {
+    if (this.projects.has("ora-mvp")) {
+      return;
+    }
+
+    let mutated = false;
+    for (const [sessionId, session] of this.sessions.entries()) {
+      if (session.projectId !== "ora-mvp") {
+        continue;
+      }
+      const nextSession = SessionSummarySchema.parse({
+        ...session,
+        projectId: undefined,
+      });
+      this.sessions.set(sessionId, nextSession);
+      this.backend.saveSession(nextSession);
+      mutated = true;
+    }
+
+    for (const [runId, run] of this.runs.entries()) {
+      if (run.input.projectId !== "ora-mvp") {
+        continue;
+      }
+      const nextRun = StateSnapshotSchema.parse({
+        ...run,
+        input: {
+          ...run.input,
+          projectId: undefined,
+        },
+      });
+      this.runs.set(runId, nextRun);
+      this.backend.saveRun(nextRun);
+      mutated = true;
+    }
+
+    if (mutated) {
+      this.backend.saveManifest(this.manifest);
+    }
+  }
+
   private now(): number {
     return this.clock();
   }
@@ -1433,4 +1714,10 @@ export function defaultEvaluationStoreDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "evaluation-store")
     : path.join(runtimeDataDir, "evaluation-store");
+}
+
+export function defaultCustomAgentsDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "agents")
+    : path.join(runtimeDataDir, "agents");
 }

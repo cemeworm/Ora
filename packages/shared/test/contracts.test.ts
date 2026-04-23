@@ -3,6 +3,11 @@ import {
   AgentProfileSchema,
   ApprovalDecisionSchema,
   ApprovalRequestSchema,
+  CustomAgentCheckNameResultSchema,
+  CustomAgentCreateParamsSchema,
+  CustomAgentDetailSchema,
+  CustomAgentSummarySchema,
+  CustomAgentUpdateParamsSchema,
   DEFAULT_PROVIDERS,
   EvaluationAttemptSchema,
   EvaluationBaselineSchema,
@@ -25,6 +30,11 @@ import {
   PlanItemSchema,
   PolicyDecisionSchema,
   ProjectConfigSchema,
+  ProjectCreateParamsSchema,
+  ProjectDetailSchema,
+  ProjectGetParamsSchema,
+  ProjectListParamsSchema,
+  ProjectSummarySchema,
   ProviderConfigSchema,
   ProviderRegistrySchema,
   ProviderSecretStatusSchema,
@@ -37,6 +47,9 @@ import {
   RunHandleSchema,
   RunReplayParamsSchema,
   RunResumeParamsSchema,
+  RunTraceMetadataSchema,
+  RunTrailParamsSchema,
+  RunTrailSchema,
   RunSummarySchema,
   SessionConfigSchema,
   SessionCreateParamsSchema,
@@ -80,6 +93,7 @@ describe("Ora shared contracts", () => {
     expect(config.modelRef).toBe("local/smoke-model");
     expect(config.providerId).toBeUndefined();
     expect(config.providerConfig).toBeUndefined();
+    expect(config.customAgentId).toBeUndefined();
     expect(config.skillIds).toEqual([]);
     expect(config.toolIds).toEqual([]);
     expect(config.approvalMode).toBe("high_risk_only");
@@ -101,6 +115,14 @@ describe("Ora shared contracts", () => {
 
     expect(config.providerConfig?.type).toBe("openai_compatible");
     expect(config.providerConfig?.capabilities).toEqual(["chat"]);
+  });
+
+  it("accepts a custom agent selection in run config", () => {
+    const config = RunConfigSchema.parse({
+      customAgentId: "research-bot",
+    });
+
+    expect(config.customAgentId).toBe("research-bot");
   });
 
   it("validates capability records and event envelopes", () => {
@@ -174,6 +196,22 @@ describe("Ora shared contracts", () => {
     ).toBe("runtime.health");
 
     expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "agents.list"
+      }).method
+    ).toBe("agents.list");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "projects.list"
+      }).method
+    ).toBe("projects.list");
+
+    expect(
       JsonRpcResponseSchema.parse({
         jsonrpc: "2.0",
         id: 1,
@@ -225,6 +263,93 @@ describe("Ora shared contracts", () => {
         checkpointId: "checkpoint-1"
       }).runId
     ).toBe(summary.runId);
+    expect(
+      RunTrailParamsSchema.parse({
+        runId: summary.runId,
+      }).runId
+    ).toBe(summary.runId);
+  });
+
+  it("validates trail metadata on turns and trail payloads", () => {
+    const trace = RunTraceMetadataSchema.parse({
+      enabled: true,
+      available: true,
+      traceId: "0123456789abcdef0123456789abcdef",
+      rootObservationId: "0123456789abcdef",
+      traceUrl: "http://localhost:3000/project/ora-runtime/traces/0123456789abcdef0123456789abcdef",
+      source: "managed_local",
+      generationRefs: [
+        {
+          observationId: "fedcba9876543210",
+          traceId: "0123456789abcdef0123456789abcdef",
+          name: "model.local-smoke",
+          model: "local/smoke-model",
+        },
+      ],
+    });
+
+    const turn = SessionTurnSchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      prompt: "Show the trail.",
+      startedAt: 1,
+      updatedAt: 2,
+      eventCount: 3,
+      checkpointCount: 1,
+      artifactCount: 0,
+      trace,
+    });
+    expect(turn.trace?.traceId).toBe(trace.traceId);
+
+    const runTrail = RunTrailSchema.parse({
+      run: {
+        runId: "run-1",
+        sessionId: "session-1",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        prompt: "Inspect the run.",
+        startedAt: 1,
+        updatedAt: 2,
+        eventCount: 4,
+        checkpointCount: 1,
+        artifactCount: 0,
+      },
+      trace: {
+        enabled: true,
+        available: true,
+        traceId: "0123456789abcdef0123456789abcdef",
+        rootObservationId: "0123456789abcdef",
+        source: "local_synthesized",
+        generationRefs: [],
+      },
+      observations: [
+        {
+          id: "0123456789abcdef",
+          traceId: "0123456789abcdef0123456789abcdef",
+          parentObservationId: null,
+          type: "agent",
+          name: "ora.run.orchestrator_subagent",
+          metadata: { runId: "run-1" },
+        },
+      ],
+      liveMetrics: {
+        runtimeMs: 1000,
+        eventCount: 4,
+        checkpointCount: 1,
+        topologyChangeCount: 1,
+        messageCount: 1,
+        activeAgentCount: 2,
+        warningCount: 0,
+        errorCount: 0,
+        estimatedCostUsd: 0.0008,
+      },
+    });
+    expect(runTrail.trace.source).toBe("local_synthesized");
+    expect(runTrail.observations).toHaveLength(1);
   });
 
   it("validates evaluation dataset/run contracts", () => {
@@ -808,6 +933,92 @@ describe("Session thread contracts", () => {
     expect(getParams.sessionId).toBe("session-1");
     expect(turn.pattern).toBe("shared_state");
     expect(transcript.role).toBe("assistant");
+  });
+});
+
+describe("Project thread contracts", () => {
+  it("accepts project create/list/get payloads", () => {
+    const createParams = ProjectCreateParamsSchema.parse({
+      label: "ora",
+      rootPath: "/Users/quintenchen/developer/ora",
+    });
+    const listParams = ProjectListParamsSchema.parse({ limit: 50 });
+    const getParams = ProjectGetParamsSchema.parse({ projectId: "project-0001" });
+    const summary = ProjectSummarySchema.parse({
+      projectId: "project-0001",
+      label: "ora",
+      rootPath: "/Users/quintenchen/developer/ora",
+      sessionCount: 2,
+      createdAt: 1000,
+      updatedAt: 1200,
+    });
+    const detail = ProjectDetailSchema.parse({
+      project: summary,
+      sessions: [
+        {
+          sessionId: "session-1",
+          title: "Investigate runtime startup",
+          projectId: "project-0001",
+          status: "succeeded",
+          latestRunId: "run-1",
+          latestPattern: "orchestrator_subagent",
+          latestProviderId: "local-smoke",
+          latestModelRef: "local/smoke-model",
+          turnCount: 1,
+          createdAt: 1000,
+          updatedAt: 1200,
+        },
+      ],
+    });
+
+    expect(createParams.rootPath).toBe("/Users/quintenchen/developer/ora");
+    expect(listParams.limit).toBe(50);
+    expect(getParams.projectId).toBe("project-0001");
+    expect(detail.project.sessionCount).toBe(2);
+    expect(detail.sessions[0]?.projectId).toBe("project-0001");
+  });
+});
+
+describe("Custom agent contracts", () => {
+  it("accepts custom agent summary and detail payloads", () => {
+    const summary = CustomAgentSummarySchema.parse({
+      name: "research-bot",
+      description: "Focuses on concise research synthesis.",
+      model: "claude-sonnet-4-20250514",
+      toolGroups: ["web", "files"],
+      createdAt: 1000,
+      updatedAt: 1200,
+    });
+
+    const detail = CustomAgentDetailSchema.parse({
+      ...summary,
+      soul: "Stay concise and source-backed.",
+    });
+
+    expect(detail.name).toBe("research-bot");
+    expect(detail.soul).toContain("source-backed");
+  });
+
+  it("accepts create/update payloads and check-name results", () => {
+    const createParams = CustomAgentCreateParamsSchema.parse({
+      name: "review-bot",
+      description: "Surfaces risks before merge.",
+      toolGroups: ["files"],
+      soul: "Default to a review mindset.",
+    });
+    const updateParams = CustomAgentUpdateParamsSchema.parse({
+      name: "review-bot",
+      model: "gpt-5.4",
+      soul: "Look for regressions first.",
+    });
+    const checkResult = CustomAgentCheckNameResultSchema.parse({
+      available: true,
+      name: "review-bot",
+    });
+
+    expect(createParams.name).toBe("review-bot");
+    expect(updateParams.model).toBe("gpt-5.4");
+    expect(checkResult.available).toBe(true);
   });
 });
 

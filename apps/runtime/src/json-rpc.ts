@@ -44,6 +44,24 @@ export function createRuntimeMethodHandler(
         return SkillRegistrySchema.parse(skillRegistry);
       case "providers.list":
         return providerRegistry;
+      case "agents.list":
+        return store.listAgents();
+      case "agents.get":
+        return store.getAgent(request.params);
+      case "agents.create":
+        return store.createAgent(request.params);
+      case "agents.update":
+        return store.updateAgent(request.params);
+      case "agents.delete":
+        return store.deleteAgent(request.params);
+      case "agents.checkName":
+        return store.checkAgentName(request.params);
+      case "projects.create":
+        return store.createProject(request.params);
+      case "projects.list":
+        return store.listProjects(request.params);
+      case "projects.get":
+        return store.getProject(request.params);
       case "sessions.create":
         return store.createSession(request.params);
       case "sessions.list":
@@ -69,6 +87,8 @@ export function createRuntimeMethodHandler(
         return store.cancelRun(request.params);
       case "runs.state":
         return store.getRunState(request.params);
+      case "runs.trail":
+        return store.getRunTrail(request.params);
       case "runs.checkpoints":
         return store.listCheckpoints(request.params);
       case "runs.replay":

@@ -1,7 +1,23 @@
 import { useMemo } from "react";
-import { getSharedRuntimeClient, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
+import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { useWorkbench } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
+
+async function pickProjectDirectory(): Promise<string | null> {
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      recursive: true,
+      title: "Select Project Folder",
+    });
+    return typeof selected === "string" && selected.trim() ? selected : null;
+  }
+
+  const entered = window.prompt("Project folder path");
+  return typeof entered === "string" && entered.trim() ? entered.trim() : null;
+}
 
 export function useRunActions() {
   const { state, dispatch } = useWorkbench();
@@ -28,13 +44,20 @@ export function useRunActions() {
   const selectedCheckpoint =
     viewModel?.checkpoints.find((checkpoint) => checkpoint.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0];
 
+  async function loadProjects(): Promise<OraProjectSummary[]> {
+    const projects = await runtimeClient.listProjects();
+    dispatch({ type: "SET_PROJECTS", projects });
+    return projects;
+  }
+
   async function hydrateSession(sessionId: string, snapshot?: OraStateSnapshot, feedback?: string) {
-    const [sessions, detail] = await Promise.all([
+    const [projects, sessions, detail] = await Promise.all([
+      runtimeClient.listProjects(),
       runtimeClient.listSessions(),
       runtimeClient.getSession(sessionId),
     ]);
-    dispatch({ type: "HYDRATE_SESSION", sessions, detail, snapshot, feedback });
-    return { sessions, detail };
+    dispatch({ type: "HYDRATE_SESSION", projects, sessions, detail, snapshot, feedback });
+    return { projects, sessions, detail };
   }
 
   async function selectSession(sessionId: string) {
@@ -63,7 +86,8 @@ export function useRunActions() {
   async function createSession() {
     dispatch({ type: "SET_LOADING", loading: true });
     try {
-      const created = await runtimeClient.createSession({ projectId: "ora-mvp" });
+      dispatch({ type: "SELECT_PROJECT", projectId: undefined });
+      const created = await runtimeClient.createSession();
       await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.");
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session creation failed." });
@@ -71,12 +95,51 @@ export function useRunActions() {
     }
   }
 
+  async function createProjectSession(projectId: string) {
+    dispatch({ type: "SET_LOADING", loading: true });
+    try {
+      const created = await runtimeClient.createSession({ projectId });
+      dispatch({ type: "SELECT_PROJECT", projectId });
+      await hydrateSession(created.sessionId, undefined, "Created a new project session.");
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Project session creation failed." });
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
+  async function addProjectFromDialog() {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Add project" });
+    try {
+      const rootPath = await pickProjectDirectory();
+      if (!rootPath) {
+        dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+        return;
+      }
+      const project = await runtimeClient.createProject({ rootPath });
+      await loadProjects();
+      dispatch({ type: "SELECT_PROJECT", projectId: project.projectId });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Added project ${project.label}.` });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Project import failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
   async function ensureInitialSession() {
-    const sessions = await runtimeClient.listSessions();
-    const firstSession = sessions[0] ?? await runtimeClient.createSession({ projectId: "ora-mvp" });
+    const [projects, sessions] = await Promise.all([
+      runtimeClient.listProjects(),
+      runtimeClient.listSessions(),
+    ]);
+    const firstSession = sessions[0] ?? await runtimeClient.createSession();
     const detail = await runtimeClient.getSession(firstSession.sessionId);
-    dispatch({ type: "HYDRATE_SESSION", sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions], detail });
-    return { sessions, detail };
+    dispatch({
+      type: "HYDRATE_SESSION",
+      projects,
+      sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+      detail,
+    });
+    return { projects, sessions, detail };
   }
 
   async function refreshCurrentSession(snapshot?: OraStateSnapshot, feedback?: string) {
@@ -91,13 +154,21 @@ export function useRunActions() {
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     try {
       const snapshot = await runtimeClient.startRun(
-        { prompt: state.promptText, projectId: "ora-mvp", context: { source: "desktop-workbench" } },
+        {
+          prompt: state.promptText,
+          projectId: state.activeSessionDetail?.session.projectId,
+          context: { source: "desktop-workbench" },
+        },
         {
           pattern: state.selectedPattern,
           providerId: state.selectedProviderId,
           providerConfig: provider,
+          customAgentId: state.selectedCustomAgentId,
           modelRef: provider?.modelId ?? "local/smoke-model",
-          metadata: { providerId: state.selectedProviderId },
+          metadata: {
+            providerId: state.selectedProviderId,
+            ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
+          },
         },
         state.selectedSessionId,
       );
@@ -264,6 +335,16 @@ export function useRunActions() {
     }
   }
 
+  async function openAgentChat(agentId: string) {
+    dispatch({ type: "SET_SELECTED_CUSTOM_AGENT", agentId });
+    dispatch({ type: "SET_VIEW", view: "chat" });
+    await createSession();
+  }
+
+  function clearSelectedCustomAgent() {
+    dispatch({ type: "SET_SELECTED_CUSTOM_AGENT", agentId: undefined });
+  }
+
   return {
     runtimeClient,
     viewModel,
@@ -273,7 +354,9 @@ export function useRunActions() {
     selectedAgent,
     selectedCheckpoint,
     actions: {
+      addProjectFromDialog,
       createSession,
+      createProjectSession,
       ensureInitialSession,
       selectSession,
       selectTurn,
@@ -288,6 +371,8 @@ export function useRunActions() {
       deleteProviderSecret,
       upsertCustomProvider,
       deleteCustomProvider,
+      openAgentChat,
+      clearSelectedCustomAgent,
     },
   };
 }

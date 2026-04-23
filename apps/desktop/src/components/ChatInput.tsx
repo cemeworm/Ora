@@ -6,6 +6,7 @@ import {
   Paperclip,
   Rocket,
   Square,
+  X,
   Zap,
 } from "lucide-react";
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -24,11 +25,13 @@ interface ChatInputProps {
   patternOptions: PatternCard[];
   activeProvider?: OraProviderConfig;
   providerOptions: OraProviderConfig[];
+  selectedCustomAgentId?: string;
   inputMode: InputMode;
   onInputModeChange: (mode: InputMode) => void;
   onPatternChange: (pattern: CoordinationPattern) => void;
   onProviderChange: (providerId: string) => void;
   onPromptChange: (prompt: string) => void;
+  onClearSelectedCustomAgent?: () => void;
   onStartRun: () => void;
   onStopRun: () => void;
 }
@@ -48,11 +51,13 @@ export function ChatInput({
   patternOptions,
   activeProvider,
   providerOptions,
+  selectedCustomAgentId,
   inputMode,
   onInputModeChange,
   onPatternChange,
   onProviderChange,
   onPromptChange,
+  onClearSelectedCustomAgent,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
@@ -101,6 +106,19 @@ export function ChatInput({
                 <Button type="button" variant="ghost" size="icon-sm" title="Attachments">
                   <Paperclip size={14} />
                 </Button>
+                {selectedCustomAgentId && (
+                  <button
+                    type="button"
+                    onClick={onClearSelectedCustomAgent}
+                    className="flex h-7 max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-background/70 px-2.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
+                    title={`Clear custom agent ${selectedCustomAgentId}`}
+                  >
+                    <Bot size={13} />
+                    <span className="hidden xl:inline">Agent</span>
+                    <span className="max-w-[140px] truncate text-foreground">{selectedCustomAgentId}</span>
+                    <X size={12} />
+                  </button>
+                )}
                 <Picker
                   open={openPicker === "provider"}
                   onOpenChange={(open) => setOpenPicker(open ? "provider" : undefined)}

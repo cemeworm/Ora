@@ -182,7 +182,7 @@ function adaptSession(session: OraSessionSummary): SessionRun {
   return {
     id: session.sessionId,
     title: session.title,
-    project: session.projectId ?? "Ora MVP",
+    project: session.projectId ?? "Recent chat",
     status: adaptRunStatus(session.status ?? "succeeded"),
     pattern: session.latestPattern ?? "orchestrator_subagent",
     updatedAt: formatClock(session.updatedAt),

@@ -4,6 +4,7 @@ mod commands;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::sidecar::RuntimeFacade::default())
         .setup(|app| {
             app.manage(commands::sidecar::RuntimeSidecarManager::new(app.handle().clone()));
@@ -15,6 +16,7 @@ fn main() {
             commands::sidecar::provider_secret_status,
             commands::sidecar::provider_secret_store,
             commands::sidecar::provider_secret_delete,
+            commands::sidecar::open_external_url,
             commands::sidecar::runtime_json_rpc,
             commands::sidecar::runtime_start_run,
             commands::sidecar::runtime_stream_run,

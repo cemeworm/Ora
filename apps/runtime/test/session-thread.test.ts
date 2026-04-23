@@ -55,8 +55,9 @@ describe("session thread runtime behavior", () => {
   it("creates and reloads empty sessions", () => {
     const dir = freshStoreDir();
     const firstStore = new LocalRunStore({ dataDir: dir, clock });
+    const project = firstStore.createProject({ rootPath: dir, label: "alpha" });
 
-    const created = firstStore.createSession({ projectId: "project-alpha" });
+    const created = firstStore.createSession({ projectId: project.projectId });
     expect(created.sessionId).toBe("session-0001");
     expect(created.title).toBe("New Chat");
     expect(created.turnCount).toBe(0);
@@ -71,6 +72,27 @@ describe("session thread runtime behavior", () => {
     expect(reloadedSessions).toHaveLength(1);
     expect(reloadedSessions[0]?.sessionId).toBe(created.sessionId);
     expect(reloaded.getSession({ sessionId: created.sessionId }).session.turnCount).toBe(0);
+  });
+
+  it("creates projects, deduplicates repeated paths, and groups project sessions", () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+
+    const created = store.createProject({ rootPath: dir, label: "workspace" });
+    const duplicate = store.createProject({ rootPath: `${dir}/` });
+    const scopedSession = store.createSession({ projectId: created.projectId });
+
+    expect(duplicate.projectId).toBe(created.projectId);
+    expect(store.listProjects()).toHaveLength(1);
+
+    const detail = store.getProject({ projectId: created.projectId });
+    expect(detail.project.projectId).toBe(created.projectId);
+    expect(detail.project.sessionCount).toBe(1);
+    expect(detail.sessions[0]?.sessionId).toBe(scopedSession.sessionId);
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    expect(reloaded.listProjects()[0]?.projectId).toBe(created.projectId);
+    expect(reloaded.getProject({ projectId: created.projectId }).project.sessionCount).toBe(1);
   });
 
   it("appends turns inside a session and rebuilds transcript for later turns", async () => {
@@ -242,6 +264,44 @@ describe("session thread runtime behavior", () => {
     expect(detail.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(detail.transcript[0]?.content).toBe("Legacy migration prompt");
     expect(detail.transcript[1]?.content).toContain("Legacy migration prompt");
+  });
+
+  it("migrates legacy ora-mvp placeholder project ids into unscoped recent chats", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const project = store.createProject({ rootPath: dir });
+    const session = store.createSession({ projectId: project.projectId });
+    const run = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Placeholder project" },
+      config: { pattern: "orchestrator_subagent" },
+    });
+
+    const legacySession = {
+      ...store.getSession({ sessionId: session.sessionId }).session,
+      projectId: "ora-mvp",
+    };
+    const existingRun = store.getRunState({ runId: run.runId });
+    const legacyRun = {
+      ...existingRun,
+      input: {
+        ...existingRun.input,
+        projectId: "ora-mvp",
+      },
+    };
+
+    fs.writeFileSync(
+      path.join(dir, "sessions", `${encodeURIComponent(session.sessionId)}.json`),
+      `${JSON.stringify(legacySession, null, 2)}\n`,
+    );
+    fs.writeFileSync(
+      path.join(dir, "runs", `${encodeURIComponent(run.runId)}.json`),
+      `${JSON.stringify(legacyRun, null, 2)}\n`,
+    );
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    expect(reloaded.getSession({ sessionId: session.sessionId }).session.projectId).toBeUndefined();
+    expect(reloaded.getRunState({ runId: run.runId }).input.projectId).toBeUndefined();
   });
 
   it("passes rebuilt session transcript through the LangGraph session manager path", async () => {

@@ -153,7 +153,7 @@ export interface RuntimeBridgeStatus {
   detail: string;
 }
 
-export type AppView = "chat" | "evaluation" | "settings";
+export type AppView = "chat" | "agents" | "evaluation";
 
 export interface ChatMessage {
   id: string;

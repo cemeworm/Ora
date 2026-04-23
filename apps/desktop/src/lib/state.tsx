@@ -5,6 +5,7 @@ import type {
   OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
+  OraProjectSummary,
   OraSessionDetail,
   OraSessionSummary,
   OraSkillRegistry,
@@ -20,7 +21,10 @@ export interface WorkbenchState {
   selectedDockTab: DockTab;
   selectedBeatId: string | undefined;
   selectedNodeId: string;
+  projects: OraProjectSummary[];
   sessions: OraSessionSummary[];
+  selectedProjectId: string | undefined;
+  expandedProjectIds: Record<string, boolean>;
   activeSessionDetail: OraSessionDetail | undefined;
   activeSnapshot: OraStateSnapshot | undefined;
   patterns: OraPatternDefinition[];
@@ -29,6 +33,7 @@ export interface WorkbenchState {
   skillRegistry: OraSkillRegistry | undefined;
   providerSecretStatuses: OraProviderSecretStatus[];
   selectedProviderId: string;
+  selectedCustomAgentId: string | undefined;
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
   isLoading: boolean;
@@ -36,6 +41,7 @@ export interface WorkbenchState {
   commandFeedback: string;
   filmstripExpanded: boolean;
   activeView: AppView;
+  settingsOpen: boolean;
   sidebarCollapsed: boolean;
   detailDrawerOpen: boolean;
   artifactPanelOpen: boolean;
@@ -46,6 +52,7 @@ export type WorkbenchAction =
   | {
       type: "BOOTSTRAP";
       patterns: OraPatternDefinition[];
+      projects: OraProjectSummary[];
       providerRegistry: OraProviderRegistry;
       toolRegistry: OraToolRegistry;
       skillRegistry: OraSkillRegistry;
@@ -56,12 +63,17 @@ export type WorkbenchAction =
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
   | {
       type: "HYDRATE_SESSION";
+      projects: OraProjectSummary[];
       sessions: OraSessionSummary[];
       detail: OraSessionDetail;
       snapshot?: OraStateSnapshot;
       feedback?: string;
     }
+  | { type: "SET_PROJECTS"; projects: OraProjectSummary[] }
+  | { type: "SELECT_PROJECT"; projectId: string | undefined }
+  | { type: "TOGGLE_PROJECT_SECTION"; projectId: string }
   | { type: "SET_PROVIDER"; providerId: string }
+  | { type: "SET_SELECTED_CUSTOM_AGENT"; agentId: string | undefined }
   | { type: "SET_PROVIDER_REGISTRY"; providerRegistry: OraProviderRegistry }
   | { type: "UPSERT_PROVIDER"; provider: OraProviderConfig }
   | { type: "DELETE_PROVIDER"; providerId: string }
@@ -79,6 +91,7 @@ export type WorkbenchAction =
   | { type: "SET_BRIDGE_STATUS"; status: RuntimeBridgeStatus }
   | { type: "TOGGLE_FILMSTRIP" }
   | { type: "SET_VIEW"; view: AppView }
+  | { type: "SET_SETTINGS_OPEN"; open: boolean }
   | { type: "TOGGLE_SIDEBAR" }
   | { type: "TOGGLE_DETAIL_DRAWER" }
   | { type: "TOGGLE_ARTIFACT_PANEL" }
@@ -91,7 +104,10 @@ const initialState: WorkbenchState = {
   selectedDockTab: "Overview",
   selectedBeatId: undefined,
   selectedNodeId: "run",
+  projects: [],
   sessions: [],
+  selectedProjectId: undefined,
+  expandedProjectIds: {},
   activeSessionDetail: undefined,
   activeSnapshot: undefined,
   patterns: [],
@@ -100,6 +116,7 @@ const initialState: WorkbenchState = {
   skillRegistry: undefined,
   providerSecretStatuses: [],
   selectedProviderId: "local-smoke",
+  selectedCustomAgentId: undefined,
   bridgeStatus: {
     mode: "initializing",
     ok: false,
@@ -112,6 +129,7 @@ const initialState: WorkbenchState = {
   commandFeedback: "Select a session to inspect its latest turn, checkpoints, and approvals.",
   filmstripExpanded: false,
   activeView: "chat",
+  settingsOpen: false,
   sidebarCollapsed: false,
   detailDrawerOpen: false,
   artifactPanelOpen: false,
@@ -141,7 +159,9 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         selectedTurnRunId: undefined,
         selectedBeatId: undefined,
         selectedNodeId: "run",
+        projects: [],
         sessions: [],
+        selectedProjectId: undefined,
         activeSessionDetail: undefined,
         activeSnapshot: undefined,
         promptText: "",
@@ -154,6 +174,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       return {
         ...state,
         patterns: action.patterns,
+        projects: action.projects,
         providerRegistry: action.providerRegistry,
         toolRegistry: action.toolRegistry,
         skillRegistry: action.skillRegistry,
@@ -173,10 +194,15 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       const latestTurn = action.detail.turns.at(-1);
       return {
         ...state,
+        projects: action.projects,
         sessions: replaceSessionSummary(
           action.sessions.filter((session) => session.sessionId !== action.detail.session.sessionId),
           action.detail.session,
         ),
+        selectedProjectId: action.detail.session.projectId,
+        expandedProjectIds: action.detail.session.projectId
+          ? { ...state.expandedProjectIds, [action.detail.session.projectId]: true }
+          : state.expandedProjectIds,
         activeSessionDetail: action.detail,
         activeSnapshot: snapshot,
         selectedSessionId: action.detail.session.sessionId,
@@ -191,6 +217,21 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       };
     }
 
+    case "SET_PROJECTS":
+      return { ...state, projects: action.projects };
+
+    case "SELECT_PROJECT":
+      return { ...state, selectedProjectId: action.projectId };
+
+    case "TOGGLE_PROJECT_SECTION":
+      return {
+        ...state,
+        expandedProjectIds: {
+          ...state.expandedProjectIds,
+          [action.projectId]: !(state.expandedProjectIds[action.projectId] ?? true),
+        },
+      };
+
     case "SET_PATTERN":
       return { ...state, selectedPattern: action.pattern };
 
@@ -204,6 +245,15 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
           : `Provider ${action.providerId} selected for the next turn.`,
       };
     }
+
+    case "SET_SELECTED_CUSTOM_AGENT":
+      return {
+        ...state,
+        selectedCustomAgentId: action.agentId,
+        commandFeedback: action.agentId
+          ? `Custom agent ${action.agentId} selected for the next run.`
+          : "Custom agent persona cleared for the next run.",
+      };
 
     case "SET_PROVIDER_REGISTRY": {
       const selectedProvider = action.providerRegistry.providers.some((provider) => provider.id === state.selectedProviderId)
@@ -305,6 +355,9 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
 
     case "SET_VIEW":
       return { ...state, activeView: action.view };
+
+    case "SET_SETTINGS_OPEN":
+      return { ...state, settingsOpen: action.open };
 
     case "TOGGLE_SIDEBAR":
       return { ...state, sidebarCollapsed: !state.sidebarCollapsed };

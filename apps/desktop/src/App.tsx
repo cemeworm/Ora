@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
 import { AppShell } from "./components/AppShell";
 import { ApprovalModal } from "./components/ApprovalModal";
+import { AgentsView } from "./components/AgentsView";
 import { ChatView } from "./components/ChatView";
-import { DetailDrawer } from "./components/DetailDrawer";
 import { EvaluationView } from "./components/EvaluationView";
 import { SettingsView } from "./components/SettingsView";
+import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import { cn } from "./lib/utils";
@@ -81,10 +82,12 @@ function WorkbenchInner() {
       try {
         dispatch({ type: "RESET_RUNTIME_VIEW" });
         const bootstrap = await runtimeClient.bootstrap();
+        const projects = await runtimeClient.listProjects();
         if (cancelled) return;
         dispatch({
           type: "BOOTSTRAP",
           patterns: bootstrap.patterns,
+          projects,
           providerRegistry: bootstrap.providerRegistry,
           toolRegistry: bootstrap.toolRegistry,
           skillRegistry: bootstrap.skillRegistry,
@@ -92,11 +95,12 @@ function WorkbenchInner() {
           health: bootstrap.health,
         });
         const sessions = await runtimeClient.listSessions();
-        const firstSession = sessions[0] ?? await runtimeClient.createSession({ projectId: "ora-mvp" });
+        const firstSession = sessions[0] ?? await runtimeClient.createSession();
         const detail = await runtimeClient.getSession(firstSession.sessionId);
         if (cancelled) return;
         dispatch({
           type: "HYDRATE_SESSION",
+          projects,
           sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
           detail,
         });
@@ -132,11 +136,18 @@ function WorkbenchInner() {
   const chatMessages = useMemo(() => {
     return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], state.activeSnapshot);
   }, [state.activeSessionDetail, state.activeSnapshot]);
+  const settingsDialog = (
+    <SettingsView
+      open={state.settingsOpen}
+      onOpenChange={(open) => dispatch({ type: "SET_SETTINGS_OPEN", open })}
+    />
+  );
 
   // Loading / error state
   if (!viewModel || !selectedSession || !state.bridgeStatus) {
     return (
       <AppShell>
+        {settingsDialog}
         <WorkspacePane className="w-full">
           <div className="flex h-full items-center justify-center">
             <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
@@ -149,20 +160,10 @@ function WorkbenchInner() {
     );
   }
 
-  // Settings view
-  if (state.activeView === "settings") {
-    return (
-      <AppShell>
-        <WorkspacePane className="w-full">
-          <SettingsView />
-        </WorkspacePane>
-      </AppShell>
-    );
-  }
-
   if (state.activeView === "evaluation") {
     return (
       <AppShell>
+        {settingsDialog}
         <WorkspacePane className="w-full">
           <EvaluationView runtimeClient={runtimeClient} bridgeStatus={state.bridgeStatus} />
         </WorkspacePane>
@@ -170,8 +171,24 @@ function WorkbenchInner() {
     );
   }
 
+  if (state.activeView === "agents") {
+    return (
+      <AppShell>
+        {settingsDialog}
+        <WorkspacePane className="w-full">
+          <AgentsView
+            runtimeClient={runtimeClient}
+            selectedCustomAgentId={state.selectedCustomAgentId}
+            onStartChat={actions.openAgentChat}
+            onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
+          />
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
   // Chat view (default)
-  const { actions: actionRecords, agents, artifacts, beats, checkpoints, memoryRecords, patternCards, planItems, sessions, streamLines, topologyEdges, topologyNodes, activePattern } = viewModel;
+  const { actions: actionRecords, agents, artifacts, checkpoints, patternCards, planItems, streamLines, topologyEdges, topologyNodes, activePattern } = viewModel;
   const isRunning = selectedSession.status === "running";
   const isApprovalRequired = selectedSession.status === "approval_required";
   const pendingApprovals = actionRecords.filter((a) => a.state === "approval_required");
@@ -179,6 +196,7 @@ function WorkbenchInner() {
 
   return (
     <AppShell>
+      {settingsDialog}
       {isApprovalRequired && nextApproval && (
         <ApprovalModal action={nextApproval} onResume={actions.resumeRun} onCancel={actions.cancelRun} disabled={state.busyCommand !== undefined} />
       )}
@@ -188,6 +206,7 @@ function WorkbenchInner() {
             activePattern={activePattern}
             sessionTurns={viewModel.turns}
             selectedTurnRunId={state.selectedTurnRunId}
+            selectedCustomAgentId={state.selectedCustomAgentId}
             activeSnapshot={state.activeSnapshot}
             agents={agents}
             bridgeStatus={state.bridgeStatus}
@@ -207,6 +226,7 @@ function WorkbenchInner() {
             topologyNodes={topologyNodes}
             onCancelRun={actions.cancelRun}
             onComposerPromptChange={(text) => dispatch({ type: "SET_PROMPT", text })}
+            onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
             onExportReport={actions.exportReport}
             onForkRun={actions.forkRun}
             onInterruptRun={actions.interruptRun}
@@ -224,7 +244,7 @@ function WorkbenchInner() {
           <>
             <button
               type="button"
-              aria-label="Resize details panel"
+              aria-label="Resize trails panel"
               onPointerDown={handleDetailResizeStart}
               className="group flex h-full w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-transparent"
             >
@@ -235,7 +255,7 @@ function WorkbenchInner() {
               className="min-w-0 shrink-0 flex-none"
               style={{ width: detailPanelWidth }}
             >
-              <DetailDrawer
+              <TrailsDrawer
                 open={state.detailDrawerOpen}
                 onClose={() => dispatch({ type: "TOGGLE_DETAIL_DRAWER" })}
                 actions={actionRecords}
@@ -245,7 +265,6 @@ function WorkbenchInner() {
                 busyCommand={state.busyCommand}
                 checkpoints={checkpoints}
                 commandFeedback={state.commandFeedback}
-                memoryRecords={memoryRecords}
                 planItems={planItems}
                 selectedAgent={selectedAgent}
                 selectedBeat={selectedBeat}
@@ -254,7 +273,6 @@ function WorkbenchInner() {
                 selectedSession={selectedSession}
                 onExportReport={actions.exportReport}
                 onForkRun={actions.forkRun}
-                onReplaySelection={actions.replaySelection}
                 onResumeRun={actions.resumeRun}
                 onCancelRun={actions.cancelRun}
               />

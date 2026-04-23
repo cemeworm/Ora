@@ -43,7 +43,9 @@ pub struct RuntimeFacade {
 struct FacadeState {
     runs: HashMap<String, Value>,
     run_order: Vec<String>,
+    projects: HashMap<String, Value>,
     sessions: HashMap<String, Value>,
+    next_project_number: u64,
     next_run_number: u64,
     next_session_number: u64,
 }
@@ -282,6 +284,30 @@ pub struct ProviderSecretStatus {
     detail: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedCustomAgentConfig {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(rename = "tool_groups", skip_serializing_if = "Option::is_none")]
+    tool_groups: Option<Vec<String>>,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CustomAgentDetailRecord {
+    name: String,
+    description: String,
+    model: Option<String>,
+    tool_groups: Option<Vec<String>>,
+    soul: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
 #[tauri::command]
 // The webview only receives lifecycle metadata here; shell access stays out of React.
 pub fn runtime_sidecar_status(manager: State<'_, RuntimeSidecarManager>) -> SidecarStatus {
@@ -375,6 +401,32 @@ pub fn provider_secret_delete(provider_id: String) -> Result<ProviderSecretStatu
         keychain_service: Some(service),
         detail: "Provider key is not stored.".to_string(),
     })
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("URL is required.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(trimmed)
+            .status()
+            .map_err(|error| format!("Unable to open URL: {error}"))?;
+        if !status.success() {
+            return Err("macOS rejected the external URL open request.".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = trimmed;
+        Err("External URL opening is only implemented for macOS in this MVP.".to_string())
+    }
 }
 
 #[tauri::command]
@@ -507,6 +559,15 @@ impl RuntimeFacade {
             "runtime.health" => Ok(runtime_health()),
             "patterns.list" => Ok(patterns_list()),
             "providers.list" => Ok(providers_list()),
+            "agents.list" => self.agents_list(),
+            "agents.get" => self.agents_get(params.as_ref()),
+            "agents.create" => self.agents_create(params.as_ref()),
+            "agents.update" => self.agents_update(params.as_ref()),
+            "agents.delete" => self.agents_delete(params.as_ref()),
+            "agents.checkName" => self.agents_check_name(params.as_ref()),
+            "projects.create" => self.projects_create(params.as_ref()),
+            "projects.list" => self.projects_list(params.as_ref()),
+            "projects.get" => self.projects_get(params.as_ref()),
             "sessions.create" => self.sessions_create(params.as_ref()),
             "sessions.list" => self.sessions_list(params.as_ref()),
             "sessions.get" => self.sessions_get(params.as_ref()),
@@ -517,6 +578,7 @@ impl RuntimeFacade {
             "runs.resume" => self.runs_resume(params.as_ref()),
             "runs.cancel" => self.runs_cancel(params.as_ref()),
             "runs.state" => self.runs_state(params.as_ref()),
+            "runs.trail" => self.runs_trail(params.as_ref()),
             "runs.checkpoints" => self.runs_checkpoints(params.as_ref()),
             "runs.replay" => self.runs_replay(params.as_ref()),
             "runs.fork" => self.runs_fork(params.as_ref()),
@@ -533,18 +595,161 @@ impl RuntimeFacade {
         }
     }
 
+    fn agents_list(&self) -> Result<Value, RuntimeJsonRpcError> {
+        let root = ensure_custom_agents_root()?;
+        let mut agents = fs::read_dir(root)
+            .map_err(|error| {
+                runtime_error(
+                    -32060,
+                    "Unable to read custom agents directory",
+                    Some(json!({ "error": error.to_string() })),
+                )
+            })?
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_dir() {
+                    return None;
+                }
+                read_custom_agent_detail(&path).ok()
+            })
+            .collect::<Vec<CustomAgentDetailRecord>>();
+        agents.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(Value::Array(
+            agents
+                .into_iter()
+                .map(|agent| custom_agent_summary_value(&agent))
+                .collect(),
+        ))
+    }
+
+    fn agents_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let name = require_custom_agent_name(params)?;
+        let path = custom_agent_dir(&name)?;
+        let agent = read_custom_agent_detail(&path)?;
+        Ok(custom_agent_detail_value(&agent))
+    }
+
+    fn agents_create(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let params = params.ok_or_else(|| runtime_error(-32602, "Missing custom agent payload", None))?;
+        let name = require_custom_agent_name(Some(params))?;
+        let path = custom_agent_dir(&name)?;
+        if path.exists() {
+            return Err(runtime_error(
+                -32602,
+                "Custom agent already exists",
+                Some(json!({ "name": name })),
+            ));
+        }
+
+        let now = now_ms();
+        let agent = CustomAgentDetailRecord {
+            name: name.clone(),
+            description: params
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            model: optional_trimmed_string(params.get("model")),
+            tool_groups: optional_string_array(params.get("toolGroups"))?,
+            soul: params
+                .get("soul")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        write_custom_agent(&agent)?;
+        Ok(custom_agent_detail_value(&agent))
+    }
+
+    fn agents_update(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let params = params.ok_or_else(|| runtime_error(-32602, "Missing custom agent payload", None))?;
+        let name = require_custom_agent_name(Some(params))?;
+        let path = custom_agent_dir(&name)?;
+        let existing = read_custom_agent_detail(&path)?;
+        let agent = CustomAgentDetailRecord {
+            name: existing.name.clone(),
+            description: params
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or(existing.description),
+            model: merge_optional_string_field(params.get("model"), existing.model),
+            tool_groups: merge_optional_string_array_field(params.get("toolGroups"), existing.tool_groups)?,
+            soul: params
+                .get("soul")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or(existing.soul),
+            created_at: existing.created_at,
+            updated_at: now_ms(),
+        };
+        write_custom_agent(&agent)?;
+        Ok(custom_agent_detail_value(&agent))
+    }
+
+    fn agents_delete(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let name = require_custom_agent_name(params)?;
+        let path = custom_agent_dir(&name)?;
+        if !path.exists() {
+            return Err(runtime_error(
+                -32004,
+                "Custom agent not found",
+                Some(json!({ "name": name })),
+            ));
+        }
+        fs::remove_dir_all(&path).map_err(|error| {
+            runtime_error(
+                -32061,
+                "Unable to delete custom agent",
+                Some(json!({ "name": name, "error": error.to_string() })),
+            )
+        })?;
+        Ok(json!({ "deleted": true, "name": name }))
+    }
+
+    fn agents_check_name(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let params = params.ok_or_else(|| runtime_error(-32602, "Missing custom agent payload", None))?;
+        let raw_name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| runtime_error(-32602, "Custom agent name is required", None))?;
+        let name = normalize_custom_agent_name(raw_name)?;
+        let path = custom_agent_dir(&name)?;
+        Ok(json!({
+            "available": !path.exists(),
+            "name": name,
+        }))
+    }
+
     fn sessions_create(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
         let project_id = params
             .and_then(|value| value.get("projectId"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        let label = params
+            .and_then(|value| value.get("label"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string);
         let created_at = now_ms();
         let mut state = self.lock_state()?;
+        if let Some(project_id) = project_id.as_deref() {
+            get_project(&state, project_id)?;
+        }
         state.next_session_number += 1;
         let session_id = format!("session-{:04}", state.next_session_number);
         let session = json!({
             "sessionId": session_id,
-            "title": "New Chat",
+            "title": label.unwrap_or_else(|| "New Chat".to_string()),
             "projectId": project_id,
             "status": "idle",
             "turnCount": 0,
@@ -552,7 +757,98 @@ impl RuntimeFacade {
             "updatedAt": created_at
         });
         state.sessions.insert(session_id.clone(), session.clone());
+        if let Some(project_id) = session["projectId"].as_str() {
+            sync_project_summary(&mut state, project_id);
+        }
         Ok(session)
+    }
+
+    fn projects_create(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let root_path = params
+            .and_then(|value| value.get("rootPath"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| runtime_error(-32602, "Missing rootPath", None))?;
+        let normalized_root_path = normalize_project_root_path(root_path);
+        let label = params
+            .and_then(|value| value.get("label"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| default_project_label(&normalized_root_path));
+        let created_at = now_ms();
+        let mut state = self.lock_state()?;
+        if let Some(existing) = state
+            .projects
+            .values()
+            .find(|project| project["rootPath"].as_str() == Some(normalized_root_path.as_str()))
+            .cloned()
+        {
+            return Ok(existing);
+        }
+        state.next_project_number += 1;
+        let project_id = format!("project-{:04}", state.next_project_number);
+        let project = json!({
+            "projectId": project_id,
+            "label": label,
+            "rootPath": normalized_root_path,
+            "sessionCount": 0,
+            "createdAt": created_at,
+            "updatedAt": created_at,
+        });
+        state.projects.insert(project_id, project.clone());
+        Ok(project)
+    }
+
+    fn projects_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let limit = params
+            .and_then(|value| value.get("limit"))
+            .and_then(Value::as_u64)
+            .unwrap_or(500) as usize;
+        let state = self.lock_state()?;
+        let mut projects = state.projects.values().cloned().collect::<Vec<Value>>();
+        projects.sort_by(|left, right| {
+            let left_updated = left["updatedAt"].as_u64().unwrap_or(0);
+            let right_updated = right["updatedAt"].as_u64().unwrap_or(0);
+            right_updated
+                .cmp(&left_updated)
+                .then_with(|| {
+                    left["projectId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .cmp(right["projectId"].as_str().unwrap_or_default())
+                })
+        });
+        projects.truncate(limit);
+        Ok(Value::Array(projects))
+    }
+
+    fn projects_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let project_id = require_project_id(params)?;
+        let state = self.lock_state()?;
+        let project = get_project(&state, &project_id)?.clone();
+        let mut sessions = state
+            .sessions
+            .values()
+            .filter(|session| session["projectId"].as_str() == Some(project_id.as_str()))
+            .cloned()
+            .collect::<Vec<Value>>();
+        sessions.sort_by(|left, right| {
+            let left_updated = left["updatedAt"].as_u64().unwrap_or(0);
+            let right_updated = right["updatedAt"].as_u64().unwrap_or(0);
+            right_updated
+                .cmp(&left_updated)
+                .then_with(|| {
+                    left["sessionId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .cmp(right["sessionId"].as_str().unwrap_or_default())
+                })
+        });
+        Ok(json!({
+            "project": project,
+            "sessions": sessions,
+        }))
     }
 
     fn sessions_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -615,6 +911,7 @@ impl RuntimeFacade {
         let pattern = start_pattern(params)?;
         let provider_id = start_provider_id(params);
         let model_ref = start_model_ref(params);
+        let custom_agent_id = start_custom_agent_id(params)?;
         let started_at = now_ms();
         let mut state = self.lock_state()?;
         let session_id = ensure_session_for_run(&mut state, params, started_at)?;
@@ -643,6 +940,7 @@ impl RuntimeFacade {
             None,
             provider_id.as_deref(),
             model_ref.as_deref(),
+            custom_agent_id.as_deref(),
         );
         state.runs.insert(run_id.clone(), snapshot.clone());
         state.run_order.push(run_id.clone());
@@ -786,6 +1084,13 @@ impl RuntimeFacade {
         Ok(get_run(&state, &run_id)?.clone())
     }
 
+    fn runs_trail(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let run_id = require_run_id(params)?;
+        let state = self.lock_state()?;
+        let snapshot = get_run(&state, &run_id)?;
+        Ok(build_run_trail(snapshot))
+    }
+
     fn runs_checkpoints(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
         let run_id = require_run_id(params)?;
         let state = self.lock_state()?;
@@ -891,6 +1196,13 @@ impl RuntimeFacade {
             .and_then(Value::as_str)
             .or_else(|| source["config"]["modelRef"].as_str())
             .map(str::to_string);
+        let custom_agent_id = params
+            .and_then(|value| value.get("config"))
+            .and_then(|config| config.get("customAgentId"))
+            .and_then(Value::as_str)
+            .map(normalize_custom_agent_name)
+            .transpose()?
+            .or_else(|| source["config"]["customAgentId"].as_str().map(str::to_string));
         let started_at = now_ms();
         let session_id = source["sessionId"]
             .as_str()
@@ -929,6 +1241,7 @@ impl RuntimeFacade {
             Some(forked_from),
             provider_id.as_deref(),
             model_ref.as_deref(),
+            custom_agent_id.as_deref(),
         );
         state.runs.insert(child_run_id.clone(), snapshot.clone());
         state.run_order.push(child_run_id.clone());
@@ -1425,6 +1738,218 @@ fn providers_list() -> Value {
     })
 }
 
+fn ensure_custom_agents_root() -> Result<PathBuf, RuntimeJsonRpcError> {
+    let root = workspace_root()
+        .ok_or_else(|| runtime_error(-32060, "Workspace root unavailable for custom agents", None))?
+        .join(".ora")
+        .join("agents");
+    fs::create_dir_all(&root).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to create custom agents directory",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })?;
+    Ok(root)
+}
+
+fn custom_agent_dir(name: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
+    Ok(ensure_custom_agents_root()?.join(name))
+}
+
+fn custom_agent_config_path(agent_dir: &Path) -> PathBuf {
+    agent_dir.join("config.yaml")
+}
+
+fn custom_agent_soul_path(agent_dir: &Path) -> PathBuf {
+    agent_dir.join("SOUL.md")
+}
+
+fn read_custom_agent_detail(agent_dir: &Path) -> Result<CustomAgentDetailRecord, RuntimeJsonRpcError> {
+    let config_path = custom_agent_config_path(agent_dir);
+    if !config_path.is_file() {
+        return Err(runtime_error(
+            -32004,
+            "Custom agent config missing",
+            Some(json!({ "path": config_path.to_string_lossy() })),
+        ));
+    }
+    let raw = fs::read_to_string(&config_path).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to read custom agent config",
+            Some(json!({ "path": config_path.to_string_lossy(), "error": error.to_string() })),
+        )
+    })?;
+    let config: PersistedCustomAgentConfig = serde_json::from_str(raw.trim()).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to parse custom agent config",
+            Some(json!({ "path": config_path.to_string_lossy(), "error": error.to_string() })),
+        )
+    })?;
+    let soul_path = custom_agent_soul_path(agent_dir);
+    let soul = if soul_path.is_file() {
+        fs::read_to_string(&soul_path).map_err(|error| {
+            runtime_error(
+                -32060,
+                "Unable to read custom agent SOUL",
+                Some(json!({ "path": soul_path.to_string_lossy(), "error": error.to_string() })),
+            )
+        })?
+    } else {
+        String::new()
+    };
+    Ok(CustomAgentDetailRecord {
+        name: config.name,
+        description: config.description,
+        model: config.model,
+        tool_groups: config.tool_groups,
+        soul,
+        created_at: config.created_at,
+        updated_at: config.updated_at,
+    })
+}
+
+fn write_custom_agent(agent: &CustomAgentDetailRecord) -> Result<(), RuntimeJsonRpcError> {
+    let agent_dir = custom_agent_dir(&agent.name)?;
+    fs::create_dir_all(&agent_dir).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to create custom agent directory",
+            Some(json!({ "path": agent_dir.to_string_lossy(), "error": error.to_string() })),
+        )
+    })?;
+    let config = PersistedCustomAgentConfig {
+        name: agent.name.clone(),
+        description: agent.description.clone(),
+        model: agent.model.clone(),
+        tool_groups: agent.tool_groups.clone(),
+        created_at: agent.created_at,
+        updated_at: agent.updated_at,
+    };
+    let config_path = custom_agent_config_path(&agent_dir);
+    let config_json = serde_json::to_string_pretty(&config).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to serialize custom agent config",
+            Some(json!({ "name": agent.name, "error": error.to_string() })),
+        )
+    })?;
+    fs::write(&config_path, format!("{config_json}\n")).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to write custom agent config",
+            Some(json!({ "path": config_path.to_string_lossy(), "error": error.to_string() })),
+        )
+    })?;
+    let soul_path = custom_agent_soul_path(&agent_dir);
+    fs::write(&soul_path, agent.soul.as_bytes()).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to write custom agent SOUL",
+            Some(json!({ "path": soul_path.to_string_lossy(), "error": error.to_string() })),
+        )
+    })?;
+    Ok(())
+}
+
+fn custom_agent_summary_value(agent: &CustomAgentDetailRecord) -> Value {
+    json!({
+        "name": agent.name,
+        "description": agent.description,
+        "model": agent.model,
+        "toolGroups": agent.tool_groups,
+        "createdAt": agent.created_at,
+        "updatedAt": agent.updated_at,
+    })
+}
+
+fn custom_agent_detail_value(agent: &CustomAgentDetailRecord) -> Value {
+    json!({
+        "name": agent.name,
+        "description": agent.description,
+        "model": agent.model,
+        "toolGroups": agent.tool_groups,
+        "soul": agent.soul,
+        "createdAt": agent.created_at,
+        "updatedAt": agent.updated_at,
+    })
+}
+
+fn optional_trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn optional_string_array(value: Option<&Value>) -> Result<Option<Vec<String>>, RuntimeJsonRpcError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(items) = value.as_array() else {
+        return Err(runtime_error(-32602, "Custom agent toolGroups must be an array", None));
+    };
+    let values = items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| runtime_error(-32602, "Custom agent toolGroups must be strings", None))
+        })
+        .collect::<Result<Vec<String>, RuntimeJsonRpcError>>()?;
+    Ok(if values.is_empty() { None } else { Some(values) })
+}
+
+fn merge_optional_string_field(value: Option<&Value>, existing: Option<String>) -> Option<String> {
+    match value {
+        Some(Value::Null) => None,
+        Some(other) => optional_trimmed_string(Some(other)).or(existing),
+        None => existing,
+    }
+}
+
+fn merge_optional_string_array_field(
+    value: Option<&Value>,
+    existing: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, RuntimeJsonRpcError> {
+    match value {
+        Some(Value::Null) => Ok(None),
+        Some(other) => optional_string_array(Some(other)).map(|next| next.or(existing)),
+        None => Ok(existing),
+    }
+}
+
+fn normalize_custom_agent_name(value: &str) -> Result<String, RuntimeJsonRpcError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(runtime_error(-32602, "Custom agent name is required", None));
+    }
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        return Err(runtime_error(
+            -32602,
+            "Custom agent names must contain only letters, digits, and hyphens",
+            Some(json!({ "name": value })),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn require_custom_agent_name(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
+    let raw = params
+        .and_then(|value| value.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| runtime_error(-32602, "Custom agent name is required", None))?;
+    normalize_custom_agent_name(raw)
+}
+
 fn create_snapshot(
     run_id: &str,
     session_id: &str,
@@ -1436,8 +1961,10 @@ fn create_snapshot(
     forked_from: Option<Value>,
     provider_id: Option<&str>,
     model_ref: Option<&str>,
+    custom_agent_id: Option<&str>,
 ) -> Value {
     let definition = pattern_definition(pattern);
+    let custom_agent_label = custom_agent_id.map(|value| format!(" via custom agent {}", value));
     let topology = definition["topology"].clone();
     let plan_template = definition["planTemplate"]
         .as_array()
@@ -1496,8 +2023,9 @@ fn create_snapshot(
         json!({
             "role": "assistant",
             "content": format!(
-                "{} accepted a local smoke task: {}",
+                "{} accepted a local smoke task{}: {}",
                 definition["label"].as_str().unwrap_or("Ora"),
+                custom_agent_label.as_deref().unwrap_or(""),
                 prompt
             )
         }),
@@ -1585,6 +2113,27 @@ fn create_snapshot(
         })
         .collect::<Vec<Value>>();
 
+    let mut config = json!({
+        "pattern": pattern,
+        "profileIds": definition["profiles"].as_array().map(|profiles| {
+            profiles.iter().filter_map(|profile| profile["id"].as_str()).collect::<Vec<&str>>()
+        }).unwrap_or_default(),
+        "providerId": provider_id.unwrap_or("local-smoke"),
+        "modelRef": model_ref.unwrap_or("local/smoke-model"),
+        "budget": definition["defaultBudget"],
+        "metadata": {
+            "source": "tauri-facade",
+            "providerId": provider_id.unwrap_or("local-smoke")
+        },
+        "deterministicSeed": "ora-smoke"
+    });
+    if let Some(custom_agent_id) = custom_agent_id {
+        set_object_value(&mut config, "customAgentId", json!(custom_agent_id));
+        if let Some(metadata) = config.get_mut("metadata") {
+            set_object_value(metadata, "customAgentId", json!(custom_agent_id));
+        }
+    }
+
     json!({
         "runId": run_id,
         "sessionId": session_id,
@@ -1593,21 +2142,11 @@ fn create_snapshot(
         "pattern": pattern,
         "input": {
             "prompt": prompt,
-            "projectId": project_id.unwrap_or("ora-mvp"),
+            "projectId": project_id.map_or(Value::Null, |value| json!(value)),
             "context": forked_from.map_or_else(|| json!({}), |fork_info| json!({ "forkedFrom": fork_info })),
             "createdAt": started_at
         },
-        "config": {
-            "pattern": pattern,
-            "profileIds": definition["profiles"].as_array().map(|profiles| {
-                profiles.iter().filter_map(|profile| profile["id"].as_str()).collect::<Vec<&str>>()
-            }).unwrap_or_default(),
-            "providerId": provider_id.unwrap_or("local-smoke"),
-            "modelRef": model_ref.unwrap_or("local/smoke-model"),
-            "budget": definition["defaultBudget"],
-            "metadata": { "source": "tauri-facade", "providerId": provider_id.unwrap_or("local-smoke") },
-            "deterministicSeed": "ora-smoke"
-        },
+        "config": config,
         "topology": {
             "nodes": done_topology_nodes(&definition),
             "edges": definition["topology"]["edges"].clone()
@@ -1633,11 +2172,13 @@ fn create_snapshot(
         "artifacts": [],
         "output": {
             "text": format!(
-                "Smoke result for {}: {}",
+                "Smoke result for {}{}: {}",
                 definition["label"].as_str().unwrap_or("Ora"),
+                custom_agent_label.as_deref().unwrap_or(""),
                 prompt
             )
         },
+        "trace": build_trace_metadata(run_id, provider_id, model_ref),
         "updatedAt": started_at + 10
     })
 }
@@ -1663,6 +2204,174 @@ fn create_event(
     }
     event.insert("payload".to_string(), payload);
     Value::Object(event)
+}
+
+fn build_trace_metadata(
+    run_id: &str,
+    provider_id: Option<&str>,
+    model_ref: Option<&str>,
+) -> Value {
+    json!({
+        "provider": "langfuse",
+        "enabled": true,
+        "available": true,
+        "traceId": format!("trace-{}", run_id),
+        "rootObservationId": format!("{}:trace-root", run_id),
+        "traceUrl": format!("http://localhost:3000/project/ora-runtime/traces/trace-{}", run_id),
+        "source": "local_synthesized",
+        "generationRefs": [{
+            "observationId": format!("{}:generation-0", run_id),
+            "traceId": format!("trace-{}", run_id),
+            "parentObservationId": format!("{}:trace-root", run_id),
+            "name": "model.local-smoke",
+            "providerId": provider_id.unwrap_or("local-smoke"),
+            "providerType": "local_smoke",
+            "model": model_ref.unwrap_or("local/smoke-model"),
+            "latencySeconds": 1.2,
+            "totalCostUsd": 0.0
+        }]
+    })
+}
+
+fn build_run_trail(snapshot: &Value) -> Value {
+    let run_id = snapshot["runId"].as_str().unwrap_or("run-unknown");
+    let trace = if snapshot.get("trace").is_some() {
+        snapshot["trace"].clone()
+    } else {
+        build_trace_metadata(
+            run_id,
+            snapshot["config"]["providerId"].as_str(),
+            snapshot["config"]["modelRef"].as_str(),
+        )
+    };
+    let trace_id = trace["traceId"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("trace-{}", run_id));
+    let root_observation_id = trace["rootObservationId"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}:trace-root", run_id));
+    let started_at = snapshot["input"]["createdAt"]
+        .as_u64()
+        .unwrap_or_else(|| snapshot["updatedAt"].as_u64().unwrap_or(0));
+    let updated_at = snapshot["updatedAt"].as_u64().unwrap_or(started_at);
+
+    let mut observations = vec![json!({
+        "id": root_observation_id,
+        "traceId": trace_id,
+        "parentObservationId": Value::Null,
+        "type": "agent",
+        "name": format!("ora.run.{}", snapshot["pattern"].as_str().unwrap_or(DEFAULT_PATTERN)),
+        "input": {
+            "prompt": snapshot["input"]["prompt"],
+            "config": snapshot["config"]
+        },
+        "output": snapshot["output"],
+        "metadata": {
+            "runId": snapshot["runId"],
+            "pattern": snapshot["pattern"],
+            "source": "tauri-facade"
+        },
+        "startTime": started_at.to_string(),
+        "endTime": updated_at.to_string(),
+        "latencySeconds": ((updated_at.saturating_sub(started_at)) as f64) / 1000.0,
+        "totalCostUsd": 0.0
+    })];
+
+    if let Some(events) = snapshot["events"].as_array() {
+        for event in events {
+            let event_type = event["type"].as_str().unwrap_or("runtime.event");
+            let created_at = event["createdAt"].as_u64().unwrap_or(updated_at);
+            observations.push(json!({
+                "id": format!("{}:obs", event["id"].as_str().unwrap_or("event")),
+                "traceId": trace["traceId"],
+                "parentObservationId": trace["rootObservationId"],
+                "type": if event_type == "message.delta" {
+                    "generation"
+                } else if event_type == "checkpoint.created" {
+                    "event"
+                } else {
+                    "span"
+                },
+                "name": event_type,
+                "input": event["payload"],
+                "metadata": {
+                    "eventSeq": event["seq"],
+                    "nodeId": event["nodeId"],
+                    "agentId": event["agentId"]
+                },
+                "startTime": created_at.to_string(),
+                "endTime": created_at.to_string(),
+                "model": if event_type == "message.delta" {
+                    snapshot["config"]["modelRef"].clone()
+                } else {
+                    Value::Null
+                },
+                "latencySeconds": if event_type == "message.delta" { json!(0.8) } else { Value::Null },
+                "totalCostUsd": if event_type == "message.delta" { json!(0.0) } else { Value::Null }
+            }));
+        }
+    }
+
+    let event_count = snapshot["events"].as_array().map_or(0, Vec::len);
+    let checkpoint_count = snapshot["checkpoints"].as_array().map_or(0, Vec::len);
+    let topology_change_count = snapshot["events"]
+        .as_array()
+        .map(|events| {
+            events
+                .iter()
+                .filter(|event| event["type"].as_str() == Some("topology.updated"))
+                .count()
+        })
+        .unwrap_or(0);
+    let message_count = snapshot["events"]
+        .as_array()
+        .map(|events| {
+            events
+                .iter()
+                .filter(|event| event["type"].as_str() == Some("message.delta"))
+                .count()
+        })
+        .unwrap_or(0);
+    let active_agent_count = snapshot["activeAgents"].as_array().map_or(0, Vec::len);
+    let estimated_cost_usd = trace["generationRefs"]
+        .as_array()
+        .map(|refs| {
+            refs.iter()
+                .map(|generation| generation["totalCostUsd"].as_f64().unwrap_or(0.0))
+                .sum::<f64>()
+        })
+        .unwrap_or(0.0);
+
+    json!({
+        "run": {
+            "runId": snapshot["runId"],
+            "sessionId": snapshot["sessionId"],
+            "turnIndex": snapshot["turnIndex"],
+            "status": snapshot["status"],
+            "pattern": snapshot["pattern"],
+            "prompt": snapshot["input"]["prompt"],
+            "startedAt": started_at,
+            "updatedAt": updated_at,
+            "eventCount": event_count,
+            "checkpointCount": checkpoint_count,
+            "artifactCount": snapshot["artifacts"].as_array().map_or(0, Vec::len)
+        },
+        "trace": trace,
+        "observations": observations,
+        "liveMetrics": {
+            "runtimeMs": updated_at.saturating_sub(started_at),
+            "eventCount": event_count,
+            "checkpointCount": checkpoint_count,
+            "topologyChangeCount": topology_change_count,
+            "messageCount": message_count,
+            "activeAgentCount": active_agent_count,
+            "warningCount": 0,
+            "errorCount": 0,
+            "estimatedCostUsd": estimated_cost_usd
+        }
+    })
 }
 
 fn append_event(
@@ -1868,12 +2577,15 @@ fn ensure_session_for_run(
         return Ok(session_id.to_string());
     }
 
-    state.next_session_number += 1;
-    let session_id = format!("session-{:04}", state.next_session_number);
     let project_id = params
         .and_then(|value| value.get("input"))
         .and_then(|input| input.get("projectId"))
         .and_then(Value::as_str);
+    if let Some(project_id) = project_id {
+        get_project(state, project_id)?;
+    }
+    state.next_session_number += 1;
+    let session_id = format!("session-{:04}", state.next_session_number);
     state.sessions.insert(
         session_id.clone(),
         json!({
@@ -1886,6 +2598,9 @@ fn ensure_session_for_run(
             "updatedAt": created_at
         }),
     );
+    if let Some(project_id) = project_id {
+        sync_project_summary(state, project_id);
+    }
     Ok(session_id)
 }
 
@@ -1937,6 +2652,9 @@ fn upsert_session_from_snapshot(state: &mut FacadeState, snapshot: &Value) {
             "updatedAt": snapshot["updatedAt"]
         }),
     );
+    if let Some(project_id) = project_id.as_str() {
+        sync_project_summary(state, project_id);
+    }
 }
 
 fn require_run_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
@@ -1955,6 +2673,75 @@ fn require_session_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcEr
         .filter(|session_id| !session_id.is_empty())
         .map(str::to_string)
         .ok_or_else(|| runtime_error(-32602, "Missing sessionId", None))
+}
+
+fn require_project_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
+    params
+        .and_then(|value| value.get("projectId"))
+        .and_then(Value::as_str)
+        .filter(|project_id| !project_id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| runtime_error(-32602, "Missing projectId", None))
+}
+
+fn get_project<'a>(
+    state: &'a FacadeState,
+    project_id: &str,
+) -> Result<&'a Value, RuntimeJsonRpcError> {
+    state.projects.get(project_id).ok_or_else(|| {
+        runtime_error(
+            -32004,
+            "Project not found",
+            Some(json!({ "projectId": project_id })),
+        )
+    })
+}
+
+fn sync_project_summary(state: &mut FacadeState, project_id: &str) {
+    let Some(existing) = state.projects.get(project_id).cloned() else {
+        return;
+    };
+    let sessions = state
+        .sessions
+        .values()
+        .filter(|session| session["projectId"].as_str() == Some(project_id))
+        .cloned()
+        .collect::<Vec<Value>>();
+    let updated_at = sessions
+        .iter()
+        .filter_map(|session| session["updatedAt"].as_u64())
+        .max()
+        .unwrap_or_else(|| existing["createdAt"].as_u64().unwrap_or_else(now_ms));
+    state.projects.insert(
+        project_id.to_string(),
+        json!({
+            "projectId": existing["projectId"],
+            "label": existing["label"],
+            "rootPath": existing["rootPath"],
+            "sessionCount": sessions.len(),
+            "createdAt": existing["createdAt"],
+            "updatedAt": updated_at,
+        }),
+    );
+}
+
+fn normalize_project_root_path(root_path: &str) -> String {
+    let trimmed = root_path.trim();
+    let path = PathBuf::from(trimmed);
+    fs::canonicalize(&path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .trim_end_matches(std::path::MAIN_SEPARATOR)
+        .to_string()
+}
+
+fn default_project_label(root_path: &str) -> String {
+    Path::new(root_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(root_path)
+        .to_string()
 }
 
 fn require_checkpoint_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
@@ -2006,6 +2793,15 @@ fn start_model_ref(params: Option<&Value>) -> Option<String> {
         .and_then(|config| config.get("modelRef"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+fn start_custom_agent_id(params: Option<&Value>) -> Result<Option<String>, RuntimeJsonRpcError> {
+    params
+        .and_then(|value| value.get("config"))
+        .and_then(|config| config.get("customAgentId"))
+        .and_then(Value::as_str)
+        .map(normalize_custom_agent_name)
+        .transpose()
 }
 
 fn ensure_pattern(pattern: &str) -> Result<(), RuntimeJsonRpcError> {
@@ -2314,6 +3110,10 @@ mod tests {
         RuntimeSidecarManager::with_process_bridge(Some(command), available)
     }
 
+    fn unique_custom_agent_name() -> String {
+        format!("test-agent-{}-{}", std::process::id(), now_ms())
+    }
+
     #[test]
     fn runtime_health_returns_facade_status() {
         let facade = RuntimeFacade::default();
@@ -2410,7 +3210,10 @@ mod tests {
             "runs.start",
             Some(json!({
                 "input": { "prompt": "Bridge smoke", "context": {} },
-                "config": { "pattern": "agent_teams" }
+                "config": {
+                    "pattern": "agent_teams",
+                    "customAgentId": "bridge-smoke-agent"
+                }
             })),
         ));
         let run_id = start.result.unwrap()["runId"].as_str().unwrap().to_string();
@@ -2419,6 +3222,7 @@ mod tests {
             .handle_method("runs.state", Some(json!({ "runId": run_id.clone() })))
             .unwrap();
         assert_eq!(state["pattern"], json!("agent_teams"));
+        assert_eq!(state["config"]["customAgentId"], json!("bridge-smoke-agent"));
 
         let stream = facade
             .handle_method(
@@ -2441,10 +3245,92 @@ mod tests {
     }
 
     #[test]
+    fn custom_agent_lifecycle_persists_to_workspace_files() {
+        let facade = RuntimeFacade::default();
+        let name = unique_custom_agent_name();
+        let agent_dir = custom_agent_dir(&name).expect("custom agent dir should resolve");
+        if agent_dir.exists() {
+            let _ = fs::remove_dir_all(&agent_dir);
+        }
+
+        let created = facade
+            .handle_method(
+                "agents.create",
+                Some(json!({
+                    "name": name,
+                    "description": "Tracks Hong Kong market research.",
+                    "model": "claude-sonnet-4-20250514",
+                    "toolGroups": ["web", "shell"],
+                    "soul": "Always collect evidence before summarizing."
+                })),
+            )
+            .unwrap();
+        assert_eq!(created["name"], json!(name));
+        assert!(custom_agent_config_path(&agent_dir).is_file());
+        assert!(custom_agent_soul_path(&agent_dir).is_file());
+
+        let list = facade.handle_method("agents.list", None).unwrap();
+        assert!(list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|agent| agent["name"] == json!(name)));
+
+        let fetched = facade
+            .handle_method("agents.get", Some(json!({ "name": name })))
+            .unwrap();
+        assert_eq!(
+            fetched["soul"],
+            json!("Always collect evidence before summarizing.")
+        );
+
+        let availability = facade
+            .handle_method("agents.checkName", Some(json!({ "name": name })))
+            .unwrap();
+        assert_eq!(availability["available"], json!(false));
+
+        let updated = facade
+            .handle_method(
+                "agents.update",
+                Some(json!({
+                    "name": name,
+                    "description": "Updated description",
+                    "model": null,
+                    "toolGroups": null,
+                    "soul": "Updated SOUL"
+                })),
+            )
+            .unwrap();
+        assert_eq!(updated["description"], json!("Updated description"));
+        assert!(updated["model"].is_null());
+        assert!(updated["toolGroups"].is_null());
+
+        let deleted = facade
+            .handle_method("agents.delete", Some(json!({ "name": name })))
+            .unwrap();
+        assert_eq!(deleted["deleted"], json!(true));
+        assert!(!agent_dir.exists());
+
+        let available_again = facade
+            .handle_method("agents.checkName", Some(json!({ "name": name })))
+            .unwrap();
+        assert_eq!(available_again["available"], json!(true));
+    }
+
+    #[test]
     fn session_lifecycle_supports_create_get_and_turn_append() {
         let facade = RuntimeFacade::default();
+        let project = facade
+            .handle_method(
+                "projects.create",
+                Some(json!({ "rootPath": "/tmp/ora-ui", "label": "ora-ui" })),
+            )
+            .unwrap();
         let created = facade
-            .handle_method("sessions.create", Some(json!({ "projectId": "ora-ui" })))
+            .handle_method(
+                "sessions.create",
+                Some(json!({ "projectId": project["projectId"] })),
+            )
             .unwrap();
         let session_id = created["sessionId"].as_str().unwrap().to_string();
         assert_eq!(created["turnCount"], json!(0));

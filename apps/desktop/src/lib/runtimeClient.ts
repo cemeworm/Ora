@@ -4,6 +4,11 @@ import type {
   ArtifactRef as OraArtifactRef,
   CheckpointMeta as OraCheckpointMeta,
   CoordinationPattern,
+  CustomAgentCheckNameResult as OraCustomAgentCheckNameResult,
+  CustomAgentCreateParams as OraCustomAgentCreateParams,
+  CustomAgentDetail as OraCustomAgentDetail,
+  CustomAgentSummary as OraCustomAgentSummary,
+  CustomAgentUpdateParams as OraCustomAgentUpdateParams,
   EvaluationBaseline as OraEvaluationBaseline,
   EvaluationCaseResult as OraEvaluationCaseResult,
   EvaluationDataset as OraEvaluationDataset,
@@ -19,13 +24,19 @@ import type {
   OraEventEnvelope,
   PatternDefinition as OraPatternDefinition,
   PlanItem as OraPlanItem,
+  ProjectCreateParams as OraProjectCreateParams,
+  ProjectDetail as OraProjectDetail,
+  ProjectSummary as OraProjectSummary,
   ProviderConfig as OraProviderConfig,
   ProviderRegistry as OraProviderRegistry,
   ProviderSecretStatus as OraProviderSecretStatus,
+  RunTraceMetadata as OraRunTraceMetadata,
   RuntimeBootstrap as OraRuntimeBootstrap,
   RunConfig as OraRunConfig,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
+  RunTrail as OraRunTrail,
+  RunTrailMetrics as OraRunTrailMetrics,
   SessionCreateParams as OraSessionCreateParams,
   SessionDetail as OraSessionDetail,
   SessionSummary as OraSessionSummary,
@@ -35,6 +46,8 @@ import type {
   StateSnapshot as OraStateSnapshot,
   TopologyEdge as OraTopologyEdge,
   TopologyNode as OraTopologyNode,
+  TrailGenerationRef as OraTrailGenerationRef,
+  TrailObservation as OraTrailObservation,
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
@@ -45,6 +58,11 @@ export type {
   OraAgentProfile,
   OraArtifactRef,
   OraCheckpointMeta,
+  OraCustomAgentCheckNameResult,
+  OraCustomAgentCreateParams,
+  OraCustomAgentDetail,
+  OraCustomAgentSummary,
+  OraCustomAgentUpdateParams,
   OraEvaluationBaseline,
   OraEvaluationCaseResult,
   OraEvaluationDataset,
@@ -61,9 +79,15 @@ export type {
   OraProviderRegistry,
   OraProviderSecretStatus,
   OraPlanItem,
+  OraProjectCreateParams,
+  OraProjectDetail,
+  OraProjectSummary,
   OraRunConfig,
   OraRunEventStream,
   OraRunHandle,
+  OraRunTraceMetadata,
+  OraRunTrail,
+  OraRunTrailMetrics,
   OraSessionCreateParams,
   OraSessionDetail,
   OraSessionSummary,
@@ -74,6 +98,8 @@ export type {
   OraSkillRegistry,
   OraTopologyEdge,
   OraTopologyNode,
+  OraTrailGenerationRef,
+  OraTrailObservation,
   OraUserTaskInput,
 };
 
@@ -198,6 +224,15 @@ export function createRuntimeClient() {
     async createSession(params: OraSessionCreateParams = {}): Promise<OraSessionSummary> {
       return call<OraSessionSummary>("sessions.create", params);
     },
+    async createProject(params: OraProjectCreateParams): Promise<OraProjectSummary> {
+      return call<OraProjectSummary>("projects.create", params);
+    },
+    async listProjects(): Promise<OraProjectSummary[]> {
+      return call<OraProjectSummary[]>("projects.list");
+    },
+    async getProject(projectId: string): Promise<OraProjectDetail> {
+      return call<OraProjectDetail>("projects.get", { projectId });
+    },
     async listSessions(): Promise<OraSessionSummary[]> {
       return call<OraSessionSummary[]>("sessions.list");
     },
@@ -241,12 +276,33 @@ export function createRuntimeClient() {
     async getSession(sessionId: string): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.get", { sessionId });
     },
+    async listAgents(): Promise<OraCustomAgentSummary[]> {
+      return call<OraCustomAgentSummary[]>("agents.list");
+    },
+    async getAgent(name: string): Promise<OraCustomAgentDetail> {
+      return call<OraCustomAgentDetail>("agents.get", { name });
+    },
+    async createAgent(params: OraCustomAgentCreateParams): Promise<OraCustomAgentDetail> {
+      return call<OraCustomAgentDetail>("agents.create", params);
+    },
+    async updateAgent(params: OraCustomAgentUpdateParams): Promise<OraCustomAgentDetail> {
+      return call<OraCustomAgentDetail>("agents.update", params);
+    },
+    async deleteAgent(name: string): Promise<{ deleted: true; name: string }> {
+      return call<{ deleted: true; name: string }>("agents.delete", { name });
+    },
+    async checkAgentName(name: string): Promise<OraCustomAgentCheckNameResult> {
+      return call<OraCustomAgentCheckNameResult>("agents.checkName", { name });
+    },
     async startRun(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraStateSnapshot> {
       const handle = await call<OraRunHandle>("runs.start", { input, config, sessionId });
       return call<OraStateSnapshot>("runs.state", { runId: handle.runId });
     },
     async getRunState(runId: string): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.state", { runId });
+    },
+    async getRunTrail(runId: string): Promise<OraRunTrail> {
+      return call<OraRunTrail>("runs.trail", { runId });
     },
     async interruptRun(runId: string, reason: string): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.interrupt", { runId, reason });
@@ -304,6 +360,9 @@ export function createRuntimeClient() {
     async deleteCustomProvider(providerId: string): Promise<OraProviderRegistry> {
       writeCustomProviders(readCustomProviders().filter((provider) => provider.id !== providerId));
       return mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
+    },
+    async openExternalUrl(url: string): Promise<void> {
+      return openExternalUrl(url);
     },
   };
 }
@@ -451,6 +510,20 @@ async function removeProviderSecret(providerId: string): Promise<OraProviderSecr
   return invoke<OraProviderSecretStatus>("provider_secret_delete", { providerId });
 }
 
+async function openExternalUrl(url: string): Promise<void> {
+  if (typeof window === "undefined" || url.trim().length === 0) {
+    return;
+  }
+
+  if (isTauriAvailable()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_external_url", { url });
+    return;
+  }
+
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function isTauriAvailable(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in (window as TauriWindow);
 }
@@ -464,11 +537,14 @@ function unwrapJsonRpc<T>(response: JsonRpcResponse): T {
 }
 
 class LocalJsonRpcRuntime {
+  private projects = new Map<string, OraProjectSummary>();
   private sessions = new Map<string, OraSessionSummary>();
   private runs = new Map<string, OraStateSnapshot>();
+  private customAgents = new Map<string, OraCustomAgentDetail>();
   private evaluationDatasets = new Map<string, OraEvaluationDatasetDetail>();
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
+  private nextProjectNumber = 1;
   private nextSessionNumber = 1;
   private nextRunNumber = 1;
   private nextEvaluationDatasetNumber = 1;
@@ -538,10 +614,41 @@ class LocalJsonRpcRuntime {
           providers: DEFAULT_PROVIDERS,
           defaultProviderId: "local-smoke",
         };
+      case "agents.list":
+        return [...this.customAgents.values()]
+          .map(({ soul, ...summary }) => summary)
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+      case "agents.get": {
+        const name = normalizeMockAgentName(params);
+        const agent = this.customAgents.get(name);
+        if (!agent) {
+          throw new Error(`Custom agent not found: ${name}`);
+        }
+        return agent;
+      }
+      case "agents.create":
+        return this.createAgent(params);
+      case "agents.update":
+        return this.updateAgent(params);
+      case "agents.delete":
+        return this.deleteAgent(params);
+      case "agents.checkName":
+        return this.checkAgentName(params);
+      case "projects.create":
+        return this.createProject(params);
+      case "projects.list":
+        return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId));
+      case "projects.get":
+        return this.getProjectDetail(params);
       case "sessions.create":
         return this.createSession(params);
       case "sessions.list":
-        return [...this.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
+        return [...this.sessions.values()]
+          .filter((session) => {
+            if (typeof params !== "object" || params === null || !("projectId" in params)) return true;
+            return typeof params.projectId === "string" ? session.projectId === params.projectId : true;
+          })
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
       case "sessions.get":
         return this.getSessionDetail(params);
       case "evaluation.datasets.import":
@@ -607,9 +714,12 @@ class LocalJsonRpcRuntime {
             eventCount: snapshot.events.length,
             checkpointCount: snapshot.checkpoints.length,
             artifactCount: snapshot.artifacts.length,
+            trace: snapshot.trace,
           }));
       case "runs.state":
         return this.getRunState(params);
+      case "runs.trail":
+        return this.getRunTrail(params);
       case "runs.interrupt":
         return this.transitionRun(params, "interrupted", "run.interrupted");
       case "runs.resume":
@@ -700,6 +810,8 @@ class LocalJsonRpcRuntime {
           {
             providerId: parsed.config?.providerId ?? source.config.providerId ?? "local-smoke",
             modelRef: parsed.config?.modelRef ?? source.config.modelRef,
+            customAgentId: parsed.config?.customAgentId ?? source.config.customAgentId,
+            projectId: source.input.projectId,
           },
           sessionId,
           (source.turnIndex ?? 0) + 1,
@@ -728,7 +840,10 @@ class LocalJsonRpcRuntime {
     const projectId =
       typeof params === "object" && params !== null && "projectId" in params && typeof params.projectId === "string"
         ? params.projectId
-        : "ora-mvp";
+        : undefined;
+    if (projectId && !this.projects.has(projectId)) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
     const sessionId = `session-${String(this.nextSessionNumber++).padStart(4, "0")}`;
     const now = Date.now();
     const session: OraSessionSummary = {
@@ -740,7 +855,132 @@ class LocalJsonRpcRuntime {
       updatedAt: now,
     };
     this.sessions.set(sessionId, session);
+    if (projectId) {
+      this.syncProjectSummary(projectId);
+    }
     return session;
+  }
+
+  private createProject(params: unknown): OraProjectSummary {
+    const rootPath =
+      typeof params === "object" && params !== null && "rootPath" in params && typeof params.rootPath === "string"
+        ? normalizeMockProjectPath(params.rootPath)
+        : "";
+    if (!rootPath) {
+      throw new Error("Project rootPath is required.");
+    }
+
+    const existing = [...this.projects.values()].find((project) => project.rootPath === rootPath);
+    if (existing) {
+      return existing;
+    }
+
+    const label =
+      typeof params === "object" && params !== null && "label" in params && typeof params.label === "string" && params.label.trim()
+        ? params.label.trim()
+        : defaultMockProjectLabel(rootPath);
+    const projectId = `project-${String(this.nextProjectNumber++).padStart(4, "0")}`;
+    const now = Date.now();
+    const project: OraProjectSummary = {
+      projectId,
+      label,
+      rootPath,
+      sessionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.projects.set(projectId, project);
+    return project;
+  }
+
+  private getProjectDetail(params: unknown): OraProjectDetail {
+    if (typeof params !== "object" || params === null || !("projectId" in params) || typeof params.projectId !== "string") {
+      throw new Error("Missing projectId");
+    }
+    const project = this.projects.get(params.projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${params.projectId}`);
+    }
+    const sessions = [...this.sessions.values()]
+      .filter((session) => session.projectId === params.projectId)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
+    return {
+      project,
+      sessions,
+    };
+  }
+
+  private createAgent(params: unknown): OraCustomAgentDetail {
+    if (!isRecord(params) || typeof params.name !== "string") {
+      throw new Error("Custom agent name is required.");
+    }
+    const name = normalizeMockAgentName(params.name);
+    if (this.customAgents.has(name)) {
+      throw new Error(`Custom agent '${name}' already exists.`);
+    }
+    const now = Date.now();
+    const detail: OraCustomAgentDetail = {
+      name,
+      description: typeof params.description === "string" ? params.description : "",
+      model: typeof params.model === "string" && params.model.trim() ? params.model : undefined,
+      toolGroups: Array.isArray(params.toolGroups)
+        ? params.toolGroups.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : undefined,
+      soul: typeof params.soul === "string" ? params.soul : "",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.customAgents.set(name, detail);
+    return detail;
+  }
+
+  private updateAgent(params: unknown): OraCustomAgentDetail {
+    if (!isRecord(params) || typeof params.name !== "string") {
+      throw new Error("Custom agent name is required.");
+    }
+    const name = normalizeMockAgentName(params.name);
+    const existing = this.customAgents.get(name);
+    if (!existing) {
+      throw new Error(`Custom agent not found: ${name}`);
+    }
+    const next: OraCustomAgentDetail = {
+      ...existing,
+      description: typeof params.description === "string" ? params.description : existing.description,
+      model: params.model === null
+        ? undefined
+        : typeof params.model === "string" && params.model.trim()
+          ? params.model
+          : existing.model,
+      toolGroups: params.toolGroups === null
+        ? undefined
+        : Array.isArray(params.toolGroups)
+          ? params.toolGroups.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          : existing.toolGroups,
+      soul: typeof params.soul === "string" ? params.soul : existing.soul,
+      updatedAt: Date.now(),
+    };
+    this.customAgents.set(name, next);
+    return next;
+  }
+
+  private deleteAgent(params: unknown): { deleted: true; name: string } {
+    const name = normalizeMockAgentName(isRecord(params) ? params.name : undefined);
+    if (!this.customAgents.has(name)) {
+      throw new Error(`Custom agent not found: ${name}`);
+    }
+    this.customAgents.delete(name);
+    return { deleted: true, name };
+  }
+
+  private checkAgentName(params: unknown): OraCustomAgentCheckNameResult {
+    if (!isRecord(params) || typeof params.name !== "string" || params.name.trim().length === 0) {
+      throw new Error("Custom agent name is required.");
+    }
+    const name = normalizeMockAgentName(params.name);
+    return {
+      available: !this.customAgents.has(name),
+      name,
+    };
   }
 
   private getSessionDetail(params: unknown): OraSessionDetail {
@@ -820,6 +1060,8 @@ class LocalJsonRpcRuntime {
     const snapshot = this.createSnapshot(runId, pattern, parsed.input.prompt, startedAt, "succeeded", undefined, {
       providerId: parsed.config?.providerId ?? "local-smoke",
       modelRef: parsed.config?.modelRef ?? "local/smoke-model",
+      customAgentId: parsed.config?.customAgentId,
+      projectId: parsed.input.projectId ?? this.sessions.get(sessionId)?.projectId,
     }, sessionId, turnIndex);
     this.runs.set(runId, snapshot);
     this.updateSessionFromSnapshot(snapshot);
@@ -893,7 +1135,6 @@ class LocalJsonRpcRuntime {
           const handle = this.startRun({
             input: {
               prompt: evaluationCase.input.prompt,
-              projectId: "ora-evaluation",
             },
             config: config.runConfig,
           });
@@ -991,6 +1232,10 @@ class LocalJsonRpcRuntime {
     return snapshot;
   }
 
+  private getRunTrail(params: unknown): OraRunTrail {
+    return buildMockRunTrail(this.getRunState(params));
+  }
+
   private transitionRun(
     params: unknown,
     status: "interrupted" | "cancelled",
@@ -1056,7 +1301,7 @@ class LocalJsonRpcRuntime {
     startedAt: number,
     status: OraStateSnapshot["status"],
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number },
-    provider?: { providerId?: string; modelRef?: string },
+    provider?: { providerId?: string; modelRef?: string; customAgentId?: string; projectId?: string },
     sessionId?: string,
     turnIndex = 1,
   ): OraStateSnapshot {
@@ -1113,7 +1358,7 @@ class LocalJsonRpcRuntime {
       pattern,
       input: {
         prompt,
-        projectId: "ora-mvp",
+        projectId: provider?.projectId,
         context: {},
         createdAt: eventBase,
       },
@@ -1123,11 +1368,16 @@ class LocalJsonRpcRuntime {
         skillIds: [],
         toolIds: [],
         providerId: provider?.providerId ?? "local-smoke",
+        customAgentId: provider?.customAgentId,
         modelRef: provider?.modelRef ?? "local/smoke-model",
         budget: definition.defaultBudget,
         approvalMode: "high_risk_only",
         patternOptions: {},
-        metadata: { source: "desktop-smoke", providerId: provider?.providerId ?? "local-smoke" },
+        metadata: {
+          source: "desktop-smoke",
+          providerId: provider?.providerId ?? "local-smoke",
+          ...(provider?.customAgentId ? { customAgentId: provider.customAgentId } : {}),
+        },
         deterministicSeed: "ora-smoke",
       },
       topology: {
@@ -1228,6 +1478,7 @@ class LocalJsonRpcRuntime {
       output: {
         text: `Smoke result for ${definition.label}: ${prompt}`,
       },
+      trace: createMockTraceMetadata(runId, provider?.providerId, provider?.modelRef),
       updatedAt: eventBase + 6000,
     };
   }
@@ -1237,7 +1488,7 @@ class LocalJsonRpcRuntime {
     if (!sessionId) return;
     const existing = this.sessions.get(sessionId);
     if (!existing) return;
-    this.sessions.set(sessionId, {
+    const updatedSession = {
       ...existing,
       title: existing.turnCount > 0 && existing.title !== "New Chat" ? existing.title : snapshot.input.prompt,
       status: snapshot.status,
@@ -1245,9 +1496,14 @@ class LocalJsonRpcRuntime {
       latestPattern: snapshot.pattern,
       latestProviderId: snapshot.config.providerId,
       latestModelRef: snapshot.config.modelRef,
+      projectId: snapshot.input.projectId ?? existing.projectId,
       turnCount: [...this.runs.values()].filter((run) => run.sessionId === sessionId).length,
       updatedAt: snapshot.updatedAt,
-    });
+    };
+    this.sessions.set(sessionId, updatedSession);
+    if (updatedSession.projectId) {
+      this.syncProjectSummary(updatedSession.projectId);
+    }
   }
 
   private assistantTextForRun(snapshot: OraStateSnapshot): string {
@@ -1260,6 +1516,19 @@ class LocalJsonRpcRuntime {
     return lastMessage && isRecord(lastMessage.payload) && typeof lastMessage.payload.content === "string"
       ? lastMessage.payload.content
       : "";
+  }
+
+  private syncProjectSummary(projectId: string) {
+    const project = this.projects.get(projectId);
+    if (!project) {
+      return;
+    }
+    const sessions = [...this.sessions.values()].filter((session) => session.projectId === projectId);
+    this.projects.set(projectId, {
+      ...project,
+      sessionCount: sessions.length,
+      updatedAt: sessions.reduce((max, session) => Math.max(max, session.updatedAt), project.createdAt),
+    });
   }
 }
 
@@ -1281,6 +1550,114 @@ function createEvent(
     pattern,
     checkpointId,
     payload,
+  };
+}
+
+function createMockTraceMetadata(
+  runId: string,
+  providerId?: string,
+  modelRef?: string,
+): OraRunTraceMetadata {
+  return {
+    provider: "langfuse",
+    enabled: true,
+    available: true,
+    traceId: `trace-${runId}`,
+    rootObservationId: `${runId}:trace-root`,
+    traceUrl: `http://localhost:3000/project/ora-runtime/traces/trace-${runId}`,
+    source: "local_synthesized",
+    generationRefs: [{
+      observationId: `${runId}:generation-0`,
+      traceId: `trace-${runId}`,
+      parentObservationId: `${runId}:trace-root`,
+      name: "model.local-smoke",
+      providerId: providerId ?? "local-smoke",
+      providerType: "local_smoke",
+      model: modelRef ?? "local/smoke-model",
+      latencySeconds: 1.2,
+      totalCostUsd: 0,
+    }],
+  };
+}
+
+function buildMockRunTrail(snapshot: OraStateSnapshot): OraRunTrail {
+  const trace = snapshot.trace ?? createMockTraceMetadata(snapshot.runId, snapshot.config.providerId, snapshot.config.modelRef);
+  const traceId = trace.traceId ?? `trace-${snapshot.runId}`;
+  const rootObservationId = trace.rootObservationId ?? `${snapshot.runId}:trace-root`;
+  const observations: OraTrailObservation[] = [
+    {
+      id: rootObservationId,
+      traceId,
+      parentObservationId: null,
+      type: "agent",
+      name: `ora.run.${snapshot.pattern}`,
+      input: {
+        prompt: snapshot.input.prompt,
+        config: snapshot.config,
+      },
+      output: snapshot.output,
+      metadata: {
+        runId: snapshot.runId,
+        pattern: snapshot.pattern,
+        source: "desktop-smoke",
+      },
+      startTime: new Date(snapshot.input.createdAt ?? snapshot.updatedAt).toISOString(),
+      endTime: new Date(snapshot.updatedAt).toISOString(),
+      latencySeconds: Math.max(0, snapshot.updatedAt - (snapshot.input.createdAt ?? snapshot.updatedAt)) / 1000,
+      totalCostUsd: 0,
+    },
+    ...snapshot.events.map((event) => ({
+      id: `${event.id}:obs`,
+      traceId,
+      parentObservationId: rootObservationId,
+      type: event.type === "message.delta" ? "generation" : event.type === "checkpoint.created" ? "event" : "span",
+      name: event.type,
+      input: event.payload,
+      metadata: {
+        eventSeq: event.seq,
+        agentId: event.agentId,
+        nodeId: event.nodeId,
+      },
+      startTime: new Date(event.createdAt).toISOString(),
+      endTime: new Date(event.createdAt).toISOString(),
+      ...(event.type === "message.delta"
+        ? {
+            model: snapshot.config.modelRef,
+            totalCostUsd: 0,
+            latencySeconds: 0.8,
+          }
+        : {}),
+    })),
+  ];
+  const liveMetrics: OraRunTrailMetrics = {
+    runtimeMs: Math.max(0, snapshot.updatedAt - (snapshot.input.createdAt ?? snapshot.updatedAt)),
+    eventCount: snapshot.events.length,
+    checkpointCount: snapshot.checkpoints.length,
+    topologyChangeCount: snapshot.events.filter((event) => event.type === "topology.updated").length,
+    messageCount: snapshot.events.filter((event) => event.type === "message.delta").length,
+    activeAgentCount: snapshot.activeAgents.length,
+    warningCount: observations.filter((observation) => observation.level === "WARNING").length,
+    errorCount: observations.filter((observation) => observation.level === "ERROR").length,
+    estimatedCostUsd: trace.generationRefs.reduce((sum, generation) => sum + (generation.totalCostUsd ?? 0), 0),
+  };
+
+  return {
+    run: {
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
+      status: snapshot.status,
+      pattern: snapshot.pattern,
+      prompt: snapshot.input.prompt,
+      startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+      updatedAt: snapshot.updatedAt,
+      eventCount: snapshot.events.length,
+      checkpointCount: snapshot.checkpoints.length,
+      artifactCount: snapshot.artifacts.length,
+    },
+    trace,
+    observations,
+    liveMetrics,
   };
 }
 
@@ -1350,6 +1727,17 @@ function asReplayRunParams(params: unknown): { runId: string; checkpointId?: str
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function normalizeMockAgentName(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Custom agent name is required.");
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(normalized)) {
+    throw new Error("Custom agent names must contain only letters, digits, and hyphens.");
+  }
+  return normalized;
 }
 
 function getPatternDefinition(pattern: CoordinationPattern): OraPatternDefinition {
@@ -1454,6 +1842,16 @@ function parseMockCsvContent(content: string): Record<string, string>[] {
     });
     return record;
   });
+}
+
+function normalizeMockProjectPath(value: string): string {
+  return value.trim().replace(/[\\/]+$/, "");
+}
+
+function defaultMockProjectLabel(rootPath: string): string {
+  const normalized = normalizeMockProjectPath(rootPath);
+  const segments = normalized.split(/[\\/]/).filter(Boolean);
+  return segments.at(-1) ?? normalized;
 }
 
 function scoreMockEvaluationCase(profileId: "outcome" | "orchestration" | "task_completion", evaluationCase: OraEvaluationDatasetDetail["cases"][number], snapshot: OraStateSnapshot) {

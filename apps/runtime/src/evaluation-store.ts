@@ -227,7 +227,6 @@ export class LocalEvaluationStore {
                 evaluationConfigId: config.id,
                 evaluationProfileId: spec.profileId,
               },
-              projectId: "ora-evaluation",
               createdAt: attemptStartedAt,
             },
             config: {

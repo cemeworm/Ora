@@ -139,6 +139,7 @@ export const RunConfigSchema = z.object({
   profileIds: z.array(z.string().min(1)).default([]),
   providerId: z.string().min(1).optional(),
   providerConfig: z.lazy(() => ProviderConfigSchema).optional(),
+  customAgentId: z.string().min(1).optional(),
   modelRef: z.string().min(1).default("local/smoke-model"),
   budget: ResourceBudgetSchema.optional(),
   skillIds: z.array(z.string().min(1)).default([]),
@@ -285,6 +286,38 @@ export const SessionCreateParamsSchema = z.object({
 });
 export type SessionCreateParams = z.infer<typeof SessionCreateParamsSchema>;
 
+export const ProjectCreateParamsSchema = z.object({
+  label: z.string().min(1).optional(),
+  rootPath: z.string().min(1),
+});
+export type ProjectCreateParams = z.infer<typeof ProjectCreateParamsSchema>;
+
+export const ProjectListParamsSchema = z.object({
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type ProjectListParams = z.infer<typeof ProjectListParamsSchema>;
+
+export const ProjectGetParamsSchema = z.object({
+  projectId: z.string().min(1),
+});
+export type ProjectGetParams = z.infer<typeof ProjectGetParamsSchema>;
+
+export const ProjectSummarySchema = z.object({
+  projectId: z.string().min(1),
+  label: z.string().min(1),
+  rootPath: z.string().min(1),
+  sessionCount: z.number().int().nonnegative(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
+
+export const ProjectDetailSchema = z.object({
+  project: ProjectSummarySchema,
+  sessions: z.array(z.lazy(() => SessionSummarySchema)).default([]),
+});
+export type ProjectDetail = z.infer<typeof ProjectDetailSchema>;
+
 export const SessionListParamsSchema = z.object({
   projectId: z.string().min(1).optional(),
   limit: z.number().int().positive().max(500).optional(),
@@ -325,6 +358,7 @@ export const SessionTurnSchema = z.object({
   eventCount: z.number().int().nonnegative(),
   checkpointCount: z.number().int().nonnegative(),
   artifactCount: z.number().int().nonnegative(),
+  trace: z.lazy(() => RunTraceMetadataSchema).optional(),
 });
 export type SessionTurn = z.infer<typeof SessionTurnSchema>;
 
@@ -366,6 +400,78 @@ export const RunReplayParamsSchema = z.object({
   checkpointId: z.string().min(1).optional()
 });
 export type RunReplayParams = z.infer<typeof RunReplayParamsSchema>;
+
+export const RunTrailParamsSchema = z.object({
+  runId: z.string().min(1),
+});
+export type RunTrailParams = z.infer<typeof RunTrailParamsSchema>;
+
+export const TrailObservationSchema = z.object({
+  id: z.string().min(1),
+  traceId: z.string().min(1),
+  parentObservationId: z.string().min(1).nullable().optional(),
+  type: z.string().min(1),
+  name: z.string().min(1),
+  level: z.enum(["DEBUG", "DEFAULT", "WARNING", "ERROR"]).optional(),
+  statusMessage: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  startTime: z.string().min(1).optional(),
+  endTime: z.string().nullable().optional(),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  metadata: z.record(z.unknown()).default({}),
+  latencySeconds: z.number().nonnegative().optional(),
+  totalCostUsd: z.number().nonnegative().optional(),
+});
+export type TrailObservation = z.infer<typeof TrailObservationSchema>;
+
+export const TrailGenerationRefSchema = z.object({
+  observationId: z.string().min(1),
+  traceId: z.string().min(1),
+  parentObservationId: z.string().min(1).optional(),
+  name: z.string().min(1),
+  providerId: z.string().min(1).optional(),
+  providerType: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  statusMessage: z.string().min(1).optional(),
+  totalCostUsd: z.number().nonnegative().optional(),
+  latencySeconds: z.number().nonnegative().optional(),
+});
+export type TrailGenerationRef = z.infer<typeof TrailGenerationRefSchema>;
+
+export const RunTraceMetadataSchema = z.object({
+  provider: z.literal("langfuse").default("langfuse"),
+  enabled: z.boolean().default(false),
+  available: z.boolean().default(false),
+  traceId: z.string().min(1).optional(),
+  rootObservationId: z.string().min(1).optional(),
+  traceUrl: z.string().min(1).optional(),
+  source: z.enum(["managed_local", "local_synthesized", "disabled", "degraded"]).default("managed_local"),
+  reason: z.string().min(1).optional(),
+  generationRefs: z.array(TrailGenerationRefSchema).default([]),
+});
+export type RunTraceMetadata = z.infer<typeof RunTraceMetadataSchema>;
+
+export const RunTrailMetricsSchema = z.object({
+  runtimeMs: z.number().int().nonnegative(),
+  eventCount: z.number().int().nonnegative(),
+  checkpointCount: z.number().int().nonnegative(),
+  topologyChangeCount: z.number().int().nonnegative(),
+  messageCount: z.number().int().nonnegative(),
+  activeAgentCount: z.number().int().nonnegative(),
+  warningCount: z.number().int().nonnegative(),
+  errorCount: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative(),
+});
+export type RunTrailMetrics = z.infer<typeof RunTrailMetricsSchema>;
+
+export const RunTrailSchema = z.object({
+  run: RunSummarySchema,
+  trace: RunTraceMetadataSchema,
+  observations: z.array(TrailObservationSchema).default([]),
+  liveMetrics: RunTrailMetricsSchema,
+});
+export type RunTrail = z.infer<typeof RunTrailSchema>;
 
 export const QueueSummarySchema = z.object({
   mode: z.enum(["dag", "backlog", "event_bus", "shared_state"]).default("dag"),
@@ -426,6 +532,7 @@ export const StateSnapshotSchema = z.object({
   sharedStateSummary: SharedStateSummarySchema.default({}),
   busStats: BusStatsSchema.default({}),
   pendingApprovals: z.array(z.string().min(1)).default([]),
+  trace: RunTraceMetadataSchema.optional(),
   output: z.unknown().optional(),
   error: z.string().optional(),
   updatedAt: z.number().int().nonnegative()
@@ -780,6 +887,15 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "tools.list",
   "skills.list",
   "providers.list",
+  "agents.list",
+  "agents.get",
+  "agents.create",
+  "agents.update",
+  "agents.delete",
+  "agents.checkName",
+  "projects.create",
+  "projects.list",
+  "projects.get",
   "sessions.create",
   "sessions.list",
   "sessions.get",
@@ -790,6 +906,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "runs.resume",
   "runs.cancel",
   "runs.state",
+  "runs.trail",
   "runs.checkpoints",
   "runs.replay",
   "runs.fork",
@@ -1308,6 +1425,70 @@ export const SkillRegistrySchema = z.object({
   skills: z.array(SkillDescriptorSchema),
 });
 export type SkillRegistry = z.infer<typeof SkillRegistrySchema>;
+
+// ---------------------------------------------------------------------------
+// Custom Agent Schemas
+// ---------------------------------------------------------------------------
+
+export const CustomAgentNameSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z0-9-]+$/, "Custom agent names must contain only letters, digits, and hyphens.");
+export type CustomAgentName = z.infer<typeof CustomAgentNameSchema>;
+
+export const CustomAgentSummarySchema = z.object({
+  name: CustomAgentNameSchema,
+  description: z.string().default(""),
+  model: z.string().min(1).optional(),
+  toolGroups: z.array(z.string().min(1)).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type CustomAgentSummary = z.infer<typeof CustomAgentSummarySchema>;
+
+export const CustomAgentDetailSchema = CustomAgentSummarySchema.extend({
+  soul: z.string().default(""),
+});
+export type CustomAgentDetail = z.infer<typeof CustomAgentDetailSchema>;
+
+export const CustomAgentCreateParamsSchema = z.object({
+  name: CustomAgentNameSchema,
+  description: z.string().default(""),
+  model: z.string().min(1).optional(),
+  toolGroups: z.array(z.string().min(1)).optional(),
+  soul: z.string().default(""),
+});
+export type CustomAgentCreateParams = z.infer<typeof CustomAgentCreateParamsSchema>;
+
+export const CustomAgentUpdateParamsSchema = z.object({
+  name: CustomAgentNameSchema,
+  description: z.string().optional(),
+  model: z.string().min(1).nullable().optional(),
+  toolGroups: z.array(z.string().min(1)).nullable().optional(),
+  soul: z.string().optional(),
+});
+export type CustomAgentUpdateParams = z.infer<typeof CustomAgentUpdateParamsSchema>;
+
+export const CustomAgentGetParamsSchema = z.object({
+  name: CustomAgentNameSchema,
+});
+export type CustomAgentGetParams = z.infer<typeof CustomAgentGetParamsSchema>;
+
+export const CustomAgentDeleteParamsSchema = z.object({
+  name: CustomAgentNameSchema,
+});
+export type CustomAgentDeleteParams = z.infer<typeof CustomAgentDeleteParamsSchema>;
+
+export const CustomAgentCheckNameParamsSchema = z.object({
+  name: z.string().min(1),
+});
+export type CustomAgentCheckNameParams = z.infer<typeof CustomAgentCheckNameParamsSchema>;
+
+export const CustomAgentCheckNameResultSchema = z.object({
+  available: z.boolean(),
+  name: CustomAgentNameSchema,
+});
+export type CustomAgentCheckNameResult = z.infer<typeof CustomAgentCheckNameResultSchema>;
 
 // ---------------------------------------------------------------------------
 // Session Config Schemas

@@ -30,6 +30,7 @@ export interface RuntimeKernelOptions {
   toolRegistry?: RuntimeToolRegistry;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
+  customAgentOverlay?: string;
 }
 
 export async function executeRuntimeKernel(
@@ -136,7 +137,7 @@ export async function executeRuntimeKernel(
 
   const systemPrompt = (extra: string) => {
     const snippets = skillRegistry.promptSnippets(config.skillIds);
-    return [extra, ...snippets].filter(Boolean).join("\n\n");
+    return [extra, options.customAgentOverlay, ...snippets].filter(Boolean).join("\n\n");
   };
 
   const callAgent = async (params: {

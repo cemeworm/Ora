@@ -88,10 +88,10 @@ export function ChatHeader({
           variant={detailDrawerOpen ? "secondary" : "ghost"}
           size="sm"
           onClick={onToggleDetailDrawer}
-          title="Toggle details"
+          title="Toggle trails"
         >
           {detailDrawerOpen ? <Files size={14} /> : <PanelRightOpen size={14} />}
-          <span className="hidden sm:inline">Details</span>
+          <span className="hidden sm:inline">Trails</span>
         </Button>
       </div>
     </header>

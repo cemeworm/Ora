@@ -25,11 +25,13 @@ interface ChatViewProps {
   selectedSession: SessionRun;
   sessionTurns: SessionTurnItem[];
   selectedTurnRunId?: string;
+  selectedCustomAgentId?: string;
   streamLines: StreamLine[];
   topologyEdges: TopologyEdge[];
   topologyNodes: TopologyNode[];
   onCancelRun: () => void;
   onComposerPromptChange: (prompt: string) => void;
+  onClearSelectedCustomAgent: () => void;
   onExportReport: () => void;
   onForkRun: () => void;
   onInterruptRun: () => void;
@@ -56,8 +58,10 @@ export function ChatView({
   selectedSession,
   sessionTurns,
   selectedTurnRunId,
+  selectedCustomAgentId,
   onStartRun,
   onComposerPromptChange,
+  onClearSelectedCustomAgent,
   onInterruptRun,
   onExportReport,
   onToggleDetailDrawer,
@@ -107,7 +111,7 @@ export function ChatView({
                 <span>Welcome back to Ora</span>
               </div>
               <p className="max-w-xl text-sm leading-6 text-muted-foreground">
-                Start a new session, pick one of the five agent modes for the next turn, and keep the session transcript while inspecting each turn’s runtime detail on the right.
+                Start a new session, pick one of the five agent modes for the next turn, and keep the session transcript while inspecting each turn’s Trails view on the right.
               </p>
             </div>
           </div>
@@ -134,11 +138,13 @@ export function ChatView({
           patternOptions={patternCards}
           activeProvider={activeProvider}
           providerOptions={providerOptions}
+          selectedCustomAgentId={selectedCustomAgentId}
           inputMode={state.inputMode}
           onInputModeChange={(mode) => dispatch({ type: "SET_INPUT_MODE", mode })}
           onPatternChange={(pattern) => dispatch({ type: "SET_PATTERN", pattern })}
           onProviderChange={(providerId) => dispatch({ type: "SET_PROVIDER", providerId })}
           onPromptChange={onComposerPromptChange}
+          onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}
           onStopRun={onInterruptRun}
         />
