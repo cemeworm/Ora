@@ -7,3 +7,4 @@ target/
 !.env.example
 *.tsbuildinfo
 .ora/
+apps/desktop/src-tauri/resources/runtime-sidecar/
