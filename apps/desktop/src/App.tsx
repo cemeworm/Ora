@@ -3,6 +3,7 @@ import { AppShell } from "./components/AppShell";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { ChatView } from "./components/ChatView";
 import { DetailDrawer } from "./components/DetailDrawer";
+import { EvaluationView } from "./components/EvaluationView";
 import { SettingsView } from "./components/SettingsView";
 import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
@@ -76,9 +77,10 @@ function WorkbenchInner() {
 
   useEffect(() => {
     let cancelled = false;
-    runtimeClient
-      .bootstrap()
-      .then((bootstrap) => {
+    (async () => {
+      try {
+        dispatch({ type: "RESET_RUNTIME_VIEW" });
+        const bootstrap = await runtimeClient.bootstrap();
         if (cancelled) return;
         dispatch({
           type: "BOOTSTRAP",
@@ -87,11 +89,18 @@ function WorkbenchInner() {
           toolRegistry: bootstrap.toolRegistry,
           skillRegistry: bootstrap.skillRegistry,
           providerSecretStatuses: bootstrap.providerSecretStatuses,
-          snapshot: bootstrap.snapshot,
           health: bootstrap.health,
         });
-      })
-      .catch((error) => {
+        const sessions = await runtimeClient.listSessions();
+        const firstSession = sessions[0] ?? await runtimeClient.createSession({ projectId: "ora-mvp" });
+        const detail = await runtimeClient.getSession(firstSession.sessionId);
+        if (cancelled) return;
+        dispatch({
+          type: "HYDRATE_SESSION",
+          sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+          detail,
+        });
+      } catch (error) {
         if (cancelled) return;
         dispatch({
           type: "SET_BRIDGE_STATUS",
@@ -102,7 +111,8 @@ function WorkbenchInner() {
             detail: error instanceof Error ? error.message : "Runtime bridge failed to initialize.",
           },
         });
-      });
+      }
+    })();
     return () => { cancelled = true; };
   }, [runtimeClient, dispatch]);
 
@@ -120,12 +130,11 @@ function WorkbenchInner() {
 
   // Chat messages derived from events
   const chatMessages = useMemo(() => {
-    if (!state.activeSnapshot) return [];
-    return adaptChatMessages(state.activeSnapshot.events, state.promptText, state.activeSnapshot);
-  }, [state.activeSnapshot, state.promptText]);
+    return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], state.activeSnapshot);
+  }, [state.activeSessionDetail, state.activeSnapshot]);
 
   // Loading / error state
-  if (!viewModel || !selectedSession || !selectedNode || !selectedBeat || !selectedAgent || !state.bridgeStatus) {
+  if (!viewModel || !selectedSession || !state.bridgeStatus) {
     return (
       <AppShell>
         <WorkspacePane className="w-full">
@@ -151,6 +160,16 @@ function WorkbenchInner() {
     );
   }
 
+  if (state.activeView === "evaluation") {
+    return (
+      <AppShell>
+        <WorkspacePane className="w-full">
+          <EvaluationView runtimeClient={runtimeClient} bridgeStatus={state.bridgeStatus} />
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
   // Chat view (default)
   const { actions: actionRecords, agents, artifacts, beats, checkpoints, memoryRecords, patternCards, planItems, sessions, streamLines, topologyEdges, topologyNodes, activePattern } = viewModel;
   const isRunning = selectedSession.status === "running";
@@ -163,10 +182,12 @@ function WorkbenchInner() {
       {isApprovalRequired && nextApproval && (
         <ApprovalModal action={nextApproval} onResume={actions.resumeRun} onCancel={actions.cancelRun} disabled={state.busyCommand !== undefined} />
       )}
-      <div ref={splitContainerRef} className="flex h-full min-h-0 items-stretch gap-1.5">
+      <div ref={splitContainerRef} className="flex h-full min-h-0 items-stretch gap-0.5">
         <WorkspacePane className="min-w-0 flex-1">
           <ChatView
             activePattern={activePattern}
+            sessionTurns={viewModel.turns}
+            selectedTurnRunId={state.selectedTurnRunId}
             activeSnapshot={state.activeSnapshot}
             agents={agents}
             bridgeStatus={state.bridgeStatus}
@@ -192,6 +213,7 @@ function WorkbenchInner() {
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
+            onSelectTurn={actions.selectTurn}
             onStartRun={actions.startRun}
             onToggleDetailDrawer={() => dispatch({ type: "TOGGLE_DETAIL_DRAWER" })}
             detailDrawerOpen={state.detailDrawerOpen}
@@ -204,9 +226,9 @@ function WorkbenchInner() {
               type="button"
               aria-label="Resize details panel"
               onPointerDown={handleDetailResizeStart}
-              className="group flex h-full w-2 shrink-0 cursor-col-resize items-center justify-center bg-transparent"
+              className="group flex h-full w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-transparent"
             >
-              <span className="h-10 w-0.5 rounded-full bg-border transition-colors group-hover:bg-foreground/35" />
+              <span className="h-10 w-0.5 rounded-full bg-black/90 transition-colors group-hover:bg-black" />
             </button>
 
             <WorkspacePane

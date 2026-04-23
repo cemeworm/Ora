@@ -11,6 +11,7 @@ import type {
   RunBeat,
   RunStatus,
   SessionRun,
+  SessionTurnItem,
   StreamLine,
   TopologyEdge,
   TopologyNode,
@@ -24,7 +25,10 @@ import type {
   OraMemoryRecord,
   OraPatternDefinition,
   OraPlanItem,
+  OraSessionDetail,
+  OraSessionSummary,
   OraStateSnapshot,
+  OraSessionTranscriptMessage,
   OraTopologyEdge,
   OraTopologyNode,
 } from "./runtimeClient";
@@ -32,6 +36,7 @@ import type {
 export interface WorkbenchViewModel {
   patternCards: PatternCard[];
   sessions: SessionRun[];
+  turns: SessionTurnItem[];
   topologyNodes: TopologyNode[];
   topologyEdges: TopologyEdge[];
   streamLines: StreamLine[];
@@ -48,33 +53,79 @@ export interface WorkbenchViewModel {
 
 export function buildWorkbenchViewModel(
   patterns: OraPatternDefinition[],
-  snapshots: OraStateSnapshot[],
+  sessions: OraSessionSummary[],
+  sessionDetail: OraSessionDetail,
+  activeSnapshot: OraStateSnapshot | undefined,
   selectedPattern: CoordinationPattern,
-  selectedSessionId?: string,
 ): WorkbenchViewModel {
-  const activeSnapshot = snapshots.find((snapshot) => snapshot.runId === selectedSessionId) ?? snapshots[0];
   const activeDefinition = findPattern(patterns, selectedPattern);
+  const detailSnapshot = activeSnapshot ?? sessionDetail.latestSnapshot ?? createEmptySessionPreview(activeDefinition, sessionDetail.session);
   const selectedPatternSnapshot =
-    activeSnapshot.pattern === selectedPattern ? activeSnapshot : createPreviewFromPattern(activeSnapshot, activeDefinition);
+    detailSnapshot.pattern === selectedPattern ? detailSnapshot : createPreviewFromPattern(detailSnapshot, activeDefinition);
 
   const patternCards = patterns.map(adaptPatternCard);
   const activePattern = patternCards.find((pattern) => pattern.id === selectedPattern) ?? patternCards[0];
 
   return {
     patternCards,
-    sessions: snapshots.map(adaptSession),
+    sessions: sessions.map(adaptSession),
+    turns: sessionDetail.turns.map(adaptTurn),
     topologyNodes: adaptTopologyNodes(selectedPatternSnapshot.topology.nodes, selectedPattern),
     topologyEdges: adaptTopologyEdges(selectedPatternSnapshot.topology.edges),
-    streamLines: adaptStreamLines(activeSnapshot.events),
+    streamLines: adaptStreamLines(detailSnapshot.events),
     agents: selectedPatternSnapshot.profiles.map(adaptAgentProfile),
     memoryRecords: adaptMemoryRecords(selectedPatternSnapshot.memory, selectedPatternSnapshot.profiles),
     planItems: selectedPatternSnapshot.plan.map(adaptPlanItem),
     actions: selectedPatternSnapshot.actions.map(adaptActionRecord),
-    checkpoints: activeSnapshot.checkpoints.map(adaptCheckpoint),
-    artifacts: activeSnapshot.artifacts.map(adaptArtifact),
-    beats: adaptFilmstripBeats(activeSnapshot),
+    checkpoints: detailSnapshot.checkpoints.map(adaptCheckpoint),
+    artifacts: detailSnapshot.artifacts.map(adaptArtifact),
+    beats: adaptFilmstripBeats(detailSnapshot),
     activePattern,
-    activeSnapshot,
+    activeSnapshot: detailSnapshot,
+  };
+}
+
+function createEmptySessionPreview(definition: OraPatternDefinition, session: OraSessionSummary): OraStateSnapshot {
+  const now = session.updatedAt;
+  return {
+    runId: session.latestRunId ?? `${session.sessionId}:preview`,
+    sessionId: session.sessionId,
+    turnIndex: Math.max(1, session.turnCount || 1),
+    status: "queued",
+    pattern: definition.id,
+    input: {
+      prompt: "",
+      projectId: session.projectId,
+      context: {},
+      createdAt: now,
+    },
+    config: {
+      pattern: definition.id,
+      profileIds: definition.profiles.map((profile) => profile.id),
+      skillIds: [],
+      toolIds: [],
+      modelRef: "local/smoke-model",
+      budget: definition.defaultBudget,
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {},
+      deterministicSeed: "ora-preview",
+    },
+    topology: definition.topology,
+    profiles: definition.profiles,
+    memory: [],
+    plan: [],
+    actions: [],
+    policyDecisions: [],
+    checkpoints: [],
+    events: [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    pendingApprovals: [],
+    updatedAt: now,
   };
 }
 
@@ -127,15 +178,31 @@ function adaptPatternCard(pattern: OraPatternDefinition): PatternCard {
   };
 }
 
-function adaptSession(snapshot: OraStateSnapshot): SessionRun {
+function adaptSession(session: OraSessionSummary): SessionRun {
   return {
-    id: snapshot.runId,
-    title: snapshot.input.prompt,
-    project: snapshot.input.projectId ?? "Ora MVP",
-    status: adaptRunStatus(snapshot.status),
-    pattern: snapshot.pattern,
-    updatedAt: formatClock(snapshot.updatedAt),
-    health: snapshot.status === "failed" ? 42 : snapshot.status === "interrupted" ? 68 : 94,
+    id: session.sessionId,
+    title: session.title,
+    project: session.projectId ?? "Ora MVP",
+    status: adaptRunStatus(session.status ?? "succeeded"),
+    pattern: session.latestPattern ?? "orchestrator_subagent",
+    updatedAt: formatClock(session.updatedAt),
+    health: session.status === "failed" ? 42 : session.status === "interrupted" ? 68 : 94,
+    latestRunId: session.latestRunId,
+    turnCount: session.turnCount,
+  };
+}
+
+function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
+  return {
+    runId: turn.runId,
+    sessionId: turn.sessionId,
+    turnIndex: turn.turnIndex,
+    status: adaptRunStatus(turn.status),
+    pattern: turn.pattern,
+    providerId: turn.providerId,
+    modelRef: turn.modelRef,
+    prompt: turn.prompt,
+    updatedAt: formatClock(turn.updatedAt),
   };
 }
 
@@ -610,90 +677,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function adaptChatMessages(
-  events: OraEventEnvelope[],
-  promptText: string,
+  transcript: OraSessionTranscriptMessage[],
   selectedSnapshot?: OraStateSnapshot,
 ): ChatMessage[] {
-  const messages: ChatMessage[] = [];
+  const messages: ChatMessage[] = transcript.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: formatClock(message.createdAt),
+    metadata: {
+      runId: message.runId,
+      turnIndex: message.turnIndex,
+      pattern: message.pattern,
+    },
+  }));
 
-  // User prompt as first message
-  if (promptText) {
-    messages.push({
-      id: "user-prompt",
-      role: "user",
-      content: promptText,
-      timestamp: selectedSnapshot?.input.createdAt
-        ? formatClock(selectedSnapshot.input.createdAt)
-        : new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date()),
-    });
-  }
-
-  // Adapt events to chat messages
-  for (const event of events) {
-    switch (event.type) {
-      case "message.delta": {
-        const content = eventText(event);
-        if (content && content !== "Runtime event received.") {
+  if (selectedSnapshot) {
+    for (const event of selectedSnapshot.events) {
+      switch (event.type) {
+        case "plan.updated":
+        case "action.updated": {
           messages.push({
             id: event.id,
-            role: "assistant",
-            content,
-            timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
-            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
+            role: "system",
+            content: `${beatLabel(event)}: ${eventText(event)}`,
+            timestamp: formatElapsed(selectedSnapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
+            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id, runId: selectedSnapshot.runId, turnIndex: selectedSnapshot.turnIndex, pattern: selectedSnapshot.pattern },
           });
+          break;
         }
-        break;
-      }
-      case "plan.updated":
-      case "action.updated": {
-        messages.push({
-          id: event.id,
-          role: "system",
-          content: `${beatLabel(event)}: ${eventText(event)}`,
-          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
-          metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
-        });
-        break;
-      }
-      case "approval.required": {
-        messages.push({
-          id: event.id,
-          role: "system",
-          content: `Approval required: ${eventText(event)}`,
-          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
-          metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
-        });
-        break;
-      }
-      case "checkpoint.created": {
-        messages.push({
-          id: event.id,
-          role: "system",
-          content: `Checkpoint created: ${eventText(event)}`,
-          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
-          metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id },
-        });
-        break;
-      }
-      case "run.done": {
-        messages.push({
-          id: event.id,
-          role: "system",
-          content: "Run completed successfully.",
-          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
-          metadata: { eventType: event.type },
-        });
-        break;
-      }
-      case "run.failed": {
-        messages.push({
-          id: event.id,
-          role: "system",
-          content: `Run failed: ${eventText(event)}`,
-          timestamp: formatElapsed(events[0]?.createdAt ?? event.createdAt, event.createdAt),
-          metadata: { eventType: event.type },
-        });
-        break;
+        case "approval.required": {
+          messages.push({
+            id: event.id,
+            role: "system",
+            content: `Approval required: ${eventText(event)}`,
+            timestamp: formatElapsed(selectedSnapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
+            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id, runId: selectedSnapshot.runId, turnIndex: selectedSnapshot.turnIndex, pattern: selectedSnapshot.pattern },
+          });
+          break;
+        }
       }
     }
   }

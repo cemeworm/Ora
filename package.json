@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter @ora/desktop dev",
+    "dev:desktop": "./scripts/dev-desktop.sh",
     "dev:runtime": "pnpm --filter @ora/runtime dev",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",

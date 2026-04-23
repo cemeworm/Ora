@@ -17,6 +17,7 @@ import { ActionLedger, AgentProfileRegistry, MemoryService, PlanService, PolicyS
 import { invokeRunProvider } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
 import { getPatternDriver } from "../patterns/driver-registry.js";
+import type { ModelMessage } from "../providers/index.js";
 
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
@@ -28,6 +29,7 @@ export interface RuntimeKernelOptions {
   skillRegistry?: RuntimeSkillRegistry;
   toolRegistry?: RuntimeToolRegistry;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
+  conversationMessages?: ModelMessage[];
 }
 
 export async function executeRuntimeKernel(
@@ -175,6 +177,7 @@ export async function executeRuntimeKernel(
 
     const response = await invokeRunProvider(config, {
       prompt: params.prompt,
+      messages: options.conversationMessages,
       system: params.system,
       maxTokens: config.budget?.maxTokens,
     });

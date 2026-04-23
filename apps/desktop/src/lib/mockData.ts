@@ -18,15 +18,17 @@ export const sessions: SessionRun[] = [
     pattern: "orchestrator_subagent",
     updatedAt: "11:40",
     health: 94,
+    turnCount: 3,
   },
   {
     id: "run_0422_1016",
     title: "Extract shared Ora contracts",
     project: "Ora MVP",
-    status: "checkpointed",
+    status: "done",
     pattern: "agent_teams",
     updatedAt: "10:16",
     health: 88,
+    turnCount: 2,
   },
   {
     id: "run_0421_2228",
@@ -36,6 +38,7 @@ export const sessions: SessionRun[] = [
     pattern: "generator_verifier",
     updatedAt: "Apr 21",
     health: 71,
+    turnCount: 1,
   },
 ];
 

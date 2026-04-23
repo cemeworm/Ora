@@ -48,6 +48,20 @@ export interface SessionRun {
   pattern: CoordinationPattern;
   updatedAt: string;
   health: number;
+  latestRunId?: string;
+  turnCount: number;
+}
+
+export interface SessionTurnItem {
+  runId: string;
+  sessionId: string;
+  turnIndex: number;
+  status: RunStatus;
+  pattern: CoordinationPattern;
+  providerId?: string;
+  modelRef?: string;
+  prompt: string;
+  updatedAt: string;
 }
 
 export interface PatternCard {
@@ -139,12 +153,12 @@ export interface RuntimeBridgeStatus {
   detail: string;
 }
 
-export type AppView = "chat" | "settings";
+export type AppView = "chat" | "evaluation" | "settings";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
-  metadata?: { eventType?: string; agentId?: string; beatId?: string };
+  metadata?: { eventType?: string; agentId?: string; beatId?: string; runId?: string; turnIndex?: number; pattern?: CoordinationPattern };
 }

@@ -27,6 +27,16 @@ import {
   RunSummary,
   RunSummarySchema,
   RunsListParamsSchema,
+  SessionCreateParamsSchema,
+  SessionDetail,
+  SessionDetailSchema,
+  SessionGetParamsSchema,
+  SessionSummary,
+  SessionSummarySchema,
+  SessionTranscriptMessage,
+  SessionTranscriptMessageSchema,
+  SessionTurn,
+  SessionTurnSchema,
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput,
@@ -42,11 +52,14 @@ import {
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
+import type { ModelMessage } from "./providers/index.js";
 import { recordLangfuseSnapshotTrace } from "./telemetry/langfuse.js";
+import { LocalEvaluationStore } from "./evaluation-store.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
-  config: RunConfigSchema.partial().optional()
+  config: RunConfigSchema.partial().optional(),
+  sessionId: z.string().min(1).optional(),
 });
 
 const RunIdParamsSchema = z.object({
@@ -58,12 +71,14 @@ const InterruptParamsSchema = RunIdParamsSchema.extend({
 });
 
 const StoreManifestSchema = z.object({
-  schemaVersion: z.literal(1),
-  nextRunNumber: z.number().int().positive()
+  schemaVersion: z.literal(2).default(2),
+  nextRunNumber: z.number().int().positive(),
+  nextSessionNumber: z.number().int().positive().default(1),
 });
 
 type StoreManifest = z.infer<typeof StoreManifestSchema>;
 type StoredRun = StateSnapshot;
+type StoredSession = SessionSummary;
 
 export interface LocalRunStoreOptions {
   dataDir?: string;
@@ -89,22 +104,30 @@ export class OraRuntimeError extends Error {
 
 class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
   private readonly manifestPath: string;
+  private readonly sessionsDir: string;
   private readonly runsDir: string;
   private readonly artifactsDir: string;
 
   constructor(private readonly dataDir: string) {
     this.manifestPath = path.join(dataDir, "manifest.json");
+    this.sessionsDir = path.join(dataDir, "sessions");
     this.runsDir = path.join(dataDir, "runs");
     this.artifactsDir = path.join(dataDir, "artifacts");
   }
 
-  load(): { manifest: StoreManifest; runs: StoredRun[] } {
+  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[] } {
     this.ensureDirs();
 
     const manifest = this.readJsonFile(this.manifestPath, StoreManifestSchema, StoreManifestSchema.parse({
-      schemaVersion: 1,
-      nextRunNumber: 1
+      schemaVersion: 2,
+      nextRunNumber: 1,
+      nextSessionNumber: 1,
     }));
+    const sessions: StoredSession[] = fs
+      .readdirSync(this.sessionsDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => this.readJsonFile(path.join(this.sessionsDir, name), SessionSummarySchema))
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
     const runs: StoredRun[] = fs
       .readdirSync(this.runsDir)
       .filter((name) => name.endsWith(".json"))
@@ -114,9 +137,11 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
     return {
       manifest: {
         ...manifest,
-        nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(runs))
+        nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(runs)),
+        nextSessionNumber: Math.max(manifest.nextSessionNumber, this.nextSessionNumberAfter(sessions)),
       },
-      runs
+      runs,
+      sessions,
     };
   }
 
@@ -128,6 +153,11 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
   saveRun(run: StoredRun): void {
     this.ensureDirs();
     this.writeJsonFile(path.join(this.runsDir, `${this.fileSafeId(run.runId)}.json`), run);
+  }
+
+  saveSession(session: StoredSession): void {
+    this.ensureDirs();
+    this.writeJsonFile(path.join(this.sessionsDir, `${this.fileSafeId(session.sessionId)}.json`), session);
   }
 
   saveArtifact(artifact: PersistedArtifact): ArtifactRef {
@@ -146,6 +176,7 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
   }
 
   private ensureDirs(): void {
+    fs.mkdirSync(this.sessionsDir, { recursive: true });
     fs.mkdirSync(this.runsDir, { recursive: true });
     fs.mkdirSync(this.artifactsDir, { recursive: true });
   }
@@ -194,6 +225,15 @@ class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
     );
   }
 
+  private nextSessionNumberAfter(sessions: StoredSession[]): number {
+    return (
+      sessions.reduce((max, session) => {
+        const match = /^session-(\d+)$/.exec(session.sessionId);
+        return match ? Math.max(max, Number(match[1])) : max;
+      }, 0) + 1
+    );
+  }
+
   private fileSafeId(id: string): string {
     return encodeURIComponent(id);
   }
@@ -203,6 +243,8 @@ export class LocalRunStore {
   private readonly backend: RuntimePersistenceBackend;
   private readonly clock: () => number;
   private readonly persistenceType: "sqlite" | "json-file";
+  private readonly evaluationStore: LocalEvaluationStore;
+  private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
   private manifest: StoreManifest;
 
@@ -217,9 +259,12 @@ export class LocalRunStore {
       this.persistenceType = "json-file";
       this.backend = new JsonFileRuntimePersistenceBackend(dataDir);
     }
+    this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
     const loaded = this.backend.load();
-    this.manifest = loaded.manifest;
+    this.manifest = StoreManifestSchema.parse(loaded.manifest);
+    this.sessions = new Map(loaded.sessions.map((session) => [session.sessionId, session]));
     this.runs = new Map(loaded.runs.map((run) => [run.runId, run]));
+    this.migrateLegacyRunsIntoSessions();
     this.backend.saveManifest(this.manifest);
   }
 
@@ -237,10 +282,53 @@ export class LocalRunStore {
     return MVP_PATTERNS;
   }
 
+  createSession(params: unknown = {}): SessionSummary {
+    const parsed = SessionCreateParamsSchema.parse(params ?? {});
+    const now = this.now();
+    const session = SessionSummarySchema.parse({
+      sessionId: this.nextSessionId(),
+      title: parsed.label?.trim() || "New Chat",
+      projectId: parsed.projectId,
+      turnCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.persistSession(session);
+    return session;
+  }
+
+  listSessions(params: unknown = {}): SessionSummary[] {
+    const parsed = z.object({
+      projectId: z.string().min(1).optional(),
+      limit: z.number().int().positive().max(500).optional(),
+    }).parse(params ?? {});
+    return [...this.sessions.values()]
+      .filter((session) => (parsed.projectId ? session.projectId === parsed.projectId : true))
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
+      .slice(0, parsed.limit)
+      .map((session) => SessionSummarySchema.parse(session));
+  }
+
+  getSession(params: unknown): SessionDetail {
+    const parsed = SessionGetParamsSchema.parse(params);
+    const session = this.getSessionOrThrow(parsed.sessionId);
+    const turns = this.runsForSession(parsed.sessionId).map((run) => this.toSessionTurn(run));
+    const latestSnapshot = turns.length > 0
+      ? this.getRunOrThrow(turns.at(-1)!.runId)
+      : undefined;
+    return SessionDetailSchema.parse({
+      session,
+      turns,
+      transcript: this.sessionTranscript(parsed.sessionId),
+      latestSnapshot,
+    });
+  }
+
   listRuns(params: unknown = {}): RunSummary[] {
     const parsed = RunsListParamsSchema.parse(params ?? {});
     return [...this.runs.values()]
       .filter((run) => (parsed.status ? run.status === parsed.status : true))
+      .filter((run) => (parsed.sessionId ? run.sessionId === parsed.sessionId : true))
       .sort((a, b) => b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId))
       .slice(0, parsed.limit)
       .map((run) => this.toRunSummary(run));
@@ -248,6 +336,7 @@ export class LocalRunStore {
 
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
+    const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
     const manualApproval =
       parsed.config?.approvalMode === "manual" ||
       parsed.config?.metadata?.approvalMode === "manual" ||
@@ -255,7 +344,8 @@ export class LocalRunStore {
     if (manualApproval) {
       const run = this.createCompletedRun({
         input: parsed.input,
-        config: parsed.config
+        config: parsed.config,
+        session,
       });
       recordLangfuseSnapshotTrace(run);
       this.persistRun(run);
@@ -272,12 +362,19 @@ export class LocalRunStore {
       budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
     });
     const runId = this.nextRunId();
+    const turnIndex = this.nextTurnIndex(session.sessionId);
     const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
-      clock: this.clock
+      clock: this.clock,
+      conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
     });
-    recordLangfuseSnapshotTrace(snapshot);
-    this.persistRun(snapshot);
-    return this.toRunHandle(snapshot);
+    const sessionBoundSnapshot = StateSnapshotSchema.parse({
+      ...snapshot,
+      sessionId: session.sessionId,
+      turnIndex,
+    });
+    recordLangfuseSnapshotTrace(sessionBoundSnapshot);
+    this.persistRun(sessionBoundSnapshot);
+    return this.toRunHandle(sessionBoundSnapshot);
   }
 
   async startRunWithKernel(
@@ -285,6 +382,7 @@ export class LocalRunStore {
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number }
   ): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
+    const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
     const config = RunConfigSchema.parse(parsed.config ?? {});
     const input = UserTaskInputSchema.parse({
       ...parsed.input,
@@ -295,23 +393,34 @@ export class LocalRunStore {
       budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
     });
     const runId = this.nextRunId();
+    const turnIndex = this.nextTurnIndex(session.sessionId);
     const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
       clock: this.clock,
-      forkedFrom
+      forkedFrom,
+      conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
     });
-    this.persistRun(snapshot);
-    return this.toRunHandle(snapshot);
+    const sessionBoundSnapshot = StateSnapshotSchema.parse({
+      ...snapshot,
+      sessionId: session.sessionId,
+      turnIndex,
+    });
+    this.persistRun(sessionBoundSnapshot);
+    return this.toRunHandle(sessionBoundSnapshot);
   }
 
   async startRunWithSnapshot(
     params: unknown,
-    createSnapshot: (
-      runId: string,
-      input: UserTaskInput,
-      config: RunConfig
-    ) => Promise<StateSnapshot | undefined>
+    createSnapshot: (args: {
+      runId: string;
+      input: UserTaskInput;
+      config: RunConfig;
+      sessionId: string;
+      turnIndex: number;
+      conversationMessages: ModelMessage[];
+    }) => Promise<StateSnapshot | undefined>
   ): Promise<RunHandle | undefined> {
     const parsed = StartRunParamsSchema.parse(params);
+    const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
     const config = RunConfigSchema.parse(parsed.config ?? {});
     const input = UserTaskInputSchema.parse({
       ...parsed.input,
@@ -322,13 +431,27 @@ export class LocalRunStore {
       budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
     });
     const runId = this.nextRunId();
-    const snapshot = await createSnapshot(runId, input, fullConfig);
+    const turnIndex = this.nextTurnIndex(session.sessionId);
+    const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
+    const snapshot = await createSnapshot({
+      runId,
+      input,
+      config: fullConfig,
+      sessionId: session.sessionId,
+      turnIndex,
+      conversationMessages,
+    });
     if (!snapshot) {
       return undefined;
     }
 
-    this.persistRun(StateSnapshotSchema.parse(snapshot));
-    return this.toRunHandle(snapshot);
+    const sessionBoundSnapshot = StateSnapshotSchema.parse({
+      ...snapshot,
+      sessionId: session.sessionId,
+      turnIndex,
+    });
+    this.persistRun(sessionBoundSnapshot);
+    return this.toRunHandle(sessionBoundSnapshot);
   }
 
   streamRun(params: unknown): RunEventStream {
@@ -523,6 +646,7 @@ export class LocalRunStore {
     }
 
     return this.startRunWithKernel({
+      sessionId: source.sessionId,
       input: {
         ...source.input,
         ...parsed.input,
@@ -591,9 +715,53 @@ export class LocalRunStore {
     return persistedRef;
   }
 
+  importEvaluationDataset(params: unknown) {
+    return this.evaluationStore.importDataset(params);
+  }
+
+  listEvaluationDatasets(params: unknown = {}) {
+    return this.evaluationStore.listDatasets(params);
+  }
+
+  getEvaluationDataset(params: unknown) {
+    return this.evaluationStore.getDataset(params);
+  }
+
+  async startEvaluationRun(
+    params: unknown,
+    createRun: (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>
+  ) {
+    return this.evaluationStore.startRun(params, createRun);
+  }
+
+  listEvaluationRuns(params: unknown = {}) {
+    return this.evaluationStore.listRuns(params);
+  }
+
+  getEvaluationRun(params: unknown) {
+    return this.evaluationStore.getRun(params);
+  }
+
+  streamEvaluationRun(params: unknown) {
+    return this.evaluationStore.streamRun(params);
+  }
+
+  promoteEvaluationBaseline(params: unknown) {
+    return this.evaluationStore.promoteBaseline(params);
+  }
+
+  listEvaluationBaselines(params: unknown = {}) {
+    return this.evaluationStore.listBaselines(params);
+  }
+
+  exportEvaluationRun(params: unknown) {
+    return this.evaluationStore.exportRun(params);
+  }
+
   private createCompletedRun(params: {
     input: UserTaskInput;
     config?: Partial<RunConfig>;
+    session: SessionSummary;
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   }): StoredRun {
     const config = RunConfigSchema.parse(params.config ?? {});
@@ -604,6 +772,7 @@ export class LocalRunStore {
     const pattern = config.pattern;
     const definition = getPatternDefinition(pattern);
     const runId = this.nextRunId();
+    const turnIndex = this.nextTurnIndex(params.session.sessionId);
     const startedAt = this.now();
     const budget = config.budget ?? DEFAULT_RESOURCE_BUDGETS[pattern];
     const fullConfig = RunConfigSchema.parse({ ...config, budget });
@@ -723,9 +892,11 @@ export class LocalRunStore {
         checkpointId: checkpoint.id
       });
 
-      return StateSnapshotSchema.parse({
-        runId,
-        status: "interrupted",
+    return StateSnapshotSchema.parse({
+      runId,
+      sessionId: params.session.sessionId,
+      turnIndex,
+      status: "interrupted",
         pattern,
         input,
         config: fullConfig,
@@ -795,6 +966,8 @@ export class LocalRunStore {
 
     return StateSnapshotSchema.parse({
       runId,
+      sessionId: params.session.sessionId,
+      turnIndex,
       status: "succeeded",
       pattern,
       input,
@@ -986,6 +1159,8 @@ export class LocalRunStore {
   private toRunHandle(snapshot: StateSnapshot): RunHandle {
     return RunHandleSchema.parse({
       runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
       status: snapshot.status,
       pattern: snapshot.pattern,
       startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt
@@ -995,6 +1170,8 @@ export class LocalRunStore {
   private toRunSummary(snapshot: StateSnapshot): RunSummary {
     return RunSummarySchema.parse({
       runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
       status: snapshot.status,
       pattern: snapshot.pattern,
       prompt: snapshot.input.prompt,
@@ -1006,9 +1183,31 @@ export class LocalRunStore {
     });
   }
 
+  private toSessionTurn(snapshot: StateSnapshot): SessionTurn {
+    return SessionTurnSchema.parse({
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
+      status: snapshot.status,
+      pattern: snapshot.pattern,
+      providerId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : undefined,
+      modelRef: snapshot.config.modelRef,
+      prompt: snapshot.input.prompt,
+      startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
+      updatedAt: snapshot.updatedAt,
+      eventCount: snapshot.events.length,
+      checkpointCount: snapshot.checkpoints.length,
+      artifactCount: snapshot.artifacts.length,
+    });
+  }
+
   private persistRun(snapshot: StateSnapshot): void {
     this.runs.set(snapshot.runId, snapshot);
     this.backend.saveRun(snapshot);
+    if (snapshot.sessionId) {
+      const session = this.upsertSessionFromRun(snapshot);
+      this.persistSession(session);
+    }
     this.backend.saveManifest(this.manifest);
   }
 
@@ -1019,6 +1218,15 @@ export class LocalRunStore {
       nextRunNumber: this.manifest.nextRunNumber + 1
     };
     return runId;
+  }
+
+  private nextSessionId(): string {
+    const sessionId = `session-${String(this.manifest.nextSessionNumber).padStart(4, "0")}`;
+    this.manifest = {
+      ...this.manifest,
+      nextSessionNumber: this.manifest.nextSessionNumber + 1,
+    };
+    return sessionId;
   }
 
   private requireRunId(params: unknown): string {
@@ -1033,6 +1241,183 @@ export class LocalRunStore {
     return snapshot;
   }
 
+  private getSessionOrThrow(sessionId: string): SessionSummary {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new OraRuntimeError(`Session not found: ${sessionId}`, -32004, { sessionId });
+    }
+    return session;
+  }
+
+  private persistSession(session: SessionSummary): void {
+    this.sessions.set(session.sessionId, session);
+    this.backend.saveSession(session);
+    this.backend.saveManifest(this.manifest);
+  }
+
+  private runsForSession(sessionId: string): StateSnapshot[] {
+    return [...this.runs.values()]
+      .filter((run) => run.sessionId === sessionId)
+      .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
+  }
+
+  private nextTurnIndex(sessionId: string): number {
+    const last = this.runsForSession(sessionId).at(-1);
+    return (last?.turnIndex ?? 0) + 1;
+  }
+
+  private ensureSessionForRun(sessionId: string | undefined, input: UserTaskInput): SessionSummary {
+    if (sessionId) {
+      return this.getSessionOrThrow(sessionId);
+    }
+    return this.createSession({ projectId: input.projectId });
+  }
+
+  private upsertSessionFromRun(snapshot: StateSnapshot): SessionSummary {
+    const sessionId = snapshot.sessionId;
+    if (!sessionId) {
+      throw new OraRuntimeError("Cannot persist run without sessionId.", -32004, { runId: snapshot.runId });
+    }
+    const existing = this.sessions.get(sessionId);
+    const turnCount = this.runsForSession(sessionId).filter((run) => run.runId !== snapshot.runId).length + 1;
+    const title = existing && existing.turnCount > 0
+      ? existing.title
+      : this.defaultSessionTitle(snapshot.input.prompt);
+    return SessionSummarySchema.parse({
+      sessionId,
+      title,
+      projectId: snapshot.input.projectId ?? existing?.projectId,
+      status: snapshot.status,
+      latestRunId: snapshot.runId,
+      latestPattern: snapshot.pattern,
+      latestProviderId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : existing?.latestProviderId,
+      latestModelRef: snapshot.config.modelRef ?? existing?.latestModelRef,
+      turnCount,
+      createdAt: existing?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
+      updatedAt: snapshot.updatedAt,
+    });
+  }
+
+  private defaultSessionTitle(prompt: string): string {
+    const trimmed = prompt.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 120) : "New Chat";
+  }
+
+  private buildConversationMessages(sessionId: string, currentPrompt: string): ModelMessage[] {
+    const priorTurns = this.runsForSession(sessionId);
+    const messages: ModelMessage[] = [];
+    for (const turn of priorTurns) {
+      const prompt = turn.input.prompt.trim();
+      if (prompt) {
+        messages.push({ role: "user", content: prompt });
+      }
+      const assistant = this.assistantTextForRun(turn);
+      if (assistant) {
+        messages.push({ role: "assistant", content: assistant });
+      }
+    }
+    if (currentPrompt.trim()) {
+      messages.push({ role: "user", content: currentPrompt.trim() });
+    }
+    return messages;
+  }
+
+  private assistantTextForRun(snapshot: StateSnapshot): string {
+    if (typeof snapshot.output === "string") {
+      return snapshot.output.trim();
+    }
+    if (snapshot.output && typeof snapshot.output === "object") {
+      const candidate = (snapshot.output as Record<string, unknown>).text;
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+    for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+      const event = snapshot.events[index];
+      if (!event || event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
+        continue;
+      }
+      const content = (event.payload as Record<string, unknown>).content;
+      if (typeof content === "string" && content.trim()) {
+        return content.trim();
+      }
+    }
+    return "";
+  }
+
+  private sessionTranscript(sessionId: string): SessionTranscriptMessage[] {
+    const transcript: SessionTranscriptMessage[] = [];
+    for (const run of this.runsForSession(sessionId)) {
+      const createdAt = run.input.createdAt ?? run.updatedAt;
+      const prompt = run.input.prompt.trim();
+      if (prompt) {
+        transcript.push(SessionTranscriptMessageSchema.parse({
+          id: `${run.runId}:user`,
+          sessionId,
+          runId: run.runId,
+          turnIndex: run.turnIndex ?? 1,
+          role: "user",
+          content: prompt,
+          pattern: run.pattern,
+          createdAt,
+        }));
+      }
+      const assistant = this.assistantTextForRun(run);
+      if (assistant) {
+        transcript.push(SessionTranscriptMessageSchema.parse({
+          id: `${run.runId}:assistant`,
+          sessionId,
+          runId: run.runId,
+          turnIndex: run.turnIndex ?? 1,
+          role: "assistant",
+          content: assistant,
+          pattern: run.pattern,
+          createdAt: run.updatedAt,
+        }));
+      }
+    }
+    return transcript;
+  }
+
+  private migrateLegacyRunsIntoSessions(): void {
+    let mutated = false;
+    for (const [runId, existing] of this.runs.entries()) {
+      if (existing.sessionId) {
+        continue;
+      }
+      const sessionId = `session-legacy-${runId}`;
+      const migrated = StateSnapshotSchema.parse({
+        ...existing,
+        sessionId,
+        turnIndex: 1,
+      });
+      this.runs.set(runId, migrated);
+      this.backend.saveRun(migrated);
+      if (!this.sessions.has(sessionId)) {
+        this.sessions.set(sessionId, SessionSummarySchema.parse({
+          sessionId,
+          title: this.defaultSessionTitle(migrated.input.prompt),
+          projectId: migrated.input.projectId,
+          status: migrated.status,
+          latestRunId: migrated.runId,
+          latestPattern: migrated.pattern,
+          latestProviderId: typeof migrated.config.providerId === "string" ? migrated.config.providerId : undefined,
+          latestModelRef: migrated.config.modelRef,
+          turnCount: 1,
+          createdAt: migrated.input.createdAt ?? migrated.updatedAt,
+          updatedAt: migrated.updatedAt,
+        }));
+      }
+      mutated = true;
+    }
+    if (mutated) {
+      for (const session of this.sessions.values()) {
+        this.backend.saveSession(session);
+      }
+      this.backend.saveManifest(this.manifest);
+    }
+  }
+
   private now(): number {
     return this.clock();
   }
@@ -1042,4 +1427,10 @@ export class InMemoryRunStore extends LocalRunStore {}
 
 export function defaultRuntimeStoreDir(): string {
   return fileURLToPath(pathToFileURL(path.join(process.cwd(), ".ora", "runtime.db")));
+}
+
+export function defaultEvaluationStoreDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "evaluation-store")
+    : path.join(runtimeDataDir, "evaluation-store");
 }

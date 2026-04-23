@@ -4,6 +4,17 @@ import {
   ApprovalDecisionSchema,
   ApprovalRequestSchema,
   DEFAULT_PROVIDERS,
+  EvaluationAttemptSchema,
+  EvaluationBaselineSchema,
+  EvaluationDatasetDetailSchema,
+  EvaluationDatasetSchema,
+  EvaluationExportResultSchema,
+  EvaluationImportParamsSchema,
+  EvaluationRunDetailSchema,
+  EvaluationRunSchema,
+  EvaluationRunStreamSchema,
+  EvaluationScorecardSchema,
+  EvaluationSpecSchema,
   JsonRpcRequestSchema,
   JsonRpcResponseSchema,
   MVP_PATTERNS,
@@ -23,10 +34,17 @@ import {
   RunConfigSchema,
   RunEventStreamSchema,
   RunForkParamsSchema,
+  RunHandleSchema,
   RunReplayParamsSchema,
   RunResumeParamsSchema,
   RunSummarySchema,
   SessionConfigSchema,
+  SessionCreateParamsSchema,
+  SessionDetailSchema,
+  SessionGetParamsSchema,
+  SessionSummarySchema,
+  SessionTranscriptMessageSchema,
+  SessionTurnSchema,
   SkillRegistrySchema,
   ToolDescriptorSchema,
   ToolRegistrySchema
@@ -207,6 +225,160 @@ describe("Ora shared contracts", () => {
         checkpointId: "checkpoint-1"
       }).runId
     ).toBe(summary.runId);
+  });
+
+  it("validates evaluation dataset/run contracts", () => {
+    const importParams = EvaluationImportParamsSchema.parse({
+      name: "Smoke Dataset",
+      sourceFileName: "smoke.json",
+      sourceFormat: "json",
+      content: JSON.stringify([{ id: "case-1", prompt: "Evaluate me", expected: "done" }]),
+    });
+    expect(importParams.sourceFormat).toBe("json");
+
+    const dataset = EvaluationDatasetSchema.parse({
+      id: "dataset-0001",
+      name: "Smoke Dataset",
+      sourceFormat: "json",
+      schemaVersion: 1,
+      caseCount: 1,
+      tags: ["smoke"],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const detail = EvaluationDatasetDetailSchema.parse({
+      dataset,
+      cases: [{
+        id: "case-1",
+        input: { prompt: "Evaluate me", context: {} },
+        expected: { text: "done" },
+        metadata: { difficulty: "easy", tags: ["smoke"] },
+      }],
+      metadataKeys: ["difficulty", "tags"],
+      tagCounts: { smoke: 1 },
+    });
+    expect(detail.cases).toHaveLength(1);
+
+    const spec = EvaluationSpecSchema.parse({
+      datasetId: dataset.id,
+      profileId: "outcome",
+      configs: [{
+        id: "orchestrator",
+        label: "Orchestrator",
+        runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" },
+      }],
+      repetitions: 1,
+      concurrency: 1,
+    });
+
+    const attempt = EvaluationAttemptSchema.parse({
+      id: "eval-run-0001:attempt:1",
+      evaluationRunId: "eval-run-0001",
+      caseId: "case-1",
+      configId: "orchestrator",
+      repetition: 1,
+      status: "succeeded",
+      underlyingRunId: "run-0001",
+      output: { text: "done" },
+      score: {
+        outcomeScore: 1,
+        processScore: 0.8,
+        efficiencyScore: 0.9,
+        safetyScore: 0.95,
+        overallScore: 0.94,
+        judgeRationale: "Looks good.",
+        failureTags: [],
+      },
+      runtimeMs: 1200,
+      costUsd: 0.0012,
+      startedAt: 1,
+      updatedAt: 2,
+    });
+    expect(attempt.underlyingRunId).toBe("run-0001");
+
+    const run = EvaluationRunSchema.parse({
+      id: "eval-run-0001",
+      spec,
+      status: "succeeded",
+      totalAttempts: 1,
+      completedAttempts: 1,
+      failedAttempts: 0,
+      attemptIds: [attempt.id],
+      caseResults: [{
+        caseId: "case-1",
+        configId: "orchestrator",
+        attemptIds: [attempt.id],
+        averageScore: attempt.score,
+        latestOutput: attempt.output,
+        expected: { text: "done" },
+        metadata: { difficulty: "easy", tags: ["smoke"] },
+        traceRunIds: ["run-0001"],
+      }],
+      scorecard: {
+        overallScore: 0.94,
+        passRate: 1,
+        averageRuntimeMs: 1200,
+        averageCostUsd: 0.0012,
+        regressionCount: 0,
+        configSummaries: [{
+          configId: "orchestrator",
+          label: "Orchestrator",
+          overallScore: 0.94,
+          passRate: 1,
+          averageRuntimeMs: 1200,
+          averageCostUsd: 0.0012,
+          caseCount: 1,
+          regressionCount: 0,
+          failureTagCounts: {},
+        }],
+        slices: [{
+          dimension: "difficulty",
+          value: "easy",
+          configId: "orchestrator",
+          caseCount: 1,
+          overallScore: 0.94,
+        }],
+      },
+      startedAt: 1,
+      updatedAt: 2,
+      completedAt: 2,
+    });
+    const detailRun = EvaluationRunDetailSchema.parse({
+      run,
+      attempts: [attempt],
+      dataset,
+      configs: spec.configs,
+    });
+    expect(detailRun.run.id).toBe("eval-run-0001");
+    expect(EvaluationScorecardSchema.parse(run.scorecard).overallScore).toBe(0.94);
+    expect(EvaluationRunStreamSchema.parse({
+      evaluationRunId: run.id,
+      fromSeq: 0,
+      events: [{
+        id: `${run.id}:evt-0`,
+        evaluationRunId: run.id,
+        seq: 0,
+        type: "evaluation.run.started",
+        createdAt: 1,
+        payload: { datasetId: dataset.id },
+      }],
+      nextSeq: 1,
+    }).events[0]?.type).toBe("evaluation.run.started");
+    expect(EvaluationBaselineSchema.parse({
+      id: "baseline-0001",
+      name: "Smoke baseline",
+      datasetId: dataset.id,
+      profileId: "outcome",
+      configId: "orchestrator",
+      configSignature: "{\"pattern\":\"orchestrator_subagent\"}",
+      evaluationRunId: run.id,
+      createdAt: 2,
+    }).id).toBe("baseline-0001");
+    expect(EvaluationExportResultSchema.parse({
+      evaluationRunId: run.id,
+      format: "json",
+      content: "{}",
+    }).format).toBe("json");
   });
 });
 
@@ -491,6 +663,151 @@ describe("SessionConfigSchema", () => {
 
   it("rejects missing required fields", () => {
     expect(() => SessionConfigSchema.parse({ id: "s1" })).toThrow();
+  });
+});
+
+describe("Session thread contracts", () => {
+  it("accepts session create params and session summaries", () => {
+    const createParams = SessionCreateParamsSchema.parse({ projectId: "ora-mvp" });
+    const summary = SessionSummarySchema.parse({
+      sessionId: "session-1",
+      title: "New Chat",
+      projectId: "ora-mvp",
+      turnCount: 0,
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+
+    expect(createParams.projectId).toBe("ora-mvp");
+    expect(summary.turnCount).toBe(0);
+    expect(summary.title).toBe("New Chat");
+  });
+
+  it("accepts session detail with transcript and latest snapshot", () => {
+    const detail = SessionDetailSchema.parse({
+      session: {
+        sessionId: "session-1",
+        title: "Investigate new chat",
+        projectId: "ora-mvp",
+        status: "succeeded",
+        latestRunId: "run-1",
+        latestPattern: "orchestrator_subagent",
+        turnCount: 1,
+        createdAt: 1000,
+        updatedAt: 2000,
+      },
+      turns: [
+        {
+          runId: "run-1",
+          sessionId: "session-1",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "Fix new chat.",
+          startedAt: 1000,
+          updatedAt: 2000,
+          eventCount: 4,
+          checkpointCount: 1,
+          artifactCount: 0,
+        },
+      ],
+      transcript: [
+        {
+          id: "run-1:user",
+          sessionId: "session-1",
+          runId: "run-1",
+          turnIndex: 1,
+          role: "user",
+          content: "Fix new chat.",
+          pattern: "orchestrator_subagent",
+          createdAt: 1000,
+        },
+      ],
+      latestSnapshot: {
+        runId: "run-1",
+        sessionId: "session-1",
+        turnIndex: 1,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        input: { prompt: "Fix new chat.", context: {}, createdAt: 1000, projectId: "ora-mvp" },
+        config: RunConfigSchema.parse({}),
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        actions: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+        sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+        busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+        pendingApprovals: [],
+        updatedAt: 2000,
+      },
+    });
+
+    expect(detail.turns[0]?.turnIndex).toBe(1);
+    expect(detail.transcript[0]?.role).toBe("user");
+    expect(detail.latestSnapshot?.sessionId).toBe("session-1");
+  });
+
+  it("accepts run handles and summaries with optional session metadata", () => {
+    const handle = RunHandleSchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 2,
+      status: "succeeded",
+      pattern: "shared_state",
+      startedAt: 1234,
+    });
+    const summary = RunSummarySchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 2,
+      status: "succeeded",
+      pattern: "shared_state",
+      prompt: "Continue this session.",
+      startedAt: 1234,
+      updatedAt: 2345,
+      eventCount: 7,
+      checkpointCount: 1,
+      artifactCount: 0,
+    });
+    const getParams = SessionGetParamsSchema.parse({ sessionId: "session-1" });
+    const turn = SessionTurnSchema.parse({
+      runId: "run-1",
+      sessionId: "session-1",
+      turnIndex: 2,
+      status: "succeeded",
+      pattern: "shared_state",
+      prompt: "Continue this session.",
+      startedAt: 1234,
+      updatedAt: 2345,
+      eventCount: 7,
+      checkpointCount: 1,
+      artifactCount: 0,
+    });
+    const transcript = SessionTranscriptMessageSchema.parse({
+      id: "run-1:assistant",
+      sessionId: "session-1",
+      runId: "run-1",
+      turnIndex: 2,
+      role: "assistant",
+      content: "Session continued.",
+      pattern: "shared_state",
+      createdAt: 2345,
+    });
+
+    expect(handle.sessionId).toBe("session-1");
+    expect(summary.turnIndex).toBe(2);
+    expect(getParams.sessionId).toBe("session-1");
+    expect(turn.pattern).toBe("shared_state");
+    expect(transcript.role).toBe("assistant");
   });
 });
 

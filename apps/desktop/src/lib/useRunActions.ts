@@ -1,28 +1,92 @@
 import { useMemo } from "react";
-import { createRuntimeClient, type OraProviderConfig } from "./runtimeClient";
+import { getSharedRuntimeClient, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { useWorkbench } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
 export function useRunActions() {
   const { state, dispatch } = useWorkbench();
-  const runtimeClient = useMemo(() => createRuntimeClient(), []);
+  const runtimeClient = getSharedRuntimeClient();
 
   const viewModel = useMemo(() => {
-    if (state.patterns.length === 0 || state.sessions.length === 0) return undefined;
-    return buildWorkbenchViewModel(state.patterns, state.sessions, state.selectedPattern, state.selectedSessionId);
-  }, [state.patterns, state.sessions, state.selectedPattern, state.selectedSessionId]);
+    if (state.patterns.length === 0 || !state.activeSessionDetail) return undefined;
+    return buildWorkbenchViewModel(
+      state.patterns,
+      state.sessions,
+      state.activeSessionDetail,
+      state.activeSnapshot,
+      state.selectedPattern,
+    );
+  }, [state.patterns, state.sessions, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern]);
 
-  const selectedSession = viewModel?.sessions.find((s) => s.id === state.selectedSessionId) ?? viewModel?.sessions[0];
-  const selectedNode = viewModel?.topologyNodes.find((n) => n.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
-  const selectedBeat = viewModel?.beats.find((b) => b.id === state.selectedBeatId) ?? viewModel?.beats[0];
+  const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
+  const selectedNode = viewModel?.topologyNodes.find((node) => node.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
+  const selectedBeat = viewModel?.beats.find((beat) => beat.id === state.selectedBeatId) ?? viewModel?.beats[0];
   const selectedAgent =
-    viewModel?.agents.find((a) => a.id === selectedNode?.agentId) ??
-    viewModel?.agents.find((a) => a.id === selectedBeat?.agentId) ??
+    viewModel?.agents.find((agent) => agent.id === selectedNode?.agentId) ??
+    viewModel?.agents.find((agent) => agent.id === selectedBeat?.agentId) ??
     viewModel?.agents[0];
   const selectedCheckpoint =
-    viewModel?.checkpoints.find((c) => c.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0];
+    viewModel?.checkpoints.find((checkpoint) => checkpoint.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0];
+
+  async function hydrateSession(sessionId: string, snapshot?: OraStateSnapshot, feedback?: string) {
+    const [sessions, detail] = await Promise.all([
+      runtimeClient.listSessions(),
+      runtimeClient.getSession(sessionId),
+    ]);
+    dispatch({ type: "HYDRATE_SESSION", sessions, detail, snapshot, feedback });
+    return { sessions, detail };
+  }
+
+  async function selectSession(sessionId: string) {
+    dispatch({ type: "SET_LOADING", loading: true });
+    dispatch({ type: "SELECT_SESSION", sessionId });
+    try {
+      await hydrateSession(sessionId);
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session load failed." });
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
+  async function selectTurn(runId: string) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Load turn" });
+    try {
+      const snapshot = await runtimeClient.getRunState(runId);
+      dispatch({ type: "SELECT_TURN", runId, snapshot });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Turn load failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function createSession() {
+    dispatch({ type: "SET_LOADING", loading: true });
+    try {
+      const created = await runtimeClient.createSession({ projectId: "ora-mvp" });
+      await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.");
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session creation failed." });
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
+  async function ensureInitialSession() {
+    const sessions = await runtimeClient.listSessions();
+    const firstSession = sessions[0] ?? await runtimeClient.createSession({ projectId: "ora-mvp" });
+    const detail = await runtimeClient.getSession(firstSession.sessionId);
+    dispatch({ type: "HYDRATE_SESSION", sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions], detail });
+    return { sessions, detail };
+  }
+
+  async function refreshCurrentSession(snapshot?: OraStateSnapshot, feedback?: string) {
+    const sessionId = snapshot?.sessionId ?? state.selectedSessionId;
+    if (!sessionId) return;
+    await hydrateSession(sessionId, snapshot, feedback);
+  }
 
   async function startRun() {
+    if (!state.selectedSessionId || !state.promptText.trim()) return;
     dispatch({ type: "SET_LOADING", loading: true });
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     try {
@@ -35,8 +99,10 @@ export function useRunActions() {
           modelRef: provider?.modelId ?? "local/smoke-model",
           metadata: { providerId: state.selectedProviderId },
         },
+        state.selectedSessionId,
       );
-      dispatch({ type: "RUN_STARTED", snapshot });
+      await refreshCurrentSession(snapshot, `Added turn ${snapshot.turnIndex ?? "?"} to the current session.`);
+      dispatch({ type: "SET_PROMPT", text: "" });
       const health = runtimeClient.getHealth();
       if (health) {
         dispatch({ type: "SET_BRIDGE_STATUS", status: { mode: health.mode, ok: health.ok, label: health.service, detail: health.detail } });
@@ -51,12 +117,11 @@ export function useRunActions() {
   }
 
   async function interruptRun() {
-    if (!selectedSession) return;
+    if (!state.selectedTurnRunId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Interrupt" });
     try {
-      const snapshot = await runtimeClient.interruptRun(selectedSession.id, "Interrupted from Operator Workbench.");
-      dispatch({ type: "RUN_UPDATED", snapshot });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Interrupt completed against ${snapshot.runId}.` });
+      const snapshot = await runtimeClient.interruptRun(state.selectedTurnRunId, "Interrupted from Operator Workbench.");
+      await refreshCurrentSession(snapshot, `Interrupt completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Interrupt failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -64,16 +129,15 @@ export function useRunActions() {
   }
 
   async function resumeRun() {
-    if (!selectedSession) return;
+    if (!state.selectedTurnRunId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Approve" });
     try {
       const snapshot = await runtimeClient.resumeRun(
-        selectedSession.id,
+        state.selectedTurnRunId,
         "Approved sidecar action from Context Dock.",
         { approvedActionIds: viewModel?.actions.filter((a) => a.state === "approval_required").map((a) => a.id) ?? [] },
       );
-      dispatch({ type: "RUN_UPDATED", snapshot });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Approve completed against ${snapshot.runId}.` });
+      await refreshCurrentSession(snapshot, `Approve completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Approve failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -81,12 +145,11 @@ export function useRunActions() {
   }
 
   async function cancelRun() {
-    if (!selectedSession) return;
+    if (!state.selectedTurnRunId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Cancel" });
     try {
-      const snapshot = await runtimeClient.cancelRun(selectedSession.id);
-      dispatch({ type: "RUN_UPDATED", snapshot });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Cancel completed against ${snapshot.runId}.` });
+      const snapshot = await runtimeClient.cancelRun(state.selectedTurnRunId);
+      await refreshCurrentSession(snapshot, `Cancel completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Cancel failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -94,20 +157,19 @@ export function useRunActions() {
   }
 
   async function forkRun() {
-    if (!selectedSession || !selectedCheckpoint) {
+    if (!state.selectedTurnRunId || !selectedCheckpoint) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Select a checkpoint before forking." });
       return;
     }
     dispatch({ type: "SET_BUSY_COMMAND", command: "Fork" });
     try {
       const snapshot = await runtimeClient.forkRun(
-        selectedSession.id,
+        state.selectedTurnRunId,
         selectedCheckpoint.id,
         { pattern: state.selectedPattern, metadata: { source: "desktop-workbench" } },
         { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } },
       );
-      dispatch({ type: "RUN_ADDED", snapshot });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Fork completed against ${snapshot.runId}.` });
+      await refreshCurrentSession(snapshot, `Fork completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Fork failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -115,10 +177,10 @@ export function useRunActions() {
   }
 
   async function replaySelection() {
-    if (!selectedSession || !selectedBeat) return;
+    if (!state.selectedTurnRunId || !selectedBeat) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Replay" });
     try {
-      const stream = await runtimeClient.replayRun(selectedSession.id, selectedBeat.checkpointId);
+      const stream = await runtimeClient.replayRun(state.selectedTurnRunId, selectedBeat.checkpointId);
       const firstEvent = stream.events[0];
       if (firstEvent) dispatch({ type: "SELECT_BEAT", beatId: firstEvent.id });
       dispatch({
@@ -133,12 +195,11 @@ export function useRunActions() {
   }
 
   async function exportReport() {
-    if (!selectedSession) return;
+    if (!state.selectedTurnRunId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Report" });
     try {
-      const { artifact, snapshot } = await runtimeClient.exportReport(selectedSession.id);
-      dispatch({ type: "RUN_UPDATED", snapshot });
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Exported ${artifact.label} as ${artifact.mimeType}.` });
+      const { artifact, snapshot } = await runtimeClient.exportReport(state.selectedTurnRunId);
+      await refreshCurrentSession(snapshot, `Exported ${artifact.label} as ${artifact.mimeType}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Report export failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -212,6 +273,10 @@ export function useRunActions() {
     selectedAgent,
     selectedCheckpoint,
     actions: {
+      createSession,
+      ensureInitialSession,
+      selectSession,
+      selectTurn,
       startRun,
       interruptRun,
       resumeRun,

@@ -1,9 +1,8 @@
-import { Bot, MessageSquarePlus, Search, Settings } from "lucide-react";
-import { useMemo } from "react";
+import { Bot, ChartNoAxesColumn, MessageSquarePlus, Search, Settings } from "lucide-react";
 import { useWorkbench } from "../lib/state";
-import { buildWorkbenchViewModel } from "../lib/viewModel";
+import { useRunActions } from "../lib/useRunActions";
 import { cn } from "../lib/utils";
-import type { AppView } from "../types";
+import type { AppView, RunStatus } from "../types";
 import { SidebarTrigger, useSidebar } from "./ui/sidebar";
 import { StatusPill } from "./StatusPill";
 
@@ -13,14 +12,20 @@ const navItems: { view: AppView; label: string; icon: typeof Settings }[] = [
 
 export function Sidebar() {
   const { state, dispatch } = useWorkbench();
+  const { actions } = useRunActions();
   const { open } = useSidebar();
-
-  const viewModel = useMemo(() => {
-    if (state.patterns.length === 0 || state.sessions.length === 0) return undefined;
-    return buildWorkbenchViewModel(state.patterns, state.sessions, state.selectedPattern, state.selectedSessionId);
-  }, [state.patterns, state.sessions, state.selectedPattern, state.selectedSessionId]);
-
-  const sessions = viewModel?.sessions ?? [];
+  const sessions = state.sessions.map((session) => ({
+    id: session.sessionId,
+    title: session.title,
+    project: session.projectId ?? "Ora MVP",
+    status: (session.status === "interrupted"
+      ? "approval_required"
+      : session.status === "failed" || session.status === "cancelled"
+        ? "failed"
+        : session.status === "running" || session.status === "queued"
+          ? "running"
+          : "done") as RunStatus,
+  }));
 
   return (
     <aside
@@ -46,7 +51,10 @@ export function Sidebar() {
 
       <div className="px-2 pb-2">
         <button
-          onClick={() => dispatch({ type: "SET_VIEW", view: "chat" })}
+          onClick={() => {
+            dispatch({ type: "SET_VIEW", view: "chat" });
+            void actions.createSession();
+          }}
           className={cn(
             "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
             !open && "justify-center px-0",
@@ -74,12 +82,25 @@ export function Sidebar() {
             onClick={() => dispatch({ type: "SET_VIEW", view: "chat" })}
             className={cn(
               "mt-2 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              state.activeView === "chat" && "bg-sidebar-accent text-sidebar-accent-foreground",
               !open && "justify-center px-0",
             )}
             title="Agents"
           >
             <Bot size={16} />
             {open && <span>Agents</span>}
+          </button>
+          <button
+            onClick={() => dispatch({ type: "SET_VIEW", view: "evaluation" })}
+            className={cn(
+              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              state.activeView === "evaluation" && "bg-sidebar-accent text-sidebar-accent-foreground",
+              !open && "justify-center px-0",
+            )}
+            title="Evaluation"
+          >
+            <ChartNoAxesColumn size={16} />
+            {open && <span>Evaluation</span>}
           </button>
         </div>
 
@@ -92,7 +113,7 @@ export function Sidebar() {
                 return (
                   <button
                     key={session.id}
-                    onClick={() => dispatch({ type: "SELECT_SESSION", sessionId: session.id })}
+                    onClick={() => void actions.selectSession(session.id)}
                     className={cn(
                       "group relative flex min-h-[44px] w-full items-center rounded-md px-2 py-2 text-left text-sm transition",
                       selected ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/70",

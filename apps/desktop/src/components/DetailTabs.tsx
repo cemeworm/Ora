@@ -85,12 +85,14 @@ export function DetailTabs({
       <div className="p-4">
         {selectedTab === "Overview" && (
           <div className="space-y-3">
-            <MetricRow label="Run ID" value={selectedSession.id} />
+            <MetricRow label="Session ID" value={selectedSession.id} />
+            <MetricRow label="Run ID" value={activeSnapshot?.runId ?? "No turns yet"} />
             <MetricRow label="Status" value={statusLabels[selectedSession.status]} />
-            <MetricRow label="Pattern" value={selectedSession.pattern.replace(/_/g, " ")} />
+            <MetricRow label="Pattern" value={(activeSnapshot?.pattern ?? selectedSession.pattern).replace(/_/g, " ")} />
             <MetricRow label="Prompt" value={activeSnapshot?.input.prompt ?? selectedSession.title} />
             <MetricRow label="Events" value={String(activeSnapshot?.events.length ?? 0)} />
             <MetricRow label="Checkpoints" value={String(activeSnapshot?.checkpoints.length ?? 0)} />
+            <MetricRow label="Turns" value={String(selectedSession.turnCount)} />
             <MetricRow label="Health" value={`${selectedSession.health}%`} />
             <DockCard title="Control result" icon={<Activity size={16} />}>
               <p>{commandFeedback}</p>

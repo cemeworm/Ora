@@ -44,7 +44,18 @@ export function createRuntimeMethodHandler(
         return SkillRegistrySchema.parse(skillRegistry);
       case "providers.list":
         return providerRegistry;
+      case "sessions.create":
+        return store.createSession(request.params);
+      case "sessions.list":
+        return store.listSessions(request.params);
+      case "sessions.get":
+        return store.getSession(request.params);
       case "runs.start":
+        if (sessionManager.isEnabled()) {
+          return store.startRunWithSnapshot(request.params, ({ runId, input, config, conversationMessages }) =>
+            sessionManager.startRun(runId, input, config, conversationMessages)
+          );
+        }
         return store.startRun(request.params);
       case "runs.list":
         return store.listRuns(request.params);
@@ -66,6 +77,43 @@ export function createRuntimeMethodHandler(
         return store.forkRun(request.params);
       case "runs.exportReport":
         return store.exportReport(request.params);
+      case "evaluation.datasets.import":
+        return store.importEvaluationDataset(request.params);
+      case "evaluation.datasets.list":
+        return store.listEvaluationDatasets(request.params);
+      case "evaluation.datasets.get":
+        return store.getEvaluationDataset(request.params);
+      case "evaluation.runs.start":
+        return store.startEvaluationRun(request.params, async ({ input, config }) => {
+          if (sessionManager.isEnabled()) {
+            const handle = await store.startRunWithSnapshot(
+              {
+                input,
+                config,
+              },
+              ({ runId, input: nextInput, config: nextConfig }) =>
+                sessionManager.startRun(runId, nextInput, nextConfig)
+            );
+            if (!handle) {
+              throw new OraRuntimeError("LangGraph evaluation run did not produce a snapshot.", -32003);
+            }
+            return store.getRunState({ runId: handle.runId });
+          }
+          const handle = await store.startRun({ input, config });
+          return store.getRunState({ runId: handle.runId });
+        });
+      case "evaluation.runs.list":
+        return store.listEvaluationRuns(request.params);
+      case "evaluation.runs.get":
+        return store.getEvaluationRun(request.params);
+      case "evaluation.runs.stream":
+        return store.streamEvaluationRun(request.params);
+      case "evaluation.runs.promoteBaseline":
+        return store.promoteEvaluationBaseline(request.params);
+      case "evaluation.runs.export":
+        return store.exportEvaluationRun(request.params);
+      case "evaluation.baselines.list":
+        return store.listEvaluationBaselines(request.params);
       default:
         throw new OraRuntimeError(`Method not found: ${request.method}`, -32601, {
           method: request.method

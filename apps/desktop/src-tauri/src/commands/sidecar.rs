@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,7 +29,8 @@ const STATUS_REASON_PROCESS: &str =
 const STATUS_REASON_UNAVAILABLE: &str =
     "Runtime sidecar command is configured but unavailable; Rust is falling back to deterministic Ora facade responses.";
 const DEFAULT_PATTERN: &str = "orchestrator_subagent";
-const DEV_RUNTIME_COMMAND_DISPLAY: &str = "pnpm --filter @ora/runtime start";
+const DEV_RUNTIME_COMMAND_DISPLAY: &str =
+    "node <workspace-tsx>/cli.mjs apps/runtime/src/sidecar-entry.ts";
 const PROD_RUNTIME_COMMAND_DISPLAY: &str =
     "runtime-sidecar/bin/node runtime-sidecar/app/runtime-sidecar.cjs";
 
@@ -41,7 +43,9 @@ pub struct RuntimeFacade {
 struct FacadeState {
     runs: HashMap<String, Value>,
     run_order: Vec<String>,
+    sessions: HashMap<String, Value>,
     next_run_number: u64,
+    next_session_number: u64,
 }
 
 pub struct RuntimeSidecarManager {
@@ -79,10 +83,11 @@ impl RuntimeSidecarManager {
         command: Option<RuntimeCommandSpec>,
         process_spawn_available: bool,
     ) -> Self {
+        let configured_from_env = command.is_some();
         Self {
             configured_command: command,
             process_spawn_available: Mutex::new(process_spawn_available),
-            configured_from_env: command.is_some(),
+            configured_from_env,
         }
     }
 
@@ -381,16 +386,7 @@ pub fn runtime_json_rpc(
     if let Some(response) = manager.try_process_json_rpc(&request) {
         response
     } else {
-        let _ = facade;
-        json_rpc_error(
-            request.id,
-            -32060,
-            "Runtime sidecar unavailable",
-            Some(json!({
-                "reason": STATUS_REASON_UNAVAILABLE,
-                "bridge_mode": BRIDGE_MODE_FACADE,
-            })),
-        )
+        facade.handle_runtime_json_rpc(request)
     }
 }
 
@@ -511,6 +507,9 @@ impl RuntimeFacade {
             "runtime.health" => Ok(runtime_health()),
             "patterns.list" => Ok(patterns_list()),
             "providers.list" => Ok(providers_list()),
+            "sessions.create" => self.sessions_create(params.as_ref()),
+            "sessions.list" => self.sessions_list(params.as_ref()),
+            "sessions.get" => self.sessions_get(params.as_ref()),
             "runs.start" => self.runs_start(params.as_ref()),
             "runs.list" => self.runs_list(params.as_ref()),
             "runs.stream" => self.runs_stream(params.as_ref()),
@@ -534,6 +533,83 @@ impl RuntimeFacade {
         }
     }
 
+    fn sessions_create(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let project_id = params
+            .and_then(|value| value.get("projectId"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let created_at = now_ms();
+        let mut state = self.lock_state()?;
+        state.next_session_number += 1;
+        let session_id = format!("session-{:04}", state.next_session_number);
+        let session = json!({
+            "sessionId": session_id,
+            "title": "New Chat",
+            "projectId": project_id,
+            "status": "idle",
+            "turnCount": 0,
+            "createdAt": created_at,
+            "updatedAt": created_at
+        });
+        state.sessions.insert(session_id.clone(), session.clone());
+        Ok(session)
+    }
+
+    fn sessions_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let project_id = params
+            .and_then(|value| value.get("projectId"))
+            .and_then(Value::as_str);
+        let limit = params
+            .and_then(|value| value.get("limit"))
+            .and_then(Value::as_u64)
+            .unwrap_or(500) as usize;
+        let state = self.lock_state()?;
+        let mut sessions = state
+            .sessions
+            .values()
+            .filter(|session| {
+                project_id.map_or(true, |expected| session["projectId"].as_str() == Some(expected))
+            })
+            .cloned()
+            .collect::<Vec<Value>>();
+        sessions.sort_by(|left, right| {
+            let left_updated = left["updatedAt"].as_u64().unwrap_or(0);
+            let right_updated = right["updatedAt"].as_u64().unwrap_or(0);
+            right_updated
+                .cmp(&left_updated)
+                .then_with(|| {
+                    left["sessionId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .cmp(right["sessionId"].as_str().unwrap_or_default())
+                })
+        });
+        sessions.truncate(limit);
+        Ok(Value::Array(sessions))
+    }
+
+    fn sessions_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let state = self.lock_state()?;
+        let session = get_session(&state, &session_id)?.clone();
+        let turns = runs_for_session(&state, &session_id)
+            .into_iter()
+            .map(session_turn)
+            .collect::<Vec<Value>>();
+        let transcript = session_transcript(&state, &session_id);
+        let latest_snapshot = runs_for_session(&state, &session_id)
+            .last()
+            .cloned()
+            .cloned();
+
+        Ok(json!({
+            "session": session,
+            "turns": turns,
+            "transcript": transcript,
+            "latestSnapshot": latest_snapshot
+        }))
+    }
+
     fn runs_start(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
         let prompt = start_prompt(params)?;
         let pattern = start_pattern(params)?;
@@ -541,10 +617,26 @@ impl RuntimeFacade {
         let model_ref = start_model_ref(params);
         let started_at = now_ms();
         let mut state = self.lock_state()?;
+        let session_id = ensure_session_for_run(&mut state, params, started_at)?;
+        let turn_index = next_turn_index(&state, &session_id);
+        let project_id = params
+            .and_then(|value| value.get("input"))
+            .and_then(|input| input.get("projectId"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                state
+                    .sessions
+                    .get(&session_id)
+                    .and_then(|session| session["projectId"].as_str())
+            })
+            .map(str::to_string);
         state.next_run_number += 1;
         let run_id = format!("run-{:04}", state.next_run_number);
         let snapshot = create_snapshot(
             &run_id,
+            &session_id,
+            turn_index,
+            project_id.as_deref(),
             pattern,
             &prompt,
             started_at,
@@ -554,9 +646,12 @@ impl RuntimeFacade {
         );
         state.runs.insert(run_id.clone(), snapshot.clone());
         state.run_order.push(run_id.clone());
+        upsert_session_from_snapshot(&mut state, &snapshot);
 
         Ok(json!({
             "runId": run_id,
+            "sessionId": session_id,
+            "turnIndex": turn_index,
             "status": snapshot["status"],
             "pattern": pattern,
             "startedAt": snapshot["events"][0]["createdAt"]
@@ -571,6 +666,9 @@ impl RuntimeFacade {
             .and_then(|value| value.get("limit"))
             .and_then(Value::as_u64)
             .unwrap_or(500) as usize;
+        let session_filter = params
+            .and_then(|value| value.get("sessionId"))
+            .and_then(Value::as_str);
         let state = self.lock_state()?;
         let mut summaries = Vec::new();
 
@@ -578,6 +676,9 @@ impl RuntimeFacade {
             if let Some(snapshot) = state.runs.get(run_id) {
                 let status = snapshot["status"].as_str().unwrap_or("failed");
                 if status_filter.map_or(false, |expected| expected != status) {
+                    continue;
+                }
+                if session_filter.map_or(false, |expected| snapshot["sessionId"].as_str() != Some(expected)) {
                     continue;
                 }
                 summaries.push(run_summary(snapshot));
@@ -641,29 +742,33 @@ impl RuntimeFacade {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let mut state = self.lock_state()?;
-        let snapshot = get_run_mut(&mut state, &run_id)?;
-        append_event(
-            snapshot,
-            "run.resumed",
-            json!({ "reason": reason, "patch": patch }),
-            None,
-        );
-        set_snapshot_status(snapshot, "running");
-        set_topology_status(snapshot, "running");
-        set_plan_status(snapshot, "running");
-        append_event(
-            snapshot,
-            "run.done",
-            json!({
-                "status": "succeeded",
-                "summary": "Deterministic local smoke run resumed and completed."
-            }),
-            None,
-        );
-        set_snapshot_status(snapshot, "succeeded");
-        set_topology_status(snapshot, "done");
-        set_plan_status(snapshot, "done");
-        Ok(snapshot.clone())
+        let updated = {
+            let snapshot = get_run_mut(&mut state, &run_id)?;
+            append_event(
+                snapshot,
+                "run.resumed",
+                json!({ "reason": reason, "patch": patch }),
+                None,
+            );
+            set_snapshot_status(snapshot, "running");
+            set_topology_status(snapshot, "running");
+            set_plan_status(snapshot, "running");
+            append_event(
+                snapshot,
+                "run.done",
+                json!({
+                    "status": "succeeded",
+                    "summary": "Deterministic local smoke run resumed and completed."
+                }),
+                None,
+            );
+            set_snapshot_status(snapshot, "succeeded");
+            set_topology_status(snapshot, "done");
+            set_plan_status(snapshot, "done");
+            snapshot.clone()
+        };
+        upsert_session_from_snapshot(&mut state, &updated);
+        Ok(updated)
     }
 
     fn runs_cancel(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -698,36 +803,40 @@ impl RuntimeFacade {
     fn runs_export_report(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
         let run_id = require_run_id(params)?;
         let mut state = self.lock_state()?;
-        let snapshot = get_run_mut(&mut state, &run_id)?;
-        let report_index = snapshot["artifacts"].as_array().map_or(0, Vec::len);
-        let artifact = json!({
-            "id": format!("{}:report-{}", run_id, report_index),
-            "runId": run_id,
-            "kind": "report",
-            "label": if report_index == 0 {
-                "Smoke run report".to_string()
-            } else {
-                format!("Smoke run report {}", report_index + 1)
-            },
-            "mimeType": "application/json",
-            "createdAt": now_ms(),
-            "payload": {
-                "runId": snapshot["runId"],
-                "status": snapshot["status"],
-                "pattern": snapshot["pattern"],
-                "eventCount": snapshot["events"].as_array().map_or(0, Vec::len),
-                "checkpointCount": snapshot["checkpoints"].as_array().map_or(0, Vec::len),
-                "output": snapshot["output"]
-            }
-        });
+        let (artifact, updated) = {
+            let snapshot = get_run_mut(&mut state, &run_id)?;
+            let report_index = snapshot["artifacts"].as_array().map_or(0, Vec::len);
+            let artifact = json!({
+                "id": format!("{}:report-{}", run_id, report_index),
+                "runId": run_id,
+                "kind": "report",
+                "label": if report_index == 0 {
+                    "Smoke run report".to_string()
+                } else {
+                    format!("Smoke run report {}", report_index + 1)
+                },
+                "mimeType": "application/json",
+                "createdAt": now_ms(),
+                "payload": {
+                    "runId": snapshot["runId"],
+                    "status": snapshot["status"],
+                    "pattern": snapshot["pattern"],
+                    "eventCount": snapshot["events"].as_array().map_or(0, Vec::len),
+                    "checkpointCount": snapshot["checkpoints"].as_array().map_or(0, Vec::len),
+                    "output": snapshot["output"]
+                }
+            });
 
-        push_array_item(snapshot, "artifacts", artifact.clone());
-        append_event(
-            snapshot,
-            "artifact.exported",
-            json!({ "artifact": artifact.clone() }),
-            None,
-        );
+            push_array_item(snapshot, "artifacts", artifact.clone());
+            append_event(
+                snapshot,
+                "artifact.exported",
+                json!({ "artifact": artifact.clone() }),
+                None,
+            );
+            (artifact, snapshot.clone())
+        };
+        upsert_session_from_snapshot(&mut state, &updated);
         Ok(artifact)
     }
 
@@ -739,7 +848,7 @@ impl RuntimeFacade {
         let source_run_id = require_run_id(params)?;
         let checkpoint_id = require_checkpoint_id(params)?;
         let mut state = self.lock_state()?;
-        let source = get_run(&state, &source_run_id)?;
+        let source = get_run(&state, &source_run_id)?.clone();
         let checkpoint = source["checkpoints"]
             .as_array()
             .and_then(|checkpoints| {
@@ -783,6 +892,15 @@ impl RuntimeFacade {
             .or_else(|| source["config"]["modelRef"].as_str())
             .map(str::to_string);
         let started_at = now_ms();
+        let session_id = source["sessionId"]
+            .as_str()
+            .ok_or_else(|| runtime_error(
+                -32004,
+                "Source run is missing sessionId",
+                Some(json!({ "runId": source_run_id })),
+            ))?
+            .to_string();
+        let turn_index = next_turn_index(&state, &session_id);
         state.next_run_number += 1;
         let child_run_id = format!("run-{:04}", state.next_run_number);
         let forked_from = json!({
@@ -791,8 +909,20 @@ impl RuntimeFacade {
             "eventSeq": checkpoint["eventSeq"],
             "mode": if is_fork { "fork" } else { "replay" }
         });
+        let project_id = source["input"]["projectId"]
+            .as_str()
+            .or_else(|| {
+                state
+                    .sessions
+                    .get(&session_id)
+                    .and_then(|session| session["projectId"].as_str())
+            })
+            .map(str::to_string);
         let snapshot = create_snapshot(
             &child_run_id,
+            &session_id,
+            turn_index,
+            project_id.as_deref(),
             &pattern,
             &prompt,
             started_at,
@@ -802,9 +932,12 @@ impl RuntimeFacade {
         );
         state.runs.insert(child_run_id.clone(), snapshot.clone());
         state.run_order.push(child_run_id.clone());
+        upsert_session_from_snapshot(&mut state, &snapshot);
 
         Ok(json!({
             "runId": child_run_id,
+            "sessionId": session_id,
+            "turnIndex": turn_index,
             "status": snapshot["status"],
             "pattern": pattern,
             "startedAt": snapshot["events"][0]["createdAt"]
@@ -820,10 +953,14 @@ impl RuntimeFacade {
     ) -> Result<Value, RuntimeJsonRpcError> {
         let run_id = require_run_id(params)?;
         let mut state = self.lock_state()?;
-        let snapshot = get_run_mut(&mut state, &run_id)?;
-        append_event(snapshot, event_type, payload, None);
-        set_snapshot_status(snapshot, status);
-        Ok(snapshot.clone())
+        let updated = {
+            let snapshot = get_run_mut(&mut state, &run_id)?;
+            append_event(snapshot, event_type, payload, None);
+            set_snapshot_status(snapshot, status);
+            snapshot.clone()
+        };
+        upsert_session_from_snapshot(&mut state, &updated);
+        Ok(updated)
     }
 
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, FacadeState>, RuntimeJsonRpcError> {
@@ -961,14 +1098,22 @@ fn runtime_health() -> Value {
 fn resolve_runtime_command(app: &AppHandle) -> (Option<RuntimeCommandSpec>, bool) {
     if let Ok(command) = env::var(RUNTIME_COMMAND_ENV) {
         let resolved = match command.trim().to_ascii_lowercase().as_str() {
-            "dev" | "development" => Some(dev_runtime_command()),
+            "dev" | "development" => dev_runtime_command(),
             "prod" | "production" => bundled_runtime_command(app),
             _ => None,
         };
         return (resolved, true);
     }
 
-    (bundled_runtime_command(app), false)
+    #[cfg(debug_assertions)]
+    {
+        (dev_runtime_command(), false)
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        (bundled_runtime_command(app), false)
+    }
 }
 
 fn command_is_available(executable: &Path) -> bool {
@@ -1143,18 +1288,54 @@ fn run_process_json_rpc(
     Ok(response)
 }
 
-fn dev_runtime_command() -> RuntimeCommandSpec {
-    RuntimeCommandSpec::new(
+fn dev_runtime_command() -> Option<RuntimeCommandSpec> {
+    let repo_root = workspace_root()?;
+    let tsx_cli = find_workspace_tsx_cli(&repo_root)?;
+    let sidecar_entry = repo_root.join("apps").join("runtime").join("src").join("sidecar-entry.ts");
+
+    if !sidecar_entry.is_file() {
+        return None;
+    }
+
+    Some(RuntimeCommandSpec::new(
         DEV_RUNTIME_COMMAND_DISPLAY,
-        "pnpm",
+        "node",
         vec![
-            "--filter".to_string(),
-            "@ora/runtime".to_string(),
-            "start".to_string(),
+            tsx_cli.to_string_lossy().into_owned(),
+            sidecar_entry.to_string_lossy().into_owned(),
         ],
-        None,
+        Some(repo_root),
         Vec::new(),
-    )
+    ))
+}
+
+fn workspace_root() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.join("../../..").canonicalize().ok()
+}
+
+fn find_workspace_tsx_cli(repo_root: &Path) -> Option<PathBuf> {
+    let pnpm_dir = repo_root.join("node_modules").join(".pnpm");
+    let entries = fs::read_dir(pnpm_dir).ok()?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?;
+        if !name.starts_with("tsx@") {
+            continue;
+        }
+
+        let cli = path
+            .join("node_modules")
+            .join("tsx")
+            .join("dist")
+            .join("cli.mjs");
+        if cli.is_file() {
+            return Some(cli);
+        }
+    }
+
+    None
 }
 
 fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
@@ -1210,6 +1391,8 @@ fn patterns_list() -> Value {
         pattern_definition("orchestrator_subagent"),
         pattern_definition("generator_verifier"),
         pattern_definition("agent_teams"),
+        pattern_definition("message_bus"),
+        pattern_definition("shared_state"),
     ])
 }
 
@@ -1244,6 +1427,9 @@ fn providers_list() -> Value {
 
 fn create_snapshot(
     run_id: &str,
+    session_id: &str,
+    turn_index: u64,
+    project_id: Option<&str>,
     pattern: &str,
     prompt: &str,
     started_at: u64,
@@ -1401,11 +1587,13 @@ fn create_snapshot(
 
     json!({
         "runId": run_id,
+        "sessionId": session_id,
+        "turnIndex": turn_index,
         "status": "succeeded",
         "pattern": pattern,
         "input": {
             "prompt": prompt,
-            "projectId": "ora-mvp",
+            "projectId": project_id.unwrap_or("ora-mvp"),
             "context": forked_from.map_or_else(|| json!({}), |fork_info| json!({ "forkedFrom": fork_info })),
             "createdAt": started_at
         },
@@ -1506,8 +1694,28 @@ fn append_event(
 fn run_summary(snapshot: &Value) -> Value {
     json!({
         "runId": snapshot["runId"],
+        "sessionId": snapshot["sessionId"],
+        "turnIndex": snapshot["turnIndex"],
         "status": snapshot["status"],
         "pattern": snapshot["pattern"],
+        "prompt": snapshot["input"]["prompt"],
+        "startedAt": snapshot["events"][0]["createdAt"].clone(),
+        "updatedAt": snapshot["updatedAt"],
+        "eventCount": snapshot["events"].as_array().map_or(0, Vec::len),
+        "checkpointCount": snapshot["checkpoints"].as_array().map_or(0, Vec::len),
+        "artifactCount": snapshot["artifacts"].as_array().map_or(0, Vec::len)
+    })
+}
+
+fn session_turn(snapshot: &Value) -> Value {
+    json!({
+        "runId": snapshot["runId"],
+        "sessionId": snapshot["sessionId"],
+        "turnIndex": snapshot["turnIndex"],
+        "status": snapshot["status"],
+        "pattern": snapshot["pattern"],
+        "providerId": snapshot["config"]["providerId"],
+        "modelRef": snapshot["config"]["modelRef"],
         "prompt": snapshot["input"]["prompt"],
         "startedAt": snapshot["events"][0]["createdAt"].clone(),
         "updatedAt": snapshot["updatedAt"],
@@ -1524,6 +1732,19 @@ fn get_run<'a>(state: &'a FacadeState, run_id: &str) -> Result<&'a Value, Runtim
         .ok_or_else(|| runtime_error(-32004, "Run not found", Some(json!({ "runId": run_id }))))
 }
 
+fn get_session<'a>(state: &'a FacadeState, session_id: &str) -> Result<&'a Value, RuntimeJsonRpcError> {
+    state
+        .sessions
+        .get(session_id)
+        .ok_or_else(|| {
+            runtime_error(
+                -32004,
+                "Session not found",
+                Some(json!({ "sessionId": session_id })),
+            )
+        })
+}
+
 fn get_run_mut<'a>(
     state: &'a mut FacadeState,
     run_id: &str,
@@ -1534,6 +1755,190 @@ fn get_run_mut<'a>(
         .ok_or_else(|| runtime_error(-32004, "Run not found", Some(json!({ "runId": run_id }))))
 }
 
+fn runs_for_session<'a>(state: &'a FacadeState, session_id: &str) -> Vec<&'a Value> {
+    let mut runs = state
+        .runs
+        .values()
+        .filter(|snapshot| snapshot["sessionId"].as_str() == Some(session_id))
+        .collect::<Vec<&Value>>();
+    runs.sort_by(|left, right| {
+        let left_turn = left["turnIndex"].as_u64().unwrap_or(1);
+        let right_turn = right["turnIndex"].as_u64().unwrap_or(1);
+        left_turn
+            .cmp(&right_turn)
+            .then_with(|| left["updatedAt"].as_u64().unwrap_or(0).cmp(&right["updatedAt"].as_u64().unwrap_or(0)))
+            .then_with(|| {
+                left["runId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["runId"].as_str().unwrap_or_default())
+            })
+    });
+    runs
+}
+
+fn next_turn_index(state: &FacadeState, session_id: &str) -> u64 {
+    runs_for_session(state, session_id)
+        .last()
+        .and_then(|snapshot| snapshot["turnIndex"].as_u64())
+        .unwrap_or(0)
+        + 1
+}
+
+fn default_session_title(prompt: &str) -> String {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        "New Chat".to_string()
+    } else {
+        trimmed.chars().take(120).collect()
+    }
+}
+
+fn assistant_text_for_run(snapshot: &Value) -> String {
+    if let Some(text) = snapshot["output"]["text"].as_str() {
+        if !text.trim().is_empty() {
+            return text.trim().to_string();
+        }
+    }
+    if let Some(text) = snapshot["output"].as_str() {
+        if !text.trim().is_empty() {
+            return text.trim().to_string();
+        }
+    }
+    if let Some(events) = snapshot["events"].as_array() {
+        for event in events.iter().rev() {
+            if event["type"].as_str() != Some("message.delta") {
+                continue;
+            }
+            if let Some(content) = event["payload"]["content"].as_str() {
+                if !content.trim().is_empty() {
+                    return content.trim().to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn session_transcript(state: &FacadeState, session_id: &str) -> Vec<Value> {
+    let mut transcript = Vec::new();
+    for run in runs_for_session(state, session_id) {
+        if let Some(prompt) = run["input"]["prompt"].as_str() {
+            if !prompt.trim().is_empty() {
+                transcript.push(json!({
+                    "id": format!("{}:user", run["runId"].as_str().unwrap_or("run")),
+                    "sessionId": session_id,
+                    "runId": run["runId"],
+                    "turnIndex": run["turnIndex"],
+                    "role": "user",
+                    "content": prompt.trim(),
+                    "pattern": run["pattern"],
+                    "createdAt": run["input"]["createdAt"]
+                }));
+            }
+        }
+        let assistant = assistant_text_for_run(run);
+        if !assistant.is_empty() {
+            transcript.push(json!({
+                "id": format!("{}:assistant", run["runId"].as_str().unwrap_or("run")),
+                "sessionId": session_id,
+                "runId": run["runId"],
+                "turnIndex": run["turnIndex"],
+                "role": "assistant",
+                "content": assistant,
+                "pattern": run["pattern"],
+                "createdAt": run["updatedAt"]
+            }));
+        }
+    }
+    transcript
+}
+
+fn ensure_session_for_run(
+    state: &mut FacadeState,
+    params: Option<&Value>,
+    created_at: u64,
+) -> Result<String, RuntimeJsonRpcError> {
+    if let Some(session_id) = params
+        .and_then(|value| value.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|session_id| !session_id.is_empty())
+    {
+        get_session(state, session_id)?;
+        return Ok(session_id.to_string());
+    }
+
+    state.next_session_number += 1;
+    let session_id = format!("session-{:04}", state.next_session_number);
+    let project_id = params
+        .and_then(|value| value.get("input"))
+        .and_then(|input| input.get("projectId"))
+        .and_then(Value::as_str);
+    state.sessions.insert(
+        session_id.clone(),
+        json!({
+            "sessionId": session_id,
+            "title": "New Chat",
+            "projectId": project_id,
+            "status": "idle",
+            "turnCount": 0,
+            "createdAt": created_at,
+            "updatedAt": created_at
+        }),
+    );
+    Ok(session_id)
+}
+
+fn upsert_session_from_snapshot(state: &mut FacadeState, snapshot: &Value) {
+    let Some(session_id) = snapshot["sessionId"].as_str() else {
+        return;
+    };
+    let existing = state.sessions.get(session_id).cloned();
+    let project_id = if !snapshot["input"]["projectId"].is_null() {
+        snapshot["input"]["projectId"].clone()
+    } else {
+        existing
+            .as_ref()
+            .map(|session| session["projectId"].clone())
+            .unwrap_or(Value::Null)
+    };
+    let turn_count = runs_for_session(state, session_id)
+        .into_iter()
+        .filter(|run| run["runId"] != snapshot["runId"])
+        .count() as u64
+        + 1;
+    let title = if existing
+        .as_ref()
+        .and_then(|session| session["turnCount"].as_u64())
+        .unwrap_or(0)
+        > 0
+    {
+        existing
+            .as_ref()
+            .and_then(|session| session["title"].as_str())
+            .unwrap_or("New Chat")
+            .to_string()
+    } else {
+        default_session_title(snapshot["input"]["prompt"].as_str().unwrap_or("New Chat"))
+    };
+    state.sessions.insert(
+        session_id.to_string(),
+        json!({
+            "sessionId": session_id,
+            "title": title,
+            "projectId": project_id,
+            "status": snapshot["status"],
+            "latestRunId": snapshot["runId"],
+            "latestPattern": snapshot["pattern"],
+            "latestProviderId": snapshot["config"]["providerId"],
+            "latestModelRef": snapshot["config"]["modelRef"],
+            "turnCount": turn_count,
+            "createdAt": existing.as_ref().map(|session| session["createdAt"].clone()).unwrap_or_else(|| snapshot["input"]["createdAt"].clone()),
+            "updatedAt": snapshot["updatedAt"]
+        }),
+    );
+}
+
 fn require_run_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
     params
         .and_then(|value| value.get("runId"))
@@ -1541,6 +1946,15 @@ fn require_run_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError>
         .filter(|run_id| !run_id.is_empty())
         .map(str::to_string)
         .ok_or_else(|| runtime_error(-32602, "Missing runId", None))
+}
+
+fn require_session_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
+    params
+        .and_then(|value| value.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|session_id| !session_id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| runtime_error(-32602, "Missing sessionId", None))
 }
 
 fn require_checkpoint_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
@@ -1596,7 +2010,7 @@ fn start_model_ref(params: Option<&Value>) -> Option<String> {
 
 fn ensure_pattern(pattern: &str) -> Result<(), RuntimeJsonRpcError> {
     match pattern {
-        "generator_verifier" | "orchestrator_subagent" | "agent_teams" => Ok(()),
+        "generator_verifier" | "orchestrator_subagent" | "agent_teams" | "message_bus" | "shared_state" => Ok(()),
         _ => Err(runtime_error(
             -32602,
             "Unsupported coordination pattern",
@@ -1683,6 +2097,8 @@ fn pattern_budget(pattern: &str) -> Value {
     match pattern {
         "generator_verifier" => budget(12000, 8, 180000, 2),
         "agent_teams" => budget(24000, 24, 600000, 5),
+        "message_bus" => budget(18000, 18, 300000, 3),
+        "shared_state" => budget(20000, 20, 360000, 4),
         _ => budget(18000, 16, 300000, 3),
     }
 }
@@ -1757,6 +2173,76 @@ fn pattern_definition(pattern: &str) -> Value {
                 { "id": "build", "title": "Complete assigned task", "ownerAgentId": "builder", "dependencies": ["triage"] },
                 { "id": "check", "title": "Validate output", "ownerAgentId": "checker", "dependencies": ["build"] },
                 { "id": "handoff", "title": "Record handoff and next action", "ownerAgentId": "team_lead", "dependencies": ["check"] }
+            ]
+        }),
+        "message_bus" => json!({
+            "id": "message_bus",
+            "label": "Message Bus",
+            "summary": "Agents coordinate through explicit publish, route, and respond stages.",
+            "recommendedUse": "Use when you want inspectable message routing instead of direct delegation.",
+            "failureMode": "Loose topic contracts can create dropped or duplicated work.",
+            "defaultConstraints": [
+                "Keep topics explicit.",
+                "Route messages deterministically.",
+                "Record correlation context."
+            ],
+            "defaultBudget": pattern_budget("message_bus"),
+            "profiles": [
+                profile("router", "Router", "Publish and route work across topics.", "message_bus", vec!["session", "project"]),
+                profile("responder", "Responder", "Consume routed work and emit the final response.", "message_bus", vec!["session", "project", "artifact"])
+            ],
+            "topology": {
+                "nodes": [
+                    { "id": "run", "label": "Run", "kind": "run", "status": "idle", "metadata": {} },
+                    { "id": "router", "label": "Router", "kind": "agent", "agentId": "router", "status": "idle", "metadata": {} },
+                    { "id": "bus", "label": "Bus", "kind": "capability", "status": "blocked", "metadata": {} },
+                    { "id": "responder", "label": "Responder", "kind": "agent", "agentId": "responder", "status": "idle", "metadata": {} }
+                ],
+                "edges": [
+                    { "id": "run-router", "source": "run", "target": "router", "kind": "control", "label": "publish", "metadata": {} },
+                    { "id": "router-bus", "source": "router", "target": "bus", "kind": "message", "label": "route", "metadata": {} },
+                    { "id": "bus-responder", "source": "bus", "target": "responder", "kind": "message", "label": "deliver", "metadata": {} }
+                ]
+            },
+            "planTemplate": [
+                { "id": "publish", "title": "Publish task input onto the bus", "ownerAgentId": "router", "dependencies": [] },
+                { "id": "route", "title": "Route work to the response topic", "ownerAgentId": "router", "dependencies": ["publish"] },
+                { "id": "respond", "title": "Respond from the terminal topic", "ownerAgentId": "responder", "dependencies": ["route"] }
+            ]
+        }),
+        "shared_state" => json!({
+            "id": "shared_state",
+            "label": "Shared State",
+            "summary": "Agents converge by iteratively updating a shared board.",
+            "recommendedUse": "Use when multiple agents should co-edit a visible shared artifact.",
+            "failureMode": "Weak convergence rules can cause board churn or stale state.",
+            "defaultConstraints": [
+                "Keep the shared board visible.",
+                "Use explicit convergence criteria.",
+                "Record final state."
+            ],
+            "defaultBudget": pattern_budget("shared_state"),
+            "profiles": [
+                profile("planner", "Planner", "Seed and refine the shared board.", "shared_state", vec!["project", "session"]),
+                profile("critic", "Critic", "Check convergence and remaining gaps.", "shared_state", vec!["project", "artifact"])
+            ],
+            "topology": {
+                "nodes": [
+                    { "id": "run", "label": "Run", "kind": "run", "status": "idle", "metadata": {} },
+                    { "id": "planner", "label": "Planner", "kind": "agent", "agentId": "planner", "status": "idle", "metadata": {} },
+                    { "id": "board", "label": "Shared Board", "kind": "capability", "status": "blocked", "metadata": {} },
+                    { "id": "critic", "label": "Critic", "kind": "agent", "agentId": "critic", "status": "idle", "metadata": {} }
+                ],
+                "edges": [
+                    { "id": "run-planner", "source": "run", "target": "planner", "kind": "control", "label": "seed", "metadata": {} },
+                    { "id": "planner-board", "source": "planner", "target": "board", "kind": "memory", "label": "update", "metadata": {} },
+                    { "id": "board-critic", "source": "board", "target": "critic", "kind": "control", "label": "review", "metadata": {} }
+                ]
+            },
+            "planTemplate": [
+                { "id": "seed", "title": "Seed the shared board", "ownerAgentId": "planner", "dependencies": [] },
+                { "id": "refine", "title": "Refine the board with supporting detail", "ownerAgentId": "planner", "dependencies": ["seed"] },
+                { "id": "converge", "title": "Check convergence and finalize", "ownerAgentId": "critic", "dependencies": ["refine"] }
             ]
         }),
         _ => json!({
@@ -1855,7 +2341,10 @@ mod tests {
 
     #[test]
     fn sidecar_manager_reports_process_mode_when_bridge_is_enabled() {
-        let manager = process_bridge_manager(dev_runtime_command(), true);
+        let manager = process_bridge_manager(
+            dev_runtime_command().expect("workspace tsx cli should be available in tests"),
+            true,
+        );
         let status = manager.status();
 
         assert_eq!(status.runtime_mode, RUNTIME_MODE_PROCESS);
@@ -1897,7 +2386,7 @@ mod tests {
         let response = facade.handle_runtime_json_rpc(request("patterns.list", None));
 
         let result = response.result.unwrap();
-        assert_eq!(result.as_array().unwrap().len(), 3);
+        assert_eq!(result.as_array().unwrap().len(), 5);
         assert_eq!(
             result[0].get("id").unwrap(),
             &json!("orchestrator_subagent")
@@ -1949,6 +2438,50 @@ mod tests {
 
         let list = facade.handle_method("runs.list", None).unwrap();
         assert_eq!(list.as_array().unwrap()[0]["artifactCount"], json!(1));
+    }
+
+    #[test]
+    fn session_lifecycle_supports_create_get_and_turn_append() {
+        let facade = RuntimeFacade::default();
+        let created = facade
+            .handle_method("sessions.create", Some(json!({ "projectId": "ora-ui" })))
+            .unwrap();
+        let session_id = created["sessionId"].as_str().unwrap().to_string();
+        assert_eq!(created["turnCount"], json!(0));
+
+        let first = facade
+            .handle_method(
+                "runs.start",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "input": { "prompt": "First turn" },
+                    "config": { "pattern": "generator_verifier" }
+                })),
+            )
+            .unwrap();
+        let second = facade
+            .handle_method(
+                "runs.start",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "input": { "prompt": "Second turn" },
+                    "config": { "pattern": "shared_state" }
+                })),
+            )
+            .unwrap();
+
+        assert_eq!(first["turnIndex"], json!(1));
+        assert_eq!(second["turnIndex"], json!(2));
+        assert_eq!(second["sessionId"], json!(session_id));
+
+        let detail = facade
+            .handle_method("sessions.get", Some(json!({ "sessionId": session_id })))
+            .unwrap();
+        assert_eq!(detail["session"]["turnCount"], json!(2));
+        assert_eq!(detail["session"]["latestPattern"], json!("shared_state"));
+        assert_eq!(detail["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(detail["transcript"].as_array().unwrap().len(), 4);
+        assert_eq!(detail["latestSnapshot"]["runId"], second["runId"]);
     }
 
     #[test]

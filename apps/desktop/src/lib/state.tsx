@@ -1,10 +1,12 @@
-import { createContext, useContext, useReducer, useMemo, type Dispatch, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import type {
   OraPatternDefinition,
   OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
+  OraSessionDetail,
+  OraSessionSummary,
   OraSkillRegistry,
   OraStateSnapshot,
   OraToolRegistry,
@@ -14,10 +16,12 @@ import type {
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
   selectedSessionId: string | undefined;
+  selectedTurnRunId: string | undefined;
   selectedDockTab: DockTab;
   selectedBeatId: string | undefined;
   selectedNodeId: string;
-  sessions: OraStateSnapshot[];
+  sessions: OraSessionSummary[];
+  activeSessionDetail: OraSessionDetail | undefined;
   activeSnapshot: OraStateSnapshot | undefined;
   patterns: OraPatternDefinition[];
   providerRegistry: OraProviderRegistry | undefined;
@@ -46,10 +50,17 @@ export type WorkbenchAction =
       toolRegistry: OraToolRegistry;
       skillRegistry: OraSkillRegistry;
       providerSecretStatuses: OraProviderSecretStatus[];
-      snapshot: OraStateSnapshot;
       health: RuntimeHealth;
     }
+  | { type: "RESET_RUNTIME_VIEW" }
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
+  | {
+      type: "HYDRATE_SESSION";
+      sessions: OraSessionSummary[];
+      detail: OraSessionDetail;
+      snapshot?: OraStateSnapshot;
+      feedback?: string;
+    }
   | { type: "SET_PROVIDER"; providerId: string }
   | { type: "SET_PROVIDER_REGISTRY"; providerRegistry: OraProviderRegistry }
   | { type: "UPSERT_PROVIDER"; provider: OraProviderConfig }
@@ -57,6 +68,7 @@ export type WorkbenchAction =
   | { type: "SET_PROVIDER_SECRET_STATUS"; status: OraProviderSecretStatus }
   | { type: "SET_PROVIDER_SECRET_STATUSES"; statuses: OraProviderSecretStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
+  | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
   | { type: "SELECT_TAB"; tab: DockTab }
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
@@ -66,9 +78,6 @@ export type WorkbenchAction =
   | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
   | { type: "SET_BRIDGE_STATUS"; status: RuntimeBridgeStatus }
   | { type: "TOGGLE_FILMSTRIP" }
-  | { type: "RUN_STARTED"; snapshot: OraStateSnapshot }
-  | { type: "RUN_UPDATED"; snapshot: OraStateSnapshot }
-  | { type: "RUN_ADDED"; snapshot: OraStateSnapshot }
   | { type: "SET_VIEW"; view: AppView }
   | { type: "TOGGLE_SIDEBAR" }
   | { type: "TOGGLE_DETAIL_DRAWER" }
@@ -78,10 +87,12 @@ export type WorkbenchAction =
 const initialState: WorkbenchState = {
   selectedPattern: "orchestrator_subagent",
   selectedSessionId: undefined,
+  selectedTurnRunId: undefined,
   selectedDockTab: "Overview",
   selectedBeatId: undefined,
   selectedNodeId: "run",
   sessions: [],
+  activeSessionDetail: undefined,
   activeSnapshot: undefined,
   patterns: [],
   providerRegistry: undefined,
@@ -95,11 +106,10 @@ const initialState: WorkbenchState = {
     label: "Runtime",
     detail: "Connecting to the Ora runtime bridge.",
   },
-  promptText:
-    "Implement a smoke run that proves Ora can switch patterns, expose topology, stream events, and checkpoint state.",
+  promptText: "",
   isLoading: false,
   busyCommand: undefined,
-  commandFeedback: "Select a checkpoint or event to replay, fork, approve, or export.",
+  commandFeedback: "Select a session to inspect its latest turn, checkpoints, and approvals.",
   filmstripExpanded: false,
   activeView: "chat",
   sidebarCollapsed: false,
@@ -108,14 +118,39 @@ const initialState: WorkbenchState = {
   inputMode: "pro",
 };
 
-function replaceSession(sessions: OraStateSnapshot[], snapshot: OraStateSnapshot): OraStateSnapshot[] {
-  return [snapshot, ...sessions.filter((item) => item.runId !== snapshot.runId)];
+function replaceSessionSummary(sessions: OraSessionSummary[], session: OraSessionSummary): OraSessionSummary[] {
+  return [session, ...sessions.filter((item) => item.sessionId !== session.sessionId)];
+}
+
+function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStateSnapshot, selectedRunId?: string) {
+  if (snapshot) {
+    return snapshot;
+  }
+  if (selectedRunId && detail.latestSnapshot?.runId === selectedRunId) {
+    return detail.latestSnapshot;
+  }
+  return detail.latestSnapshot;
 }
 
 function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   switch (action.type) {
-    case "BOOTSTRAP": {
-      const snapshot = action.snapshot;
+    case "RESET_RUNTIME_VIEW":
+      return {
+        ...state,
+        selectedSessionId: undefined,
+        selectedTurnRunId: undefined,
+        selectedBeatId: undefined,
+        selectedNodeId: "run",
+        sessions: [],
+        activeSessionDetail: undefined,
+        activeSnapshot: undefined,
+        promptText: "",
+        isLoading: true,
+        busyCommand: undefined,
+        commandFeedback: "Reconnecting to the Ora runtime bridge.",
+      };
+
+    case "BOOTSTRAP":
       return {
         ...state,
         patterns: action.patterns,
@@ -124,12 +159,6 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         skillRegistry: action.skillRegistry,
         providerSecretStatuses: action.providerSecretStatuses,
         selectedProviderId: action.providerRegistry.defaultProviderId,
-        sessions: [snapshot],
-        activeSnapshot: snapshot,
-        selectedSessionId: snapshot.runId,
-        selectedPattern: snapshot.pattern,
-        selectedNodeId: snapshot.topology.nodes[1]?.id ?? snapshot.topology.nodes[0]?.id ?? "run",
-        selectedBeatId: snapshot.events[2]?.id ?? snapshot.events[0]?.id,
         bridgeStatus: {
           mode: action.health.mode,
           ok: action.health.ok,
@@ -137,6 +166,28 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
           detail: action.health.detail,
         },
         isLoading: false,
+      };
+
+    case "HYDRATE_SESSION": {
+      const snapshot = selectedSnapshotFromDetail(action.detail, action.snapshot, state.selectedTurnRunId);
+      const latestTurn = action.detail.turns.at(-1);
+      return {
+        ...state,
+        sessions: replaceSessionSummary(
+          action.sessions.filter((session) => session.sessionId !== action.detail.session.sessionId),
+          action.detail.session,
+        ),
+        activeSessionDetail: action.detail,
+        activeSnapshot: snapshot,
+        selectedSessionId: action.detail.session.sessionId,
+        selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
+        selectedPattern: snapshot?.pattern ?? state.selectedPattern,
+        selectedProviderId: snapshot?.config.providerId ?? state.selectedProviderId,
+        selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
+        selectedBeatId: snapshot?.events.at(-1)?.id,
+        commandFeedback: action.feedback ?? state.commandFeedback,
+        isLoading: false,
+        busyCommand: undefined,
       };
     }
 
@@ -149,8 +200,8 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         ...state,
         selectedProviderId: action.providerId,
         commandFeedback: provider
-          ? `${provider.label} selected for the next run.`
-          : `Provider ${action.providerId} selected for the next run.`,
+          ? `${provider.label} selected for the next turn.`
+          : `Provider ${action.providerId} selected for the next turn.`,
       };
     }
 
@@ -178,7 +229,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
           defaultProviderId: state.providerRegistry?.defaultProviderId ?? action.provider.id,
         },
         selectedProviderId: action.provider.id,
-        commandFeedback: `${action.provider.label} saved for future runs.`,
+        commandFeedback: `${action.provider.label} saved for future turns.`,
       };
     }
 
@@ -212,14 +263,18 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
     case "SET_PROVIDER_SECRET_STATUSES":
       return { ...state, providerSecretStatuses: action.statuses };
 
-    case "SELECT_SESSION": {
-      const selected = state.sessions.find((s) => s.runId === action.sessionId);
+    case "SELECT_SESSION":
+      return { ...state, selectedSessionId: action.sessionId };
+
+    case "SELECT_TURN":
       return {
         ...state,
-        selectedSessionId: action.sessionId,
-        activeSnapshot: selected ?? state.activeSnapshot,
+        selectedTurnRunId: action.runId,
+        activeSnapshot: action.snapshot ?? state.activeSnapshot,
+        selectedPattern: action.snapshot?.pattern ?? state.selectedPattern,
+        selectedNodeId: action.snapshot?.topology.nodes[1]?.id ?? action.snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
+        selectedBeatId: action.snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
       };
-    }
 
     case "SELECT_TAB":
       return { ...state, selectedDockTab: action.tab };
@@ -247,46 +302,6 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
 
     case "TOGGLE_FILMSTRIP":
       return { ...state, filmstripExpanded: !state.filmstripExpanded };
-
-    case "RUN_STARTED": {
-      const sessions = replaceSession(state.sessions, action.snapshot);
-      return {
-        ...state,
-        sessions,
-        activeSnapshot: action.snapshot,
-        selectedSessionId: action.snapshot.runId,
-        selectedNodeId: action.snapshot.topology.nodes[1]?.id ?? action.snapshot.topology.nodes[0]?.id ?? "run",
-        selectedBeatId: action.snapshot.events[0]?.id,
-        isLoading: false,
-        busyCommand: undefined,
-        commandFeedback: "Started a contract-backed smoke run and refreshed workbench state.",
-      };
-    }
-
-    case "RUN_UPDATED": {
-      const sessions = replaceSession(state.sessions, action.snapshot);
-      return {
-        ...state,
-        sessions,
-        activeSnapshot: action.snapshot,
-        selectedBeatId: action.snapshot.events.at(-1)?.id ?? state.selectedBeatId,
-        isLoading: false,
-        busyCommand: undefined,
-      };
-    }
-
-    case "RUN_ADDED": {
-      const sessions = replaceSession(state.sessions, action.snapshot);
-      return {
-        ...state,
-        sessions,
-        activeSnapshot: action.snapshot,
-        selectedSessionId: action.snapshot.runId,
-        selectedBeatId: action.snapshot.events.at(-1)?.id ?? state.selectedBeatId,
-        isLoading: false,
-        busyCommand: undefined,
-      };
-    }
 
     case "SET_VIEW":
       return { ...state, activeView: action.view };

@@ -2,7 +2,7 @@ import { Sparkles } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, PlanItem, RuntimeBridgeStatus, SessionRun, StreamLine, TopologyEdge, TopologyNode, PatternCard } from "../types";
+import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, PlanItem, RuntimeBridgeStatus, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode, PatternCard } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
@@ -23,6 +23,8 @@ interface ChatViewProps {
   planItems: PlanItem[];
   actionRecords: ActionRecord[];
   selectedSession: SessionRun;
+  sessionTurns: SessionTurnItem[];
+  selectedTurnRunId?: string;
   streamLines: StreamLine[];
   topologyEdges: TopologyEdge[];
   topologyNodes: TopologyNode[];
@@ -34,6 +36,7 @@ interface ChatViewProps {
   onReplaySelection: () => void;
   onResumeRun: () => void;
   onSelectNode: (id: string) => void;
+  onSelectTurn: (runId: string) => void;
   onStartRun: () => void;
   onToggleDetailDrawer: () => void;
   detailDrawerOpen: boolean;
@@ -51,6 +54,8 @@ export function ChatView({
   isRunning,
   isApprovalRequired,
   selectedSession,
+  sessionTurns,
+  selectedTurnRunId,
   onStartRun,
   onComposerPromptChange,
   onInterruptRun,
@@ -61,9 +66,10 @@ export function ChatView({
   planItems,
   onResumeRun,
   onCancelRun,
+  onSelectTurn,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
-  const showWelcome = chatMessages.length <= 1 && !isRunning;
+  const showWelcome = chatMessages.length === 0 && !isRunning;
   const allProviders = state.providerRegistry?.providers ?? [];
   const configuredProviders = allProviders.filter((provider) => {
     if (provider.type === "local_smoke") return true;
@@ -84,6 +90,9 @@ export function ChatView({
         isRunning={isRunning}
         isApprovalRequired={isApprovalRequired}
         selectedSession={selectedSession}
+        turns={sessionTurns}
+        selectedTurnRunId={selectedTurnRunId}
+        onSelectTurn={onSelectTurn}
         onExportReport={onExportReport}
         onInterruptRun={onInterruptRun}
         onToggleDetailDrawer={onToggleDetailDrawer}
@@ -98,7 +107,7 @@ export function ChatView({
                 <span>Welcome back to Ora</span>
               </div>
               <p className="max-w-xl text-sm leading-6 text-muted-foreground">
-                Ask Ora to plan, run, checkpoint, and inspect multi-agent work. The workspace keeps runtime state close without leaving the chat.
+                Start a new session, pick one of the five agent modes for the next turn, and keep the session transcript while inspecting each turn’s runtime detail on the right.
               </p>
             </div>
           </div>

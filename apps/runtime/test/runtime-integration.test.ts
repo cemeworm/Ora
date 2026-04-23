@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ActionRecordSchema,
   ArtifactRefSchema,
+  EvaluationBaselineSchema,
+  EvaluationDatasetDetailSchema,
+  EvaluationExportResultSchema,
+  EvaluationRunDetailSchema,
+  EvaluationRunSchema,
   ProviderRegistrySchema,
   getPatternDefinition,
   MemoryRecordSchema,
@@ -485,5 +490,85 @@ describe("LocalRunStore", () => {
 
     // Clean up
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("imports datasets and runs evaluations through the runtime contract", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "evaluation.datasets.import",
+      params: {
+        name: "Smoke Eval Dataset",
+        sourceFileName: "smoke.json",
+        sourceFormat: "json",
+        content: JSON.stringify([
+          { id: "case-1", prompt: "Regression prompt", expected: "regression prompt" },
+          { id: "case-2", prompt: "Lab prompt", metadata: { taskType: "analysis", difficulty: "easy", tags: ["lab"] } },
+        ]),
+      }
+    }));
+    expect(dataset.dataset.caseCount).toBe(2);
+
+    const detail = EvaluationRunDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.runs.start",
+      params: {
+        datasetId: dataset.dataset.id,
+        profileId: "outcome",
+        repetitions: 1,
+        concurrency: 1,
+        configs: [
+          {
+            id: "orchestrator",
+            label: "Orchestrator",
+            runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" }
+          },
+          {
+            id: "team",
+            label: "Agent Teams",
+            runConfig: { pattern: "agent_teams", modelRef: "local/smoke-model" }
+          }
+        ],
+        metadata: {},
+      }
+    }));
+    expect(detail.attempts.length).toBe(4);
+    expect(detail.run.caseResults.length).toBe(4);
+    expect(detail.run.scorecard.configSummaries).toHaveLength(2);
+    expect(detail.attempts.every((attempt) => attempt.underlyingRunId?.startsWith("run-"))).toBe(true);
+
+    const runSummaryList = EvaluationRunSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.runs.list",
+      params: { datasetId: dataset.dataset.id }
+    }));
+    expect(runSummaryList.map((run) => run.id)).toContain(detail.run.id);
+
+    const stream = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "evaluation.runs.stream",
+      params: { evaluationRunId: detail.run.id }
+    }) as { events: Array<{ type: string }> };
+    expect(stream.events.some((event) => event.type === "evaluation.attempt.completed")).toBe(true);
+
+    const baseline = EvaluationBaselineSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "evaluation.runs.promoteBaseline",
+      params: { evaluationRunId: detail.run.id, configId: "orchestrator", name: "Smoke baseline" }
+    }));
+    expect(baseline.configId).toBe("orchestrator");
+
+    const exportResult = EvaluationExportResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "evaluation.runs.export",
+      params: { evaluationRunId: detail.run.id, format: "csv" }
+    }));
+    expect(exportResult.content).toContain("case_id,config_id,overall_score");
   });
 });

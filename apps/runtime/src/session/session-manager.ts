@@ -5,6 +5,7 @@ import {
   type StateSnapshot,
   type UserTaskInput
 } from "@ora/shared";
+import type { ModelMessage } from "../providers/index.js";
 import { createOraSqliteCheckpointer } from "../persistence/sqlite-checkpointer.js";
 import { executeRuntimeKernel } from "../harness/runtime-kernel.js";
 import { withLangfuseRunTrace } from "../telemetry/langfuse.js";
@@ -33,24 +34,27 @@ export class SessionManager {
   async startRun(
     runId: string,
     input: UserTaskInput,
-    config: RunConfig
+    config: RunConfig,
+    conversationMessages: ModelMessage[] = []
   ): Promise<StateSnapshot | undefined> {
     if (!this.enabled) {
       return undefined;
     }
 
     return withLangfuseRunTrace({ runId, input, config }, () =>
-      this.startTracedRun(runId, input, config)
+      this.startTracedRun(runId, input, config, conversationMessages)
     );
   }
 
   private async startTracedRun(
     runId: string,
     input: UserTaskInput,
-    config: RunConfig
+    config: RunConfig,
+    conversationMessages: ModelMessage[]
   ): Promise<StateSnapshot> {
     const { snapshot } = await executeRuntimeKernel(runId, input, config, {
       clock: Date.now,
+      conversationMessages,
     });
     return StateSnapshotSchema.parse(snapshot);
   }
