@@ -78,7 +78,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[min(88vh,860px)] w-full max-w-[1120px] flex-col overflow-hidden rounded-[28px] border border-black/[0.03] bg-background p-0 shadow-lift">
+      <DialogContent className="flex h-[min(88vh,860px)] w-[min(1120px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[28px] border border-black/[0.03] bg-background p-0 shadow-lift">
         <div className="flex items-start justify-between gap-4 border-b border-border/80 bg-sidebar/90 px-6 py-5">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Settings</p>
@@ -97,7 +97,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
           </button>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 bg-background lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden bg-background lg:grid-cols-[240px_minmax(0,1fr)]">
           <aside className="border-b border-border bg-sidebar/75 p-4 lg:border-b-0 lg:border-r">
             <div className="rounded-[22px] bg-white/72 p-2 shadow-xs ring-1 ring-inset ring-bench-200/85">
               <nav className="space-y-1.5">

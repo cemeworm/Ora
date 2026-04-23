@@ -88,8 +88,11 @@ export class LocalEvaluationStore {
     this.baselinesDir = path.join(baseDir, "baselines");
     this.ensureDirs();
     this.manifest = this.readJsonFile(this.manifestPath, EvaluationManifestSchema, EvaluationManifestSchema.parse({}));
+    const originalManifest = JSON.stringify(this.manifest);
     this.loadAll();
-    this.saveManifest();
+    if (JSON.stringify(this.manifest) !== originalManifest) {
+      this.saveManifest();
+    }
   }
 
   importDataset(params: unknown): EvaluationDatasetDetail {
@@ -452,7 +455,7 @@ export class LocalEvaluationStore {
 
   private writeJsonFile(filePath: string, value: unknown) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const tempPath = `${filePath}.tmp`;
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     fs.renameSync(tempPath, filePath);
   }
