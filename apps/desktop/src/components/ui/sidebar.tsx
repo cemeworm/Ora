@@ -13,7 +13,7 @@ const SidebarContext = createContext<SidebarContextValue | null>(null);
 export function SidebarProvider({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
   return (
     <SidebarContext.Provider value={{ open, toggleSidebar: () => onOpenChange(!open) }}>
-      <div className="group/sidebar-wrapper flex min-h-screen w-full bg-sidebar text-sidebar-foreground">{children}</div>
+      <div className="group/sidebar-wrapper flex min-h-screen w-full bg-background text-foreground">{children}</div>
     </SidebarContext.Provider>
   );
 }

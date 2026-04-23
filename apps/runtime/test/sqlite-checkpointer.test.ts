@@ -233,15 +233,18 @@ describe("SessionManager", () => {
 
     expect(run.status).toBe("succeeded");
     expect(state.output).toMatchObject({
-      candidate: expect.stringContaining("[local-smoke]"),
-      verdict: "pass",
-      verifierText: expect.stringContaining("[local-smoke]")
+      pattern: "generator_verifier",
+      text: "Verified candidate for: Persist enabled LangGraph state.",
+      generator: {
+        candidate: expect.stringContaining("[local-smoke]")
+      },
+      verifier: {
+        verdict: "pass",
+        notes: expect.stringContaining("[local-smoke]")
+      }
     });
-    expect(state.events.map((event) => event.type)).toEqual([
-      "run.started",
-      "checkpoint.created",
-      "run.done"
-    ]);
+    expect(state.events.map((event) => event.type)).toContain("checkpoint.created");
+    expect(state.events.map((event) => event.type)).toContain("run.done");
     expect(state.checkpoints).toHaveLength(1);
 
     checkpointer.close();

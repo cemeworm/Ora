@@ -8,6 +8,8 @@ import { ZodError } from "zod";
 import { LocalRunStore, OraRuntimeError } from "./run-store.js";
 import { SessionManager } from "./session/session-manager.js";
 import { createDefaultProviderRegistry } from "./providers/index.js";
+import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
+import { RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
 
@@ -15,20 +17,34 @@ export function createRuntimeMethodHandler(
   store = new LocalRunStore(),
   sessionManager = new SessionManager(process.env.ORA_LANGGRAPH_ENABLED === "true")
 ): JsonRpcMethodHandler {
+  const providerRegistry = createDefaultProviderRegistry().config;
+  const toolRegistry = new RuntimeToolRegistry().snapshot();
+  const skillRegistry = new RuntimeSkillRegistry().snapshot();
   return (request) => {
     switch (request.method) {
       case "runtime.health":
         return store.health();
+      case "runtime.bootstrap":
+        return RuntimeBootstrapSchema.parse({
+          health: {
+            ...store.health(),
+            mode: "runtime",
+            detail: "Ora runtime bootstrap is served from the shared runtime kernel."
+          },
+          patterns: store.listPatterns(),
+          tools: toolRegistry,
+          skills: skillRegistry,
+          providers: providerRegistry
+        });
       case "patterns.list":
         return store.listPatterns();
+      case "tools.list":
+        return ToolRegistrySchema.parse(toolRegistry);
+      case "skills.list":
+        return SkillRegistrySchema.parse(skillRegistry);
       case "providers.list":
-        return createDefaultProviderRegistry().config;
+        return providerRegistry;
       case "runs.start":
-        if (sessionManager.isEnabled()) {
-          return store.startRunWithSnapshot(request.params, (runId, input, config) =>
-            sessionManager.startRun(runId, input, config)
-          ).then((handle) => handle ?? store.startRun(request.params));
-        }
         return store.startRun(request.params);
       case "runs.list":
         return store.listRuns(request.params);

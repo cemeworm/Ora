@@ -1,9 +1,14 @@
+use tauri::Manager;
+
 mod commands;
 
 fn main() {
     tauri::Builder::default()
         .manage(commands::sidecar::RuntimeFacade::default())
-        .manage(commands::sidecar::RuntimeSidecarManager::default())
+        .setup(|app| {
+            app.manage(commands::sidecar::RuntimeSidecarManager::new(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::sidecar::runtime_sidecar_status,
             commands::sidecar::preview_sidecar_command,

@@ -5,7 +5,7 @@
   "identifier": "dev.ora.workbench",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm run build:bundle",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -29,6 +29,9 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "externalBin": []
+    "externalBin": [],
+    "resources": {
+      "resources/runtime-sidecar/": "runtime-sidecar/"
+    }
   }
 }

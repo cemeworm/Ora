@@ -103,6 +103,7 @@ export class OraSqliteCheckpointer extends BaseCheckpointSaver {
 
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db.pragma("foreign_keys = ON");
     this.db.exec(CREATE_CHECKPOINTS_TABLE);
     this.db.exec(CREATE_WRITES_TABLE);

@@ -3,7 +3,9 @@ import { z } from "zod";
 export const CoordinationPatternSchema = z.enum([
   "generator_verifier",
   "orchestrator_subagent",
-  "agent_teams"
+  "agent_teams",
+  "message_bus",
+  "shared_state"
 ]);
 export type CoordinationPattern = z.infer<typeof CoordinationPatternSchema>;
 
@@ -139,6 +141,10 @@ export const RunConfigSchema = z.object({
   providerConfig: z.lazy(() => ProviderConfigSchema).optional(),
   modelRef: z.string().min(1).default("local/smoke-model"),
   budget: ResourceBudgetSchema.optional(),
+  skillIds: z.array(z.string().min(1)).default([]),
+  toolIds: z.array(z.string().min(1)).default([]),
+  approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
+  patternOptions: z.record(z.unknown()).default({}),
   metadata: z.record(z.unknown()).default({}),
   deterministicSeed: z.string().min(1).default("ora-smoke")
 });
@@ -200,6 +206,8 @@ export const OraEventTypeSchema = z.enum([
   "run.resumed",
   "run.forked",
   "run.replayed",
+  "agent.started",
+  "agent.completed",
   "topology.updated",
   "profile.updated",
   "memory.updated",
@@ -207,8 +215,15 @@ export const OraEventTypeSchema = z.enum([
   "action.updated",
   "approval.required",
   "approval.resolved",
+  "tool.called",
   "message.delta",
+  "message.published",
+  "message.routed",
   "token.delta",
+  "queue.updated",
+  "shared_state.updated",
+  "worker.claimed",
+  "worker.released",
   "checkpoint.created",
   "artifact.exported",
   "run.interrupted",
@@ -286,6 +301,40 @@ export const RunReplayParamsSchema = z.object({
 });
 export type RunReplayParams = z.infer<typeof RunReplayParamsSchema>;
 
+export const QueueSummarySchema = z.object({
+  mode: z.enum(["dag", "backlog", "event_bus", "shared_state"]).default("dag"),
+  pending: z.number().int().nonnegative().default(0),
+  inProgress: z.number().int().nonnegative().default(0),
+  completed: z.number().int().nonnegative().default(0),
+  topics: z.array(z.string().min(1)).default([])
+});
+export type QueueSummary = z.infer<typeof QueueSummarySchema>;
+
+export const SharedStateEntrySchema = z.object({
+  key: z.string().min(1),
+  version: z.number().int().nonnegative(),
+  summary: z.string().min(1),
+  updatedBy: z.string().min(1).optional()
+});
+export type SharedStateEntry = z.infer<typeof SharedStateEntrySchema>;
+
+export const SharedStateSummarySchema = z.object({
+  enabled: z.boolean().default(false),
+  storeKind: z.enum(["none", "blackboard", "document", "kv"]).default("none"),
+  version: z.number().int().nonnegative().default(0),
+  entries: z.array(SharedStateEntrySchema).default([]),
+  stopReason: z.string().min(1).optional()
+});
+export type SharedStateSummary = z.infer<typeof SharedStateSummarySchema>;
+
+export const BusStatsSchema = z.object({
+  enabled: z.boolean().default(false),
+  publishedCount: z.number().int().nonnegative().default(0),
+  routedCount: z.number().int().nonnegative().default(0),
+  topicCounts: z.record(z.number().int().nonnegative()).default({})
+});
+export type BusStats = z.infer<typeof BusStatsSchema>;
+
 export const StateSnapshotSchema = z.object({
   runId: z.string().min(1),
   status: RunStatusSchema,
@@ -304,6 +353,11 @@ export const StateSnapshotSchema = z.object({
   checkpoints: z.array(CheckpointMetaSchema),
   events: z.array(OraEventEnvelopeSchema),
   artifacts: z.array(ArtifactRefSchema).default([]),
+  activeAgents: z.array(z.string().min(1)).default([]),
+  queueSummary: QueueSummarySchema.default({}),
+  sharedStateSummary: SharedStateSummarySchema.default({}),
+  busStats: BusStatsSchema.default({}),
+  pendingApprovals: z.array(z.string().min(1)).default([]),
   output: z.unknown().optional(),
   error: z.string().optional(),
   updatedAt: z.number().int().nonnegative()
@@ -314,7 +368,10 @@ export const JsonRpcIdSchema = z.union([z.string(), z.number().int()]);
 
 export const RuntimeJsonRpcMethodSchema = z.enum([
   "runtime.health",
+  "runtime.bootstrap",
   "patterns.list",
+  "tools.list",
+  "skills.list",
   "providers.list",
   "runs.start",
   "runs.list",
@@ -371,6 +428,17 @@ export const PatternDefinitionSchema = z.object({
   summary: z.string().min(1),
   recommendedUse: z.string().min(1),
   failureMode: z.string().min(1),
+  coordinationKind: z.enum(["loop", "hierarchical", "team", "bus", "shared_state"]),
+  stateModel: z.enum(["ephemeral", "persistent_workers", "event_routed", "shared_blackboard"]),
+  supportsPersistentWorkers: z.boolean().default(false),
+  supportsSharedState: z.boolean().default(false),
+  supportsEventRouting: z.boolean().default(false),
+  defaultStopPolicy: z.object({
+    type: z.enum(["max_iterations", "queue_drained", "converged", "manual"]),
+    maxIterations: z.number().int().positive().optional(),
+    idleCycles: z.number().int().positive().optional(),
+    detail: z.string().min(1)
+  }),
   defaultConstraints: z.array(z.string().min(1)),
   defaultBudget: ResourceBudgetSchema,
   profiles: z.array(AgentProfileSchema).min(1),
@@ -407,6 +475,18 @@ export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudge
     maxToolCalls: 24,
     maxRuntimeMs: 600000,
     maxCostUsd: 5
+  },
+  message_bus: {
+    maxTokens: 20000,
+    maxToolCalls: 18,
+    maxRuntimeMs: 360000,
+    maxCostUsd: 4
+  },
+  shared_state: {
+    maxTokens: 22000,
+    maxToolCalls: 20,
+    maxRuntimeMs: 420000,
+    maxCostUsd: 4
   }
 };
 
@@ -433,6 +513,16 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     summary: "A generator proposes an answer and a verifier checks it against a rubric.",
     recommendedUse: "Use when quality can be judged by explicit acceptance criteria.",
     failureMode: "Weak rubrics can create false confidence or unproductive retry loops.",
+    coordinationKind: "loop",
+    stateModel: "ephemeral",
+    supportsPersistentWorkers: false,
+    supportsSharedState: false,
+    supportsEventRouting: false,
+    defaultStopPolicy: {
+      type: "max_iterations",
+      maxIterations: 3,
+      detail: "Stop after the verifier accepts the output or the retry budget is exhausted."
+    },
     defaultConstraints: [
       "Require a clear rubric before verification.",
       "Keep retries bounded.",
@@ -472,6 +562,15 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     summary: "An orchestrator decomposes the task and dispatches explicit subagents.",
     recommendedUse: "Use as the default for decomposable tasks needing inspectable delegation.",
     failureMode: "Over-decomposition can spend budget on coordination instead of progress.",
+    coordinationKind: "hierarchical",
+    stateModel: "ephemeral",
+    supportsPersistentWorkers: false,
+    supportsSharedState: false,
+    supportsEventRouting: false,
+    defaultStopPolicy: {
+      type: "queue_drained",
+      detail: "Stop when the orchestrator has synthesized all delegated subagent results."
+    },
     defaultConstraints: [
       "Keep subagents explicit in topology.",
       "Track plan items as Ora-owned records.",
@@ -518,6 +617,15 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     summary: "Persistent teammate agents coordinate around a shared backlog and memory.",
     recommendedUse: "Use when long-running workers need identity and context across tasks.",
     failureMode: "Unclear ownership can create duplicate work or stale worker memory.",
+    coordinationKind: "team",
+    stateModel: "persistent_workers",
+    supportsPersistentWorkers: true,
+    supportsSharedState: false,
+    supportsEventRouting: false,
+    defaultStopPolicy: {
+      type: "queue_drained",
+      detail: "Stop when the shared backlog is drained and the coordinator has collected all worker outcomes."
+    },
     defaultConstraints: [
       "Assign every plan item to an owner.",
       "Keep worker memory namespaces explicit.",
@@ -559,6 +667,123 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
       { id: "build", title: "Complete assigned task", ownerAgentId: "builder", dependencies: ["triage"] },
       { id: "check", title: "Validate output", ownerAgentId: "checker", dependencies: ["build"] },
       { id: "handoff", title: "Record handoff and next action", ownerAgentId: "team_lead", dependencies: ["check"] }
+    ]
+  },
+  message_bus: {
+    id: "message_bus",
+    label: "Message Bus",
+    summary: "Agents publish and subscribe to routed events through a shared bus.",
+    recommendedUse: "Use for event-driven pipelines where routing should stay extensible as the agent ecosystem grows.",
+    failureMode: "Dropped or misrouted events can silently stall the system without obvious control-flow failures.",
+    coordinationKind: "bus",
+    stateModel: "event_routed",
+    supportsPersistentWorkers: false,
+    supportsSharedState: false,
+    supportsEventRouting: true,
+    defaultStopPolicy: {
+      type: "queue_drained",
+      detail: "Stop when the bus has no pending routed events and the responder has published a final outcome."
+    },
+    defaultConstraints: [
+      "Attach correlation ids to every published message.",
+      "Make routing explicit in the event stream.",
+      "Keep topic subscriptions inspectable in the runtime snapshot."
+    ],
+    defaultBudget: DEFAULT_RESOURCE_BUDGETS.message_bus,
+    profiles: [
+      profile("router", "Router", "Classify messages and route them to interested subscribers.", "message_bus", [
+        "session",
+        "project"
+      ]),
+      profile("investigator", "Investigator", "Handle routed work items and publish findings.", "message_bus", [
+        "session",
+        "project",
+        "artifact"
+      ]),
+      profile("responder", "Responder", "Publish the final response after routed findings arrive.", "message_bus", [
+        "session",
+        "artifact"
+      ])
+    ],
+    topology: {
+      nodes: [
+        { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
+        { id: "router", label: "Router", kind: "agent", agentId: "router", status: "idle", metadata: {} },
+        { id: "triage_topic", label: "triage", kind: "capability", status: "idle", metadata: { role: "topic" } },
+        { id: "investigator", label: "Investigator", kind: "agent", agentId: "investigator", status: "idle", metadata: {} },
+        { id: "responder", label: "Responder", kind: "agent", agentId: "responder", status: "idle", metadata: {} }
+      ],
+      edges: [
+        { id: "run-router", source: "run", target: "router", kind: "control", label: "publish", metadata: {} },
+        { id: "router-topic", source: "router", target: "triage_topic", kind: "artifact", label: "route", metadata: {} },
+        { id: "topic-investigator", source: "triage_topic", target: "investigator", kind: "delegation", label: "deliver", metadata: {} },
+        { id: "investigator-responder", source: "investigator", target: "responder", kind: "verification", label: "finding", metadata: {} }
+      ]
+    },
+    planTemplate: [
+      { id: "publish", title: "Publish the initial event", ownerAgentId: "router", dependencies: [] },
+      { id: "route", title: "Route events to subscribers", ownerAgentId: "router", dependencies: ["publish"] },
+      { id: "handle", title: "Handle subscribed work", ownerAgentId: "investigator", dependencies: ["route"] },
+      { id: "respond", title: "Publish the final response", ownerAgentId: "responder", dependencies: ["handle"] }
+    ]
+  },
+  shared_state: {
+    id: "shared_state",
+    label: "Shared State",
+    summary: "Agents collaborate through a versioned shared blackboard instead of a central coordinator.",
+    recommendedUse: "Use when agents need to build on each other's findings in near real time.",
+    failureMode: "Without explicit termination rules, agents can loop on each other's writes or duplicate work.",
+    coordinationKind: "shared_state",
+    stateModel: "shared_blackboard",
+    supportsPersistentWorkers: false,
+    supportsSharedState: true,
+    supportsEventRouting: false,
+    defaultStopPolicy: {
+      type: "converged",
+      idleCycles: 2,
+      detail: "Stop when the shared board converges with no new meaningful findings for the configured idle cycles."
+    },
+    defaultConstraints: [
+      "Version every shared-state write.",
+      "Expose shared findings directly in the runtime snapshot.",
+      "Use an explicit convergence or timeout stop rule."
+    ],
+    defaultBudget: DEFAULT_RESOURCE_BUDGETS.shared_state,
+    profiles: [
+      profile("seed_agent", "Seed Agent", "Create the initial shared-state hypothesis board.", "shared_state", [
+        "session",
+        "project"
+      ]),
+      profile("research_agent", "Research Agent", "Add new findings to the shared board.", "shared_state", [
+        "session",
+        "project",
+        "artifact"
+      ]),
+      profile("critic_agent", "Critic Agent", "Validate findings and decide whether the board has converged.", "shared_state", [
+        "session",
+        "project",
+        "artifact"
+      ])
+    ],
+    topology: {
+      nodes: [
+        { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
+        { id: "seed_agent", label: "Seed Agent", kind: "agent", agentId: "seed_agent", status: "idle", metadata: {} },
+        { id: "shared_board", label: "Shared Board", kind: "capability", status: "idle", metadata: { role: "blackboard" } },
+        { id: "research_agent", label: "Research Agent", kind: "agent", agentId: "research_agent", status: "idle", metadata: {} },
+        { id: "critic_agent", label: "Critic Agent", kind: "agent", agentId: "critic_agent", status: "idle", metadata: {} }
+      ],
+      edges: [
+        { id: "run-seed", source: "run", target: "seed_agent", kind: "control", label: "seed", metadata: {} },
+        { id: "seed-board", source: "seed_agent", target: "shared_board", kind: "memory", label: "write", metadata: {} },
+        { id: "research-board", source: "research_agent", target: "shared_board", kind: "memory", label: "contribute", metadata: {} },
+        { id: "critic-board", source: "critic_agent", target: "shared_board", kind: "verification", label: "review", metadata: {} }
+      ]
+    },
+    planTemplate: [
+      { id: "seed", title: "Seed the shared board", ownerAgentId: "seed_agent", dependencies: [] },
+      { id: "research", title: "Contribute findings to the shared board", ownerAgentId: "research_agent", dependencies: ["seed"] },
+      { id: "converge", title: "Review board convergence and finalize", ownerAgentId: "critic_agent", dependencies: ["research"] }
     ]
   }
 };
@@ -648,6 +873,22 @@ export const ToolRegistrySchema = z.object({
 });
 export type ToolRegistry = z.infer<typeof ToolRegistrySchema>;
 
+export const SkillDescriptorSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().min(1),
+  promptSnippet: z.string().min(1).optional(),
+  path: z.string().min(1).optional(),
+  allowedPatterns: z.array(CoordinationPatternSchema).default([]),
+  tags: z.array(z.string().min(1)).default([]),
+});
+export type SkillDescriptor = z.infer<typeof SkillDescriptorSchema>;
+
+export const SkillRegistrySchema = z.object({
+  skills: z.array(SkillDescriptorSchema),
+});
+export type SkillRegistry = z.infer<typeof SkillRegistrySchema>;
+
 // ---------------------------------------------------------------------------
 // Session Config Schemas
 // ---------------------------------------------------------------------------
@@ -716,8 +957,42 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "web.fetch", label: "Fetch URL", description: "Fetch content from a URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
   { id: "mcp.call", label: "MCP Tool Call", description: "Invoke an MCP tool.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
   { id: "model.handoff", label: "Model Handoff", description: "Delegate to another model.", category: "model", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "message.publish", label: "Publish Message", description: "Publish an event to the runtime message bus.", category: "internal", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "shared_state.write", label: "Write Shared State", description: "Write a versioned update to the shared blackboard.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
   { id: "export.report", label: "Export Report", description: "Export a run report.", category: "export", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
 ];
+
+export const MVP_SKILLS: SkillDescriptor[] = [
+  {
+    id: "long-task-protocol",
+    name: "Long Task Protocol",
+    description: "Keep complex work resumable with a task journal, checkpoints, and strict verification gates.",
+    promptSnippet: "Use a task journal for complex multi-step work and keep verification evidence explicit.",
+    path: "skills/long-task-protocol/SKILL.md",
+    allowedPatterns: [
+      "orchestrator_subagent",
+      "agent_teams",
+      "message_bus",
+      "shared_state"
+    ],
+    tags: ["planning", "verification", "resumable"]
+  }
+];
+
+export const RuntimeBootstrapSchema = z.object({
+  health: z.object({
+    ok: z.boolean(),
+    service: z.string().min(1),
+    version: z.string().min(1),
+    mode: z.enum(["runtime", "deterministic_fixture"]).default("runtime"),
+    detail: z.string().min(1)
+  }),
+  patterns: z.array(PatternDefinitionSchema),
+  tools: ToolRegistrySchema,
+  skills: SkillRegistrySchema,
+  providers: ProviderRegistrySchema
+});
+export type RuntimeBootstrap = z.infer<typeof RuntimeBootstrapSchema>;
 
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
   { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use"], dropParams: [] },

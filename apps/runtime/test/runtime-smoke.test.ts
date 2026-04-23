@@ -11,6 +11,15 @@ function createTempStore() {
   });
 }
 
+function expectOrderedEvents(eventTypes: string[], expected: string[]) {
+  let lastIndex = -1;
+  for (const eventType of expected) {
+    const nextIndex = eventTypes.indexOf(eventType, lastIndex + 1);
+    expect(nextIndex).toBeGreaterThan(lastIndex);
+    lastIndex = nextIndex;
+  }
+}
+
 describe("Ora runtime smoke path", () => {
   it("starts a deterministic smoke run with ordered Ora events", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
@@ -36,40 +45,45 @@ describe("Ora runtime smoke path", () => {
       })
     );
 
-    expect(state.events.map((event) => event.type)).toEqual([
+    const eventTypes = state.events.map((event) => event.type);
+
+    expect(eventTypes.slice(0, 4)).toEqual([
       "run.started",
       "topology.updated",
       "profile.updated",
-      "plan.updated",
-      "action.updated",
-      "approval.required",
-      "action.updated",
-      "approval.resolved",
-      "action.updated",
-      "action.updated",
-      "memory.updated",
-      "plan.updated",
+      "plan.updated"
+    ]);
+    expectOrderedEvents(eventTypes, [
+      "agent.started",
+      "tool.called",
       "message.delta",
       "token.delta",
-      "action.updated",
-      "checkpoint.created",
-      "run.done"
+      "agent.completed",
+      "memory.updated",
+      "run.done",
+      "checkpoint.created"
     ]);
-    expect(state.events.map((event) => event.seq)).toEqual([...Array(17).keys()]);
+    expect(state.events.map((event) => event.seq)).toEqual([...Array(state.events.length).keys()]);
     expect(state.checkpoints).toHaveLength(1);
     expect(state.topology.nodes.length).toBeGreaterThan(1);
     expect(state.profiles.map((profile) => profile.id)).toEqual(["generator", "verifier"]);
-    expect(state.actions).toHaveLength(1);
-    expect(state.actions[0]?.status).toBe("succeeded");
-    expect(state.actions[0]?.riskLevel).toBe("high");
-    expect(state.policyDecisions[0]?.requiredApproval).toBe(true);
+    expect(state.actions.length).toBeGreaterThanOrEqual(4);
+    expect(state.actions.every((action) => action.status === "succeeded")).toBe(true);
+    expect(state.policyDecisions).toEqual([]);
     expect(state.memory[0]?.namespace).toEqual([
       "session",
       "local-project",
       "generator_verifier"
     ]);
     expect(state.plan.every((item) => item.status === "done")).toBe(true);
-    expect(state.plan[0]?.linkedActionIds).toContain(state.actions[0]?.id);
+    expect(state.plan.some((item) => item.linkedActionIds.length > 0)).toBe(true);
+    expect(state.pendingApprovals).toEqual([]);
+    expect(state.activeAgents).toEqual([]);
+    expect(state.output).toMatchObject({
+      pattern: "generator_verifier",
+      generator: { candidate: expect.stringContaining("[local-smoke]") },
+      verifier: { verdict: "pass" }
+    });
 
     for (const event of state.events) {
       expect(OraEventEnvelopeSchema.parse(event).runId).toBe(run.runId);
@@ -93,10 +107,105 @@ describe("Ora runtime smoke path", () => {
         ok: true,
         service: "ora-runtime",
         version: "0.1.0",
-        deterministic: true,
+        deterministic: false,
         persistence: "json-file"
       }
     });
+  });
+
+  it("exposes runtime bootstrap, tool list, and skill list from the unified runtime surface", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const bootstrap = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runtime.bootstrap"
+    }) as {
+      health: { ok: boolean; mode: string };
+      patterns: { id: string }[];
+      tools: { tools: { id: string }[] };
+      skills: { skills: { id: string }[] };
+    };
+    const tools = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools.list"
+    }) as { tools: { id: string }[] };
+    const skills = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skills.list"
+    }) as { skills: { id: string }[] };
+
+    expect(bootstrap.health.ok).toBe(true);
+    expect(bootstrap.health.mode).toBe("runtime");
+    expect(bootstrap.patterns.map((pattern) => pattern.id)).toEqual([
+      "generator_verifier",
+      "orchestrator_subagent",
+      "agent_teams",
+      "message_bus",
+      "shared_state"
+    ]);
+    expect(bootstrap.tools.tools.length).toBeGreaterThan(0);
+    expect(bootstrap.skills.skills.length).toBeGreaterThan(0);
+    expect(tools.tools).toEqual(bootstrap.tools.tools);
+    expect(skills.skills).toEqual(bootstrap.skills.skills);
+  });
+
+  it("starts all five coordination patterns through the unified runtime kernel", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const patterns = [
+      "generator_verifier",
+      "orchestrator_subagent",
+      "agent_teams",
+      "message_bus",
+      "shared_state"
+    ] as const;
+
+    for (const pattern of patterns) {
+      const run = (await handle({
+        jsonrpc: "2.0",
+        id: `${pattern}-start`,
+        method: "runs.start",
+        params: {
+          input: { prompt: `Smoke ${pattern}.` },
+          config: { pattern }
+        }
+      })) as { runId: string; status: string; pattern: string };
+      const state = StateSnapshotSchema.parse(
+        await handle({
+          jsonrpc: "2.0",
+          id: `${pattern}-state`,
+          method: "runs.state",
+          params: { runId: run.runId }
+        })
+      );
+
+      expect(run.status).toBe("succeeded");
+      expect(run.pattern).toBe(pattern);
+      expect(state.status).toBe("succeeded");
+      expect(state.pattern).toBe(pattern);
+      expect(state.checkpoints).toHaveLength(1);
+      expect(state.events.map((event) => event.type)).toContain("checkpoint.created");
+
+      if (pattern === "agent_teams") {
+        expect(state.events.map((event) => event.type)).toContain("worker.claimed");
+        expect(state.events.map((event) => event.type)).toContain("worker.released");
+        expect(state.memory.some((record) => record.kind === "worker")).toBe(true);
+      }
+
+      if (pattern === "message_bus") {
+        expect(state.busStats.enabled).toBe(true);
+        expect(state.busStats.publishedCount).toBeGreaterThan(0);
+        expect(state.busStats.routedCount).toBeGreaterThan(0);
+        expect(state.queueSummary.topics).toContain("task.response");
+      }
+
+      if (pattern === "shared_state") {
+        expect(state.sharedStateSummary.enabled).toBe(true);
+        expect(state.sharedStateSummary.version).toBeGreaterThan(0);
+        expect(state.sharedStateSummary.entries.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("lists checkpoints and exports a report for a run", async () => {
@@ -137,7 +246,7 @@ describe("Ora runtime smoke path", () => {
     expect(checkpoints).toHaveLength(1);
     expect(report.kind).toBe("report");
     expect(report.uri).toMatch(/^file:\/\//);
-    expect(report.payload.eventCount).toBe(17);
+    expect(report.payload.eventCount).toBe(state.events.length - 1);
     expect(state.artifacts).toHaveLength(1);
     expect(state.events.at(-1)?.type).toBe("artifact.exported");
   });
@@ -201,28 +310,19 @@ describe("Ora runtime smoke path", () => {
       method: "runs.stream",
       params: { runId: run.runId, afterSeq: 2 }
     })) as { fromSeq: number; nextSeq: number; events: { seq: number; type: string }[] };
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.state",
+        params: { runId: run.runId }
+      })
+    );
+    const expectedEvents = state.events.filter((event) => event.seq >= 3);
 
     expect(stream.fromSeq).toBe(3);
-    expect(stream.nextSeq).toBe(17);
-    expect(stream.events.map((event) => event.seq)).toEqual([
-      3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
-    ]);
-    expect(stream.events.map((event) => event.type)).toEqual([
-      "plan.updated",
-      "action.updated",
-      "approval.required",
-      "action.updated",
-      "approval.resolved",
-      "action.updated",
-      "action.updated",
-      "memory.updated",
-      "plan.updated",
-      "message.delta",
-      "token.delta",
-      "action.updated",
-      "checkpoint.created",
-      "run.done"
-    ]);
+    expect(stream.nextSeq).toBe(state.events.length);
+    expect(stream.events).toEqual(expectedEvents);
   });
 
   it("resumes an interrupted run with an Ora-owned transition event", async () => {
@@ -389,8 +489,9 @@ describe("Ora runtime smoke path", () => {
     );
 
     expect(replay.events.at(-1)?.type).toBe("checkpoint.created");
-    expect(replay.events.map((event) => event.seq)).toEqual([...Array(16).keys()]);
-    expect(replay.nextSeq).toBe(18);
+    expect(replay.events.map((event) => event.seq)).toEqual([...Array(replay.events.length).keys()]);
+    expect(replay.events.length).toBe(source.checkpoints[0]!.eventSeq + 1);
+    expect(replay.nextSeq).toBe(replayedState.events.length);
     expect(replayedState.events.at(-1)?.type).toBe("run.replayed");
   });
 });

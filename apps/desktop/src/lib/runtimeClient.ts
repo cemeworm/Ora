@@ -13,17 +13,18 @@ import type {
   ProviderConfig as OraProviderConfig,
   ProviderRegistry as OraProviderRegistry,
   ProviderSecretStatus as OraProviderSecretStatus,
-  ResourceBudget as OraResourceBudget,
+  RuntimeBootstrap as OraRuntimeBootstrap,
   RunConfig as OraRunConfig,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
-  RunStatus as OraRunStatus,
+  SkillRegistry as OraSkillRegistry,
   StateSnapshot as OraStateSnapshot,
   TopologyEdge as OraTopologyEdge,
   TopologyNode as OraTopologyNode,
+  ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, ProviderConfigSchema } from "@ora/shared";
+import { DEFAULT_PROVIDERS, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -37,11 +38,12 @@ export type {
   OraProviderRegistry,
   OraProviderSecretStatus,
   OraPlanItem,
-  OraResourceBudget,
   OraRunConfig,
   OraRunEventStream,
   OraRunHandle,
   OraStateSnapshot,
+  OraToolRegistry,
+  OraSkillRegistry,
   OraTopologyEdge,
   OraTopologyNode,
   OraUserTaskInput,
@@ -49,7 +51,7 @@ export type {
 
 export interface RuntimeHealth {
   ok: boolean;
-  mode: "tauri" | "browser_mock" | "tauri_mock_fallback";
+  mode: "tauri" | "browser_mock" | "unavailable" | "error";
   service: string;
   detail: string;
 }
@@ -58,6 +60,8 @@ export interface RuntimeBootstrap {
   health: RuntimeHealth;
   patterns: OraPatternDefinition[];
   providerRegistry: OraProviderRegistry;
+  toolRegistry: OraToolRegistry;
+  skillRegistry: OraSkillRegistry;
   providerSecretStatuses: OraProviderSecretStatus[];
   snapshot: OraStateSnapshot;
 }
@@ -72,7 +76,8 @@ export function createRuntimeClient() {
   const local = new LocalJsonRpcRuntime();
   let requestId = 1;
   let lastHealth: RuntimeHealth | undefined;
-  let sidecarSpawnEnabled = false;
+  let processBridgeEnabled = false;
+  let tauriUnavailableReason = "Runtime sidecar is unavailable.";
 
   async function call<T>(method: string, params?: unknown): Promise<T> {
     const request: JsonRpcRequest = {
@@ -82,7 +87,10 @@ export function createRuntimeClient() {
       params,
     };
 
-    const tauriResponse = sidecarSpawnEnabled ? await tryTauriJsonRpc(request) : { ok: false as const, tauriAvailable: isTauriAvailable() };
+    const tauriAvailable = isTauriAvailable();
+    const tauriResponse = tauriAvailable && processBridgeEnabled
+      ? await tryTauriJsonRpc(request)
+      : { ok: false as const, tauriAvailable };
     if (tauriResponse.ok && !("error" in tauriResponse.response)) {
       lastHealth = {
         ok: true,
@@ -93,14 +101,22 @@ export function createRuntimeClient() {
       return unwrapJsonRpc<T>(tauriResponse.response);
     }
 
+    if (tauriAvailable) {
+      lastHealth = {
+        ok: false,
+        mode: "unavailable",
+        service: "ora-runtime",
+        detail: tauriUnavailableReason,
+      };
+      throw new Error(tauriUnavailableReason);
+    }
+
     const response = await local.handle(request);
     lastHealth = {
       ok: true,
-      mode: tauriResponse.tauriAvailable ? "tauri_mock_fallback" : "browser_mock",
+      mode: "browser_mock",
       service: "ora-runtime-mock",
-      detail: tauriResponse.tauriAvailable
-        ? `Tauri is present; using deterministic browser handler until runtime_json_rpc is wired.`
-        : "Browser dev fallback is serving deterministic Ora JSON-RPC.",
+      detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
     };
     return unwrapJsonRpc<T>(response);
   }
@@ -108,26 +124,54 @@ export function createRuntimeClient() {
   return {
     async bootstrap(): Promise<RuntimeBootstrap> {
       const sidecarStatus = await readTauriSidecarStatus();
-      sidecarSpawnEnabled = Boolean(sidecarStatus?.sidecar_spawn_enabled);
-      const health = await call<Omit<RuntimeHealth, "mode" | "detail">>("runtime.health");
-      const patterns = await call<OraPatternDefinition[]>("patterns.list");
-      const providerRegistry = mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
+      processBridgeEnabled = Boolean(sidecarStatus?.process_spawn_available);
+      tauriUnavailableReason = sidecarStatus
+        ? String(sidecarStatus.reason ?? "Runtime sidecar process bridge is unavailable.")
+        : "Runtime sidecar process bridge is unavailable.";
+
+      if (isTauriAvailable() && !processBridgeEnabled) {
+        const providerRegistry = mergeCustomProviders({
+          providers: DEFAULT_PROVIDERS,
+          defaultProviderId: "local-smoke",
+        });
+        const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
+        const snapshot = local.previewState("orchestrator_subagent", DEFAULT_PROMPT);
+        lastHealth = {
+          ok: false,
+          mode: "unavailable",
+          service: "ora-runtime",
+          detail: tauriUnavailableReason,
+        };
+        return {
+          health: lastHealth,
+          patterns: MVP_PATTERNS,
+          providerRegistry,
+          toolRegistry: { tools: MVP_TOOLS, defaultPolicyId: "runtime.default_policy" },
+          skillRegistry: { skills: MVP_SKILLS },
+          providerSecretStatuses,
+          snapshot,
+        };
+      }
+
+      const bootstrap = await call<OraRuntimeBootstrap>("runtime.bootstrap");
+      const providerRegistry = mergeCustomProviders(bootstrap.providers);
       const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
-      const snapshot = local.previewState("orchestrator_subagent", DEFAULT_PROMPT);
 
       return {
         health: lastHealth ?? {
-          ok: health.ok,
+          ok: bootstrap.health.ok,
           mode: "browser_mock",
-          service: health.service,
+          service: bootstrap.health.service,
           detail: sidecarStatus
-            ? String(sidecarStatus.reason ?? "Tauri facade is available; deterministic browser runtime owns run state.")
+            ? String(sidecarStatus.reason ?? bootstrap.health.detail)
             : "Browser dev fallback is serving deterministic Ora JSON-RPC.",
         },
-        patterns,
+        patterns: bootstrap.patterns,
         providerRegistry,
+        toolRegistry: bootstrap.tools,
+        skillRegistry: bootstrap.skills,
         providerSecretStatuses,
-        snapshot,
+        snapshot: local.previewState("orchestrator_subagent", DEFAULT_PROMPT),
       };
     },
     async startRun(input: OraUserTaskInput, config: Partial<OraRunConfig>): Promise<OraStateSnapshot> {
@@ -376,8 +420,39 @@ class LocalJsonRpcRuntime {
           version: "0.1.0",
           deterministic: true,
         };
+      case "runtime.bootstrap":
+        return {
+          health: {
+            ok: true,
+            service: "ora-runtime-mock",
+            version: "0.1.0",
+            mode: "deterministic_fixture",
+            detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
+          },
+          patterns: MVP_PATTERNS,
+          tools: {
+            tools: MVP_TOOLS,
+            defaultPolicyId: "runtime.default_policy",
+          },
+          skills: {
+            skills: MVP_SKILLS,
+          },
+          providers: {
+            providers: DEFAULT_PROVIDERS,
+            defaultProviderId: "local-smoke",
+          },
+        };
       case "patterns.list":
-        return PATTERN_DEFINITIONS;
+        return MVP_PATTERNS;
+      case "tools.list":
+        return {
+          tools: MVP_TOOLS,
+          defaultPolicyId: "runtime.default_policy",
+        };
+      case "skills.list":
+        return {
+          skills: MVP_SKILLS,
+        };
       case "providers.list":
         return {
           providers: DEFAULT_PROVIDERS,
@@ -580,7 +655,7 @@ class LocalJsonRpcRuntime {
     pattern: CoordinationPattern,
     prompt: string,
     startedAt: number,
-    status: OraRunStatus,
+    status: OraStateSnapshot["status"],
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number },
     provider?: { providerId?: string; modelRef?: string },
   ): OraStateSnapshot {
@@ -642,9 +717,13 @@ class LocalJsonRpcRuntime {
       config: {
         pattern,
         profileIds: definition.profiles.map((profile) => profile.id),
+        skillIds: [],
+        toolIds: [],
         providerId: provider?.providerId ?? "local-smoke",
         modelRef: provider?.modelRef ?? "local/smoke-model",
         budget: definition.defaultBudget,
+        approvalMode: "high_risk_only",
+        patternOptions: {},
         metadata: { source: "desktop-smoke", providerId: provider?.providerId ?? "local-smoke" },
         deterministicSeed: "ora-smoke",
       },
@@ -695,6 +774,54 @@ class LocalJsonRpcRuntime {
       checkpoints: [checkpoint],
       events,
       artifacts: [],
+      activeAgents: status === "running" ? definition.profiles.slice(0, 1).map((profile) => profile.id) : [],
+      queueSummary: {
+        mode: definition.coordinationKind === "bus"
+          ? "event_bus"
+          : definition.coordinationKind === "shared_state"
+            ? "shared_state"
+            : definition.coordinationKind === "team"
+              ? "backlog"
+              : "dag",
+        pending: Math.max(0, definition.planTemplate.length - 1),
+        inProgress: status === "running" ? 1 : 0,
+        completed: status === "succeeded" ? definition.planTemplate.length : 0,
+        topics: definition.supportsEventRouting ? ["task.input", "task.findings", "task.response"] : [],
+      },
+      sharedStateSummary: definition.supportsSharedState
+        ? {
+            enabled: true,
+            storeKind: "blackboard",
+            version: 2,
+            entries: [
+              { key: "seed", version: 1, summary: `Seeded board for ${prompt}` },
+              { key: "finding-1", version: 2, summary: "Added supporting evidence" },
+            ],
+          }
+        : {
+            enabled: false,
+            storeKind: "none",
+            version: 0,
+            entries: [],
+          },
+      busStats: definition.supportsEventRouting
+        ? {
+            enabled: true,
+            publishedCount: 2,
+            routedCount: 1,
+            topicCounts: {
+              "task.input": 1,
+              "task.findings": 1,
+              "task.response": 1,
+            },
+          }
+        : {
+            enabled: false,
+            publishedCount: 0,
+            routedCount: 0,
+            topicCounts: {},
+          },
+      pendingApprovals: [],
       output: {
         text: `Smoke result for ${definition.label}: ${prompt}`,
       },
@@ -792,154 +919,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-const budget = (maxTokens: number, maxToolCalls: number, maxRuntimeMs: number, maxCostUsd: number): OraResourceBudget => ({
-  maxTokens,
-  maxToolCalls,
-  maxRuntimeMs,
-  maxCostUsd,
-});
-
-const DEFAULT_BUDGETS: Record<CoordinationPattern, OraResourceBudget> = {
-  generator_verifier: budget(12000, 8, 180000, 2),
-  orchestrator_subagent: budget(18000, 16, 300000, 3),
-  agent_teams: budget(24000, 24, 600000, 5),
-};
-
-function profile(
-  id: string,
-  label: string,
-  role: string,
-  pattern: CoordinationPattern,
-  namespaces: string[],
-): OraAgentProfile {
-  return {
-    id,
-    label,
-    role,
-    modelRef: "local/smoke-model",
-    toolPolicyId: `${pattern}.default_policy`,
-    memoryNamespaces: namespaces,
-    budget: DEFAULT_BUDGETS[pattern],
-  };
-}
-
-const PATTERN_DEFINITIONS: OraPatternDefinition[] = [
-  {
-    id: "orchestrator_subagent",
-    label: "Orchestrator-Subagent",
-    summary: "An orchestrator decomposes the task and dispatches explicit subagents.",
-    recommendedUse: "Use as the default for decomposable tasks needing inspectable delegation.",
-    failureMode: "Over-decomposition can spend budget on coordination instead of progress.",
-    defaultConstraints: [
-      "Keep subagents explicit in topology.",
-      "Track plan items as Ora-owned records.",
-      "Expose subagent state without leaking graph internals.",
-    ],
-    defaultBudget: DEFAULT_BUDGETS.orchestrator_subagent,
-    profiles: [
-      profile("orchestrator", "Orchestrator", "Plan, dispatch, and synthesize results.", "orchestrator_subagent", [
-        "session",
-        "project",
-      ]),
-      profile("researcher", "Research Subagent", "Gather focused context.", "orchestrator_subagent", [
-        "session",
-        "project",
-      ]),
-      profile("reviewer", "Review Subagent", "Check completeness and risks.", "orchestrator_subagent", [
-        "session",
-        "artifact",
-      ]),
-    ],
-    topology: {
-      nodes: [
-        { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "orchestrator", label: "Orchestrator", kind: "agent", agentId: "orchestrator", status: "idle", metadata: {} },
-        { id: "researcher", label: "Research", kind: "agent", agentId: "researcher", status: "idle", metadata: {} },
-        { id: "reviewer", label: "Review", kind: "agent", agentId: "reviewer", status: "idle", metadata: {} },
-        { id: "checkpoint", label: "Checkpoint", kind: "checkpoint", status: "blocked", metadata: {} },
-      ],
-      edges: [
-        { id: "run-orchestrator", source: "run", target: "orchestrator", kind: "control", label: "task", metadata: {} },
-        { id: "orchestrator-researcher", source: "orchestrator", target: "researcher", kind: "delegation", label: "research", metadata: {} },
-        { id: "orchestrator-reviewer", source: "orchestrator", target: "reviewer", kind: "delegation", label: "review", metadata: {} },
-        { id: "reviewer-checkpoint", source: "reviewer", target: "checkpoint", kind: "artifact", label: "state", metadata: {} },
-      ],
-    },
-    planTemplate: [
-      { id: "decompose", title: "Decompose task into inspectable plan", ownerAgentId: "orchestrator", dependencies: [] },
-      { id: "research", title: "Gather focused supporting context", ownerAgentId: "researcher", dependencies: ["decompose"] },
-      { id: "review", title: "Review result and surface risks", ownerAgentId: "reviewer", dependencies: ["research"] },
-      { id: "synthesize", title: "Synthesize final response", ownerAgentId: "orchestrator", dependencies: ["review"] },
-    ],
-  },
-  {
-    id: "generator_verifier",
-    label: "Generator-Verifier",
-    summary: "A generator proposes an answer and a verifier checks it against a rubric.",
-    recommendedUse: "Use when quality can be judged by explicit acceptance criteria.",
-    failureMode: "Weak rubrics can create false confidence or unproductive retry loops.",
-    defaultConstraints: ["Require a clear rubric before verification.", "Keep retries bounded.", "Attach verifier evidence."],
-    defaultBudget: DEFAULT_BUDGETS.generator_verifier,
-    profiles: [
-      profile("generator", "Generator", "Produce the candidate answer.", "generator_verifier", ["session", "project"]),
-      profile("verifier", "Verifier", "Evaluate the answer against the rubric.", "generator_verifier", [
-        "session",
-        "project",
-        "artifact",
-      ]),
-    ],
-    topology: {
-      nodes: [
-        { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "generator", label: "Generator", kind: "agent", agentId: "generator", status: "idle", metadata: {} },
-        { id: "verifier", label: "Verifier", kind: "agent", agentId: "verifier", status: "blocked", metadata: {} },
-      ],
-      edges: [
-        { id: "run-generator", source: "run", target: "generator", kind: "control", label: "draft", metadata: {} },
-        { id: "generator-verifier", source: "generator", target: "verifier", kind: "verification", label: "check", metadata: {} },
-      ],
-    },
-    planTemplate: [
-      { id: "draft", title: "Draft candidate output", ownerAgentId: "generator", dependencies: [] },
-      { id: "verify", title: "Verify against rubric", ownerAgentId: "verifier", dependencies: ["draft"] },
-    ],
-  },
-  {
-    id: "agent_teams",
-    label: "Agent Teams",
-    summary: "Persistent teammate agents coordinate around a shared backlog and memory.",
-    recommendedUse: "Use when long-running workers need identity and context across tasks.",
-    failureMode: "Unclear ownership can create duplicate work or stale worker memory.",
-    defaultConstraints: ["Assign every plan item to an owner.", "Keep worker memory explicit.", "Summarize handoffs."],
-    defaultBudget: DEFAULT_BUDGETS.agent_teams,
-    profiles: [
-      profile("team_lead", "Team Lead", "Prioritize backlog and coordinate workers.", "agent_teams", ["session", "project"]),
-      profile("builder", "Builder", "Implement assigned work.", "agent_teams", ["session", "project", "worker"]),
-      profile("checker", "Checker", "Validate completed work.", "agent_teams", ["session", "project", "worker", "artifact"]),
-    ],
-    topology: {
-      nodes: [
-        { id: "team_lead", label: "Team Lead", kind: "agent", agentId: "team_lead", status: "idle", metadata: {} },
-        { id: "builder", label: "Builder", kind: "agent", agentId: "builder", status: "idle", metadata: {} },
-        { id: "checker", label: "Checker", kind: "agent", agentId: "checker", status: "idle", metadata: {} },
-        { id: "memory", label: "Shared Memory", kind: "capability", status: "blocked", metadata: {} },
-      ],
-      edges: [
-        { id: "lead-builder", source: "team_lead", target: "builder", kind: "delegation", label: "assign", metadata: {} },
-        { id: "builder-checker", source: "builder", target: "checker", kind: "verification", label: "validate", metadata: {} },
-        { id: "checker-lead", source: "checker", target: "team_lead", kind: "control", label: "report", metadata: {} },
-        { id: "lead-memory", source: "team_lead", target: "memory", kind: "memory", label: "scope", metadata: {} },
-      ],
-    },
-    planTemplate: [
-      { id: "triage", title: "Triage work into team backlog", ownerAgentId: "team_lead", dependencies: [] },
-      { id: "build", title: "Complete assigned task", ownerAgentId: "builder", dependencies: ["triage"] },
-      { id: "check", title: "Validate output", ownerAgentId: "checker", dependencies: ["build"] },
-      { id: "handoff", title: "Record handoff and next action", ownerAgentId: "team_lead", dependencies: ["check"] },
-    ],
-  },
-];
-
 function getPatternDefinition(pattern: CoordinationPattern): OraPatternDefinition {
-  return PATTERN_DEFINITIONS.find((definition) => definition.id === pattern) ?? PATTERN_DEFINITIONS[0];
+  return MVP_PATTERNS.find((definition) => definition.id === pattern) ?? MVP_PATTERNS[0];
 }

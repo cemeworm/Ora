@@ -1,4 +1,4 @@
-import { Bot, MessageSquare, MessageSquarePlus, Search, Settings } from "lucide-react";
+import { Bot, MessageSquarePlus, Search, Settings } from "lucide-react";
 import { useMemo } from "react";
 import { useWorkbench } from "../lib/state";
 import { buildWorkbenchViewModel } from "../lib/viewModel";
@@ -7,9 +7,7 @@ import type { AppView } from "../types";
 import { SidebarTrigger, useSidebar } from "./ui/sidebar";
 import { StatusPill } from "./StatusPill";
 
-const navItems: { view: AppView; label: string; icon: typeof MessageSquare }[] = [
-  { view: "chat", label: "Chats", icon: MessageSquare },
-  { view: "chat", label: "Agents", icon: Bot },
+const navItems: { view: AppView; label: string; icon: typeof Settings }[] = [
   { view: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -28,7 +26,7 @@ export function Sidebar() {
     <aside
       data-state={open ? "expanded" : "collapsed"}
       className={cn(
-        "hidden h-screen shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-linear md:flex md:flex-col",
+        "hidden h-screen shrink-0 bg-background text-sidebar-foreground transition-[width] duration-200 ease-linear md:flex md:flex-col",
         open ? "w-64" : "w-12",
       )}
     >
@@ -50,9 +48,8 @@ export function Sidebar() {
         <button
           onClick={() => dispatch({ type: "SET_VIEW", view: "chat" })}
           className={cn(
-            "flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+            "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
             !open && "justify-center px-0",
-            state.activeView === "chat" && "bg-sidebar-accent text-sidebar-accent-foreground",
           )}
           title="New chat"
         >
@@ -62,14 +59,29 @@ export function Sidebar() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {open && (
-          <div className="px-2 pb-2">
-            <div className="flex h-9 items-center gap-2 rounded-md border border-border bg-background/70 px-3 text-sm text-muted-foreground shadow-xs">
+        <div className="px-2 pb-2">
+          {open && (
+            <button
+              type="button"
+              className="flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              title="Search"
+            >
               <Search size={14} />
-              <span className="text-xs">Search conversations</span>
-            </div>
-          </div>
-        )}
+              <span>Search</span>
+            </button>
+          )}
+          <button
+            onClick={() => dispatch({ type: "SET_VIEW", view: "chat" })}
+            className={cn(
+              "mt-2 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              !open && "justify-center px-0",
+            )}
+            title="Agents"
+          >
+            <Bot size={16} />
+            {open && <span>Agents</span>}
+          </button>
+        </div>
 
         {open && sessions.length > 0 && (
           <section className="min-h-0 px-2">
@@ -105,9 +117,7 @@ export function Sidebar() {
       <footer className="border-t border-sidebar-border p-2">
         <div className="flex flex-col gap-1">
           {navItems.map(({ view, label, icon: Icon }) => {
-            const active =
-              (label !== "Settings" && state.activeView === "chat") ||
-              (label === "Settings" && state.activeView === "settings");
+            const active = label === "Settings" && state.activeView === "settings";
             return (
               <button
                 key={label}

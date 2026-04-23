@@ -109,6 +109,18 @@ export class PlanService {
     return this.items;
   }
 
+  setStatus(planItemId: string, status: PlanItem["status"]): PlanItem[] {
+    this.update(planItemId, (item) => ({
+      ...item,
+      status
+    }));
+    return this.items;
+  }
+
+  findByTemplateId(templateId: string): PlanItem | undefined {
+    return this.items.find((item) => item.id === `${this.runId}:${templateId}`);
+  }
+
   markAll(status: PlanItem["status"]): PlanItem[] {
     for (const item of this.items) {
       item.status = status;

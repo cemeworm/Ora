@@ -5,7 +5,9 @@ import type {
   OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
+  OraSkillRegistry,
   OraStateSnapshot,
+  OraToolRegistry,
   RuntimeHealth,
 } from "./runtimeClient";
 
@@ -19,6 +21,8 @@ export interface WorkbenchState {
   activeSnapshot: OraStateSnapshot | undefined;
   patterns: OraPatternDefinition[];
   providerRegistry: OraProviderRegistry | undefined;
+  toolRegistry: OraToolRegistry | undefined;
+  skillRegistry: OraSkillRegistry | undefined;
   providerSecretStatuses: OraProviderSecretStatus[];
   selectedProviderId: string;
   bridgeStatus: RuntimeBridgeStatus | undefined;
@@ -39,6 +43,8 @@ export type WorkbenchAction =
       type: "BOOTSTRAP";
       patterns: OraPatternDefinition[];
       providerRegistry: OraProviderRegistry;
+      toolRegistry: OraToolRegistry;
+      skillRegistry: OraSkillRegistry;
       providerSecretStatuses: OraProviderSecretStatus[];
       snapshot: OraStateSnapshot;
       health: RuntimeHealth;
@@ -79,6 +85,8 @@ const initialState: WorkbenchState = {
   activeSnapshot: undefined,
   patterns: [],
   providerRegistry: undefined,
+  toolRegistry: undefined,
+  skillRegistry: undefined,
   providerSecretStatuses: [],
   selectedProviderId: "local-smoke",
   bridgeStatus: {
@@ -112,6 +120,8 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         ...state,
         patterns: action.patterns,
         providerRegistry: action.providerRegistry,
+        toolRegistry: action.toolRegistry,
+        skillRegistry: action.skillRegistry,
         providerSecretStatuses: action.providerSecretStatuses,
         selectedProviderId: action.providerRegistry.defaultProviderId,
         sessions: [snapshot],

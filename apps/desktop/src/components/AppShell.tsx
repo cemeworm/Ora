@@ -12,7 +12,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     >
       <Sidebar />
       <SidebarInset className="h-screen min-h-[720px] overflow-hidden antialiased">
-        {children}
+        <div className="h-full w-full pb-1.5 pl-0.5 pr-1.5 pt-1.5 md:pb-2 md:pl-1 md:pr-2 md:pt-2">{children}</div>
       </SidebarInset>
     </SidebarProvider>
   );

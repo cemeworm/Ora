@@ -30,8 +30,8 @@ export function ChatHeader({
   return (
     <header
       className={cn(
-        "absolute left-0 right-0 top-0 z-30 flex h-12 shrink-0 items-center justify-between bg-background/80 px-4 shadow-xs backdrop-blur",
-        isApprovalRequired && "bg-amber-50/80",
+        "absolute left-0 right-0 top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/74 px-4 backdrop-blur-sm",
+        isApprovalRequired && "bg-amber-50/90",
       )}
     >
       <div className="flex min-w-0 items-center gap-3">

@@ -77,8 +77,8 @@ export function ChatInput({
 
   return (
     <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
-      <div className="pointer-events-auto relative w-full max-w-container-md">
-        <div className="rounded-2xl border border-border bg-background/85 shadow-lift backdrop-blur-sm transition-all duration-300">
+      <div className="pointer-events-auto relative w-full max-w-[88rem]">
+        <div className="rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
           <div className="relative min-h-[96px]">
             <textarea
               ref={textareaRef}
@@ -108,7 +108,7 @@ export function ChatInput({
                   trigger={
                     <>
                       <Bot size={13} />
-                      <span className="hidden sm:inline">模型</span>
+                      <span className="hidden xl:inline">模型</span>
                       <span className="max-w-[140px] truncate text-foreground">
                         {activeProvider?.modelId ?? "No model"}
                       </span>
@@ -150,7 +150,7 @@ export function ChatInput({
                   trigger={
                     <>
                       <Rocket size={13} />
-                      <span className="hidden sm:inline">工作模式</span>
+                      <span className="hidden xl:inline">工作模式</span>
                       <span className="max-w-[150px] truncate text-foreground">{activePattern?.label ?? "Default"}</span>
                     </>
                   }
@@ -179,7 +179,7 @@ export function ChatInput({
                   trigger={
                     <>
                       <SelectedIcon size={13} className={cn(inputMode === "ultra" && "text-[#dabb5e]")} />
-                      <span className="hidden sm:inline">思考程度</span>
+                      <span className="hidden xl:inline">思考程度</span>
                       <span className={cn("text-foreground", inputMode === "ultra" && "golden-text")}>{selectedMode.label}</span>
                     </>
                   }
@@ -244,7 +244,7 @@ function Picker({
         type="button"
         onClick={() => onOpenChange(!open)}
         className={cn(
-          "flex h-7 max-w-[260px] items-center gap-1.5 rounded-full border border-border bg-background/70 px-2.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground",
+          "flex h-7 max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-background/70 px-2.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground",
           open && "bg-accent text-accent-foreground",
         )}
       >

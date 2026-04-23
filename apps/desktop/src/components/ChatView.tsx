@@ -74,9 +74,10 @@ export function ChatView({
     providerOptions.find((provider) => provider.id === state.selectedProviderId) ??
     allProviders.find((provider) => provider.id === state.selectedProviderId) ??
     providerOptions[0];
+  const workspaceContentClassName = "mx-auto flex min-h-0 w-full max-w-[88rem]";
 
   return (
-    <div className="relative flex h-full min-h-0 justify-between bg-background">
+    <div className="relative flex h-full min-h-0 w-full bg-transparent">
       <ChatHeader
         bridgeStatus={bridgeStatus}
         busyCommand={busyCommand}
@@ -88,10 +89,10 @@ export function ChatView({
         onToggleDetailDrawer={onToggleDetailDrawer}
         detailDrawerOpen={detailDrawerOpen}
       />
-      <main className="flex min-h-0 max-w-full grow flex-col">
+      <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
         {showWelcome && (
           <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center px-6">
-            <div className="flex w-full max-w-container-sm flex-col items-center gap-2 text-center">
+            <div className="flex w-full max-w-container-md flex-col items-center gap-2 text-center">
               <div className={cn("flex items-center gap-2 text-2xl font-bold", state.inputMode === "ultra" && "golden-text")}>
                 <Sparkles size={22} />
                 <span>Welcome back to Ora</span>
@@ -102,17 +103,19 @@ export function ChatView({
             </div>
           </div>
         )}
-        <div className="flex min-h-0 flex-1 justify-center">
-          <ChatMessages
-            chatMessages={chatMessages}
-            agents={agents}
-            actionRecords={actionRecords}
-            planItems={planItems}
-            isApprovalRequired={isApprovalRequired}
-            onResumeRun={onResumeRun}
-            onCancelRun={onCancelRun}
-            busyCommand={busyCommand}
-          />
+        <div className="flex min-h-0 flex-1">
+          <div className={workspaceContentClassName}>
+            <ChatMessages
+              chatMessages={chatMessages}
+              agents={agents}
+              actionRecords={actionRecords}
+              planItems={planItems}
+              isApprovalRequired={isApprovalRequired}
+              onResumeRun={onResumeRun}
+              onCancelRun={onCancelRun}
+              busyCommand={busyCommand}
+            />
+          </div>
         </div>
         <ChatInput
           composerPrompt={composerPrompt}

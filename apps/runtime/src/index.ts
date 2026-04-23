@@ -8,6 +8,12 @@ export {
 export { createRuntimeMethodHandler, handleJsonRpcLine } from "./json-rpc.js";
 export { InMemoryRunStore, LocalRunStore, OraRuntimeError } from "./run-store.js";
 export { runStdioServer } from "./stdio.js";
+export {
+  RuntimeSkillRegistry,
+  RuntimeToolRegistry,
+  loadRuntimeSkills
+} from "./harness/capability-registries.js";
+export { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 
 // Persistence
 export { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";

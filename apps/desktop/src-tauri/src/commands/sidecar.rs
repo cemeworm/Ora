@@ -3,11 +3,11 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 const JSON_RPC_VERSION: &str = "2.0";
 const RUNTIME_COMMAND_ENV: &str = "ORA_RUNTIME_SIDECAR_COMMAND";
@@ -17,6 +17,10 @@ const BRIDGE_MODE_FACADE: &str = "in-process-facade";
 const BRIDGE_MODE_PROCESS: &str = "process-json-rpc";
 const RUNTIME_MODE_FACADE: &str = "facade";
 const RUNTIME_MODE_PROCESS: &str = "process";
+const BUNDLED_RUNTIME_ROOT: &str = "runtime-sidecar";
+const BUNDLED_RUNTIME_ENTRYPOINT: &str = "runtime-sidecar.cjs";
+const BUNDLED_RUNTIME_STORE_DB: &str = "runtime.db";
+const BUNDLED_RUNTIME_CHECKPOINT_DB: &str = "langgraph-checkpoints.db";
 const STATUS_REASON_FACADE: &str =
     "Runtime process spawning is disabled; Rust is serving deterministic Ora facade responses.";
 const STATUS_REASON_PROCESS: &str =
@@ -24,20 +28,9 @@ const STATUS_REASON_PROCESS: &str =
 const STATUS_REASON_UNAVAILABLE: &str =
     "Runtime sidecar command is configured but unavailable; Rust is falling back to deterministic Ora facade responses.";
 const DEFAULT_PATTERN: &str = "orchestrator_subagent";
-const DEV_RUNTIME_COMMAND: RuntimeCommandSpec = RuntimeCommandSpec {
-    display: "pnpm --filter @ora/runtime start",
-    parts: &["pnpm", "--filter", "@ora/runtime", "start"],
-};
-const PROD_RUNTIME_COMMAND: RuntimeCommandSpec = RuntimeCommandSpec {
-    display: "ora-runtime-sidecar --transport stdio --event-format ora-envelope-v1",
-    parts: &[
-        "ora-runtime-sidecar",
-        "--transport",
-        "stdio",
-        "--event-format",
-        "ora-envelope-v1",
-    ],
-};
+const DEV_RUNTIME_COMMAND_DISPLAY: &str = "pnpm --filter @ora/runtime start";
+const PROD_RUNTIME_COMMAND_DISPLAY: &str =
+    "runtime-sidecar/bin/node runtime-sidecar/app/runtime-sidecar.cjs";
 
 #[derive(Default)]
 pub struct RuntimeFacade {
@@ -59,19 +52,28 @@ pub struct RuntimeSidecarManager {
 
 impl Default for RuntimeSidecarManager {
     fn default() -> Self {
-        let configured_command = resolve_runtime_command();
-        let process_spawn_available = configured_command
-            .map(|command| command_is_available(command.executable()))
-            .unwrap_or(false);
         Self {
-            configured_command,
-            process_spawn_available: Mutex::new(process_spawn_available),
-            configured_from_env: configured_command.is_some(),
+            configured_command: None,
+            process_spawn_available: Mutex::new(false),
+            configured_from_env: false,
         }
     }
 }
 
 impl RuntimeSidecarManager {
+    pub fn new(app: AppHandle) -> Self {
+        let (configured_command, configured_from_env) = resolve_runtime_command(&app);
+        let process_spawn_available = configured_command
+            .as_ref()
+            .map(|command| command_is_available(command.executable()))
+            .unwrap_or(false);
+        Self {
+            configured_command,
+            process_spawn_available: Mutex::new(process_spawn_available),
+            configured_from_env,
+        }
+    }
+
     #[cfg(test)]
     fn with_process_bridge(
         command: Option<RuntimeCommandSpec>,
@@ -85,7 +87,7 @@ impl RuntimeSidecarManager {
     }
 
     fn status(&self) -> SidecarStatus {
-        let configured_command = self.configured_command;
+        let configured_command = self.configured_command.as_ref();
         let active_process = self
             .process_spawn_available
             .lock()
@@ -94,7 +96,7 @@ impl RuntimeSidecarManager {
         SidecarStatus {
             configured: true,
             sidecar_configured: self.configured_from_env,
-            json_rpc_facade_enabled: true,
+            json_rpc_facade_enabled: false,
             runtime_mode: if active_process {
                 RUNTIME_MODE_PROCESS
             } else {
@@ -105,7 +107,9 @@ impl RuntimeSidecarManager {
             } else {
                 "in-process-json-rpc-facade"
             },
-            command: configured_command.map_or(PROD_RUNTIME_COMMAND.display, |spec| spec.display),
+            command: configured_command
+                .map(|spec| spec.display.clone())
+                .unwrap_or_else(|| PROD_RUNTIME_COMMAND_DISPLAY.to_string()),
             bridge_mode: if active_process {
                 RUNTIME_MODE_PROCESS
             } else {
@@ -117,7 +121,7 @@ impl RuntimeSidecarManager {
             shell_authority_exposed: false,
             reason: if active_process {
                 STATUS_REASON_PROCESS
-            } else if self.configured_from_env && self.configured_command.is_some() {
+            } else if self.configured_from_env || self.configured_command.is_some() {
                 STATUS_REASON_UNAVAILABLE
             } else {
                 STATUS_REASON_FACADE
@@ -125,11 +129,16 @@ impl RuntimeSidecarManager {
         }
     }
 
-    fn preview_command(&self) -> Vec<&'static str> {
+    fn preview_command(&self) -> Vec<String> {
         self.configured_command
-            .map(RuntimeCommandSpec::parts)
-            .unwrap_or_else(|| PROD_RUNTIME_COMMAND.parts())
-            .to_vec()
+            .as_ref()
+            .map(RuntimeCommandSpec::preview_command)
+            .unwrap_or_else(|| {
+                PROD_RUNTIME_COMMAND_DISPLAY
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect()
+            })
     }
 
     fn try_process_json_rpc(
@@ -145,8 +154,8 @@ impl RuntimeSidecarManager {
             return None;
         }
 
-        let command = self.configured_command?;
-        match run_process_json_rpc(command, request) {
+        let command = self.configured_command.clone()?;
+        match run_process_json_rpc(&command, request) {
             Ok(response) => Some(response),
             Err(_) => {
                 self.disable_process_bridge();
@@ -162,19 +171,44 @@ impl RuntimeSidecarManager {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 struct RuntimeCommandSpec {
-    display: &'static str,
-    parts: &'static [&'static str],
+    display: String,
+    executable: PathBuf,
+    args: Vec<String>,
+    working_directory: Option<PathBuf>,
+    environment: Vec<(String, String)>,
 }
 
 impl RuntimeCommandSpec {
-    fn executable(self) -> &'static str {
-        self.parts[0]
+    fn new(
+        display: impl Into<String>,
+        executable: impl Into<PathBuf>,
+        args: Vec<String>,
+        working_directory: Option<PathBuf>,
+        environment: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            display: display.into(),
+            executable: executable.into(),
+            args,
+            working_directory,
+            environment,
+        }
     }
 
-    fn parts(self) -> &'static [&'static str] {
-        self.parts
+    fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    fn preview_command(&self) -> Vec<String> {
+        let mut command = vec![self.executable.to_string_lossy().into_owned()];
+        command.extend(self.args.clone());
+        command
     }
 }
 
@@ -185,7 +219,7 @@ pub struct SidecarStatus {
     json_rpc_facade_enabled: bool,
     runtime_mode: &'static str,
     transport: &'static str,
-    command: &'static str,
+    command: String,
     bridge_mode: &'static str,
     sidecar_spawn_enabled: bool,
     sidecar_process_spawn_enabled: bool,
@@ -250,7 +284,7 @@ pub fn runtime_sidecar_status(manager: State<'_, RuntimeSidecarManager>) -> Side
 }
 
 #[tauri::command]
-pub fn preview_sidecar_command(manager: State<'_, RuntimeSidecarManager>) -> Vec<&'static str> {
+pub fn preview_sidecar_command(manager: State<'_, RuntimeSidecarManager>) -> Vec<String> {
     manager.preview_command()
 }
 
@@ -347,7 +381,16 @@ pub fn runtime_json_rpc(
     if let Some(response) = manager.try_process_json_rpc(&request) {
         response
     } else {
-        facade.handle_runtime_json_rpc(request)
+        let _ = facade;
+        json_rpc_error(
+            request.id,
+            -32060,
+            "Runtime sidecar unavailable",
+            Some(json!({
+                "reason": STATUS_REASON_UNAVAILABLE,
+                "bridge_mode": BRIDGE_MODE_FACADE,
+            })),
+        )
     }
 }
 
@@ -906,7 +949,7 @@ fn runtime_health() -> Value {
         "runtime_mode": RUNTIME_MODE_FACADE,
         "bridge_mode": BRIDGE_MODE_FACADE,
         "transport": "in-process-json-rpc-facade",
-        "command": PROD_RUNTIME_COMMAND.display,
+        "command": PROD_RUNTIME_COMMAND_DISPLAY,
         "sidecar_spawn_enabled": true,
         "sidecar_process_spawn_enabled": false,
         "process_spawn_available": false,
@@ -915,16 +958,20 @@ fn runtime_health() -> Value {
     })
 }
 
-fn resolve_runtime_command() -> Option<RuntimeCommandSpec> {
-    let command = env::var(RUNTIME_COMMAND_ENV).ok()?;
-    match command.trim().to_ascii_lowercase().as_str() {
-        "dev" | "development" => Some(DEV_RUNTIME_COMMAND),
-        "prod" | "production" => Some(PROD_RUNTIME_COMMAND),
-        _ => None,
+fn resolve_runtime_command(app: &AppHandle) -> (Option<RuntimeCommandSpec>, bool) {
+    if let Ok(command) = env::var(RUNTIME_COMMAND_ENV) {
+        let resolved = match command.trim().to_ascii_lowercase().as_str() {
+            "dev" | "development" => Some(dev_runtime_command()),
+            "prod" | "production" => bundled_runtime_command(app),
+            _ => None,
+        };
+        return (resolved, true);
     }
+
+    (bundled_runtime_command(app), false)
 }
 
-fn command_is_available(executable: &str) -> bool {
+fn command_is_available(executable: &Path) -> bool {
     let candidate = Path::new(executable);
     if candidate.components().count() > 1 {
         return candidate.is_file();
@@ -959,16 +1006,22 @@ fn command_is_available(executable: &str) -> bool {
 }
 
 fn run_process_json_rpc(
-    command: RuntimeCommandSpec,
+    command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,
 ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
-    let mut child = Command::new(command.executable())
-        .args(command.parts().iter().skip(1))
+    let mut process = Command::new(command.executable());
+    process
+        .args(command.args())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| {
+        .stderr(Stdio::inherit());
+    if let Some(working_directory) = command.working_directory.as_ref() {
+        process.current_dir(working_directory);
+    }
+    for (key, value) in &command.environment {
+        process.env(key, value);
+    }
+    let mut child = process.spawn().map_err(|error| {
             runtime_error(
                 -32050,
                 "Runtime sidecar process spawn failed",
@@ -998,7 +1051,7 @@ fn run_process_json_rpc(
             runtime_error(
                 -32053,
                 "Runtime sidecar write failed",
-                Some(json!({
+            Some(json!({
                     "command": command.display,
                     "error": error.to_string()
                 })),
@@ -1008,7 +1061,7 @@ fn run_process_json_rpc(
             runtime_error(
                 -32053,
                 "Runtime sidecar write failed",
-                Some(json!({
+            Some(json!({
                     "command": command.display,
                     "error": error.to_string()
                 })),
@@ -1018,7 +1071,7 @@ fn run_process_json_rpc(
             runtime_error(
                 -32053,
                 "Runtime sidecar write failed",
-                Some(json!({
+            Some(json!({
                     "command": command.display,
                     "error": error.to_string()
                 })),
@@ -1088,6 +1141,68 @@ fn run_process_json_rpc(
     }
 
     Ok(response)
+}
+
+fn dev_runtime_command() -> RuntimeCommandSpec {
+    RuntimeCommandSpec::new(
+        DEV_RUNTIME_COMMAND_DISPLAY,
+        "pnpm",
+        vec![
+            "--filter".to_string(),
+            "@ora/runtime".to_string(),
+            "start".to_string(),
+        ],
+        None,
+        Vec::new(),
+    )
+}
+
+fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
+    let resource_dir = app.path().resource_dir().ok()?;
+    let runtime_root = resource_dir.join(BUNDLED_RUNTIME_ROOT);
+    let node_path = runtime_root.join("bin").join(bundled_node_binary_name());
+    let entrypoint_path = runtime_root.join("app").join(BUNDLED_RUNTIME_ENTRYPOINT);
+    let working_directory = runtime_root.join("app");
+
+    if !node_path.is_file() || !entrypoint_path.is_file() || !working_directory.is_dir() {
+        return None;
+    }
+
+    let app_data_dir = app.path().app_data_dir().ok()?;
+    let runtime_data_dir = app_data_dir.join("runtime");
+    let runtime_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_STORE_DB);
+    let checkpoint_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_CHECKPOINT_DB);
+
+    Some(RuntimeCommandSpec::new(
+        format!(
+            "{} {}",
+            node_path.to_string_lossy(),
+            entrypoint_path.to_string_lossy()
+        ),
+        node_path,
+        vec![entrypoint_path.to_string_lossy().into_owned()],
+        Some(working_directory),
+        vec![
+            (
+                "ORA_RUNTIME_STORE_DIR".to_string(),
+                runtime_db_path.to_string_lossy().into_owned(),
+            ),
+            (
+                "ORA_LANGGRAPH_CHECKPOINT_DB".to_string(),
+                checkpoint_db_path.to_string_lossy().into_owned(),
+            ),
+        ],
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn bundled_node_binary_name() -> &'static str {
+    "node.exe"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn bundled_node_binary_name() -> &'static str {
+    "node"
 }
 
 fn patterns_list() -> Value {
@@ -1732,7 +1847,7 @@ mod tests {
         let status = manager.status();
 
         assert_eq!(status.runtime_mode, RUNTIME_MODE_FACADE);
-        assert_eq!(status.command, PROD_RUNTIME_COMMAND.display);
+        assert_eq!(status.command, PROD_RUNTIME_COMMAND_DISPLAY);
         assert!(!status.process_spawn_available);
         assert!(!status.sidecar_process_spawn_enabled);
         assert!(status.sidecar_spawn_enabled);
@@ -1740,13 +1855,13 @@ mod tests {
 
     #[test]
     fn sidecar_manager_reports_process_mode_when_bridge_is_enabled() {
-        let manager = process_bridge_manager(DEV_RUNTIME_COMMAND, true);
+        let manager = process_bridge_manager(dev_runtime_command(), true);
         let status = manager.status();
 
         assert_eq!(status.runtime_mode, RUNTIME_MODE_PROCESS);
         assert_eq!(status.bridge_mode, RUNTIME_MODE_PROCESS);
         assert_eq!(status.transport, BRIDGE_MODE_PROCESS);
-        assert_eq!(status.command, DEV_RUNTIME_COMMAND.display);
+        assert_eq!(status.command, DEV_RUNTIME_COMMAND_DISPLAY);
         assert!(status.process_spawn_available);
         assert!(status.sidecar_process_spawn_enabled);
     }
@@ -1754,14 +1869,16 @@ mod tests {
     #[test]
     fn runtime_json_rpc_uses_process_bridge_when_available() {
         let manager = process_bridge_manager(
-            RuntimeCommandSpec {
-                display: "sh -c one-shot-json-rpc",
-                parts: &[
-                    "sh",
-                    "-c",
-                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'",
+            RuntimeCommandSpec::new(
+                "sh -c one-shot-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'".to_string(),
                 ],
-            },
+                None,
+                Vec::new(),
+            ),
             true,
         );
         let facade = RuntimeFacade::default();

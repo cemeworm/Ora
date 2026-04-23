@@ -39,6 +39,7 @@ import {
   PlanService,
   PolicyService
 } from "./capabilities.js";
+import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
 import { recordLangfuseSnapshotTrace } from "./telemetry/langfuse.js";
@@ -227,7 +228,7 @@ export class LocalRunStore {
       ok: true,
       service: "ora-runtime",
       version: "0.1.0",
-      deterministic: true,
+      deterministic: false,
       persistence: this.persistenceType
     };
   }
@@ -245,15 +246,61 @@ export class LocalRunStore {
       .map((run) => this.toRunSummary(run));
   }
 
-  startRun(params: unknown): RunHandle {
+  async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
-    const run = this.createCompletedRun({
-      input: parsed.input,
-      config: parsed.config
+    const manualApproval =
+      parsed.config?.approvalMode === "manual" ||
+      parsed.config?.metadata?.approvalMode === "manual" ||
+      parsed.config?.metadata?.requireApproval === true;
+    if (manualApproval) {
+      const run = this.createCompletedRun({
+        input: parsed.input,
+        config: parsed.config
+      });
+      recordLangfuseSnapshotTrace(run);
+      this.persistRun(run);
+      return this.toRunHandle(run);
+    }
+
+    const config = RunConfigSchema.parse(parsed.config ?? {});
+    const input = UserTaskInputSchema.parse({
+      ...parsed.input,
+      createdAt: parsed.input.createdAt ?? this.now()
     });
-    recordLangfuseSnapshotTrace(run);
-    this.persistRun(run);
-    return this.toRunHandle(run);
+    const fullConfig = RunConfigSchema.parse({
+      ...config,
+      budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
+    });
+    const runId = this.nextRunId();
+    const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
+      clock: this.clock
+    });
+    recordLangfuseSnapshotTrace(snapshot);
+    this.persistRun(snapshot);
+    return this.toRunHandle(snapshot);
+  }
+
+  async startRunWithKernel(
+    params: unknown,
+    forkedFrom?: { runId: string; checkpointId: string; eventSeq: number }
+  ): Promise<RunHandle> {
+    const parsed = StartRunParamsSchema.parse(params);
+    const config = RunConfigSchema.parse(parsed.config ?? {});
+    const input = UserTaskInputSchema.parse({
+      ...parsed.input,
+      createdAt: parsed.input.createdAt ?? this.now()
+    });
+    const fullConfig = RunConfigSchema.parse({
+      ...config,
+      budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
+    });
+    const runId = this.nextRunId();
+    const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
+      clock: this.clock,
+      forkedFrom
+    });
+    this.persistRun(snapshot);
+    return this.toRunHandle(snapshot);
   }
 
   async startRunWithSnapshot(
@@ -464,7 +511,7 @@ export class LocalRunStore {
     });
   }
 
-  forkRun(params: unknown): RunHandle {
+  async forkRun(params: unknown): Promise<RunHandle> {
     const parsed = RunForkParamsSchema.parse(params);
     const source = this.getRunOrThrow(parsed.runId);
     const checkpoint = source.checkpoints.find((candidate) => candidate.id === parsed.checkpointId);
@@ -475,7 +522,7 @@ export class LocalRunStore {
       });
     }
 
-    const fork = this.createCompletedRun({
+    return this.startRunWithKernel({
       input: {
         ...source.input,
         ...parsed.input,
@@ -499,15 +546,12 @@ export class LocalRunStore {
           forkedFromRunId: source.runId,
           forkedFromCheckpointId: checkpoint.id
         }
-      },
-      forkedFrom: {
-        runId: source.runId,
-        checkpointId: checkpoint.id,
-        eventSeq: checkpoint.eventSeq
       }
+    }, {
+      runId: source.runId,
+      checkpointId: checkpoint.id,
+      eventSeq: checkpoint.eventSeq
     });
-    this.persistRun(fork);
-    return this.toRunHandle(fork);
   }
 
   exportReport(params: unknown): ArtifactRef {
@@ -783,7 +827,12 @@ export class LocalRunStore {
         return "pattern.orchestrator_subagent.dispatch_subagent";
       case "agent_teams":
         return "pattern.agent_teams.assign_worker";
+      case "message_bus":
+        return "pattern.message_bus.publish_event";
+      case "shared_state":
+        return "pattern.shared_state.write_board";
     }
+    throw new OraRuntimeError(`Unsupported pattern action type: ${pattern}`, -32002, { pattern });
   }
 
   private patternMemoryNamespace(pattern: CoordinationPattern, projectId?: string): string[] {
@@ -795,7 +844,12 @@ export class LocalRunStore {
         return ["session", projectNamespace, "orchestrator_subagent"];
       case "agent_teams":
         return ["worker", projectNamespace, "agent_teams"];
+      case "message_bus":
+        return ["session", projectNamespace, "message_bus"];
+      case "shared_state":
+        return ["project", projectNamespace, "shared_state"];
     }
+    throw new OraRuntimeError(`Unsupported pattern memory namespace: ${pattern}`, -32002, { pattern });
   }
 
   private patternOutput(pattern: CoordinationPattern, prompt: string) {
@@ -849,7 +903,35 @@ export class LocalRunStore {
             }
           }
         };
+      case "message_bus":
+        return {
+          token: "published",
+          tokenCount: 1,
+          message: `Router published "${prompt}" onto the bus, routed it, and the responder emitted the final message.`,
+          state: {
+            text: `Bus response: ${prompt}`,
+            pattern,
+            correlationId: `${prompt.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-corr`,
+            routingPlan: "task.input -> task.findings -> task.response",
+          }
+        };
+      case "shared_state":
+        return {
+          token: "converged",
+          tokenCount: 1,
+          message: `Agents updated the shared board for "${prompt}" until the critic declared convergence.`,
+          state: {
+            text: `Shared-state result: ${prompt}`,
+            pattern,
+            board: [
+              { key: "seed", summary: `Seeded board for ${prompt}` },
+              { key: "finding-1", summary: "Added supporting evidence" },
+              { key: "convergence", summary: "Board converged" }
+            ]
+          }
+        };
     }
+    throw new OraRuntimeError(`Unsupported pattern output: ${pattern}`, -32002, { pattern });
   }
 
   private transitionRun(

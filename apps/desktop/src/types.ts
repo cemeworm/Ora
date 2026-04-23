@@ -1,7 +1,9 @@
 export type CoordinationPattern =
   | "generator_verifier"
   | "orchestrator_subagent"
-  | "agent_teams";
+  | "agent_teams"
+  | "message_bus"
+  | "shared_state";
 
 export type RunStatus =
   | "running"
@@ -128,7 +130,7 @@ export interface ArtifactRecord {
   uri?: string;
 }
 
-export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "tauri_mock_fallback" | "error";
+export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "unavailable" | "error";
 
 export interface RuntimeBridgeStatus {
   mode: RuntimeBridgeMode;

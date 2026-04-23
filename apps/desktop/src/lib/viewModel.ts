@@ -439,10 +439,23 @@ function beatGroup(event: OraEventEnvelope): RunBeat["group"] {
       return "retry";
     case "topology.updated":
       return "dispatch";
+    case "agent.started":
+    case "agent.completed":
+      return "dispatch";
     case "approval.required":
     case "approval.resolved":
     case "action.updated":
       return "approval";
+    case "message.published":
+    case "message.routed":
+      return "dispatch";
+    case "queue.updated":
+      return "plan";
+    case "shared_state.updated":
+      return "tool";
+    case "worker.claimed":
+    case "worker.released":
+      return "dispatch";
     case "checkpoint.created":
       return "checkpoint";
     case "run.failed":
@@ -473,6 +486,10 @@ function beatLabel(event: OraEventEnvelope): string {
       return "Replayed";
     case "topology.updated":
       return "Topology";
+    case "agent.started":
+      return "Agent start";
+    case "agent.completed":
+      return "Agent done";
     case "profile.updated":
       return "Profile";
     case "memory.updated":
@@ -485,10 +502,24 @@ function beatLabel(event: OraEventEnvelope): string {
       return "Approval";
     case "approval.resolved":
       return "Approval done";
+    case "tool.called":
+      return "Tool";
     case "message.delta":
       return "Stream";
+    case "message.published":
+      return "Publish";
+    case "message.routed":
+      return "Route";
     case "token.delta":
       return "Token";
+    case "queue.updated":
+      return "Queue";
+    case "shared_state.updated":
+      return "Shared state";
+    case "worker.claimed":
+      return "Worker claimed";
+    case "worker.released":
+      return "Worker released";
     case "checkpoint.created":
       return "Checkpoint";
     case "artifact.exported":
@@ -519,6 +550,26 @@ function nodeLayout(pattern: CoordinationPattern, count: number): Array<{ x: num
       { x: 305, y: 34 },
       { x: 530, y: 40 },
       { x: 305, y: 146 },
+    ];
+  }
+
+  if (pattern === "message_bus") {
+    return [
+      { x: 40, y: 92 },
+      { x: 220, y: 36 },
+      { x: 390, y: 92 },
+      { x: 560, y: 36 },
+      { x: 720, y: 92 },
+    ];
+  }
+
+  if (pattern === "shared_state") {
+    return [
+      { x: 40, y: 92 },
+      { x: 220, y: 30 },
+      { x: 390, y: 92 },
+      { x: 560, y: 30 },
+      { x: 720, y: 92 },
     ];
   }
 

@@ -20,10 +20,3 @@ export async function runStdioServer(): Promise<void> {
     await shutdownLangfuseTelemetry();
   }
 }
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runStdioServer().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-    process.exitCode = 1;
-  });
-}

@@ -55,8 +55,8 @@ export function SettingsView() {
   }
 
   return (
-    <div className="flex h-full flex-col bg-bench-100">
-      <div className="border-b border-bench-200 bg-bench-50 px-6 py-4">
+    <div className="flex h-full min-h-0 flex-col bg-transparent">
+      <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <button
             onClick={() => dispatch({ type: "SET_VIEW", view: "chat" })}
@@ -220,6 +220,54 @@ export function SettingsView() {
               {state.busyCommand && (
                 <p className="mt-2 text-xs text-bench-700">{state.busyCommand} in progress.</p>
               )}
+            </section>
+          )}
+
+          {state.toolRegistry && (
+            <section className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+              <h3 className="mb-3 text-sm font-semibold">Tool Registry</h3>
+              <div className="grid gap-2 md:grid-cols-2">
+                {state.toolRegistry.tools.map((tool) => (
+                  <div key={tool.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-bench-900">{tool.label}</span>
+                      <span className="rounded-full bg-white px-2 py-0.5 font-mono text-[11px] text-bench-700 ring-1 ring-inset ring-bench-200">
+                        {tool.riskLevel}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-bench-700">{tool.description}</p>
+                    <p className="mt-2 font-mono text-[11px] text-bench-700">{tool.id}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {state.skillRegistry && (
+            <section className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+              <h3 className="mb-3 text-sm font-semibold">Skill Registry</h3>
+              <div className="space-y-2">
+                {state.skillRegistry.skills.map((skill) => (
+                  <div key={skill.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-bench-900">{skill.name}</span>
+                      <span className="rounded-full bg-white px-2 py-0.5 font-mono text-[11px] text-bench-700 ring-1 ring-inset ring-bench-200">
+                        {skill.id}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-bench-700">{skill.description}</p>
+                    {skill.allowedPatterns.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {skill.allowedPatterns.map((pattern) => (
+                          <span key={pattern} className="rounded-full bg-white px-2 py-0.5 font-mono text-[11px] text-bench-700 ring-1 ring-inset ring-bench-200">
+                            {pattern}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </section>
           )}
         </div>

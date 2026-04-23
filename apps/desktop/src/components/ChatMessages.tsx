@@ -35,7 +35,7 @@ export function ChatMessages({
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex min-h-full w-full max-w-container-md flex-col gap-8 px-4 pb-44 pt-20">
+      <div className="flex min-h-full w-full flex-col gap-8 px-4 pb-44 pt-20 md:px-6 xl:px-8">
         {chatMessages.map((message) => {
           if (
             message.role === "system" &&

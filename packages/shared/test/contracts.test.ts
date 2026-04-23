@@ -19,6 +19,7 @@ import {
   ProviderSecretStatusSchema,
   ProviderSecretWriteSchema,
   ResourceBudgetSchema,
+  RuntimeBootstrapSchema,
   RunConfigSchema,
   RunEventStreamSchema,
   RunForkParamsSchema,
@@ -26,18 +27,31 @@ import {
   RunResumeParamsSchema,
   RunSummarySchema,
   SessionConfigSchema,
+  SkillRegistrySchema,
   ToolDescriptorSchema,
   ToolRegistrySchema
 } from "../src/index.js";
 
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
-    expect(MVP_PATTERNS).toHaveLength(3);
+    expect(MVP_PATTERNS).toHaveLength(5);
+    expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
+      "generator_verifier",
+      "orchestrator_subagent",
+      "agent_teams",
+      "message_bus",
+      "shared_state"
+    ]);
 
     for (const pattern of MVP_PATTERNS) {
       expect(PatternDefinitionSchema.parse(pattern).id).toBe(pattern.id);
       expect(pattern.topology.nodes.length).toBeGreaterThan(1);
       expect(pattern.planTemplate.length).toBeGreaterThan(0);
+      expect(typeof pattern.supportsPersistentWorkers).toBe("boolean");
+      expect(typeof pattern.supportsSharedState).toBe("boolean");
+      expect(typeof pattern.supportsEventRouting).toBe("boolean");
+      expect(pattern.defaultStopPolicy.type).toBeTruthy();
+      expect(pattern.defaultStopPolicy.detail.length).toBeGreaterThan(0);
     }
   });
 
@@ -48,6 +62,10 @@ describe("Ora shared contracts", () => {
     expect(config.modelRef).toBe("local/smoke-model");
     expect(config.providerId).toBeUndefined();
     expect(config.providerConfig).toBeUndefined();
+    expect(config.skillIds).toEqual([]);
+    expect(config.toolIds).toEqual([]);
+    expect(config.approvalMode).toBe("high_risk_only");
+    expect(config.patternOptions).toEqual({});
   });
 
   it("accepts a run-scoped custom provider config", () => {
@@ -372,6 +390,66 @@ describe("ToolRegistrySchema", () => {
     });
     expect(parsed.tools).toHaveLength(1);
     expect(parsed.defaultPolicyId).toBe("default-policy");
+  });
+});
+
+describe("SkillRegistrySchema", () => {
+  it("accepts a valid skill registry", () => {
+    const parsed = SkillRegistrySchema.parse({
+      skills: [
+        {
+          id: "runtime.default.review",
+          name: "Default review",
+          description: "Default review instructions.",
+          promptSnippet: "Review output for correctness.",
+          allowedPatterns: ["orchestrator_subagent", "message_bus"]
+        }
+      ]
+    });
+    expect(parsed.skills).toHaveLength(1);
+    expect(parsed.skills[0]?.allowedPatterns).toEqual([
+      "orchestrator_subagent",
+      "message_bus"
+    ]);
+  });
+});
+
+describe("RuntimeBootstrapSchema", () => {
+  it("accepts runtime bootstrap payloads with pattern, provider, tool, and skill truth", () => {
+    const parsed = RuntimeBootstrapSchema.parse({
+      health: {
+        ok: true,
+        service: "ora-runtime",
+        version: "0.1.0",
+        mode: "runtime",
+        detail: "Ora runtime bootstrap is served from the shared runtime kernel."
+      },
+      patterns: MVP_PATTERNS,
+      providers: {
+        providers: DEFAULT_PROVIDERS,
+        defaultProviderId: "local-smoke"
+      },
+      tools: {
+        tools: MVP_TOOLS,
+        defaultPolicyId: "default-policy"
+      },
+      skills: {
+        skills: [
+          {
+            id: "runtime.default.review",
+            name: "Default review",
+            description: "Default review instructions.",
+            promptSnippet: "Review output for correctness.",
+            allowedPatterns: ["generator_verifier"]
+          }
+        ]
+      }
+    });
+
+    expect(parsed.health.mode).toBe("runtime");
+    expect(parsed.patterns).toHaveLength(5);
+    expect(parsed.tools.tools.length).toBeGreaterThan(0);
+    expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");
   });
 });
 
