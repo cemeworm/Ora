@@ -921,12 +921,12 @@ export function adaptChatMessages(
       }
 
       const assistantTurn = turn.snapshot ? buildAssistantTurnAttachment(turn.snapshot) : undefined;
-      const streamedAssistant = turn.snapshot ? assistantTextFromSnapshot(turn.snapshot) : undefined;
+      const snapshotAssistant = turn.snapshot ? assistantTextFromSnapshot(turn.snapshot) : undefined;
       if (turn.assistant || assistantTurn) {
         messages.push({
           id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
           role: "assistant",
-          content: turn.assistant?.content ?? streamedAssistant ?? placeholderAssistantCopy(turn.snapshot),
+          content: snapshotAssistant ?? turn.assistant?.content ?? placeholderAssistantCopy(turn.snapshot),
           timestamp: formatClock(turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now()),
           metadata: {
             runId: turn.runId,
@@ -943,9 +943,17 @@ export function adaptChatMessages(
 }
 
 function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  const outputText = outputTextFromSnapshot(snapshot);
+  if (outputText) {
+    return outputText;
+  }
+
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
     const event = snapshot.events[index];
     if (event?.type !== "message.delta" || !isRecord(event.payload)) {
+      continue;
+    }
+    if (isInternalVerifierDelta(snapshot, event)) {
       continue;
     }
     const content = event.payload.content;
@@ -954,6 +962,25 @@ function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefin
     }
   }
   return undefined;
+}
+
+function outputTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  if (typeof snapshot.output === "string" && snapshot.output.trim()) {
+    return snapshot.output.trim();
+  }
+  if (isRecord(snapshot.output) && typeof snapshot.output.text === "string" && snapshot.output.text.trim()) {
+    return snapshot.output.text.trim();
+  }
+  return undefined;
+}
+
+function isInternalVerifierDelta(snapshot: OraStateSnapshot, event: OraEventEnvelope): boolean {
+  if (snapshot.pattern !== "generator_verifier") {
+    return false;
+  }
+  const agentId = typeof event.agentId === "string" ? event.agentId : undefined;
+  const nodeId = typeof event.nodeId === "string" ? event.nodeId : undefined;
+  return agentId === "verifier" || nodeId === "verifier";
 }
 
 function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurnAttachment {

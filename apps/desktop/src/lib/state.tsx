@@ -198,6 +198,86 @@ function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: 
   };
 }
 
+function streamRunStatus(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): OraStateSnapshot["status"] | undefined {
+  if (snapshot?.runId === stream.runId) {
+    return snapshot.status;
+  }
+  return stream.status;
+}
+
+function isSettledRunStatus(status: OraStateSnapshot["status"] | undefined): status is OraStateSnapshot["status"] {
+  return status !== undefined && status !== "queued" && status !== "running";
+}
+
+function streamUpdatedAt(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): number | undefined {
+  if (snapshot?.runId === stream.runId) {
+    return snapshot.updatedAt;
+  }
+  return stream.events.at(-1)?.createdAt;
+}
+
+function syncSessionStateForSettledStream(
+  state: WorkbenchState,
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+) {
+  const status = streamRunStatus(stream, snapshot);
+  if (!isSettledRunStatus(status)) {
+    return {
+      sessions: state.sessions,
+      activeSessionDetail: state.activeSessionDetail,
+    };
+  }
+
+  const updatedAt = streamUpdatedAt(stream, snapshot);
+  const activeDetailHasRun = state.activeSessionDetail?.turns.some((turn) => turn.runId === stream.runId) ?? false;
+  const updateSession = (session: OraSessionSummary): OraSessionSummary => {
+    if (session.latestRunId !== stream.runId) {
+      return session;
+    }
+    return {
+      ...session,
+      status,
+      latestRunId: snapshot?.runId ?? session.latestRunId,
+      latestPattern: snapshot?.pattern ?? session.latestPattern,
+      latestModeId: snapshot?.modeId ?? session.latestModeId,
+      latestProviderId: snapshot?.config.providerId ?? session.latestProviderId,
+      latestModelRef: snapshot?.config.modelRef ?? session.latestModelRef,
+      updatedAt: updatedAt ?? session.updatedAt,
+    };
+  };
+
+  const sessions = state.sessions.map(updateSession);
+  if (!state.activeSessionDetail || !activeDetailHasRun) {
+    return { sessions, activeSessionDetail: state.activeSessionDetail };
+  }
+
+  const turns = state.activeSessionDetail.turns.map((turn) => {
+    if (turn.runId !== stream.runId) {
+      return turn;
+    }
+    return {
+      ...turn,
+      status,
+      eventCount: snapshot?.events.length ?? turn.eventCount,
+      checkpointCount: snapshot?.checkpoints.length ?? turn.checkpointCount,
+      artifactCount: snapshot?.artifacts.length ?? turn.artifactCount,
+      updatedAt: updatedAt ?? turn.updatedAt,
+      trace: snapshot?.trace ?? turn.trace,
+    };
+  });
+
+  return {
+    sessions,
+    activeSessionDetail: {
+      ...state.activeSessionDetail,
+      session: updateSession(state.activeSessionDetail.session),
+      turns,
+      latestSnapshot: snapshot ?? state.activeSessionDetail.latestSnapshot,
+    },
+  };
+}
+
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   switch (action.type) {
     case "RESET_RUNTIME_VIEW":
@@ -439,8 +519,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "APPLY_RUN_STREAM": {
       const activeSnapshot = mergeRunStreamSnapshot(state.activeSnapshot, action.stream);
+      const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, activeSnapshot);
       return {
         ...state,
+        sessions,
+        activeSessionDetail,
         activeSnapshot,
         selectedTurnRunId: state.selectedTurnRunId ?? action.stream.runId,
         selectedBeatId: action.stream.events.at(-1)?.id ?? state.selectedBeatId,
