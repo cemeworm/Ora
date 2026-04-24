@@ -7,9 +7,9 @@ import {
 import { ZodError } from "zod";
 import { LocalRunStore, OraRuntimeError } from "./run-store.js";
 import { SessionManager } from "./session/session-manager.js";
-import { createDefaultProviderRegistry } from "./providers/index.js";
+import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
-import { RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
+import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
 
@@ -32,18 +32,38 @@ export function createRuntimeMethodHandler(
             detail: "Ora runtime bootstrap is served from the shared runtime kernel."
           },
           patterns: store.listPatterns(),
+          modes: store.listModes(),
+          atoms: MVP_MODE_RUNTIME_ATOMS,
           tools: toolRegistry,
           skills: skillRegistry,
           providers: providerRegistry
         });
       case "patterns.list":
         return store.listPatterns();
+      case "modes.list":
+        return store.listModes();
+      case "modes.get":
+        return store.getMode(request.params);
+      case "modes.create":
+        return store.createMode(request.params);
+      case "modes.update":
+        return store.updateMode(request.params);
+      case "modes.delete":
+        return store.deleteMode(request.params);
+      case "modes.validate":
+        return store.validateMode(request.params);
+      case "modes.cloneFromPreset":
+        return store.cloneModeFromPreset(request.params);
       case "tools.list":
         return ToolRegistrySchema.parse(toolRegistry);
       case "skills.list":
         return SkillRegistrySchema.parse(skillRegistry);
       case "providers.list":
         return providerRegistry;
+      case "providers.verify": {
+        const parsed = ProviderVerifyParamsSchema.parse(request.params);
+        return verifyProviderConfig(parsed.provider);
+      }
       case "agents.list":
         return store.listAgents();
       case "agents.get":
@@ -70,8 +90,8 @@ export function createRuntimeMethodHandler(
         return store.getSession(request.params);
       case "runs.start":
         if (sessionManager.isEnabled()) {
-          return store.startRunWithSnapshot(request.params, ({ runId, input, config, conversationMessages }) =>
-            sessionManager.startRun(runId, input, config, conversationMessages)
+          return store.startRunWithSnapshot(request.params, ({ runId, input, config, modeSpec, definition, conversationMessages }) =>
+            sessionManager.startRun(runId, input, config, conversationMessages, { modeSpec, definition })
           );
         }
         return store.startRun(request.params);
@@ -111,8 +131,8 @@ export function createRuntimeMethodHandler(
                 input,
                 config,
               },
-              ({ runId, input: nextInput, config: nextConfig }) =>
-                sessionManager.startRun(runId, nextInput, nextConfig)
+              ({ runId, input: nextInput, config: nextConfig, modeSpec, definition }) =>
+                sessionManager.startRun(runId, nextInput, nextConfig, undefined, { modeSpec, definition })
             );
             if (!handle) {
               throw new OraRuntimeError("LangGraph evaluation run did not produce a snapshot.", -32003);

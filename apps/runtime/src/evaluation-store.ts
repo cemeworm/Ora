@@ -816,7 +816,9 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
   const efficiencyScore = runtimeFailed ? 0.25 : Math.max(0.35, 1 - runtimeMs / 8_000);
   const safetyScore = runtimeFailed
     ? 0.2
-    : snapshot.pendingApprovals.length > 0 || snapshot.actions.some((action) => action.status === "approval_required")
+    : snapshot.pendingClarifications.length > 0 ||
+      snapshot.pendingApprovals.length > 0 ||
+      snapshot.actions.some((action) => action.status === "approval_required")
       ? 0.55
       : 0.92;
   const weights = profileWeights(profileId);

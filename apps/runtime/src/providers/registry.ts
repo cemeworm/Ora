@@ -1,6 +1,7 @@
-import type { ProviderConfig, ProviderRegistry as SharedProviderRegistry, RunConfig } from "@ora/shared";
+import type { ProviderConfig, ProviderRegistry as SharedProviderRegistry, ProviderStatus, RunConfig } from "@ora/shared";
 import { DEFAULT_PROVIDERS } from "@ora/shared";
 import { createAnthropicProvider } from "./anthropic.js";
+import { createAnthropicCompatibleProvider } from "./anthropic-compatible.js";
 import { createLocalSmokeProvider } from "./local-smoke.js";
 import { createOpenAIProvider } from "./openai.js";
 import { createOpenAICompatibleProvider } from "./openai-compatible.js";
@@ -14,6 +15,8 @@ export function createModelProvider(
   switch (config.type) {
     case "anthropic":
       return createAnthropicProvider(config, options);
+    case "anthropic_compatible":
+      return createAnthropicCompatibleProvider(config, options);
     case "openai":
       return createOpenAIProvider(config, options);
     case "openai_compatible":
@@ -118,4 +121,60 @@ export async function invokeRunProvider(
   options: ProviderRuntimeOptions = {}
 ) {
   return createProviderRegistryForRun(config, options).invoke(configuredProviderId(config), request);
+}
+
+export async function verifyProviderConfig(
+  config: ProviderConfig,
+  options: ProviderRuntimeOptions = {}
+): Promise<ProviderStatus> {
+  if (config.type === "local_smoke") {
+    return {
+      providerId: config.id,
+      state: "verified",
+      detail: "Local smoke provider is ready.",
+      checkedAt: Date.now(),
+    };
+  }
+
+  if (!config.modelId.trim()) {
+    return {
+      providerId: config.id,
+      state: "not_configured",
+      detail: "Model ID is required before verification.",
+      checkedAt: Date.now(),
+    };
+  }
+
+  if ((config.type === "openai_compatible" || config.type === "anthropic_compatible") && !config.baseUrl?.trim()) {
+    return {
+      providerId: config.id,
+      state: "not_configured",
+      detail: "Base URL is required before verification.",
+      checkedAt: Date.now(),
+    };
+  }
+
+  try {
+    const provider = createModelProvider(config, options);
+    await provider({
+      prompt: "Reply with OK.",
+      system: "Respond with a short connectivity acknowledgement.",
+      maxTokens: 16,
+      temperature: 0,
+    });
+
+    return {
+      providerId: config.id,
+      state: "verified",
+      detail: "Connection verified.",
+      checkedAt: Date.now(),
+    };
+  } catch (error) {
+    return {
+      providerId: config.id,
+      state: "failed",
+      detail: error instanceof Error ? error.message : "Provider verification failed.",
+      checkedAt: Date.now(),
+    };
+  }
 }

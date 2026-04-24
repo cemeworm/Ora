@@ -1,6 +1,11 @@
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import {
   StateSnapshotSchema,
+  createModeSpecFromPattern,
+  getModePreset,
+  modeSpecToPatternDefinition,
+  type ModeSpec,
+  type PatternDefinition,
   type RunConfig,
   type StateSnapshot,
   type UserTaskInput
@@ -35,14 +40,15 @@ export class SessionManager {
     runId: string,
     input: UserTaskInput,
     config: RunConfig,
-    conversationMessages: ModelMessage[] = []
+    conversationMessages: ModelMessage[] = [],
+    resolved?: { modeSpec: ModeSpec; definition: PatternDefinition }
   ): Promise<StateSnapshot | undefined> {
     if (!this.enabled) {
       return undefined;
     }
 
     return withLangfuseRunTrace({ runId, input, config }, () =>
-      this.startTracedRun(runId, input, config, conversationMessages)
+      this.startTracedRun(runId, input, config, conversationMessages, resolved)
     );
   }
 
@@ -50,10 +56,14 @@ export class SessionManager {
     runId: string,
     input: UserTaskInput,
     config: RunConfig,
-    conversationMessages: ModelMessage[]
+    conversationMessages: ModelMessage[],
+    resolved?: { modeSpec: ModeSpec; definition: PatternDefinition }
   ): Promise<StateSnapshot> {
+    const nextResolved = resolveSessionMode(config, resolved);
     const { snapshot } = await executeRuntimeKernel(runId, input, config, {
       clock: Date.now,
+      modeSpec: nextResolved.modeSpec,
+      definition: nextResolved.definition,
       conversationMessages,
     });
     return StateSnapshotSchema.parse(snapshot);
@@ -101,4 +111,32 @@ export class SessionManager {
   isEnabled(): boolean {
     return this.enabled;
   }
+}
+
+function resolveSessionMode(
+  config: RunConfig,
+  resolved?: { modeSpec: ModeSpec; definition: PatternDefinition }
+): { modeSpec: ModeSpec; definition: PatternDefinition } {
+  if (resolved) {
+    return resolved;
+  }
+
+  const requestedModeId = config.modeId ?? config.pattern;
+  const preset = getModePreset(requestedModeId);
+  if (preset) {
+    return {
+      modeSpec: preset,
+      definition: modeSpecToPatternDefinition(preset),
+    };
+  }
+
+  if (!config.modeId || config.modeId === config.pattern) {
+    const modeSpec = createModeSpecFromPattern(config.pattern);
+    return {
+      modeSpec,
+      definition: modeSpecToPatternDefinition(modeSpec),
+    };
+  }
+
+  throw new Error(`SessionManager requires resolved mode data for custom mode '${config.modeId}'.`);
 }

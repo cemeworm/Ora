@@ -27,12 +27,14 @@ export function useRunActions() {
     if (state.patterns.length === 0 || !state.activeSessionDetail) return undefined;
     return buildWorkbenchViewModel(
       state.patterns,
+      state.modes,
       state.sessions,
       state.activeSessionDetail,
       state.activeSnapshot,
       state.selectedPattern,
+      state.selectedModeId,
     );
-  }, [state.patterns, state.sessions, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern]);
+  }, [state.patterns, state.modes, state.sessions, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern, state.selectedModeId]);
 
   const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
   const selectedNode = viewModel?.topologyNodes.find((node) => node.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
@@ -161,6 +163,7 @@ export function useRunActions() {
         },
         {
           pattern: state.selectedPattern,
+          modeId: state.selectedModeId,
           providerId: state.selectedProviderId,
           providerConfig: provider,
           customAgentId: state.selectedCustomAgentId,
@@ -237,7 +240,7 @@ export function useRunActions() {
       const snapshot = await runtimeClient.forkRun(
         state.selectedTurnRunId,
         selectedCheckpoint.id,
-        { pattern: state.selectedPattern, metadata: { source: "desktop-workbench" } },
+        { pattern: state.selectedPattern, modeId: state.selectedModeId, metadata: { source: "desktop-workbench" } },
         { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } },
       );
       await refreshCurrentSession(snapshot, `Fork completed against ${snapshot.runId}.`);
@@ -282,8 +285,19 @@ export function useRunActions() {
     try {
       const status = await runtimeClient.storeProviderSecret(providerId, secret);
       dispatch({ type: "SET_PROVIDER_SECRET_STATUS", status });
-      const statuses = await runtimeClient.refreshProviderSecretStatuses(state.providerRegistry?.providers ?? []);
+      const refreshed = await runtimeClient.refreshProviderSecretStatuses(state.providerRegistry?.providers ?? []);
+      const statuses = refreshed.some((entry) => entry.providerId === providerId)
+        ? refreshed
+        : [status, ...refreshed.filter((entry) => entry.providerId !== providerId)];
       dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({
+        type: "SET_PROVIDER_STATUSES",
+        statuses: runtimeClient.refreshProviderStatuses(
+          state.providerRegistry?.providers ?? [],
+          statuses,
+          state.providerStatuses,
+        ),
+      });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider key save failed." });
@@ -296,10 +310,37 @@ export function useRunActions() {
     try {
       const status = await runtimeClient.deleteProviderSecret(providerId);
       dispatch({ type: "SET_PROVIDER_SECRET_STATUS", status });
+      const refreshed = await runtimeClient.refreshProviderSecretStatuses(state.providerRegistry?.providers ?? []);
+      const statuses = refreshed.some((entry) => entry.providerId === providerId)
+        ? refreshed
+        : [status, ...refreshed.filter((entry) => entry.providerId !== providerId)];
+      dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({
+        type: "SET_PROVIDER_STATUSES",
+        statuses: runtimeClient.refreshProviderStatuses(
+          state.providerRegistry?.providers ?? [],
+          statuses,
+          state.providerStatuses,
+        ),
+      });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider key removal failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function verifyProvider(provider: OraProviderConfig) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Verify provider" });
+    try {
+      const status = await runtimeClient.verifyProvider(provider);
+      dispatch({ type: "SET_PROVIDER_STATUS", status });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+      return status;
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider verification failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+      return undefined;
     }
   }
 
@@ -311,6 +352,10 @@ export function useRunActions() {
       dispatch({ type: "SET_PROVIDER", providerId: provider.id });
       const statuses = await runtimeClient.refreshProviderSecretStatuses(registry.providers);
       dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({
+        type: "SET_PROVIDER_STATUSES",
+        statuses: runtimeClient.refreshProviderStatuses(registry.providers, statuses, state.providerStatuses),
+      });
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${provider.label} is ready to configure.` });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
@@ -328,6 +373,10 @@ export function useRunActions() {
       dispatch({ type: "SET_PROVIDER_REGISTRY", providerRegistry: registry });
       const statuses = await runtimeClient.refreshProviderSecretStatuses(registry.providers);
       dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
+      dispatch({
+        type: "SET_PROVIDER_STATUSES",
+        statuses: runtimeClient.refreshProviderStatuses(registry.providers, statuses, state.providerStatuses),
+      });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Provider removal failed." });
@@ -369,6 +418,7 @@ export function useRunActions() {
       exportReport,
       storeProviderSecret,
       deleteProviderSecret,
+      verifyProvider,
       upsertCustomProvider,
       deleteCustomProvider,
       openAgentChat,

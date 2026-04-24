@@ -1,10 +1,12 @@
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import type {
+  OraModeSpec,
   OraPatternDefinition,
   OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
+  OraProviderStatus,
   OraProjectSummary,
   OraSessionDetail,
   OraSessionSummary,
@@ -16,6 +18,7 @@ import type {
 
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
+  selectedModeId: string;
   selectedSessionId: string | undefined;
   selectedTurnRunId: string | undefined;
   selectedDockTab: DockTab;
@@ -28,10 +31,12 @@ export interface WorkbenchState {
   activeSessionDetail: OraSessionDetail | undefined;
   activeSnapshot: OraStateSnapshot | undefined;
   patterns: OraPatternDefinition[];
+  modes: OraModeSpec[];
   providerRegistry: OraProviderRegistry | undefined;
   toolRegistry: OraToolRegistry | undefined;
   skillRegistry: OraSkillRegistry | undefined;
   providerSecretStatuses: OraProviderSecretStatus[];
+  providerStatuses: OraProviderStatus[];
   selectedProviderId: string;
   selectedCustomAgentId: string | undefined;
   bridgeStatus: RuntimeBridgeStatus | undefined;
@@ -52,15 +57,18 @@ export type WorkbenchAction =
   | {
       type: "BOOTSTRAP";
       patterns: OraPatternDefinition[];
+      modes: OraModeSpec[];
       projects: OraProjectSummary[];
       providerRegistry: OraProviderRegistry;
       toolRegistry: OraToolRegistry;
       skillRegistry: OraSkillRegistry;
       providerSecretStatuses: OraProviderSecretStatus[];
+      providerStatuses: OraProviderStatus[];
       health: RuntimeHealth;
     }
   | { type: "RESET_RUNTIME_VIEW" }
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
+  | { type: "SET_MODE"; modeId: string }
   | {
       type: "HYDRATE_SESSION";
       projects: OraProjectSummary[];
@@ -70,6 +78,7 @@ export type WorkbenchAction =
       feedback?: string;
     }
   | { type: "SET_PROJECTS"; projects: OraProjectSummary[] }
+  | { type: "SET_MODES"; modes: OraModeSpec[] }
   | { type: "SELECT_PROJECT"; projectId: string | undefined }
   | { type: "TOGGLE_PROJECT_SECTION"; projectId: string }
   | { type: "SET_PROVIDER"; providerId: string }
@@ -79,6 +88,8 @@ export type WorkbenchAction =
   | { type: "DELETE_PROVIDER"; providerId: string }
   | { type: "SET_PROVIDER_SECRET_STATUS"; status: OraProviderSecretStatus }
   | { type: "SET_PROVIDER_SECRET_STATUSES"; statuses: OraProviderSecretStatus[] }
+  | { type: "SET_PROVIDER_STATUS"; status: OraProviderStatus }
+  | { type: "SET_PROVIDER_STATUSES"; statuses: OraProviderStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
   | { type: "SELECT_TAB"; tab: DockTab }
@@ -99,6 +110,7 @@ export type WorkbenchAction =
 
 const initialState: WorkbenchState = {
   selectedPattern: "orchestrator_subagent",
+  selectedModeId: "orchestrator_subagent",
   selectedSessionId: undefined,
   selectedTurnRunId: undefined,
   selectedDockTab: "Overview",
@@ -111,10 +123,12 @@ const initialState: WorkbenchState = {
   activeSessionDetail: undefined,
   activeSnapshot: undefined,
   patterns: [],
+  modes: [],
   providerRegistry: undefined,
   toolRegistry: undefined,
   skillRegistry: undefined,
   providerSecretStatuses: [],
+  providerStatuses: [],
   selectedProviderId: "local-smoke",
   selectedCustomAgentId: undefined,
   bridgeStatus: {
@@ -164,6 +178,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         selectedProjectId: undefined,
         activeSessionDetail: undefined,
         activeSnapshot: undefined,
+        modes: [],
         promptText: "",
         isLoading: true,
         busyCommand: undefined,
@@ -174,12 +189,15 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       return {
         ...state,
         patterns: action.patterns,
+        modes: action.modes,
         projects: action.projects,
         providerRegistry: action.providerRegistry,
         toolRegistry: action.toolRegistry,
         skillRegistry: action.skillRegistry,
         providerSecretStatuses: action.providerSecretStatuses,
+        providerStatuses: action.providerStatuses,
         selectedProviderId: action.providerRegistry.defaultProviderId,
+        selectedModeId: action.modes[0]?.id ?? state.selectedModeId,
         bridgeStatus: {
           mode: action.health.mode,
           ok: action.health.ok,
@@ -208,6 +226,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         selectedSessionId: action.detail.session.sessionId,
         selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
         selectedPattern: snapshot?.pattern ?? state.selectedPattern,
+        selectedModeId: snapshot?.modeId ?? state.selectedModeId,
         selectedProviderId: snapshot?.config.providerId ?? state.selectedProviderId,
         selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
         selectedBeatId: snapshot?.events.at(-1)?.id,
@@ -219,6 +238,15 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
 
     case "SET_PROJECTS":
       return { ...state, projects: action.projects };
+
+    case "SET_MODES":
+      return {
+        ...state,
+        modes: action.modes,
+        selectedModeId: action.modes.some((mode) => mode.id === state.selectedModeId)
+          ? state.selectedModeId
+          : action.modes[0]?.id ?? state.selectedModeId,
+      };
 
     case "SELECT_PROJECT":
       return { ...state, selectedProjectId: action.projectId };
@@ -234,6 +262,18 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
 
     case "SET_PATTERN":
       return { ...state, selectedPattern: action.pattern };
+
+    case "SET_MODE": {
+      const mode = state.modes.find((entry) => entry.id === action.modeId);
+      return {
+        ...state,
+        selectedModeId: action.modeId,
+        selectedPattern: mode?.family ?? state.selectedPattern,
+        commandFeedback: mode
+          ? `${mode.label} selected for the next turn.`
+          : `Mode ${action.modeId} selected for the next turn.`,
+      };
+    }
 
     case "SET_PROVIDER": {
       const provider = state.providerRegistry?.providers.find((entry) => entry.id === action.providerId);
@@ -296,6 +336,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
           : state.providerRegistry,
         selectedProviderId,
         providerSecretStatuses: state.providerSecretStatuses.filter((status) => status.providerId !== action.providerId),
+        providerStatuses: state.providerStatuses.filter((status) => status.providerId !== action.providerId),
         commandFeedback: `Removed provider ${action.providerId}.`,
       };
     }
@@ -313,6 +354,19 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
     case "SET_PROVIDER_SECRET_STATUSES":
       return { ...state, providerSecretStatuses: action.statuses };
 
+    case "SET_PROVIDER_STATUS":
+      return {
+        ...state,
+        providerStatuses: [
+          action.status,
+          ...state.providerStatuses.filter((status) => status.providerId !== action.status.providerId),
+        ],
+        commandFeedback: action.status.detail,
+      };
+
+    case "SET_PROVIDER_STATUSES":
+      return { ...state, providerStatuses: action.statuses };
+
     case "SELECT_SESSION":
       return { ...state, selectedSessionId: action.sessionId };
 
@@ -322,6 +376,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         selectedTurnRunId: action.runId,
         activeSnapshot: action.snapshot ?? state.activeSnapshot,
         selectedPattern: action.snapshot?.pattern ?? state.selectedPattern,
+        selectedModeId: action.snapshot?.modeId ?? state.selectedModeId,
         selectedNodeId: action.snapshot?.topology.nodes[1]?.id ?? action.snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
         selectedBeatId: action.snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
       };

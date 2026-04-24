@@ -40,6 +40,29 @@ export function toInputText(content: string) {
   return [{ type: "input_text", text: content }];
 }
 
+export function buildResponsesInput(request: ModelRequest) {
+  const messages = normalizeMessages(request);
+  const { instructions, dialog } = splitInstructionMessages(messages);
+  return [
+    ...(instructions
+      ? [
+          {
+            type: "message",
+            role: "developer",
+            content: toInputText(request.system?.trim() ? `${request.system.trim()}\n\n${instructions}` : instructions),
+          }
+        ]
+      : request.system?.trim()
+        ? [{ type: "message", role: "developer", content: toInputText(request.system.trim()) }]
+        : []),
+    ...dialog.map((message) => ({
+      type: "message",
+      role: message.role,
+      content: toInputText(message.content),
+    })),
+  ];
+}
+
 export function appendIfDefined<T extends object, K extends string, V>(
   target: T,
   key: K,
@@ -220,5 +243,26 @@ export function resolveProviderEndpoint(params: {
     throw new Error(`Provider ${params.providerId} endpoint must use HTTPS unless it targets localhost`);
   }
 
+  return url.href;
+}
+
+export function resolveCompatibleProviderEndpoint(params: {
+  providerId: string;
+  baseUrl: string;
+  path: string;
+}) {
+  const url = new URL(params.baseUrl);
+  if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+    throw new Error(`Provider ${params.providerId} endpoint must use HTTPS unless it targets localhost`);
+  }
+
+  let pathname = url.pathname.replace(/\/+$/, "");
+  if (!pathname.endsWith(params.path)) {
+    pathname = pathname.endsWith("/v1")
+      ? `${pathname}${params.path}`
+      : `${pathname}/v1${params.path}`;
+  }
+
+  url.pathname = pathname;
   return url.href;
 }

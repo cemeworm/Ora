@@ -59,8 +59,10 @@ describe("Ora runtime smoke path", () => {
       "message.delta",
       "token.delta",
       "agent.completed",
-      "memory.updated",
+      "memory.queued",
       "run.done",
+      "memory.updated",
+      "memory.flushed",
       "checkpoint.created"
     ]);
     expect(state.events.map((event) => event.seq)).toEqual([...Array(state.events.length).keys()]);
@@ -70,13 +72,14 @@ describe("Ora runtime smoke path", () => {
     expect(state.actions.length).toBeGreaterThanOrEqual(4);
     expect(state.actions.every((action) => action.status === "succeeded")).toBe(true);
     expect(state.policyDecisions).toEqual([]);
-    expect(state.memory[0]?.namespace).toEqual([
-      "session",
-      "local-project",
-      "generator_verifier"
-    ]);
+    expect(
+      state.memory.some((record) =>
+        record.namespace.join(":").startsWith("session:local-project:generator_verifier"),
+      ),
+    ).toBe(true);
     expect(state.plan.every((item) => item.status === "done")).toBe(true);
     expect(state.plan.some((item) => item.linkedActionIds.length > 0)).toBe(true);
+    expect(state.pendingClarifications).toEqual([]);
     expect(state.pendingApprovals).toEqual([]);
     expect(state.activeAgents).toEqual([]);
     expect(state.output).toMatchObject({
@@ -122,6 +125,8 @@ describe("Ora runtime smoke path", () => {
     }) as {
       health: { ok: boolean; mode: string };
       patterns: { id: string }[];
+      modes: { id: string }[];
+      atoms: { id: string }[];
       tools: { tools: { id: string }[] };
       skills: { skills: { id: string }[] };
     };
@@ -145,10 +150,485 @@ describe("Ora runtime smoke path", () => {
       "message_bus",
       "shared_state"
     ]);
+    expect(bootstrap.modes.map((mode) => mode.id)).toEqual([
+      "generator_verifier",
+      "orchestrator_subagent",
+      "agent_teams",
+      "message_bus",
+      "shared_state"
+    ]);
+    expect(bootstrap.atoms.length).toBeGreaterThan(0);
     expect(bootstrap.tools.tools.length).toBeGreaterThan(0);
     expect(bootstrap.skills.skills.length).toBeGreaterThan(0);
     expect(tools.tools).toEqual(bootstrap.tools.tools);
     expect(skills.skills).toEqual(bootstrap.skills.skills);
+  });
+
+  it("creates, validates, lists, and runs a custom mode preset", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-subagent-custom",
+        label: "Orchestrator Custom",
+      },
+    }) as any;
+
+    expect(cloned.id).toBe("orchestrator-subagent-custom");
+    expect(cloned.nodes.every((node: { position?: { x: number; y: number } }) => node.position)).toBe(true);
+
+    const updated = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode.",
+          nodes: cloned.nodes.map((node, index) =>
+            node.id === "review"
+              ? { ...node, enabled: false, label: "Review (disabled)", position: { x: 900, y: 240 } }
+              : { ...node, position: { x: 120 + index * 220, y: 80 + index * 140 } }
+          ),
+        },
+      },
+    }) as any;
+
+    expect(updated.nodes.find((node) => node.id === "review")?.enabled).toBe(false);
+    expect(updated.nodes.find((node) => node.id === "review")?.position).toEqual({ x: 900, y: 240 });
+
+    const validation = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "modes.validate",
+      params: { spec: updated },
+    }) as { valid: boolean; errors: string[] };
+    expect(validation.valid).toBe(true);
+    expect(validation.errors).toEqual([]);
+
+    const modes = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "modes.list",
+    }) as Array<{ id: string }>;
+    expect(modes.some((mode) => mode.id === cloned.id)).toBe(true);
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Run the custom mode." },
+        config: { modeId: cloned.id },
+      },
+    }) as { runId: string };
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(state.modeId).toBe(cloned.id);
+    expect(state.modeSpec?.id).toBe(cloned.id);
+    expect(state.pattern).toBe("orchestrator_subagent");
+    expect(state.plan.some((item) => item.id.endsWith(":review"))).toBe(false);
+  });
+
+  it("publishes runtime artifacts when a node enables the artifact_publish atom", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "message_bus",
+        modeId: "message-bus-artifact-custom",
+        label: "Message Bus Artifact",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom message bus artifact mode.",
+          nodes: cloned.nodes.map((node) =>
+            node.id === "handle"
+              ? { ...node, config: { ...node.config, atoms: ["artifact_publish"] } }
+              : node,
+          ),
+        },
+      },
+    });
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Publish an artifact." },
+        config: { modeId: cloned.id },
+      },
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(state.artifacts).toHaveLength(1);
+    expect(state.artifacts[0]?.label).toContain("artifact");
+    expect(state.events.some((event) => event.type === "artifact.exported")).toBe(true);
+  });
+
+  it("emits delegated task lifecycle events when a stage enables subagent_delegate", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-subagent-delegate-custom",
+        label: "Orchestrator Delegate",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode with delegated stage lifecycle.",
+          capabilityFlags: {
+            ...cloned.capabilityFlags,
+            toolIds: [...new Set([...(cloned.capabilityFlags?.toolIds ?? []), "model.handoff"])],
+          },
+          nodes: cloned.nodes.map((node) =>
+            node.id === "research"
+              ? { ...node, config: { ...node.config, atoms: ["subagent_delegate"] } }
+              : node,
+          ),
+        },
+      },
+    });
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Delegate the research stage." },
+        config: { modeId: cloned.id },
+      },
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    const eventTypes = state.events.map((event) => event.type);
+    expect(eventTypes).toContain("task.started");
+    expect(eventTypes).toContain("task.progress");
+    expect(eventTypes).toContain("task.completed");
+    expectOrderedEvents(eventTypes, [
+      "task.started",
+      "task.progress",
+      "agent.started",
+      "agent.completed",
+      "task.completed",
+    ]);
+    const taskStarted = state.events.find((event) => event.type === "task.started");
+    expect(taskStarted?.payload).toMatchObject({
+      taskId: "task:research",
+      nodeId: "research",
+    });
+  });
+
+  it("degrades provider failures into runtime state when tool_error_boundary is enabled", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-tool-boundary-custom",
+        label: "Orchestrator Tool Boundary",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode that keeps going after provider failures.",
+        },
+      },
+    });
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Keep going after a provider failure." },
+        config: {
+          modeId: cloned.id,
+          providerId: "missing-provider",
+        },
+      },
+    }) as { runId: string; status: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(run.status).toBe("succeeded");
+    expect(state.status).toBe("succeeded");
+    expect(state.events.map((event) => event.type)).toContain("run.done");
+    expect(state.actions.some((action) => action.status === "failed")).toBe(true);
+    expect(
+      state.events.some((event) =>
+        event.type === "tool.called" &&
+        typeof (event.payload as Record<string, unknown>).status === "string" &&
+        (event.payload as Record<string, unknown>).status === "failed",
+      ),
+    ).toBe(true);
+    expect(state.output).toMatchObject({
+      text: expect.stringContaining("[tool-error-boundary]"),
+    });
+  });
+
+  it("fails the run when tool_error_boundary is removed from the mode", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-tool-boundary-disabled",
+        label: "Orchestrator No Boundary",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode without the tool error boundary.",
+          runtimeAtoms: cloned.runtimeAtoms.filter((atom: string) => atom !== "tool_error_boundary"),
+        },
+      },
+    });
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Fail without the boundary." },
+        config: {
+          modeId: cloned.id,
+          providerId: "missing-provider",
+        },
+      },
+    }) as { runId: string; status: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(run.status).toBe("failed");
+    expect(state.status).toBe("failed");
+    expect(state.events.map((event) => event.type)).toContain("run.failed");
+    expect(state.events.map((event) => event.type)).not.toContain("run.done");
+    expect(state.actions.some((action) => action.status === "failed")).toBe(true);
+  });
+
+  it("interrupts a run when clarification_interrupt hits an unanswered stage question", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-clarification-custom",
+        label: "Orchestrator Clarification",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode with a clarification gate.",
+          nodes: cloned.nodes.map((node) =>
+            node.id === "research"
+              ? {
+                  ...node,
+                  config: {
+                    ...node.config,
+                    clarificationQuestion: "Which repository or document should research prioritize?",
+                  },
+                }
+              : node,
+          ),
+        },
+      },
+    });
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Research this request." },
+        config: { modeId: cloned.id },
+      },
+    }) as { runId: string; status: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(run.status).toBe("interrupted");
+    expect(state.status).toBe("interrupted");
+    expect(state.pendingClarifications).toHaveLength(1);
+    expect(state.pendingClarifications[0]).toMatchObject({
+      nodeId: "research",
+      key: "research",
+    });
+    expect(state.events.map((event) => event.type)).toContain("clarification.required");
+    expectOrderedEvents(state.events.map((event) => event.type), [
+      "agent.completed",
+      "clarification.required",
+      "run.interrupted",
+    ]);
+    expect(state.plan.find((item) => item.id.endsWith(":research"))?.status).toBe("blocked");
+  });
+
+  it("resolves pending clarifications on resume when answers are supplied", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-clarification-resume",
+        label: "Orchestrator Clarification Resume",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode that resumes from clarification.",
+          nodes: cloned.nodes.map((node) =>
+            node.id === "research"
+              ? {
+                  ...node,
+                  config: {
+                    ...node.config,
+                    clarificationQuestion: "What scope should research use?",
+                  },
+                }
+              : node,
+          ),
+        },
+      },
+    });
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Resume after clarification." },
+        config: { modeId: cloned.id },
+      },
+    }) as { runId: string };
+
+    const resumed = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: {
+            clarifications: {
+              research: "Focus on the harness package first.",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.pendingClarifications).toEqual([]);
+    expect(resumed.events.map((event) => event.type)).toContain("clarification.resolved");
+    expect(resumed.input.context.clarifications).toMatchObject({
+      research: "Focus on the harness package first.",
+    });
   });
 
   it("starts all five coordination patterns through the unified runtime kernel", async () => {

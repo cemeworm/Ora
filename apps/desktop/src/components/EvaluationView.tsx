@@ -52,11 +52,17 @@ export function EvaluationView({
   const activeProvider = providerOptions.find((provider) => provider.id === state.selectedProviderId) ?? providerOptions[0];
 
   async function refreshIndex() {
-    const [nextDatasets, nextRuns, nextBaselines] = await Promise.all([
+    const [nextDatasetsResult, nextRunsResult, nextBaselinesResult] = await Promise.all([
       runtimeClient.listEvaluationDatasets(),
       runtimeClient.listEvaluationRuns(),
       runtimeClient.listEvaluationBaselines(),
     ]);
+    const nextDatasets = Array.isArray(nextDatasetsResult) ? nextDatasetsResult : [];
+    const nextRuns = Array.isArray(nextRunsResult) ? nextRunsResult : [];
+    const nextBaselines = Array.isArray(nextBaselinesResult) ? nextBaselinesResult : [];
+    if (!Array.isArray(nextDatasetsResult) || !Array.isArray(nextRunsResult) || !Array.isArray(nextBaselinesResult)) {
+      setError("Evaluation index returned an invalid response.");
+    }
     setDatasets(nextDatasets);
     setRuns(nextRuns);
     setBaselines(nextBaselines);

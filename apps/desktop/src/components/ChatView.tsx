@@ -2,14 +2,14 @@ import { Sparkles } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, PlanItem, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode, PatternCard } from "../types";
+import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, ModeCard, PlanItem, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
 
 interface ChatViewProps {
-  activePattern: PatternCard;
-  patternCards: PatternCard[];
+  activeMode: ModeCard;
+  modeCards: ModeCard[];
   activeSnapshot?: OraStateSnapshot;
   agents: AgentProfile[];
   busyCommand?: string;
@@ -36,6 +36,7 @@ interface ChatViewProps {
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onSelectMode: (modeId: string) => void;
   onSelectNode: (id: string) => void;
   onSelectTurn: (runId: string) => void;
   onStartRun: () => void;
@@ -44,8 +45,8 @@ interface ChatViewProps {
 }
 
 export function ChatView({
-  activePattern,
-  patternCards,
+  activeMode,
+  modeCards,
   agents,
   busyCommand,
   chatMessages,
@@ -68,6 +69,7 @@ export function ChatView({
   planItems,
   onResumeRun,
   onCancelRun,
+  onSelectMode,
   onSelectTurn,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
@@ -131,14 +133,14 @@ export function ChatView({
           composerPrompt={composerPrompt}
           isLoading={isLoading}
           isRunning={isRunning}
-          activePattern={activePattern}
-          patternOptions={patternCards}
+          activeMode={activeMode}
+          modeOptions={modeCards}
           activeProvider={activeProvider}
           providerOptions={providerOptions}
           selectedCustomAgentId={selectedCustomAgentId}
           inputMode={state.inputMode}
           onInputModeChange={(mode) => dispatch({ type: "SET_INPUT_MODE", mode })}
-          onPatternChange={(pattern) => dispatch({ type: "SET_PATTERN", pattern })}
+          onModeChange={onSelectMode}
           onProviderChange={(providerId) => dispatch({ type: "SET_PROVIDER", providerId })}
           onPromptChange={onComposerPromptChange}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}

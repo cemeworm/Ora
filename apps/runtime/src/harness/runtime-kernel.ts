@@ -1,7 +1,11 @@
 import {
   type ActionRiskLevel,
+  type ArtifactRef,
+  ArtifactRefSchema,
   type CheckpointMeta,
+  type ModeSpec,
   type OraEventEnvelope,
+  type PatternDefinition,
   type QueueSummary,
   type RunConfig,
   type SharedStateSummary,
@@ -9,14 +13,16 @@ import {
   type ToolRegistry,
   type UserTaskInput,
   type BusStats,
+  type MemoryKind,
+  type PendingClarification,
   OraEventEnvelopeSchema,
+  PendingClarificationSchema,
   StateSnapshotSchema,
-  getPatternDefinition,
 } from "@ora/shared";
-import { ActionLedger, AgentProfileRegistry, MemoryService, PlanService, PolicyService } from "../capabilities.js";
-import { invokeRunProvider } from "../providers/index.js";
+import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService } from "../capabilities.js";
+import { configuredProviderId, invokeRunProvider } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
-import { getPatternDriver } from "../patterns/driver-registry.js";
+import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { ModelMessage } from "../providers/index.js";
 
 export interface RuntimeKernelResult {
@@ -31,6 +37,14 @@ export interface RuntimeKernelOptions {
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
   customAgentOverlay?: string;
+  modeSpec?: ModeSpec;
+  definition?: PatternDefinition;
+}
+
+class ClarificationInterruptError extends Error {
+  constructor(public readonly clarification: PendingClarification) {
+    super(clarification.question);
+  }
 }
 
 export async function executeRuntimeKernel(
@@ -40,19 +54,29 @@ export async function executeRuntimeKernel(
   options: RuntimeKernelOptions = {},
 ): Promise<RuntimeKernelResult> {
   const now = options.clock ?? Date.now;
-  const definition = getPatternDefinition(config.pattern);
+  const definition = options.definition;
+  if (!definition) {
+    throw new Error("Runtime kernel requires a resolved mode definition.");
+  }
+  const modeSpec = options.modeSpec;
+  if (!modeSpec) {
+    throw new Error("Runtime kernel requires a resolved mode spec.");
+  }
   const startedAt = now();
   const projectId = input.projectId ?? "local-project";
   const skillRegistry = options.skillRegistry ?? new RuntimeSkillRegistry();
   const toolRegistry = options.toolRegistry ?? new RuntimeToolRegistry();
   const tools = toolRegistry.snapshot();
-  const skills = skillRegistry.snapshot(config.pattern);
+  const skills = skillRegistry.snapshot(modeSpec.family);
   const profiles = new AgentProfileRegistry(definition).list(config.profileIds);
   const memoryService = new MemoryService(runId, now);
+  const memoryCaptureQueue = new MemoryCaptureQueue();
   const planService = new PlanService(runId, definition);
   const actionLedger = new ActionLedger(runId);
   const policyService = new PolicyService(runId, now);
   const events: OraEventEnvelope[] = [];
+  const artifacts: ArtifactRef[] = [];
+  const pendingClarifications: PendingClarification[] = [];
   const activeAgents = new Set<string>();
   const busTopicCounts: Record<string, number> = {};
   const sharedEntries: SharedStateSummary["entries"] = [];
@@ -108,6 +132,20 @@ export async function executeRuntimeKernel(
 
   const emitPlanUpdated = () => {
     emit("plan.updated", { items: planService.list() });
+  };
+
+  const clarificationAnswer = (key: string, id: string): unknown => {
+    const clarifications = input.context?.clarifications;
+    if (!clarifications || typeof clarifications !== "object" || clarifications === null) {
+      return undefined;
+    }
+    if (id in clarifications) {
+      return (clarifications as Record<string, unknown>)[id];
+    }
+    if (key in clarifications) {
+      return (clarifications as Record<string, unknown>)[key];
+    }
+    return undefined;
   };
 
   const setTopologyStatus = (agentId: string, status: "idle" | "running" | "done" | "blocked" | "failed") => {
@@ -175,35 +213,65 @@ export async function executeRuntimeKernel(
 
     const running = actionLedger.transition(action.id, "running");
     emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
+    try {
+      const response = await invokeRunProvider(config, {
+        prompt: params.prompt,
+        messages: options.conversationMessages,
+        system: params.system,
+        maxTokens: config.budget?.maxTokens,
+      });
 
-    const response = await invokeRunProvider(config, {
-      prompt: params.prompt,
-      messages: options.conversationMessages,
-      system: params.system,
-      maxTokens: config.budget?.maxTokens,
-    });
+      emit("tool.called", {
+        actionId: action.id,
+        providerId: response.providerId,
+        modelId: response.modelId,
+        title: params.title,
+        status: "succeeded",
+      }, { agentId: params.agentId, nodeId: params.agentId });
+      emit("message.delta", { role: "assistant", content: response.text }, { agentId: params.agentId, nodeId: params.agentId });
+      emit("token.delta", {
+        text: response.text.slice(0, 32),
+        tokenCount: Math.max(1, response.text.split(/\s+/).filter(Boolean).length),
+        budget: config.budget,
+      }, { agentId: params.agentId, nodeId: params.agentId });
 
-    emit("tool.called", {
-      actionId: action.id,
-      providerId: response.providerId,
-      modelId: response.modelId,
-      title: params.title,
-    }, { agentId: params.agentId, nodeId: params.agentId });
-    emit("message.delta", { role: "assistant", content: response.text }, { agentId: params.agentId, nodeId: params.agentId });
-    emit("token.delta", {
-      text: response.text.slice(0, 32),
-      tokenCount: Math.max(1, response.text.split(/\s+/).filter(Boolean).length),
-      budget: config.budget,
-    }, { agentId: params.agentId, nodeId: params.agentId });
+      const succeeded = actionLedger.transition(action.id, "succeeded", {
+        output: response.raw,
+      });
+      emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
+      emit("agent.completed", { title: params.title }, { agentId: params.agentId, nodeId: params.agentId });
+      activeAgents.delete(params.agentId);
+      setTopologyStatus(params.agentId, "done");
+      return response.text;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const failed = actionLedger.transition(action.id, "failed", { error: detail });
+      emit("tool.called", {
+        actionId: action.id,
+        providerId: configuredProviderId(config) ?? "unknown",
+        title: params.title,
+        status: "failed",
+        error: detail,
+      }, { agentId: params.agentId, nodeId: params.agentId });
+      emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
 
-    const succeeded = actionLedger.transition(action.id, "succeeded", {
-      output: response.raw,
-    });
-    emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
-    emit("agent.completed", { title: params.title }, { agentId: params.agentId, nodeId: params.agentId });
-    activeAgents.delete(params.agentId);
-    setTopologyStatus(params.agentId, "done");
-    return response.text;
+      if (!modeSpec.runtimeAtoms.includes("tool_error_boundary")) {
+        activeAgents.delete(params.agentId);
+        setTopologyStatus(params.agentId, "failed");
+        throw error;
+      }
+
+      const fallback = `[tool-error-boundary] ${params.title} degraded after provider failure: ${detail}`;
+      emit("message.delta", {
+        role: "assistant",
+        content: fallback,
+        boundary: "tool_error_boundary",
+      }, { agentId: params.agentId, nodeId: params.agentId });
+      emit("agent.completed", { title: params.title, degraded: true }, { agentId: params.agentId, nodeId: params.agentId });
+      activeAgents.delete(params.agentId);
+      setTopologyStatus(params.agentId, "done");
+      return fallback;
+    }
   };
 
   const remember = (params: {
@@ -215,6 +283,116 @@ export async function executeRuntimeKernel(
   }) => {
     const record = memoryService.remember(params);
     emit("memory.updated", { record });
+  };
+
+  const captureMemory = (params: {
+    id: string;
+    namespace: string[];
+    kind: MemoryKind;
+    value: unknown;
+    sourceActionId?: string;
+  }) => {
+    const queued = memoryCaptureQueue.enqueue(params);
+    emit("memory.queued", {
+      entry: {
+        id: queued.id,
+        namespace: queued.namespace,
+        kind: queued.kind,
+      },
+      pending: memoryCaptureQueue.size(),
+    });
+  };
+
+  const publishArtifact = (params: {
+    id: string;
+    label: string;
+    kind?: "report" | "file" | "log";
+    mimeType?: string;
+    payload: unknown;
+  }) => {
+    const artifact = ArtifactRefSchema.parse({
+      id: `${runId}:artifact:${params.id}`,
+      runId,
+      kind: params.kind ?? "log",
+      label: params.label,
+      mimeType: params.mimeType ?? "application/json",
+      createdAt: now(),
+      payload: params.payload,
+    });
+    artifacts.push(artifact);
+    emit("artifact.exported", { artifact });
+  };
+
+  const ensureClarification = (params: {
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+  }) => {
+    const answered = clarificationAnswer(params.key, params.id);
+    if (answered !== undefined) {
+      return answered;
+    }
+    const clarification = PendingClarificationSchema.parse({
+      id: params.id,
+      nodeId: params.nodeId,
+      nodeLabel: params.nodeLabel,
+      key: params.key,
+      question: params.question,
+      requestedAt: now(),
+    });
+    pendingClarifications.push(clarification);
+    emit("clarification.required", {
+      clarification,
+      pending: pendingClarifications.length,
+    }, { nodeId: params.nodeId });
+    throw new ClarificationInterruptError(clarification);
+  };
+
+  const runDelegatedTask = async <T>(params: {
+    taskId: string;
+    nodeId: string;
+    nodeLabel: string;
+    agentId: string;
+    title: string;
+  }, execute: () => Promise<T>): Promise<T> => {
+    emit("task.started", {
+      taskId: params.taskId,
+      nodeId: params.nodeId,
+      nodeLabel: params.nodeLabel,
+      title: params.title,
+      summary: `Delegated ${params.title} to ${params.agentId}.`,
+    }, { agentId: params.agentId, nodeId: params.nodeId });
+    emit("task.progress", {
+      taskId: params.taskId,
+      nodeId: params.nodeId,
+      nodeLabel: params.nodeLabel,
+      title: params.title,
+      phase: "running",
+      summary: `Delegated task ${params.title} is running.`,
+    }, { agentId: params.agentId, nodeId: params.nodeId });
+    try {
+      const result = await execute();
+      emit("task.completed", {
+        taskId: params.taskId,
+        nodeId: params.nodeId,
+        nodeLabel: params.nodeLabel,
+        title: params.title,
+        summary: `Delegated task ${params.title} completed.`,
+      }, { agentId: params.agentId, nodeId: params.nodeId });
+      return result;
+    } catch (error) {
+      emit("task.failed", {
+        taskId: params.taskId,
+        nodeId: params.nodeId,
+        nodeLabel: params.nodeLabel,
+        title: params.title,
+        error: error instanceof Error ? error.message : String(error),
+        summary: `Delegated task ${params.title} failed.`,
+      }, { agentId: params.agentId, nodeId: params.nodeId });
+      throw error;
+    }
   };
 
   const publishMessage = (params: {
@@ -303,14 +481,13 @@ export async function executeRuntimeKernel(
   emit("profile.updated", { profiles });
   emitPlanUpdated();
 
-  const driver = getPatternDriver(config.pattern);
   let status: StateSnapshot["status"] = "succeeded";
   let output: unknown;
   let error: string | undefined;
 
   try {
-    const result = await driver.execute(
-      {
+    const result = await executeModeSpec({
+      context: {
         projectId,
         queueSummary,
         sharedStateSummary,
@@ -321,25 +498,46 @@ export async function executeRuntimeKernel(
           queueSummary = { ...queueSummary, ...patch };
           emit("queue.updated", { summary: queueSummary, busStats });
         },
+        runDelegatedTask,
+        ensureClarification,
         claimWorker,
         releaseWorker,
         callAgent,
         remember,
+        captureMemory,
+        publishArtifact,
         publishMessage,
         routeMessage,
         writeSharedState,
         currentSharedState: () => sharedStateSummary,
       },
-      input.prompt
-    );
+      prompt: input.prompt,
+      modeSpec,
+      definition,
+    });
     output = result.output;
     emit("run.done", { status: "succeeded", output });
   } catch (caught) {
     error = caught instanceof Error ? caught.message : String(caught);
-    status = config.approvalMode === "manual" ? "interrupted" : "failed";
+    status = caught instanceof ClarificationInterruptError || config.approvalMode === "manual"
+      ? "interrupted"
+      : "failed";
     emit(status === "interrupted" ? "run.interrupted" : "run.failed", {
       error,
       status,
+      reason: caught instanceof ClarificationInterruptError ? "clarification_required" : undefined,
+      clarificationId: caught instanceof ClarificationInterruptError ? caught.clarification.id : undefined,
+    });
+  }
+
+  if (memoryCaptureQueue.size() > 0) {
+    const flushed = memoryCaptureQueue.flush(memoryService);
+    for (const record of flushed) {
+      emit("memory.updated", { record });
+    }
+    emit("memory.flushed", {
+      count: flushed.length,
+      recordIds: flushed.map((record) => record.id),
     });
   }
 
@@ -363,6 +561,8 @@ export async function executeRuntimeKernel(
     runId,
     status,
     pattern: config.pattern,
+    coordinationKind: config.pattern,
+    modeId: modeSpec.id,
     input,
     config,
     topology,
@@ -373,12 +573,14 @@ export async function executeRuntimeKernel(
     policyDecisions: [],
     checkpoints: [checkpoint],
     events,
-    artifacts: [],
+    artifacts,
     activeAgents: [...activeAgents],
     queueSummary,
     sharedStateSummary,
     busStats,
+    pendingClarifications,
     pendingApprovals: actionLedger.list().filter((action) => action.status === "approval_required").map((action) => action.id),
+    modeSpec,
     output,
     error,
     updatedAt: now(),

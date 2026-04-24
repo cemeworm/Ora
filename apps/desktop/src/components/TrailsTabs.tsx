@@ -442,6 +442,14 @@ function timelineLabel(eventType: string) {
       return "Topology change";
     case "action.updated":
       return "Action change";
+    case "task.started":
+      return "Task started";
+    case "task.progress":
+      return "Task progress";
+    case "task.completed":
+      return "Task completed";
+    case "task.failed":
+      return "Task failed";
     case "checkpoint.created":
       return "Checkpoint captured";
     case "message.delta":

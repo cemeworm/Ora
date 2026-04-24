@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "@ora/shared";
-import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages, toInputText } from "./provider-utils.js";
+import { appendIfDefined, buildResponsesInput, extractTextFromValue, failMissingApiKey, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 
 function createError(status: number, body: string, providerId: string) {
@@ -19,31 +19,10 @@ export function createOpenAIProvider(
       throw failMissingApiKey(config.id, "OPENAI_API_KEY");
     }
 
-    const messages = normalizeMessages(request);
-    const { instructions, dialog } = splitInstructionMessages(messages);
-    const input = [
-      ...(instructions
-        ? [
-            {
-              type: "message",
-              role: "developer",
-              content: toInputText(request.system?.trim() ? `${request.system.trim()}\n\n${instructions}` : instructions),
-            }
-          ]
-        : request.system?.trim()
-          ? [{ type: "message", role: "developer", content: toInputText(request.system.trim()) }]
-          : []),
-      ...dialog.map((message) => ({
-        type: "message",
-        role: message.role,
-        content: toInputText(message.content),
-      })),
-    ];
-
     const body = appendIfDefined(
       {
         model: config.modelId,
-        input,
+        input: buildResponsesInput(request),
       },
       "max_output_tokens",
       request.maxTokens ?? config.maxTokens
@@ -66,6 +45,7 @@ export function createOpenAIProvider(
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
       signal: request.signal,

@@ -1,19 +1,39 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
 import { AppShell } from "./components/AppShell";
 import { ApprovalModal } from "./components/ApprovalModal";
-import { AgentsView } from "./components/AgentsView";
 import { ChatView } from "./components/ChatView";
-import { EvaluationView } from "./components/EvaluationView";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
+import type { AppView } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
+
+const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
+const EvaluationView = lazy(() => import("./components/EvaluationView").then((module) => ({ default: module.EvaluationView })));
+const ModesView = lazy(() => import("./components/ModesView").then((module) => ({ default: module.ModesView })));
 
 const DEFAULT_DETAIL_PANEL_WIDTH = 460;
 const MIN_DETAIL_PANEL_WIDTH = 360;
 const MIN_MAIN_PANEL_WIDTH = 640;
+const WINDOW_TITLE_BASE = "Ora Operator Workbench";
+
+function windowTitleForView(activeView: AppView, settingsOpen: boolean) {
+  if (settingsOpen) return `${WINDOW_TITLE_BASE} · Settings`;
+
+  switch (activeView) {
+    case "agents":
+      return `${WINDOW_TITLE_BASE} · Agents`;
+    case "modes":
+      return `${WINDOW_TITLE_BASE} · Modes`;
+    case "evaluation":
+      return `${WINDOW_TITLE_BASE} · Evaluation`;
+    case "chat":
+    default:
+      return `${WINDOW_TITLE_BASE} · Chat`;
+  }
+}
 
 function WorkspacePane({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
   return (
@@ -26,6 +46,18 @@ function WorkspacePane({ children, className, style }: { children: ReactNode; cl
     >
       {children}
     </section>
+  );
+}
+
+function LoadingPane({ label = "Loading view..." }: { label?: string }) {
+  return (
+    <WorkspacePane className="w-full">
+      <div className="flex h-full items-center justify-center">
+        <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+          <p className="text-sm font-semibold">{label}</p>
+        </div>
+      </div>
+    </WorkspacePane>
   );
 }
 
@@ -87,11 +119,13 @@ function WorkbenchInner() {
         dispatch({
           type: "BOOTSTRAP",
           patterns: bootstrap.patterns,
+          modes: bootstrap.modes,
           projects,
           providerRegistry: bootstrap.providerRegistry,
           toolRegistry: bootstrap.toolRegistry,
           skillRegistry: bootstrap.skillRegistry,
           providerSecretStatuses: bootstrap.providerSecretStatuses,
+          providerStatuses: bootstrap.providerStatuses,
           health: bootstrap.health,
         });
         const sessions = await runtimeClient.listSessions();
@@ -132,16 +166,25 @@ function WorkbenchInner() {
     return () => window.removeEventListener("resize", syncPanelWidth);
   }, [state.detailDrawerOpen]);
 
+  useEffect(() => {
+    const title = windowTitleForView(state.activeView, state.settingsOpen);
+    document.title = title;
+
+    void import("@tauri-apps/api/webviewWindow")
+      .then(({ getCurrentWebviewWindow }) => getCurrentWebviewWindow().setTitle(title))
+      .catch(() => {});
+  }, [state.activeView, state.settingsOpen]);
+
   // Chat messages derived from events
   const chatMessages = useMemo(() => {
     return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], state.activeSnapshot);
   }, [state.activeSessionDetail, state.activeSnapshot]);
-  const settingsDialog = (
+  const settingsDialog = state.settingsOpen ? (
     <SettingsView
       open={state.settingsOpen}
       onOpenChange={(open) => dispatch({ type: "SET_SETTINGS_OPEN", open })}
     />
-  );
+  ) : null;
 
   // Loading / error state
   if (!viewModel || !selectedSession || !state.bridgeStatus) {
@@ -165,7 +208,9 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <EvaluationView runtimeClient={runtimeClient} bridgeStatus={state.bridgeStatus} />
+          <Suspense fallback={<LoadingPane label="Loading evaluation tools..." />}>
+            <EvaluationView runtimeClient={runtimeClient} bridgeStatus={state.bridgeStatus} />
+          </Suspense>
         </WorkspacePane>
       </AppShell>
     );
@@ -176,19 +221,34 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <AgentsView
-            runtimeClient={runtimeClient}
-            selectedCustomAgentId={state.selectedCustomAgentId}
-            onStartChat={actions.openAgentChat}
-            onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
-          />
+          <Suspense fallback={<LoadingPane label="Loading agents..." />}>
+            <AgentsView
+              runtimeClient={runtimeClient}
+              selectedCustomAgentId={state.selectedCustomAgentId}
+              onStartChat={actions.openAgentChat}
+              onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
+            />
+          </Suspense>
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
+  if (state.activeView === "modes") {
+    return (
+      <AppShell>
+        {settingsDialog}
+        <WorkspacePane className="w-full">
+          <Suspense fallback={<LoadingPane label="Loading mode studio..." />}>
+            <ModesView runtimeClient={runtimeClient} />
+          </Suspense>
         </WorkspacePane>
       </AppShell>
     );
   }
 
   // Chat view (default)
-  const { actions: actionRecords, agents, artifacts, checkpoints, patternCards, planItems, streamLines, topologyEdges, topologyNodes, activePattern } = viewModel;
+  const { actions: actionRecords, agents, artifacts, checkpoints, modeCards, planItems, streamLines, topologyEdges, topologyNodes, activeMode } = viewModel;
   const isRunning = selectedSession.status === "running";
   const isApprovalRequired = selectedSession.status === "approval_required";
   const pendingApprovals = actionRecords.filter((a) => a.state === "approval_required");
@@ -203,7 +263,7 @@ function WorkbenchInner() {
       <div ref={splitContainerRef} className="flex h-full min-h-0 items-stretch gap-0.5">
         <WorkspacePane className="min-w-0 flex-1">
           <ChatView
-            activePattern={activePattern}
+            activeMode={activeMode}
             sessionTurns={viewModel.turns}
             selectedTurnRunId={state.selectedTurnRunId}
             selectedCustomAgentId={state.selectedCustomAgentId}
@@ -212,7 +272,7 @@ function WorkbenchInner() {
             busyCommand={state.busyCommand}
             chatMessages={chatMessages}
             checkpoints={checkpoints}
-            patternCards={patternCards}
+            modeCards={modeCards}
             composerPrompt={state.promptText}
             isLoading={state.isLoading}
             isRunning={isRunning}
@@ -231,6 +291,7 @@ function WorkbenchInner() {
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
+            onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
             onSelectTurn={actions.selectTurn}
             onStartRun={actions.startRun}

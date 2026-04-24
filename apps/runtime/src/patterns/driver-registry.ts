@@ -1,8 +1,16 @@
-import type {
-  CoordinationPattern,
-  QueueSummary,
-  SharedStateSummary,
-  BusStats,
+import {
+  createModeSpecFromPattern,
+  getModeNodeRuntimeTemplateDefinition,
+  type MemoryKind,
+  modeSpecToPatternDefinition,
+  orderedEnabledModeNodes,
+  type BusStats,
+  type CoordinationPattern,
+  type ModeNodeSpec,
+  type ModeSpec,
+  type PatternDefinition,
+  type QueueSummary,
+  type SharedStateSummary,
 } from "@ora/shared";
 
 export interface PatternExecutionContext {
@@ -13,6 +21,20 @@ export interface PatternExecutionContext {
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
   setQueueSummary(patch: Partial<QueueSummary>): void;
+  runDelegatedTask<T>(params: {
+    taskId: string;
+    nodeId: string;
+    nodeLabel: string;
+    agentId: string;
+    title: string;
+  }, execute: () => Promise<T>): Promise<T>;
+  ensureClarification(params: {
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+  }): unknown;
   claimWorker(agentId: string): void;
   releaseWorker(agentId: string): void;
   callAgent(params: {
@@ -29,6 +51,20 @@ export interface PatternExecutionContext {
     kind: "profile" | "project" | "session" | "worker" | "artifact";
     value: unknown;
     sourceActionId?: string;
+  }): void;
+  captureMemory(params: {
+    id: string;
+    namespace: string[];
+    kind: MemoryKind;
+    value: unknown;
+    sourceActionId?: string;
+  }): void;
+  publishArtifact(params: {
+    id: string;
+    label: string;
+    kind?: "report" | "file" | "log";
+    mimeType?: string;
+    payload: unknown;
   }): void;
   publishMessage(params: {
     agentId: string;
@@ -62,369 +98,696 @@ export interface PatternDriver {
   execute(context: PatternExecutionContext, prompt: string): Promise<PatternExecutionResult>;
 }
 
+interface ModeExecutionInput {
+  context: PatternExecutionContext;
+  prompt: string;
+  modeSpec: ModeSpec;
+  definition: PatternDefinition;
+}
+
+type ExecutionBag = Record<string, unknown>;
+
 function correlationId(base: string): string {
   return `${base}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const generatorVerifierDriver: PatternDriver = {
-  id: "generator_verifier",
-  async execute(context, prompt) {
-    const rubric = [
+function asText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
+  return JSON.stringify(value);
+}
+
+function interpolate(template: string, values: Record<string, unknown>): string {
+  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => asText(values[key]));
+}
+
+function promptTemplate(
+  node: ModeNodeSpec,
+  fallback: string,
+  values: Record<string, unknown>,
+): string {
+  return interpolate(node.prompt ?? fallback, values);
+}
+
+function titleForNode(node: ModeNodeSpec, fallback: string): string {
+  return node.title ?? node.label ?? fallback;
+}
+
+function runtimeFallbackPrompt(family: CoordinationPattern, template: ModeNodeSpec["template"]): string {
+  return getModeNodeRuntimeTemplateDefinition(family, template).fallbackPrompt ?? "";
+}
+
+function queueModeForFamily(family: CoordinationPattern): QueueSummary["mode"] {
+  switch (family) {
+    case "agent_teams":
+      return "backlog";
+    case "message_bus":
+      return "event_bus";
+    case "shared_state":
+      return "shared_state";
+    default:
+      return "dag";
+  }
+}
+
+function nodeAtomIds(node: ModeNodeSpec): Set<string> {
+  return new Set(
+    Array.isArray(node.config?.atoms)
+      ? node.config.atoms.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+}
+
+function initializeQueueSummary(
+  context: PatternExecutionContext,
+  family: CoordinationPattern,
+  totalActiveNodes: number,
+): void {
+  context.setQueueSummary({
+    mode: queueModeForFamily(family),
+    pending: totalActiveNodes,
+    inProgress: 0,
+    completed: 0,
+    topics: family === "message_bus" ? ["task.input", "task.findings", "task.response"] : [],
+  });
+}
+
+async function runNode(
+  context: PatternExecutionContext,
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  totalActiveNodes: number,
+  completedNodes: number,
+  execute: () => Promise<unknown>,
+): Promise<number> {
+  const clarificationQuestion = typeof node.config?.clarificationQuestion === "string"
+    ? node.config.clarificationQuestion
+    : undefined;
+  if (modeSpec.runtimeAtoms.includes("clarification_interrupt") && clarificationQuestion) {
+    try {
+      context.ensureClarification({
+        id: `clarification:${node.id}`,
+        key: typeof node.config?.clarificationKey === "string" ? node.config.clarificationKey : node.id,
+        nodeId: node.id,
+        nodeLabel: node.label,
+        question: clarificationQuestion,
+      });
+    } catch (error) {
+      context.setPlanStatus(node.id, "blocked");
+      context.setQueueSummary({
+        pending: Math.max(0, totalActiveNodes - completedNodes),
+        inProgress: 0,
+        completed: completedNodes,
+      });
+      throw error;
+    }
+  }
+  context.setPlanStatus(node.id, "running");
+  context.setQueueSummary({
+    pending: Math.max(0, totalActiveNodes - completedNodes - 1),
+    inProgress: 1,
+    completed: completedNodes,
+  });
+  const result = nodeAtomIds(node).has("subagent_delegate")
+    ? await context.runDelegatedTask({
+        taskId: `task:${node.id}`,
+        nodeId: node.id,
+        nodeLabel: node.label,
+        agentId: node.ownerAgentId ?? node.id,
+        title: titleForNode(node, node.label),
+      }, execute)
+    : await execute();
+  if (modeSpec.runtimeAtoms.includes("memory_capture") && result !== undefined) {
+    context.captureMemory({
+      id: `atom-memory-${node.id}-${completedNodes + 1}`,
+      namespace: ["session", context.projectId, modeSpec.family, "memory_capture"],
+      kind: "session",
+      value: {
+        nodeId: node.id,
+        nodeLabel: node.label,
+        output: result,
+      },
+    });
+  }
+  if (nodeAtomIds(node).has("artifact_publish") && result !== undefined) {
+    context.publishArtifact({
+      id: `${node.id}-artifact-${completedNodes + 1}`,
+      label: `${node.label} artifact`,
+      kind: "log",
+      mimeType: "application/json",
+      payload: {
+        nodeId: node.id,
+        nodeLabel: node.label,
+        output: result,
+      },
+    });
+  }
+  const nextCompleted = completedNodes + 1;
+  context.setPlanStatus(node.id, "done");
+  context.setQueueSummary({
+    pending: Math.max(0, totalActiveNodes - nextCompleted),
+    inProgress: 0,
+    completed: nextCompleted,
+  });
+  return nextCompleted;
+}
+
+async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const maxIterations = modeSpec.stopPolicy.maxIterations ?? 3;
+  const bag: ExecutionBag = {
+    prompt,
+    rubric: [
       "addresses the user request",
       "uses explicit verification criteria",
       "stays bounded and inspectable",
-    ];
-    let candidate = "";
-    let verifierNotes = "";
-    let verdict: "pass" | "fail" = "fail";
+    ],
+    retryCount: 0,
+    verdict: "fail",
+  };
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      context.setPlanStatus("draft", "running");
-      candidate = await context.callAgent({
-        agentId: "generator",
-        planItemId: "draft",
-        title: `Draft attempt ${attempt}`,
-        prompt: `Prompt: ${prompt}\nAttempt: ${attempt}\nWrite a candidate answer that can be verified against an explicit rubric.`,
-        system: context.systemPrompt("You are the generator. Produce a concrete candidate answer."),
+  for (let attempt = 1; attempt <= maxIterations; attempt += 1) {
+    bag.retryCount = attempt;
+    let completedNodes = 0;
+    for (const node of nodes) {
+      completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+        if (node.template === "draft") {
+          const candidate = await context.callAgent({
+            agentId: node.ownerAgentId ?? "generator",
+            planItemId: node.id,
+            title: titleForNode(node, `Draft attempt ${attempt}`),
+            prompt: promptTemplate(
+              node,
+              runtimeFallbackPrompt(modeSpec.family, node.template),
+              { ...bag, attempt },
+            ),
+            system: context.systemPrompt("You are the generator. Produce a concrete candidate answer."),
+            riskLevel: node.riskLevel,
+          });
+          bag.candidate = candidate;
+          return candidate;
+        }
+
+        if (node.template === "verify") {
+          const verifierNotes = await context.callAgent({
+            agentId: node.ownerAgentId ?? "verifier",
+            planItemId: node.id,
+            title: titleForNode(node, `Verify attempt ${attempt}`),
+            prompt: promptTemplate(
+              node,
+              runtimeFallbackPrompt(modeSpec.family, node.template),
+              {
+                ...bag,
+                rubric: (bag.rubric as string[]).join("\n- "),
+                attempt,
+              },
+            ),
+            system: context.systemPrompt("You are the verifier. Evaluate the candidate against the explicit rubric."),
+            riskLevel: node.riskLevel,
+          });
+          bag.verifierNotes = verifierNotes;
+          bag.verdict = attempt >= Math.min(2, maxIterations) ? "pass" : "fail";
+          context.remember({
+            id: `generator-verifier-${attempt}`,
+            namespace: ["session", context.projectId, "generator_verifier"],
+            kind: "session",
+            value: {
+              attempt,
+              candidate: bag.candidate,
+              verifierNotes,
+              verdict: bag.verdict,
+              rubric: bag.rubric,
+            },
+          });
+          return verifierNotes;
+        }
       });
-      context.setPlanStatus("draft", "done");
-
-      context.setPlanStatus("verify", "running");
-      verifierNotes = await context.callAgent({
-        agentId: "verifier",
-        planItemId: "verify",
-        title: `Verify attempt ${attempt}`,
-        prompt: `Original prompt: ${prompt}\nRubric:\n- ${rubric.join("\n- ")}\nCandidate:\n${candidate}\nReturn concise verification notes.`,
-        system: context.systemPrompt("You are the verifier. Evaluate the candidate against the explicit rubric."),
-      });
-      verdict = attempt >= 2 ? "pass" : "fail";
-      context.setPlanStatus("verify", verdict === "pass" ? "done" : "ready");
-
-      context.remember({
-        id: `generator-verifier-${attempt}`,
-        namespace: ["session", context.projectId, "generator_verifier"],
-        kind: "session",
-        value: { attempt, candidate, verifierNotes, verdict, rubric },
-      });
-
-      if (verdict === "pass") {
-        break;
-      }
     }
 
-    return {
-      output: {
-        text: `Verified candidate for: ${prompt}`,
-        pattern: "generator_verifier",
-        generator: { candidate },
-        verifier: { verdict, notes: verifierNotes, rubric },
+    if (bag.verdict === "pass") {
+      break;
+    }
+  }
+
+  return {
+    output: {
+      text: `Verified candidate for: ${prompt}`,
+      pattern: "generator_verifier",
+      modeId: modeSpec.id,
+      generator: { candidate: bag.candidate },
+      verifier: { verdict: bag.verdict, notes: bag.verifierNotes, rubric: bag.rubric },
+    },
+  };
+}
+
+async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const bag: ExecutionBag = { prompt };
+  let completedNodes = 0;
+
+  for (const node of nodes) {
+      completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+        if (node.template === "decompose") {
+          bag.plan = await context.callAgent({
+          agentId: node.ownerAgentId ?? "orchestrator",
+          planItemId: node.id,
+          title: titleForNode(node, "Decompose work"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the orchestrator. Keep delegation explicit and inspectable."),
+          riskLevel: node.riskLevel,
+          });
+          return bag.plan;
+        }
+
+      if (node.template === "research") {
+        bag.research = await context.callAgent({
+          agentId: node.ownerAgentId ?? "researcher",
+          planItemId: node.id,
+          title: titleForNode(node, "Research context"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the research subagent. Return concise findings."),
+          riskLevel: node.riskLevel,
+          });
+          return bag.research;
+        }
+
+      if (node.template === "review") {
+        bag.review = await context.callAgent({
+          agentId: node.ownerAgentId ?? "reviewer",
+          planItemId: node.id,
+          title: titleForNode(node, "Review risks"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the review subagent. Surface risks and gaps."),
+          riskLevel: node.riskLevel,
+          });
+          return bag.review;
+        }
+
+      if (node.template === "synthesize") {
+        bag.synthesis = await context.callAgent({
+          agentId: node.ownerAgentId ?? "orchestrator",
+          planItemId: node.id,
+          title: titleForNode(node, "Synthesize result"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the orchestrator. Synthesize delegated results into one answer."),
+          riskLevel: node.riskLevel,
+          });
+          return bag.synthesis;
+        }
+      });
+  }
+
+  context.remember({
+    id: `mode-${modeSpec.id}-result`,
+    namespace: ["session", context.projectId, "orchestrator_subagent"],
+    kind: "session",
+    value: { plan: bag.plan, research: bag.research, review: bag.review, synthesis: bag.synthesis },
+  });
+
+  return {
+    output: {
+      text: asText(bag.synthesis || bag.review || bag.research || bag.plan),
+      pattern: "orchestrator_subagent",
+      modeId: modeSpec.id,
+      orchestrator: {
+        decomposition: nodes.map((node) => node.template),
+        plan: bag.plan,
       },
-    };
-  },
-};
-
-const orchestratorSubagentDriver: PatternDriver = {
-  id: "orchestrator_subagent",
-  async execute(context, prompt) {
-    context.setPlanStatus("decompose", "running");
-    const plan = await context.callAgent({
-      agentId: "orchestrator",
-      planItemId: "decompose",
-      title: "Decompose work",
-      prompt: `Task: ${prompt}\nDecompose it into research, review, and synthesis responsibilities.`,
-      system: context.systemPrompt("You are the orchestrator. Keep delegation explicit and inspectable."),
-    });
-    context.setPlanStatus("decompose", "done");
-
-    context.setPlanStatus("research", "running");
-    const research = await context.callAgent({
-      agentId: "researcher",
-      planItemId: "research",
-      title: "Research context",
-      prompt: `Task: ${prompt}\nGather focused supporting context for the orchestration plan:\n${plan}`,
-      system: context.systemPrompt("You are the research subagent. Return concise findings."),
-    });
-    context.setPlanStatus("research", "done");
-
-    context.setPlanStatus("review", "running");
-    const review = await context.callAgent({
-      agentId: "reviewer",
-      planItemId: "review",
-      title: "Review risks",
-      prompt: `Task: ${prompt}\nPlan:\n${plan}\nResearch:\n${research}\nReview completeness, risks, and missing pieces.`,
-      system: context.systemPrompt("You are the review subagent. Surface risks and gaps."),
-    });
-    context.setPlanStatus("review", "done");
-
-    context.setPlanStatus("synthesize", "running");
-    const synthesis = await context.callAgent({
-      agentId: "orchestrator",
-      planItemId: "synthesize",
-      title: "Synthesize result",
-      prompt: `Task: ${prompt}\nPlan:\n${plan}\nResearch:\n${research}\nReview:\n${review}\nProduce the final orchestrated answer.`,
-      system: context.systemPrompt("You are the orchestrator. Synthesize delegated results into one answer."),
-    });
-    context.setPlanStatus("synthesize", "done");
-
-    context.remember({
-      id: "orchestrator-subagent-result",
-      namespace: ["session", context.projectId, "orchestrator_subagent"],
-      kind: "session",
-      value: { plan, research, review, synthesis },
-    });
-
-    return {
-      output: {
-        text: synthesis,
-        pattern: "orchestrator_subagent",
-        orchestrator: {
-          decomposition: ["research", "review", "synthesize"],
-          plan,
-        },
-        subagents: {
-          researcher: research,
-          reviewer: review,
-        },
+      subagents: {
+        researcher: bag.research,
+        reviewer: bag.review,
       },
-    };
-  },
-};
+    },
+  };
+}
 
-const agentTeamsDriver: PatternDriver = {
-  id: "agent_teams",
-  async execute(context, prompt) {
-    context.setQueueSummary({ mode: "backlog", pending: 3, inProgress: 0, completed: 0 });
+async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const bag: ExecutionBag = { prompt };
+  let completedNodes = 0;
 
-    context.setPlanStatus("triage", "running");
-    const triage = await context.callAgent({
-      agentId: "team_lead",
-      planItemId: "triage",
-      title: "Triage backlog",
-      prompt: `Task: ${prompt}\nBreak the work into a team backlog with explicit ownership.`,
-      system: context.systemPrompt("You are the team lead. Create a compact backlog."),
-    });
-    context.setPlanStatus("triage", "done");
-    context.setQueueSummary({ pending: 2, completed: 1 });
+  for (const node of nodes) {
+      completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+        if (node.template === "triage") {
+          bag.triage = await context.callAgent({
+          agentId: node.ownerAgentId ?? "team_lead",
+          planItemId: node.id,
+          title: titleForNode(node, "Triage backlog"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the team lead. Create a compact backlog."),
+          riskLevel: node.riskLevel,
+          });
+          return bag.triage;
+        }
 
-    context.claimWorker("builder");
-    context.setPlanStatus("build", "running");
-    const build = await context.callAgent({
-      agentId: "builder",
-      planItemId: "build",
-      title: "Build assigned work",
-      prompt: `Task: ${prompt}\nBacklog:\n${triage}\nComplete the builder's assigned work.`,
-      system: context.systemPrompt("You are the persistent builder teammate. Complete the assigned work."),
-    });
-    context.remember({
-      id: "builder-memory",
-      namespace: ["worker", context.projectId, "builder"],
-      kind: "worker",
-      value: { summary: build },
-    });
-    context.setPlanStatus("build", "done");
-    context.releaseWorker("builder");
-    context.setQueueSummary({ pending: 1, completed: 2 });
+      if (node.template === "build") {
+        const agentId = node.ownerAgentId ?? "builder";
+        context.claimWorker(agentId);
+        try {
+          bag.build = await context.callAgent({
+            agentId,
+            planItemId: node.id,
+            title: titleForNode(node, "Build assigned work"),
+            prompt: promptTemplate(
+              node,
+              runtimeFallbackPrompt(modeSpec.family, node.template),
+              bag,
+            ),
+            system: context.systemPrompt("You are the persistent builder teammate. Complete the assigned work."),
+            riskLevel: node.riskLevel,
+          });
+          context.remember({
+            id: `${agentId}-memory`,
+            namespace: ["worker", context.projectId, agentId],
+            kind: "worker",
+            value: { summary: bag.build },
+          });
+        } finally {
+          context.releaseWorker(agentId);
+        }
+        return bag.build;
+      }
 
-    context.claimWorker("checker");
-    context.setPlanStatus("check", "running");
-    const check = await context.callAgent({
-      agentId: "checker",
-      planItemId: "check",
-      title: "Validate assigned work",
-      prompt: `Task: ${prompt}\nBacklog:\n${triage}\nBuilder output:\n${build}\nValidate the work and report issues or approval.`,
-      system: context.systemPrompt("You are the persistent checker teammate. Validate the assigned work."),
-    });
-    context.remember({
-      id: "checker-memory",
-      namespace: ["worker", context.projectId, "checker"],
-      kind: "worker",
-      value: { summary: check },
-    });
-    context.setPlanStatus("check", "done");
-    context.releaseWorker("checker");
+      if (node.template === "check") {
+        const agentId = node.ownerAgentId ?? "checker";
+        context.claimWorker(agentId);
+        try {
+          bag.check = await context.callAgent({
+            agentId,
+            planItemId: node.id,
+            title: titleForNode(node, "Validate assigned work"),
+            prompt: promptTemplate(
+              node,
+              runtimeFallbackPrompt(modeSpec.family, node.template),
+              bag,
+            ),
+            system: context.systemPrompt("You are the persistent checker teammate. Validate the assigned work."),
+            riskLevel: node.riskLevel,
+          });
+          context.remember({
+            id: `${agentId}-memory`,
+            namespace: ["worker", context.projectId, agentId],
+            kind: "worker",
+            value: { summary: bag.check },
+          });
+        } finally {
+          context.releaseWorker(agentId);
+        }
+        return bag.check;
+      }
 
-    context.setPlanStatus("handoff", "running");
-    const handoff = await context.callAgent({
-      agentId: "team_lead",
-      planItemId: "handoff",
-      title: "Record handoff",
-      prompt: `Task: ${prompt}\nBacklog:\n${triage}\nBuilder:\n${build}\nChecker:\n${check}\nRecord the handoff and next action.`,
-      system: context.systemPrompt("You are the team lead. Summarize the handoff and next steps."),
+      if (node.template === "handoff") {
+        bag.handoff = await context.callAgent({
+          agentId: node.ownerAgentId ?? "team_lead",
+          planItemId: node.id,
+          title: titleForNode(node, "Record handoff"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the team lead. Summarize the handoff and next steps."),
+          riskLevel: node.riskLevel,
+          });
+        return bag.handoff;
+      }
     });
-    context.setPlanStatus("handoff", "done");
-    context.setQueueSummary({ pending: 0, completed: 4 });
+  }
 
-    return {
-      output: {
-        text: handoff,
-        pattern: "agent_teams",
-        backlog: ["triage", "build", "check", "handoff"],
-        triage,
-        workers: {
-          builder: build,
-          checker: check,
-        },
+  return {
+    output: {
+      text: asText(bag.handoff || bag.check || bag.build || bag.triage),
+      pattern: "agent_teams",
+      modeId: modeSpec.id,
+      backlog: nodes.map((node) => node.template),
+      triage: bag.triage,
+      workers: {
+        builder: bag.build,
+        checker: bag.check,
       },
-    };
-  },
-};
+    },
+  };
+}
 
-const messageBusDriver: PatternDriver = {
-  id: "message_bus",
-  async execute(context, prompt) {
-    const messageCorrelation = correlationId("bus");
-    context.setQueueSummary({ mode: "event_bus", pending: 3, inProgress: 0, completed: 0, topics: ["task.input", "task.findings", "task.response"] });
-    context.publishMessage({
-      agentId: "router",
-      topic: "task.input",
-      correlationId: messageCorrelation,
-      summary: `Published input event for: ${prompt}`,
-      payload: { prompt },
-    });
+async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const bag: ExecutionBag = {
+    prompt,
+    correlationId: correlationId("bus"),
+  };
+  let completedNodes = 0;
 
-    context.setPlanStatus("publish", "done");
-    context.setPlanStatus("route", "running");
-    const routingPlan = await context.callAgent({
-      agentId: "router",
-      planItemId: "route",
-      title: "Route event",
-      prompt: `Task: ${prompt}\nClassify the incoming event and decide which topic/subscriber should receive it.`,
-      system: context.systemPrompt("You are the router. Route work explicitly to the correct subscriber."),
-    });
-    context.routeMessage({
-      agentId: "router",
-      fromTopic: "task.input",
-      toTopic: "task.findings",
-      correlationId: messageCorrelation,
-      summary: routingPlan,
-    });
-    context.setPlanStatus("route", "done");
-    context.setQueueSummary({ pending: 2, completed: 2 });
+  for (const node of nodes) {
+      completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+        if (node.template === "publish") {
+        context.publishMessage({
+          agentId: node.ownerAgentId ?? "router",
+          topic: "task.input",
+          correlationId: asText(bag.correlationId),
+          summary: `Published input event for: ${prompt}`,
+          payload: { prompt },
+        });
+        bag.publish = `Published input event for: ${prompt}`;
+        return bag.publish;
+      }
 
-    context.setPlanStatus("handle", "running");
-    const findings = await context.callAgent({
-      agentId: "investigator",
-      planItemId: "handle",
-      title: "Handle routed work",
-      prompt: `Task: ${prompt}\nRouting plan:\n${routingPlan}\nProduce the investigation findings for the subscribed work item.`,
-      system: context.systemPrompt("You are the investigator. Produce findings for the routed event."),
-    });
-    context.publishMessage({
-      agentId: "investigator",
-      topic: "task.findings",
-      correlationId: messageCorrelation,
-      summary: findings,
-      payload: { findings },
-    });
-    context.setPlanStatus("handle", "done");
-    context.setQueueSummary({ pending: 1, completed: 3 });
+      if (node.template === "route") {
+        bag.routingPlan = await context.callAgent({
+          agentId: node.ownerAgentId ?? "router",
+          planItemId: node.id,
+          title: titleForNode(node, "Route event"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the router. Route work explicitly to the correct subscriber."),
+          riskLevel: node.riskLevel,
+        });
+        context.routeMessage({
+          agentId: node.ownerAgentId ?? "router",
+          fromTopic: "task.input",
+          toTopic: "task.findings",
+          correlationId: asText(bag.correlationId),
+          summary: asText(bag.routingPlan),
+        });
+        return bag.routingPlan;
+      }
 
-    context.setPlanStatus("respond", "running");
-    const response = await context.callAgent({
-      agentId: "responder",
-      planItemId: "respond",
-      title: "Publish response",
-      prompt: `Task: ${prompt}\nRouting plan:\n${routingPlan}\nFindings:\n${findings}\nProduce the final routed response.`,
-      system: context.systemPrompt("You are the responder. Publish the final bus response."),
-    });
-    context.publishMessage({
-      agentId: "responder",
-      topic: "task.response",
-      correlationId: messageCorrelation,
-      summary: response,
-      payload: { response },
-    });
-    context.setPlanStatus("respond", "done");
-    context.setQueueSummary({ pending: 0, completed: 4 });
+      if (node.template === "handle") {
+        bag.findings = await context.callAgent({
+          agentId: node.ownerAgentId ?? "investigator",
+          planItemId: node.id,
+          title: titleForNode(node, "Handle routed work"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the investigator. Produce findings for the routed event."),
+          riskLevel: node.riskLevel,
+        });
+        context.publishMessage({
+          agentId: node.ownerAgentId ?? "investigator",
+          topic: "task.findings",
+          correlationId: asText(bag.correlationId),
+          summary: asText(bag.findings),
+          payload: { findings: bag.findings },
+        });
+        return bag.findings;
+      }
 
-    return {
-      output: {
-        text: response,
-        pattern: "message_bus",
-        routingPlan,
-        findings,
-        response,
-        correlationId: messageCorrelation,
-      },
-    };
-  },
-};
-
-const sharedStateDriver: PatternDriver = {
-  id: "shared_state",
-  async execute(context, prompt) {
-    context.setQueueSummary({ mode: "shared_state", pending: 3, completed: 0 });
-
-    context.setPlanStatus("seed", "running");
-    const seed = await context.callAgent({
-      agentId: "seed_agent",
-      planItemId: "seed",
-      title: "Seed shared board",
-      prompt: `Task: ${prompt}\nCreate the initial shared-state board for collaborative work.`,
-      system: context.systemPrompt("You are the seed agent. Seed the shared board with the initial hypothesis."),
+      if (node.template === "respond") {
+        bag.response = await context.callAgent({
+          agentId: node.ownerAgentId ?? "responder",
+          planItemId: node.id,
+          title: titleForNode(node, "Publish response"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the responder. Publish the final bus response."),
+          riskLevel: node.riskLevel,
+        });
+        context.publishMessage({
+          agentId: node.ownerAgentId ?? "responder",
+          topic: "task.response",
+          correlationId: asText(bag.correlationId),
+          summary: asText(bag.response),
+          payload: { response: bag.response },
+        });
+        return bag.response;
+      }
     });
-    context.writeSharedState({
-      agentId: "seed_agent",
-      key: "seed",
-      summary: seed,
-      value: { prompt, seed },
-    });
-    context.setPlanStatus("seed", "done");
-    context.setQueueSummary({ pending: 2, completed: 1 });
+  }
 
-    context.setPlanStatus("research", "running");
-    const research = await context.callAgent({
-      agentId: "research_agent",
-      planItemId: "research",
-      title: "Contribute findings",
-      prompt: `Task: ${prompt}\nCurrent shared board:\n${JSON.stringify(context.currentSharedState().entries)}\nAdd the next finding that other agents should build on.`,
-      system: context.systemPrompt("You are the research agent. Add a meaningful finding to the shared board."),
-    });
-    context.writeSharedState({
-      agentId: "research_agent",
-      key: "finding-1",
-      summary: research,
-      value: { research },
-    });
-    context.setPlanStatus("research", "done");
-    context.setQueueSummary({ pending: 1, completed: 2 });
+  return {
+    output: {
+      text: asText(bag.response || bag.findings || bag.routingPlan || bag.publish),
+      pattern: "message_bus",
+      modeId: modeSpec.id,
+      routingPlan: bag.routingPlan,
+      findings: bag.findings,
+      response: bag.response,
+      correlationId: bag.correlationId,
+    },
+  };
+}
 
-    context.setPlanStatus("converge", "running");
-    const convergence = await context.callAgent({
-      agentId: "critic_agent",
-      planItemId: "converge",
-      title: "Review convergence",
-      prompt: `Task: ${prompt}\nShared board:\n${JSON.stringify(context.currentSharedState().entries)}\nDecide whether the board has converged and summarize the conclusion.`,
-      system: context.systemPrompt("You are the critic agent. Decide whether the shared board has converged."),
-    });
-    context.writeSharedState({
-      agentId: "critic_agent",
-      key: "convergence",
-      summary: convergence,
-      value: { convergence, stopReason: "converged" },
-    });
-    context.setPlanStatus("converge", "done");
-    context.setQueueSummary({ pending: 0, completed: 3 });
+async function executeSharedState(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const bag: ExecutionBag = { prompt };
+  let completedNodes = 0;
 
-    return {
-      output: {
-        text: convergence,
-        pattern: "shared_state",
-        board: context.currentSharedState().entries,
-        convergence,
-      },
-    };
-  },
-};
+  for (const node of nodes) {
+      completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+        if (node.template === "seed") {
+        bag.seed = await context.callAgent({
+          agentId: node.ownerAgentId ?? "seed_agent",
+          planItemId: node.id,
+          title: titleForNode(node, "Seed shared board"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: context.systemPrompt("You are the seed agent. Seed the shared board with the initial hypothesis."),
+          riskLevel: node.riskLevel,
+        });
+        context.writeSharedState({
+          agentId: node.ownerAgentId ?? "seed_agent",
+          key: "seed",
+          summary: asText(bag.seed),
+          value: { prompt, seed: bag.seed },
+        });
+        return bag.seed;
+      }
 
-const DRIVER_REGISTRY: Record<CoordinationPattern, PatternDriver> = {
-  generator_verifier: generatorVerifierDriver,
-  orchestrator_subagent: orchestratorSubagentDriver,
-  agent_teams: agentTeamsDriver,
-  message_bus: messageBusDriver,
-  shared_state: sharedStateDriver,
-};
+      if (node.template === "research") {
+        bag.research = await context.callAgent({
+          agentId: node.ownerAgentId ?? "research_agent",
+          planItemId: node.id,
+          title: titleForNode(node, "Contribute findings"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            {
+              ...bag,
+              sharedBoard: JSON.stringify(context.currentSharedState().entries),
+            },
+          ),
+          system: context.systemPrompt("You are the research agent. Add a meaningful finding to the shared board."),
+          riskLevel: node.riskLevel,
+        });
+        context.writeSharedState({
+          agentId: node.ownerAgentId ?? "research_agent",
+          key: "finding-1",
+          summary: asText(bag.research),
+          value: { research: bag.research },
+        });
+        return bag.research;
+      }
+
+      if (node.template === "converge") {
+        bag.convergence = await context.callAgent({
+          agentId: node.ownerAgentId ?? "critic_agent",
+          planItemId: node.id,
+          title: titleForNode(node, "Review convergence"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            {
+              ...bag,
+              sharedBoard: JSON.stringify(context.currentSharedState().entries),
+            },
+          ),
+          system: context.systemPrompt("You are the critic agent. Decide whether the shared board has converged."),
+          riskLevel: node.riskLevel,
+        });
+        context.writeSharedState({
+          agentId: node.ownerAgentId ?? "critic_agent",
+          key: "convergence",
+          summary: asText(bag.convergence),
+          value: { convergence: bag.convergence, stopReason: "converged" },
+        });
+        return bag.convergence;
+      }
+    });
+  }
+
+  return {
+    output: {
+      text: asText(bag.convergence || bag.research || bag.seed),
+      pattern: "shared_state",
+      modeId: modeSpec.id,
+      board: context.currentSharedState().entries,
+      convergence: bag.convergence,
+    },
+  };
+}
+
+export async function executeModeSpec(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  switch (input.modeSpec.family) {
+    case "generator_verifier":
+      return executeGeneratorVerifier(input);
+    case "orchestrator_subagent":
+      return executeOrchestratorSubagent(input);
+    case "agent_teams":
+      return executeAgentTeams(input);
+    case "message_bus":
+      return executeMessageBus(input);
+    case "shared_state":
+      return executeSharedState(input);
+  }
+}
 
 export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
-  return DRIVER_REGISTRY[pattern];
+  return {
+    id: pattern,
+    async execute(context, prompt) {
+      const modeSpec = createModeSpecFromPattern(pattern);
+      const definition = modeSpecToPatternDefinition(modeSpec);
+      return executeModeSpec({ context, prompt, modeSpec, definition });
+    },
+  };
 }

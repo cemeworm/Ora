@@ -21,6 +21,11 @@ import type {
   JsonRpcRequest,
   JsonRpcResponse,
   MemoryRecord as OraMemoryRecord,
+  ModeRuntimeAtomDefinition as OraModeRuntimeAtomDefinition,
+  ModeCreateParams as OraModeCreateParams,
+  ModeSpec as OraModeSpec,
+  ModeUpdateParams as OraModeUpdateParams,
+  ModeValidationResult as OraModeValidationResult,
   OraEventEnvelope,
   PatternDefinition as OraPatternDefinition,
   PlanItem as OraPlanItem,
@@ -30,6 +35,7 @@ import type {
   ProviderConfig as OraProviderConfig,
   ProviderRegistry as OraProviderRegistry,
   ProviderSecretStatus as OraProviderSecretStatus,
+  ProviderStatus as OraProviderStatus,
   RunTraceMetadata as OraRunTraceMetadata,
   RuntimeBootstrap as OraRuntimeBootstrap,
   RunConfig as OraRunConfig,
@@ -51,7 +57,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema } from "@ora/shared";
+import { DEFAULT_PROVIDERS, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -74,10 +80,16 @@ export type {
   OraEvaluationSpec,
   OraEventEnvelope,
   OraMemoryRecord,
+  OraModeRuntimeAtomDefinition,
+  OraModeCreateParams,
+  OraModeSpec,
+  OraModeUpdateParams,
+  OraModeValidationResult,
   OraPatternDefinition,
   OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
+  OraProviderStatus,
   OraPlanItem,
   OraProjectCreateParams,
   OraProjectDetail,
@@ -113,10 +125,13 @@ export interface RuntimeHealth {
 export interface RuntimeBootstrap {
   health: RuntimeHealth;
   patterns: OraPatternDefinition[];
+  modes: OraModeSpec[];
+  atoms: OraModeRuntimeAtomDefinition[];
   providerRegistry: OraProviderRegistry;
   toolRegistry: OraToolRegistry;
   skillRegistry: OraSkillRegistry;
   providerSecretStatuses: OraProviderSecretStatus[];
+  providerStatuses: OraProviderStatus[];
 }
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown };
@@ -186,6 +201,7 @@ export function createRuntimeClient() {
         const patterns = await call<OraPatternDefinition[]>("patterns.list");
         const providerRegistry = mergeCustomProviders(await call<OraProviderRegistry>("providers.list"));
         const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
+        const providerStatuses = deriveProviderStatuses(providerRegistry.providers, providerSecretStatuses);
         return {
           health: lastHealth ?? {
             ok: true,
@@ -194,16 +210,20 @@ export function createRuntimeClient() {
             detail: tauriUnavailableReason,
           },
           patterns,
+          modes: MVP_MODES,
+          atoms: MVP_MODE_RUNTIME_ATOMS,
           providerRegistry,
           toolRegistry: { tools: MVP_TOOLS, defaultPolicyId: "runtime.default_policy" },
           skillRegistry: { skills: MVP_SKILLS },
           providerSecretStatuses,
+          providerStatuses,
         };
       }
 
       const bootstrap = await call<OraRuntimeBootstrap>("runtime.bootstrap");
       const providerRegistry = mergeCustomProviders(bootstrap.providers);
       const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
+      const providerStatuses = deriveProviderStatuses(providerRegistry.providers, providerSecretStatuses);
 
       return {
         health: lastHealth ?? {
@@ -215,10 +235,13 @@ export function createRuntimeClient() {
             : "Browser dev fallback is serving deterministic Ora JSON-RPC.",
         },
         patterns: bootstrap.patterns,
+        modes: bootstrap.modes,
+        atoms: bootstrap.atoms,
         providerRegistry,
         toolRegistry: bootstrap.tools,
         skillRegistry: bootstrap.skills,
         providerSecretStatuses,
+        providerStatuses,
       };
     },
     async createSession(params: OraSessionCreateParams = {}): Promise<OraSessionSummary> {
@@ -278,6 +301,27 @@ export function createRuntimeClient() {
     },
     async listAgents(): Promise<OraCustomAgentSummary[]> {
       return call<OraCustomAgentSummary[]>("agents.list");
+    },
+    async listModes(): Promise<OraModeSpec[]> {
+      return call<OraModeSpec[]>("modes.list");
+    },
+    async getMode(modeId: string): Promise<OraModeSpec> {
+      return call<OraModeSpec>("modes.get", { modeId });
+    },
+    async createMode(spec: OraModeCreateParams): Promise<OraModeSpec> {
+      return call<OraModeSpec>("modes.create", spec);
+    },
+    async updateMode(modeId: string, spec: OraModeCreateParams): Promise<OraModeSpec> {
+      return call<OraModeSpec>("modes.update", { modeId, spec } satisfies OraModeUpdateParams);
+    },
+    async deleteMode(modeId: string): Promise<{ deleted: true; modeId: string }> {
+      return call<{ deleted: true; modeId: string }>("modes.delete", { modeId });
+    },
+    async validateMode(spec: OraModeSpec | OraModeCreateParams): Promise<OraModeValidationResult> {
+      return call<OraModeValidationResult>("modes.validate", { spec });
+    },
+    async cloneModeFromPreset(sourceModeId: string, modeId?: string, label?: string): Promise<OraModeSpec> {
+      return call<OraModeSpec>("modes.cloneFromPreset", { sourceModeId, modeId, label });
     },
     async getAgent(name: string): Promise<OraCustomAgentDetail> {
       return call<OraCustomAgentDetail>("agents.get", { name });
@@ -342,11 +386,21 @@ export function createRuntimeClient() {
     async refreshProviderSecretStatuses(providers: OraProviderConfig[]): Promise<OraProviderSecretStatus[]> {
       return getProviderSecretStatuses(providers);
     },
+    refreshProviderStatuses(
+      providers: OraProviderConfig[],
+      secretStatuses: OraProviderSecretStatus[],
+      currentStatuses: OraProviderStatus[] = []
+    ): OraProviderStatus[] {
+      return deriveProviderStatuses(providers, secretStatuses, currentStatuses);
+    },
     async storeProviderSecret(providerId: string, secret: string): Promise<OraProviderSecretStatus> {
       return writeProviderSecret(providerId, secret);
     },
     async deleteProviderSecret(providerId: string): Promise<OraProviderSecretStatus> {
       return removeProviderSecret(providerId);
+    },
+    async verifyProvider(provider: OraProviderConfig): Promise<OraProviderStatus> {
+      return call<OraProviderStatus>("providers.verify", { provider });
     },
     async upsertCustomProvider(provider: OraProviderConfig): Promise<OraProviderRegistry> {
       const parsed = ProviderConfigSchema.parse(provider) as OraProviderConfig;
@@ -420,6 +474,46 @@ function writeCustomProviders(providers: OraProviderConfig[]) {
   }
 
   window.localStorage.setItem(CUSTOM_PROVIDER_STORAGE_KEY, JSON.stringify(providers));
+}
+
+function deriveProviderStatuses(
+  providers: OraProviderConfig[],
+  secretStatuses: OraProviderSecretStatus[],
+  currentStatuses: OraProviderStatus[] = []
+): OraProviderStatus[] {
+  const currentById = new Map(currentStatuses.map((status) => [status.providerId, status]));
+  const secretById = new Map(secretStatuses.map((status) => [status.providerId, status]));
+
+  return providers.map((provider) => {
+    if (provider.type === "local_smoke") {
+      return {
+        providerId: provider.id,
+        state: "verified",
+        detail: "Local smoke provider is ready.",
+        checkedAt: currentById.get(provider.id)?.checkedAt,
+      } satisfies OraProviderStatus;
+    }
+
+    const secretStatus = secretById.get(provider.id);
+    if (!secretStatus?.hasSecret) {
+      return {
+        providerId: provider.id,
+        state: "needs_key",
+        detail: "API key required before verification.",
+      } satisfies OraProviderStatus;
+    }
+
+    const current = currentById.get(provider.id);
+    if (current?.state === "verified" || current?.state === "failed") {
+      return current;
+    }
+
+    return {
+      providerId: provider.id,
+      state: "key_stored",
+      detail: "API key stored. Run verify to confirm connectivity.",
+    } satisfies OraProviderStatus;
+  });
 }
 
 async function tryTauriJsonRpc(request: JsonRpcRequest): Promise<
@@ -541,6 +635,7 @@ class LocalJsonRpcRuntime {
   private sessions = new Map<string, OraSessionSummary>();
   private runs = new Map<string, OraStateSnapshot>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
+  private modes = new Map<string, OraModeSpec>();
   private evaluationDatasets = new Map<string, OraEvaluationDatasetDetail>();
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
@@ -583,12 +678,14 @@ class LocalJsonRpcRuntime {
             service: "ora-runtime-mock",
             version: "0.1.0",
             mode: "deterministic_fixture",
-            detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
-          },
-          patterns: MVP_PATTERNS,
-          tools: {
-            tools: MVP_TOOLS,
-            defaultPolicyId: "runtime.default_policy",
+          detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
+        },
+        patterns: MVP_PATTERNS,
+        modes: [...MVP_MODES],
+        atoms: MVP_MODE_RUNTIME_ATOMS,
+        tools: {
+          tools: MVP_TOOLS,
+          defaultPolicyId: "runtime.default_policy",
           },
           skills: {
             skills: MVP_SKILLS,
@@ -600,6 +697,22 @@ class LocalJsonRpcRuntime {
         };
       case "patterns.list":
         return MVP_PATTERNS;
+      case "modes.list":
+        return this.listModes();
+      case "modes.get": {
+        const modeId = typeof params === "object" && params !== null && "modeId" in params ? String((params as { modeId: unknown }).modeId) : "";
+        return this.getMode(modeId);
+      }
+      case "modes.create":
+        return this.createMode(params);
+      case "modes.update":
+        return this.updateMode(params);
+      case "modes.delete":
+        return this.deleteMode(params);
+      case "modes.validate":
+        return this.validateMode(params);
+      case "modes.cloneFromPreset":
+        return this.cloneModeFromPreset(params);
       case "tools.list":
         return {
           tools: MVP_TOOLS,
@@ -614,6 +727,36 @@ class LocalJsonRpcRuntime {
           providers: DEFAULT_PROVIDERS,
           defaultProviderId: "local-smoke",
         };
+      case "providers.verify": {
+        const provider = isRecord(params) && isRecord(params.provider)
+          ? ProviderConfigSchema.parse(params.provider) as OraProviderConfig
+          : undefined;
+        if (!provider) {
+          throw new Error("Provider config is required for verification.");
+        }
+        if (provider.type === "local_smoke") {
+          return {
+            providerId: provider.id,
+            state: "verified",
+            detail: "Local smoke provider is ready.",
+            checkedAt: Date.now(),
+          } satisfies OraProviderStatus;
+        }
+        if ((provider.type === "openai_compatible" || provider.type === "anthropic_compatible") && !provider.baseUrl) {
+          return {
+            providerId: provider.id,
+            state: "not_configured",
+            detail: "Base URL is required before verification.",
+            checkedAt: Date.now(),
+          } satisfies OraProviderStatus;
+        }
+        return {
+          providerId: provider.id,
+          state: "verified",
+          detail: "Browser mock verified the provider configuration shape.",
+          checkedAt: Date.now(),
+        } satisfies OraProviderStatus;
+      }
       case "agents.list":
         return [...this.customAgents.values()]
           .map(({ soul, ...summary }) => summary)
@@ -708,6 +851,7 @@ class LocalJsonRpcRuntime {
             turnIndex: snapshot.turnIndex,
             status: snapshot.status,
             pattern: snapshot.pattern,
+            modeId: snapshot.modeId,
             prompt: snapshot.input.prompt,
             startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
             updatedAt: snapshot.updatedAt,
@@ -792,13 +936,14 @@ class LocalJsonRpcRuntime {
         if (!checkpoint) {
           throw new Error(`Checkpoint not found: ${parsed.checkpointId}`);
         }
-        const pattern = parsed.config?.pattern ?? source.pattern;
+        const mode = this.resolveMode(parsed.config?.modeId ?? source.modeId, parsed.config?.pattern ?? source.pattern);
+        const pattern = mode.family;
         const prompt = parsed.input?.prompt ?? `${source.input.prompt} (forked from ${checkpoint.label})`;
         const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
         const sessionId = source.sessionId ?? this.createSession({}).sessionId;
         const snapshot = this.createSnapshot(
           runId,
-          pattern,
+          mode,
           prompt,
           Date.now(),
           "succeeded",
@@ -824,6 +969,7 @@ class LocalJsonRpcRuntime {
           turnIndex: snapshot.turnIndex,
           status: snapshot.status,
           pattern,
+          modeId: mode.id,
           startedAt: snapshot.events[0]?.createdAt ?? snapshot.updatedAt,
         };
       }
@@ -934,6 +1080,115 @@ class LocalJsonRpcRuntime {
     return detail;
   }
 
+  private listModes(): OraModeSpec[] {
+    return [...MVP_MODES, ...this.modes.values()]
+      .sort((left, right) =>
+        Number(right.systemPreset) - Number(left.systemPreset) ||
+        right.updatedAt - left.updatedAt ||
+        left.label.localeCompare(right.label),
+      );
+  }
+
+  private getMode(modeId: string): OraModeSpec {
+    return this.listModes().find((mode) => mode.id === modeId) ?? (() => {
+      throw new Error(`Mode not found: ${modeId}`);
+    })();
+  }
+
+  private createMode(params: unknown): OraModeSpec {
+    const spec = params as OraModeCreateParams;
+    if (!spec?.id) {
+      throw new Error("Mode id is required.");
+    }
+    if (this.listModes().some((mode) => mode.id === spec.id)) {
+      throw new Error(`Mode '${spec.id}' already exists.`);
+    }
+    const now = Date.now();
+    const next = {
+      ...spec,
+      systemPreset: false,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies OraModeSpec;
+    const validation = validateModeSpec(next);
+    if (!validation.valid) {
+      throw new Error(validation.errors.join(" "));
+    }
+    this.modes.set(next.id, next);
+    return next;
+  }
+
+  private updateMode(params: unknown): OraModeSpec {
+    if (typeof params !== "object" || params === null || !("modeId" in params) || !("spec" in params)) {
+      throw new Error("Mode update requires modeId and spec.");
+    }
+    const modeId = String((params as { modeId: unknown }).modeId);
+    const existing = this.getMode(modeId);
+    if (existing.systemPreset) {
+      throw new Error(`System preset '${modeId}' is read-only.`);
+    }
+    const spec = (params as { spec: OraModeCreateParams }).spec;
+    const next = {
+      ...spec,
+      id: modeId,
+      systemPreset: false,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now(),
+    } satisfies OraModeSpec;
+    const validation = validateModeSpec(next);
+    if (!validation.valid) {
+      throw new Error(validation.errors.join(" "));
+    }
+    this.modes.set(modeId, next);
+    return next;
+  }
+
+  private deleteMode(params: unknown): { deleted: true; modeId: string } {
+    const modeId = typeof params === "object" && params !== null && "modeId" in params ? String((params as { modeId: unknown }).modeId) : "";
+    const existing = this.getMode(modeId);
+    if (existing.systemPreset) {
+      throw new Error(`System preset '${modeId}' cannot be deleted.`);
+    }
+    this.modes.delete(modeId);
+    return { deleted: true, modeId };
+  }
+
+  private validateMode(params: unknown): OraModeValidationResult {
+    if (typeof params !== "object" || params === null || !("spec" in params)) {
+      throw new Error("Mode validation requires a spec.");
+    }
+    const incoming = (params as { spec: OraModeSpec }).spec;
+    const spec = {
+      ...incoming,
+      systemPreset: false,
+      createdAt: "createdAt" in incoming && typeof incoming.createdAt === "number" ? incoming.createdAt : Date.now(),
+      updatedAt: Date.now(),
+    } satisfies OraModeSpec;
+    return validateModeSpec(spec);
+  }
+
+  private cloneModeFromPreset(params: unknown): OraModeSpec {
+    const sourceModeId = typeof params === "object" && params !== null && "sourceModeId" in params
+      ? String((params as { sourceModeId: unknown }).sourceModeId)
+      : "";
+    const source = this.getMode(sourceModeId);
+    const modeId = typeof params === "object" && params !== null && "modeId" in params && typeof (params as { modeId?: unknown }).modeId === "string"
+      ? String((params as { modeId?: unknown }).modeId)
+      : `${source.id}-copy-${this.modes.size + 1}`;
+    const label = typeof params === "object" && params !== null && "label" in params && typeof (params as { label?: unknown }).label === "string"
+      ? String((params as { label?: unknown }).label)
+      : `${source.label} Copy`;
+    return this.createMode({
+      ...source,
+      id: modeId,
+      label,
+      editorConstraints: {
+        ...source.editorConstraints,
+        readOnly: false,
+      },
+    });
+  }
+
   private updateAgent(params: unknown): OraCustomAgentDetail {
     if (!isRecord(params) || typeof params.name !== "string") {
       throw new Error("Custom agent name is required.");
@@ -1000,6 +1255,7 @@ class LocalJsonRpcRuntime {
         turnIndex: snapshot.turnIndex ?? 1,
         status: snapshot.status,
         pattern: snapshot.pattern,
+        modeId: snapshot.modeId,
         providerId: snapshot.config.providerId,
         modelRef: snapshot.config.modelRef,
         prompt: snapshot.input.prompt,
@@ -1019,6 +1275,7 @@ class LocalJsonRpcRuntime {
         role: "user",
         content: snapshot.input.prompt,
         pattern: turn.pattern,
+        modeId: turn.modeId,
         createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
       }];
       const assistant = this.assistantTextForRun(snapshot);
@@ -1031,6 +1288,7 @@ class LocalJsonRpcRuntime {
           role: "assistant",
           content: assistant,
           pattern: turn.pattern,
+          modeId: turn.modeId,
           createdAt: snapshot.updatedAt,
         });
       }
@@ -1053,11 +1311,12 @@ class LocalJsonRpcRuntime {
     if (!this.sessions.has(sessionId)) {
       throw new Error(`Session not found: ${sessionId}`);
     }
-    const pattern = parsed.config?.pattern ?? "orchestrator_subagent";
+    const mode = this.resolveMode(parsed.config?.modeId, parsed.config?.pattern ?? "orchestrator_subagent");
+    const pattern = mode.family;
     const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
     const startedAt = Date.now();
     const turnIndex = [...this.runs.values()].filter((snapshot) => snapshot.sessionId === sessionId).length + 1;
-    const snapshot = this.createSnapshot(runId, pattern, parsed.input.prompt, startedAt, "succeeded", undefined, {
+    const snapshot = this.createSnapshot(runId, mode, parsed.input.prompt, startedAt, "succeeded", undefined, {
       providerId: parsed.config?.providerId ?? "local-smoke",
       modelRef: parsed.config?.modelRef ?? "local/smoke-model",
       customAgentId: parsed.config?.customAgentId,
@@ -1072,6 +1331,7 @@ class LocalJsonRpcRuntime {
       turnIndex,
       status: snapshot.status,
       pattern,
+      modeId: mode.id,
       startedAt,
     };
   }
@@ -1296,7 +1556,7 @@ class LocalJsonRpcRuntime {
 
   private createSnapshot(
     runId: string,
-    pattern: CoordinationPattern,
+    mode: OraModeSpec,
     prompt: string,
     startedAt: number,
     status: OraStateSnapshot["status"],
@@ -1305,7 +1565,8 @@ class LocalJsonRpcRuntime {
     sessionId?: string,
     turnIndex = 1,
   ): OraStateSnapshot {
-    const definition = getPatternDefinition(pattern);
+    const pattern = mode.family;
+    const definition = modeSpecToPatternDefinition(mode);
     const eventBase = startedAt || Date.parse("2026-04-22T13:00:00.000Z");
     const checkpoint: OraCheckpointMeta = {
       id: `${runId}:checkpoint-0`,
@@ -1356,6 +1617,8 @@ class LocalJsonRpcRuntime {
       turnIndex,
       status,
       pattern,
+      coordinationKind: pattern,
+      modeId: mode.id,
       input: {
         prompt,
         projectId: provider?.projectId,
@@ -1364,17 +1627,19 @@ class LocalJsonRpcRuntime {
       },
       config: {
         pattern,
+        modeId: mode.id,
         profileIds: definition.profiles.map((profile) => profile.id),
-        skillIds: [],
-        toolIds: [],
+        skillIds: mode.capabilityFlags.skillIds,
+        toolIds: mode.capabilityFlags.toolIds,
         providerId: provider?.providerId ?? "local-smoke",
         customAgentId: provider?.customAgentId,
         modelRef: provider?.modelRef ?? "local/smoke-model",
         budget: definition.defaultBudget,
-        approvalMode: "high_risk_only",
+        approvalMode: mode.capabilityFlags.approvalMode,
         patternOptions: {},
         metadata: {
           source: "desktop-smoke",
+          modeId: mode.id,
           providerId: provider?.providerId ?? "local-smoke",
           ...(provider?.customAgentId ? { customAgentId: provider.customAgentId } : {}),
         },
@@ -1428,10 +1693,10 @@ class LocalJsonRpcRuntime {
       events,
       artifacts: [],
       activeAgents: status === "running" ? definition.profiles.slice(0, 1).map((profile) => profile.id) : [],
-      queueSummary: {
-        mode: definition.coordinationKind === "bus"
-          ? "event_bus"
-          : definition.coordinationKind === "shared_state"
+    queueSummary: {
+      mode: definition.coordinationKind === "bus"
+        ? "event_bus"
+        : definition.coordinationKind === "shared_state"
             ? "shared_state"
             : definition.coordinationKind === "team"
               ? "backlog"
@@ -1440,8 +1705,8 @@ class LocalJsonRpcRuntime {
         inProgress: status === "running" ? 1 : 0,
         completed: status === "succeeded" ? definition.planTemplate.length : 0,
         topics: definition.supportsEventRouting ? ["task.input", "task.findings", "task.response"] : [],
-      },
-      sharedStateSummary: definition.supportsSharedState
+    },
+    sharedStateSummary: definition.supportsSharedState
         ? {
             enabled: true,
             storeKind: "blackboard",
@@ -1457,7 +1722,7 @@ class LocalJsonRpcRuntime {
             version: 0,
             entries: [],
           },
-      busStats: definition.supportsEventRouting
+    busStats: definition.supportsEventRouting
         ? {
             enabled: true,
             publishedCount: 2,
@@ -1474,9 +1739,11 @@ class LocalJsonRpcRuntime {
             routedCount: 0,
             topicCounts: {},
           },
-      pendingApprovals: [],
+    pendingClarifications: [],
+    pendingApprovals: [],
+    modeSpec: mode,
       output: {
-        text: `Smoke result for ${definition.label}: ${prompt}`,
+        text: `Smoke result for ${mode.label}: ${prompt}`,
       },
       trace: createMockTraceMetadata(runId, provider?.providerId, provider?.modelRef),
       updatedAt: eventBase + 6000,
@@ -1494,6 +1761,7 @@ class LocalJsonRpcRuntime {
       status: snapshot.status,
       latestRunId: snapshot.runId,
       latestPattern: snapshot.pattern,
+      latestModeId: snapshot.modeId,
       latestProviderId: snapshot.config.providerId,
       latestModelRef: snapshot.config.modelRef,
       projectId: snapshot.input.projectId ?? existing.projectId,
@@ -1529,6 +1797,12 @@ class LocalJsonRpcRuntime {
       sessionCount: sessions.length,
       updatedAt: sessions.reduce((max, session) => Math.max(max, session.updatedAt), project.createdAt),
     });
+  }
+
+  private resolveMode(modeId: string | undefined, fallbackPattern: CoordinationPattern): OraModeSpec {
+    return this.listModes().find((mode) => mode.id === (modeId ?? fallbackPattern))
+      ?? this.listModes().find((mode) => mode.family === fallbackPattern)
+      ?? MVP_MODES[0]!;
   }
 }
 
@@ -1599,6 +1873,7 @@ function buildMockRunTrail(snapshot: OraStateSnapshot): OraRunTrail {
       metadata: {
         runId: snapshot.runId,
         pattern: snapshot.pattern,
+        modeId: snapshot.modeId,
         source: "desktop-smoke",
       },
       startTime: new Date(snapshot.input.createdAt ?? snapshot.updatedAt).toISOString(),
@@ -1648,6 +1923,7 @@ function buildMockRunTrail(snapshot: OraStateSnapshot): OraRunTrail {
       turnIndex: snapshot.turnIndex,
       status: snapshot.status,
       pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
       prompt: snapshot.input.prompt,
       startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
       updatedAt: snapshot.updatedAt,
@@ -1738,10 +2014,6 @@ function normalizeMockAgentName(value: unknown): string {
     throw new Error("Custom agent names must contain only letters, digits, and hyphens.");
   }
   return normalized;
-}
-
-function getPatternDefinition(pattern: CoordinationPattern): OraPatternDefinition {
-  return MVP_PATTERNS.find((definition) => definition.id === pattern) ?? MVP_PATTERNS[0];
 }
 
 function inferMockDatasetFormat(sourceFileName?: string): "json" | "jsonl" | "csv" | "inline" {
@@ -1864,7 +2136,9 @@ function scoreMockEvaluationCase(profileId: "outcome" | "orchestration" | "task_
     : outputText ? 0.72 : 0.25;
   const processScore = Math.min(1, 0.5 + snapshot.events.filter((event) => ["topology.updated", "plan.updated", "checkpoint.created"].includes(event.type)).length * 0.12);
   const efficiencyScore = Math.max(0.4, 1 - snapshot.events.length / 20);
-  const safetyScore = snapshot.actions.some((action) => action.status === "approval_required") ? 0.55 : 0.92;
+  const safetyScore = snapshot.pendingClarifications.length > 0 || snapshot.actions.some((action) => action.status === "approval_required")
+    ? 0.55
+    : 0.92;
   const weights = profileId === "orchestration"
     ? { outcome: 0.25, process: 0.45, efficiency: 0.15, safety: 0.15 }
     : profileId === "task_completion"

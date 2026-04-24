@@ -22,10 +22,15 @@ import {
   EvaluationSpecSchema,
   JsonRpcRequestSchema,
   JsonRpcResponseSchema,
+  MVP_MODES,
+  MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
+  ModeSpecSchema,
+  ModeValidationResultSchema,
   MVP_TOOLS,
   MemoryRecordSchema,
   OraEventEnvelopeSchema,
+  OpenAICompatibleProtocolSchema,
   PatternDefinitionSchema,
   PlanItemSchema,
   PolicyDecisionSchema,
@@ -39,6 +44,8 @@ import {
   ProviderRegistrySchema,
   ProviderSecretStatusSchema,
   ProviderSecretWriteSchema,
+  ProviderStatusSchema,
+  ProviderVerifyParamsSchema,
   ResourceBudgetSchema,
   RuntimeBootstrapSchema,
   RunConfigSchema,
@@ -59,6 +66,10 @@ import {
   SessionTranscriptMessageSchema,
   SessionTurnSchema,
   SkillRegistrySchema,
+  autoLayoutModeSpec,
+  ensureModeNodePositions,
+  getModeNodeRuntimeTemplateDefinition,
+  validateModeSpec,
   ToolDescriptorSchema,
   ToolRegistrySchema
 } from "../src/index.js";
@@ -66,6 +77,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
+    expect(MVP_MODES).toHaveLength(5);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -84,12 +96,87 @@ describe("Ora shared contracts", () => {
       expect(pattern.defaultStopPolicy.type).toBeTruthy();
       expect(pattern.defaultStopPolicy.detail.length).toBeGreaterThan(0);
     }
+
+    for (const mode of MVP_MODES) {
+      expect(ModeSpecSchema.parse(mode).id).toBe(mode.id);
+      expect(mode.nodes.length).toBeGreaterThan(0);
+      expect(mode.nodes.every((node) => node.position)).toBe(true);
+      expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
+      expect(ModeValidationResultSchema.parse({ valid: true, errors: [], warnings: [] }).valid).toBe(true);
+    }
+  });
+
+  it("accepts legacy mode specs without stored node positions", () => {
+    const legacy = {
+      ...MVP_MODES[1]!,
+      nodes: MVP_MODES[1]!.nodes.map(({ position: _position, ...node }) => ({ ...node })),
+    };
+
+    const parsed = ModeSpecSchema.parse(legacy);
+    expect(parsed.nodes.every((node) => node.position === undefined)).toBe(true);
+
+    const hydrated = ensureModeNodePositions(parsed);
+    expect(hydrated.nodes.every((node) => node.position)).toBe(true);
+  });
+
+  it("keeps validation and layout semantics independent", () => {
+    const positioned = autoLayoutModeSpec({
+      ...MVP_MODES[1]!,
+      nodes: MVP_MODES[1]!.nodes.map((node, index) => ({
+        ...node,
+        position: { x: 100 + index * 10, y: 200 + index * 20 },
+      })),
+    });
+
+    const withoutPositions = {
+      ...positioned,
+      nodes: positioned.nodes.map(({ position: _position, ...node }) => ({ ...node })),
+    };
+
+    expect(validateModeSpec(positioned).valid).toBe(true);
+    expect(validateModeSpec(ModeSpecSchema.parse(withoutPositions)).valid).toBe(true);
+  });
+
+  it("rejects duplicate and self-referential mode edges", () => {
+    const duplicateEdgeMode = {
+      ...MVP_MODES[1]!,
+      edges: [
+        ...MVP_MODES[1]!.edges,
+        {
+          ...MVP_MODES[1]!.edges[0]!,
+          id: "duplicate-edge",
+        },
+      ],
+    };
+
+    const duplicateValidation = validateModeSpec(duplicateEdgeMode);
+    expect(duplicateValidation.valid).toBe(false);
+    expect(duplicateValidation.errors.join(" ")).toContain("Duplicate edge");
+
+    const selfLoopMode = {
+      ...MVP_MODES[1]!,
+      edges: [
+        ...MVP_MODES[1]!.edges,
+        {
+          id: "self-loop",
+          source: MVP_MODES[1]!.nodes[0]!.id,
+          target: MVP_MODES[1]!.nodes[0]!.id,
+          kind: "control" as const,
+          enabled: true,
+        },
+      ],
+    };
+
+    const selfLoopValidation = validateModeSpec(selfLoopMode);
+    expect(selfLoopValidation.valid).toBe(false);
+    expect(selfLoopValidation.errors.join(" ")).toContain("self-loop");
   });
 
   it("defaults run config to the product default pattern", () => {
     const config = RunConfigSchema.parse({});
 
     expect(config.pattern).toBe("orchestrator_subagent");
+    expect(config.modeId).toBeUndefined();
     expect(config.modelRef).toBe("local/smoke-model");
     expect(config.providerId).toBeUndefined();
     expect(config.providerConfig).toBeUndefined();
@@ -98,6 +185,34 @@ describe("Ora shared contracts", () => {
     expect(config.toolIds).toEqual([]);
     expect(config.approvalMode).toBe("high_risk_only");
     expect(config.patternOptions).toEqual({});
+  });
+
+  it("derives family-specific prompt variables from runtime node templates", () => {
+    const orchestratorResearch = getModeNodeRuntimeTemplateDefinition("orchestrator_subagent", "research");
+    const sharedStateResearch = getModeNodeRuntimeTemplateDefinition("shared_state", "research");
+    const messagePublish = getModeNodeRuntimeTemplateDefinition("message_bus", "publish");
+
+    expect(orchestratorResearch.supportsPromptOverride).toBe(true);
+    expect(orchestratorResearch.promptVariables).toEqual(["prompt", "plan"]);
+    expect(sharedStateResearch.promptVariables).toEqual(["prompt", "sharedBoard"]);
+    expect(messagePublish.supportsPromptOverride).toBe(false);
+    expect(messagePublish.promptVariables).toEqual([]);
+  });
+
+  it("rejects incompatible runtime atoms on modes and nodes", () => {
+    const validation = validateModeSpec({
+      ...MVP_MODES[0]!,
+      runtimeAtoms: [...MVP_MODES[0]!.runtimeAtoms, "shared_blackboard"],
+      nodes: MVP_MODES[0]!.nodes.map((node) =>
+        node.id === "draft"
+          ? { ...node, config: { ...node.config, atoms: ["persistent_worker_memory"] } }
+          : node,
+      ),
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.errors.join(" ")).toContain("shared_blackboard");
+    expect(validation.errors.join(" ")).toContain("persistent_worker_memory");
   });
 
   it("accepts a run-scoped custom provider config", () => {
@@ -554,10 +669,34 @@ describe("ProviderConfigSchema", () => {
       modelId: "openai/gpt-4o-mini",
       baseUrl: "https://openrouter.ai/api/v1",
       apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions",
     });
 
     expect(parsed.enabled).toBe(true);
     expect(parsed.capabilities).toEqual(["chat"]);
+    expect(parsed.protocol).toBe("chat_completions");
+    expect(parsed.headers).toEqual({});
+  });
+
+  it("accepts an Anthropic-compatible custom provider", () => {
+    const parsed = ProviderConfigSchema.parse({
+      id: "claude-gateway",
+      type: "anthropic_compatible",
+      label: "Claude Gateway",
+      modelId: "claude-sonnet-4-20250514",
+      baseUrl: "https://gateway.example.com",
+      apiKeyEnv: "CLAUDE_GATEWAY_API_KEY",
+      anthropicVersion: "2023-06-01",
+      headers: {
+        "anthropic-beta": "prompt-caching-2024-07-31",
+      },
+    });
+
+    expect(parsed.type).toBe("anthropic_compatible");
+    expect(parsed.anthropicVersion).toBe("2023-06-01");
+    expect(parsed.headers).toEqual({
+      "anthropic-beta": "prompt-caching-2024-07-31",
+    });
   });
 
   it("rejects an invalid provider type", () => {
@@ -619,6 +758,39 @@ describe("ProviderSecret schemas", () => {
     });
 
     expect(parsed.providerId).toBe("anthropic-claude");
+  });
+});
+
+describe("Provider verification schemas", () => {
+  it("accepts supported OpenAI-compatible protocols", () => {
+    expect(OpenAICompatibleProtocolSchema.parse("chat_completions")).toBe("chat_completions");
+    expect(OpenAICompatibleProtocolSchema.parse("responses")).toBe("responses");
+  });
+
+  it("accepts provider verification params", () => {
+    const parsed = ProviderVerifyParamsSchema.parse({
+      provider: {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "openai/gpt-4o-mini",
+        baseUrl: "https://openrouter.ai/api/v1",
+        protocol: "chat_completions",
+      },
+    });
+
+    expect(parsed.provider.protocol).toBe("chat_completions");
+  });
+
+  it("accepts provider status payloads", () => {
+    const parsed = ProviderStatusSchema.parse({
+      providerId: "openrouter",
+      state: "verified",
+      detail: "Connection verified.",
+      checkedAt: 123,
+    });
+
+    expect(parsed.state).toBe("verified");
   });
 });
 
@@ -722,6 +894,7 @@ describe("RuntimeBootstrapSchema", () => {
         detail: "Ora runtime bootstrap is served from the shared runtime kernel."
       },
       patterns: MVP_PATTERNS,
+      atoms: MVP_MODE_RUNTIME_ATOMS,
       providers: {
         providers: DEFAULT_PROVIDERS,
         defaultProviderId: "local-smoke"
@@ -730,6 +903,7 @@ describe("RuntimeBootstrapSchema", () => {
         tools: MVP_TOOLS,
         defaultPolicyId: "default-policy"
       },
+      modes: MVP_MODES,
       skills: {
         skills: [
           {
@@ -745,6 +919,8 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
+    expect(parsed.modes).toHaveLength(5);
+    expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");
   });
@@ -871,6 +1047,7 @@ describe("Session thread contracts", () => {
         queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
         sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
         busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+        pendingClarifications: [],
         pendingApprovals: [],
         updatedAt: 2000,
       },

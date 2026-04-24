@@ -61,6 +61,37 @@ export class MemoryService {
   }
 }
 
+export class MemoryCaptureQueue {
+  private readonly pending = new Map<string, {
+    id: string;
+    namespace: string[];
+    kind: MemoryKind;
+    value: unknown;
+    sourceActionId?: string;
+  }>();
+
+  enqueue(params: {
+    id: string;
+    namespace: string[];
+    kind: MemoryKind;
+    value: unknown;
+    sourceActionId?: string;
+  }) {
+    this.pending.set(params.id, params);
+    return params;
+  }
+
+  flush(memoryService: MemoryService): MemoryRecord[] {
+    const records = [...this.pending.values()].map((params) => memoryService.remember(params));
+    this.pending.clear();
+    return records;
+  }
+
+  size(): number {
+    return this.pending.size;
+  }
+}
+
 export class PlanService {
   private readonly items: PlanItem[];
 

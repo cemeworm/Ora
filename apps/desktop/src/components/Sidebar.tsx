@@ -4,6 +4,7 @@ import {
   ChartNoAxesColumn,
   Folder,
   FolderOpen,
+  GitBranchPlus,
   MessageSquarePlus,
   Plus,
   Search,
@@ -204,6 +205,18 @@ export function Sidebar() {
           >
             <Bot size={16} />
             {open && <span>Agents</span>}
+          </button>
+          <button
+            onClick={() => dispatch({ type: "SET_VIEW", view: "modes" })}
+            className={cn(
+              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              state.activeView === "modes" && "bg-sidebar-accent text-sidebar-accent-foreground",
+              !open && "justify-center px-0",
+            )}
+            title="Modes"
+          >
+            <GitBranchPlus size={16} />
+            {open && <span>Modes</span>}
           </button>
           <button
             onClick={() => dispatch({ type: "SET_VIEW", view: "evaluation" })}

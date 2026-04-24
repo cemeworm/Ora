@@ -46,6 +46,7 @@ export interface SessionRun {
   project: string;
   status: RunStatus;
   pattern: CoordinationPattern;
+  modeId?: string;
   updatedAt: string;
   health: number;
   latestRunId?: string;
@@ -58,6 +59,7 @@ export interface SessionTurnItem {
   turnIndex: number;
   status: RunStatus;
   pattern: CoordinationPattern;
+  modeId?: string;
   providerId?: string;
   modelRef?: string;
   prompt: string;
@@ -71,6 +73,16 @@ export interface PatternCard {
   recommendedUse: string;
   failureMode: string;
   constraints: string;
+}
+
+export interface ModeCard {
+  id: string;
+  family: CoordinationPattern;
+  label: string;
+  summary: string;
+  recommendedUse: string;
+  failureMode: string;
+  isPreset: boolean;
 }
 
 export interface TopologyNode {
@@ -153,7 +165,7 @@ export interface RuntimeBridgeStatus {
   detail: string;
 }
 
-export type AppView = "chat" | "agents" | "evaluation";
+export type AppView = "chat" | "agents" | "modes" | "evaluation";
 
 export interface ChatMessage {
   id: string;

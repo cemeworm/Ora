@@ -1,8 +1,21 @@
-import { Activity, Bot, Settings, Sparkles, Wrench, X } from "lucide-react";
-import { useRef, useState } from "react";
+import type { ProviderCapability } from "@ora/shared";
+import { Activity, Bot, ChevronDown, ChevronUp, Settings, Sparkles, Wrench, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkbench } from "../lib/state";
+import {
+  BUILT_IN_PROVIDER_IDS,
+  PROVIDER_PRESETS,
+  buildProviderConfigFromDraft,
+  canEditBaseUrl,
+  createDraftFromPreset,
+  createDraftFromProvider,
+  findPresetById,
+  findPresetForProvider,
+  type ProviderDraft,
+} from "../lib/providerPresets";
 import { useRunActions } from "../lib/useRunActions";
 import { cn } from "../lib/utils";
+import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
 
 type SettingsSection = "providers" | "runtime" | "tools" | "skills";
@@ -18,9 +31,51 @@ const settingsSections: Array<{
   { id: "skills", label: "Skills", icon: Sparkles },
 ];
 
+const capabilityOptions: Array<{ id: ProviderCapability; label: string }> = [
+  { id: "chat", label: "Chat" },
+  { id: "tool_use", label: "Tool Use" },
+  { id: "image_input", label: "Images" },
+  { id: "json_mode", label: "JSON" },
+  { id: "reasoning", label: "Reasoning" },
+];
+
 interface SettingsViewProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+function statusLabel(state: string) {
+  switch (state) {
+    case "verified":
+      return "Verified";
+    case "failed":
+      return "Verification failed";
+    case "key_stored":
+      return "Key stored";
+    case "needs_key":
+      return "Needs key";
+    default:
+      return "Not configured";
+  }
+}
+
+function statusClasses(state: string) {
+  switch (state) {
+    case "verified":
+      return "bg-lime-50 text-bench-900 ring-lime-200";
+    case "failed":
+      return "bg-red-50 text-bench-900 ring-red-200";
+    case "key_stored":
+      return "bg-sky-50 text-bench-900 ring-sky-200";
+    case "needs_key":
+      return "bg-amber-50 text-bench-900 ring-amber-200";
+    default:
+      return "bg-bench-50 text-bench-900 ring-bench-200";
+  }
+}
+
+function emptyDraft(): ProviderDraft {
+  return createDraftFromPreset(PROVIDER_PRESETS[0], []);
 }
 
 export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
@@ -28,51 +83,87 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const { actions } = useRunActions();
   const secretInputRef = useRef<HTMLInputElement>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
-  const [customProvider, setCustomProvider] = useState({
-    id: "",
-    label: "",
-    baseUrl: "",
-    modelId: "",
-    apiKeyEnv: "",
-  });
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("openai-compatible-generic");
+  const [providerDraft, setProviderDraft] = useState<ProviderDraft>(emptyDraft());
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const providers = state.providerRegistry?.providers ?? [];
-  const selectedProvider = providers.find((p) => p.id === state.selectedProviderId) ?? providers[0];
-  const selectedStatus = state.providerSecretStatuses.find((s) => s.providerId === selectedProvider?.id);
-  const needsSecret = selectedProvider && selectedProvider.type !== "local_smoke";
+  const selectedProvider = providers.find((provider) => provider.id === state.selectedProviderId) ?? providers[0];
+  const selectedPreset = useMemo(() => findPresetById(selectedTemplateId), [selectedTemplateId]);
+  const activePreset = useMemo(() => findPresetById(providerDraft.presetId), [providerDraft.presetId]);
+
+  useEffect(() => {
+    if (!selectedProvider) {
+      return;
+    }
+    const preset = findPresetForProvider(selectedProvider);
+    setSelectedTemplateId(preset.id);
+    setProviderDraft(createDraftFromProvider(selectedProvider));
+  }, [selectedProvider]);
+
+  const draftProvider = useMemo(() => buildProviderConfigFromDraft(providerDraft), [providerDraft]);
+  const draftSecretStatus = state.providerSecretStatuses.find((status) => status.providerId === providerDraft.id);
+  const draftProviderStatus = state.providerStatuses.find((status) => status.providerId === providerDraft.id)
+    ?? (draftProvider.type === "local_smoke"
+      ? { providerId: providerDraft.id, state: "verified", detail: "Local smoke provider is ready." }
+      : draftSecretStatus?.hasSecret
+        ? { providerId: providerDraft.id, state: "key_stored", detail: "API key stored. Run verify to confirm connectivity." }
+        : { providerId: providerDraft.id, state: "needs_key", detail: "API key required before verification." });
+
+  const modelSuggestions = activePreset.modelSuggestions.length > 0
+    ? activePreset.modelSuggestions
+    : [providerDraft.modelId];
+  const isBuiltInProvider = BUILT_IN_PROVIDER_IDS.has(providerDraft.id);
+  const isSavedProvider = providers.some((provider) => provider.id === providerDraft.id);
+  const canDeleteProvider = isSavedProvider && !isBuiltInProvider;
+  const needsSecret = providerDraft.type !== "local_smoke";
+  const saveDisabled = !providerDraft.label.trim()
+    || !providerDraft.modelId.trim()
+    || ((providerDraft.type === "openai_compatible" || providerDraft.type === "anthropic_compatible") && !providerDraft.baseUrl.trim())
+    || state.busyCommand !== undefined;
+
+  function updateDraft(patch: Partial<ProviderDraft>) {
+    setProviderDraft((current) => ({ ...current, ...patch }));
+  }
+
+  function loadTemplate() {
+    const preset = findPresetById(selectedTemplateId);
+    if (preset.fixedProviderId) {
+      const existing = providers.find((provider) => provider.id === preset.fixedProviderId);
+      if (existing) {
+        dispatch({ type: "SET_PROVIDER", providerId: existing.id });
+        setProviderDraft(createDraftFromProvider(existing));
+        setSelectedTemplateId(preset.id);
+        return;
+      }
+    }
+
+    setProviderDraft(createDraftFromPreset(preset, providers));
+    setSelectedTemplateId(preset.id);
+  }
 
   function saveSecret() {
-    if (!selectedProvider || !secretInputRef.current) return;
+    if (!secretInputRef.current) return;
     const secret = secretInputRef.current.value.trim();
     if (!secret) return;
-    actions.storeProviderSecret(selectedProvider.id, secret);
+    void actions.storeProviderSecret(providerDraft.id, secret);
     secretInputRef.current.value = "";
   }
 
-  function providerIdFromLabel(label: string) {
-    return label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "custom-provider";
+  function saveProvider() {
+    void actions.upsertCustomProvider(draftProvider);
   }
 
-  function saveCustomProvider() {
-    const label = customProvider.label.trim();
-    const baseUrl = customProvider.baseUrl.trim();
-    const modelId = customProvider.modelId.trim();
-    if (!label || !baseUrl || !modelId) return;
+  function verifyProvider() {
+    void actions.verifyProvider(draftProvider);
+  }
 
-    const id = providerIdFromLabel(customProvider.id || label);
-    actions.upsertCustomProvider({
-      id,
-      type: "openai_compatible",
-      label,
-      modelId,
-      baseUrl,
-      apiKeyEnv: customProvider.apiKeyEnv.trim() || undefined,
-      enabled: true,
-      maxTokens: 8192,
-      capabilities: ["chat"],
-      dropParams: [],
+  function toggleCapability(capability: ProviderCapability) {
+    updateDraft({
+      capabilities: providerDraft.capabilities.includes(capability)
+        ? providerDraft.capabilities.filter((entry) => entry !== capability)
+        : [...providerDraft.capabilities, capability],
     });
-    setCustomProvider({ id: "", label: "", baseUrl: "", modelId: "", apiKeyEnv: "" });
   }
 
   return (
@@ -134,146 +225,309 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
               {activeSection === "providers" && (
                 <>
                   <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-                    <div className="mb-4 flex items-center gap-2">
-                      <Settings size={18} />
-                      <h3 className="text-sm font-semibold">Provider Settings</h3>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="mb-2 flex items-center gap-2">
+                          <Settings size={18} />
+                          <h3 className="text-sm font-semibold">Provider Settings</h3>
+                        </div>
+                        <p className="text-sm leading-6 text-bench-700">
+                          Use one provider flow: choose an API provider, load a template when needed, then save and verify from the same form.
+                        </p>
+                      </div>
+                      <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset", statusClasses(draftProviderStatus.state))}>
+                        {statusLabel(draftProviderStatus.state)}
+                      </span>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {providers.map((provider) => {
-                        const status = state.providerSecretStatuses.find((entry) => entry.providerId === provider.id);
-                        const selected = provider.id === state.selectedProviderId;
-                        return (
-                          <button
-                            key={provider.id}
-                            onClick={() => dispatch({ type: "SET_PROVIDER", providerId: provider.id })}
-                            className={cn(
-                              "rounded-2xl px-4 py-4 text-left ring-1 ring-inset transition active:scale-[0.99]",
-                              selected
-                                ? "bg-bench-900 text-white ring-bench-900"
-                                : "bg-bench-50 text-bench-900 ring-bench-200 hover:bg-white",
-                            )}
-                          >
-                            <span className="block truncate text-sm font-semibold">{provider.label}</span>
-                            <span className={cn("mt-1 block truncate font-mono text-xs", selected ? "text-bench-200" : "text-bench-700")}>
-                              {provider.modelId}
-                            </span>
-                            <span className={cn("mt-2 block text-xs", selected ? "text-bench-200" : "text-bench-700")}>
-                              {provider.type === "local_smoke"
-                                ? "deterministic"
-                                : status?.hasSecret
-                                  ? "keychain ready"
-                                  : provider.type === "openai_compatible"
-                                    ? "custom endpoint"
-                                    : "needs key"}
-                            </span>
-                          </button>
-                        );
-                      })}
+                    <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_auto]">
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">API Provider</span>
+                        <select
+                          value={selectedProvider?.id ?? ""}
+                          onChange={(event) => dispatch({ type: "SET_PROVIDER", providerId: event.target.value })}
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                        >
+                          {providers.map((provider) => (
+                            <option key={provider.id} value={provider.id}>
+                              {provider.label} · {provider.type}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Template</span>
+                        <select
+                          value={selectedTemplateId}
+                          onChange={(event) => setSelectedTemplateId(event.target.value)}
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                        >
+                          <optgroup label="Official">
+                            {PROVIDER_PRESETS.filter((preset) => preset.group === "official").map((preset) => (
+                              <option key={preset.id} value={preset.id}>{preset.label}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="Templates">
+                            {PROVIDER_PRESETS.filter((preset) => preset.group === "template").map((preset) => (
+                              <option key={preset.id} value={preset.id}>{preset.label}</option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      </label>
+
+                      <div className="flex items-end">
+                        <Button type="button" variant="outline" className="h-11 rounded-xl px-4" onClick={loadTemplate}>
+                          Load Template
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-2xl bg-bench-50/80 px-4 py-3 ring-1 ring-inset ring-bench-200">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700 ring-1 ring-inset ring-bench-200">
+                          {providerDraft.type}
+                        </span>
+                        {providerDraft.type === "openai_compatible" && (
+                          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700 ring-1 ring-inset ring-bench-200">
+                            {providerDraft.protocol === "responses" ? "Responses API" : "Chat Completions"}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-bench-700">{activePreset.description}</p>
+                      <p className="mt-2 text-xs text-bench-700">{draftProviderStatus.detail}</p>
                     </div>
                   </section>
 
                   <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <h3 className="text-sm font-semibold">Add OpenAI-Compatible Provider</h3>
-                      <span className="rounded-full bg-bench-50 px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
-                        chat completions
-                      </span>
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Provider Name</span>
+                        <input
+                          value={providerDraft.label}
+                          onChange={(event) => updateDraft({ label: event.target.value })}
+                          placeholder="Provider name"
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                        />
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">API Key Env</span>
+                        <input
+                          value={providerDraft.apiKeyEnv}
+                          onChange={(event) => updateDraft({ apiKeyEnv: event.target.value.toUpperCase() })}
+                          placeholder="OPENAI_API_KEY"
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                        />
+                      </label>
+
+                      {canEditBaseUrl(providerDraft.type) && (
+                        <label className="space-y-2 lg:col-span-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">
+                            {providerDraft.type === "openai" || providerDraft.type === "anthropic" ? "Base URL (optional)" : "Base URL"}
+                          </span>
+                          <input
+                            value={providerDraft.baseUrl}
+                            onChange={(event) => updateDraft({ baseUrl: event.target.value })}
+                            placeholder={
+                              providerDraft.type === "openai_compatible"
+                                ? "https://provider.example/v1"
+                                : providerDraft.type === "anthropic_compatible"
+                                  ? "https://provider.example"
+                                  : "https://api.provider.com"
+                            }
+                            className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                          />
+                        </label>
+                      )}
+
+                      <label className="space-y-2 lg:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Model</span>
+                        <input
+                          list={`provider-models-${providerDraft.id}`}
+                          value={providerDraft.modelId}
+                          onChange={(event) => updateDraft({ modelId: event.target.value })}
+                          placeholder="Model ID"
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                        />
+                        <datalist id={`provider-models-${providerDraft.id}`}>
+                          {modelSuggestions.map((modelId) => (
+                            <option key={modelId} value={modelId} />
+                          ))}
+                        </datalist>
+                      </label>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <input
-                        value={customProvider.label}
-                        onChange={(event) => setCustomProvider((provider) => ({ ...provider, label: event.target.value }))}
-                        placeholder="Provider name"
-                        className="h-11 min-w-0 rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
-                      />
-                      <input
-                        value={customProvider.id}
-                        onChange={(event) => setCustomProvider((provider) => ({ ...provider, id: event.target.value }))}
-                        placeholder="Provider id"
-                        className="h-11 min-w-0 rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
-                      />
-                      <input
-                        value={customProvider.baseUrl}
-                        onChange={(event) => setCustomProvider((provider) => ({ ...provider, baseUrl: event.target.value }))}
-                        placeholder="https://provider.example/v1"
-                        className="h-11 min-w-0 rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
-                      />
-                      <input
-                        value={customProvider.modelId}
-                        onChange={(event) => setCustomProvider((provider) => ({ ...provider, modelId: event.target.value }))}
-                        placeholder="model id"
-                        className="h-11 min-w-0 rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
-                      />
-                      <input
-                        value={customProvider.apiKeyEnv}
-                        onChange={(event) => setCustomProvider((provider) => ({ ...provider, apiKeyEnv: event.target.value.toUpperCase() }))}
-                        placeholder="API_KEY_ENV optional"
-                        className="h-11 min-w-0 rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 md:col-span-2"
-                      />
-                    </div>
-
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        onClick={saveCustomProvider}
-                        disabled={!customProvider.label.trim() || !customProvider.baseUrl.trim() || !customProvider.modelId.trim() || state.busyCommand !== undefined}
-                        className="h-10 rounded-xl bg-bench-900 px-4 text-sm font-semibold text-white transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Save provider
-                      </button>
-                    </div>
-                  </section>
-
-                  {selectedProvider && (
-                    <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <h3 className="text-sm font-semibold">API Key — {selectedProvider.label}</h3>
-                        <span
-                          className={cn(
-                            "rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset",
-                            selectedStatus?.hasSecret || !needsSecret
-                              ? "bg-lime-50 text-bench-900 ring-lime-200"
-                              : "bg-amber-50 text-bench-900 ring-amber-200",
-                          )}
-                        >
-                          {needsSecret ? (selectedStatus?.hasSecret ? "Key ready" : "Key needed") : "Local"}
+                    <div className="mt-5 rounded-[22px] bg-bench-50/70 p-4 ring-1 ring-inset ring-bench-200">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-bench-900">Provider Secret</h4>
+                          <p className="mt-1 text-xs text-bench-700">
+                            Secrets stay in the runtime layer and Keychain. This form never stores the raw key in React state.
+                          </p>
+                        </div>
+                        <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset", statusClasses(draftProviderStatus.state))}>
+                          {needsSecret ? (draftSecretStatus?.hasSecret ? "Key ready" : "Key needed") : "Local"}
                         </span>
                       </div>
 
-                      <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center">
+                      <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
                         <input
                           ref={secretInputRef}
                           type="password"
                           disabled={!needsSecret || state.busyCommand !== undefined}
-                          placeholder={needsSecret ? `${selectedProvider.label} API key` : "No key required for local smoke"}
-                          className="h-11 min-w-0 rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                          placeholder={needsSecret ? `${providerDraft.label || "Provider"} API key` : "No key required for local smoke"}
+                          className="h-11 min-w-0 rounded-xl border border-bench-200 bg-white px-3 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
                         />
-                        <button
-                          onClick={saveSecret}
-                          disabled={!needsSecret || state.busyCommand !== undefined}
-                          className="h-11 rounded-xl bg-bench-900 px-4 text-sm font-semibold text-white transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        <Button type="button" className="h-11 rounded-xl px-4" onClick={saveSecret} disabled={!needsSecret || state.busyCommand !== undefined}>
+                          Save Key
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-11 rounded-xl px-4"
+                          onClick={() => void actions.deleteProviderSecret(providerDraft.id)}
+                          disabled={!needsSecret || state.busyCommand !== undefined || !draftSecretStatus?.hasSecret}
                         >
-                          Save key
-                        </button>
-                        <button
-                          onClick={() => actions.deleteProviderSecret(selectedProvider.id)}
-                          disabled={!needsSecret || state.busyCommand !== undefined || !selectedStatus?.hasSecret}
-                          className="h-11 rounded-xl border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          Remove
-                        </button>
-                        <button
-                          onClick={() => actions.deleteCustomProvider(selectedProvider.id)}
-                          disabled={selectedProvider.type !== "openai_compatible" || state.busyCommand !== undefined}
-                          className="h-11 rounded-xl border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          Delete
-                        </button>
+                          Remove Key
+                        </Button>
                       </div>
-                      <p className="mt-3 truncate text-xs text-bench-700">{selectedStatus?.detail ?? "Provider status pending."}</p>
-                    </section>
-                  )}
+                    </div>
+
+                    <div className="mt-5">
+                      <button
+                        type="button"
+                        onClick={() => setAdvancedOpen((current) => !current)}
+                        className="flex w-full items-center justify-between rounded-2xl border border-bench-200 bg-bench-50/75 px-4 py-3 text-left transition hover:bg-white"
+                      >
+                        <span>
+                          <span className="block text-sm font-semibold text-bench-900">Model Configuration</span>
+                          <span className="mt-1 block text-xs text-bench-700">Protocol, limits, capability flags, drop params, and optional headers.</span>
+                        </span>
+                        {advancedOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                      </button>
+
+                      {advancedOpen && (
+                        <div className="mt-3 space-y-4 rounded-[22px] bg-bench-50/60 p-4 ring-1 ring-inset ring-bench-200">
+                          <div className="grid gap-4 lg:grid-cols-2">
+                            {providerDraft.type === "openai_compatible" && (
+                              <label className="space-y-2">
+                                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Protocol</span>
+                                <select
+                                  value={providerDraft.protocol}
+                                  onChange={(event) => updateDraft({ protocol: event.target.value as ProviderDraft["protocol"] })}
+                                  className="h-11 w-full rounded-xl border border-bench-200 bg-white px-3 text-sm outline-none transition focus:border-bench-900"
+                                >
+                                  <option value="chat_completions">Chat Completions</option>
+                                  <option value="responses">Responses</option>
+                                </select>
+                              </label>
+                            )}
+
+                            {(providerDraft.type === "anthropic" || providerDraft.type === "anthropic_compatible") && (
+                              <label className="space-y-2">
+                                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Anthropic Version</span>
+                                <input
+                                  value={providerDraft.anthropicVersion}
+                                  onChange={(event) => updateDraft({ anthropicVersion: event.target.value })}
+                                  placeholder="2023-06-01"
+                                  className="h-11 w-full rounded-xl border border-bench-200 bg-white px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                                />
+                              </label>
+                            )}
+
+                            <label className="space-y-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Max Output Tokens</span>
+                              <input
+                                value={providerDraft.maxTokens}
+                                onChange={(event) => updateDraft({ maxTokens: event.target.value })}
+                                placeholder="8192"
+                                className="h-11 w-full rounded-xl border border-bench-200 bg-white px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                              />
+                            </label>
+
+                            <label className="space-y-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Temperature</span>
+                              <input
+                                value={providerDraft.temperature}
+                                onChange={(event) => updateDraft({ temperature: event.target.value })}
+                                placeholder="0.2"
+                                className="h-11 w-full rounded-xl border border-bench-200 bg-white px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                              />
+                            </label>
+
+                            <label className="space-y-2 lg:col-span-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Drop Params</span>
+                              <input
+                                value={providerDraft.dropParams}
+                                onChange={(event) => updateDraft({ dropParams: event.target.value })}
+                                placeholder="temperature, top_p"
+                                className="h-11 w-full rounded-xl border border-bench-200 bg-white px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                              />
+                            </label>
+
+                            <label className="space-y-2 lg:col-span-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Headers</span>
+                              <textarea
+                                value={providerDraft.headersText}
+                                onChange={(event) => updateDraft({ headersText: event.target.value })}
+                                placeholder={"Header-Name: value\nanthropic-beta: prompt-caching-2024-07-31"}
+                                className="min-h-28 w-full rounded-2xl border border-bench-200 bg-white px-3 py-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                              />
+                            </label>
+                          </div>
+
+                          <div>
+                            <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Capabilities</span>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {capabilityOptions.map((capability) => {
+                                const active = providerDraft.capabilities.includes(capability.id);
+                                return (
+                                  <button
+                                    key={capability.id}
+                                    type="button"
+                                    onClick={() => toggleCapability(capability.id)}
+                                    className={cn(
+                                      "rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset transition",
+                                      active
+                                        ? "bg-bench-900 text-white ring-bench-900"
+                                        : "bg-white text-bench-700 ring-bench-200 hover:bg-bench-50",
+                                    )}
+                                  >
+                                    {capability.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-xs text-bench-700">
+                        Provider id: <span className="font-mono">{providerDraft.id}</span>
+                      </p>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" variant="outline" className="rounded-xl" onClick={verifyProvider} disabled={state.busyCommand !== undefined}>
+                          Verify
+                        </Button>
+                        <Button type="button" className="rounded-xl" onClick={saveProvider} disabled={saveDisabled}>
+                          Save
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="rounded-xl"
+                          onClick={() => void actions.deleteCustomProvider(providerDraft.id)}
+                          disabled={!canDeleteProvider || state.busyCommand !== undefined}
+                        >
+                          Delete Custom Provider
+                        </Button>
+                      </div>
+                    </div>
+                  </section>
                 </>
               )}
 

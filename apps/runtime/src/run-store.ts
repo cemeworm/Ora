@@ -14,7 +14,12 @@ import {
   CustomAgentUpdateParams,
   DEFAULT_RESOURCE_BUDGETS,
   getPatternDefinition,
+  modeSpecToPatternDefinition,
   MVP_PATTERNS,
+  type ModeCreateParams,
+  type ModeSpec,
+  type ModeUpdateParams,
+  type ModeValidationResult,
   OraEventEnvelope,
   OraEventEnvelopeSchema,
   PatternDefinition,
@@ -69,6 +74,7 @@ import {
 } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
+import { ModeSpecFileStore } from "./modes.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
 import type { ModelMessage } from "./providers/index.js";
@@ -297,6 +303,7 @@ export class LocalRunStore {
   private readonly persistenceType: "sqlite" | "json-file";
   private readonly evaluationStore: LocalEvaluationStore;
   private readonly customAgentStore: CustomAgentFileStore;
+  private readonly modeStore: ModeSpecFileStore;
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
@@ -314,6 +321,7 @@ export class LocalRunStore {
       this.backend = new JsonFileRuntimePersistenceBackend(dataDir);
     }
     this.customAgentStore = new CustomAgentFileStore(defaultCustomAgentsDir(dataDir), this.clock);
+    this.modeStore = new ModeSpecFileStore(defaultModesDir(dataDir), this.clock);
     this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
@@ -340,6 +348,34 @@ export class LocalRunStore {
 
   listPatterns(): PatternDefinition[] {
     return MVP_PATTERNS;
+  }
+
+  listModes(): ModeSpec[] {
+    return this.modeStore.list();
+  }
+
+  getMode(params: unknown): ModeSpec {
+    return this.modeStore.get(params);
+  }
+
+  createMode(params: ModeCreateParams | unknown): ModeSpec {
+    return this.modeStore.create(params);
+  }
+
+  updateMode(params: ModeUpdateParams | unknown): ModeSpec {
+    return this.modeStore.update(params);
+  }
+
+  deleteMode(params: unknown): { deleted: true; modeId: string } {
+    return this.modeStore.delete(params);
+  }
+
+  validateMode(params: unknown): ModeValidationResult {
+    return this.modeStore.validate(params);
+  }
+
+  cloneModeFromPreset(params: unknown): ModeSpec {
+    return this.modeStore.cloneFromPreset(params);
   }
 
   createProject(params: unknown = {}): ProjectSummary {
@@ -459,14 +495,15 @@ export class LocalRunStore {
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
+    const { fullConfig } = this.resolveModeSelection(parsed.config);
     const manualApproval =
-      parsed.config?.approvalMode === "manual" ||
-      parsed.config?.metadata?.approvalMode === "manual" ||
-      parsed.config?.metadata?.requireApproval === true;
+      fullConfig.approvalMode === "manual" ||
+      fullConfig.metadata?.approvalMode === "manual" ||
+      fullConfig.metadata?.requireApproval === true;
     if (manualApproval) {
       const run = this.createCompletedRun({
         input: parsed.input,
-        config: parsed.config,
+        config: fullConfig,
         session,
       });
       recordLangfuseSnapshotTrace(run);
@@ -475,15 +512,11 @@ export class LocalRunStore {
       return this.toRunHandle(tracedRun);
     }
 
-    const config = RunConfigSchema.parse(parsed.config ?? {});
     const input = UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     });
-    const fullConfig = RunConfigSchema.parse({
-      ...config,
-      budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
-    });
+    const { modeSpec, definition } = this.resolveModeSelection(fullConfig);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const sessionBoundSnapshot = await withLangfuseRunTrace(
@@ -491,6 +524,8 @@ export class LocalRunStore {
       async () => {
         const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
           clock: this.clock,
+          modeSpec,
+          definition,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
@@ -512,15 +547,11 @@ export class LocalRunStore {
   ): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const config = RunConfigSchema.parse(parsed.config ?? {});
     const input = UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     });
-    const fullConfig = RunConfigSchema.parse({
-      ...config,
-      budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
-    });
+    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const sessionBoundSnapshot = await withLangfuseRunTrace(
@@ -528,6 +559,8 @@ export class LocalRunStore {
       async () => {
         const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
           clock: this.clock,
+          modeSpec,
+          definition,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           forkedFrom,
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
@@ -550,6 +583,8 @@ export class LocalRunStore {
       runId: string;
       input: UserTaskInput;
       config: RunConfig;
+      modeSpec: ModeSpec;
+      definition: PatternDefinition;
       sessionId: string;
       turnIndex: number;
       conversationMessages: ModelMessage[];
@@ -557,15 +592,11 @@ export class LocalRunStore {
   ): Promise<RunHandle | undefined> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const config = RunConfigSchema.parse(parsed.config ?? {});
     const input = UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     });
-    const fullConfig = RunConfigSchema.parse({
-      ...config,
-      budget: config.budget ?? DEFAULT_RESOURCE_BUDGETS[config.pattern]
-    });
+    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
@@ -573,6 +604,8 @@ export class LocalRunStore {
       runId,
       input,
       config: fullConfig,
+      modeSpec,
+      definition,
       sessionId: session.sessionId,
       turnIndex,
       conversationMessages,
@@ -585,6 +618,9 @@ export class LocalRunStore {
       ...snapshot,
       sessionId: session.sessionId,
       turnIndex,
+      coordinationKind: snapshot.coordinationKind ?? snapshot.pattern,
+      modeId: snapshot.modeId ?? modeSpec.id,
+      modeSpec: snapshot.modeSpec ?? modeSpec,
     }));
     this.persistRun(sessionBoundSnapshot);
     return this.toRunHandle(sessionBoundSnapshot);
@@ -613,10 +649,52 @@ export class LocalRunStore {
   resumeRun(params: unknown): StateSnapshot {
     const parsed = RunResumeParamsSchema.parse(params);
     const snapshot = this.getRunOrThrow(parsed.runId);
+    const patchRecord = parsed.patch && typeof parsed.patch === "object" && parsed.patch !== null
+      ? parsed.patch
+      : {};
+    const clarificationPatch = "clarifications" in patchRecord &&
+      typeof patchRecord.clarifications === "object" &&
+      patchRecord.clarifications !== null
+      ? patchRecord.clarifications as Record<string, unknown>
+      : {};
     let working = this.appendEvent(snapshot, "run.resumed", {
       reason: parsed.reason ?? "Resumed by caller.",
       patch: parsed.patch ?? {}
     });
+
+    if (working.pendingClarifications.length > 0) {
+      const resolvedIds = new Set<string>();
+      for (const clarification of working.pendingClarifications) {
+        const answer = clarificationPatch[clarification.id] ?? clarificationPatch[clarification.key];
+        if (answer === undefined) {
+          continue;
+        }
+        working = this.appendEvent(working, "clarification.resolved", {
+          clarificationId: clarification.id,
+          nodeId: clarification.nodeId,
+          answer,
+          mode: "resume",
+        });
+        resolvedIds.add(clarification.id);
+      }
+      if (resolvedIds.size > 0) {
+        const existingClarifications = working.input.context?.clarifications;
+        const nextClarifications = typeof existingClarifications === "object" && existingClarifications !== null
+          ? { ...existingClarifications, ...clarificationPatch }
+          : { ...clarificationPatch };
+        working = StateSnapshotSchema.parse({
+          ...working,
+          input: {
+            ...working.input,
+            context: {
+              ...working.input.context,
+              clarifications: nextClarifications,
+            },
+          },
+          pendingClarifications: working.pendingClarifications.filter((clarification) => !resolvedIds.has(clarification.id)),
+        });
+      }
+    }
 
     const pendingApprovalActions = working.actions.filter((action) => action.status === "approval_required");
     for (const action of pendingApprovalActions) {
@@ -673,6 +751,16 @@ export class LocalRunStore {
       );
     }
 
+    if (working.pendingClarifications.length > 0 || working.actions.some((action) => action.status === "approval_required")) {
+      const updated = StateSnapshotSchema.parse({
+        ...working,
+        status: "interrupted",
+        updatedAt: this.now(),
+      });
+      this.persistRun(updated);
+      return updated;
+    }
+
     const checkpoint: CheckpointMeta = {
       id: `${working.runId}:checkpoint-${working.checkpoints.length}`,
       runId: working.runId,
@@ -694,7 +782,7 @@ export class LocalRunStore {
       "checkpoint.created",
       {
         checkpoint,
-        summary: "Checkpoint captured after approval resume."
+        summary: "Checkpoint captured after deterministic resume."
       },
       { checkpointId: checkpoint.id }
     );
@@ -708,7 +796,7 @@ export class LocalRunStore {
       "run.done",
       {
         status: "succeeded",
-        summary: "Deterministic MVP run resumed after approval and completed."
+        summary: "Deterministic MVP run resumed and completed."
       }
     );
     const updated = StateSnapshotSchema.parse({
@@ -906,26 +994,55 @@ export class LocalRunStore {
     return this.evaluationStore.exportRun(params);
   }
 
+  private resolveModeSelection(config?: Partial<RunConfig>): {
+    modeSpec: ModeSpec;
+    definition: PatternDefinition;
+    fullConfig: RunConfig;
+  } {
+    const parsed = RunConfigSchema.parse(config ?? {});
+    const requestedModeId = typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern;
+    const modeSpec = this.modeStore.resolve(requestedModeId, parsed.pattern);
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const fullConfig = RunConfigSchema.parse({
+      ...parsed,
+      pattern: modeSpec.family,
+      modeId: modeSpec.id,
+      budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
+      approvalMode: config?.approvalMode ?? modeSpec.capabilityFlags.approvalMode,
+      skillIds: Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds,
+      toolIds: Array.isArray(config?.toolIds) ? config.toolIds : modeSpec.capabilityFlags.toolIds,
+      metadata: {
+        ...parsed.metadata,
+        modeId: modeSpec.id,
+      },
+    });
+    return {
+      modeSpec,
+      definition,
+      fullConfig,
+    };
+  }
+
   private createCompletedRun(params: {
     input: UserTaskInput;
     config?: Partial<RunConfig>;
     session: SessionSummary;
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   }): StoredRun {
-    const config = RunConfigSchema.parse(params.config ?? {});
     const input = UserTaskInputSchema.parse({
       ...params.input,
       createdAt: params.input.createdAt ?? this.now()
     });
-    const pattern = config.pattern;
-    const definition = getPatternDefinition(pattern);
+    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(params.config);
+    const pattern = fullConfig.pattern;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(params.session.sessionId);
     const startedAt = this.now();
-    const budget = config.budget ?? DEFAULT_RESOURCE_BUDGETS[pattern];
-    const fullConfig = RunConfigSchema.parse({ ...config, budget });
+    const budget = fullConfig.budget ?? DEFAULT_RESOURCE_BUDGETS[pattern];
     const manualApproval =
-      fullConfig.metadata.approvalMode === "manual" || fullConfig.metadata.requireApproval === true;
+      fullConfig.approvalMode === "manual" ||
+      fullConfig.metadata.approvalMode === "manual" ||
+      fullConfig.metadata.requireApproval === true;
     const checkpoints: CheckpointMeta[] = [];
     const events: OraEventEnvelope[] = [];
     const profiles = new AgentProfileRegistry(definition).list(fullConfig.profileIds);
@@ -1040,12 +1157,14 @@ export class LocalRunStore {
         checkpointId: checkpoint.id
       });
 
-    return StateSnapshotSchema.parse({
+      return StateSnapshotSchema.parse({
       runId,
       sessionId: params.session.sessionId,
       turnIndex,
       status: "interrupted",
         pattern,
+        coordinationKind: pattern,
+        modeId: modeSpec.id,
         input,
         config: fullConfig,
         topology: {
@@ -1063,6 +1182,7 @@ export class LocalRunStore {
         checkpoints,
         events,
         artifacts: [],
+        modeSpec,
         updatedAt: startedAt + events.length
       });
     }
@@ -1118,6 +1238,8 @@ export class LocalRunStore {
       turnIndex,
       status: "succeeded",
       pattern,
+      coordinationKind: pattern,
+      modeId: modeSpec.id,
       input,
       config: fullConfig,
       topology: {
@@ -1135,6 +1257,7 @@ export class LocalRunStore {
       checkpoints,
       events,
       artifacts: [],
+      modeSpec,
       output: patternOutput.state,
       updatedAt: startedAt + events.length
     });
@@ -1311,6 +1434,7 @@ export class LocalRunStore {
       turnIndex: snapshot.turnIndex,
       status: snapshot.status,
       pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
       startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt
     });
   }
@@ -1322,6 +1446,7 @@ export class LocalRunStore {
       turnIndex: snapshot.turnIndex,
       status: snapshot.status,
       pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
       prompt: snapshot.input.prompt,
       startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
       updatedAt: snapshot.updatedAt,
@@ -1338,6 +1463,7 @@ export class LocalRunStore {
       turnIndex: snapshot.turnIndex,
       status: snapshot.status,
       pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
       providerId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : undefined,
       modelRef: snapshot.config.modelRef,
       prompt: snapshot.input.prompt,
@@ -1511,6 +1637,7 @@ export class LocalRunStore {
       status: snapshot.status,
       latestRunId: snapshot.runId,
       latestPattern: snapshot.pattern,
+      latestModeId: snapshot.modeId ?? existing?.latestModeId,
       latestProviderId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : existing?.latestProviderId,
       latestModelRef: snapshot.config.modelRef ?? existing?.latestModelRef,
       turnCount,
@@ -1600,6 +1727,7 @@ export class LocalRunStore {
           role: "user",
           content: prompt,
           pattern: run.pattern,
+          modeId: run.modeId,
           createdAt,
         }));
       }
@@ -1613,6 +1741,7 @@ export class LocalRunStore {
           role: "assistant",
           content: assistant,
           pattern: run.pattern,
+          modeId: run.modeId,
           createdAt: run.updatedAt,
         }));
       }
@@ -1720,4 +1849,10 @@ export function defaultCustomAgentsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "agents")
     : path.join(runtimeDataDir, "agents");
+}
+
+export function defaultModesDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "modes")
+    : path.join(runtimeDataDir, "modes");
 }

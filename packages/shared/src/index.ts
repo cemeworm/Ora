@@ -8,6 +8,14 @@ export const CoordinationPatternSchema = z.enum([
   "shared_state"
 ]);
 export type CoordinationPattern = z.infer<typeof CoordinationPatternSchema>;
+export const CoordinationKindSchema = CoordinationPatternSchema;
+export type CoordinationKind = CoordinationPattern;
+
+export const ModeIdSchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/, "Mode ids must start with a lowercase letter or digit and use only lowercase letters, digits, hyphens, or underscores.");
+export type ModeId = z.infer<typeof ModeIdSchema>;
 
 export const RunStatusSchema = z.enum([
   "queued",
@@ -136,6 +144,7 @@ export type UserTaskInput = z.infer<typeof UserTaskInputSchema>;
 
 export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
+  modeId: ModeIdSchema.optional(),
   profileIds: z.array(z.string().min(1)).default([]),
   providerId: z.string().min(1).optional(),
   providerConfig: z.lazy(() => ProviderConfigSchema).optional(),
@@ -157,6 +166,7 @@ export const RunHandleSchema = z.object({
   turnIndex: z.number().int().positive().optional(),
   status: RunStatusSchema,
   pattern: CoordinationPatternSchema,
+  modeId: ModeIdSchema.optional(),
   startedAt: z.number().int().nonnegative()
 });
 export type RunHandle = z.infer<typeof RunHandleSchema>;
@@ -167,6 +177,7 @@ export const RunSummarySchema = z.object({
   turnIndex: z.number().int().positive().optional(),
   status: RunStatusSchema,
   pattern: CoordinationPatternSchema,
+  modeId: ModeIdSchema.optional(),
   prompt: z.string().min(1),
   startedAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -215,9 +226,17 @@ export const OraEventTypeSchema = z.enum([
   "agent.completed",
   "topology.updated",
   "profile.updated",
+  "memory.queued",
   "memory.updated",
+  "memory.flushed",
   "plan.updated",
   "action.updated",
+  "task.started",
+  "task.progress",
+  "task.completed",
+  "task.failed",
+  "clarification.required",
+  "clarification.resolved",
   "approval.required",
   "approval.resolved",
   "tool.called",
@@ -336,6 +355,7 @@ export const SessionSummarySchema = z.object({
   status: RunStatusSchema.optional(),
   latestRunId: z.string().min(1).optional(),
   latestPattern: CoordinationPatternSchema.optional(),
+  latestModeId: ModeIdSchema.optional(),
   latestProviderId: z.string().min(1).optional(),
   latestModelRef: z.string().min(1).optional(),
   turnCount: z.number().int().nonnegative(),
@@ -350,6 +370,7 @@ export const SessionTurnSchema = z.object({
   turnIndex: z.number().int().positive(),
   status: RunStatusSchema,
   pattern: CoordinationPatternSchema,
+  modeId: ModeIdSchema.optional(),
   providerId: z.string().min(1).optional(),
   modelRef: z.string().min(1).optional(),
   prompt: z.string().min(1),
@@ -370,6 +391,7 @@ export const SessionTranscriptMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1),
   pattern: CoordinationPatternSchema,
+  modeId: ModeIdSchema.optional(),
   createdAt: z.number().int().nonnegative(),
 });
 export type SessionTranscriptMessage = z.infer<typeof SessionTranscriptMessageSchema>;
@@ -507,12 +529,24 @@ export const BusStatsSchema = z.object({
 });
 export type BusStats = z.infer<typeof BusStatsSchema>;
 
+export const PendingClarificationSchema = z.object({
+  id: z.string().min(1),
+  nodeId: z.string().min(1),
+  nodeLabel: z.string().min(1),
+  key: z.string().min(1),
+  question: z.string().min(1),
+  requestedAt: z.number().int().nonnegative(),
+});
+export type PendingClarification = z.infer<typeof PendingClarificationSchema>;
+
 export const StateSnapshotSchema = z.object({
   runId: z.string().min(1),
   sessionId: z.string().min(1).optional(),
   turnIndex: z.number().int().positive().default(1),
   status: RunStatusSchema,
   pattern: CoordinationPatternSchema,
+  coordinationKind: CoordinationKindSchema.optional(),
+  modeId: ModeIdSchema.optional(),
   input: UserTaskInputSchema,
   config: RunConfigSchema,
   topology: z.object({
@@ -531,8 +565,10 @@ export const StateSnapshotSchema = z.object({
   queueSummary: QueueSummarySchema.default({}),
   sharedStateSummary: SharedStateSummarySchema.default({}),
   busStats: BusStatsSchema.default({}),
+  pendingClarifications: z.array(PendingClarificationSchema).default([]),
   pendingApprovals: z.array(z.string().min(1)).default([]),
   trace: RunTraceMetadataSchema.optional(),
+  modeSpec: z.lazy(() => ModeSpecSchema).optional(),
   output: z.unknown().optional(),
   error: z.string().optional(),
   updatedAt: z.number().int().nonnegative()
@@ -884,6 +920,13 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "runtime.health",
   "runtime.bootstrap",
   "patterns.list",
+  "modes.list",
+  "modes.get",
+  "modes.create",
+  "modes.update",
+  "modes.delete",
+  "modes.validate",
+  "modes.cloneFromPreset",
   "tools.list",
   "skills.list",
   "providers.list",
@@ -994,6 +1037,181 @@ export const PatternDefinitionSchema = z.object({
 });
 export type PatternDefinition = z.infer<typeof PatternDefinitionSchema>;
 
+export const ModeStopPolicySchema = z.object({
+  type: z.enum(["max_iterations", "queue_drained", "converged", "manual"]),
+  maxIterations: z.number().int().positive().optional(),
+  idleCycles: z.number().int().positive().optional(),
+  detail: z.string().min(1),
+});
+export type ModeStopPolicy = z.infer<typeof ModeStopPolicySchema>;
+
+export const ModeNodeTemplateSchema = z.enum([
+  "draft",
+  "verify",
+  "decide",
+  "decompose",
+  "research",
+  "review",
+  "synthesize",
+  "triage",
+  "build",
+  "check",
+  "handoff",
+  "publish",
+  "route",
+  "handle",
+  "respond",
+  "seed",
+  "converge",
+]);
+export type ModeNodeTemplate = z.infer<typeof ModeNodeTemplateSchema>;
+
+export const ModeNodePositionSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+export type ModeNodePosition = z.infer<typeof ModeNodePositionSchema>;
+
+export const ModeNodeSpecSchema = z.object({
+  id: z.string().min(1),
+  template: ModeNodeTemplateSchema,
+  label: z.string().min(1),
+  title: z.string().min(1).optional(),
+  ownerAgentId: z.string().min(1).optional(),
+  position: ModeNodePositionSchema.optional(),
+  enabled: z.boolean().default(true),
+  prompt: z.string().min(1).optional(),
+  riskLevel: ActionRiskLevelSchema.optional(),
+  config: z.record(z.unknown()).default({}),
+});
+export type ModeNodeSpec = z.infer<typeof ModeNodeSpecSchema>;
+
+export const ModeEdgeSpecSchema = z.object({
+  id: z.string().min(1),
+  source: z.string().min(1),
+  target: z.string().min(1),
+  label: z.string().min(1).optional(),
+  kind: TopologyEdgeSchema.shape.kind.default("control"),
+  enabled: z.boolean().default(true),
+});
+export type ModeEdgeSpec = z.infer<typeof ModeEdgeSpecSchema>;
+
+export const ModeRuntimeAtomIdSchema = z.enum([
+  "thread_workspace",
+  "tool_error_boundary",
+  "loop_guard",
+  "clarification_interrupt",
+  "memory_capture",
+  "deferred_tool_discovery",
+  "subagent_delegate",
+  "persistent_worker_memory",
+  "event_routing",
+  "shared_blackboard",
+  "artifact_publish",
+  "token_usage_trace",
+]);
+export type ModeRuntimeAtomId = z.infer<typeof ModeRuntimeAtomIdSchema>;
+
+export const ModeRuntimeAtomScopeSchema = z.enum(["mode", "node"]);
+export type ModeRuntimeAtomScope = z.infer<typeof ModeRuntimeAtomScopeSchema>;
+
+export const ModeRuntimeAtomDefinitionSchema = z.object({
+  id: ModeRuntimeAtomIdSchema,
+  scope: ModeRuntimeAtomScopeSchema,
+  label: z.string().min(1),
+  description: z.string().min(1),
+  compatibleFamilies: z.array(CoordinationPatternSchema).min(1),
+  requiresTools: z.array(z.string().min(1)).default([]),
+  requiresFlags: z.array(z.string().min(1)).default([]),
+  defaultEnabled: z.boolean().default(false),
+});
+export type ModeRuntimeAtomDefinition = z.infer<typeof ModeRuntimeAtomDefinitionSchema>;
+
+export const ModeCapabilityFlagsSchema = z.object({
+  supportsPersistentWorkers: z.boolean().default(false),
+  supportsSharedState: z.boolean().default(false),
+  supportsEventRouting: z.boolean().default(false),
+  approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
+  skillIds: z.array(z.string().min(1)).default([]),
+  toolIds: z.array(z.string().min(1)).default([]),
+});
+export type ModeCapabilityFlags = z.infer<typeof ModeCapabilityFlagsSchema>;
+
+export const ModeEditorConstraintsSchema = z.object({
+  allowedNodeTemplates: z.array(ModeNodeTemplateSchema).default([]),
+  requiredNodeTemplates: z.array(ModeNodeTemplateSchema).default([]),
+  readOnly: z.boolean().default(false),
+  allowReorder: z.boolean().default(true),
+  allowCreate: z.boolean().default(true),
+  allowDelete: z.boolean().default(true),
+  allowDisable: z.boolean().default(true),
+});
+export type ModeEditorConstraints = z.infer<typeof ModeEditorConstraintsSchema>;
+
+export const ModeSpecSchema = z.object({
+  id: ModeIdSchema,
+  family: CoordinationPatternSchema,
+  label: z.string().min(1),
+  summary: z.string().min(1),
+  description: z.string().min(1).optional(),
+  recommendedUse: z.string().min(1).optional(),
+  failureMode: z.string().min(1).optional(),
+  systemPreset: z.boolean().default(false),
+  nodes: z.array(ModeNodeSpecSchema).min(1),
+  edges: z.array(ModeEdgeSpecSchema).default([]),
+  stopPolicy: ModeStopPolicySchema,
+  capabilityFlags: ModeCapabilityFlagsSchema,
+  editorConstraints: ModeEditorConstraintsSchema,
+  defaultBudget: ResourceBudgetSchema,
+  profiles: z.array(AgentProfileSchema).min(1),
+  runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type ModeSpec = z.infer<typeof ModeSpecSchema>;
+
+export const ModeValidationResultSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(z.string().min(1)).default([]),
+  warnings: z.array(z.string().min(1)).default([]),
+});
+export type ModeValidationResult = z.infer<typeof ModeValidationResultSchema>;
+
+export const ModeGetParamsSchema = z.object({
+  modeId: ModeIdSchema,
+});
+export type ModeGetParams = z.infer<typeof ModeGetParamsSchema>;
+
+export const ModeDeleteParamsSchema = z.object({
+  modeId: ModeIdSchema,
+});
+export type ModeDeleteParams = z.infer<typeof ModeDeleteParamsSchema>;
+
+export const ModeCloneParamsSchema = z.object({
+  sourceModeId: ModeIdSchema,
+  modeId: ModeIdSchema.optional(),
+  label: z.string().min(1).optional(),
+});
+export type ModeCloneParams = z.infer<typeof ModeCloneParamsSchema>;
+
+export const ModeCreateParamsSchema = ModeSpecSchema.omit({
+  systemPreset: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type ModeCreateParams = z.infer<typeof ModeCreateParamsSchema>;
+
+export const ModeUpdateParamsSchema = z.object({
+  modeId: ModeIdSchema,
+  spec: ModeCreateParamsSchema,
+});
+export type ModeUpdateParams = z.infer<typeof ModeUpdateParamsSchema>;
+
+export const ModeValidateParamsSchema = z.object({
+  spec: ModeSpecSchema.or(ModeCreateParamsSchema),
+});
+export type ModeValidateParams = z.infer<typeof ModeValidateParamsSchema>;
+
 export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudget> = {
   generator_verifier: {
     maxTokens: 12000,
@@ -1027,6 +1245,167 @@ export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudge
   }
 };
 
+const MODE_FAMILY_RULES: Record<
+  CoordinationPattern,
+  {
+    allowedTemplates: ModeNodeTemplate[];
+    requiredTemplates: ModeNodeTemplate[];
+    stopPolicyTypes: ModeStopPolicy["type"][];
+  }
+> = {
+  generator_verifier: {
+    allowedTemplates: ["draft", "verify", "decide"],
+    requiredTemplates: ["draft", "verify"],
+    stopPolicyTypes: ["max_iterations", "manual"],
+  },
+  orchestrator_subagent: {
+    allowedTemplates: ["decompose", "research", "review", "synthesize"],
+    requiredTemplates: ["decompose", "synthesize"],
+    stopPolicyTypes: ["queue_drained", "manual"],
+  },
+  agent_teams: {
+    allowedTemplates: ["triage", "build", "check", "handoff"],
+    requiredTemplates: ["triage", "handoff"],
+    stopPolicyTypes: ["queue_drained", "manual"],
+  },
+  message_bus: {
+    allowedTemplates: ["publish", "route", "handle", "respond"],
+    requiredTemplates: ["publish", "route", "respond"],
+    stopPolicyTypes: ["queue_drained", "manual"],
+  },
+  shared_state: {
+    allowedTemplates: ["seed", "research", "converge"],
+    requiredTemplates: ["seed", "converge"],
+    stopPolicyTypes: ["converged", "manual"],
+  },
+};
+
+export interface ModeNodeRuntimeTemplateDefinition {
+  description: string;
+  supportsPromptOverride: boolean;
+  fallbackPrompt?: string;
+  promptVariables: string[];
+}
+
+type StoredModeNodeRuntimeTemplateDefinition = Omit<ModeNodeRuntimeTemplateDefinition, "promptVariables">;
+
+const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
+  CoordinationPattern,
+  Partial<Record<ModeNodeTemplate, StoredModeNodeRuntimeTemplateDefinition>>
+> = {
+  generator_verifier: {
+    draft: {
+      description: "Draft a candidate answer for verifier review.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\nWrite a candidate answer that can be verified against an explicit rubric.",
+    },
+    verify: {
+      description: "Evaluate the candidate against the current rubric.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Original prompt: {{prompt}}\nRubric:\n- {{rubric}}\nCandidate:\n{{candidate}}\nReturn concise verification notes.",
+    },
+    decide: {
+      description: "Reserved stage for a future explicit accept/retry decision step.",
+      supportsPromptOverride: false,
+    },
+  },
+  orchestrator_subagent: {
+    decompose: {
+      description: "Break the task into inspectable orchestration steps.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nDecompose it into research, review, and synthesis responsibilities.",
+    },
+    research: {
+      description: "Collect focused supporting context from the decomposition plan.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nGather focused supporting context for the orchestration plan:\n{{plan}}",
+    },
+    review: {
+      description: "Review findings and surface risks or missing pieces.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nPlan:\n{{plan}}\nResearch:\n{{research}}\nReview completeness, risks, and missing pieces.",
+    },
+    synthesize: {
+      description: "Combine plan, research, and review into the final answer.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nPlan:\n{{plan}}\nResearch:\n{{research}}\nReview:\n{{review}}\nProduce the final orchestrated answer.",
+    },
+  },
+  agent_teams: {
+    triage: {
+      description: "Turn the task into a compact team backlog.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nBreak the work into a team backlog with explicit ownership.",
+    },
+    build: {
+      description: "Complete the assigned backlog item.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nComplete the builder's assigned work.",
+    },
+    check: {
+      description: "Validate builder output and report issues or approval.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder output:\n{{build}}\nValidate the work and report issues or approval.",
+    },
+    handoff: {
+      description: "Summarize handoff state and the next action.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder:\n{{build}}\nChecker:\n{{check}}\nRecord the handoff and next action.",
+    },
+  },
+  message_bus: {
+    publish: {
+      description: "Publish the initial input event to the bus.",
+      supportsPromptOverride: false,
+    },
+    route: {
+      description: "Classify the incoming event and choose the subscriber path.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nClassify the incoming event and decide which topic/subscriber should receive it.",
+    },
+    handle: {
+      description: "Process the routed work item and emit findings.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nRouting plan:\n{{routingPlan}}\nProduce the investigation findings for the subscribed work item.",
+    },
+    respond: {
+      description: "Turn bus findings into the final response event.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nRouting plan:\n{{routingPlan}}\nFindings:\n{{findings}}\nProduce the final routed response.",
+    },
+  },
+  shared_state: {
+    seed: {
+      description: "Create the initial shared-state board.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nCreate the initial shared-state board for collaborative work.",
+    },
+    research: {
+      description: "Add the next meaningful finding to the shared board.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nCurrent shared board:\n{{sharedBoard}}\nAdd the next finding that other agents should build on.",
+    },
+    converge: {
+      description: "Review the board and decide whether it has converged.",
+      supportsPromptOverride: true,
+      fallbackPrompt: "Task: {{prompt}}\nShared board:\n{{sharedBoard}}\nDecide whether the board has converged and summarize the conclusion.",
+    },
+  },
+};
+
+function extractMustacheVariables(template: string | undefined): string[] {
+  if (!template) {
+    return [];
+  }
+  const variables = new Set<string>();
+  for (const match of template.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)) {
+    if (match[1]) {
+      variables.add(match[1]);
+    }
+  }
+  return [...variables];
+}
+
 const profile = (
   id: string,
   label: string,
@@ -1042,6 +1421,145 @@ const profile = (
   memoryNamespaces: namespaces,
   budget: DEFAULT_RESOURCE_BUDGETS[pattern]
 });
+
+const ALL_COORDINATION_PATTERNS = [...CoordinationPatternSchema.options] as CoordinationPattern[];
+
+export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
+  {
+    id: "thread_workspace",
+    scope: "mode",
+    label: "Thread Workspace",
+    description: "Provision a per-run workspace and thread-scoped paths before execution starts.",
+    compatibleFamilies: ["orchestrator_subagent", "agent_teams"],
+    requiresTools: [],
+    requiresFlags: [],
+    defaultEnabled: true,
+  },
+  {
+    id: "tool_error_boundary",
+    scope: "mode",
+    label: "Tool Error Boundary",
+    description: "Convert tool and provider failures into structured runtime events instead of aborting immediately.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    defaultEnabled: true,
+  },
+  {
+    id: "loop_guard",
+    scope: "mode",
+    label: "Loop Guard",
+    description: "Detect repetitive tool or action loops and force the run to wrap up safely.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    defaultEnabled: true,
+  },
+  {
+    id: "clarification_interrupt",
+    scope: "mode",
+    label: "Clarification Interrupt",
+    description: "Pause execution when the mode needs missing user input before continuing.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    defaultEnabled: true,
+  },
+  {
+    id: "memory_capture",
+    scope: "mode",
+    label: "Memory Capture",
+    description: "Queue run summaries into session or project memory after meaningful progress.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    defaultEnabled: true,
+  },
+  {
+    id: "deferred_tool_discovery",
+    scope: "node",
+    label: "Deferred Tool Discovery",
+    description: "Expose lightweight tool metadata first and promote full schemas on demand.",
+    compatibleFamilies: ["orchestrator_subagent"],
+    requiresTools: ["mcp.call"],
+    requiresFlags: [],
+    defaultEnabled: false,
+  },
+  {
+    id: "subagent_delegate",
+    scope: "node",
+    label: "Subagent Delegate",
+    description: "Run a stage as a delegated task with explicit lifecycle events and handoff records.",
+    compatibleFamilies: ["orchestrator_subagent", "agent_teams"],
+    requiresTools: ["model.handoff"],
+    requiresFlags: [],
+    defaultEnabled: false,
+  },
+  {
+    id: "persistent_worker_memory",
+    scope: "mode",
+    label: "Persistent Worker Memory",
+    description: "Persist worker-specific memory across runs so long-lived team roles can accumulate context.",
+    compatibleFamilies: ["agent_teams"],
+    requiresTools: [],
+    requiresFlags: ["supportsPersistentWorkers"],
+    defaultEnabled: true,
+  },
+  {
+    id: "event_routing",
+    scope: "mode",
+    label: "Event Routing",
+    description: "Track routed topics, subscribers, and correlation records as first-class runtime state.",
+    compatibleFamilies: ["message_bus"],
+    requiresTools: ["message.publish"],
+    requiresFlags: ["supportsEventRouting"],
+    defaultEnabled: true,
+  },
+  {
+    id: "shared_blackboard",
+    scope: "mode",
+    label: "Shared Blackboard",
+    description: "Maintain a versioned shared board with explicit convergence state across collaborators.",
+    compatibleFamilies: ["shared_state"],
+    requiresTools: ["shared_state.write"],
+    requiresFlags: ["supportsSharedState"],
+    defaultEnabled: true,
+  },
+  {
+    id: "artifact_publish",
+    scope: "node",
+    label: "Artifact Publish",
+    description: "Promote stage outputs into explicit runtime artifacts and handoff surfaces.",
+    compatibleFamilies: ["agent_teams", "message_bus", "shared_state"],
+    requiresTools: ["export.report"],
+    requiresFlags: [],
+    defaultEnabled: false,
+  },
+  {
+    id: "token_usage_trace",
+    scope: "mode",
+    label: "Token Usage Trace",
+    description: "Attach token usage and budget accounting to runtime events and reports.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    defaultEnabled: false,
+  },
+];
+
+export function getModeRuntimeAtom(id: ModeRuntimeAtomId): ModeRuntimeAtomDefinition {
+  const atom = MVP_MODE_RUNTIME_ATOMS.find((candidate) => candidate.id === id);
+  if (!atom) {
+    throw new Error(`Unknown runtime atom '${id}'.`);
+  }
+  return atom;
+}
+
+export function defaultRuntimeAtomsForFamily(family: CoordinationPattern): ModeRuntimeAtomId[] {
+  return MVP_MODE_RUNTIME_ATOMS
+    .filter((atom) => atom.defaultEnabled && atom.compatibleFamilies.includes(family))
+    .map((atom) => atom.id);
+}
 
 export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinition> = {
   generator_verifier: {
@@ -1331,12 +1849,418 @@ export function getPatternDefinition(pattern: CoordinationPattern): PatternDefin
   return MVP_PATTERN_DEFINITIONS[pattern];
 }
 
+function planEdgesFromTemplate(
+  pattern: CoordinationPattern,
+  planTemplate: PatternDefinition["planTemplate"],
+): ModeEdgeSpec[] {
+  const dependencyEdges = planTemplate.flatMap((item) =>
+    item.dependencies.map((dependency) => ({
+      id: `${dependency}-${item.id}`,
+      source: dependency,
+      target: item.id,
+      kind: "control" as const,
+    })),
+  );
+  if (dependencyEdges.length > 0) {
+    return dependencyEdges.map((edge) => ModeEdgeSpecSchema.parse(edge));
+  }
+
+  return planTemplate.slice(1).map((item, index) =>
+    ModeEdgeSpecSchema.parse({
+      id: `${planTemplate[index]!.id}-${item.id}`,
+      source: planTemplate[index]!.id,
+      target: item.id,
+      kind: pattern === "generator_verifier"
+        ? "verification"
+        : pattern === "agent_teams"
+          ? "delegation"
+          : pattern === "shared_state"
+            ? "memory"
+            : "control",
+    }),
+  );
+}
+
+export function getModeFamilyRule(family: CoordinationPattern) {
+  return MODE_FAMILY_RULES[family];
+}
+
+export function getModeNodeRuntimeTemplateDefinition(
+  family: CoordinationPattern,
+  template: ModeNodeTemplate,
+): ModeNodeRuntimeTemplateDefinition {
+  const definition = MODE_NODE_RUNTIME_TEMPLATE_LIBRARY[family][template];
+  if (!definition) {
+    return {
+      description: `No runtime template metadata is registered for '${template}' in family '${family}'.`,
+      supportsPromptOverride: false,
+      promptVariables: [],
+    };
+  }
+
+  return {
+    ...definition,
+    promptVariables: extractMustacheVariables(definition.fallbackPrompt),
+  };
+}
+
+const MODE_LAYOUT_ORIGIN_X = 56;
+const MODE_LAYOUT_ORIGIN_Y = 64;
+const MODE_LAYOUT_COLUMN_GAP = 320;
+const MODE_LAYOUT_ROW_GAP = 176;
+const MODE_LAYOUT_DISABLED_COLUMN_OFFSET = 104;
+
+function activeEnabledModeEdges(mode: Pick<ModeSpec, "nodes" | "edges">): ModeEdgeSpec[] {
+  const enabledNodeIds = new Set(mode.nodes.filter((node) => node.enabled).map((node) => node.id));
+  return mode.edges.filter((edge) => edge.enabled && enabledNodeIds.has(edge.source) && enabledNodeIds.has(edge.target));
+}
+
+export function orderedEnabledModeNodes(mode: Pick<ModeSpec, "nodes" | "edges">): ModeNodeSpec[] {
+  const enabledNodes = mode.nodes.filter((node) => node.enabled);
+  const nodeIds = new Set(enabledNodes.map((node) => node.id));
+  const indegree = new Map(enabledNodes.map((node) => [node.id, 0]));
+  const adjacency = new Map(enabledNodes.map((node) => [node.id, [] as string[]]));
+
+  for (const edge of activeEnabledModeEdges(mode).filter((candidate) => nodeIds.has(candidate.source) && nodeIds.has(candidate.target))) {
+    adjacency.get(edge.source)?.push(edge.target);
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+  }
+
+  const orderIndex = new Map(mode.nodes.map((node, index) => [node.id, index]));
+  const queue = enabledNodes
+    .filter((node) => (indegree.get(node.id) ?? 0) === 0)
+    .sort((left, right) => (orderIndex.get(left.id) ?? 0) - (orderIndex.get(right.id) ?? 0));
+  const ordered: ModeNodeSpec[] = [];
+
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    ordered.push(node);
+    for (const target of adjacency.get(node.id) ?? []) {
+      const next = (indegree.get(target) ?? 0) - 1;
+      indegree.set(target, next);
+      if (next === 0) {
+        const candidate = enabledNodes.find((item) => item.id === target);
+        if (candidate) {
+          queue.push(candidate);
+          queue.sort((left, right) => (orderIndex.get(left.id) ?? 0) - (orderIndex.get(right.id) ?? 0));
+        }
+      }
+    }
+  }
+
+  return ordered.length === enabledNodes.length ? ordered : enabledNodes;
+}
+
+export function computeModeNodePositions(mode: Pick<ModeSpec, "nodes" | "edges">): Record<string, ModeNodePosition> {
+  const enabledNodes = orderedEnabledModeNodes(mode);
+  const disabledNodes = mode.nodes.filter((node) => !node.enabled);
+  const depthByNodeId = new Map<string, number>();
+  const incoming = new Map(enabledNodes.map((node) => [node.id, [] as string[]]));
+
+  for (const edge of activeEnabledModeEdges(mode)) {
+    incoming.get(edge.target)?.push(edge.source);
+  }
+
+  for (const node of enabledNodes) {
+    const maxSourceDepth = Math.max(-1, ...(incoming.get(node.id) ?? []).map((sourceId) => depthByNodeId.get(sourceId) ?? 0));
+    depthByNodeId.set(node.id, maxSourceDepth + 1);
+  }
+
+  const positions: Record<string, ModeNodePosition> = {};
+  const layers = new Map<number, string[]>();
+  for (const node of enabledNodes) {
+    const depth = depthByNodeId.get(node.id) ?? 0;
+    const layer = layers.get(depth) ?? [];
+    layer.push(node.id);
+    layers.set(depth, layer);
+  }
+
+  const layerDepths = [...layers.keys()].sort((left, right) => left - right);
+  for (const depth of layerDepths) {
+    for (const [index, nodeId] of (layers.get(depth) ?? []).entries()) {
+      positions[nodeId] = {
+        x: MODE_LAYOUT_ORIGIN_X + depth * MODE_LAYOUT_COLUMN_GAP,
+        y: MODE_LAYOUT_ORIGIN_Y + index * MODE_LAYOUT_ROW_GAP,
+      };
+    }
+  }
+
+  const disabledColumn = (layerDepths.at(-1) ?? 0) + 1;
+  for (const [index, node] of disabledNodes.entries()) {
+    positions[node.id] = {
+      x: MODE_LAYOUT_ORIGIN_X + disabledColumn * MODE_LAYOUT_COLUMN_GAP + MODE_LAYOUT_DISABLED_COLUMN_OFFSET,
+      y: MODE_LAYOUT_ORIGIN_Y + index * MODE_LAYOUT_ROW_GAP,
+    };
+  }
+
+  return positions;
+}
+
+export function ensureModeNodePositions(mode: ModeSpec): ModeSpec {
+  if (mode.nodes.every((node) => node.position)) {
+    return mode;
+  }
+
+  const computed = computeModeNodePositions(mode);
+  return {
+    ...mode,
+    nodes: mode.nodes.map((node) => ({
+      ...node,
+      position: node.position ?? computed[node.id] ?? { x: MODE_LAYOUT_ORIGIN_X, y: MODE_LAYOUT_ORIGIN_Y },
+    })),
+  };
+}
+
+export function autoLayoutModeSpec(mode: ModeSpec): ModeSpec {
+  const computed = computeModeNodePositions(mode);
+  return {
+    ...mode,
+    nodes: mode.nodes.map((node) => ({
+      ...node,
+      position: computed[node.id] ?? { x: MODE_LAYOUT_ORIGIN_X, y: MODE_LAYOUT_ORIGIN_Y },
+    })),
+  };
+}
+
+export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpec {
+  const definition = getPatternDefinition(pattern);
+  const now = 0;
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: definition.id,
+    family: definition.id,
+    label: definition.label,
+    summary: definition.summary,
+    description: definition.summary,
+    recommendedUse: definition.recommendedUse,
+    failureMode: definition.failureMode,
+    systemPreset: true,
+    nodes: definition.planTemplate.map((item) => ({
+      id: item.id,
+      template: item.id as ModeNodeTemplate,
+      label: item.title,
+      title: item.title,
+      ownerAgentId: item.ownerAgentId,
+      enabled: true,
+      config: {},
+    })),
+    edges: planEdgesFromTemplate(pattern, definition.planTemplate),
+    stopPolicy: definition.defaultStopPolicy,
+    capabilityFlags: {
+      supportsPersistentWorkers: definition.supportsPersistentWorkers,
+      supportsSharedState: definition.supportsSharedState,
+      supportsEventRouting: definition.supportsEventRouting,
+      approvalMode: "high_risk_only",
+      skillIds: [],
+      toolIds: [],
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily(pattern),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES[pattern].allowedTemplates,
+      requiredNodeTemplates: MODE_FAMILY_RULES[pattern].requiredTemplates,
+      readOnly: true,
+      allowReorder: true,
+      allowCreate: true,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: definition.defaultBudget,
+    profiles: definition.profiles,
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
+export const MVP_MODES = CoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern));
+
+export function getModePreset(modeId: string): ModeSpec | undefined {
+  return MVP_MODES.find((mode) => mode.id === modeId);
+}
+
+export function modeSpecToPatternDefinition(mode: ModeSpec): PatternDefinition {
+  const family = getPatternDefinition(mode.family);
+  const orderedNodes = orderedEnabledModeNodes(mode);
+  const edgeDependencies = new Map<string, string[]>();
+  for (const node of orderedNodes) {
+    edgeDependencies.set(node.id, []);
+  }
+  for (const edge of mode.edges.filter((candidate) => candidate.enabled && edgeDependencies.has(candidate.target) && edgeDependencies.has(candidate.source))) {
+    edgeDependencies.get(edge.target)!.push(edge.source);
+  }
+
+  return PatternDefinitionSchema.parse({
+    ...family,
+    id: mode.family,
+    label: mode.label,
+    summary: mode.summary,
+    recommendedUse: mode.recommendedUse ?? family.recommendedUse,
+    failureMode: mode.failureMode ?? family.failureMode,
+    defaultStopPolicy: mode.stopPolicy,
+    defaultBudget: mode.defaultBudget,
+    profiles: mode.profiles,
+    defaultConstraints: [
+      ...family.defaultConstraints,
+      ...(mode.systemPreset ? [] : [`Mode preset: ${mode.id}`]),
+    ],
+    planTemplate: orderedNodes.map((node) => ({
+      id: node.id,
+      title: node.title ?? node.label,
+      ownerAgentId: node.ownerAgentId,
+      dependencies: edgeDependencies.get(node.id) ?? [],
+    })),
+    topology: {
+      nodes: family.topology.nodes.map((node) => ({
+        ...node,
+        metadata: {
+          ...node.metadata,
+          modeId: mode.id,
+          enabledNodeIds: orderedNodes.map((item) => item.id),
+        },
+      })),
+      edges: family.topology.edges,
+    },
+  });
+}
+
+export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const rule = getModeFamilyRule(spec.family);
+  const nodeIds = new Set<string>();
+  const activeRuntimeAtoms = new Set(spec.runtimeAtoms);
+
+  for (const atomId of spec.runtimeAtoms) {
+    const atom = getModeRuntimeAtom(atomId);
+    if (!atom.compatibleFamilies.includes(spec.family)) {
+      errors.push(`Runtime atom '${atomId}' is not compatible with family '${spec.family}'.`);
+    }
+    if (atom.scope !== "mode") {
+      errors.push(`Runtime atom '${atomId}' cannot be attached at mode scope.`);
+    }
+    for (const requiredFlag of atom.requiresFlags) {
+      if (!spec.capabilityFlags[requiredFlag as keyof ModeCapabilityFlags]) {
+        errors.push(`Runtime atom '${atomId}' requires capability flag '${requiredFlag}'.`);
+      }
+    }
+  }
+
+  for (const node of spec.nodes) {
+    if (nodeIds.has(node.id)) {
+      errors.push(`Duplicate node id '${node.id}'.`);
+    }
+    nodeIds.add(node.id);
+    if (!rule.allowedTemplates.includes(node.template)) {
+      errors.push(`Node template '${node.template}' is not allowed for family '${spec.family}'.`);
+    }
+
+    const configuredAtoms = Array.isArray(node.config?.atoms)
+      ? node.config.atoms.filter((value): value is string => typeof value === "string")
+      : [];
+    for (const atomId of configuredAtoms) {
+      const parsed = ModeRuntimeAtomIdSchema.safeParse(atomId);
+      if (!parsed.success) {
+        errors.push(`Node '${node.id}' references unknown runtime atom '${atomId}'.`);
+        continue;
+      }
+      const atom = getModeRuntimeAtom(parsed.data);
+      if (!atom.compatibleFamilies.includes(spec.family)) {
+        errors.push(`Node '${node.id}' cannot use runtime atom '${atom.id}' in family '${spec.family}'.`);
+      }
+      if (atom.scope !== "node") {
+        errors.push(`Node '${node.id}' cannot attach mode-scoped atom '${atom.id}'.`);
+      }
+      for (const requiredFlag of atom.requiresFlags) {
+        if (!spec.capabilityFlags[requiredFlag as keyof ModeCapabilityFlags]) {
+          errors.push(`Node atom '${atom.id}' requires capability flag '${requiredFlag}'.`);
+        }
+      }
+      if (activeRuntimeAtoms.has(atom.id)) {
+        warnings.push(`Node '${node.id}' redundantly enables runtime atom '${atom.id}' that is already active for the mode.`);
+      }
+    }
+  }
+
+  const enabledTemplates = new Set(spec.nodes.filter((node) => node.enabled).map((node) => node.template));
+  for (const required of rule.requiredTemplates) {
+    if (!enabledTemplates.has(required)) {
+      errors.push(`Family '${spec.family}' requires an enabled '${required}' node.`);
+    }
+  }
+
+  if (!rule.stopPolicyTypes.includes(spec.stopPolicy.type)) {
+    errors.push(`Stop policy '${spec.stopPolicy.type}' is not supported for family '${spec.family}'.`);
+  }
+
+  const adjacency = new Map(spec.nodes.map((node) => [node.id, [] as string[]]));
+  const enabledNodeIds = new Set(spec.nodes.filter((node) => node.enabled).map((node) => node.id));
+  const seenEdgePairs = new Set<string>();
+  for (const edge of spec.edges.filter((edge) => edge.enabled)) {
+    if (!nodeIds.has(edge.source)) {
+      errors.push(`Edge '${edge.id}' references unknown source '${edge.source}'.`);
+      continue;
+    }
+    if (!nodeIds.has(edge.target)) {
+      errors.push(`Edge '${edge.id}' references unknown target '${edge.target}'.`);
+      continue;
+    }
+    if (edge.source === edge.target) {
+      errors.push(`Edge '${edge.id}' cannot create a self-loop on '${edge.source}'.`);
+      continue;
+    }
+    const pairKey = `${edge.source}->${edge.target}`;
+    if (seenEdgePairs.has(pairKey)) {
+      errors.push(`Duplicate edge detected between '${edge.source}' and '${edge.target}'.`);
+      continue;
+    }
+    seenEdgePairs.add(pairKey);
+    if (enabledNodeIds.has(edge.source) && enabledNodeIds.has(edge.target)) {
+      adjacency.get(edge.source)?.push(edge.target);
+    }
+  }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (nodeId: string) => {
+    if (visiting.has(nodeId)) {
+      errors.push(`Cycle detected involving node '${nodeId}'.`);
+      return;
+    }
+    if (visited.has(nodeId)) {
+      return;
+    }
+    visiting.add(nodeId);
+    for (const next of adjacency.get(nodeId) ?? []) {
+      visit(next);
+    }
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+  for (const node of spec.nodes.filter((candidate) => candidate.enabled)) {
+    visit(node.id);
+  }
+
+  const orderedNodes = orderedEnabledModeNodes(spec);
+  if (orderedNodes.length === 0) {
+    errors.push("A mode requires at least one enabled node.");
+  } else if (orderedNodes.length === 1) {
+    warnings.push("Single-node modes are supported, but may not provide much orchestration value.");
+  }
+
+  return ModeValidationResultSchema.parse({
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Provider Config Schemas
 // ---------------------------------------------------------------------------
 
-export const ProviderTypeSchema = z.enum(["anthropic", "openai", "openai_compatible", "local_smoke"]);
+export const ProviderTypeSchema = z.enum(["anthropic", "anthropic_compatible", "openai", "openai_compatible", "local_smoke"]);
 export type ProviderType = z.infer<typeof ProviderTypeSchema>;
+
+export const OpenAICompatibleProtocolSchema = z.enum(["chat_completions", "responses"]);
+export type OpenAICompatibleProtocol = z.infer<typeof OpenAICompatibleProtocolSchema>;
 
 export const ProviderCapabilitySchema = z.enum([
   "chat",
@@ -1355,11 +2279,14 @@ export const ProviderConfigSchema = z.object({
   enabled: z.boolean().default(true),
   baseUrl: z.string().url().optional(),
   apiKeyEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
+  protocol: OpenAICompatibleProtocolSchema.optional(),
+  anthropicVersion: z.string().min(1).optional(),
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
   contextWindow: z.number().int().positive().optional(),
   capabilities: z.array(ProviderCapabilitySchema).default(["chat"]),
   dropParams: z.array(z.string().min(1)).default([]),
+  headers: z.record(z.string().min(1)).default({}),
   timeoutMs: z.number().int().positive().optional(),
 });
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
@@ -1387,6 +2314,28 @@ export const ProviderSecretWriteSchema = z.object({
   secret: z.string().min(1),
 });
 export type ProviderSecretWrite = z.infer<typeof ProviderSecretWriteSchema>;
+
+export const ProviderStatusStateSchema = z.enum([
+  "not_configured",
+  "key_stored",
+  "needs_key",
+  "verified",
+  "failed",
+]);
+export type ProviderStatusState = z.infer<typeof ProviderStatusStateSchema>;
+
+export const ProviderStatusSchema = z.object({
+  providerId: z.string().min(1),
+  state: ProviderStatusStateSchema,
+  detail: z.string().min(1),
+  checkedAt: z.number().int().nonnegative().optional(),
+});
+export type ProviderStatus = z.infer<typeof ProviderStatusSchema>;
+
+export const ProviderVerifyParamsSchema = z.object({
+  provider: ProviderConfigSchema,
+});
+export type ProviderVerifyParams = z.infer<typeof ProviderVerifyParamsSchema>;
 
 // ---------------------------------------------------------------------------
 // Tool Descriptor Schemas
@@ -1589,6 +2538,8 @@ export const RuntimeBootstrapSchema = z.object({
     detail: z.string().min(1)
   }),
   patterns: z.array(PatternDefinitionSchema),
+  modes: z.array(ModeSpecSchema),
+  atoms: z.array(ModeRuntimeAtomDefinitionSchema),
   tools: ToolRegistrySchema,
   skills: SkillRegistrySchema,
   providers: ProviderRegistrySchema
@@ -1596,7 +2547,7 @@ export const RuntimeBootstrapSchema = z.object({
 export type RuntimeBootstrap = z.infer<typeof RuntimeBootstrapSchema>;
 
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
-  { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use"], dropParams: [] },
-  { id: "openai-gpt", type: "openai", label: "GPT", modelId: "gpt-4o", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use", "image_input", "json_mode"], dropParams: [] },
-  { id: "local-smoke", type: "local_smoke", label: "Smoke Model", modelId: "smoke-model", enabled: true, maxTokens: 1024, capabilities: ["chat"], dropParams: [] },
+  { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use"], dropParams: [], headers: {} },
+  { id: "openai-gpt", type: "openai", label: "GPT", modelId: "gpt-4o", enabled: true, maxTokens: 8192, capabilities: ["chat", "tool_use", "image_input", "json_mode"], dropParams: [], headers: {} },
+  { id: "local-smoke", type: "local_smoke", label: "Smoke Model", modelId: "smoke-model", enabled: true, maxTokens: 1024, capabilities: ["chat"], dropParams: [], headers: {} },
 ];

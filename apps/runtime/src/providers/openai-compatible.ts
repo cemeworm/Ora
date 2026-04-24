@@ -1,32 +1,18 @@
 import type { ProviderConfig } from "@ora/shared";
 import {
   appendIfDefined,
+  buildResponsesInput,
   extractTextFromValue,
   failMissingApiKey,
   normalizeMessages,
   readProviderApiKey,
+  resolveCompatibleProviderEndpoint,
   splitInstructionMessages,
 } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 
 function createError(status: number, body: string, providerId: string) {
   return new Error(`OpenAI-compatible provider ${providerId} failed with ${status}: ${body}`);
-}
-
-function resolveChatCompletionsEndpoint(baseUrl: string, providerId: string): string {
-  const url = new URL(baseUrl);
-  if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
-    throw new Error(`Provider ${providerId} endpoint must use HTTPS unless it targets localhost`);
-  }
-
-  let pathname = url.pathname.replace(/\/+$/, "");
-  if (!pathname.endsWith("/chat/completions")) {
-    pathname = pathname.endsWith("/v1")
-      ? `${pathname}/chat/completions`
-      : `${pathname}/v1/chat/completions`;
-  }
-  url.pathname = pathname;
-  return url.href;
 }
 
 function configuredPayload<T extends Record<string, unknown>>(payload: T, dropParams: readonly string[]): T {
@@ -39,6 +25,49 @@ function configuredPayload<T extends Record<string, unknown>>(payload: T, dropPa
     delete next[key];
   }
   return next;
+}
+
+function createResponsesPayload(config: ProviderConfig, request: Parameters<ModelProvider>[0]) {
+  const body = appendIfDefined(
+    {
+      model: config.modelId,
+      input: buildResponsesInput(request),
+    },
+    "max_output_tokens",
+    request.maxTokens ?? config.maxTokens
+  );
+
+  return configuredPayload(
+    appendIfDefined(body, "temperature", request.temperature ?? config.temperature),
+    config.dropParams ?? []
+  );
+}
+
+function createChatCompletionsPayload(config: ProviderConfig, request: Parameters<ModelProvider>[0]) {
+  const messages = normalizeMessages(request);
+  const { instructions, dialog } = splitInstructionMessages(messages);
+  const chatMessages = [
+    ...(request.system?.trim() ? [{ role: "system", content: request.system.trim() }] : []),
+    ...(instructions ? [{ role: "system", content: instructions }] : []),
+    ...dialog.map((message) => ({
+      role: message.role === "developer" ? "system" : message.role,
+      content: message.content,
+    })),
+  ];
+
+  const body = appendIfDefined(
+    {
+      model: config.modelId,
+      messages: chatMessages,
+    },
+    "max_tokens",
+    request.maxTokens ?? config.maxTokens
+  );
+
+  return configuredPayload(
+    appendIfDefined(body, "temperature", request.temperature ?? config.temperature),
+    config.dropParams ?? []
+  );
 }
 
 export function createOpenAICompatibleProvider(
@@ -59,36 +88,20 @@ export function createOpenAICompatibleProvider(
       throw failMissingApiKey(config.id, `${envName} or macOS Keychain service ora.provider.${config.id}`);
     }
 
-    const messages = normalizeMessages(request);
-    const { instructions, dialog } = splitInstructionMessages(messages);
-    const chatMessages = [
-      ...(request.system?.trim() ? [{ role: "system", content: request.system.trim() }] : []),
-      ...(instructions ? [{ role: "system", content: instructions }] : []),
-      ...dialog.map((message) => ({
-        role: message.role === "developer" ? "system" : message.role,
-        content: message.content,
-      })),
-    ];
-
-    const body = appendIfDefined(
-      {
-        model: config.modelId,
-        messages: chatMessages,
-      },
-      "max_tokens",
-      request.maxTokens ?? config.maxTokens
-    );
-
-    const payload = configuredPayload(
-      appendIfDefined(body, "temperature", request.temperature ?? config.temperature),
-      config.dropParams
-    );
-
-    const response = await fetchImpl(resolveChatCompletionsEndpoint(config.baseUrl, config.id), {
+    const protocol = config.protocol ?? "chat_completions";
+    const payload = protocol === "responses"
+      ? createResponsesPayload(config, request)
+      : createChatCompletionsPayload(config, request);
+    const response = await fetchImpl(resolveCompatibleProviderEndpoint({
+      providerId: config.id,
+      baseUrl: config.baseUrl,
+      path: protocol === "responses" ? "/responses" : "/chat/completions",
+    }), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
       signal: request.signal,

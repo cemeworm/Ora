@@ -12,7 +12,7 @@ import {
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import type { CoordinationPattern, PatternCard } from "../types";
+import type { ModeCard } from "../types";
 import type { OraProviderConfig } from "../lib/runtimeClient";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
@@ -21,14 +21,14 @@ interface ChatInputProps {
   composerPrompt: string;
   isLoading: boolean;
   isRunning: boolean;
-  activePattern?: PatternCard;
-  patternOptions: PatternCard[];
+  activeMode?: ModeCard;
+  modeOptions: ModeCard[];
   activeProvider?: OraProviderConfig;
   providerOptions: OraProviderConfig[];
   selectedCustomAgentId?: string;
   inputMode: InputMode;
   onInputModeChange: (mode: InputMode) => void;
-  onPatternChange: (pattern: CoordinationPattern) => void;
+  onModeChange: (modeId: string) => void;
   onProviderChange: (providerId: string) => void;
   onPromptChange: (prompt: string) => void;
   onClearSelectedCustomAgent?: () => void;
@@ -36,7 +36,7 @@ interface ChatInputProps {
   onStopRun: () => void;
 }
 
-const modeOptions: Array<{ mode: InputMode; label: string; icon: typeof Zap }> = [
+const inputModeOptions: Array<{ mode: InputMode; label: string; icon: typeof Zap }> = [
   { mode: "flash", label: "Flash", icon: Zap },
   { mode: "thinking", label: "Thinking", icon: Lightbulb },
   { mode: "pro", label: "Pro", icon: GraduationCap },
@@ -47,14 +47,14 @@ export function ChatInput({
   composerPrompt,
   isLoading,
   isRunning,
-  activePattern,
-  patternOptions,
+  activeMode,
+  modeOptions,
   activeProvider,
   providerOptions,
   selectedCustomAgentId,
   inputMode,
   onInputModeChange,
-  onPatternChange,
+  onModeChange,
   onProviderChange,
   onPromptChange,
   onClearSelectedCustomAgent,
@@ -77,7 +77,7 @@ export function ChatInput({
     }
   }
 
-  const selectedMode = modeOptions.find((option) => option.mode === inputMode) ?? modeOptions[2];
+  const selectedMode = inputModeOptions.find((option) => option.mode === inputMode) ?? inputModeOptions[2];
   const SelectedIcon = selectedMode.icon;
 
   return (
@@ -169,25 +169,30 @@ export function ChatInput({
                     <>
                       <Rocket size={13} />
                       <span className="hidden xl:inline">工作模式</span>
-                      <span className="max-w-[150px] truncate text-foreground">{activePattern?.label ?? "Default"}</span>
+                      <span className="max-w-[150px] truncate text-foreground">{activeMode?.label ?? "Default"}</span>
                     </>
                   }
                 >
-                  {patternOptions.map((pattern) => (
+                  {modeOptions.map((mode) => (
                     <button
-                      key={pattern.id}
+                      key={mode.id}
                       type="button"
                       onClick={() => {
-                        onPatternChange(pattern.id);
+                        onModeChange(mode.id);
                         setOpenPicker(undefined);
                       }}
                       className={cn(
                         "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                        activePattern?.id === pattern.id && "bg-accent text-accent-foreground",
+                        activeMode?.id === mode.id && "bg-accent text-accent-foreground",
                       )}
                     >
-                      <div className="text-xs font-medium">{pattern.label}</div>
-                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">{pattern.summary}</div>
+                      <div className="flex items-center justify-between gap-2 text-xs font-medium">
+                        <span>{mode.label}</span>
+                        <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {mode.isPreset ? "preset" : mode.family}
+                        </span>
+                      </div>
+                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">{mode.summary}</div>
                     </button>
                   ))}
                 </Picker>
@@ -202,7 +207,7 @@ export function ChatInput({
                     </>
                   }
                 >
-                  {modeOptions.map(({ mode, label, icon: Icon }) => (
+                  {inputModeOptions.map(({ mode, label, icon: Icon }) => (
                     <button
                       key={mode}
                       type="button"

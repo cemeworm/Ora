@@ -6,6 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VITE_PATTERN='vite --host 127.0.0.1 --port 1420'
 TAURI_PATTERN='@tauri-apps/cli/tauri.js dev'
 DESKTOP_PATTERN='target/debug/ora-desktop'
+DESKTOP_BUNDLE_PATTERN='target/release/bundle/macos/Ora.app/Contents/MacOS/ora-desktop'
+ORA_BUNDLE_ID='dev.ora.workbench'
 PNPM_STATE_FILE="$ROOT_DIR/node_modules/.modules.yaml"
 RUNTIME_SIDECAR_DIR="$ROOT_DIR/apps/desktop/src-tauri/resources/runtime-sidecar"
 
@@ -15,10 +17,20 @@ if [ -f "$HOME/.cargo/env" ]; then
   source "$HOME/.cargo/env"
 fi
 
+quit_installed_ora_app() {
+  osascript <<APPLESCRIPT >/dev/null 2>&1 || true
+tell application id "$ORA_BUNDLE_ID"
+  if running then quit
+end tell
+APPLESCRIPT
+}
+
 cleanup_stale_dev_processes() {
+  quit_installed_ora_app
   pkill -f "$VITE_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$TAURI_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$DESKTOP_PATTERN" >/dev/null 2>&1 || true
+  pkill -f "$DESKTOP_BUNDLE_PATTERN" >/dev/null 2>&1 || true
 }
 
 needs_pnpm_install() {

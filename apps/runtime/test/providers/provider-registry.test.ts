@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, invokeRunProvider } from "../../src/providers/index.js";
+import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, invokeRunProvider, verifyProviderConfig } from "../../src/providers/index.js";
 
 describe("provider adapters", () => {
   it("builds a deterministic local smoke response", async () => {
@@ -9,6 +9,7 @@ describe("provider adapters", () => {
       label: "Smoke",
       modelId: "smoke-model",
       maxTokens: 64,
+      headers: {},
     });
 
     const response = await provider({
@@ -56,6 +57,7 @@ describe("provider adapters", () => {
         modelId: "gpt-test",
         maxTokens: 42,
         temperature: 0.4,
+        headers: {},
       },
       {
         env: { OPENAI_API_KEY: "test-openai-key" },
@@ -115,6 +117,7 @@ describe("provider adapters", () => {
         maxTokens: 128,
         temperature: 0.2,
         dropParams: ["temperature"],
+        headers: {},
       },
       {
         env: { OPENROUTER_API_KEY: "test-openrouter-key" },
@@ -132,6 +135,55 @@ describe("provider adapters", () => {
     expect(response.text).toBe("Compatible hello.");
   });
 
+  it("sends an OpenAI-compatible responses request when requested", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://gateway.example.com/v1/responses");
+
+      const body = JSON.parse(String(init?.body)) as {
+        model: string;
+        input: Array<{ role: string }>;
+        max_output_tokens?: number;
+      };
+
+      expect(body.model).toBe("gateway-reasoner");
+      expect(body.max_output_tokens).toBe(64);
+      expect(body.input[0]?.role).toBe("developer");
+
+      return new Response(JSON.stringify({ output_text: "Responses hello." }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "gateway",
+        type: "openai_compatible",
+        label: "Gateway",
+        modelId: "gateway-reasoner",
+        baseUrl: "https://gateway.example.com",
+        apiKeyEnv: "GATEWAY_API_KEY",
+        protocol: "responses",
+        maxTokens: 64,
+        headers: {
+          "x-gateway": "enabled",
+        },
+      },
+      {
+        env: { GATEWAY_API_KEY: "test-gateway-key" },
+        fetchImpl,
+      }
+    );
+
+    const response = await provider({
+      prompt: "Say hello from responses.",
+      system: "Stay brief.",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(response.text).toBe("Responses hello.");
+  });
+
   it("blocks custom provider base URLs unless explicitly enabled", async () => {
     const provider = createModelProvider(
       {
@@ -140,6 +192,7 @@ describe("provider adapters", () => {
         label: "GPT",
         modelId: "gpt-test",
         baseUrl: "https://example.invalid",
+        headers: {},
       },
       {
         env: { OPENAI_API_KEY: "test-openai-key" },
@@ -187,6 +240,7 @@ describe("provider adapters", () => {
         label: "Claude",
         modelId: "claude-test",
         maxTokens: 24,
+        headers: {},
       },
       {
         env: { ANTHROPIC_API_KEY: "test-anthropic-key" },
@@ -204,6 +258,51 @@ describe("provider adapters", () => {
     expect(response.raw).toMatchObject({
       content: [{ type: "text", text: "Anthropic says hello." }],
     });
+  });
+
+  it("sends an Anthropic-compatible Messages API request", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://claude-gateway.example.com/v1/messages");
+
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-api-key")).toBe("test-compatible-key");
+      expect(headers.get("anthropic-version")).toBe("2023-06-01");
+      expect(headers.get("anthropic-beta")).toBe("prompt-caching-2024-07-31");
+
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "Anthropic compatible hello." }],
+          role: "assistant",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "claude-gateway",
+        type: "anthropic_compatible",
+        label: "Claude Gateway",
+        modelId: "claude-test",
+        baseUrl: "https://claude-gateway.example.com",
+        apiKeyEnv: "CLAUDE_GATEWAY_API_KEY",
+        anthropicVersion: "2023-06-01",
+        headers: {
+          "anthropic-beta": "prompt-caching-2024-07-31",
+        },
+      },
+      {
+        env: { CLAUDE_GATEWAY_API_KEY: "test-compatible-key" },
+        fetchImpl,
+      }
+    );
+
+    const response = await provider({
+      prompt: "Hello.",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(response.text).toBe("Anthropic compatible hello.");
   });
 
   it("creates a registry with a local smoke default provider", async () => {
@@ -226,6 +325,7 @@ describe("provider adapters", () => {
           type: "local_smoke",
           label: "Smoke",
           modelId: "smoke-model",
+          headers: {},
         },
       ],
     });
@@ -268,6 +368,7 @@ describe("provider adapters", () => {
           enabled: true,
           capabilities: ["chat"],
           dropParams: [],
+          headers: {},
         },
         modelRef: "custom-model",
         metadata: {},
@@ -282,5 +383,55 @@ describe("provider adapters", () => {
 
     expect(response.providerId).toBe("custom-compatible");
     expect(response.text).toBe("Run-scoped compatible output.");
+  });
+
+  it("verifies provider configs and returns a verified status", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "OK" } }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const status = await verifyProviderConfig(
+      {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "openai/gpt-4o-mini",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      },
+      {
+        env: { OPENROUTER_API_KEY: "test-openrouter-key" },
+        fetchImpl,
+      }
+    );
+
+    expect(status.state).toBe("verified");
+    expect(status.detail).toBe("Connection verified.");
+  });
+
+  it("returns a failed verification status with actionable detail", async () => {
+    const status = await verifyProviderConfig(
+      {
+        id: "broken-compatible",
+        type: "openai_compatible",
+        label: "Broken Compatible",
+        modelId: "broken-model",
+        baseUrl: "https://broken.example.com",
+        apiKeyEnv: "BROKEN_API_KEY",
+        headers: {},
+      },
+      {
+        env: {},
+        fetchImpl: vi.fn(),
+      }
+    );
+
+    expect(status.state).toBe("failed");
+    expect(status.detail).toContain("BROKEN_API_KEY");
   });
 });

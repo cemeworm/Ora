@@ -2,21 +2,24 @@ import type { ProviderConfig } from "@ora/shared";
 import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 
-function createError(status: number, body: string, providerId: string) {
-  return new Error(`Anthropic provider ${providerId} failed with ${status}: ${body}`);
-}
-
-export function createAnthropicProvider(
+export function createAnthropicStyleProvider(
   config: ProviderConfig,
-  options: ProviderRuntimeOptions = {}
+  options: ProviderRuntimeOptions = {},
+  settings: {
+    fallbackEnvName: string;
+    allowCustomBaseUrl?: boolean;
+    defaultOrigin?: string;
+    defaultVersion?: string;
+    errorLabel?: string;
+  }
 ): ModelProvider {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
 
   return async (request) => {
-    const apiKey = readProviderApiKey(config, "ANTHROPIC_API_KEY", env);
+    const apiKey = readProviderApiKey(config, settings.fallbackEnvName, env);
     if (!apiKey) {
-      throw failMissingApiKey(config.id, "ANTHROPIC_API_KEY");
+      throw failMissingApiKey(config.id, settings.fallbackEnvName);
     }
 
     const messages = normalizeMessages(request);
@@ -46,15 +49,17 @@ export function createAnthropicProvider(
     const response = await fetchImpl(resolveProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
-      defaultOrigin: "https://api.anthropic.com",
+      defaultOrigin: settings.defaultOrigin ?? "https://api.anthropic.com",
       path: "/v1/messages",
       env,
+      allowCustomBaseUrl: settings.allowCustomBaseUrl,
     }), {
       method: "POST",
       headers: {
         "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        "anthropic-version": config.anthropicVersion ?? settings.defaultVersion ?? "2023-06-01",
         "content-type": "application/json",
+        ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
       signal: request.signal,
@@ -62,7 +67,7 @@ export function createAnthropicProvider(
 
     const rawText = await response.text();
     if (!response.ok) {
-      throw createError(response.status, rawText, config.id);
+      throw new Error(`${settings.errorLabel ?? "Anthropic"} provider ${config.id} failed with ${response.status}: ${rawText}`);
     }
 
     const raw = rawText ? JSON.parse(rawText) : {};
@@ -75,4 +80,14 @@ export function createAnthropicProvider(
       raw,
     } satisfies ModelResponse;
   };
+}
+
+export function createAnthropicProvider(
+  config: ProviderConfig,
+  options: ProviderRuntimeOptions = {}
+): ModelProvider {
+  return createAnthropicStyleProvider(config, options, {
+    fallbackEnvName: "ANTHROPIC_API_KEY",
+    errorLabel: "Anthropic",
+  });
 }

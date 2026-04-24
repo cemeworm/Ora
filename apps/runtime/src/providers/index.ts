@@ -8,6 +8,7 @@ export type {
   ProviderRuntimeOptions,
 } from "./types.js";
 
+export { createAnthropicCompatibleProvider } from "./anthropic-compatible.js";
 export { createAnthropicProvider } from "./anthropic.js";
 export {
   configuredProviderId,
@@ -16,6 +17,7 @@ export {
   createProviderRegistry,
   createProviderRegistryForRun,
   invokeRunProvider,
+  verifyProviderConfig,
 } from "./registry.js";
 export { createLocalSmokeProvider } from "./local-smoke.js";
 export { createOpenAICompatibleProvider } from "./openai-compatible.js";
