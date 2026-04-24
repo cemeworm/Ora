@@ -10,12 +10,18 @@ import { SessionManager } from "./session/session-manager.js";
 import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
+import type { RunEventStream } from "@ora/shared";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
 
+export interface RuntimeMethodHandlerOptions {
+  onRunStream?: (stream: RunEventStream) => void;
+}
+
 export function createRuntimeMethodHandler(
   store = new LocalRunStore(),
-  sessionManager = new SessionManager(process.env.ORA_LANGGRAPH_ENABLED === "true")
+  sessionManager = new SessionManager(process.env.ORA_LANGGRAPH_ENABLED === "true"),
+  options: RuntimeMethodHandlerOptions = {},
 ): JsonRpcMethodHandler {
   const providerRegistry = createDefaultProviderRegistry().config;
   const toolRegistry = new RuntimeToolRegistry().snapshot();
@@ -112,6 +118,8 @@ export function createRuntimeMethodHandler(
           );
         }
         return store.startRun(request.params);
+      case "runs.startStreaming":
+        return store.startStreamingRun(request.params, { onStream: options.onRunStream });
       case "runs.list":
         return store.listRuns(request.params);
       case "runs.stream":

@@ -26,16 +26,30 @@ export interface ModelResponse {
   raw: unknown;
 }
 
+export interface ModelStreamChunk {
+  delta: string;
+  text: string;
+  raw?: unknown;
+}
+
+export interface ModelStreamCallbacks {
+  onTextDelta?: (chunk: ModelStreamChunk) => void | Promise<void>;
+}
+
 export interface ProviderRuntimeOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: FetchLike;
 }
 
-export type ModelProvider = (request: ModelRequest) => Promise<ModelResponse>;
+export interface ModelProvider {
+  (request: ModelRequest): Promise<ModelResponse>;
+  stream?: (request: ModelRequest, callbacks?: ModelStreamCallbacks) => Promise<ModelResponse>;
+}
 
 export interface ProviderRegistry {
   readonly config: SharedProviderRegistry;
   list(): readonly ProviderConfig[];
   resolve(providerId?: string): ModelProvider;
   invoke(providerId: string | undefined, request: ModelRequest): Promise<ModelResponse>;
+  invokeStream(providerId: string | undefined, request: ModelRequest, callbacks?: ModelStreamCallbacks): Promise<ModelResponse>;
 }

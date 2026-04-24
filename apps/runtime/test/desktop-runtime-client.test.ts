@@ -89,6 +89,59 @@ describe("desktop browser-mock runtime lifecycle", () => {
     expect(steps.at(-1)?.contextLabel).toBe("notes/project.md");
   });
 
+  it("renders streamed assistant text before transcript finalization", async () => {
+    const client = createRuntimeClient();
+    const session = await client.createSession();
+    const snapshot = await client.startRun(
+      { prompt: "Render partial streamed text." },
+      { modeId: "generator_verifier" },
+      session.sessionId,
+    );
+    const partialSnapshot = {
+      ...snapshot,
+      status: "running" as const,
+      output: undefined,
+      events: [
+        ...snapshot.events.filter((event) => event.type !== "message.delta" && event.type !== "run.done"),
+        {
+          id: `${snapshot.runId}:evt-stream`,
+          runId: snapshot.runId,
+          seq: snapshot.events.length,
+          type: "message.delta" as const,
+          createdAt: snapshot.updatedAt + 1,
+          pattern: snapshot.pattern,
+          payload: {
+            role: "assistant",
+            content: "Partial answer",
+            delta: "answer",
+            streaming: true,
+          },
+        },
+      ],
+    };
+
+    const messages = adaptChatMessages(
+      [
+        {
+          id: `${snapshot.runId}:user`,
+          sessionId: session.sessionId,
+          runId: snapshot.runId,
+          turnIndex: snapshot.turnIndex ?? 1,
+          role: "user",
+          content: snapshot.input.prompt,
+          pattern: snapshot.pattern,
+          modeId: snapshot.modeId,
+          createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+        },
+      ],
+      { [snapshot.runId]: partialSnapshot },
+    );
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toBe("Partial answer");
+    expect(assistant?.isPlaceholder).toBe(true);
+  });
+
   it("blocks in-flight todos after cancelling an approval-required run", async () => {
     const client = createRuntimeClient();
     const session = await client.createSession();

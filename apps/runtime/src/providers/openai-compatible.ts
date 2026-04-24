@@ -10,6 +10,7 @@ import {
   splitInstructionMessages,
 } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
+import { emitTextDelta, openAiChatDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
 
 function createError(status: number, body: string, providerId: string) {
   return new Error(`OpenAI-compatible provider ${providerId} failed with ${status}: ${body}`);
@@ -77,7 +78,7 @@ export function createOpenAICompatibleProvider(
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
 
-  return async (request) => {
+  const provider: ModelProvider = async (request) => {
     if (!config.baseUrl) {
       throw new Error(`OpenAI-compatible provider ${config.id} requires a baseUrl`);
     }
@@ -122,4 +123,66 @@ export function createOpenAICompatibleProvider(
       raw,
     } satisfies ModelResponse;
   };
+
+  provider.stream = async (request, callbacks) => {
+    if (!config.baseUrl) {
+      throw new Error(`OpenAI-compatible provider ${config.id} requires a baseUrl`);
+    }
+
+    const envName = config.apiKeyEnv ?? `${config.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+    const apiKey = readProviderApiKey(config, envName, env);
+    if (!apiKey) {
+      throw failMissingApiKey(config.id, `${envName} or macOS Keychain service ora.provider.${config.id}`);
+    }
+
+    const protocol = config.protocol ?? "chat_completions";
+    const basePayload = protocol === "responses"
+      ? createResponsesPayload(config, request)
+      : createChatCompletionsPayload(config, request);
+    const payload = { ...basePayload, stream: true };
+
+    const response = await fetchImpl(resolveCompatibleProviderEndpoint({
+      providerId: config.id,
+      baseUrl: config.baseUrl,
+      path: protocol === "responses" ? "/responses" : "/chat/completions",
+    }), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        ...(config.headers ?? {}),
+      },
+      body: JSON.stringify(payload),
+      signal: request.signal,
+    });
+
+    if (!response.ok) {
+      throw createError(response.status, await response.text(), config.id);
+    }
+
+    let text = "";
+    const rawEvents = await readSseMessages(response, async (message) => {
+      const data = JSON.parse(message.data) as unknown;
+      const delta = protocol === "responses"
+        ? openAiResponsesDelta(data)
+        : openAiChatDelta(data);
+      if (!delta) return;
+      text += delta;
+      await emitTextDelta(callbacks, { delta, text, raw: data });
+    });
+
+    return {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      text,
+      raw: {
+        streamMode: "sse",
+        protocol,
+        events: rawEvents,
+      },
+    } satisfies ModelResponse;
+  };
+
+  return provider;
 }

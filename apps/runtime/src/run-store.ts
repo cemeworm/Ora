@@ -145,6 +145,10 @@ interface PersistedArtifact {
   payload: unknown;
 }
 
+interface StreamingRunOptions {
+  onStream?: (stream: RunEventStream) => void;
+}
+
 // RuntimePersistenceBackend is imported from ./persistence/sqlite-backend.js
 
 export class OraRuntimeError extends Error {
@@ -579,6 +583,110 @@ export class LocalRunStore {
     const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
     this.persistRun(tracedSnapshot);
     return this.toRunHandle(tracedSnapshot);
+  }
+
+  async startStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
+    const parsed = StartRunParamsSchema.parse(params);
+    const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
+    const input = this.enrichInputForSession(UserTaskInputSchema.parse({
+      ...parsed.input,
+      createdAt: parsed.input.createdAt ?? this.now()
+    }), session);
+    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
+    const runId = this.nextRunId();
+    const turnIndex = this.nextTurnIndex(session.sessionId);
+    const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
+    let liveSnapshot = this.createRunningSnapshot({
+      runId,
+      sessionId: session.sessionId,
+      turnIndex,
+      input,
+      config: fullConfig,
+      modeSpec,
+      definition,
+    });
+    this.persistRun(liveSnapshot);
+
+    const publishStream = (events: OraEventEnvelope[], snapshot?: StateSnapshot) => {
+      if (events.length === 0 && !snapshot) {
+        return;
+      }
+      const firstSeq = events[0]?.seq ?? liveSnapshot.events.length;
+      options.onStream?.(RunEventStreamSchema.parse({
+        runId,
+        fromSeq: firstSeq,
+        events,
+        nextSeq: events.length > 0 ? firstSeq + events.length : liveSnapshot.events.length,
+        status: snapshot?.status ?? liveSnapshot.status,
+        snapshot,
+      }));
+    };
+
+    const applyLiveEvent = (event: OraEventEnvelope) => {
+      const status = event.type === "run.done"
+        ? "succeeded"
+        : event.type === "run.failed"
+          ? "failed"
+          : event.type === "run.cancelled"
+            ? "cancelled"
+            : event.type === "run.interrupted"
+              ? "interrupted"
+              : liveSnapshot.status;
+      liveSnapshot = StateSnapshotSchema.parse({
+        ...liveSnapshot,
+        status,
+        events: [...liveSnapshot.events, event],
+        updatedAt: event.createdAt,
+      });
+      this.cacheRun(liveSnapshot, event.seq % 8 === 0 || event.type.startsWith("run."));
+      publishStream([event]);
+    };
+
+    void withLangfuseRunTrace(
+      { runId, input, config: fullConfig },
+      async () => {
+        const { snapshot } = await executeRuntimeKernel(runId, input, fullConfig, {
+          clock: this.clock,
+          modeSpec,
+          definition,
+          skillRegistry: this.skillRegistry,
+          customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+          conversationMessages,
+          streamProvider: true,
+          onEvent: applyLiveEvent,
+        });
+        const finalSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
+          ...snapshot,
+          sessionId: session.sessionId,
+          turnIndex,
+        }));
+        this.persistRun(finalSnapshot);
+        publishStream([], finalSnapshot);
+      },
+    ).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const failedAt = this.now();
+      const failedEvent = OraEventEnvelopeSchema.parse({
+        id: `${runId}:evt-${liveSnapshot.events.length}`,
+        runId,
+        seq: liveSnapshot.events.length,
+        type: "run.failed",
+        createdAt: failedAt,
+        pattern: fullConfig.pattern,
+        payload: { status: "failed", error: detail },
+      });
+      liveSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
+        ...liveSnapshot,
+        status: "failed",
+        error: detail,
+        events: [...liveSnapshot.events, failedEvent],
+        updatedAt: failedAt,
+      }));
+      this.persistRun(liveSnapshot);
+      publishStream([failedEvent], liveSnapshot);
+    });
+
+    return this.toRunHandle(liveSnapshot);
   }
 
   async startRunWithKernel(
@@ -1153,6 +1261,80 @@ export class LocalRunStore {
       definition,
       fullConfig,
     };
+  }
+
+  private createRunningSnapshot(params: {
+    runId: string;
+    sessionId: string;
+    turnIndex: number;
+    input: UserTaskInput;
+    config: RunConfig;
+    modeSpec: ModeSpec;
+    definition: PatternDefinition;
+  }): StateSnapshot {
+    const startedAt = this.now();
+    const pattern = params.config.pattern;
+    const planService = new PlanService(params.runId, params.definition);
+    const todoService = new TodoService(params.runId, () => this.now(), planService.list());
+    const queueMode = params.definition.coordinationKind === "bus"
+      ? "event_bus"
+      : params.definition.coordinationKind === "shared_state"
+        ? "shared_state"
+        : params.definition.coordinationKind === "team"
+          ? "backlog"
+          : "dag";
+
+    return StateSnapshotSchema.parse({
+      runId: params.runId,
+      sessionId: params.sessionId,
+      turnIndex: params.turnIndex,
+      status: "running",
+      pattern,
+      coordinationKind: pattern,
+      modeId: params.modeSpec.id,
+      input: params.input,
+      config: params.config,
+      topology: {
+        nodes: params.definition.topology.nodes.map((node) => ({
+          ...node,
+          status: node.kind === "run" ? "running" : node.status,
+        })),
+        edges: params.definition.topology.edges,
+      },
+      profiles: new AgentProfileRegistry(params.definition).list(params.config.profileIds),
+      memory: [],
+      plan: planService.list(),
+      todos: todoService.list(),
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {
+        mode: queueMode,
+        pending: params.definition.planTemplate.length,
+        inProgress: 0,
+        completed: 0,
+        topics: [],
+      },
+      sharedStateSummary: {
+        enabled: params.definition.supportsSharedState,
+        storeKind: params.definition.supportsSharedState ? "blackboard" : "none",
+        version: 0,
+        entries: [],
+      },
+      busStats: {
+        enabled: params.definition.supportsEventRouting,
+        publishedCount: 0,
+        routedCount: 0,
+        topicCounts: {},
+      },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      modeSpec: params.modeSpec,
+      updatedAt: startedAt,
+    });
   }
 
   private createCompletedRun(params: {
@@ -1739,13 +1921,25 @@ export class LocalRunStore {
   }
 
   private persistRun(snapshot: StateSnapshot): void {
+    this.cacheRun(snapshot, true);
+  }
+
+  private cacheRun(snapshot: StateSnapshot, flush: boolean): void {
     this.runs.set(snapshot.runId, snapshot);
-    this.backend.saveRun(snapshot);
     if (snapshot.sessionId) {
       const session = this.upsertSessionFromRun(snapshot);
-      this.persistSession(session);
+      this.sessions.set(session.sessionId, session);
+      if (flush) {
+        this.backend.saveSession(session);
+        if (session.projectId) {
+          this.syncProjectSummary(session.projectId);
+        }
+      }
     }
-    this.backend.saveManifest(this.manifest);
+    if (flush) {
+      this.backend.saveRun(snapshot);
+      this.backend.saveManifest(this.manifest);
+    }
   }
 
   private nextRunId(): string {

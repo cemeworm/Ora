@@ -6,7 +6,8 @@ import { createLocalSmokeProvider } from "./local-smoke.js";
 import { createOpenAIProvider } from "./openai.js";
 import { createOpenAICompatibleProvider } from "./openai-compatible.js";
 import { traceLangfuseGeneration } from "../telemetry/langfuse.js";
-import type { ModelProvider, ModelRequest, ProviderRegistry, ProviderRuntimeOptions } from "./types.js";
+import type { ModelProvider, ModelRequest, ModelStreamCallbacks, ProviderRegistry, ProviderRuntimeOptions } from "./types.js";
+import { streamFallback } from "./streaming.js";
 
 export function createModelProvider(
   config: ProviderConfig,
@@ -77,6 +78,20 @@ export function createProviderRegistry(
         () => provider(request)
       );
     },
+    async invokeStream(providerId: string | undefined, request: ModelRequest, callbacks?: ModelStreamCallbacks) {
+      const providerConfig = resolveConfig(providerId);
+      const provider = resolve(providerConfig.id);
+      const stream = provider.stream ?? streamFallback(provider);
+      return traceLangfuseGeneration(
+        {
+          providerId: providerConfig.id,
+          modelId: providerConfig.modelId,
+          providerType: providerConfig.type,
+          request
+        },
+        () => stream(request, callbacks)
+      );
+    },
   };
 }
 
@@ -121,6 +136,15 @@ export async function invokeRunProvider(
   options: ProviderRuntimeOptions = {}
 ) {
   return createProviderRegistryForRun(config, options).invoke(configuredProviderId(config), request);
+}
+
+export async function invokeRunProviderStream(
+  config: RunConfig,
+  request: ModelRequest,
+  callbacks?: ModelStreamCallbacks,
+  options: ProviderRuntimeOptions = {}
+) {
+  return createProviderRegistryForRun(config, options).invokeStream(configuredProviderId(config), request, callbacks);
 }
 
 export async function verifyProviderConfig(

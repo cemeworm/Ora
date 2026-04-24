@@ -148,6 +148,7 @@ export interface RuntimeBootstrap {
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown };
 const CUSTOM_PROVIDER_STORAGE_KEY = "ora.customProviders.v1";
+export const RUN_EVENT_NOTIFICATION = "ora://runtime/run-event";
 let sharedRuntimeClient: ReturnType<typeof createRuntimeClient> | undefined;
 
 export function createRuntimeClient() {
@@ -374,6 +375,16 @@ export function createRuntimeClient() {
     async startRun(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraStateSnapshot> {
       const handle = await call<OraRunHandle>("runs.start", { input, config, sessionId });
       return call<OraStateSnapshot>("runs.state", { runId: handle.runId });
+    },
+    async startStreamingRun(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraRunHandle> {
+      return call<OraRunHandle>("runs.startStreaming", { input, config, sessionId });
+    },
+    async subscribeRunEvents(callback: (stream: OraRunEventStream) => void): Promise<() => void> {
+      if (!isTauriAvailable()) {
+        return () => {};
+      }
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<OraRunEventStream>(RUN_EVENT_NOTIFICATION, (event) => callback(event.payload));
     },
     async getRunState(runId: string): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.state", { runId });
@@ -888,6 +899,8 @@ class LocalJsonRpcRuntime {
         return [...this.evaluationBaselines.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
       case "runs.start":
         return this.startRun(params);
+      case "runs.startStreaming":
+        return this.startRun(params);
       case "runs.list":
         return [...this.runs.values()]
           .filter((snapshot) => {
@@ -937,6 +950,8 @@ class LocalJsonRpcRuntime {
           fromSeq,
           events,
           nextSeq: snapshot.events.length,
+          status: snapshot.status,
+          snapshot,
         };
       }
       case "runs.replay": {

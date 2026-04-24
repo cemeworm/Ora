@@ -24,6 +24,27 @@ describe("provider adapters", () => {
     expect(response.text).toContain("instructions=Keep this deterministic.");
   });
 
+  it("streams local smoke responses as cumulative text deltas", async () => {
+    const provider = createModelProvider({
+      id: "local-smoke",
+      type: "local_smoke",
+      label: "Smoke",
+      modelId: "smoke-model",
+      headers: {},
+    });
+    const chunks: Array<{ delta: string; text: string }> = [];
+
+    const response = await provider.stream?.(
+      { prompt: "Stream a small answer." },
+      { onTextDelta: (chunk) => { chunks.push({ delta: chunk.delta, text: chunk.text }); } },
+    );
+
+    expect(response?.text).toContain("Stream a small answer.");
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.at(-1)?.text).toBe(response?.text);
+    expect(chunks.every((chunk) => chunk.text.endsWith(chunk.delta) || chunk.delta.trim().length > 0)).toBe(true);
+  });
+
   it("sends an OpenAI Responses API request and parses output_text", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
@@ -73,6 +94,40 @@ describe("provider adapters", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(response.text).toBe("OpenAI says hello.");
     expect(response.raw).toMatchObject({ output_text: "OpenAI says hello." });
+  });
+
+  it("parses OpenAI Responses API streaming text deltas", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { stream?: boolean };
+      expect(body.stream).toBe(true);
+      return new Response([
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+        "data: [DONE]\n\n",
+      ].join(""), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const provider = createModelProvider(
+      {
+        id: "openai-gpt",
+        type: "openai",
+        label: "GPT",
+        modelId: "gpt-test",
+        headers: {},
+      },
+      { env: { OPENAI_API_KEY: "test-openai-key" }, fetchImpl },
+    );
+    const chunks: string[] = [];
+
+    const response = await provider.stream?.(
+      { prompt: "Say hello." },
+      { onTextDelta: (chunk) => { chunks.push(chunk.delta); } },
+    );
+
+    expect(response?.text).toBe("Hello");
+    expect(chunks).toEqual(["Hel", "lo"]);
   });
 
   it("sends an OpenAI-compatible chat completions request", async () => {

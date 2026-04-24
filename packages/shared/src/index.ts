@@ -437,7 +437,9 @@ export const RunEventStreamSchema = z.object({
   runId: z.string().min(1),
   fromSeq: z.number().int().nonnegative(),
   events: z.array(OraEventEnvelopeSchema),
-  nextSeq: z.number().int().nonnegative()
+  nextSeq: z.number().int().nonnegative(),
+  status: RunStatusSchema.optional(),
+  snapshot: z.lazy(() => StateSnapshotSchema).optional()
 });
 export type RunEventStream = z.infer<typeof RunEventStreamSchema>;
 
@@ -1099,6 +1101,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "sessions.list",
   "sessions.get",
   "runs.start",
+  "runs.startStreaming",
   "runs.list",
   "runs.stream",
   "runs.interrupt",

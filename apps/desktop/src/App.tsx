@@ -9,7 +9,7 @@ import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import type { AppView, ArtifactRecord } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
-import type { OraStateSnapshot } from "./lib/runtimeClient";
+import type { OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
 const EvaluationView = lazy(() => import("./components/EvaluationView").then((module) => ({ default: module.EvaluationView })));
@@ -65,6 +65,21 @@ function LoadingPane({ label = "Loading view..." }: { label?: string }) {
       </div>
     </WorkspacePane>
   );
+}
+
+function mergeStreamIntoSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
+  if (stream.snapshot) return stream.snapshot;
+  if (!snapshot || snapshot.runId !== stream.runId) return snapshot;
+  const eventBySeq = new Map(snapshot.events.map((event) => [event.seq, event]));
+  for (const event of stream.events) {
+    eventBySeq.set(event.seq, event);
+  }
+  return {
+    ...snapshot,
+    status: stream.status ?? snapshot.status,
+    events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
+    updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
+  };
 }
 
 class WorkbenchErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
@@ -266,6 +281,28 @@ function WorkbenchInner() {
       .then(({ getCurrentWebviewWindow }) => getCurrentWebviewWindow().setTitle(title))
       .catch(() => {});
   }, [state.activeView, state.settingsOpen]);
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
+    void runtimeClient.subscribeRunEvents((stream) => {
+      dispatch({ type: "APPLY_RUN_STREAM", stream });
+      setTurnSnapshots((current) => {
+        const merged = mergeStreamIntoSnapshot(current[stream.runId], stream);
+        return merged ? { ...current, [stream.runId]: merged } : current;
+      });
+    }).then((nextUnsubscribe) => {
+      if (cancelled) {
+        nextUnsubscribe();
+        return;
+      }
+      unsubscribe = nextUnsubscribe;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [runtimeClient, dispatch]);
 
   useEffect(() => {
     const snapshot = state.activeSnapshot;

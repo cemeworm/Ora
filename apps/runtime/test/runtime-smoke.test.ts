@@ -20,6 +20,16 @@ function expectOrderedEvents(eventTypes: string[], expected: string[]) {
   }
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe("Ora runtime smoke path", () => {
   it("starts a deterministic smoke run with ordered Ora events", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
@@ -1150,6 +1160,40 @@ describe("Ora runtime smoke path", () => {
     expect(stream.fromSeq).toBe(3);
     expect(stream.nextSeq).toBe(state.events.length);
     expect(stream.events).toEqual(expectedEvents);
+  });
+
+  it("starts a streaming run and publishes incremental message events before final state", async () => {
+    const streams: Array<{ status?: string; events: Array<{ type: string; payload: unknown }>; snapshot?: unknown }> = [];
+    const handle = createRuntimeMethodHandler(createTempStore(), undefined, {
+      onRunStream(stream) {
+        streams.push(stream);
+      },
+    });
+    const run = (await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.startStreaming",
+      params: {
+        input: { prompt: "Stream local smoke output." },
+        config: { pattern: "orchestrator_subagent" },
+      },
+    })) as { runId: string; status: string };
+
+    expect(run.status).toBe("running");
+    await waitFor(() => streams.some((stream) => stream.status === "succeeded" || stream.snapshot !== undefined));
+
+    const deltaEvents = streams.flatMap((stream) => stream.events).filter((event) => event.type === "message.delta");
+    expect(deltaEvents.length).toBeGreaterThan(1);
+    expect(deltaEvents.some((event) => typeof (event.payload as { delta?: unknown }).delta === "string")).toBe(true);
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.state",
+      params: { runId: run.runId },
+    }));
+    expect(state.status).toBe("succeeded");
+    expect(state.events.some((event) => event.type === "run.done")).toBe(true);
   });
 
   it("resumes an interrupted run with an Ora-owned transition event", async () => {

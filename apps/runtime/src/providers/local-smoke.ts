@@ -1,6 +1,7 @@
 import type { ProviderConfig } from "@ora/shared";
 import { normalizeMessages, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
+import { emitTextDelta } from "./streaming.js";
 
 function stableSummary(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 160);
@@ -10,7 +11,7 @@ export function createLocalSmokeProvider(
   config: ProviderConfig,
   _options: ProviderRuntimeOptions = {}
 ): ModelProvider {
-  return async (request) => {
+  const provider: ModelProvider = async (request) => {
     const messages = normalizeMessages(request);
     const { instructions, dialog } = splitInstructionMessages(messages);
     const prompt = stableSummary(
@@ -41,5 +42,27 @@ export function createLocalSmokeProvider(
       raw,
     };
   };
-}
 
+  provider.stream = async (request, callbacks) => {
+    const response = await provider(request);
+    const parts = response.text.match(/\S+\s*/g) ?? [response.text];
+    let text = "";
+    for (const part of parts) {
+      text += part;
+      await emitTextDelta(callbacks, {
+        delta: part,
+        text,
+        raw: { provider: config.type, model: config.modelId },
+      });
+    }
+    return {
+      ...response,
+      raw: {
+        streamMode: "local_smoke",
+        response: response.raw,
+      },
+    };
+  };
+
+  return provider;
+}

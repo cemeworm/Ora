@@ -171,7 +171,7 @@ export function useRunActions() {
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
     try {
-      const snapshot = await runtimeClient.startRun(
+      const handle = await runtimeClient.startStreamingRun(
         {
           prompt: submittedPrompt,
           projectId,
@@ -192,7 +192,9 @@ export function useRunActions() {
         },
         state.selectedSessionId,
       );
-      await refreshCurrentSession(snapshot, `Added turn ${snapshot.turnIndex ?? "?"} to the current session.`);
+      const snapshot = await runtimeClient.getRunState(handle.runId);
+      dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
+      await refreshCurrentSession(snapshot, `Started turn ${snapshot.turnIndex ?? "?"}.`);
       dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
       const health = runtimeClient.getHealth();
       if (health) {

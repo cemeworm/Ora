@@ -7,8 +7,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const JSON_RPC_VERSION: &str = "2.0";
 const RUNTIME_COMMAND_ENV: &str = "ORA_RUNTIME_SIDECAR_COMMAND";
@@ -154,6 +155,7 @@ impl RuntimeSidecarManager {
     fn try_process_json_rpc(
         &self,
         request: &RuntimeJsonRpcRequest,
+        app: Option<&AppHandle>,
     ) -> Option<RuntimeJsonRpcResponse> {
         if !self
             .process_spawn_available
@@ -165,7 +167,7 @@ impl RuntimeSidecarManager {
         }
 
         let command = self.configured_command.clone()?;
-        match run_process_json_rpc(&command, request) {
+        match run_process_json_rpc_for_app(&command, request, app) {
             Ok(response) => Some(response),
             Err(_) => {
                 self.disable_process_bridge();
@@ -437,8 +439,9 @@ pub fn runtime_json_rpc(
     request: RuntimeJsonRpcRequest,
     manager: State<'_, RuntimeSidecarManager>,
     facade: State<'_, RuntimeFacade>,
+    app: AppHandle,
 ) -> RuntimeJsonRpcResponse {
-    if let Some(response) = manager.try_process_json_rpc(&request) {
+    if let Some(response) = manager.try_process_json_rpc(&request, Some(&app)) {
         response
     } else {
         facade.handle_runtime_json_rpc(request)
@@ -575,6 +578,7 @@ impl RuntimeFacade {
             "sessions.list" => self.sessions_list(params.as_ref()),
             "sessions.get" => self.sessions_get(params.as_ref()),
             "runs.start" => self.runs_start(params.as_ref()),
+            "runs.startStreaming" => self.runs_start(params.as_ref()),
             "runs.list" => self.runs_list(params.as_ref()),
             "runs.stream" => self.runs_stream(params.as_ref()),
             "runs.interrupt" => self.runs_interrupt(params.as_ref()),
@@ -1017,7 +1021,9 @@ impl RuntimeFacade {
             "runId": run_id,
             "fromSeq": from_seq,
             "events": events,
-            "nextSeq": snapshot["events"].as_array().map_or(0, Vec::len)
+            "nextSeq": snapshot["events"].as_array().map_or(0, Vec::len),
+            "status": snapshot["status"],
+            "snapshot": snapshot
         }))
     }
 
@@ -1474,9 +1480,39 @@ fn command_is_available(executable: &Path) -> bool {
     false
 }
 
-fn run_process_json_rpc(
+fn run_process_json_rpc_for_app(
     command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,
+    app: Option<&AppHandle>,
+) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+    run_process_json_rpc_internal(
+        command,
+        request,
+        if request.method == "runs.startStreaming" {
+            let app = app.cloned();
+            Some(Box::new(move |payload| {
+                if let Some(app) = app.as_ref() {
+                    let _ = app.emit("ora://runtime/run-event", payload);
+                }
+            }))
+        } else {
+            None
+        },
+    )
+}
+
+fn run_process_json_rpc_with_notifications(
+    command: &RuntimeCommandSpec,
+    request: &RuntimeJsonRpcRequest,
+    on_notification: Box<dyn Fn(Value) + Send + 'static>,
+) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+    run_process_json_rpc_internal(command, request, Some(on_notification))
+}
+
+fn run_process_json_rpc_internal(
+    command: &RuntimeCommandSpec,
+    request: &RuntimeJsonRpcRequest,
+    on_notification: Option<Box<dyn Fn(Value) + Send + 'static>>,
 ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
     let mut process = Command::new(command.executable());
     process
@@ -1588,21 +1624,50 @@ fn run_process_json_rpc(
         )
     })?;
 
-    // The sidecar process is one-shot; once a valid JSON-RPC response is read,
-    // post-response cleanup must not block the desktop command path.
-    match child.try_wait() {
-        Ok(Some(_status)) => {}
-        Ok(None) => {
-            let _ = child.kill();
+    if let Some(on_notification) = on_notification {
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut child = child;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if let Some(payload) = parse_runtime_notification(line.trim()) {
+                            on_notification(payload);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
             let _ = child.wait();
-        }
-        Err(_error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+        });
+    } else {
+        // The sidecar process is one-shot; once a valid JSON-RPC response is read,
+        // post-response cleanup must not block the desktop command path.
+        match child.try_wait() {
+            Ok(Some(_status)) => {}
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Err(_error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 
     Ok(response)
+}
+
+fn parse_runtime_notification(line: &str) -> Option<Value> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("method").and_then(Value::as_str) == Some("runs.stream") {
+        return value.get("params").cloned();
+    }
+    None
 }
 
 fn dev_runtime_command() -> Option<RuntimeCommandSpec> {
@@ -3231,7 +3296,7 @@ mod tests {
         );
         let facade = RuntimeFacade::default();
         let response = manager
-            .try_process_json_rpc(&request("runtime.health", None))
+            .try_process_json_rpc(&request("runtime.health", None), None)
             .unwrap_or_else(|| facade.handle_runtime_json_rpc(request("runtime.health", None)));
 
         assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
@@ -3257,7 +3322,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         let response = manager
-            .try_process_json_rpc(&request("runtime.health", None))
+            .try_process_json_rpc(&request("runtime.health", None), None)
             .expect("valid JSON-RPC response should be returned before child cleanup");
 
         assert!(
@@ -3267,6 +3332,41 @@ mod tests {
         assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
         assert_eq!(response.id, Some(json!(1)));
         assert_eq!(response.result.unwrap()["bridge"], json!("process"));
+    }
+
+    #[test]
+    fn process_bridge_forwards_stream_notifications_after_start_response() {
+        let command = RuntimeCommandSpec::new(
+            "sh -c streaming-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"running\"}}'; sleep 0.2; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"runs.stream\",\"params\":{\"runId\":\"run-0001\",\"fromSeq\":1,\"events\":[{\"seq\":1,\"type\":\"message.delta\"}],\"nextSeq\":2,\"status\":\"running\"}}'; sleep 1".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let response = run_process_json_rpc_with_notifications(
+            &command,
+            &request("runs.startStreaming", Some(json!({ "input": { "prompt": "hello" } }))),
+            Box::new(move |payload| {
+                let _ = sender.send(payload);
+            }),
+        )
+        .expect("streaming start should return the initial handle response");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "streaming bridge should return the handle before delayed notifications finish"
+        );
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        let notification = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("delayed stream notification should be forwarded");
+        assert_eq!(notification["runId"], json!("run-0001"));
+        assert_eq!(notification["events"][0]["type"], json!("message.delta"));
     }
 
     #[test]

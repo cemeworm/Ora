@@ -8,6 +8,7 @@ import type {
   OraProviderRegistry,
   OraProviderSecretStatus,
   OraProviderStatus,
+  OraRunEventStream,
   OraProjectSummary,
   OraSessionDetail,
   OraSessionSummary,
@@ -95,6 +96,7 @@ export type WorkbenchAction =
   | { type: "SET_PROVIDER_STATUSES"; statuses: OraProviderStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
+  | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream }
   | { type: "SELECT_TAB"; tab: DockTab }
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
@@ -175,6 +177,25 @@ function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStat
 
 function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraModeSpec | undefined {
   return modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
+}
+
+function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
+  if (stream.snapshot) {
+    return stream.snapshot;
+  }
+  if (!snapshot || snapshot.runId !== stream.runId) {
+    return snapshot;
+  }
+  const eventBySeq = new Map(snapshot.events.map((event) => [event.seq, event]));
+  for (const event of stream.events) {
+    eventBySeq.set(event.seq, event);
+  }
+  return {
+    ...snapshot,
+    status: stream.status ?? snapshot.status,
+    events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
+    updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
+  };
 }
 
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
@@ -415,6 +436,22 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedNodeId: action.snapshot?.topology.nodes[1]?.id ?? action.snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
         selectedBeatId: action.snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
       };
+
+    case "APPLY_RUN_STREAM": {
+      const activeSnapshot = mergeRunStreamSnapshot(state.activeSnapshot, action.stream);
+      return {
+        ...state,
+        activeSnapshot,
+        selectedTurnRunId: state.selectedTurnRunId ?? action.stream.runId,
+        selectedBeatId: action.stream.events.at(-1)?.id ?? state.selectedBeatId,
+        isLoading: action.stream.status === "running" || action.stream.status === "queued",
+        commandFeedback: action.stream.status === "succeeded"
+          ? "Run completed."
+          : action.stream.status === "failed"
+            ? "Run failed."
+            : state.commandFeedback,
+      };
+    }
 
     case "SELECT_TAB":
       return { ...state, selectedDockTab: action.tab };

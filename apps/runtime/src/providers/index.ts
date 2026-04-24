@@ -17,6 +17,7 @@ export {
   createProviderRegistry,
   createProviderRegistryForRun,
   invokeRunProvider,
+  invokeRunProviderStream,
   verifyProviderConfig,
 } from "./registry.js";
 export { createLocalSmokeProvider } from "./local-smoke.js";

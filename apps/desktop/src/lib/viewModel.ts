@@ -921,11 +921,12 @@ export function adaptChatMessages(
       }
 
       const assistantTurn = turn.snapshot ? buildAssistantTurnAttachment(turn.snapshot) : undefined;
+      const streamedAssistant = turn.snapshot ? assistantTextFromSnapshot(turn.snapshot) : undefined;
       if (turn.assistant || assistantTurn) {
         messages.push({
           id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
           role: "assistant",
-          content: turn.assistant?.content ?? placeholderAssistantCopy(turn.snapshot),
+          content: turn.assistant?.content ?? streamedAssistant ?? placeholderAssistantCopy(turn.snapshot),
           timestamp: formatClock(turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now()),
           metadata: {
             runId: turn.runId,
@@ -938,7 +939,21 @@ export function adaptChatMessages(
       }
 
       return messages;
-    });
+  });
+}
+
+function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type !== "message.delta" || !isRecord(event.payload)) {
+      continue;
+    }
+    const content = event.payload.content;
+    if (typeof content === "string" && content.trim()) {
+      return content;
+    }
+  }
+  return undefined;
 }
 
 function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurnAttachment {

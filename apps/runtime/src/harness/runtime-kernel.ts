@@ -21,7 +21,7 @@ import {
   StateSnapshotSchema,
 } from "@ora/shared";
 import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
-import { configuredProviderId, invokeRunProvider } from "../providers/index.js";
+import { configuredProviderId, invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
 import { RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import { classifyRecoveryError, RecoveryCoordinator, type RecoveryDecision, type RecoveryIncident } from "./recovery-policy.js";
@@ -46,6 +46,8 @@ export interface RuntimeKernelOptions {
     clarifications?: Record<string, unknown>;
     approvedActionIds?: string[];
   };
+  streamProvider?: boolean;
+  onEvent?: (event: OraEventEnvelope) => void;
 }
 
 class ClarificationInterruptError extends Error {
@@ -195,6 +197,7 @@ export async function executeRuntimeKernel(
       ...extra,
     });
     events.push(envelope);
+    options.onEvent?.(envelope);
     return envelope;
   };
 
@@ -319,12 +322,32 @@ export async function executeRuntimeKernel(
   }): Promise<ModelResponse> => {
     const enabledTools = runtimeToolExecutor.enabledToolIds(config.toolIds);
     let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
-    let response = await invokeRunProvider(config, {
+    const invokeProvider = options.streamProvider ? invokeRunProviderStream : invokeRunProvider;
+    const streamCallbacks = options.streamProvider
+      ? {
+          onTextDelta: (chunk: { delta: string; text: string; raw?: unknown }) => {
+            emit("message.delta", {
+              role: "assistant",
+              content: chunk.text,
+              delta: chunk.delta,
+              streaming: true,
+              raw: chunk.raw,
+            }, { agentId: params.agentId, nodeId: params.agentId });
+            emit("token.delta", {
+              text: chunk.delta,
+              tokenCount: Math.max(1, chunk.delta.split(/\s+/).filter(Boolean).length),
+              budget: config.budget,
+              streaming: true,
+            }, { agentId: params.agentId, nodeId: params.agentId });
+          },
+        }
+      : undefined;
+    let response = await invokeProvider(config, {
       prompt: params.prompt,
       messages,
       system: params.system,
       maxTokens: config.budget?.maxTokens,
-    });
+    }, streamCallbacks);
 
     if (enabledTools.length === 0) {
       return response;
@@ -385,11 +408,11 @@ export async function executeRuntimeKernel(
           { role: "assistant", content: response.text },
           { role: "user", content: `Workspace tool result for ${toolCall.tool}:\n${JSON.stringify(output, null, 2)}` },
         ];
-        response = await invokeRunProvider(config, {
+        response = await invokeProvider(config, {
           messages,
           system: params.system,
           maxTokens: config.budget?.maxTokens,
-        });
+        }, streamCallbacks);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         const failed = actionLedger.transition(action.id, "failed", { error: detail });
@@ -458,11 +481,11 @@ export async function executeRuntimeKernel(
             { role: "assistant", content: response.text },
             { role: "user", content: `Workspace tool result for ${alternateCall.tool}:\n${JSON.stringify(alternateOutput, null, 2)}` },
           ];
-          response = await invokeRunProvider(config, {
+          response = await invokeProvider(config, {
             messages,
             system: params.system,
             maxTokens: config.budget?.maxTokens,
-          });
+          }, streamCallbacks);
           continue;
         }
 
@@ -485,11 +508,11 @@ export async function executeRuntimeKernel(
             { role: "assistant", content: response.text },
             { role: "user", content: `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}` },
           ];
-          response = await invokeRunProvider(config, {
+          response = await invokeProvider(config, {
             messages,
             system: params.system,
             maxTokens: config.budget?.maxTokens,
-          });
+          }, streamCallbacks);
           continue;
         }
 
