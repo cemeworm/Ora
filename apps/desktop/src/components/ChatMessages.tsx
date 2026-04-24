@@ -1,29 +1,30 @@
 import { useEffect, useRef } from "react";
 import { MessageBubble } from "./MessageBubble";
-import { AgentCard } from "./AgentCard";
+import { AssistantTurnCard } from "./AssistantTurnCard";
 import type { ActionRecord, AgentProfile, ChatMessage, PlanItem } from "../types";
+import { Conversation, ConversationContent } from "./ai-elements/conversation";
 import { cn } from "../lib/utils";
 
 interface ChatMessagesProps {
   chatMessages: ChatMessage[];
-  agents: AgentProfile[];
-  actionRecords: ActionRecord[];
-  planItems: PlanItem[];
-  isApprovalRequired: boolean;
-  onResumeRun: () => void;
-  onCancelRun: () => void;
+  agents?: AgentProfile[];
+  actionRecords?: ActionRecord[];
+  planItems?: PlanItem[];
+  isApprovalRequired?: boolean;
+  onResumeRun?: () => void;
+  onCancelRun?: () => void;
   busyCommand?: string;
 }
 
 export function ChatMessages({
   chatMessages,
-  agents,
-  actionRecords,
-  planItems,
-  isApprovalRequired,
-  onResumeRun,
-  onCancelRun,
-  busyCommand,
+  agents: _agents,
+  actionRecords: _actionRecords,
+  planItems: _planItems,
+  isApprovalRequired: _isApprovalRequired,
+  onResumeRun: _onResumeRun,
+  onCancelRun: _onCancelRun,
+  busyCommand: _busyCommand,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -35,30 +36,17 @@ export function ChatMessages({
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-      <div className="flex min-h-full w-full flex-col gap-8 px-4 pb-44 pt-20 md:px-6 xl:px-8">
+      <Conversation className="min-h-0 flex-1">
+        <ConversationContent className="min-h-full w-full gap-8 px-4 pb-44 pt-20 md:px-6 xl:px-8">
         {chatMessages.map((message) => {
-          if (
-            message.role === "system" &&
-            message.metadata?.eventType &&
-            ["plan.updated", "action.updated", "approval.required"].includes(message.metadata.eventType)
-          ) {
-            const agentId = message.metadata.agentId;
-            const agent = agents.find((a) => a.id === agentId);
-            const relatedActions = actionRecords.filter((a) => a.agentId === agentId);
-            const relatedPlans = planItems.filter((p) => p.owner === agentId);
-
+          if (message.role === "assistant") {
             return (
               <div key={message.id} className="w-full">
-                <AgentCard
-                  agent={agent}
+                <AssistantTurnCard
                   content={message.content}
-                  eventType={message.metadata.eventType}
-                  actions={relatedActions}
-                  planItems={relatedPlans}
-                  isApprovalRequired={isApprovalRequired}
-                  onResumeRun={onResumeRun}
-                  onCancelRun={onCancelRun}
-                  busyCommand={busyCommand}
+                  timestamp={message.timestamp}
+                  turn={message.turn}
+                  isPlaceholder={message.isPlaceholder}
                 />
               </div>
             );
@@ -74,7 +62,8 @@ export function ChatMessages({
           );
         })}
         <div className={cn("h-1", chatMessages.length === 0 && "flex-1")} />
-      </div>
+        </ConversationContent>
+      </Conversation>
     </div>
   );
 }

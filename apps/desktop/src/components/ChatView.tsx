@@ -2,7 +2,7 @@ import { Sparkles } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, ModeCard, PlanItem, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode } from "../types";
+import type { AgentProfile, ChatMessage, CheckpointRecord, ModeCard, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
@@ -19,8 +19,6 @@ interface ChatViewProps {
   isLoading: boolean;
   isRunning: boolean;
   isApprovalRequired: boolean;
-  planItems: PlanItem[];
-  actionRecords: ActionRecord[];
   selectedSession: SessionRun;
   sessionTurns: SessionTurnItem[];
   selectedTurnRunId?: string;
@@ -47,7 +45,6 @@ interface ChatViewProps {
 export function ChatView({
   activeMode,
   modeCards,
-  agents,
   busyCommand,
   chatMessages,
   composerPrompt,
@@ -65,10 +62,6 @@ export function ChatView({
   onExportReport,
   onToggleDetailDrawer,
   detailDrawerOpen,
-  actionRecords,
-  planItems,
-  onResumeRun,
-  onCancelRun,
   onSelectMode,
   onSelectTurn,
 }: ChatViewProps) {
@@ -110,23 +103,14 @@ export function ChatView({
                 <span>Welcome back to Ora</span>
               </div>
               <p className="max-w-xl text-sm leading-6 text-muted-foreground">
-                Start a new session, pick one of the five agent modes for the next turn, and keep the session transcript while inspecting each turn’s Trails view on the right.
+                Start a new session, pick a mode for the next turn, and keep the session transcript while inspecting each turn’s Trails view on the right.
               </p>
             </div>
           </div>
         )}
         <div className="flex min-h-0 flex-1">
           <div className={workspaceContentClassName}>
-            <ChatMessages
-              chatMessages={chatMessages}
-              agents={agents}
-              actionRecords={actionRecords}
-              planItems={planItems}
-              isApprovalRequired={isApprovalRequired}
-              onResumeRun={onResumeRun}
-              onCancelRun={onCancelRun}
-              busyCommand={busyCommand}
-            />
+            <ChatMessages chatMessages={chatMessages} />
           </div>
         </div>
         <ChatInput

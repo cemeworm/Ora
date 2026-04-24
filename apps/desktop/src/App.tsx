@@ -9,6 +9,7 @@ import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import type { AppView } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
+import type { OraStateSnapshot } from "./lib/runtimeClient";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
 const EvaluationView = lazy(() => import("./components/EvaluationView").then((module) => ({ default: module.EvaluationView })));
@@ -66,6 +67,7 @@ function WorkbenchInner() {
   const { runtimeClient, viewModel, selectedSession, selectedNode, selectedBeat, selectedAgent, selectedCheckpoint, actions } = useRunActions();
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [detailPanelWidth, setDetailPanelWidth] = useState(DEFAULT_DETAIL_PANEL_WIDTH);
+  const [turnSnapshots, setTurnSnapshots] = useState<Record<string, OraStateSnapshot>>({});
 
   function clampDetailPanelWidth(nextWidth: number) {
     const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
@@ -175,10 +177,61 @@ function WorkbenchInner() {
       .catch(() => {});
   }, [state.activeView, state.settingsOpen]);
 
+  useEffect(() => {
+    const snapshot = state.activeSnapshot;
+    if (!snapshot) return;
+
+    setTurnSnapshots((current) => {
+      const existing = current[snapshot.runId];
+      if (existing === snapshot || existing?.updatedAt === snapshot.updatedAt) {
+        return current;
+      }
+      return { ...current, [snapshot.runId]: snapshot };
+    });
+  }, [state.activeSnapshot]);
+
+  useEffect(() => {
+    const turns = state.activeSessionDetail?.turns ?? [];
+    const missingRunIds = turns
+      .map((turn) => turn.runId)
+      .filter((runId) => turnSnapshots[runId] === undefined);
+
+    if (missingRunIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    void Promise.all(
+      missingRunIds.map(async (runId) => {
+        try {
+          return await runtimeClient.getRunState(runId);
+        } catch {
+          return undefined;
+        }
+      }),
+    ).then((snapshots) => {
+      if (cancelled) return;
+      const resolved = snapshots.filter((snapshot): snapshot is OraStateSnapshot => snapshot !== undefined);
+      if (resolved.length === 0) return;
+
+      setTurnSnapshots((current) => {
+        const next = { ...current };
+        for (const snapshot of resolved) {
+          next[snapshot.runId] = snapshot;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runtimeClient, state.activeSessionDetail, turnSnapshots]);
+
   // Chat messages derived from events
   const chatMessages = useMemo(() => {
-    return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], state.activeSnapshot);
-  }, [state.activeSessionDetail, state.activeSnapshot]);
+    return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], turnSnapshots);
+  }, [state.activeSessionDetail, turnSnapshots]);
   const settingsDialog = state.settingsOpen ? (
     <SettingsView
       open={state.settingsOpen}
@@ -277,13 +330,10 @@ function WorkbenchInner() {
             isLoading={state.isLoading}
             isRunning={isRunning}
             isApprovalRequired={isApprovalRequired}
-            planItems={planItems}
-            actionRecords={actionRecords}
             selectedSession={selectedSession}
             streamLines={streamLines}
             topologyEdges={topologyEdges}
             topologyNodes={topologyNodes}
-            onCancelRun={actions.cancelRun}
             onComposerPromptChange={(text) => dispatch({ type: "SET_PROMPT", text })}
             onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
             onExportReport={actions.exportReport}
@@ -291,6 +341,7 @@ function WorkbenchInner() {
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
+            onCancelRun={actions.cancelRun}
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
             onSelectTurn={actions.selectTurn}

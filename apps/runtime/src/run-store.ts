@@ -48,6 +48,7 @@ import {
   RunStreamParamsSchema,
   RunSummary,
   RunSummarySchema,
+  SINGLE_AGENT_MODE_ID,
   RunsListParamsSchema,
   SessionCreateParamsSchema,
   SessionDetail,
@@ -70,7 +71,8 @@ import {
   AgentProfileRegistry,
   MemoryService,
   PlanService,
-  PolicyService
+  PolicyService,
+  TodoService,
 } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
@@ -661,6 +663,7 @@ export class LocalRunStore {
       reason: parsed.reason ?? "Resumed by caller.",
       patch: parsed.patch ?? {}
     });
+    working = this.syncSnapshotTodos(working, "resume.sync");
 
     if (working.pendingClarifications.length > 0) {
       const resolvedIds = new Set<string>();
@@ -718,10 +721,10 @@ export class LocalRunStore {
         { actionId: action.id, status: "running", record: running }
       );
 
-      const output = this.patternOutput(working.pattern, working.input.prompt);
+      const output = this.patternOutput(working.pattern, working.input.prompt, working.modeId);
       const memory = {
         id: `${working.runId}:memory:resumed-pattern-state`,
-        namespace: this.patternMemoryNamespace(working.pattern, working.input.projectId),
+        namespace: this.patternMemoryNamespace(working.pattern, working.input.projectId, working.modeId),
         kind: working.pattern === "agent_teams" ? "worker" as const : "session" as const,
         value: output.state,
         sourceRunId: working.runId,
@@ -806,8 +809,9 @@ export class LocalRunStore {
       plan: completed.plan.map((item) => ({ ...item, status: "done" })),
       updatedAt: completed.updatedAt
     });
-    this.persistRun(updated);
-    return updated;
+    const syncedTodos = this.syncSnapshotTodos(updated, "resume.completed");
+    this.persistRun(syncedTodos);
+    return syncedTodos;
   }
 
   cancelRun(params: unknown): StateSnapshot {
@@ -1048,6 +1052,7 @@ export class LocalRunStore {
     const profiles = new AgentProfileRegistry(definition).list(fullConfig.profileIds);
     const memoryService = new MemoryService(runId, () => startedAt + events.length);
     const planService = new PlanService(runId, definition);
+    const todoService = new TodoService(runId, () => startedAt + events.length, planService.list());
     const actionLedger = new ActionLedger(runId);
     const policyService = new PolicyService(runId, () => startedAt + events.length);
     const policyDecisions: PolicyDecision[] = [];
@@ -1120,11 +1125,12 @@ export class LocalRunStore {
     appendEvent("topology.updated", baseTopology);
     appendEvent("profile.updated", { profiles });
     appendEvent("plan.updated", { items: planService.list() });
+    appendEvent("todo.updated", { items: todoService.list() });
 
     const firstPlanItem = planService.firstItem();
     const highRiskAction = actionLedger.propose({
       id: "external-effect",
-      type: this.patternActionType(pattern),
+      type: this.patternActionType(pattern, modeSpec.id),
       riskLevel: "high",
       planItemId: firstPlanItem.id,
       agentId: firstPlanItem.ownerAgentId,
@@ -1147,6 +1153,9 @@ export class LocalRunStore {
 
     if (manualApproval) {
       planService.markAll("blocked");
+      todoService.markAll("blocked");
+      appendEvent("plan.updated", { items: planService.list() });
+      appendEvent("todo.updated", { items: todoService.list() });
       const checkpoint = createCheckpoint(
         "Approval checkpoint",
         `${pattern}:approval_required:${planService.list().length}`
@@ -1177,6 +1186,7 @@ export class LocalRunStore {
         profiles,
         memory: memoryService.list(),
         plan: planService.list(),
+        todos: todoService.list(),
         actions: actionLedger.list(),
         policyDecisions,
         checkpoints,
@@ -1197,17 +1207,19 @@ export class LocalRunStore {
     const running = actionLedger.transition(highRiskAction.id, "running");
     appendActionEvent(highRiskAction.id, "running", running);
 
-    const patternOutput = this.patternOutput(pattern, input.prompt);
+    const patternOutput = this.patternOutput(pattern, input.prompt, modeSpec.id);
     const memory = memoryService.remember({
       id: "pattern-state",
-      namespace: this.patternMemoryNamespace(pattern, input.projectId),
+      namespace: this.patternMemoryNamespace(pattern, input.projectId, modeSpec.id),
       kind: pattern === "agent_teams" ? "worker" : "session",
       sourceActionId: highRiskAction.id,
       value: patternOutput.state
     });
     appendEvent("memory.updated", { record: memory });
     planService.markAll("done");
+    todoService.markAll("done");
     appendEvent("plan.updated", { items: planService.list() });
+    appendEvent("todo.updated", { items: todoService.list() });
     appendEvent("message.delta", {
       role: "assistant",
       content: patternOutput.message
@@ -1252,6 +1264,7 @@ export class LocalRunStore {
       profiles,
       memory: memoryService.list(),
       plan: planService.list(),
+      todos: todoService.list(),
       actions: actionLedger.list(),
       policyDecisions,
       checkpoints,
@@ -1263,7 +1276,10 @@ export class LocalRunStore {
     });
   }
 
-  private patternActionType(pattern: CoordinationPattern): string {
+  private patternActionType(pattern: CoordinationPattern, modeId?: string): string {
+    if (modeId === SINGLE_AGENT_MODE_ID) {
+      return "mode.single_agent.respond";
+    }
     switch (pattern) {
       case "generator_verifier":
         return "pattern.generator_verifier.verify_candidate";
@@ -1279,8 +1295,11 @@ export class LocalRunStore {
     throw new OraRuntimeError(`Unsupported pattern action type: ${pattern}`, -32002, { pattern });
   }
 
-  private patternMemoryNamespace(pattern: CoordinationPattern, projectId?: string): string[] {
+  private patternMemoryNamespace(pattern: CoordinationPattern, projectId?: string, modeId?: string): string[] {
     const projectNamespace = projectId ?? "local-project";
+    if (modeId === SINGLE_AGENT_MODE_ID) {
+      return ["session", projectNamespace, SINGLE_AGENT_MODE_ID];
+    }
     switch (pattern) {
       case "generator_verifier":
         return ["session", projectNamespace, "generator_verifier"];
@@ -1296,7 +1315,24 @@ export class LocalRunStore {
     throw new OraRuntimeError(`Unsupported pattern memory namespace: ${pattern}`, -32002, { pattern });
   }
 
-  private patternOutput(pattern: CoordinationPattern, prompt: string) {
+  private patternOutput(pattern: CoordinationPattern, prompt: string, modeId?: string) {
+    if (modeId === SINGLE_AGENT_MODE_ID) {
+      return {
+        token: "answered",
+        tokenCount: 1,
+        message: `Single Agent framed "${prompt}" and completed the response without delegation.`,
+        state: {
+          text: `Single-agent result: ${prompt}`,
+          pattern,
+          modeId,
+          agent: {
+            id: "solo_agent",
+            plan: `Compact plan for: ${prompt}`,
+            response: `Direct answer for: ${prompt}`
+          }
+        }
+      };
+    }
     switch (pattern) {
       case "generator_verifier":
         return {
@@ -1414,6 +1450,39 @@ export class LocalRunStore {
       ...snapshot,
       events: [...snapshot.events, event],
       updatedAt
+    });
+  }
+
+  private syncSnapshotTodos(snapshot: StateSnapshot, reason: string): StateSnapshot {
+    const nextTodos = new TodoService(snapshot.runId, () => this.now(), snapshot.plan, snapshot.todos).list();
+    if (this.sameTodoList(snapshot.todos, nextTodos)) {
+      return snapshot;
+    }
+    return this.appendEvent(
+      {
+        ...snapshot,
+        todos: nextTodos,
+      },
+      "todo.updated",
+      { items: nextTodos, reason },
+    );
+  }
+
+  private sameTodoList(left: StateSnapshot["todos"], right: StateSnapshot["todos"]): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+    return left.every((item, index) => {
+      const candidate = right[index];
+      return candidate
+        && item.id === candidate.id
+        && item.runId === candidate.runId
+        && item.sourcePlanItemId === candidate.sourcePlanItemId
+        && item.status === candidate.status
+        && item.label === candidate.label
+        && item.detail === candidate.detail
+        && item.createdAt === candidate.createdAt
+        && item.updatedAt === candidate.updatedAt;
     });
   }
 

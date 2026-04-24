@@ -55,7 +55,7 @@ export function ChatHeader({
               )}
               title={turn.prompt}
             >
-              T{turn.turnIndex} · {turn.pattern.replace(/_/g, " ")}
+              T{turn.turnIndex} · {(turn.modeId ?? turn.pattern).replace(/_/g, " ")}
             </button>
           ))}
         </div>

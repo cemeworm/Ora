@@ -910,6 +910,7 @@ impl RuntimeFacade {
         let prompt = start_prompt(params)?;
         let pattern = start_pattern(params)?;
         let provider_id = start_provider_id(params);
+        let provider_config = start_provider_config(params);
         let model_ref = start_model_ref(params);
         let custom_agent_id = start_custom_agent_id(params)?;
         let started_at = now_ms();
@@ -939,6 +940,7 @@ impl RuntimeFacade {
             started_at,
             None,
             provider_id.as_deref(),
+            provider_config.as_ref(),
             model_ref.as_deref(),
             custom_agent_id.as_deref(),
         );
@@ -1190,6 +1192,11 @@ impl RuntimeFacade {
             .and_then(Value::as_str)
             .or_else(|| source["config"]["providerId"].as_str())
             .map(str::to_string);
+        let provider_config = params
+            .and_then(|value| value.get("config"))
+            .and_then(|config| config.get("providerConfig"))
+            .cloned()
+            .or_else(|| source["config"].get("providerConfig").cloned());
         let model_ref = params
             .and_then(|value| value.get("config"))
             .and_then(|config| config.get("modelRef"))
@@ -1240,6 +1247,7 @@ impl RuntimeFacade {
             started_at,
             Some(forked_from),
             provider_id.as_deref(),
+            provider_config.as_ref(),
             model_ref.as_deref(),
             custom_agent_id.as_deref(),
         );
@@ -1960,6 +1968,7 @@ fn create_snapshot(
     started_at: u64,
     forked_from: Option<Value>,
     provider_id: Option<&str>,
+    provider_config: Option<&Value>,
     model_ref: Option<&str>,
     custom_agent_id: Option<&str>,
 ) -> Value {
@@ -2127,6 +2136,9 @@ fn create_snapshot(
         },
         "deterministicSeed": "ora-smoke"
     });
+    if let Some(provider_config) = provider_config {
+        set_object_value(&mut config, "providerConfig", provider_config.clone());
+    }
     if let Some(custom_agent_id) = custom_agent_id {
         set_object_value(&mut config, "customAgentId", json!(custom_agent_id));
         if let Some(metadata) = config.get_mut("metadata") {
@@ -2787,6 +2799,13 @@ fn start_provider_id(params: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn start_provider_config(params: Option<&Value>) -> Option<Value> {
+    params
+        .and_then(|value| value.get("config"))
+        .and_then(|config| config.get("providerConfig"))
+        .cloned()
+}
+
 fn start_model_ref(params: Option<&Value>) -> Option<String> {
     params
         .and_then(|value| value.get("config"))
@@ -3242,6 +3261,48 @@ mod tests {
 
         let list = facade.handle_method("runs.list", None).unwrap();
         assert_eq!(list.as_array().unwrap()[0]["artifactCount"], json!(1));
+    }
+
+    #[test]
+    fn run_start_preserves_provider_config_in_facade_snapshots() {
+        let facade = RuntimeFacade::default();
+        let start = facade.handle_runtime_json_rpc(request(
+            "runs.start",
+            Some(json!({
+                "input": { "prompt": "Bridge provider handoff", "context": {} },
+                "config": {
+                    "pattern": "generator_verifier",
+                    "providerId": "deepseek",
+                    "modelRef": "deepseek-chat",
+                    "providerConfig": {
+                        "id": "deepseek",
+                        "type": "openai_compatible",
+                        "label": "DeepSeek",
+                        "modelId": "deepseek-chat",
+                        "enabled": true,
+                        "baseUrl": "https://api.deepseek.com",
+                        "apiKeyEnv": "DEEPSEEK_API_KEY",
+                        "protocol": "chat_completions",
+                        "capabilities": ["chat", "tool_use", "reasoning", "json_mode"],
+                        "dropParams": [],
+                        "headers": {}
+                    }
+                }
+            })),
+        ));
+        let run_id = start.result.unwrap()["runId"].as_str().unwrap().to_string();
+
+        let state = facade
+            .handle_method("runs.state", Some(json!({ "runId": run_id })))
+            .unwrap();
+
+        assert_eq!(state["config"]["providerId"], json!("deepseek"));
+        assert_eq!(state["config"]["modelRef"], json!("deepseek-chat"));
+        assert_eq!(state["config"]["providerConfig"]["id"], json!("deepseek"));
+        assert_eq!(
+            state["config"]["providerConfig"]["baseUrl"],
+            json!("https://api.deepseek.com")
+        );
     }
 
     #[test]

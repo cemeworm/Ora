@@ -174,7 +174,7 @@ export function TrailsTabs({
           <>
             <div className="grid gap-3 sm:grid-cols-2">
               <MetricRow label="Status" value={selectedSession.status.replace(/_/g, " ")} />
-              <MetricRow label="Pattern" value={activeSnapshot.pattern.replace(/_/g, " ")} />
+              <MetricRow label="Mode" value={(activeSnapshot.modeId ?? activeSnapshot.pattern).replace(/_/g, " ")} />
               <MetricRow label="Selected node" value={selectedNode?.label ?? "Run overview"} />
               <MetricRow label="Active agents" value={activeAgentLabels.join(", ") || "Idle"} />
               <MetricRow label="Events / sec" value={formatRate(liveMetrics.eventCount, liveMetrics.runtimeMs)} />

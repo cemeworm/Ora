@@ -10,6 +10,7 @@ export const CoordinationPatternSchema = z.enum([
 export type CoordinationPattern = z.infer<typeof CoordinationPatternSchema>;
 export const CoordinationKindSchema = CoordinationPatternSchema;
 export type CoordinationKind = CoordinationPattern;
+export const SINGLE_AGENT_MODE_ID = "single_agent" as const;
 
 export const ModeIdSchema = z
   .string()
@@ -90,6 +91,21 @@ export const PlanItemSchema = z.object({
   checkpointIds: z.array(z.string().min(1))
 });
 export type PlanItem = z.infer<typeof PlanItemSchema>;
+
+export const TodoItemStatusSchema = PlanItemStatusSchema;
+export type TodoItemStatus = PlanItemStatus;
+
+export const TodoItemSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sourcePlanItemId: z.string().min(1).optional(),
+  status: TodoItemStatusSchema,
+  label: z.string().min(1),
+  detail: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative()
+});
+export type TodoItem = z.infer<typeof TodoItemSchema>;
 
 export const ActionRiskLevelSchema = z.enum(["low", "medium", "high"]);
 export type ActionRiskLevel = z.infer<typeof ActionRiskLevelSchema>;
@@ -230,6 +246,7 @@ export const OraEventTypeSchema = z.enum([
   "memory.updated",
   "memory.flushed",
   "plan.updated",
+  "todo.updated",
   "action.updated",
   "task.started",
   "task.progress",
@@ -556,6 +573,7 @@ export const StateSnapshotSchema = z.object({
   profiles: z.array(AgentProfileSchema),
   memory: z.array(MemoryRecordSchema),
   plan: z.array(PlanItemSchema),
+  todos: z.array(TodoItemSchema).default([]),
   actions: z.array(ActionRecordSchema),
   policyDecisions: z.array(PolicyDecisionSchema).default([]),
   checkpoints: z.array(CheckpointMetaSchema),
@@ -1297,12 +1315,12 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
     draft: {
       description: "Draft a candidate answer for verifier review.",
       supportsPromptOverride: true,
-      fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\nWrite a candidate answer that can be verified against an explicit rubric.",
+      fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\nPrevious verifier notes:\n{{verifierNotes}}\nWrite a better candidate answer. Return only the candidate response.",
     },
     verify: {
       description: "Evaluate the candidate against the current rubric.",
       supportsPromptOverride: true,
-      fallbackPrompt: "Original prompt: {{prompt}}\nRubric:\n- {{rubric}}\nCandidate:\n{{candidate}}\nReturn concise verification notes.",
+      fallbackPrompt: "Original prompt: {{prompt}}\nRubric:\n- {{rubric}}\nCandidate:\n{{candidate}}\nReturn JSON with keys verdict ('pass'|'fail'), rationale, and missingRequirements (array of strings).",
     },
     decide: {
       description: "Reserved stage for a future explicit accept/retry decision step.",
@@ -2070,7 +2088,90 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
   }));
 }
 
-export const MVP_MODES = CoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern));
+function createSingleAgentModeSpec(): ModeSpec {
+  const now = 0;
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: SINGLE_AGENT_MODE_ID,
+    family: "orchestrator_subagent",
+    label: "Single Agent",
+    summary: "One agent makes a compact plan and completes the task without spawning teammates.",
+    description: "Use the simplest execution path when you want one accountable agent to think briefly and answer directly.",
+    recommendedUse: "Use for straightforward tasks where delegation would add overhead instead of clarity.",
+    failureMode: "A single agent can miss blind spots that multi-agent review would have caught.",
+    systemPreset: true,
+    nodes: [
+      {
+        id: "decompose",
+        template: "decompose",
+        label: "Frame task",
+        title: "Frame task",
+        ownerAgentId: "solo_agent",
+        enabled: true,
+        config: {},
+      },
+      {
+        id: "synthesize",
+        template: "synthesize",
+        label: "Respond",
+        title: "Respond",
+        ownerAgentId: "solo_agent",
+        enabled: true,
+        config: {},
+      },
+    ],
+    edges: [
+      {
+        id: "single-agent-flow",
+        source: "decompose",
+        target: "synthesize",
+        enabled: true,
+      },
+    ],
+    stopPolicy: {
+      type: "queue_drained",
+      detail: "Stop after the solo agent frames the task and produces the final response.",
+    },
+    capabilityFlags: {
+      supportsPersistentWorkers: false,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "high_risk_only",
+      skillIds: [],
+      toolIds: [],
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.orchestrator_subagent.allowedTemplates,
+      requiredNodeTemplates: ["decompose", "synthesize"],
+      readOnly: true,
+      allowReorder: true,
+      allowCreate: false,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+    profiles: [
+      profile(
+        "solo_agent",
+        "Solo Agent",
+        "Own the task end-to-end without delegating to additional workers.",
+        "orchestrator_subagent",
+        ["session", "project"],
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
+const BUILTIN_PATTERN_MODES = CoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern));
+const ORCHESTRATOR_MODE_INDEX = BUILTIN_PATTERN_MODES.findIndex((mode) => mode.id === "orchestrator_subagent");
+
+export const MVP_MODES = [
+  ...BUILTIN_PATTERN_MODES.slice(0, ORCHESTRATOR_MODE_INDEX + 1),
+  createSingleAgentModeSpec(),
+  ...BUILTIN_PATTERN_MODES.slice(ORCHESTRATOR_MODE_INDEX + 1),
+];
 
 export function getModePreset(modeId: string): ModeSpec | undefined {
   return MVP_MODES.find((mode) => mode.id === modeId);
@@ -2086,6 +2187,28 @@ export function modeSpecToPatternDefinition(mode: ModeSpec): PatternDefinition {
   for (const edge of mode.edges.filter((candidate) => candidate.enabled && edgeDependencies.has(candidate.target) && edgeDependencies.has(candidate.source))) {
     edgeDependencies.get(edge.target)!.push(edge.source);
   }
+
+  const topology = mode.id === SINGLE_AGENT_MODE_ID
+    ? {
+        nodes: [
+          { id: "run", label: "Run", kind: "run", status: "idle", metadata: { modeId: mode.id } },
+          { id: "solo_agent", label: "Solo Agent", kind: "agent", agentId: "solo_agent", status: "idle", metadata: { modeId: mode.id } },
+        ],
+        edges: [
+          { id: "run-solo-agent", source: "run", target: "solo_agent", kind: "control", label: "own task", metadata: { modeId: mode.id } },
+        ],
+      }
+    : {
+        nodes: family.topology.nodes.map((node) => ({
+          ...node,
+          metadata: {
+            ...node.metadata,
+            modeId: mode.id,
+            enabledNodeIds: orderedNodes.map((item) => item.id),
+          },
+        })),
+        edges: family.topology.edges,
+      };
 
   return PatternDefinitionSchema.parse({
     ...family,
@@ -2107,17 +2230,7 @@ export function modeSpecToPatternDefinition(mode: ModeSpec): PatternDefinition {
       ownerAgentId: node.ownerAgentId,
       dependencies: edgeDependencies.get(node.id) ?? [],
     })),
-    topology: {
-      nodes: family.topology.nodes.map((node) => ({
-        ...node,
-        metadata: {
-          ...node.metadata,
-          modeId: mode.id,
-          enabledNodeIds: orderedNodes.map((item) => item.id),
-        },
-      })),
-      edges: family.topology.edges,
-    },
+    topology,
   });
 }
 

@@ -1,6 +1,8 @@
 import {
+  SINGLE_AGENT_MODE_ID,
   createModeSpecFromPattern,
   getModeNodeRuntimeTemplateDefinition,
+  type RunConfig,
   type MemoryKind,
   modeSpecToPatternDefinition,
   orderedEnabledModeNodes,
@@ -12,6 +14,7 @@ import {
   type QueueSummary,
   type SharedStateSummary,
 } from "@ora/shared";
+import { assessGeneratorVerifierResponse } from "./generator-verifier-utils.js";
 
 export interface PatternExecutionContext {
   projectId: string;
@@ -101,6 +104,7 @@ export interface PatternDriver {
 interface ModeExecutionInput {
   context: PatternExecutionContext;
   prompt: string;
+  config: RunConfig;
   modeSpec: ModeSpec;
   definition: PatternDefinition;
 }
@@ -257,7 +261,7 @@ async function runNode(
 }
 
 async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<PatternExecutionResult> {
-  const { context, prompt, modeSpec } = input;
+  const { context, prompt, config, modeSpec } = input;
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
@@ -272,6 +276,7 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
     retryCount: 0,
     verdict: "fail",
   };
+  const selectedProviderId = config.providerConfig?.id ?? config.providerId;
 
   for (let attempt = 1; attempt <= maxIterations; attempt += 1) {
     bag.retryCount = attempt;
@@ -309,11 +314,20 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
                 attempt,
               },
             ),
-            system: context.systemPrompt("You are the verifier. Evaluate the candidate against the explicit rubric."),
+            system: context.systemPrompt(
+              "You are the verifier. Return only JSON with keys verdict, rationale, and missingRequirements. "
+              + "Use verdict=\"pass\" only when the candidate fully satisfies the rubric."
+            ),
             riskLevel: node.riskLevel,
           });
           bag.verifierNotes = verifierNotes;
-          bag.verdict = attempt >= Math.min(2, maxIterations) ? "pass" : "fail";
+          const assessment = assessGeneratorVerifierResponse({
+            candidate: asText(bag.candidate),
+            verifierResponse: verifierNotes,
+            providerId: selectedProviderId,
+          });
+          bag.verifierAssessment = assessment;
+          bag.verdict = assessment.verdict;
           context.remember({
             id: `generator-verifier-${attempt}`,
             namespace: ["session", context.projectId, "generator_verifier"],
@@ -322,7 +336,9 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
               attempt,
               candidate: bag.candidate,
               verifierNotes,
-              verdict: bag.verdict,
+              verdict: assessment.verdict,
+              rationale: assessment.rationale,
+              missingRequirements: assessment.missingRequirements,
               rubric: bag.rubric,
             },
           });
@@ -336,19 +352,38 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
     }
   }
 
+  if (bag.verdict !== "pass") {
+    const rationale = typeof bag.verifierAssessment === "object" && bag.verifierAssessment !== null
+      ? String((bag.verifierAssessment as Record<string, unknown>).rationale ?? "Verifier rejected the candidate.")
+      : "Verifier rejected the candidate.";
+    throw new Error(
+      `Generator-Verifier exhausted ${maxIterations} attempt(s) without a passing verification. ${rationale}`
+    );
+  }
+
   return {
     output: {
-      text: `Verified candidate for: ${prompt}`,
+      text: asText(bag.candidate),
       pattern: "generator_verifier",
       modeId: modeSpec.id,
-      generator: { candidate: bag.candidate },
-      verifier: { verdict: bag.verdict, notes: bag.verifierNotes, rubric: bag.rubric },
+      generator: {
+        candidate: bag.candidate,
+        attempts: bag.retryCount,
+      },
+      verifier: {
+        verdict: bag.verdict,
+        notes: bag.verifierNotes,
+        rationale: (bag.verifierAssessment as Record<string, unknown> | undefined)?.rationale,
+        missingRequirements: (bag.verifierAssessment as Record<string, unknown> | undefined)?.missingRequirements,
+        rubric: bag.rubric,
+      },
     },
   };
 }
 
 async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, modeSpec } = input;
+  const singleAgentMode = modeSpec.id === SINGLE_AGENT_MODE_ID;
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
@@ -367,7 +402,11 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the orchestrator. Keep delegation explicit and inspectable."),
+          system: context.systemPrompt(
+            singleAgentMode
+              ? "You are the solo agent. Frame the task briefly, keep the plan compact, and do not delegate."
+              : "You are the orchestrator. Keep delegation explicit and inspectable."
+          ),
           riskLevel: node.riskLevel,
           });
           return bag.plan;
@@ -415,7 +454,11 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the orchestrator. Synthesize delegated results into one answer."),
+          system: context.systemPrompt(
+            singleAgentMode
+              ? "You are the solo agent. Use your framing notes and produce the final answer directly."
+              : "You are the orchestrator. Synthesize delegated results into one answer."
+          ),
           riskLevel: node.riskLevel,
           });
           return bag.synthesis;
@@ -425,10 +468,25 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
 
   context.remember({
     id: `mode-${modeSpec.id}-result`,
-    namespace: ["session", context.projectId, "orchestrator_subagent"],
+    namespace: ["session", context.projectId, singleAgentMode ? SINGLE_AGENT_MODE_ID : "orchestrator_subagent"],
     kind: "session",
     value: { plan: bag.plan, research: bag.research, review: bag.review, synthesis: bag.synthesis },
   });
+
+  if (singleAgentMode) {
+    return {
+      output: {
+        text: asText(bag.synthesis || bag.plan),
+        pattern: "orchestrator_subagent",
+        modeId: modeSpec.id,
+        agent: {
+          id: "solo_agent",
+          plan: bag.plan,
+          response: bag.synthesis,
+        },
+      },
+    };
+  }
 
   return {
     output: {
@@ -787,7 +845,24 @@ export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
     async execute(context, prompt) {
       const modeSpec = createModeSpecFromPattern(pattern);
       const definition = modeSpecToPatternDefinition(modeSpec);
-      return executeModeSpec({ context, prompt, modeSpec, definition });
+      return executeModeSpec({
+        context,
+        prompt,
+        config: {
+          pattern,
+          modeId: modeSpec.id,
+          profileIds: [],
+          modelRef: "local/smoke-model",
+          skillIds: [],
+          toolIds: [],
+          approvalMode: "high_risk_only",
+          patternOptions: {},
+          metadata: {},
+          deterministicSeed: "ora-smoke",
+        },
+        modeSpec,
+        definition,
+      });
     },
   };
 }

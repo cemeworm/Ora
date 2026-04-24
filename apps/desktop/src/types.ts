@@ -156,6 +156,48 @@ export interface ArtifactRecord {
   uri?: string;
 }
 
+export interface TurnProcessStep {
+  id: string;
+  eventType: string;
+  label: string;
+  detail: string;
+  timestamp: string;
+  status: "complete" | "active" | "blocked";
+  tone: "neutral" | "accent" | "warning";
+  agentId?: string;
+  contextLabel?: string;
+}
+
+export interface TurnTodoItem {
+  id: string;
+  label: string;
+  status: "queued" | "running" | "blocked" | "done" | "failed";
+  owner?: string;
+  detail?: string;
+}
+
+export interface TurnArtifactAttachment {
+  id: string;
+  label: string;
+  kind: ArtifactRecord["kind"];
+  mimeType: string;
+  createdAt: string;
+  uri?: string;
+  previewable: boolean;
+}
+
+export interface AssistantTurnAttachment {
+  runId: string;
+  turnIndex: number;
+  status: RunStatus;
+  pattern?: CoordinationPattern;
+  processSteps: TurnProcessStep[];
+  artifacts: TurnArtifactAttachment[];
+  todos: TurnTodoItem[];
+  approvalCount: number;
+  clarificationCount: number;
+}
+
 export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "unavailable" | "error";
 
 export interface RuntimeBridgeStatus {
@@ -173,4 +215,6 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   metadata?: { eventType?: string; agentId?: string; beatId?: string; runId?: string; turnIndex?: number; pattern?: CoordinationPattern };
+  turn?: AssistantTurnAttachment;
+  isPlaceholder?: boolean;
 }

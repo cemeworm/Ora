@@ -50,6 +50,7 @@ import type {
   SessionTurn as OraSessionTurn,
   SkillRegistry as OraSkillRegistry,
   StateSnapshot as OraStateSnapshot,
+  TodoItem as OraTodoItem,
   TopologyEdge as OraTopologyEdge,
   TopologyNode as OraTopologyNode,
   TrailGenerationRef as OraTrailGenerationRef,
@@ -106,6 +107,7 @@ export type {
   OraSessionTranscriptMessage,
   OraSessionTurn,
   OraStateSnapshot,
+  OraTodoItem,
   OraToolRegistry,
   OraSkillRegistry,
   OraTopologyEdge,
@@ -1692,6 +1694,15 @@ class LocalJsonRpcRuntime {
       checkpoints: [checkpoint],
       events,
       artifacts: [],
+      todos: definition.planTemplate.map((item, index) => ({
+        id: `${runId}:todo-${index}`,
+        runId,
+        sourcePlanItemId: `${runId}:${item.id}`,
+        status: status === "succeeded" ? "done" : index === 0 && status === "running" ? "running" : "planned",
+        label: item.title,
+        createdAt: eventBase + 400,
+        updatedAt: eventBase + (status === "succeeded" ? 5200 : 1800),
+      })),
       activeAgents: status === "running" ? definition.profiles.slice(0, 1).map((profile) => profile.id) : [],
     queueSummary: {
       mode: definition.coordinationKind === "bus"

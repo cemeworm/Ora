@@ -3,6 +3,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
 import { invokeRunProvider } from "../providers/index.js";
+import { assessGeneratorVerifierResponse } from "./generator-verifier-utils.js";
 
 // Deterministic generator-verifier pattern graph.
 // Nodes: draft -> verify -> decide (conditional to END or retry draft, max 3)
@@ -10,11 +11,16 @@ import { invokeRunProvider } from "../providers/index.js";
 async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const retryCount = (state.output as Record<string, number> | undefined)?.retryCount ?? 0;
   const model = await invokeRunProvider(state.config, {
-    prompt: `Draft a candidate answer for: ${state.input.prompt}`,
-    system: "You are the generator in Ora's Generator-Verifier pattern.",
+    prompt: [
+      `Prompt: ${state.input.prompt}`,
+      `Attempt: ${retryCount + 1}`,
+      `Previous verifier notes: ${String((state.output as Record<string, unknown> | undefined)?.verifierText ?? "")}`,
+      "Write a better candidate answer. Return only the candidate response.",
+    ].join("\n"),
+    system: "You are the generator in Ora's Generator-Verifier pattern. Return only the candidate response.",
     maxTokens: state.config.budget?.maxTokens
   });
-  const candidate = `${model.text} (attempt ${retryCount + 1})`;
+  const candidate = model.text;
 
   return {
     output: {
@@ -34,22 +40,36 @@ async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>>
   const candidate = (output?.candidate as string) ?? "no candidate";
   const retryCount = (output?.retryCount as number) ?? 0;
   const model = await invokeRunProvider(state.config, {
-    prompt: `Verify this candidate against the prompt "${state.input.prompt}":\n\n${candidate}`,
-    system: "You are the verifier in Ora's Generator-Verifier pattern. Return concise rubric findings.",
+    prompt: [
+      `Original prompt: ${state.input.prompt}`,
+      "Rubric:",
+      "- addresses prompt",
+      "- bounded deterministic output",
+      "Candidate:",
+      candidate,
+      "Return JSON with keys verdict ('pass'|'fail'), rationale, and missingRequirements (array of strings).",
+    ].join("\n"),
+    system: "You are the verifier in Ora's Generator-Verifier pattern. Return only JSON with verdict, rationale, and missingRequirements.",
     maxTokens: state.config.budget?.maxTokens
   });
-
-  // Deterministic verification: pass on attempt 2 or later (simulates a retry)
-  const verdict = retryCount >= 2 ? "pass" : "fail";
+  const assessment = assessGeneratorVerifierResponse({
+    candidate,
+    verifierResponse: model.text,
+    providerId: output?.provider && typeof output.provider === "object"
+      ? (output.provider as Record<string, unknown>).id as string | undefined
+      : state.config.providerId ?? state.config.providerConfig?.id,
+  });
 
   return {
     output: {
       ...output,
-      verdict,
+      verdict: assessment.verdict,
       rubric: ["addresses prompt", "bounded deterministic output"],
       verifierText: model.text,
-      text: verdict === "pass"
-        ? `Verified: ${candidate}`
+      rationale: assessment.rationale,
+      missingRequirements: assessment.missingRequirements,
+      text: assessment.verdict === "pass"
+        ? candidate
         : `Verification failed for: ${candidate}, retry ${retryCount}/3`,
     },
   };

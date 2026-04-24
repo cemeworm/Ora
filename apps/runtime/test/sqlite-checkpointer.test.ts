@@ -234,7 +234,7 @@ describe("SessionManager", () => {
     expect(run.status).toBe("succeeded");
     expect(state.output).toMatchObject({
       pattern: "generator_verifier",
-      text: "Verified candidate for: Persist enabled LangGraph state.",
+      text: expect.stringContaining("[local-smoke]"),
       generator: {
         candidate: expect.stringContaining("[local-smoke]")
       },

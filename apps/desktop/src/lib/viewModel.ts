@@ -1,6 +1,7 @@
 import type {
   ActionRecord,
   AgentProfile,
+  AssistantTurnAttachment,
   ArtifactRecord,
   ChatMessage,
   CheckpointRecord,
@@ -14,6 +15,9 @@ import type {
   SessionRun,
   SessionTurnItem,
   StreamLine,
+  TurnArtifactAttachment,
+  TurnProcessStep,
+  TurnTodoItem,
   TopologyEdge,
   TopologyNode,
 } from "../types";
@@ -133,6 +137,7 @@ function createEmptySessionPreview(definition: OraPatternDefinition, session: Or
     checkpoints: [],
     events: [],
     artifacts: [],
+    todos: [],
     activeAgents: [],
     queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
     sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
@@ -151,21 +156,33 @@ export function findPattern(
 }
 
 function createPreviewFromPattern(snapshot: OraStateSnapshot, definition: OraPatternDefinition): OraStateSnapshot {
+  const previewPlan: OraPlanItem[] = definition.planTemplate.map((item, index) => ({
+    id: `${snapshot.runId}:preview:${item.id}`,
+    runId: snapshot.runId,
+    ownerAgentId: item.ownerAgentId,
+    status: (index === 0 ? "ready" : "planned") as OraPlanItem["status"],
+    title: item.title,
+    dependencies: item.dependencies,
+    linkedActionIds: [],
+    checkpointIds: snapshot.checkpoints.map((checkpoint) => checkpoint.id),
+  }));
+  const previewTodos: OraStateSnapshot["todos"] = previewPlan.map((item) => ({
+    id: `${item.id}:todo`,
+    runId: snapshot.runId,
+    sourcePlanItemId: item.id,
+    status: item.status,
+    label: item.title,
+    createdAt: snapshot.updatedAt,
+    updatedAt: snapshot.updatedAt,
+  }));
+
   return {
     ...snapshot,
     pattern: definition.id,
     topology: definition.topology,
     profiles: definition.profiles,
-    plan: definition.planTemplate.map((item, index) => ({
-      id: `${snapshot.runId}:preview:${item.id}`,
-      runId: snapshot.runId,
-      ownerAgentId: item.ownerAgentId,
-      status: index === 0 ? "ready" : "planned",
-      title: item.title,
-      dependencies: item.dependencies,
-      linkedActionIds: [],
-      checkpointIds: snapshot.checkpoints.map((checkpoint) => checkpoint.id),
-    })),
+    plan: previewPlan,
+    todos: previewTodos,
     actions: [
       {
         id: `${snapshot.runId}:preview-action`,
@@ -616,6 +633,8 @@ function beatLabel(event: OraEventEnvelope): string {
       return "Memory flushed";
     case "plan.updated":
       return "Plan";
+    case "todo.updated":
+      return "To-do";
     case "action.updated":
       return "Action";
     case "task.started":
@@ -743,59 +762,278 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function adaptChatMessages(
   transcript: OraSessionTranscriptMessage[],
-  selectedSnapshot?: OraStateSnapshot,
+  turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
 ): ChatMessage[] {
-  const messages: ChatMessage[] = transcript.map((message) => ({
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    timestamp: formatClock(message.createdAt),
-    metadata: {
+  const grouped = new Map<
+    string,
+    {
+      runId: string;
+      turnIndex: number;
+      pattern?: CoordinationPattern;
+      user?: OraSessionTranscriptMessage;
+      assistant?: OraSessionTranscriptMessage;
+      snapshot?: OraStateSnapshot;
+    }
+  >();
+
+  for (const message of transcript) {
+    const current = grouped.get(message.runId) ?? {
       runId: message.runId,
       turnIndex: message.turnIndex,
       pattern: message.pattern,
-    },
-  }));
+      snapshot: turnSnapshots[message.runId],
+    };
 
-  if (selectedSnapshot) {
-    for (const event of selectedSnapshot.events) {
-      switch (event.type) {
-        case "plan.updated":
-        case "action.updated": {
-          messages.push({
-            id: event.id,
-            role: "system",
-            content: `${beatLabel(event)}: ${eventText(event)}`,
-            timestamp: formatElapsed(selectedSnapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
-            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id, runId: selectedSnapshot.runId, turnIndex: selectedSnapshot.turnIndex, pattern: selectedSnapshot.pattern },
-          });
-          break;
-        }
-        case "approval.required": {
-          messages.push({
-            id: event.id,
-            role: "system",
-            content: `Approval required: ${eventText(event)}`,
-            timestamp: formatElapsed(selectedSnapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
-            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id, runId: selectedSnapshot.runId, turnIndex: selectedSnapshot.turnIndex, pattern: selectedSnapshot.pattern },
-          });
-          break;
-        }
-        case "clarification.required": {
-          messages.push({
-            id: event.id,
-            role: "system",
-            content: `Clarification required: ${eventText(event)}`,
-            timestamp: formatElapsed(selectedSnapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
-            metadata: { eventType: event.type, agentId: event.agentId, beatId: event.id, runId: selectedSnapshot.runId, turnIndex: selectedSnapshot.turnIndex, pattern: selectedSnapshot.pattern },
-          });
-          break;
-        }
-      }
+    if (message.role === "user") {
+      current.user = message;
+    } else if (message.role === "assistant") {
+      current.assistant = message;
     }
+
+    grouped.set(message.runId, current);
   }
 
-  return messages.length > 0
-    ? messages
-    : [{ id: "empty", role: "system", content: "Start a conversation to interact with the agent.", timestamp: "now" }];
+  for (const [runId, snapshot] of Object.entries(turnSnapshots)) {
+    if (!snapshot) continue;
+    const current = grouped.get(runId) ?? {
+      runId,
+      turnIndex: snapshot.turnIndex ?? 1,
+      pattern: snapshot.pattern,
+    };
+    current.snapshot = snapshot;
+    current.turnIndex = current.turnIndex ?? snapshot.turnIndex ?? 1;
+    current.pattern = current.pattern ?? snapshot.pattern;
+    grouped.set(runId, current);
+  }
+
+  return [...grouped.values()]
+    .sort((left, right) => left.turnIndex - right.turnIndex)
+    .flatMap((turn) => {
+      const messages: ChatMessage[] = [];
+
+      if (turn.user) {
+        messages.push({
+          id: turn.user.id,
+          role: "user",
+          content: turn.user.content,
+          timestamp: formatClock(turn.user.createdAt),
+          metadata: {
+            runId: turn.user.runId,
+            turnIndex: turn.user.turnIndex,
+            pattern: turn.user.pattern,
+          },
+        });
+      }
+
+      const assistantTurn = turn.snapshot ? buildAssistantTurnAttachment(turn.snapshot) : undefined;
+      if (turn.assistant || assistantTurn) {
+        messages.push({
+          id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
+          role: "assistant",
+          content: turn.assistant?.content ?? placeholderAssistantCopy(turn.snapshot),
+          timestamp: formatClock(turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now()),
+          metadata: {
+            runId: turn.runId,
+            turnIndex: turn.turnIndex,
+            pattern: turn.pattern,
+          },
+          turn: assistantTurn,
+          isPlaceholder: !turn.assistant,
+        });
+      }
+
+      return messages;
+    });
+}
+
+function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurnAttachment {
+  return {
+    runId: snapshot.runId,
+    turnIndex: snapshot.turnIndex ?? 1,
+    status: adaptRunStatus(snapshot.status),
+    pattern: snapshot.pattern,
+    processSteps: deriveProcessSteps(snapshot),
+    artifacts: snapshot.artifacts.map(adaptTurnArtifact),
+    todos: deriveTurnTodos(snapshot),
+    approvalCount: snapshot.pendingApprovals.length,
+    clarificationCount: snapshot.pendingClarifications.length,
+  };
+}
+
+function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
+  return snapshot.events
+    .filter((event) =>
+      [
+        "plan.updated",
+        "todo.updated",
+        "action.updated",
+        "task.started",
+        "task.progress",
+        "task.completed",
+        "task.failed",
+        "approval.required",
+        "approval.resolved",
+        "clarification.required",
+        "clarification.resolved",
+        "tool.called",
+        "checkpoint.created",
+        "artifact.exported",
+        "topology.updated",
+        "run.done",
+        "run.failed",
+      ].includes(event.type),
+    )
+    .map((event) => ({
+      id: event.id,
+      eventType: event.type,
+      label: beatLabel(event),
+      detail: processStepDetail(event),
+      timestamp: formatElapsed(snapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
+      status: processStepStatus(event),
+      tone: processStepTone(event),
+      agentId: event.agentId,
+      contextLabel: processContextLabel(event),
+    }));
+}
+
+function processStepDetail(event: OraEventEnvelope): string {
+  const detail = eventText(event);
+  if (event.type === "artifact.exported" && isRecord(event.payload) && typeof event.payload.label === "string") {
+    return `Published ${event.payload.label}.`;
+  }
+  if (event.type === "checkpoint.created" && isRecord(event.payload) && isRecord(event.payload.checkpoint) && typeof event.payload.checkpoint.label === "string") {
+    return `Checkpoint created: ${event.payload.checkpoint.label}.`;
+  }
+  return detail;
+}
+
+function processStepStatus(event: OraEventEnvelope): TurnProcessStep["status"] {
+  switch (event.type) {
+    case "task.progress":
+    case "tool.called":
+      return "active";
+    case "approval.required":
+    case "clarification.required":
+    case "task.failed":
+    case "run.failed":
+      return "blocked";
+    default:
+      return "complete";
+  }
+}
+
+function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
+  switch (event.type) {
+    case "approval.required":
+    case "clarification.required":
+      return "warning";
+    case "artifact.exported":
+    case "checkpoint.created":
+      return "accent";
+    default:
+      return "neutral";
+  }
+}
+
+function processContextLabel(event: OraEventEnvelope): string | undefined {
+  if (!isRecord(event.payload)) {
+    return undefined;
+  }
+
+  if (typeof event.payload.path === "string") {
+    return event.payload.path;
+  }
+
+  if (typeof event.payload.uri === "string") {
+    return event.payload.uri;
+  }
+
+  if (typeof event.payload.label === "string") {
+    return event.payload.label;
+  }
+
+  if (isRecord(event.payload.checkpoint) && typeof event.payload.checkpoint.id === "string") {
+    return event.payload.checkpoint.id;
+  }
+
+  return undefined;
+}
+
+function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
+  return {
+    id: artifact.id,
+    label: artifact.label,
+    kind: artifact.kind,
+    mimeType: artifact.mimeType,
+    createdAt: formatClock(artifact.createdAt),
+    uri: artifact.uri,
+    previewable: artifact.mimeType.startsWith("image/"),
+  };
+}
+
+function deriveTurnTodos(snapshot: OraStateSnapshot): TurnTodoItem[] {
+  const runtimeTodos = readRuntimeTodos(snapshot.todos);
+  if (runtimeTodos.length > 0) {
+    return runtimeTodos;
+  }
+
+  return snapshot.plan.map((item) => ({
+    id: item.id,
+    label: item.title,
+    status: todoStatusFromPlan(item.status),
+    owner: item.ownerAgentId ?? "runtime",
+    detail: item.linkedActionIds.length > 0 ? `${item.linkedActionIds.length} linked action${item.linkedActionIds.length === 1 ? "" : "s"}` : undefined,
+  }));
+}
+
+function readRuntimeTodos(todos: OraStateSnapshot["todos"]): TurnTodoItem[] {
+  return todos.map((item, index) => ({
+    id: item.id || `todo-${index}`,
+    label: item.label,
+    status: todoStatusFromPlan(item.status),
+    detail: item.detail,
+  }));
+}
+
+function todoStatusFromPlan(status: OraPlanItem["status"]): TurnTodoItem["status"] {
+  switch (status) {
+    case "running":
+      return "running";
+    case "blocked":
+    case "failed":
+      return "blocked";
+    case "done":
+    case "skipped":
+      return "done";
+    case "planned":
+    case "ready":
+    default:
+      return "queued";
+  }
+}
+
+function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
+  if (!snapshot) {
+    return "Working on it...";
+  }
+
+  if (snapshot.pendingClarifications.length > 0) {
+    return "I need a bit more information before I can continue this turn.";
+  }
+
+  if (snapshot.pendingApprovals.length > 0 || snapshot.actions.some((action) => action.status === "approval_required")) {
+    return "I'm waiting for approval before continuing this turn.";
+  }
+
+  switch (snapshot.status) {
+    case "running":
+    case "queued":
+      return "Working on it...";
+    case "failed":
+    case "cancelled":
+    case "interrupted":
+      return snapshot.error ?? "This turn did not produce a final assistant reply.";
+    case "succeeded":
+      return snapshot.artifacts.length > 0 ? "This turn completed and produced attachments below." : "This turn completed without a final assistant reply.";
+  }
 }

@@ -19,7 +19,7 @@ import {
   PendingClarificationSchema,
   StateSnapshotSchema,
 } from "@ora/shared";
-import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService } from "../capabilities.js";
+import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
 import { configuredProviderId, invokeRunProvider } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
@@ -72,6 +72,7 @@ export async function executeRuntimeKernel(
   const memoryService = new MemoryService(runId, now);
   const memoryCaptureQueue = new MemoryCaptureQueue();
   const planService = new PlanService(runId, definition);
+  const todoService = new TodoService(runId, now, planService.list());
   const actionLedger = new ActionLedger(runId);
   const policyService = new PolicyService(runId, now);
   const events: OraEventEnvelope[] = [];
@@ -134,6 +135,10 @@ export async function executeRuntimeKernel(
     emit("plan.updated", { items: planService.list() });
   };
 
+  const emitTodoUpdated = () => {
+    emit("todo.updated", { items: todoService.list() });
+  };
+
   const clarificationAnswer = (key: string, id: string): unknown => {
     const clarifications = input.context?.clarifications;
     if (!clarifications || typeof clarifications !== "object" || clarifications === null) {
@@ -163,6 +168,7 @@ export async function executeRuntimeKernel(
       return;
     }
     planService.setStatus(item.id, status);
+    todoService.setStatus(item.id, status);
     queueSummary = {
       ...queueSummary,
       pending: planService.list().filter((plan) => plan.status === "planned" || plan.status === "ready").length,
@@ -480,6 +486,7 @@ export async function executeRuntimeKernel(
   emit("topology.updated", topology);
   emit("profile.updated", { profiles });
   emitPlanUpdated();
+  emitTodoUpdated();
 
   let status: StateSnapshot["status"] = "succeeded";
   let output: unknown;
@@ -512,6 +519,7 @@ export async function executeRuntimeKernel(
         currentSharedState: () => sharedStateSummary,
       },
       prompt: input.prompt,
+      config,
       modeSpec,
       definition,
     });
@@ -569,6 +577,7 @@ export async function executeRuntimeKernel(
     profiles,
     memory: memoryService.list(),
     plan: planService.list(),
+    todos: todoService.list(),
     actions: actionLedger.list(),
     policyDecisions: [],
     checkpoints: [checkpoint],

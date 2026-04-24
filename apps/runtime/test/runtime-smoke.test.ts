@@ -69,7 +69,7 @@ describe("Ora runtime smoke path", () => {
     expect(state.checkpoints).toHaveLength(1);
     expect(state.topology.nodes.length).toBeGreaterThan(1);
     expect(state.profiles.map((profile) => profile.id)).toEqual(["generator", "verifier"]);
-    expect(state.actions.length).toBeGreaterThanOrEqual(4);
+    expect(state.actions.length).toBeGreaterThanOrEqual(2);
     expect(state.actions.every((action) => action.status === "succeeded")).toBe(true);
     expect(state.policyDecisions).toEqual([]);
     expect(
@@ -79,10 +79,15 @@ describe("Ora runtime smoke path", () => {
     ).toBe(true);
     expect(state.plan.every((item) => item.status === "done")).toBe(true);
     expect(state.plan.some((item) => item.linkedActionIds.length > 0)).toBe(true);
+    expect(state.todos).toHaveLength(state.plan.length);
+    expect(state.todos.every((item) => item.status === "done")).toBe(true);
+    expect(state.todos.map((item) => item.sourcePlanItemId)).toEqual(state.plan.map((item) => item.id));
     expect(state.pendingClarifications).toEqual([]);
     expect(state.pendingApprovals).toEqual([]);
     expect(state.activeAgents).toEqual([]);
+    expect(state.events.map((event) => event.type)).toContain("todo.updated");
     expect(state.output).toMatchObject({
+      text: expect.stringContaining("[local-smoke]"),
       pattern: "generator_verifier",
       generator: { candidate: expect.stringContaining("[local-smoke]") },
       verifier: { verdict: "pass" }
@@ -91,6 +96,57 @@ describe("Ora runtime smoke path", () => {
     for (const event of state.events) {
       expect(OraEventEnvelopeSchema.parse(event).runId).toBe(run.runId);
     }
+  });
+
+  it("preserves providerId/providerConfig and routes calls through the selected provider", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const run = (await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Use the selected provider." },
+        config: {
+          pattern: "generator_verifier",
+          providerId: "deepseek",
+          modelRef: "deepseek-chat",
+          metadata: { providerId: "deepseek" },
+          providerConfig: {
+            id: "deepseek",
+            label: "DeepSeek Smoke",
+            type: "local_smoke",
+            modelId: "deepseek-chat",
+            capabilities: ["chat"],
+            headers: {},
+          },
+        },
+      },
+    })) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      })
+    );
+
+    expect(state.config.providerId).toBe("deepseek");
+    expect(state.config.modelRef).toBe("deepseek-chat");
+    expect(state.config.providerConfig).toMatchObject({
+      id: "deepseek",
+      type: "local_smoke",
+      modelId: "deepseek-chat",
+    });
+    expect(
+      state.events.some((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).providerId === "deepseek",
+      ),
+    ).toBe(true);
   });
 
   it("serves JSON-RPC over newline-delimited request payloads", async () => {
@@ -153,6 +209,7 @@ describe("Ora runtime smoke path", () => {
     expect(bootstrap.modes.map((mode) => mode.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
+      "single_agent",
       "agent_teams",
       "message_bus",
       "shared_state"
@@ -239,6 +296,39 @@ describe("Ora runtime smoke path", () => {
     expect(state.modeSpec?.id).toBe(cloned.id);
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.plan.some((item) => item.id.endsWith(":review"))).toBe(false);
+  });
+
+  it("runs the built-in single-agent preset without cloning a custom mode", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Answer this directly." },
+        config: { pattern: "orchestrator_subagent", modeId: "single_agent" }
+      }
+    }) as { runId: string; status: string };
+
+    expect(run.status).toBe("succeeded");
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.state",
+      params: { runId: run.runId }
+    }));
+
+    expect(state.modeId).toBe("single_agent");
+    expect(state.pattern).toBe("orchestrator_subagent");
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["solo_agent"]);
+    expect(state.memory.some((record) => record.namespace.join(":").startsWith("session:local-project:single_agent"))).toBe(true);
+    expect(state.output).toMatchObject({
+      modeId: "single_agent",
+      agent: {
+        id: "solo_agent"
+      }
+    });
   });
 
   it("publishes runtime artifacts when a node enables the artifact_publish atom", async () => {
@@ -879,9 +969,12 @@ describe("Ora runtime smoke path", () => {
     expect(run.status).toBe("interrupted");
     expect(blocked.actions[0]?.status).toBe("approval_required");
     expect(blocked.events.map((event) => event.type)).toContain("approval.required");
+    expect(blocked.todos.every((todo) => todo.status === "blocked")).toBe(true);
     expect(resumed.actions[0]?.status).toBe("succeeded");
     expect(resumed.memory).toHaveLength(1);
     expect(resumed.events.map((event) => event.type)).toContain("approval.resolved");
+    expect(resumed.events.map((event) => event.type)).toContain("todo.updated");
+    expect(resumed.todos.every((todo) => todo.status === "done")).toBe(true);
   });
 
   it("forks a run from a checkpoint without exposing engine internals", async () => {

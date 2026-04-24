@@ -65,7 +65,9 @@ import {
   SessionSummarySchema,
   SessionTranscriptMessageSchema,
   SessionTurnSchema,
+  StateSnapshotSchema,
   SkillRegistrySchema,
+  TodoItemSchema,
   autoLayoutModeSpec,
   ensureModeNodePositions,
   getModeNodeRuntimeTemplateDefinition,
@@ -77,10 +79,18 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(5);
+    expect(MVP_MODES).toHaveLength(6);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
+      "agent_teams",
+      "message_bus",
+      "shared_state"
+    ]);
+    expect(MVP_MODES.map((mode) => mode.id)).toEqual([
+      "generator_verifier",
+      "orchestrator_subagent",
+      "single_agent",
       "agent_teams",
       "message_bus",
       "shared_state"
@@ -298,7 +308,46 @@ describe("Ora shared contracts", () => {
       createdAt: 1
     });
 
+    const todo = TodoItemSchema.parse({
+      id: "todo-1",
+      runId: "run-1",
+      sourcePlanItemId: planItem.id,
+      status: "ready",
+      label: "Check the answer",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
     expect(decision.requiredApproval).toBe(true);
+    expect(todo.sourcePlanItemId).toBe(planItem.id);
+    expect(
+      OraEventEnvelopeSchema.parse({
+        id: "evt-1b",
+        runId: "run-1",
+        seq: 1,
+        type: "todo.updated",
+        createdAt: 2,
+        pattern: "orchestrator_subagent",
+        payload: { items: [todo] }
+      }).type
+    ).toBe("todo.updated");
+    expect(
+      StateSnapshotSchema.parse({
+        runId: "run-1",
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        input: { prompt: "Check the answer", createdAt: 1, context: {} },
+        config: { pattern: "orchestrator_subagent" },
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        actions: [],
+        checkpoints: [],
+        events: [],
+        updatedAt: 1
+      }).todos
+    ).toEqual([]);
   });
 
   it("validates JSON-RPC request and response shapes", () => {
@@ -919,7 +968,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes).toHaveLength(5);
+    expect(parsed.modes).toHaveLength(6);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

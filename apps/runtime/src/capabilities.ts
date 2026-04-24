@@ -10,7 +10,9 @@ import {
   PlanItem,
   PlanItemSchema,
   PolicyDecision,
-  PolicyDecisionSchema
+  PolicyDecisionSchema,
+  TodoItem,
+  TodoItemSchema,
 } from "@ora/shared";
 
 export class AgentProfileRegistry {
@@ -178,6 +180,69 @@ export class PlanService {
       throw new Error(`Plan item not found: ${planItemId}`);
     }
     this.items[index] = PlanItemSchema.parse(mapper(this.items[index]!));
+  }
+}
+
+export class TodoService {
+  private items: TodoItem[];
+
+  constructor(
+    private readonly runId: string,
+    private readonly clock: () => number,
+    planItems: PlanItem[],
+    existingItems: TodoItem[] = [],
+  ) {
+    this.items = existingItems.map((item) => TodoItemSchema.parse(item));
+    this.syncFromPlan(planItems);
+  }
+
+  list(): TodoItem[] {
+    return this.items;
+  }
+
+  syncFromPlan(planItems: PlanItem[]): TodoItem[] {
+    const existing = new Map(this.items.map((item) => [item.sourcePlanItemId ?? item.id, item]));
+    this.items = planItems.map((planItem) => {
+      const current = existing.get(planItem.id);
+      const changed = !current
+        || current.status !== planItem.status
+        || current.label !== planItem.title;
+      const createdAt = current?.createdAt ?? this.clock();
+      return TodoItemSchema.parse({
+        id: current?.id ?? `${planItem.id}:todo`,
+        runId: this.runId,
+        sourcePlanItemId: planItem.id,
+        status: planItem.status,
+        label: planItem.title,
+        detail: current?.detail,
+        createdAt,
+        updatedAt: changed ? this.clock() : (current?.updatedAt ?? createdAt),
+      });
+    });
+    return this.items;
+  }
+
+  setStatus(sourcePlanItemId: string, status: TodoItem["status"]): TodoItem[] {
+    const index = this.items.findIndex((item) => item.sourcePlanItemId === sourcePlanItemId);
+    if (index < 0) {
+      throw new Error(`Todo item not found for plan item: ${sourcePlanItemId}`);
+    }
+    const current = this.items[index]!;
+    this.items[index] = TodoItemSchema.parse({
+      ...current,
+      status,
+      updatedAt: this.clock(),
+    });
+    return this.items;
+  }
+
+  markAll(status: TodoItem["status"]): TodoItem[] {
+    this.items = this.items.map((item) => TodoItemSchema.parse({
+      ...item,
+      status,
+      updatedAt: this.clock(),
+    }));
+    return this.items;
   }
 }
 
