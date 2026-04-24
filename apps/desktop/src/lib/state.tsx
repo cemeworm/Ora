@@ -1,3 +1,4 @@
+import { CoordinationPatternSchema } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import type {
@@ -50,6 +51,7 @@ export interface WorkbenchState {
   sidebarCollapsed: boolean;
   detailDrawerOpen: boolean;
   artifactPanelOpen: boolean;
+  selectedArtifactId: string | undefined;
   inputMode: "flash" | "thinking" | "pro" | "ultra";
 }
 
@@ -84,6 +86,7 @@ export type WorkbenchAction =
   | { type: "SET_PROVIDER"; providerId: string }
   | { type: "SET_SELECTED_CUSTOM_AGENT"; agentId: string | undefined }
   | { type: "SET_PROVIDER_REGISTRY"; providerRegistry: OraProviderRegistry }
+  | { type: "SET_SKILL_REGISTRY"; skillRegistry: OraSkillRegistry }
   | { type: "UPSERT_PROVIDER"; provider: OraProviderConfig }
   | { type: "DELETE_PROVIDER"; providerId: string }
   | { type: "SET_PROVIDER_SECRET_STATUS"; status: OraProviderSecretStatus }
@@ -106,11 +109,15 @@ export type WorkbenchAction =
   | { type: "TOGGLE_SIDEBAR" }
   | { type: "TOGGLE_DETAIL_DRAWER" }
   | { type: "TOGGLE_ARTIFACT_PANEL" }
+  | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
+  | { type: "CLOSE_ARTIFACT_PANEL" }
   | { type: "SET_INPUT_MODE"; mode: WorkbenchState["inputMode"] };
 
+const initialSelectedPattern = CoordinationPatternSchema.options[0] as CoordinationPattern;
+
 const initialState: WorkbenchState = {
-  selectedPattern: "orchestrator_subagent",
-  selectedModeId: "orchestrator_subagent",
+  selectedPattern: initialSelectedPattern,
+  selectedModeId: "",
   selectedSessionId: undefined,
   selectedTurnRunId: undefined,
   selectedDockTab: "Overview",
@@ -147,6 +154,7 @@ const initialState: WorkbenchState = {
   sidebarCollapsed: false,
   detailDrawerOpen: false,
   artifactPanelOpen: false,
+  selectedArtifactId: undefined,
   inputMode: "pro",
 };
 
@@ -164,6 +172,10 @@ function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStat
   return detail.latestSnapshot;
 }
 
+function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraModeSpec | undefined {
+  return modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
+}
+
 function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   switch (action.type) {
     case "RESET_RUNTIME_VIEW":
@@ -173,6 +185,8 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         selectedTurnRunId: undefined,
         selectedBeatId: undefined,
         selectedNodeId: "run",
+        selectedArtifactId: undefined,
+        artifactPanelOpen: false,
         projects: [],
         sessions: [],
         selectedProjectId: undefined,
@@ -185,7 +199,8 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         commandFeedback: "Reconnecting to the Ora runtime bridge.",
       };
 
-    case "BOOTSTRAP":
+    case "BOOTSTRAP": {
+      const selectedMode = resolveSelectedMode(action.modes, state.selectedModeId);
       return {
         ...state,
         patterns: action.patterns,
@@ -197,7 +212,8 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         providerSecretStatuses: action.providerSecretStatuses,
         providerStatuses: action.providerStatuses,
         selectedProviderId: action.providerRegistry.defaultProviderId,
-        selectedModeId: action.modes[0]?.id ?? state.selectedModeId,
+        selectedModeId: selectedMode?.id ?? state.selectedModeId,
+        selectedPattern: selectedMode?.family ?? state.selectedPattern,
         bridgeStatus: {
           mode: action.health.mode,
           ok: action.health.ok,
@@ -206,6 +222,7 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         },
         isLoading: false,
       };
+    }
 
     case "HYDRATE_SESSION": {
       const snapshot = selectedSnapshotFromDetail(action.detail, action.snapshot, state.selectedTurnRunId);
@@ -239,14 +256,15 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
     case "SET_PROJECTS":
       return { ...state, projects: action.projects };
 
-    case "SET_MODES":
+    case "SET_MODES": {
+      const selectedMode = resolveSelectedMode(action.modes, state.selectedModeId);
       return {
         ...state,
         modes: action.modes,
-        selectedModeId: action.modes.some((mode) => mode.id === state.selectedModeId)
-          ? state.selectedModeId
-          : action.modes[0]?.id ?? state.selectedModeId,
+        selectedModeId: selectedMode?.id ?? state.selectedModeId,
+        selectedPattern: selectedMode?.family ?? state.selectedPattern,
       };
+    }
 
     case "SELECT_PROJECT":
       return { ...state, selectedProjectId: action.projectId };
@@ -305,6 +323,12 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
         selectedProviderId: selectedProvider,
       };
     }
+
+    case "SET_SKILL_REGISTRY":
+      return {
+        ...state,
+        skillRegistry: action.skillRegistry,
+      };
 
     case "UPSERT_PROVIDER": {
       const providers = state.providerRegistry?.providers ?? [];
@@ -368,7 +392,17 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       return { ...state, providerStatuses: action.statuses };
 
     case "SELECT_SESSION":
-      return { ...state, selectedSessionId: action.sessionId };
+      return {
+        ...state,
+        selectedSessionId: action.sessionId,
+        selectedTurnRunId: undefined,
+        selectedBeatId: undefined,
+        selectedNodeId: "run",
+        activeSessionDetail: undefined,
+        activeSnapshot: undefined,
+        selectedArtifactId: undefined,
+        artifactPanelOpen: false,
+      };
 
     case "SELECT_TURN":
       return {
@@ -421,7 +455,13 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
       return { ...state, detailDrawerOpen: !state.detailDrawerOpen };
 
     case "TOGGLE_ARTIFACT_PANEL":
-      return { ...state, artifactPanelOpen: !state.artifactPanelOpen, detailDrawerOpen: !state.artifactPanelOpen };
+      return { ...state, artifactPanelOpen: !state.artifactPanelOpen };
+
+    case "OPEN_ARTIFACT_PANEL":
+      return { ...state, selectedArtifactId: action.artifactId, artifactPanelOpen: true };
+
+    case "CLOSE_ARTIFACT_PANEL":
+      return { ...state, artifactPanelOpen: false };
 
     case "SET_INPUT_MODE":
       return { ...state, inputMode: action.mode };

@@ -2,7 +2,7 @@ import { Sparkles } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import type { AgentProfile, ChatMessage, CheckpointRecord, ModeCard, SessionRun, SessionTurnItem, StreamLine, TopologyEdge, TopologyNode } from "../types";
+import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, ModeCard, SessionRun, StreamLine, TopologyEdge, TopologyNode } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
@@ -11,6 +11,7 @@ interface ChatViewProps {
   activeMode: ModeCard;
   modeCards: ModeCard[];
   activeSnapshot?: OraStateSnapshot;
+  actionRecords: ActionRecord[];
   agents: AgentProfile[];
   busyCommand?: string;
   chatMessages: ChatMessage[];
@@ -20,8 +21,6 @@ interface ChatViewProps {
   isRunning: boolean;
   isApprovalRequired: boolean;
   selectedSession: SessionRun;
-  sessionTurns: SessionTurnItem[];
-  selectedTurnRunId?: string;
   selectedCustomAgentId?: string;
   streamLines: StreamLine[];
   topologyEdges: TopologyEdge[];
@@ -34,9 +33,9 @@ interface ChatViewProps {
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onOpenArtifact: (artifactId: string) => void;
   onSelectMode: (modeId: string) => void;
   onSelectNode: (id: string) => void;
-  onSelectTurn: (runId: string) => void;
   onStartRun: () => void;
   onToggleDetailDrawer: () => void;
   detailDrawerOpen: boolean;
@@ -44,6 +43,7 @@ interface ChatViewProps {
 
 export function ChatView({
   activeMode,
+  actionRecords,
   modeCards,
   busyCommand,
   chatMessages,
@@ -52,18 +52,18 @@ export function ChatView({
   isRunning,
   isApprovalRequired,
   selectedSession,
-  sessionTurns,
-  selectedTurnRunId,
   selectedCustomAgentId,
   onStartRun,
   onComposerPromptChange,
   onClearSelectedCustomAgent,
   onInterruptRun,
+  onResumeRun,
+  onCancelRun,
   onExportReport,
+  onOpenArtifact,
   onToggleDetailDrawer,
   detailDrawerOpen,
   onSelectMode,
-  onSelectTurn,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
   const showWelcome = chatMessages.length === 0 && !isRunning;
@@ -86,9 +86,6 @@ export function ChatView({
         isRunning={isRunning}
         isApprovalRequired={isApprovalRequired}
         selectedSession={selectedSession}
-        turns={sessionTurns}
-        selectedTurnRunId={selectedTurnRunId}
-        onSelectTurn={onSelectTurn}
         onExportReport={onExportReport}
         onInterruptRun={onInterruptRun}
         onToggleDetailDrawer={onToggleDetailDrawer}
@@ -102,15 +99,20 @@ export function ChatView({
                 <Sparkles size={22} />
                 <span>Welcome back to Ora</span>
               </div>
-              <p className="max-w-xl text-sm leading-6 text-muted-foreground">
-                Start a new session, pick a mode for the next turn, and keep the session transcript while inspecting each turn’s Trails view on the right.
-              </p>
             </div>
           </div>
         )}
         <div className="flex min-h-0 flex-1">
           <div className={workspaceContentClassName}>
-            <ChatMessages chatMessages={chatMessages} />
+            <ChatMessages
+              chatMessages={chatMessages}
+              actionRecords={actionRecords}
+              isApprovalRequired={isApprovalRequired}
+              onResumeRun={onResumeRun}
+              onCancelRun={onCancelRun}
+              onOpenArtifact={onOpenArtifact}
+              busyCommand={busyCommand}
+            />
           </div>
         </div>
         <ChatInput

@@ -10,6 +10,7 @@ export const CoordinationPatternSchema = z.enum([
 export type CoordinationPattern = z.infer<typeof CoordinationPatternSchema>;
 export const CoordinationKindSchema = CoordinationPatternSchema;
 export type CoordinationKind = CoordinationPattern;
+export const DEERFLOW_HARNESS_MODE_ID = "deerflow_harness" as const;
 export const SINGLE_AGENT_MODE_ID = "single_agent" as const;
 
 export const ModeIdSchema = z
@@ -947,6 +948,12 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "modes.cloneFromPreset",
   "tools.list",
   "skills.list",
+  "skills.get",
+  "skills.create",
+  "skills.update",
+  "skills.delete",
+  "skills.checkName",
+  "skills.setEnabled",
   "providers.list",
   "agents.list",
   "agents.get",
@@ -1133,6 +1140,21 @@ export type ModeRuntimeAtomId = z.infer<typeof ModeRuntimeAtomIdSchema>;
 export const ModeRuntimeAtomScopeSchema = z.enum(["mode", "node"]);
 export type ModeRuntimeAtomScope = z.infer<typeof ModeRuntimeAtomScopeSchema>;
 
+export const ModeRuntimeAtomTopologyPresentationSchema = z.enum([
+  "mode_capability",
+  "stage_attachment",
+  "family_capability",
+]);
+export type ModeRuntimeAtomTopologyPresentation = z.infer<typeof ModeRuntimeAtomTopologyPresentationSchema>;
+
+export const ModeRuntimeAtomTopologySchema = z.object({
+  presentation: ModeRuntimeAtomTopologyPresentationSchema,
+  builtinNodeId: z.string().min(1).optional(),
+  edgeKind: TopologyEdgeSchema.shape.kind.default("control"),
+  edgeLabel: z.string().min(1).optional(),
+});
+export type ModeRuntimeAtomTopology = z.infer<typeof ModeRuntimeAtomTopologySchema>;
+
 export const ModeRuntimeAtomDefinitionSchema = z.object({
   id: ModeRuntimeAtomIdSchema,
   scope: ModeRuntimeAtomScopeSchema,
@@ -1141,6 +1163,7 @@ export const ModeRuntimeAtomDefinitionSchema = z.object({
   compatibleFamilies: z.array(CoordinationPatternSchema).min(1),
   requiresTools: z.array(z.string().min(1)).default([]),
   requiresFlags: z.array(z.string().min(1)).default([]),
+  topology: ModeRuntimeAtomTopologySchema,
   defaultEnabled: z.boolean().default(false),
 });
 export type ModeRuntimeAtomDefinition = z.infer<typeof ModeRuntimeAtomDefinitionSchema>;
@@ -1451,6 +1474,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["orchestrator_subagent", "agent_teams"],
     requiresTools: [],
     requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "workspace",
+    },
     defaultEnabled: true,
   },
   {
@@ -1461,6 +1489,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ALL_COORDINATION_PATTERNS,
     requiresTools: [],
     requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "guard",
+    },
     defaultEnabled: true,
   },
   {
@@ -1471,6 +1504,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ALL_COORDINATION_PATTERNS,
     requiresTools: [],
     requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "bound",
+    },
     defaultEnabled: true,
   },
   {
@@ -1481,6 +1519,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ALL_COORDINATION_PATTERNS,
     requiresTools: [],
     requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "interrupt",
+    },
     defaultEnabled: true,
   },
   {
@@ -1491,6 +1534,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ALL_COORDINATION_PATTERNS,
     requiresTools: [],
     requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "memory",
+      edgeLabel: "capture",
+    },
     defaultEnabled: true,
   },
   {
@@ -1501,6 +1549,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["orchestrator_subagent"],
     requiresTools: ["mcp.call"],
     requiresFlags: [],
+    topology: {
+      presentation: "stage_attachment",
+      edgeKind: "control",
+      edgeLabel: "discover",
+    },
     defaultEnabled: false,
   },
   {
@@ -1511,6 +1564,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["orchestrator_subagent", "agent_teams"],
     requiresTools: ["model.handoff"],
     requiresFlags: [],
+    topology: {
+      presentation: "stage_attachment",
+      edgeKind: "delegation",
+      edgeLabel: "delegate",
+    },
     defaultEnabled: false,
   },
   {
@@ -1521,6 +1579,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["agent_teams"],
     requiresTools: [],
     requiresFlags: ["supportsPersistentWorkers"],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "memory",
+      edgeLabel: "retain",
+    },
     defaultEnabled: true,
   },
   {
@@ -1531,6 +1594,12 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["message_bus"],
     requiresTools: ["message.publish"],
     requiresFlags: ["supportsEventRouting"],
+    topology: {
+      presentation: "family_capability",
+      builtinNodeId: "triage_topic",
+      edgeKind: "artifact",
+      edgeLabel: "route",
+    },
     defaultEnabled: true,
   },
   {
@@ -1541,6 +1610,12 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["shared_state"],
     requiresTools: ["shared_state.write"],
     requiresFlags: ["supportsSharedState"],
+    topology: {
+      presentation: "family_capability",
+      builtinNodeId: "shared_board",
+      edgeKind: "memory",
+      edgeLabel: "board",
+    },
     defaultEnabled: true,
   },
   {
@@ -1551,6 +1626,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ["agent_teams", "message_bus", "shared_state"],
     requiresTools: ["export.report"],
     requiresFlags: [],
+    topology: {
+      presentation: "stage_attachment",
+      edgeKind: "artifact",
+      edgeLabel: "publish",
+    },
     defaultEnabled: false,
   },
   {
@@ -1561,6 +1641,11 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
     compatibleFamilies: ALL_COORDINATION_PATTERNS,
     requiresTools: [],
     requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "trace",
+    },
     defaultEnabled: false,
   },
 ];
@@ -1577,6 +1662,244 @@ export function defaultRuntimeAtomsForFamily(family: CoordinationPattern): ModeR
   return MVP_MODE_RUNTIME_ATOMS
     .filter((atom) => atom.defaultEnabled && atom.compatibleFamilies.includes(family))
     .map((atom) => atom.id);
+}
+
+export function nodeRuntimeAtomIds(node: Pick<ModeNodeSpec, "config">): ModeRuntimeAtomId[] {
+  return Array.isArray(node.config?.atoms)
+    ? node.config.atoms.filter((value): value is ModeRuntimeAtomId => ModeRuntimeAtomIdSchema.safeParse(value).success)
+    : [];
+}
+
+function modeUsesSingleOwnerTopology(mode: ModeSpec, orderedNodes: ModeNodeSpec[]): boolean {
+  const fallbackAgentId = mode.profiles[0]?.id;
+  const ownerIds = new Set(
+    orderedNodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
+  );
+  return ownerIds.size <= 1 && !orderedNodes.some((node) => nodeRuntimeAtomIds(node).includes("subagent_delegate"));
+}
+
+function modePrimaryOwnerAgent(mode: ModeSpec, orderedNodes: ModeNodeSpec[]): AgentProfile | undefined {
+  const ownerAgentId = orderedNodes.find((node) => node.ownerAgentId)?.ownerAgentId ?? mode.profiles[0]?.id;
+  return mode.profiles.find((profile) => profile.id === ownerAgentId) ?? mode.profiles[0];
+}
+
+function applyModeTopologyMetadata(
+  mode: ModeSpec,
+  orderedNodes: ModeNodeSpec[],
+  node: TopologyNode,
+): TopologyNode {
+  return {
+    ...node,
+    metadata: {
+      ...node.metadata,
+      modeId: mode.id,
+      enabledNodeIds: orderedNodes.map((item) => item.id),
+    },
+  };
+}
+
+function applyModeEdgeMetadata(mode: ModeSpec, edge: TopologyEdge): TopologyEdge {
+  return {
+    ...edge,
+    metadata: {
+      ...edge.metadata,
+      modeId: mode.id,
+    },
+  };
+}
+
+function runtimeBaseTopology(
+  mode: ModeSpec,
+  family: PatternDefinition,
+  orderedNodes: ModeNodeSpec[],
+): { nodes: TopologyNode[]; edges: TopologyEdge[] } {
+  if (modeUsesSingleOwnerTopology(mode, orderedNodes)) {
+    const primaryAgent = modePrimaryOwnerAgent(mode, orderedNodes);
+    const agentId = primaryAgent?.id ?? orderedNodes[0]?.id ?? "agent";
+    const agentLabel = primaryAgent?.label ?? orderedNodes[0]?.label ?? "Agent";
+    return {
+      nodes: [
+        applyModeTopologyMetadata(mode, orderedNodes, {
+          id: "run",
+          label: "Run",
+          kind: "run",
+          status: "idle",
+          metadata: {},
+        }),
+        applyModeTopologyMetadata(mode, orderedNodes, {
+          id: agentId,
+          label: agentLabel,
+          kind: "agent",
+          agentId,
+          status: "idle",
+          metadata: {},
+        }),
+      ],
+      edges: [
+        applyModeEdgeMetadata(mode, {
+          id: `run-${agentId}`,
+          source: "run",
+          target: agentId,
+          kind: "control",
+          label: "own task",
+          metadata: {},
+        }),
+      ],
+    };
+  }
+
+  return {
+    nodes: family.topology.nodes.map((node) => applyModeTopologyMetadata(mode, orderedNodes, node)),
+    edges: family.topology.edges.map((edge) => applyModeEdgeMetadata(mode, edge)),
+  };
+}
+
+function runtimeTopologyAnchorId(
+  topologyNodes: TopologyNode[],
+  node: ModeNodeSpec,
+): string {
+  const owner = typeof node.ownerAgentId === "string" && node.ownerAgentId.length > 0
+    ? topologyNodes.find((candidate) => candidate.id === node.ownerAgentId || candidate.agentId === node.ownerAgentId)
+    : undefined;
+  if (owner) {
+    return owner.id;
+  }
+
+  const direct = topologyNodes.find((candidate) => candidate.id === node.id);
+  if (direct) {
+    return direct.id;
+  }
+
+  return topologyNodes.find((candidate) => candidate.kind === "run")?.id ?? topologyNodes[0]?.id ?? node.id;
+}
+
+function modeCapabilityNode(atom: ModeRuntimeAtomDefinition, mode: ModeSpec, orderedNodes: ModeNodeSpec[]): TopologyNode {
+  return {
+    id: `capability:${atom.id}`,
+    label: atom.label,
+    kind: "capability",
+    status: "idle",
+    metadata: {
+      modeId: mode.id,
+      enabledNodeIds: orderedNodes.map((item) => item.id),
+      atomId: atom.id,
+      atomScope: atom.scope,
+      atomPresentation: atom.topology.presentation,
+      atomActive: true,
+    },
+  };
+}
+
+function nodeAttachmentCapabilityNode(
+  atom: ModeRuntimeAtomDefinition,
+  mode: ModeSpec,
+  orderedNodes: ModeNodeSpec[],
+  node: ModeNodeSpec,
+): TopologyNode {
+  return {
+    id: `capability:${node.id}:${atom.id}`,
+    label: atom.label,
+    kind: "capability",
+    status: "idle",
+    metadata: {
+      modeId: mode.id,
+      enabledNodeIds: orderedNodes.map((item) => item.id),
+      atomId: atom.id,
+      atomScope: atom.scope,
+      atomPresentation: atom.topology.presentation,
+      atomActive: true,
+      sourceNodeId: node.id,
+      sourceNodeLabel: node.label,
+      ownerAgentId: node.ownerAgentId,
+    },
+  };
+}
+
+export function projectModeRuntimeTopology(mode: ModeSpec): { nodes: TopologyNode[]; edges: TopologyEdge[] } {
+  const family = getPatternDefinition(mode.family);
+  const orderedNodes = orderedEnabledModeNodes(mode);
+  const topology = runtimeBaseTopology(mode, family, orderedNodes);
+  const nodes = [...topology.nodes];
+  const edges = [...topology.edges];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const activeModeAtoms = new Set(mode.runtimeAtoms);
+
+  for (const atom of MVP_MODE_RUNTIME_ATOMS.filter((candidate) => candidate.scope === "mode" && candidate.compatibleFamilies.includes(mode.family))) {
+    if (atom.topology.presentation === "family_capability" && atom.topology.builtinNodeId) {
+      const index = nodes.findIndex((node) => node.id === atom.topology.builtinNodeId);
+      if (index >= 0) {
+        nodes[index] = {
+          ...nodes[index]!,
+          metadata: {
+            ...nodes[index]!.metadata,
+            atomId: atom.id,
+            atomScope: atom.scope,
+            atomPresentation: atom.topology.presentation,
+            atomActive: activeModeAtoms.has(atom.id),
+          },
+        };
+      }
+      continue;
+    }
+
+    if (!activeModeAtoms.has(atom.id)) {
+      continue;
+    }
+
+    const capabilityNode = modeCapabilityNode(atom, mode, orderedNodes);
+    if (!nodeIds.has(capabilityNode.id)) {
+      nodes.push(capabilityNode);
+      nodeIds.add(capabilityNode.id);
+    }
+    const anchorId = nodes.find((node) => node.kind === "run")?.id ?? nodes[0]?.id;
+    if (anchorId) {
+      edges.push(applyModeEdgeMetadata(mode, {
+        id: `${anchorId}-${capabilityNode.id}`,
+        source: anchorId,
+        target: capabilityNode.id,
+        kind: atom.topology.edgeKind,
+        label: atom.topology.edgeLabel,
+        metadata: {
+          atomId: atom.id,
+          atomScope: atom.scope,
+          atomPresentation: atom.topology.presentation,
+        },
+      }));
+    }
+  }
+
+  for (const node of orderedNodes) {
+    for (const atomId of nodeRuntimeAtomIds(node)) {
+      const atom = getModeRuntimeAtom(atomId);
+      if (atom.scope !== "node" || atom.topology.presentation !== "stage_attachment") {
+        continue;
+      }
+      const capabilityNode = nodeAttachmentCapabilityNode(atom, mode, orderedNodes, node);
+      if (!nodeIds.has(capabilityNode.id)) {
+        nodes.push(capabilityNode);
+        nodeIds.add(capabilityNode.id);
+      }
+      const anchorId = runtimeTopologyAnchorId(nodes, node);
+      edges.push(applyModeEdgeMetadata(mode, {
+        id: `${anchorId}-${capabilityNode.id}`,
+        source: anchorId,
+        target: capabilityNode.id,
+        kind: atom.topology.edgeKind,
+        label: atom.topology.edgeLabel,
+        metadata: {
+          atomId: atom.id,
+          atomScope: atom.scope,
+          atomPresentation: atom.topology.presentation,
+          sourceNodeId: node.id,
+        },
+      }));
+    }
+  }
+
+  return {
+    nodes,
+    edges,
+  };
 }
 
 export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinition> = {
@@ -2088,6 +2411,132 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
   }));
 }
 
+function createDeerflowHarnessModeSpec(): ModeSpec {
+  const now = 0;
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: DEERFLOW_HARNESS_MODE_ID,
+    family: "orchestrator_subagent",
+    label: "DeerFlow-like Harness",
+    summary: "A lead agent frames the work, delegates research and review, then synthesizes the final answer.",
+    description: "Use a DeerFlow-inspired lead-agent harness with workspace, memory capture, loop guards, tool boundaries, and explicit delegated subagent stages.",
+    recommendedUse: "Use for decomposable work where a lead agent should coordinate focused research and review before answering.",
+    failureMode: "Delegation can add coordination overhead when the task is simple or the delegated stages are underspecified.",
+    systemPreset: true,
+    nodes: [
+      {
+        id: "decompose",
+        template: "decompose",
+        label: "Lead plan",
+        title: "Lead plan",
+        ownerAgentId: "lead_agent",
+        enabled: true,
+        config: {},
+      },
+      {
+        id: "research",
+        template: "research",
+        label: "Research subagent",
+        title: "Research subagent",
+        ownerAgentId: "research_subagent",
+        enabled: true,
+        config: { atoms: ["subagent_delegate"] },
+      },
+      {
+        id: "review",
+        template: "review",
+        label: "Review subagent",
+        title: "Review subagent",
+        ownerAgentId: "review_subagent",
+        enabled: true,
+        config: { atoms: ["subagent_delegate"] },
+      },
+      {
+        id: "synthesize",
+        template: "synthesize",
+        label: "Lead synthesis",
+        title: "Lead synthesis",
+        ownerAgentId: "lead_agent",
+        enabled: true,
+        config: {},
+      },
+    ],
+    edges: [
+      {
+        id: "decompose-research",
+        source: "decompose",
+        target: "research",
+        kind: "delegation",
+        label: "delegate",
+        enabled: true,
+      },
+      {
+        id: "research-review",
+        source: "research",
+        target: "review",
+        kind: "verification",
+        label: "check",
+        enabled: true,
+      },
+      {
+        id: "review-synthesize",
+        source: "review",
+        target: "synthesize",
+        kind: "control",
+        label: "synthesize",
+        enabled: true,
+      },
+    ],
+    stopPolicy: {
+      type: "queue_drained",
+      detail: "Stop when the lead agent has synthesized the delegated research and review outputs.",
+    },
+    capabilityFlags: {
+      supportsPersistentWorkers: false,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "high_risk_only",
+      skillIds: [],
+      toolIds: ["model.handoff"],
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.orchestrator_subagent.allowedTemplates,
+      requiredNodeTemplates: ["decompose", "synthesize"],
+      readOnly: true,
+      allowReorder: true,
+      allowCreate: true,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+    profiles: [
+      profile(
+        "lead_agent",
+        "Lead Agent",
+        "Frame the task, coordinate delegated subagents, and synthesize the final answer.",
+        "orchestrator_subagent",
+        ["session", "project"],
+      ),
+      profile(
+        "research_subagent",
+        "Research Subagent",
+        "Gather focused context for the lead agent's plan.",
+        "orchestrator_subagent",
+        ["session", "project"],
+      ),
+      profile(
+        "review_subagent",
+        "Review Subagent",
+        "Check delegated findings for gaps and risks before synthesis.",
+        "orchestrator_subagent",
+        ["session", "artifact"],
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
 function createSingleAgentModeSpec(): ModeSpec {
   const now = 0;
   return autoLayoutModeSpec(ModeSpecSchema.parse({
@@ -2169,6 +2618,7 @@ const ORCHESTRATOR_MODE_INDEX = BUILTIN_PATTERN_MODES.findIndex((mode) => mode.i
 
 export const MVP_MODES = [
   ...BUILTIN_PATTERN_MODES.slice(0, ORCHESTRATOR_MODE_INDEX + 1),
+  createDeerflowHarnessModeSpec(),
   createSingleAgentModeSpec(),
   ...BUILTIN_PATTERN_MODES.slice(ORCHESTRATOR_MODE_INDEX + 1),
 ];
@@ -2188,27 +2638,7 @@ export function modeSpecToPatternDefinition(mode: ModeSpec): PatternDefinition {
     edgeDependencies.get(edge.target)!.push(edge.source);
   }
 
-  const topology = mode.id === SINGLE_AGENT_MODE_ID
-    ? {
-        nodes: [
-          { id: "run", label: "Run", kind: "run", status: "idle", metadata: { modeId: mode.id } },
-          { id: "solo_agent", label: "Solo Agent", kind: "agent", agentId: "solo_agent", status: "idle", metadata: { modeId: mode.id } },
-        ],
-        edges: [
-          { id: "run-solo-agent", source: "run", target: "solo_agent", kind: "control", label: "own task", metadata: { modeId: mode.id } },
-        ],
-      }
-    : {
-        nodes: family.topology.nodes.map((node) => ({
-          ...node,
-          metadata: {
-            ...node.metadata,
-            modeId: mode.id,
-            enabledNodeIds: orderedNodes.map((item) => item.id),
-          },
-        })),
-        edges: family.topology.edges,
-      };
+  const topology = projectModeRuntimeTopology(mode);
 
   return PatternDefinitionSchema.parse({
     ...family,
@@ -2478,6 +2908,12 @@ export const SkillDescriptorSchema = z.object({
   description: z.string().min(1),
   promptSnippet: z.string().min(1).optional(),
   path: z.string().min(1).optional(),
+  category: z.enum(["public", "custom"]).default("public"),
+  enabled: z.boolean().default(true),
+  editable: z.boolean().default(false),
+  license: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative().optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
   allowedPatterns: z.array(CoordinationPatternSchema).default([]),
   tags: z.array(z.string().min(1)).default([]),
 });
@@ -2487,6 +2923,70 @@ export const SkillRegistrySchema = z.object({
   skills: z.array(SkillDescriptorSchema),
 });
 export type SkillRegistry = z.infer<typeof SkillRegistrySchema>;
+
+export const SkillNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Skill names must be lowercase hyphen-case.");
+export type SkillName = z.infer<typeof SkillNameSchema>;
+
+export const SkillCategorySchema = z.enum(["public", "custom"]);
+export type SkillCategory = z.infer<typeof SkillCategorySchema>;
+
+export const SkillDetailSchema = SkillDescriptorSchema.extend({
+  content: z.string().min(1),
+});
+export type SkillDetail = z.infer<typeof SkillDetailSchema>;
+
+export const SkillListParamsSchema = z.object({
+  category: SkillCategorySchema.optional(),
+  enabledOnly: z.boolean().optional(),
+  query: z.string().optional(),
+  pattern: CoordinationPatternSchema.optional(),
+}).default({});
+export type SkillListParams = z.infer<typeof SkillListParamsSchema>;
+
+export const SkillGetParamsSchema = z.object({
+  name: SkillNameSchema,
+});
+export type SkillGetParams = z.infer<typeof SkillGetParamsSchema>;
+
+export const SkillCreateParamsSchema = z.object({
+  name: SkillNameSchema,
+  description: z.string().default(""),
+  content: z.string().optional(),
+  enabled: z.boolean().default(true),
+});
+export type SkillCreateParams = z.infer<typeof SkillCreateParamsSchema>;
+
+export const SkillUpdateParamsSchema = z.object({
+  name: SkillNameSchema,
+  content: z.string().min(1),
+});
+export type SkillUpdateParams = z.infer<typeof SkillUpdateParamsSchema>;
+
+export const SkillDeleteParamsSchema = z.object({
+  name: SkillNameSchema,
+});
+export type SkillDeleteParams = z.infer<typeof SkillDeleteParamsSchema>;
+
+export const SkillCheckNameParamsSchema = z.object({
+  name: z.string().min(1),
+});
+export type SkillCheckNameParams = z.infer<typeof SkillCheckNameParamsSchema>;
+
+export const SkillCheckNameResultSchema = z.object({
+  available: z.boolean(),
+  name: SkillNameSchema,
+});
+export type SkillCheckNameResult = z.infer<typeof SkillCheckNameResultSchema>;
+
+export const SkillSetEnabledParamsSchema = z.object({
+  name: SkillNameSchema,
+  enabled: z.boolean(),
+});
+export type SkillSetEnabledParams = z.infer<typeof SkillSetEnabledParamsSchema>;
 
 // ---------------------------------------------------------------------------
 // Custom Agent Schemas
@@ -2628,8 +3128,11 @@ export const MVP_TOOLS: ToolDescriptor[] = [
 export const MVP_SKILLS: SkillDescriptor[] = [
   {
     id: "long-task-protocol",
+    enabled: true,
     name: "Long Task Protocol",
     description: "Keep complex work resumable with a task journal, checkpoints, and strict verification gates.",
+    category: "public",
+    editable: false,
     promptSnippet: "Use a task journal for complex multi-step work and keep verification evidence explicit.",
     path: "skills/long-task-protocol/SKILL.md",
     allowedPatterns: [

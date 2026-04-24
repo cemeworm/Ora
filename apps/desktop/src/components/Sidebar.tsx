@@ -9,6 +9,7 @@ import {
   Plus,
   Search,
   Settings,
+  Sparkles,
 } from "lucide-react";
 import { useWorkbench } from "../lib/state";
 import { useRunActions } from "../lib/useRunActions";
@@ -100,15 +101,15 @@ function SessionRow({
     <button
       onClick={onClick}
       className={cn(
-        "group flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors",
+        "group flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         selected
-          ? "bg-sidebar-accent/95 text-sidebar-accent-foreground"
-          : "text-sidebar-foreground hover:bg-sidebar-accent/45",
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          : "text-muted-foreground",
       )}
     >
       {status !== "done" && <SessionLeadingIndicator status={status} />}
       <div className="min-w-0 flex-1">
-        <div className={cn("truncate font-medium", !selected && "text-foreground/88")}>{title}</div>
+        <div className="truncate font-medium">{title}</div>
       </div>
       <SessionStatusBadge status={status} />
     </button>
@@ -207,6 +208,18 @@ export function Sidebar() {
             {open && <span>Agents</span>}
           </button>
           <button
+            onClick={() => dispatch({ type: "SET_VIEW", view: "skills" })}
+            className={cn(
+              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              state.activeView === "skills" && "bg-sidebar-accent text-sidebar-accent-foreground",
+              !open && "justify-center px-0",
+            )}
+            title="Skills"
+          >
+            <Sparkles size={16} />
+            {open && <span>Skills</span>}
+          </button>
+          <button
             onClick={() => dispatch({ type: "SET_VIEW", view: "modes" })}
             className={cn(
               "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -251,7 +264,6 @@ export function Sidebar() {
                 />
                 <div className="flex flex-col gap-0.5">
                   {projects.map((project) => {
-                    const selectedProject = state.selectedProjectId === project.projectId;
                     const showAllSessions = expandedSessionLists[project.projectId] ?? false;
                     const visibleSessions = showAllSessions ? project.sessions : project.sessions.slice(0, MAX_VISIBLE_PROJECT_SESSIONS);
                     const hiddenSessionCount = Math.max(0, project.sessions.length - visibleSessions.length);
@@ -264,15 +276,10 @@ export function Sidebar() {
                               dispatch({ type: "SELECT_PROJECT", projectId: project.projectId });
                               dispatch({ type: "TOGGLE_PROJECT_SECTION", projectId: project.projectId });
                             }}
-                            className={cn(
-                              "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors",
-                              selectedProject
-                                ? "bg-sidebar-accent/95 text-sidebar-accent-foreground"
-                                : "text-sidebar-foreground hover:bg-sidebar-accent/45",
-                            )}
+                            className="group/project-button flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                             title={project.rootPath}
                           >
-                            <span className={cn("text-muted-foreground/85", selectedProject && "text-sidebar-accent-foreground/70")}>
+                            <span className="text-muted-foreground/85 group-hover/project-button:text-sidebar-accent-foreground/80">
                               {project.expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
                             </span>
                             <div className="min-w-0 flex-1 truncate font-medium">{project.label}</div>

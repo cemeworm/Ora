@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import {
   type ActionRiskLevel,
   type ArtifactRef,
@@ -23,7 +26,7 @@ import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, 
 import { configuredProviderId, invokeRunProvider } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
-import type { ModelMessage } from "../providers/index.js";
+import type { ModelMessage, ModelResponse } from "../providers/index.js";
 
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
@@ -39,12 +42,250 @@ export interface RuntimeKernelOptions {
   customAgentOverlay?: string;
   modeSpec?: ModeSpec;
   definition?: PatternDefinition;
+  resumeContext?: {
+    clarifications?: Record<string, unknown>;
+    approvedActionIds?: string[];
+  };
 }
 
 class ClarificationInterruptError extends Error {
   constructor(public readonly clarification: PendingClarification) {
     super(clarification.question);
   }
+}
+
+class ApprovalInterruptError extends Error {
+  constructor(public readonly actionId: string) {
+    super(`Manual approval required for action ${actionId}.`);
+  }
+}
+
+type WorkspaceToolId = "file.read" | "shell.execute";
+
+interface WorkspaceToolCall {
+  tool: WorkspaceToolId;
+  args: Record<string, unknown>;
+}
+
+const WORKSPACE_TOOL_LOOP_LIMIT = 4;
+const WORKSPACE_FILE_READ_MAX_BYTES = 96_000;
+const WORKSPACE_SHELL_MAX_OUTPUT_BYTES = 48_000;
+const WORKSPACE_SHELL_TIMEOUT_MS = 8_000;
+const WORKSPACE_SHELL_ALLOWED_COMMANDS = new Set(["cat", "find", "ls", "pwd", "rg", "wc"]);
+
+function workspaceSystemPrompt(workspace: unknown): string | undefined {
+  if (!workspace || typeof workspace !== "object" || workspace === null) {
+    return undefined;
+  }
+
+  const record = workspace as Record<string, unknown>;
+  const rootPath = typeof record.rootPath === "string" ? record.rootPath : undefined;
+  if (!rootPath) {
+    return undefined;
+  }
+
+  const label = typeof record.label === "string" ? record.label : "Project";
+  const totalFiles = typeof record.totalFiles === "number" ? record.totalFiles : undefined;
+  const markdownFiles = typeof record.markdownFiles === "number" ? record.markdownFiles : undefined;
+  const truncated = record.truncated === true;
+  const extensionCounts = record.extensionCounts && typeof record.extensionCounts === "object" && record.extensionCounts !== null
+    ? Object.entries(record.extensionCounts as Record<string, unknown>)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number")
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 12)
+      .map(([extension, count]) => `${extension}: ${count}`)
+      .join(", ")
+    : "";
+  const samplePaths = Array.isArray(record.samplePaths)
+    ? record.samplePaths
+      .filter((item): item is string => typeof item === "string" && item.length > 0)
+      .slice(0, 40)
+    : [];
+
+  return [
+    "Ora project workspace context:",
+    `- Project: ${label}`,
+    `- Root path: ${rootPath}`,
+    totalFiles === undefined ? undefined : `- Indexed files: ${totalFiles}${truncated ? " (truncated)" : ""}`,
+    markdownFiles === undefined ? undefined : `- Markdown files: ${markdownFiles}${truncated ? " (count may be partial)" : ""}`,
+    extensionCounts ? `- Extension counts: ${extensionCounts}` : undefined,
+    samplePaths.length > 0 ? `- Sample paths:\n${samplePaths.map((item) => `  - ${item}`).join("\n")}` : undefined,
+    "Use this workspace context when answering questions about the local project folder. If the question asks for information not present in the context, say the project index is available but file contents or commands still need a runtime tool.",
+  ].filter(Boolean).join("\n");
+}
+
+function workspaceToolsSystemPrompt(enabledTools: readonly string[], workspace: unknown): string | undefined {
+  const rootPath = workspaceRootPath(workspace);
+  const tools = enabledWorkspaceTools(enabledTools);
+  if (!rootPath || tools.length === 0) {
+    return undefined;
+  }
+
+  const toolLines = tools.map((toolId) => {
+    if (toolId === "file.read") {
+      return '- file.read: {"tool":"file.read","args":{"path":"relative/path.md"}}';
+    }
+    return '- shell.execute: {"tool":"shell.execute","args":{"command":"rg --files -g *.md"}}';
+  });
+
+  return [
+    "Workspace tool protocol:",
+    "When local project information is needed and a workspace tool is available, respond with exactly one JSON object and no prose.",
+    ...toolLines,
+    "Use paths relative to the project root. Shell commands run inside the project root and are limited to safe read-only commands.",
+    "After a tool result is returned, answer the user normally unless another tool call is required.",
+  ].join("\n");
+}
+
+function workspaceRootPath(workspace: unknown): string | undefined {
+  if (!workspace || typeof workspace !== "object" || workspace === null) {
+    return undefined;
+  }
+  const rootPath = (workspace as Record<string, unknown>).rootPath;
+  return typeof rootPath === "string" && rootPath.trim() ? rootPath : undefined;
+}
+
+function enabledWorkspaceTools(toolIds: readonly string[]): WorkspaceToolId[] {
+  return toolIds.filter((toolId): toolId is WorkspaceToolId => toolId === "file.read" || toolId === "shell.execute");
+}
+
+function extractWorkspaceToolCall(text: string, enabledTools: readonly string[]): WorkspaceToolCall | undefined {
+  const enabled = new Set(enabledWorkspaceTools(enabledTools));
+  if (enabled.size === 0) {
+    return undefined;
+  }
+
+  const trimmed = text.trim();
+  const candidates = [
+    trimmed,
+    ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi), (match) => match[1]?.trim() ?? ""),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+      const record = parsed as Record<string, unknown>;
+      if ((record.tool === "file.read" || record.tool === "shell.execute") && enabled.has(record.tool)) {
+        return {
+          tool: record.tool,
+          args: record.args && typeof record.args === "object" && !Array.isArray(record.args)
+            ? record.args as Record<string, unknown>
+            : {},
+        };
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+}
+
+function resolveWorkspacePath(rootPath: string, requestedPath: unknown): string {
+  if (typeof requestedPath !== "string" || !requestedPath.trim()) {
+    throw new Error("file.read requires a non-empty relative path.");
+  }
+  const resolved = path.resolve(rootPath, requestedPath);
+  const relative = path.relative(rootPath, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Workspace tool path must stay inside the project root.");
+  }
+  return resolved;
+}
+
+function readWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
+  const absolutePath = resolveWorkspacePath(rootPath, args.path);
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile()) {
+    throw new Error("file.read target must be a file.");
+  }
+  if (stat.size > WORKSPACE_FILE_READ_MAX_BYTES) {
+    throw new Error(`file.read target is too large (${stat.size} bytes).`);
+  }
+  return {
+    path: path.relative(rootPath, absolutePath),
+    sizeBytes: stat.size,
+    content: fs.readFileSync(absolutePath, "utf8"),
+  };
+}
+
+function parseShellCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (quote) {
+    throw new Error("Unclosed quote in shell command.");
+  }
+  if (current) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+function assertWorkspaceShellArgsStayLocal(argv: readonly string[]) {
+  for (const arg of argv) {
+    if (!arg || arg.startsWith("-")) {
+      continue;
+    }
+    if (path.isAbsolute(arg) || arg.split(/[\\/]/).includes("..")) {
+      throw new Error("shell.execute arguments must stay inside the project root.");
+    }
+  }
+}
+
+function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>) {
+  const command = typeof args.command === "string" ? args.command.trim() : "";
+  if (!command) {
+    throw new Error("shell.execute requires a non-empty command.");
+  }
+  if (/[|;&<>`$\\]/.test(command)) {
+    throw new Error("shell.execute only supports a single read-only command without shell metacharacters.");
+  }
+  const [executable, ...argv] = parseShellCommand(command);
+  if (!executable || !WORKSPACE_SHELL_ALLOWED_COMMANDS.has(executable)) {
+    throw new Error(`shell.execute command must be one of: ${[...WORKSPACE_SHELL_ALLOWED_COMMANDS].join(", ")}.`);
+  }
+  assertWorkspaceShellArgsStayLocal(argv);
+
+  const output = execFileSync(executable, argv, {
+    cwd: rootPath,
+    encoding: "utf8",
+    timeout: WORKSPACE_SHELL_TIMEOUT_MS,
+    maxBuffer: WORKSPACE_SHELL_MAX_OUTPUT_BYTES,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  return {
+    command,
+    cwd: rootPath,
+    output,
+  };
 }
 
 export async function executeRuntimeKernel(
@@ -140,6 +381,15 @@ export async function executeRuntimeKernel(
   };
 
   const clarificationAnswer = (key: string, id: string): unknown => {
+    const resumeClarifications = options.resumeContext?.clarifications;
+    if (resumeClarifications && typeof resumeClarifications === "object") {
+      if (id in resumeClarifications) {
+        return resumeClarifications[id];
+      }
+      if (key in resumeClarifications) {
+        return resumeClarifications[key];
+      }
+    }
     const clarifications = input.context?.clarifications;
     if (!clarifications || typeof clarifications !== "object" || clarifications === null) {
       return undefined;
@@ -181,7 +431,116 @@ export async function executeRuntimeKernel(
 
   const systemPrompt = (extra: string) => {
     const snippets = skillRegistry.promptSnippets(config.skillIds);
-    return [extra, options.customAgentOverlay, ...snippets].filter(Boolean).join("\n\n");
+    return [
+      extra,
+      workspaceSystemPrompt(input.context?.projectWorkspace),
+      workspaceToolsSystemPrompt(config.toolIds, input.context?.projectWorkspace),
+      options.customAgentOverlay,
+      ...snippets,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  };
+
+  const invokeProviderWithWorkspaceTools = async (params: {
+    agentId: string;
+    title: string;
+    prompt: string;
+    system: string;
+  }): Promise<ModelResponse> => {
+    const rootPath = workspaceRootPath(input.context?.projectWorkspace);
+    const enabledTools = enabledWorkspaceTools(config.toolIds);
+    let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
+    let response = await invokeRunProvider(config, {
+      prompt: params.prompt,
+      messages,
+      system: params.system,
+      maxTokens: config.budget?.maxTokens,
+    });
+
+    if (!rootPath || enabledTools.length === 0) {
+      return response;
+    }
+
+    for (let iteration = 0; iteration < WORKSPACE_TOOL_LOOP_LIMIT; iteration += 1) {
+      const toolCall = extractWorkspaceToolCall(response.text, config.toolIds);
+      if (!toolCall) {
+        return response;
+      }
+
+      const action = actionLedger.propose({
+        id: `${params.agentId}-tool-${events.length}`,
+        type: toolCall.tool,
+        riskLevel: toolCall.tool === "shell.execute" ? "high" : "low",
+        input: toolCall.args,
+        agentId: params.agentId,
+      });
+      emit("action.updated", { actionId: action.id, status: "proposed", record: action }, { agentId: params.agentId, nodeId: params.agentId });
+
+      const decision = policyService.evaluate(action);
+      if (decision.requiredApproval && config.approvalMode !== "auto") {
+        const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
+        if (!approvedActionIds.has(action.id)) {
+          const blocked = actionLedger.transition(action.id, "approval_required");
+          emit("approval.required", { actionId: action.id, decision }, { agentId: params.agentId, nodeId: params.agentId });
+          emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
+          throw new ApprovalInterruptError(action.id);
+        }
+        emit("approval.resolved", {
+          actionId: action.id,
+          decision: "approved",
+          mode: "resume",
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        const approved = actionLedger.transition(action.id, "approved");
+        emit("action.updated", { actionId: action.id, status: "approved", record: approved }, { agentId: params.agentId, nodeId: params.agentId });
+      }
+
+      const running = actionLedger.transition(action.id, "running");
+      emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
+
+      try {
+        const output = toolCall.tool === "file.read"
+          ? readWorkspaceFile(rootPath, toolCall.args)
+          : executeWorkspaceShell(rootPath, toolCall.args);
+        const succeeded = actionLedger.transition(action.id, "succeeded", { output });
+        emit("tool.called", {
+          actionId: action.id,
+          toolId: toolCall.tool,
+          status: "succeeded",
+          input: toolCall.args,
+          output,
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
+
+        messages = [
+          ...messages,
+          { role: "assistant", content: response.text },
+          { role: "user", content: `Workspace tool result for ${toolCall.tool}:\n${JSON.stringify(output, null, 2)}` },
+        ];
+        response = await invokeRunProvider(config, {
+          messages,
+          system: params.system,
+          maxTokens: config.budget?.maxTokens,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const failed = actionLedger.transition(action.id, "failed", { error: detail });
+        emit("tool.called", {
+          actionId: action.id,
+          toolId: toolCall.tool,
+          status: "failed",
+          input: toolCall.args,
+          error: detail,
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
+        throw error;
+      }
+    }
+
+    return {
+      ...response,
+      text: `${response.text}\n\n[Ora stopped after ${WORKSPACE_TOOL_LOOP_LIMIT} workspace tool calls.]`,
+    };
   };
 
   const callAgent = async (params: {
@@ -210,21 +569,41 @@ export async function executeRuntimeKernel(
     emit("action.updated", { actionId: action.id, status: "proposed", record: action }, { agentId: params.agentId, nodeId: params.agentId });
 
     const decision = policyService.evaluate(action);
-    if (decision.requiredApproval && config.approvalMode === "manual") {
-      const blocked = actionLedger.transition(action.id, "approval_required");
-      emit("approval.required", { actionId: action.id, decision }, { agentId: params.agentId, nodeId: params.agentId });
-      emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
-      throw new Error(`Manual approval required before executing ${params.title}.`);
+    const requiresManualGate = config.approvalMode === "manual"
+      && actionLedger.list().every((record) => record.id === action.id || record.status === "proposed");
+    const effectiveDecision = requiresManualGate && !decision.requiredApproval
+      ? {
+          ...decision,
+          requiredApproval: true,
+          reason: "Manual approval mode pauses the run before the first action executes.",
+        }
+      : decision;
+    if (effectiveDecision.requiredApproval && config.approvalMode === "manual") {
+      const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
+      if (approvedActionIds.has(action.id)) {
+        emit("approval.resolved", {
+          actionId: action.id,
+          decision: "approved",
+          mode: "resume",
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        const approved = actionLedger.transition(action.id, "approved");
+        emit("action.updated", { actionId: action.id, status: "approved", record: approved }, { agentId: params.agentId, nodeId: params.agentId });
+      } else {
+        const blocked = actionLedger.transition(action.id, "approval_required");
+        emit("approval.required", { actionId: action.id, decision: effectiveDecision }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
+        throw new ApprovalInterruptError(action.id);
+      }
     }
 
     const running = actionLedger.transition(action.id, "running");
     emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
     try {
-      const response = await invokeRunProvider(config, {
+      const response = await invokeProviderWithWorkspaceTools({
+        agentId: params.agentId,
+        title: params.title,
         prompt: params.prompt,
-        messages: options.conversationMessages,
         system: params.system,
-        maxTokens: config.budget?.maxTokens,
       });
 
       emit("tool.called", {
@@ -338,6 +717,15 @@ export async function executeRuntimeKernel(
   }) => {
     const answered = clarificationAnswer(params.key, params.id);
     if (answered !== undefined) {
+      const resumeClarifications = options.resumeContext?.clarifications;
+      if (resumeClarifications && (params.id in resumeClarifications || params.key in resumeClarifications)) {
+        emit("clarification.resolved", {
+          clarificationId: params.id,
+          nodeId: params.nodeId,
+          answer: answered,
+          mode: "resume",
+        }, { nodeId: params.nodeId });
+      }
       return answered;
     }
     const clarification = PendingClarificationSchema.parse({
@@ -527,14 +915,37 @@ export async function executeRuntimeKernel(
     emit("run.done", { status: "succeeded", output });
   } catch (caught) {
     error = caught instanceof Error ? caught.message : String(caught);
-    status = caught instanceof ClarificationInterruptError || config.approvalMode === "manual"
+    status = caught instanceof ClarificationInterruptError || caught instanceof ApprovalInterruptError
       ? "interrupted"
       : "failed";
+    if (status === "interrupted") {
+      for (const item of planService.list()) {
+        if (item.status === "done" || item.status === "skipped") {
+          continue;
+        }
+        planService.setStatus(item.id, "blocked");
+        todoService.setStatus(item.id, "blocked");
+      }
+      queueSummary = {
+        ...queueSummary,
+        pending: 0,
+        inProgress: 0,
+        completed: planService.list().filter((item) => item.status === "done" || item.status === "skipped").length,
+      };
+      emitPlanUpdated();
+      emitTodoUpdated();
+      emit("queue.updated", { summary: queueSummary, busStats });
+    }
     emit(status === "interrupted" ? "run.interrupted" : "run.failed", {
       error,
       status,
-      reason: caught instanceof ClarificationInterruptError ? "clarification_required" : undefined,
+      reason: caught instanceof ClarificationInterruptError
+        ? "clarification_required"
+        : caught instanceof ApprovalInterruptError
+          ? "approval_required"
+          : undefined,
       clarificationId: caught instanceof ClarificationInterruptError ? caught.clarification.id : undefined,
+      actionId: caught instanceof ApprovalInterruptError ? caught.actionId : undefined,
     });
   }
 

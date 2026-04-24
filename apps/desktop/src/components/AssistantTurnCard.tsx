@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -9,57 +9,33 @@ import {
   FileText,
   ListTodo,
   LoaderCircle,
-  Paperclip,
 } from "lucide-react";
 import type { AssistantTurnAttachment, TurnArtifactAttachment, TurnProcessStep, TurnTodoItem } from "../types";
 import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
-import { Artifact, ArtifactActions, ArtifactContent, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
+import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
 import { TaskItem, TaskItemMeta, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
 
 interface AssistantTurnCardProps {
   content: string;
-  timestamp: string;
   turn?: AssistantTurnAttachment;
   isPlaceholder?: boolean;
+  onOpenArtifact?: (artifactId: string) => void;
 }
 
-export function AssistantTurnCard({ content, timestamp, turn, isPlaceholder = false }: AssistantTurnCardProps) {
+export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact }: AssistantTurnCardProps) {
   const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
-
-  const statusToneClassName = useMemo(() => {
-    switch (turn?.status) {
-      case "done":
-        return "bg-emerald-50 text-emerald-700 ring-emerald-200";
-      case "approval_required":
-        return "bg-amber-50 text-amber-700 ring-amber-200";
-      case "failed":
-        return "bg-rose-50 text-rose-700 ring-rose-200";
-      default:
-        return "bg-muted text-muted-foreground ring-border";
-    }
-  }, [turn?.status]);
 
   return (
     <Message from="assistant" className="w-full">
       <div className="flex max-w-full gap-3">
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs">
-          {isPlaceholder ? <LoaderCircle size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+          <TurnStatusIcon status={turn?.status} isPlaceholder={isPlaceholder} />
         </div>
         <div className="min-w-0 flex-1 space-y-3">
           <MessageContent className="w-full">
             <p className={cn("whitespace-pre-wrap break-words", isPlaceholder && "text-muted-foreground")}>{content}</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{timestamp}</span>
-              {turn ? (
-                <span className={cn("rounded-full px-2 py-0.5 ring-1 ring-inset", statusToneClassName)}>
-                  {turn.status.replace(/_/g, " ")}
-                </span>
-              ) : null}
-              {turn?.approvalCount ? <span>{turn.approvalCount} approval gate</span> : null}
-              {turn?.clarificationCount ? <span>{turn.clarificationCount} clarification</span> : null}
-            </div>
           </MessageContent>
 
           {turn && turn.processSteps.length > 0 ? (
@@ -79,7 +55,7 @@ export function AssistantTurnCard({ content, timestamp, turn, isPlaceholder = fa
           {turn && turn.artifacts.length > 0 ? (
             <div className="space-y-3">
               {turn.artifacts.map((artifact) => (
-                <ArtifactCard key={artifact.id} artifact={artifact} />
+                <ArtifactCard key={artifact.id} artifact={artifact} onOpenArtifact={onOpenArtifact} />
               ))}
             </div>
           ) : null}
@@ -101,6 +77,22 @@ export function AssistantTurnCard({ content, timestamp, turn, isPlaceholder = fa
       </div>
     </Message>
   );
+}
+
+function TurnStatusIcon({ status, isPlaceholder }: { status?: AssistantTurnAttachment["status"]; isPlaceholder: boolean }) {
+  if (status === "approval_required") {
+    return <AlertCircle size={14} className="text-amber-600" />;
+  }
+  if (status === "failed") {
+    return <AlertCircle size={14} className="text-rose-600" />;
+  }
+  if (status === "done") {
+    return <CheckCircle2 size={14} />;
+  }
+  if (isPlaceholder || status === "running") {
+    return <LoaderCircle size={14} className="animate-spin" />;
+  }
+  return <CheckCircle2 size={14} />;
 }
 
 function CollapsibleCard({
@@ -171,37 +163,33 @@ function StepStatusIcon({ step }: { step: TurnProcessStep }) {
   return <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />;
 }
 
-function ArtifactCard({ artifact }: { artifact: TurnArtifactAttachment }) {
+function ArtifactCard({ artifact, onOpenArtifact }: { artifact: TurnArtifactAttachment; onOpenArtifact?: (artifactId: string) => void }) {
   return (
-    <Artifact>
-      <ArtifactHeader>
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground">
-            {artifact.previewable ? <FileImage size={18} /> : <FileText size={18} />}
+    <button
+      type="button"
+      onClick={() => onOpenArtifact?.(artifact.id)}
+      className="block w-full text-left"
+      disabled={!onOpenArtifact}
+    >
+      <Artifact className={cn("transition", onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]")}>
+        <ArtifactHeader>
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground">
+              {artifact.previewable ? <FileImage size={18} /> : <FileText size={18} />}
+            </div>
+            <div className="min-w-0">
+              <ArtifactTitle className="truncate">{artifact.label}</ArtifactTitle>
+              <ArtifactDescription>{artifact.kind} - {artifact.mimeType}</ArtifactDescription>
+            </div>
           </div>
-          <div className="min-w-0">
-            <ArtifactTitle className="truncate">{artifact.label}</ArtifactTitle>
-            <ArtifactDescription>{artifact.kind} - {artifact.mimeType}</ArtifactDescription>
-          </div>
-        </div>
-        <ArtifactActions>
-          {artifact.uri ? (
-            <a
-              href={artifact.uri}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
-            >
-              <Paperclip size={12} />
-              Open
-            </a>
-          ) : null}
-        </ArtifactActions>
-      </ArtifactHeader>
-      <ArtifactContent className="text-xs text-muted-foreground">
-        Produced at {artifact.createdAt}.
-      </ArtifactContent>
-    </Artifact>
+          <ArtifactActions>
+            <span className="inline-flex items-center rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground">
+              Preview
+            </span>
+          </ArtifactActions>
+        </ArtifactHeader>
+      </Artifact>
+    </button>
   );
 }
 

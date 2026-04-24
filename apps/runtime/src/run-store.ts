@@ -13,9 +13,11 @@ import {
   CustomAgentSummary,
   CustomAgentUpdateParams,
   DEFAULT_RESOURCE_BUDGETS,
+  createModeSpecFromPattern,
   getPatternDefinition,
   modeSpecToPatternDefinition,
   MVP_PATTERNS,
+  orderedEnabledModeNodes,
   type ModeCreateParams,
   type ModeSpec,
   type ModeUpdateParams,
@@ -48,7 +50,6 @@ import {
   RunStreamParamsSchema,
   RunSummary,
   RunSummarySchema,
-  SINGLE_AGENT_MODE_ID,
   RunsListParamsSchema,
   SessionCreateParamsSchema,
   SessionDetail,
@@ -61,6 +62,12 @@ import {
   SessionTranscriptMessageSchema,
   SessionTurn,
   SessionTurnSchema,
+  SkillCheckNameResult,
+  SkillCreateParams,
+  SkillDetail,
+  SkillRegistry,
+  SkillSetEnabledParams,
+  SkillUpdateParams,
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput,
@@ -75,6 +82,7 @@ import {
   TodoService,
 } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
+import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
@@ -84,7 +92,6 @@ import {
   getLangfuseRunTraceMetadata,
   getLangfuseRunTraceObservations,
   readLangfuseRunTrace,
-  recordLangfuseSnapshotTrace,
   withLangfuseRunTrace
 } from "./telemetry/langfuse.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
@@ -114,6 +121,19 @@ type StoreManifest = z.infer<typeof StoreManifestSchema>;
 type StoredRun = StateSnapshot;
 type StoredSession = SessionSummary;
 type StoredProject = ProjectSummary;
+
+const PROJECT_WORKSPACE_MAX_FILES = 20_000;
+const PROJECT_WORKSPACE_SAMPLE_LIMIT = 120;
+const PROJECT_WORKSPACE_SKIPPED_DIRS = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "target",
+]);
 
 export interface LocalRunStoreOptions {
   dataDir?: string;
@@ -306,6 +326,7 @@ export class LocalRunStore {
   private readonly evaluationStore: LocalEvaluationStore;
   private readonly customAgentStore: CustomAgentFileStore;
   private readonly modeStore: ModeSpecFileStore;
+  private readonly skillRegistry: RuntimeSkillRegistry;
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
@@ -324,6 +345,10 @@ export class LocalRunStore {
     }
     this.customAgentStore = new CustomAgentFileStore(defaultCustomAgentsDir(dataDir), this.clock);
     this.modeStore = new ModeSpecFileStore(defaultModesDir(dataDir), this.clock);
+    this.skillRegistry = new RuntimeSkillRegistry({
+      customRootDir: defaultSkillsDir(dataDir),
+      clock: this.clock,
+    });
     this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
@@ -494,30 +519,42 @@ export class LocalRunStore {
     return this.customAgentStore.checkName(params);
   }
 
+  listSkills(params?: unknown): SkillRegistry {
+    return this.skillRegistry.snapshot(params as Parameters<RuntimeSkillRegistry["snapshot"]>[0]);
+  }
+
+  getSkill(params: unknown): SkillDetail {
+    return this.skillRegistry.get(params);
+  }
+
+  createSkill(params: SkillCreateParams | unknown): SkillDetail {
+    return this.skillRegistry.create(params);
+  }
+
+  updateSkill(params: SkillUpdateParams | unknown): SkillDetail {
+    return this.skillRegistry.update(params);
+  }
+
+  deleteSkill(params: unknown): { deleted: true; name: string } {
+    return this.skillRegistry.delete(params);
+  }
+
+  checkSkillName(params: unknown): SkillCheckNameResult {
+    return this.skillRegistry.checkName(params);
+  }
+
+  setSkillEnabled(params: SkillSetEnabledParams | unknown): SkillDetail {
+    return this.skillRegistry.setEnabled(params);
+  }
+
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
     const { fullConfig } = this.resolveModeSelection(parsed.config);
-    const manualApproval =
-      fullConfig.approvalMode === "manual" ||
-      fullConfig.metadata?.approvalMode === "manual" ||
-      fullConfig.metadata?.requireApproval === true;
-    if (manualApproval) {
-      const run = this.createCompletedRun({
-        input: parsed.input,
-        config: fullConfig,
-        session,
-      });
-      recordLangfuseSnapshotTrace(run);
-      const tracedRun = this.attachTraceMetadata(run);
-      this.persistRun(tracedRun);
-      return this.toRunHandle(tracedRun);
-    }
-
-    const input = UserTaskInputSchema.parse({
+    const input = this.enrichInputForSession(UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
-    });
+    }), session);
     const { modeSpec, definition } = this.resolveModeSelection(fullConfig);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
@@ -528,6 +565,7 @@ export class LocalRunStore {
           clock: this.clock,
           modeSpec,
           definition,
+          skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
@@ -549,10 +587,10 @@ export class LocalRunStore {
   ): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const input = UserTaskInputSchema.parse({
+    const input = this.enrichInputForSession(UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
-    });
+    }), session);
     const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
@@ -563,6 +601,7 @@ export class LocalRunStore {
           clock: this.clock,
           modeSpec,
           definition,
+          skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           forkedFrom,
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
@@ -590,14 +629,15 @@ export class LocalRunStore {
       sessionId: string;
       turnIndex: number;
       conversationMessages: ModelMessage[];
+      customAgentOverlay?: string;
     }) => Promise<StateSnapshot | undefined>
   ): Promise<RunHandle | undefined> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const input = UserTaskInputSchema.parse({
+    const input = this.enrichInputForSession(UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
-    });
+    }), session);
     const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
@@ -611,6 +651,7 @@ export class LocalRunStore {
       sessionId: session.sessionId,
       turnIndex,
       conversationMessages,
+      customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
     });
     if (!snapshot) {
       return undefined;
@@ -648,7 +689,7 @@ export class LocalRunStore {
     });
   }
 
-  resumeRun(params: unknown): StateSnapshot {
+  async resumeRun(params: unknown): Promise<StateSnapshot> {
     const parsed = RunResumeParamsSchema.parse(params);
     const snapshot = this.getRunOrThrow(parsed.runId);
     const patchRecord = parsed.patch && typeof parsed.patch === "object" && parsed.patch !== null
@@ -659,6 +700,73 @@ export class LocalRunStore {
       patchRecord.clarifications !== null
       ? patchRecord.clarifications as Record<string, unknown>
       : {};
+    const approvedActionIds = Array.isArray(patchRecord.approvedActionIds)
+      ? patchRecord.approvedActionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+    const hasKernelResumeWork = snapshot.modeSpec !== undefined
+      && (snapshot.pendingClarifications.length > 0 || snapshot.actions.some((action) => action.status === "approval_required"));
+
+    if (hasKernelResumeWork) {
+      const modeSpec = snapshot.modeSpec;
+      if (!modeSpec) {
+        throw new OraRuntimeError("Cannot resume a kernel-backed run without modeSpec.", -32004, {
+          runId: snapshot.runId,
+        });
+      }
+      const nextClarifications = Object.keys(clarificationPatch).length > 0
+        ? {
+            ...(
+              snapshot.input.context?.clarifications
+              && typeof snapshot.input.context.clarifications === "object"
+              && snapshot.input.context.clarifications !== null
+                ? snapshot.input.context.clarifications
+                : {}
+            ),
+            ...clarificationPatch,
+          }
+        : snapshot.input.context?.clarifications;
+      const resumedInput = UserTaskInputSchema.parse({
+        ...snapshot.input,
+        context: {
+          ...snapshot.input.context,
+          ...(nextClarifications ? { clarifications: nextClarifications } : {}),
+        },
+      });
+      const definition = modeSpecToPatternDefinition(modeSpec);
+      const sessionId = snapshot.sessionId;
+      if (!sessionId) {
+        throw new OraRuntimeError("Cannot resume a kernel-backed run without sessionId.", -32004, {
+          runId: snapshot.runId,
+        });
+      }
+
+      const resumedSnapshot = await withLangfuseRunTrace(
+        { runId: snapshot.runId, input: resumedInput, config: snapshot.config },
+        async () => {
+          const { snapshot: nextSnapshot } = await executeRuntimeKernel(snapshot.runId, resumedInput, snapshot.config, {
+            clock: this.clock,
+            modeSpec,
+            definition,
+            skillRegistry: this.skillRegistry,
+            customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
+            conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+            resumeContext: {
+              clarifications: clarificationPatch,
+              approvedActionIds,
+            },
+          });
+          return StateSnapshotSchema.parse({
+            ...nextSnapshot,
+            sessionId,
+            turnIndex: snapshot.turnIndex,
+          });
+        },
+      );
+      const tracedSnapshot = this.attachTraceMetadata(resumedSnapshot);
+      this.persistRun(tracedSnapshot);
+      return tracedSnapshot;
+    }
+
     let working = this.appendEvent(snapshot, "run.resumed", {
       reason: parsed.reason ?? "Resumed by caller.",
       patch: parsed.patch ?? {}
@@ -721,10 +829,11 @@ export class LocalRunStore {
         { actionId: action.id, status: "running", record: running }
       );
 
-      const output = this.patternOutput(working.pattern, working.input.prompt, working.modeId);
+      const workingModeSpec = working.modeSpec ?? createModeSpecFromPattern(working.pattern);
+      const output = this.patternOutput(working.pattern, working.input.prompt, workingModeSpec);
       const memory = {
         id: `${working.runId}:memory:resumed-pattern-state`,
-        namespace: this.patternMemoryNamespace(working.pattern, working.input.projectId, working.modeId),
+        namespace: this.patternMemoryNamespace(working.pattern, working.input.projectId, workingModeSpec),
         kind: working.pattern === "agent_teams" ? "worker" as const : "session" as const,
         value: output.state,
         sourceRunId: working.runId,
@@ -824,6 +933,12 @@ export class LocalRunStore {
 
   getRunState(params: unknown): StateSnapshot {
     return this.attachTraceMetadata(this.getRunOrThrow(this.requireRunId(params)));
+  }
+
+  persistExternalSnapshot(snapshot: StateSnapshot): StateSnapshot {
+    const tracedSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse(snapshot));
+    this.persistRun(tracedSnapshot);
+    return tracedSnapshot;
   }
 
   async getRunTrail(params: unknown): Promise<RunTrail> {
@@ -1007,17 +1122,30 @@ export class LocalRunStore {
     const requestedModeId = typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern;
     const modeSpec = this.modeStore.resolve(requestedModeId, parsed.pattern);
     const definition = modeSpecToPatternDefinition(modeSpec);
+    const metadataApprovalMode = parsed.metadata.approvalMode;
+    const resolvedApprovalMode =
+      config?.approvalMode
+      ?? (metadataApprovalMode === "manual" || parsed.metadata.requireApproval === true
+        ? "manual"
+        : metadataApprovalMode === "auto" || metadataApprovalMode === "high_risk_only"
+          ? metadataApprovalMode
+          : modeSpec.capabilityFlags.approvalMode);
+    const skillIds = Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds;
+    const skillWarnings = this.skillRegistry.warnings(skillIds);
+    const skillPromptOverlay = this.skillRegistry.promptSnippets(skillIds).join("\n\n");
     const fullConfig = RunConfigSchema.parse({
       ...parsed,
       pattern: modeSpec.family,
       modeId: modeSpec.id,
       budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
-      approvalMode: config?.approvalMode ?? modeSpec.capabilityFlags.approvalMode,
-      skillIds: Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds,
+      approvalMode: resolvedApprovalMode,
+      skillIds,
       toolIds: Array.isArray(config?.toolIds) ? config.toolIds : modeSpec.capabilityFlags.toolIds,
       metadata: {
         ...parsed.metadata,
         modeId: modeSpec.id,
+        ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
+        ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
       },
     });
     return {
@@ -1130,7 +1258,7 @@ export class LocalRunStore {
     const firstPlanItem = planService.firstItem();
     const highRiskAction = actionLedger.propose({
       id: "external-effect",
-      type: this.patternActionType(pattern, modeSpec.id),
+      type: this.patternActionType(pattern, modeSpec),
       riskLevel: "high",
       planItemId: firstPlanItem.id,
       agentId: firstPlanItem.ownerAgentId,
@@ -1207,10 +1335,10 @@ export class LocalRunStore {
     const running = actionLedger.transition(highRiskAction.id, "running");
     appendActionEvent(highRiskAction.id, "running", running);
 
-    const patternOutput = this.patternOutput(pattern, input.prompt, modeSpec.id);
+    const patternOutput = this.patternOutput(pattern, input.prompt, modeSpec);
     const memory = memoryService.remember({
       id: "pattern-state",
-      namespace: this.patternMemoryNamespace(pattern, input.projectId, modeSpec.id),
+      namespace: this.patternMemoryNamespace(pattern, input.projectId, modeSpec),
       kind: pattern === "agent_teams" ? "worker" : "session",
       sourceActionId: highRiskAction.id,
       value: patternOutput.state
@@ -1276,9 +1404,25 @@ export class LocalRunStore {
     });
   }
 
-  private patternActionType(pattern: CoordinationPattern, modeId?: string): string {
-    if (modeId === SINGLE_AGENT_MODE_ID) {
-      return "mode.single_agent.respond";
+  private modeUsesSingleOwner(modeSpec: ModeSpec): boolean {
+    const nodes = orderedEnabledModeNodes(modeSpec);
+    const fallbackAgentId = modeSpec.profiles[0]?.id;
+    const ownerIds = new Set(
+      nodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
+    );
+    return ownerIds.size <= 1 && !nodes.some((node) => {
+      const atoms = Array.isArray(node.config?.atoms) ? node.config.atoms : [];
+      return atoms.includes("subagent_delegate");
+    });
+  }
+
+  private primaryOwnerAgentId(modeSpec: ModeSpec): string {
+    return orderedEnabledModeNodes(modeSpec).find((node) => node.ownerAgentId)?.ownerAgentId ?? modeSpec.profiles[0]?.id ?? "agent";
+  }
+
+  private patternActionType(pattern: CoordinationPattern, modeSpec: ModeSpec): string {
+    if (this.modeUsesSingleOwner(modeSpec)) {
+      return `mode.${modeSpec.id}.respond`;
     }
     switch (pattern) {
       case "generator_verifier":
@@ -1295,38 +1439,36 @@ export class LocalRunStore {
     throw new OraRuntimeError(`Unsupported pattern action type: ${pattern}`, -32002, { pattern });
   }
 
-  private patternMemoryNamespace(pattern: CoordinationPattern, projectId?: string, modeId?: string): string[] {
+  private patternMemoryNamespace(pattern: CoordinationPattern, projectId: string | undefined, modeSpec: ModeSpec): string[] {
     const projectNamespace = projectId ?? "local-project";
-    if (modeId === SINGLE_AGENT_MODE_ID) {
-      return ["session", projectNamespace, SINGLE_AGENT_MODE_ID];
-    }
     switch (pattern) {
       case "generator_verifier":
-        return ["session", projectNamespace, "generator_verifier"];
+        return ["session", projectNamespace, modeSpec.id];
       case "orchestrator_subagent":
-        return ["session", projectNamespace, "orchestrator_subagent"];
+        return ["session", projectNamespace, modeSpec.id];
       case "agent_teams":
-        return ["worker", projectNamespace, "agent_teams"];
+        return ["worker", projectNamespace, modeSpec.id];
       case "message_bus":
-        return ["session", projectNamespace, "message_bus"];
+        return ["session", projectNamespace, modeSpec.id];
       case "shared_state":
-        return ["project", projectNamespace, "shared_state"];
+        return ["project", projectNamespace, modeSpec.id];
     }
     throw new OraRuntimeError(`Unsupported pattern memory namespace: ${pattern}`, -32002, { pattern });
   }
 
-  private patternOutput(pattern: CoordinationPattern, prompt: string, modeId?: string) {
-    if (modeId === SINGLE_AGENT_MODE_ID) {
+  private patternOutput(pattern: CoordinationPattern, prompt: string, modeSpec: ModeSpec) {
+    if (this.modeUsesSingleOwner(modeSpec)) {
+      const agentId = this.primaryOwnerAgentId(modeSpec);
       return {
         token: "answered",
         tokenCount: 1,
-        message: `Single Agent framed "${prompt}" and completed the response without delegation.`,
+        message: `${modeSpec.label} framed "${prompt}" and completed the response without delegation.`,
         state: {
           text: `Single-agent result: ${prompt}`,
           pattern,
-          modeId,
+          modeId: modeSpec.id,
           agent: {
-            id: "solo_agent",
+            id: agentId,
             plan: `Compact plan for: ${prompt}`,
             response: `Direct answer for: ${prompt}`
           }
@@ -1342,6 +1484,7 @@ export class LocalRunStore {
           state: {
             text: `Verified candidate: ${prompt}`,
             pattern,
+            modeId: modeSpec.id,
             generator: {
               candidate: `Candidate answer for: ${prompt}`
             },
@@ -1359,6 +1502,7 @@ export class LocalRunStore {
           state: {
             text: `Orchestrated result: ${prompt}`,
             pattern,
+            modeId: modeSpec.id,
             orchestrator: {
               decomposition: ["research", "review", "synthesize"]
             },
@@ -1376,6 +1520,7 @@ export class LocalRunStore {
           state: {
             text: `Team result: ${prompt}`,
             pattern,
+            modeId: modeSpec.id,
             backlog: ["triage", "build", "check", "handoff"],
             workers: {
               builder: "completed assigned work",
@@ -1391,6 +1536,7 @@ export class LocalRunStore {
           state: {
             text: `Bus response: ${prompt}`,
             pattern,
+            modeId: modeSpec.id,
             correlationId: `${prompt.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-corr`,
             routingPlan: "task.input -> task.findings -> task.response",
           }
@@ -1403,6 +1549,7 @@ export class LocalRunStore {
           state: {
             text: `Shared-state result: ${prompt}`,
             pattern,
+            modeId: modeSpec.id,
             board: [
               { key: "seed", summary: `Seeded board for ${prompt}` },
               { key: "finding-1", summary: "Added supporting evidence" },
@@ -1689,6 +1836,86 @@ export class LocalRunStore {
     return this.createSession({ projectId: input.projectId });
   }
 
+  private enrichInputForSession(input: UserTaskInput, session: SessionSummary): UserTaskInput {
+    const projectId = input.projectId ?? session.projectId;
+    if (!projectId) {
+      return input;
+    }
+
+    const project = this.getProjectOrThrow(projectId);
+    return UserTaskInputSchema.parse({
+      ...input,
+      projectId,
+      context: {
+        ...input.context,
+        projectWorkspace: this.projectWorkspaceContext(project),
+      },
+    });
+  }
+
+  private projectWorkspaceContext(project: ProjectSummary): Record<string, unknown> {
+    const extensionCounts: Record<string, number> = {};
+    const samplePaths: string[] = [];
+    let totalFiles = 0;
+    let markdownFiles = 0;
+    let truncated = false;
+
+    const visit = (directory: string) => {
+      if (truncated) {
+        return;
+      }
+
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (truncated) {
+          return;
+        }
+        const absolutePath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (!PROJECT_WORKSPACE_SKIPPED_DIRS.has(entry.name)) {
+            visit(absolutePath);
+          }
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        totalFiles += 1;
+        const extension = path.extname(entry.name).toLowerCase() || "[no extension]";
+        extensionCounts[extension] = (extensionCounts[extension] ?? 0) + 1;
+        if (extension === ".md") {
+          markdownFiles += 1;
+        }
+        if (samplePaths.length < PROJECT_WORKSPACE_SAMPLE_LIMIT) {
+          samplePaths.push(path.relative(project.rootPath, absolutePath));
+        }
+        if (totalFiles >= PROJECT_WORKSPACE_MAX_FILES) {
+          truncated = true;
+        }
+      }
+    };
+
+    visit(project.rootPath);
+
+    return {
+      projectId: project.projectId,
+      label: project.label,
+      rootPath: project.rootPath,
+      totalFiles,
+      markdownFiles,
+      extensionCounts,
+      samplePaths,
+      truncated,
+    };
+  }
+
   private upsertSessionFromRun(snapshot: StateSnapshot): SessionSummary {
     const sessionId = snapshot.sessionId;
     if (!sessionId) {
@@ -1740,10 +1967,13 @@ export class LocalRunStore {
     this.backend.saveProject(nextProject);
   }
 
-  private buildConversationMessages(sessionId: string, currentPrompt: string): ModelMessage[] {
+  private buildConversationMessages(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] {
     const priorTurns = this.runsForSession(sessionId);
     const messages: ModelMessage[] = [];
     for (const turn of priorTurns) {
+      if (turn.runId === excludeRunId) {
+        continue;
+      }
       const prompt = turn.input.prompt.trim();
       if (prompt) {
         messages.push({ role: "user", content: prompt });
@@ -1924,4 +2154,10 @@ export function defaultModesDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "modes")
     : path.join(runtimeDataDir, "modes");
+}
+
+export function defaultSkillsDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "skills", "custom")
+    : path.join(runtimeDataDir, "skills", "custom");
 }

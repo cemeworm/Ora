@@ -37,6 +37,9 @@ export function useRunActions() {
   }, [state.patterns, state.modes, state.sessions, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern, state.selectedModeId]);
 
   const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
+  const selectedMode = state.modes.find((mode) => mode.id === state.selectedModeId);
+  const selectedRunPattern = selectedMode?.family ?? state.selectedPattern;
+  const selectedRunModeId = selectedMode?.id ?? state.selectedModeId;
   const selectedNode = viewModel?.topologyNodes.find((node) => node.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
   const selectedBeat = viewModel?.beats.find((beat) => beat.id === state.selectedBeatId) ?? viewModel?.beats[0];
   const selectedAgent =
@@ -90,6 +93,7 @@ export function useRunActions() {
     try {
       dispatch({ type: "SELECT_PROJECT", projectId: undefined });
       const created = await runtimeClient.createSession();
+      dispatch({ type: "SELECT_SESSION", sessionId: created.sessionId });
       await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.");
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session creation failed." });
@@ -102,6 +106,7 @@ export function useRunActions() {
     try {
       const created = await runtimeClient.createSession({ projectId });
       dispatch({ type: "SELECT_PROJECT", projectId });
+      dispatch({ type: "SELECT_SESSION", sessionId: created.sessionId });
       await hydrateSession(created.sessionId, undefined, "Created a new project session.");
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Project session creation failed." });
@@ -162,8 +167,8 @@ export function useRunActions() {
           context: { source: "desktop-workbench" },
         },
         {
-          pattern: state.selectedPattern,
-          modeId: state.selectedModeId,
+          pattern: selectedRunPattern,
+          modeId: selectedRunModeId,
           providerId: state.selectedProviderId,
           providerConfig: provider,
           customAgentId: state.selectedCustomAgentId,
@@ -240,7 +245,7 @@ export function useRunActions() {
       const snapshot = await runtimeClient.forkRun(
         state.selectedTurnRunId,
         selectedCheckpoint.id,
-        { pattern: state.selectedPattern, modeId: state.selectedModeId, metadata: { source: "desktop-workbench" } },
+        { pattern: selectedRunPattern, modeId: selectedRunModeId, metadata: { source: "desktop-workbench" } },
         { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } },
       );
       await refreshCurrentSession(snapshot, `Fork completed against ${snapshot.runId}.`);

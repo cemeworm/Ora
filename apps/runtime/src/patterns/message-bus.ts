@@ -3,11 +3,15 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
 import { invokeRunProvider } from "../providers/index.js";
+import { ensureGraphClarification, ensureGraphManualApproval } from "./hitl.js";
+import { withGraphPersona } from "./system-prompt.js";
 
 async function routeNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "route", "Route");
+  ensureGraphManualApproval(state, "route", "Route");
   const model = await invokeRunProvider(state.config, {
     prompt: `Route this task onto the correct message-bus topic: ${state.input.prompt}`,
-    system: "You are the bus router. Return a compact routing decision.",
+    system: withGraphPersona(state, "You are the bus router. Return a compact routing decision."),
     maxTokens: state.config.budget?.maxTokens,
   });
   return {
@@ -19,10 +23,12 @@ async function routeNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
 }
 
 async function handleNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "handle", "Handle");
+  ensureGraphManualApproval(state, "handle", "Handle");
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Handle this routed message for: ${state.input.prompt}\nRoute: ${output.route}`,
-    system: "You are the bus subscriber. Return the handled result.",
+    system: withGraphPersona(state, "You are the bus subscriber. Return the handled result."),
     maxTokens: state.config.budget?.maxTokens,
   });
   return {

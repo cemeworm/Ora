@@ -9,15 +9,39 @@ import {
   type ModeNodeTemplate,
 } from "@ora/shared";
 import { MarkerType, type Connection, type Edge, type Node } from "reactflow";
-import type { OraModeSpec } from "./runtimeClient";
+import type { OraModeRuntimeAtomDefinition, OraModeSpec } from "./runtimeClient";
 
 export interface ModeCanvasNodeData {
+  kind: "stage" | "mode-capability" | "node-attachment";
   label: string;
   template: OraModeSpec["nodes"][number]["template"];
   ownerAgentId?: string;
+  riskLevel?: OraModeSpec["nodes"][number]["riskLevel"];
   enabled: boolean;
   required: boolean;
+  atomId?: string;
+  atomScope?: "mode" | "node";
+  atomPresentation?: "mode_capability" | "stage_attachment" | "family_capability";
+  active?: boolean;
+  sourceNodeId?: string;
 }
+
+export const MODE_CAPABILITY_NODE_PREFIX = "__mode_atom__:";
+export const NODE_ATTACHMENT_NODE_PREFIX = "__node_atom__:";
+
+const STAGE_NODE_WIDTH = 248;
+const STAGE_NODE_HEIGHT = 152;
+const MODE_CAPABILITY_NODE_WIDTH = 196;
+const MODE_CAPABILITY_NODE_HEIGHT = 168;
+const NODE_ATTACHMENT_NODE_WIDTH = 196;
+const NODE_ATTACHMENT_NODE_HEIGHT = 142;
+const MODE_CAPABILITY_X_GAP = 52;
+const MODE_CAPABILITY_Y_GAP = 48;
+const MODE_CAPABILITY_ORIGIN_X = 32;
+const MODE_CAPABILITY_ORIGIN_Y = 24;
+const STAGE_TOP_PADDING = MODE_CAPABILITY_ORIGIN_Y + MODE_CAPABILITY_NODE_HEIGHT + 70;
+const ATTACHMENT_X_OFFSET = 28;
+const ATTACHMENT_Y_GAP = 28;
 
 export function hydrateModeDraft(mode: OraModeSpec): OraModeSpec {
   return ensureModeNodePositions({
@@ -61,27 +85,130 @@ export function resetModeDraftFamily(mode: OraModeSpec, family: CoordinationPatt
   };
 }
 
-export function buildModeFlowNodes(mode: OraModeSpec): Node<ModeCanvasNodeData>[] {
+export function buildModeFlowNodes(
+  mode: OraModeSpec,
+  atoms: OraModeRuntimeAtomDefinition[],
+): Node<ModeCanvasNodeData>[] {
   const requiredTemplates = new Set(mode.editorConstraints.requiredNodeTemplates);
-  return mode.nodes.map((node) => ({
+  const stageTopPadding = modeTopPadding(mode, atoms);
+  const stageNodes = mode.nodes.map((node) => ({
     id: node.id,
     type: "modeNode",
-    position: node.position ?? { x: 0, y: 0 },
+    position: offsetStagePosition(node.position ?? { x: 0, y: 0 }, stageTopPadding),
     draggable: !mode.editorConstraints.readOnly,
     selectable: true,
     data: {
+      kind: "stage" as const,
       label: node.label,
       template: node.template,
       ownerAgentId: node.ownerAgentId,
+      riskLevel: node.riskLevel,
       enabled: node.enabled,
       required: requiredTemplates.has(node.template),
     },
   }));
+
+  const compatibleModeAtoms = atoms.filter((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family));
+  const modeCapabilityNodes = compatibleModeAtoms.map((atom, index) => ({
+    id: `${MODE_CAPABILITY_NODE_PREFIX}${atom.id}`,
+    type: "modeNode",
+    position: modeCapabilityPosition(index),
+    draggable: false,
+    selectable: true,
+    data: {
+      kind: "mode-capability" as const,
+      label: atom.label,
+      template: "decompose" as const,
+      enabled: true,
+      required: false,
+      atomId: atom.id,
+      atomScope: atom.scope,
+      atomPresentation: atom.topology.presentation,
+      active: mode.runtimeAtoms.includes(atom.id),
+    },
+  }));
+
+  const compatibleNodeAtoms = atoms.filter((atom) => atom.scope === "node" && atom.compatibleFamilies.includes(mode.family));
+  const attachmentCountBySource = new Map<string, number>();
+  const attachmentNodes = mode.nodes.flatMap((node) => {
+    const configured = new Set(
+      Array.isArray(node.config?.atoms)
+        ? node.config.atoms.filter((value): value is string => typeof value === "string")
+        : [],
+    );
+    return compatibleNodeAtoms
+      .filter((atom) => configured.has(atom.id))
+      .map((atom) => {
+        const count = attachmentCountBySource.get(node.id) ?? 0;
+        attachmentCountBySource.set(node.id, count + 1);
+        const position = offsetStagePosition(node.position ?? { x: 0, y: 0 }, stageTopPadding);
+        return {
+          id: `${NODE_ATTACHMENT_NODE_PREFIX}${node.id}:${atom.id}`,
+          type: "modeNode",
+          position: {
+            x: position.x + ATTACHMENT_X_OFFSET,
+            y: position.y + STAGE_NODE_HEIGHT + ATTACHMENT_Y_GAP + count * (NODE_ATTACHMENT_NODE_HEIGHT + ATTACHMENT_Y_GAP),
+          },
+          draggable: false,
+          selectable: true,
+          data: {
+            kind: "node-attachment" as const,
+            label: atom.label,
+            template: node.template,
+            ownerAgentId: node.ownerAgentId,
+            enabled: node.enabled,
+            required: false,
+            atomId: atom.id,
+            atomScope: atom.scope,
+            atomPresentation: atom.topology.presentation,
+            active: true,
+            sourceNodeId: node.id,
+          },
+        };
+      });
+  });
+
+  return [...modeCapabilityNodes, ...stageNodes, ...attachmentNodes];
 }
 
-export function buildModeFlowEdges(mode: OraModeSpec): Edge[] {
+function modeTopPadding(mode: OraModeSpec, atoms: OraModeRuntimeAtomDefinition[]) {
+  const modeCapabilityCount = atoms.filter((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family)).length;
+  if (modeCapabilityCount === 0) {
+    return 0;
+  }
+
+  return STAGE_TOP_PADDING + (modeCapabilityRows(modeCapabilityCount) - 1) * (MODE_CAPABILITY_NODE_HEIGHT + MODE_CAPABILITY_Y_GAP);
+}
+
+function modeCapabilityRows(count: number) {
+  return Math.ceil(count / modeCapabilityColumns(count));
+}
+
+function modeCapabilityColumns(count: number) {
+  return Math.min(4, Math.max(1, count));
+}
+
+function modeCapabilityPosition(index: number) {
+  const columnCount = modeCapabilityColumns(index + 1);
+  return {
+    x: MODE_CAPABILITY_ORIGIN_X + (index % columnCount) * (MODE_CAPABILITY_NODE_WIDTH + MODE_CAPABILITY_X_GAP),
+    y: MODE_CAPABILITY_ORIGIN_Y + Math.floor(index / columnCount) * (MODE_CAPABILITY_NODE_HEIGHT + MODE_CAPABILITY_Y_GAP),
+  };
+}
+
+function offsetStagePosition(position: { x: number; y: number }, topPadding: number) {
+  return {
+    x: position.x,
+    y: position.y + topPadding,
+  };
+}
+
+export function buildModeFlowEdges(
+  mode: OraModeSpec,
+  atoms: OraModeRuntimeAtomDefinition[],
+): Edge[] {
   const visibleEdges = getVisibleModeEdges(mode);
-  return visibleEdges.map((edge) => ({
+  const stageEdges = visibleEdges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
@@ -104,6 +231,75 @@ export function buildModeFlowEdges(mode: OraModeSpec): Edge[] {
       fontSize: 11,
     },
   }));
+
+  const firstEnabledNode = mode.nodes.find((node) => node.enabled)?.id;
+  const modeAtomEdges = firstEnabledNode
+    ? atoms
+      .filter((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family))
+      .map((atom) => ({
+        id: `synthetic:${atom.id}:${firstEnabledNode}`,
+        source: `${MODE_CAPABILITY_NODE_PREFIX}${atom.id}`,
+        target: firstEnabledNode,
+        label: atom.topology.edgeLabel,
+        type: "smoothstep",
+        animated: false,
+        selectable: false,
+        deletable: false,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 16,
+          height: 16,
+          color: "#94a3b8",
+        },
+        style: {
+          stroke: "#94a3b8",
+          strokeWidth: 1.2,
+          strokeDasharray: "6 4",
+        },
+        labelStyle: {
+          fill: "#64748b",
+          fontSize: 10,
+        },
+      }))
+    : [];
+
+  const compatibleNodeAtoms = atoms.filter((atom) => atom.scope === "node" && atom.compatibleFamilies.includes(mode.family));
+  const attachmentEdges = mode.nodes.flatMap((node) => {
+    const configured = new Set(
+      Array.isArray(node.config?.atoms)
+        ? node.config.atoms.filter((value): value is string => typeof value === "string")
+        : [],
+    );
+    return compatibleNodeAtoms
+      .filter((atom) => configured.has(atom.id))
+      .map((atom) => ({
+        id: `synthetic:${node.id}:${atom.id}`,
+        source: node.id,
+        target: `${NODE_ATTACHMENT_NODE_PREFIX}${node.id}:${atom.id}`,
+        label: atom.topology.edgeLabel,
+        type: "smoothstep",
+        animated: false,
+        selectable: false,
+        deletable: false,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 14,
+          height: 14,
+          color: "#94a3b8",
+        },
+        style: {
+          stroke: "#94a3b8",
+          strokeWidth: 1.1,
+          strokeDasharray: "4 4",
+        },
+        labelStyle: {
+          fill: "#64748b",
+          fontSize: 10,
+        },
+      }));
+  });
+
+  return [...modeAtomEdges, ...stageEdges, ...attachmentEdges];
 }
 
 export function getVisibleModeEdges(mode: OraModeSpec): OraModeSpec["edges"] {
@@ -135,6 +331,17 @@ export function patchModeNodePosition(
     ...mode,
     nodes: mode.nodes.map((node) => node.id === nodeId ? { ...node, position } : node),
     updatedAt: Date.now(),
+  };
+}
+
+export function modeCanvasStagePositionToStoredPosition(
+  mode: OraModeSpec,
+  atoms: OraModeRuntimeAtomDefinition[],
+  position: { x: number; y: number },
+): { x: number; y: number } {
+  return {
+    x: position.x,
+    y: position.y - modeTopPadding(mode, atoms),
   };
 }
 

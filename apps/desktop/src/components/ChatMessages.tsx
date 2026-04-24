@@ -4,6 +4,7 @@ import { AssistantTurnCard } from "./AssistantTurnCard";
 import type { ActionRecord, AgentProfile, ChatMessage, PlanItem } from "../types";
 import { Conversation, ConversationContent } from "./ai-elements/conversation";
 import { cn } from "../lib/utils";
+import { ApprovalRequestCard } from "./ApprovalRequestCard";
 
 interface ChatMessagesProps {
   chatMessages: ChatMessage[];
@@ -13,26 +14,29 @@ interface ChatMessagesProps {
   isApprovalRequired?: boolean;
   onResumeRun?: () => void;
   onCancelRun?: () => void;
+  onOpenArtifact?: (artifactId: string) => void;
   busyCommand?: string;
 }
 
 export function ChatMessages({
   chatMessages,
   agents: _agents,
-  actionRecords: _actionRecords,
+  actionRecords = [],
   planItems: _planItems,
-  isApprovalRequired: _isApprovalRequired,
-  onResumeRun: _onResumeRun,
-  onCancelRun: _onCancelRun,
-  busyCommand: _busyCommand,
+  isApprovalRequired = false,
+  onResumeRun,
+  onCancelRun,
+  onOpenArtifact,
+  busyCommand,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pendingApprovals = actionRecords.filter((action) => action.state === "approval_required");
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [chatMessages.length]);
+  }, [chatMessages.length, isApprovalRequired, pendingApprovals.length]);
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
@@ -44,9 +48,9 @@ export function ChatMessages({
               <div key={message.id} className="w-full">
                 <AssistantTurnCard
                   content={message.content}
-                  timestamp={message.timestamp}
                   turn={message.turn}
                   isPlaceholder={message.isPlaceholder}
+                  onOpenArtifact={onOpenArtifact}
                 />
               </div>
             );
@@ -57,10 +61,17 @@ export function ChatMessages({
               key={message.id}
               role={message.role}
               content={message.content}
-              timestamp={message.timestamp}
             />
           );
         })}
+        {isApprovalRequired && pendingApprovals.length > 0 && onResumeRun && onCancelRun ? (
+          <ApprovalRequestCard
+            actions={pendingApprovals}
+            onResume={onResumeRun}
+            onCancel={onCancelRun}
+            disabled={busyCommand !== undefined}
+          />
+        ) : null}
         <div className={cn("h-1", chatMessages.length === 0 && "flex-1")} />
         </ConversationContent>
       </Conversation>

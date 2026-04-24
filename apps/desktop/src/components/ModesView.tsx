@@ -1,5 +1,5 @@
-import { ArrowLeft, Check, Copy, GitBranchPlus, Plus, RefreshCcw, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Check, Copy, FileText, GitBranchPlus, Plus, RefreshCcw, Save, Terminal, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
   CoordinationPatternSchema,
@@ -18,6 +18,7 @@ import ReactFlow, {
   type Edge,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import {
@@ -30,6 +31,9 @@ import {
   canDisableModeNode,
   getExecutionPreview,
   hydrateModeDraft,
+  modeCanvasStagePositionToStoredPosition,
+  MODE_CAPABILITY_NODE_PREFIX,
+  NODE_ATTACHMENT_NODE_PREFIX,
   patchModeNodePosition,
   removeModeEdges,
   resetModeDraftFamily,
@@ -83,6 +87,21 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   const draftDefinition = draft ? getPatternDefinition(draft.family) : undefined;
   const selectedDefinition = previewMode ? getPatternDefinition(previewMode.family) : undefined;
   const selectedNode = draft?.nodes.find((node) => node.id === selectedNodeId);
+  const selectedModeAtom = draft && selectedNodeId?.startsWith(MODE_CAPABILITY_NODE_PREFIX)
+    ? atoms.find((atom) => atom.scope === "mode" && `${MODE_CAPABILITY_NODE_PREFIX}${atom.id}` === selectedNodeId)
+    : undefined;
+  const selectedNodeAttachment = draft && selectedNodeId?.startsWith(NODE_ATTACHMENT_NODE_PREFIX)
+    ? (() => {
+      const raw = selectedNodeId.slice(NODE_ATTACHMENT_NODE_PREFIX.length);
+      const divider = raw.lastIndexOf(":");
+      if (divider === -1) return undefined;
+      const sourceNodeId = raw.slice(0, divider);
+      const atomId = raw.slice(divider + 1);
+      const sourceNode = draft.nodes.find((node) => node.id === sourceNodeId);
+      const atom = atoms.find((candidate) => candidate.scope === "node" && candidate.id === atomId);
+      return sourceNode && atom ? { sourceNode, atom } : undefined;
+    })()
+    : undefined;
   const allowedTemplates = draft?.editorConstraints.allowedNodeTemplates ?? [];
   const executionPreview = draft ? getExecutionPreview(draft) : undefined;
 
@@ -102,11 +121,11 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
       setSelectedNodeId(undefined);
       return;
     }
-    if (selectedNodeId && draft.nodes.some((node) => node.id === selectedNodeId)) {
+    if (selectedNodeId && canvasSelectionExists(draft, atoms, selectedNodeId)) {
       return;
     }
     setSelectedNodeId(draft.nodes[0]?.id);
-  }, [draft, selectedNodeId]);
+  }, [atoms, draft, selectedNodeId]);
 
   async function refreshModes() {
     setBusy("refresh");
@@ -458,9 +477,10 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                 </div>
               </div>
 
-              <section className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+              <section className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
                 <CanvasPanel
                   mode={previewMode}
+                  atoms={atoms}
                   readOnly
                   selectedNodeId={undefined}
                   onSelectNode={() => undefined}
@@ -475,15 +495,23 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
               </section>
             </section>
           ) : draft ? (
-            <section className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <section className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
               <CanvasPanel
                 mode={draft}
+                atoms={atoms}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
                 onClearSelection={() => setSelectedNodeId(undefined)}
                 onConnect={handleConnect}
                 onDeleteEdges={(edges) => patchDraft((current) => removeModeEdges(current, edges.map((edge) => edge.id)))}
-                onMoveNode={(node) => patchDraft((current) => patchModeNodePosition(current, node.id, node.position))}
+                onMoveNode={(node) => {
+                  if (node.data.kind !== "stage") return;
+                  patchDraft((current) => patchModeNodePosition(
+                    current,
+                    node.id,
+                    modeCanvasStagePositionToStoredPosition(current, atoms, node.position),
+                  ));
+                }}
               />
               <div className="space-y-5">
                 {selectedNode ? (
@@ -506,10 +534,42 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                       setSelectedNodeId(undefined);
                     }}
                   />
+                ) : selectedModeAtom ? (
+                  <CapabilityInspector
+                    mode={draft}
+                    atom={selectedModeAtom}
+                    onToggle={() => patchDraft((current) => ({
+                      ...current,
+                      runtimeAtoms: current.runtimeAtoms.includes(selectedModeAtom.id)
+                        ? current.runtimeAtoms.filter((atomId) => atomId !== selectedModeAtom.id)
+                        : [...current.runtimeAtoms, selectedModeAtom.id],
+                    }))}
+                  />
+                ) : selectedNodeAttachment ? (
+                  <CapabilityInspector
+                    mode={draft}
+                    atom={selectedNodeAttachment.atom}
+                    sourceNode={selectedNodeAttachment.sourceNode}
+                    onToggle={() => patchDraft((current) => ({
+                      ...current,
+                      nodes: current.nodes.map((node) =>
+                        node.id !== selectedNodeAttachment.sourceNode.id
+                          ? node
+                          : {
+                              ...node,
+                              config: {
+                                ...node.config,
+                                atoms: toggleNodeAtom(node, selectedNodeAttachment.atom.id),
+                              },
+                            },
+                      ),
+                    }))}
+                  />
                 ) : (
                   <ModeInspector
                     draft={draft}
                     atoms={atoms}
+                    toolRegistry={state.toolRegistry}
                     editingModeId={editingModeId}
                     definition={draftDefinition}
                     executionPreview={executionPreview}
@@ -528,6 +588,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
 
 function CanvasPanel({
   mode,
+  atoms,
   readOnly = false,
   selectedNodeId,
   onSelectNode,
@@ -537,6 +598,7 @@ function CanvasPanel({
   onDeleteEdges,
 }: {
   mode: OraModeSpec;
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
   readOnly?: boolean;
   selectedNodeId?: string;
   onSelectNode: (nodeId?: string) => void;
@@ -545,28 +607,42 @@ function CanvasPanel({
   onConnect?: (connection: Connection) => void;
   onDeleteEdges?: (edges: Edge[]) => void;
 }) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
   const nodes = useMemo(
-    () => buildModeFlowNodes(mode).map((node) => ({ ...node, selected: node.id === selectedNodeId })),
-    [mode, selectedNodeId],
+    () => buildModeFlowNodes(mode, atoms).map((node) => ({ ...node, selected: node.id === selectedNodeId })),
+    [atoms, mode, selectedNodeId],
   );
-  const edges = useMemo(() => buildModeFlowEdges(mode), [mode]);
-  const canvasHeight = useMemo(() => {
-    if (!readOnly) {
-      return 680;
-    }
+  const edges = useMemo(() => buildModeFlowEdges(mode, atoms), [atoms, mode]);
+  const fitCanvasView = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      flowInstanceRef.current?.fitView({
+        padding: readOnly ? 0.12 : 0.16,
+        duration: 160,
+      });
+    });
+  }, [readOnly]);
 
-    const positionedNodes = mode.nodes.filter((node) => node.position);
-    if (positionedNodes.length === 0) {
-      return 420;
-    }
+  useEffect(() => {
+    fitCanvasView();
+  }, [edges, fitCanvasView, nodes]);
 
-    const top = Math.min(...positionedNodes.map((node) => node.position!.y));
-    const bottom = Math.max(...positionedNodes.map((node) => node.position!.y + 248));
-    return Math.max(320, Math.min(520, bottom - top + 120));
-  }, [mode.nodes, readOnly]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const resizeObserver = new ResizeObserver(() => fitCanvasView());
+    resizeObserver.observe(canvas);
+    return () => resizeObserver.disconnect();
+  }, [fitCanvasView]);
 
   return (
-    <div className="min-w-0 w-full overflow-hidden rounded-[1.5rem] bg-white shadow-pane ring-1 ring-inset ring-bench-200">
+    <div
+      className={cn(
+        "flex h-full min-w-0 w-full flex-col overflow-hidden rounded-[1.5rem] bg-white shadow-pane ring-1 ring-inset ring-bench-200",
+        readOnly ? "min-h-[560px]" : "min-h-[680px]",
+      )}
+    >
       <div className="border-b border-bench-200/80 px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -581,15 +657,15 @@ function CanvasPanel({
         </div>
       </div>
       <div
-        className="bg-[radial-gradient(circle_at_top,rgba(245,247,249,0.9),rgba(236,240,243,0.55)_45%,rgba(250,251,252,1)_100%)]"
-        style={{ height: canvasHeight }}
+        ref={canvasRef}
+        className="min-h-0 flex-1 bg-[radial-gradient(circle_at_top,rgba(245,247,249,0.9),rgba(236,240,243,0.55)_45%,rgba(250,251,252,1)_100%)]"
       >
         <ReactFlow
           nodes={nodes}
           edges={edges}
           nodeTypes={NODE_TYPES}
           fitView
-          fitViewOptions={{ padding: 0.18 }}
+          fitViewOptions={{ padding: readOnly ? 0.12 : 0.16 }}
           nodesDraggable={!readOnly}
           nodesConnectable={!readOnly}
           elementsSelectable
@@ -599,18 +675,24 @@ function CanvasPanel({
           onNodeDragStop={(_event, node) => onMoveNode?.(node)}
           onConnect={readOnly ? undefined : onConnect}
           onEdgesDelete={readOnly ? undefined : onDeleteEdges}
+          onInit={(instance) => {
+            flowInstanceRef.current = instance;
+            fitCanvasView();
+          }}
           panOnScroll
           selectionOnDrag={false}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={22} size={1.1} color="#d5dde3" />
-          <MiniMap
-            pannable
-            zoomable
-            nodeColor={(node) => (node.data.enabled ? "#1f2937" : "#c2cbd4")}
-            maskColor="rgba(246, 248, 250, 0.7)"
-            className="!rounded-xl !border !border-bench-200 !bg-white/90 !shadow-none"
-          />
+          {!readOnly && (
+            <MiniMap
+              pannable
+              zoomable
+              nodeColor={(node) => (node.data.enabled ? "#1f2937" : "#c2cbd4")}
+              maskColor="rgba(246, 248, 250, 0.7)"
+              className="!rounded-xl !border !border-bench-200 !bg-white/90 !shadow-none"
+            />
+          )}
           <Controls showInteractive={!readOnly} className="!rounded-xl !border !border-bench-200 !bg-white/90 !shadow-none" />
         </ReactFlow>
       </div>
@@ -647,6 +729,7 @@ function ModeOverviewInspector({
 function ModeInspector({
   draft,
   atoms,
+  toolRegistry,
   editingModeId,
   definition,
   executionPreview,
@@ -655,6 +738,7 @@ function ModeInspector({
 }: {
   draft: OraModeSpec;
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  toolRegistry: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["toolRegistry"] | undefined;
   editingModeId?: string;
   definition: ReturnType<typeof getPatternDefinition> | undefined;
   executionPreview: ReturnType<typeof getExecutionPreview> | undefined;
@@ -724,6 +808,14 @@ function ModeInspector({
         </div>
       </div>
 
+      {toolRegistry && (
+        <WorkspaceToolsPanel
+          draft={draft}
+          toolRegistry={toolRegistry}
+          onPatchDraft={onPatchDraft}
+        />
+      )}
+
       <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} />
 
       {onDeleteMode && (
@@ -741,6 +833,96 @@ function ModeInspector({
   );
 }
 
+function WorkspaceToolsPanel({
+  draft,
+  toolRegistry,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  toolRegistry: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["toolRegistry"];
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  const tools = [
+    {
+      id: "file.read",
+      label: "Read files",
+      description: "Allow runs to read files inside the selected project folder.",
+      icon: FileText,
+    },
+    {
+      id: "shell.execute",
+      label: "Shell commands",
+      description: "Allow read-only commands in the project root, with high-risk calls routed through approval.",
+      icon: Terminal,
+    },
+  ].filter((tool) => toolRegistry.tools.some((entry) => entry.id === tool.id));
+
+  if (tools.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Workspace tools</p>
+          <h4 className="mt-1 text-sm font-semibold">Project folder access</h4>
+        </div>
+        <span className="rounded-full bg-bench-100 px-2.5 py-1 text-[11px] font-semibold text-bench-700">
+          {draft.capabilityFlags.toolIds.filter((toolId) => tools.some((tool) => tool.id === toolId)).length}/{tools.length}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-2">
+        {tools.map((tool) => {
+          const active = draft.capabilityFlags.toolIds.includes(tool.id);
+          const Icon = tool.icon;
+          return (
+            <button
+              key={tool.id}
+              type="button"
+              onClick={() => onPatchDraft((current) => ({
+                ...current,
+                capabilityFlags: {
+                  ...current.capabilityFlags,
+                  toolIds: active
+                    ? current.capabilityFlags.toolIds.filter((toolId) => toolId !== tool.id)
+                    : [...new Set([...current.capabilityFlags.toolIds, tool.id])],
+                },
+              }))}
+              className={cn(
+                "flex min-h-[4.5rem] w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition active:scale-[0.99]",
+                active
+                  ? "border-bench-400 bg-bench-50 text-bench-950"
+                  : "border-bench-200 bg-white text-bench-800 hover:bg-bench-50",
+              )}
+            >
+              <span className={cn(
+                "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+                active ? "bg-bench-900 text-white" : "bg-bench-100 text-bench-700",
+              )}>
+                <Icon size={15} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold">{tool.label}</span>
+                  <span className={cn(
+                    "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]",
+                    active ? "bg-emerald-100 text-emerald-900" : "bg-bench-100 text-bench-600",
+                  )}>
+                    {active ? "on" : "off"}
+                  </span>
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-bench-700">{tool.description}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ModeSummaryCards({
   mode,
   atoms,
@@ -754,6 +936,7 @@ function ModeSummaryCards({
 }) {
   const activeModeAtoms = resolveModeAtoms(mode, atoms, "mode");
   const activeNodeAtoms = resolveModeAtoms(mode, atoms, "node");
+  const riskyNodes = mode.nodes.filter((node) => node.enabled && node.riskLevel);
 
   return (
     <>
@@ -761,6 +944,11 @@ function ModeSummaryCards({
         <h4 className="text-sm font-semibold">Runtime defaults</h4>
         <div className="mt-3 grid gap-3 text-sm text-bench-700">
           <p>Approval: {mode.capabilityFlags.approvalMode}</p>
+          <p>
+            Risky stages: {riskyNodes.length > 0
+              ? riskyNodes.map((node) => `${node.label} (${formatRiskLabel(node.riskLevel!)})`).join(", ")
+              : "none"}
+          </p>
           <p>Skills: {mode.capabilityFlags.skillIds.join(", ") || "none"}</p>
           <p>Tools: {mode.capabilityFlags.toolIds.join(", ") || "none"}</p>
           <p>Stop policy: {formatStopPolicy(mode.stopPolicy)}</p>
@@ -826,8 +1014,24 @@ function ModeSummaryCards({
               <div className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Enabled stages</div>
               <div className="mt-3 space-y-2">
                 {executionPreview.nodes.map((node, index) => (
-                  <div key={node.id} className="rounded-lg border border-bench-200 bg-white px-3 py-2 text-sm text-bench-900">
-                    {index + 1}. {node.label} · {node.template}
+                  <div
+                    key={node.id}
+                    className={cn(
+                      "rounded-lg border bg-white px-3 py-2 text-sm text-bench-900",
+                      node.riskLevel ? riskSurfaceClassName(node.riskLevel) : "border-bench-200",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span>{index + 1}. {node.label} · {node.template}</span>
+                      {node.riskLevel ? (
+                        <span className={cn(
+                          "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]",
+                          riskBadgeClassName(node.riskLevel),
+                        )}>
+                          {formatRiskLabel(node.riskLevel)}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 ))}
                 {executionPreview.nodes.length === 0 && (
@@ -880,6 +1084,7 @@ function NodeInspector({
   const canDisable = canDisableModeNode(draft, node.id);
   const canDelete = canDeleteModeNode(draft, node.id);
   const nodeAtoms = resolveNodeAtoms(node, atoms);
+  const compatibleNodeAtoms = atoms.filter((atom) => atom.scope === "node" && atom.compatibleFamilies.includes(draft.family));
 
   return (
     <>
@@ -976,16 +1181,37 @@ function NodeInspector({
           <div className="grid gap-2 text-sm">
             <span className="text-bench-700">Stage atoms</span>
             <div className="rounded-md border border-bench-200 bg-bench-50 px-3 py-3">
-              {nodeAtoms.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {nodeAtoms.map((atom) => (
-                    <span key={atom.id} className="rounded-full bg-white px-3 py-1 text-xs font-medium text-bench-800 ring-1 ring-inset ring-bench-200">
+              <div className="flex flex-wrap gap-2">
+                {compatibleNodeAtoms.map((atom) => {
+                  const active = nodeAtoms.some((entry) => entry.id === atom.id);
+                  const available = atomRequirementsSatisfied(draft, atom);
+                  return (
+                    <button
+                      key={atom.id}
+                      type="button"
+                      disabled={!available}
+                      onClick={() => onPatchNode((current) => ({
+                        ...current,
+                        config: {
+                          ...current.config,
+                          atoms: toggleNodeAtom(current, atom.id),
+                        },
+                      }))}
+                      className={cn(
+                        "rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition",
+                        active
+                          ? "bg-bench-900 text-white ring-bench-900"
+                          : "bg-white text-bench-800 ring-bench-200 hover:bg-bench-100",
+                        !available && "cursor-not-allowed opacity-50 hover:bg-white",
+                      )}
+                    >
                       {atom.label}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-bench-700">No stage atoms enabled for this node.</p>
+                    </button>
+                  );
+                })}
+              </div>
+              {compatibleNodeAtoms.length === 0 && (
+                <p className="text-sm text-bench-700">No stage atoms are compatible with this family.</p>
               )}
             </div>
           </div>
@@ -1010,42 +1236,163 @@ function NodeInspector({
   );
 }
 
+function CapabilityInspector({
+  mode,
+  atom,
+  sourceNode,
+  onToggle,
+}: {
+  mode: OraModeSpec;
+  atom: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"][number];
+  sourceNode?: OraModeSpec["nodes"][number];
+  onToggle: () => void;
+}) {
+  const active = sourceNode
+    ? resolveNodeAtoms(sourceNode, [atom]).length > 0
+    : mode.runtimeAtoms.includes(atom.id);
+  const available = atomRequirementsSatisfied(mode, atom);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">
+              {sourceNode ? "Stage capability" : "Mode capability"}
+            </p>
+            <h4 className="mt-1 text-base font-semibold">{atom.label}</h4>
+          </div>
+          <div className={cn(
+            "rounded-full px-3 py-1 text-xs font-semibold",
+            active ? "bg-emerald-100 text-emerald-900" : "bg-bench-100 text-bench-700",
+          )}>
+            {active ? "Enabled" : "Disabled"}
+          </div>
+        </div>
+
+        <p className="mt-3 text-sm leading-6 text-bench-700">{atom.description}</p>
+        {sourceNode && (
+          <p className="mt-3 text-xs leading-5 text-bench-700">
+            Attached stage: <span className="font-semibold text-bench-900">{sourceNode.label}</span>
+          </p>
+        )}
+
+        <div className="mt-4 grid gap-3 text-sm text-bench-700">
+          <p>Presentation: {atom.topology.presentation}</p>
+          <p>Edge: {atom.topology.edgeKind}{atom.topology.edgeLabel ? ` · ${atom.topology.edgeLabel}` : ""}</p>
+          <p>Requires tools: {atom.requiresTools.join(", ") || "none"}</p>
+          <p>Requires flags: {atom.requiresFlags.join(", ") || "none"}</p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+        <h4 className="text-sm font-semibold">Capability action</h4>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!available}
+            onClick={onToggle}
+            className={cn(
+              "inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition",
+              active
+                ? "border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                : "bg-bench-900 text-white hover:bg-bench-800",
+              !available && "cursor-not-allowed opacity-50 hover:bg-white",
+            )}
+          >
+            {active ? "Disable capability" : "Enable capability"}
+          </button>
+          {!available && (
+            <p className="text-xs leading-5 text-amber-700">
+              This capability is blocked until its required flags/tools are enabled.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
+  const stageNode = data.kind === "stage";
   return (
     <div className={cn(
-      "relative w-[248px] rounded-[1.25rem] border bg-white px-4 py-3 shadow-[0_18px_40px_-28px_rgba(17,24,39,0.45)] transition",
-      data.enabled ? "border-bench-200 text-bench-950" : "border-bench-200/80 bg-bench-100/90 text-bench-600 opacity-80",
+      "relative rounded-[1.25rem] border bg-white px-4 py-3 shadow-[0_18px_40px_-28px_rgba(17,24,39,0.45)] transition",
+      stageNode ? "w-[248px]" : "w-[196px]",
+      stageNode
+        ? data.enabled
+          ? cn("text-bench-950", data.riskLevel ? riskSurfaceClassName(data.riskLevel) : "border-bench-200")
+          : "border-bench-200/80 bg-bench-100/90 text-bench-600 opacity-80"
+        : data.active
+          ? "border-sky-200 bg-sky-50 text-slate-950"
+          : "border-dashed border-bench-300 bg-bench-100/90 text-bench-600",
       selected && "border-bench-500 shadow-[0_24px_56px_-30px_rgba(15,23,42,0.55)]",
     )}>
-      <Handle
-        type="target"
-        position={Position.Left}
-        isConnectable={data.enabled}
-        className="!h-3 !w-3 !border-2 !border-white !bg-bench-600"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        isConnectable={data.enabled}
-        className="!h-3 !w-3 !border-2 !border-white !bg-bench-600"
-      />
+      {stageNode && data.enabled && data.riskLevel ? (
+        <div
+          className={cn(
+            "absolute inset-x-4 top-0 h-1 rounded-b-full",
+            riskAccentClassName(data.riskLevel),
+          )}
+        />
+      ) : null}
+      {stageNode && (
+        <>
+          <Handle
+            type="target"
+            position={Position.Left}
+            isConnectable={data.enabled}
+            className="!h-3 !w-3 !border-2 !border-white !bg-bench-600"
+          />
+          <Handle
+            type="source"
+            position={Position.Right}
+            isConnectable={data.enabled}
+            className="!h-3 !w-3 !border-2 !border-white !bg-bench-600"
+          />
+        </>
+      )}
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-bench-600">{data.template}</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-bench-600">
+            {stageNode ? data.template : data.atomPresentation?.replace(/_/g, " ") ?? "capability"}
+          </div>
           <div className="mt-1 text-sm font-semibold leading-5">{data.label}</div>
-          <div className="mt-2 text-xs text-bench-600">{data.ownerAgentId ?? "runtime-owned"}</div>
+          <div className="mt-2 text-xs text-bench-600">
+            {stageNode
+              ? data.ownerAgentId ?? "runtime-owned"
+              : data.sourceNodeId
+                ? `attached to ${data.sourceNodeId}`
+                : data.atomScope ?? "runtime"}
+          </div>
         </div>
         <div className={cn(
           "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em]",
-          data.enabled ? "bg-emerald-100 text-emerald-900" : "bg-bench-200 text-bench-700",
+          stageNode
+            ? data.enabled
+              ? "bg-emerald-100 text-emerald-900"
+              : "bg-bench-200 text-bench-700"
+            : data.active
+              ? "bg-sky-100 text-sky-900"
+              : "bg-bench-200 text-bench-700",
         )}>
-          {data.enabled ? "live" : "off"}
+          {stageNode ? (data.enabled ? "live" : "off") : (data.active ? "on" : "off")}
         </div>
       </div>
 
       <div className="mt-3 flex items-center gap-2 text-[11px] text-bench-600">
-        <span className="rounded-full bg-bench-100 px-2.5 py-1">{data.required ? "Required" : "Optional"}</span>
+        <span className="rounded-full bg-bench-100 px-2.5 py-1">
+          {stageNode ? (data.required ? "Required" : "Optional") : (data.kind === "node-attachment" ? "Attachment" : "Capability")}
+        </span>
+        {stageNode && data.riskLevel && (
+          <span className={cn(
+            "rounded-full px-2.5 py-1 font-semibold uppercase tracking-[0.08em]",
+            riskBadgeClassName(data.riskLevel),
+          )}>
+            {formatRiskLabel(data.riskLevel)}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -1078,6 +1425,56 @@ function resolveNodeAtoms(
       : [],
   );
   return atoms.filter((atom) => atom.scope === "node" && wanted.has(atom.id));
+}
+
+function atomRequirementsSatisfied(
+  mode: OraModeSpec,
+  atom: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"][number],
+) {
+  return atom.requiresFlags.every((flag) => Boolean(mode.capabilityFlags[flag as keyof OraModeSpec["capabilityFlags"]]));
+}
+
+function toggleNodeAtom(
+  node: OraModeSpec["nodes"][number],
+  atomId: string,
+) {
+  const current = Array.isArray(node.config?.atoms)
+    ? node.config.atoms.filter((value): value is string => typeof value === "string")
+    : [];
+  return current.includes(atomId)
+    ? current.filter((value) => value !== atomId)
+    : [...current, atomId];
+}
+
+function canvasSelectionExists(
+  mode: OraModeSpec,
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"],
+  selectedId: string,
+) {
+  if (mode.nodes.some((node) => node.id === selectedId)) {
+    return true;
+  }
+  if (selectedId.startsWith(MODE_CAPABILITY_NODE_PREFIX)) {
+    return atoms.some((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family) && `${MODE_CAPABILITY_NODE_PREFIX}${atom.id}` === selectedId);
+  }
+  if (selectedId.startsWith(NODE_ATTACHMENT_NODE_PREFIX)) {
+    const raw = selectedId.slice(NODE_ATTACHMENT_NODE_PREFIX.length);
+    const divider = raw.lastIndexOf(":");
+    if (divider === -1) {
+      return false;
+    }
+    const sourceNodeId = raw.slice(0, divider);
+    const atomId = raw.slice(divider + 1);
+    const sourceNode = mode.nodes.find((node) => node.id === sourceNodeId);
+    if (!sourceNode) {
+      return false;
+    }
+    const configured = Array.isArray(sourceNode.config?.atoms)
+      ? sourceNode.config.atoms.filter((value): value is string => typeof value === "string")
+      : [];
+    return configured.includes(atomId);
+  }
+  return false;
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
@@ -1144,6 +1541,43 @@ function formatStopPolicy(policy: OraModeSpec["stopPolicy"]): string {
       return `converged (${policy.idleCycles ?? "default"} idle cycles)`;
     default:
       return policy.type;
+  }
+}
+
+function formatRiskLabel(riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
+  return riskLevel.replace(/_/g, " ");
+}
+
+function riskBadgeClassName(riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
+  switch (riskLevel) {
+    case "high":
+      return "bg-rose-100 text-rose-900";
+    case "medium":
+      return "bg-amber-100 text-amber-900";
+    default:
+      return "bg-slate-100 text-slate-700";
+  }
+}
+
+function riskSurfaceClassName(riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
+  switch (riskLevel) {
+    case "high":
+      return "border-rose-300 bg-rose-50/80";
+    case "medium":
+      return "border-amber-300 bg-amber-50/90";
+    default:
+      return "border-slate-300 bg-slate-50/90";
+  }
+}
+
+function riskAccentClassName(riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
+  switch (riskLevel) {
+    case "high":
+      return "bg-rose-400";
+    case "medium":
+      return "bg-amber-400";
+    default:
+      return "bg-slate-400";
   }
 }
 

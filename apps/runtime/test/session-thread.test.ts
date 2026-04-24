@@ -6,6 +6,7 @@ import { SessionDetailSchema, StateSnapshotSchema } from "@ora/shared";
 
 const capturedRequests: Array<{
   prompt: string;
+  system: string;
   messages: { role: string; content: string }[];
 }> = [];
 
@@ -17,18 +18,36 @@ vi.mock("../src/providers/index.js", async () => {
   return {
     ...actual,
     invokeRunProvider: vi.fn(async (config, request) => {
+      const messages = (request.messages ?? []).map((message) => ({
+        role: message.role,
+        content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+      }));
+      const hasToolResult = messages.some((message) => message.content.includes("Workspace tool result for shell.execute"));
+      const requestText = [request.prompt ?? "", ...messages.map((message) => message.content)].join("\n");
+      const shouldEscapeShell = request.system?.includes("Workspace tool protocol:")
+        && requestText.includes("Try escaping shell")
+        && !hasToolResult;
+      const shouldCallShell = request.system?.includes("Workspace tool protocol:")
+        && requestText.includes("Count markdown with shell")
+        && !hasToolResult;
+      const text = shouldEscapeShell
+        ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
+        : shouldCallShell
+        ? JSON.stringify({ tool: "shell.execute", args: { command: "rg --files -g *.md" } })
+        : hasToolResult
+          ? "There are 2 Markdown files."
+          : `reply:${request.prompt}`;
+
       capturedRequests.push({
         prompt: request.prompt,
-        messages: (request.messages ?? []).map((message) => ({
-          role: message.role,
-          content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
-        })),
+        system: request.system ?? "",
+        messages,
       });
 
       return {
         providerId: config.providerId ?? "mock-provider",
         modelId: config.modelRef ?? "mock-model",
-        text: `reply:${request.prompt}`,
+        text,
         raw: {
           prompt: request.prompt,
           messages: request.messages ?? [],
@@ -93,6 +112,106 @@ describe("session thread runtime behavior", () => {
     const reloaded = new LocalRunStore({ dataDir: dir, clock });
     expect(reloaded.listProjects()[0]?.projectId).toBe(created.projectId);
     expect(reloaded.getProject({ projectId: created.projectId }).project.sessionCount).toBe(1);
+  });
+
+  it("injects project workspace context for project-scoped session runs", async () => {
+    const dataDir = freshStoreDir();
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-workspace-"));
+    fs.writeFileSync(path.join(workspaceDir, "README.md"), "# Readme\n");
+    fs.mkdirSync(path.join(workspaceDir, "notes"));
+    fs.writeFileSync(path.join(workspaceDir, "notes", "plan.md"), "# Plan\n");
+    fs.writeFileSync(path.join(workspaceDir, "notes", "data.txt"), "data\n");
+
+    const store = new LocalRunStore({ dataDir, clock });
+    const project = store.createProject({ rootPath: workspaceDir, label: "workspace" });
+    const session = store.createSession({ projectId: project.projectId });
+    const handle = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "这个项目里有多少 md 文件？" },
+      config: { pattern: "generator_verifier" },
+    });
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+
+    expect(snapshot.input.projectId).toBe(project.projectId);
+    expect(snapshot.input.context.projectWorkspace).toMatchObject({
+      rootPath: workspaceDir,
+      markdownFiles: 2,
+      totalFiles: 3,
+    });
+    expect(capturedRequests.some((request) =>
+      request.system.includes("Ora project workspace context:") &&
+      request.system.includes(`Root path: ${workspaceDir}`) &&
+      request.system.includes("Markdown files: 2")
+    )).toBe(true);
+  });
+
+  it("executes enabled workspace shell tools inside the project root", async () => {
+    const dataDir = freshStoreDir();
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-tool-loop-"));
+    fs.writeFileSync(path.join(workspaceDir, "README.md"), "# Readme\n");
+    fs.writeFileSync(path.join(workspaceDir, "plan.md"), "# Plan\n");
+    fs.writeFileSync(path.join(workspaceDir, "notes.txt"), "note\n");
+
+    const store = new LocalRunStore({ dataDir, clock });
+    const project = store.createProject({ rootPath: workspaceDir, label: "workspace" });
+    const session = store.createSession({ projectId: project.projectId });
+    const handle = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Count markdown with shell" },
+      config: {
+        pattern: "orchestrator_subagent",
+        toolIds: ["shell.execute"],
+        approvalMode: "auto",
+      },
+    });
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+
+    expect(snapshot.actions.some((action) =>
+      action.type === "shell.execute" &&
+      action.status === "succeeded" &&
+      (action.output as { output?: string } | undefined)?.output.includes("README.md")
+    )).toBe(true);
+    expect(snapshot.events.some((event) =>
+      event.type === "tool.called" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      (event.payload as { toolId?: string }).toolId === "shell.execute"
+    )).toBe(true);
+    expect(capturedRequests.some((request) =>
+      request.messages.some((message) => message.content.includes("Workspace tool result for shell.execute"))
+    )).toBe(true);
+  });
+
+  it("blocks workspace shell commands that target absolute paths", async () => {
+    const dataDir = freshStoreDir();
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-tool-guard-"));
+    fs.writeFileSync(path.join(workspaceDir, "README.md"), "# Readme\n");
+
+    const store = new LocalRunStore({ dataDir, clock });
+    const project = store.createProject({ rootPath: workspaceDir, label: "workspace" });
+    const session = store.createSession({ projectId: project.projectId });
+    const handle = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Try escaping shell" },
+      config: {
+        pattern: "orchestrator_subagent",
+        toolIds: ["shell.execute"],
+        approvalMode: "auto",
+      },
+    });
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+
+    expect(snapshot.actions.some((action) =>
+      action.type === "shell.execute" &&
+      action.status === "failed" &&
+      action.error?.includes("project root")
+    )).toBe(true);
+    expect(snapshot.events.some((event) =>
+      event.type === "message.delta" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      String((event.payload as { content?: string }).content ?? "").includes("tool-error-boundary")
+    )).toBe(true);
   });
 
   it("appends turns inside a session and rebuilds transcript for later turns", async () => {

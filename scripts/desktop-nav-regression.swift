@@ -20,14 +20,19 @@ private let regressionSteps: [RegressionStep] = [
     point: { bounds in CGPoint(x: bounds.minX + 120, y: bounds.minY + 184) }
   ),
   RegressionStep(
+    label: "Skills",
+    expectedTitle: "\(windowTitleBase) · Skills",
+    point: { bounds in CGPoint(x: bounds.minX + 120, y: bounds.minY + 230) }
+  ),
+  RegressionStep(
     label: "Modes",
     expectedTitle: "\(windowTitleBase) · Modes",
-    point: { bounds in CGPoint(x: bounds.minX + 120, y: bounds.minY + 230) }
+    point: { bounds in CGPoint(x: bounds.minX + 120, y: bounds.minY + 276) }
   ),
   RegressionStep(
     label: "Evaluation",
     expectedTitle: "\(windowTitleBase) · Evaluation",
-    point: { bounds in CGPoint(x: bounds.minX + 120, y: bounds.minY + 276) }
+    point: { bounds in CGPoint(x: bounds.minX + 120, y: bounds.minY + 322) }
   ),
   RegressionStep(
     label: "Settings",

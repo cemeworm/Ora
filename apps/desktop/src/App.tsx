@@ -1,12 +1,12 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
+import { Component, Suspense, lazy, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type PointerEvent, type ReactNode } from "react";
 import { AppShell } from "./components/AppShell";
-import { ApprovalModal } from "./components/ApprovalModal";
+import { ArtifactDrawer } from "./components/ArtifactDrawer";
 import { ChatView } from "./components/ChatView";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
-import type { AppView } from "./types";
+import type { AppView, ArtifactRecord } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
 import type { OraStateSnapshot } from "./lib/runtimeClient";
@@ -14,9 +14,12 @@ import type { OraStateSnapshot } from "./lib/runtimeClient";
 const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
 const EvaluationView = lazy(() => import("./components/EvaluationView").then((module) => ({ default: module.EvaluationView })));
 const ModesView = lazy(() => import("./components/ModesView").then((module) => ({ default: module.ModesView })));
+const SkillsView = lazy(() => import("./components/SkillsView").then((module) => ({ default: module.SkillsView })));
 
 const DEFAULT_DETAIL_PANEL_WIDTH = 460;
+const DEFAULT_ARTIFACT_PANEL_WIDTH = 420;
 const MIN_DETAIL_PANEL_WIDTH = 360;
+const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora Operator Workbench";
 
@@ -26,6 +29,8 @@ function windowTitleForView(activeView: AppView, settingsOpen: boolean) {
   switch (activeView) {
     case "agents":
       return `${WINDOW_TITLE_BASE} · Agents`;
+    case "skills":
+      return `${WINDOW_TITLE_BASE} · Skills`;
     case "modes":
       return `${WINDOW_TITLE_BASE} · Modes`;
     case "evaluation":
@@ -53,7 +58,7 @@ function WorkspacePane({ children, className, style }: { children: ReactNode; cl
 function LoadingPane({ label = "Loading view..." }: { label?: string }) {
   return (
     <WorkspacePane className="w-full">
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full w-full items-center justify-center">
         <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
           <p className="text-sm font-semibold">{label}</p>
         </div>
@@ -62,23 +67,78 @@ function LoadingPane({ label = "Loading view..." }: { label?: string }) {
   );
 }
 
+class WorkbenchErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
+  state: { error?: Error } = {};
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Ora workbench render failed", error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) {
+      return this.props.children;
+    }
+
+    return (
+      <AppShell>
+        <WorkspacePane className="w-full">
+          <div className="flex h-full w-full items-center justify-center p-6">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-pane">
+              <p className="text-sm font-semibold text-foreground">Ora hit a render error.</p>
+              <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                {this.state.error.message || "The workbench could not render this session."}
+              </p>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="mt-4 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground transition hover:bg-muted/60 active:scale-95"
+              >
+                Reload workbench
+              </button>
+            </div>
+          </div>
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+}
+
 function WorkbenchInner() {
   const { state, dispatch } = useWorkbench();
   const { runtimeClient, viewModel, selectedSession, selectedNode, selectedBeat, selectedAgent, selectedCheckpoint, actions } = useRunActions();
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [detailPanelWidth, setDetailPanelWidth] = useState(DEFAULT_DETAIL_PANEL_WIDTH);
+  const [artifactPanelWidth, setArtifactPanelWidth] = useState(DEFAULT_ARTIFACT_PANEL_WIDTH);
   const [turnSnapshots, setTurnSnapshots] = useState<Record<string, OraStateSnapshot>>({});
 
   function clampDetailPanelWidth(nextWidth: number) {
     const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
     if (containerWidth <= 0) return nextWidth;
+    const reservedArtifactWidth = state.artifactPanelOpen ? artifactPanelWidth + 8 : 0;
 
     const maxAllowedWidth = Math.max(
       MIN_DETAIL_PANEL_WIDTH,
-      Math.min(720, containerWidth - MIN_MAIN_PANEL_WIDTH - 24),
+      Math.min(720, containerWidth - MIN_MAIN_PANEL_WIDTH - reservedArtifactWidth - 24),
     );
 
     return Math.min(Math.max(nextWidth, MIN_DETAIL_PANEL_WIDTH), maxAllowedWidth);
+  }
+
+  function clampArtifactPanelWidth(nextWidth: number) {
+    const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
+    if (containerWidth <= 0) return nextWidth;
+    const reservedDetailWidth = state.detailDrawerOpen ? detailPanelWidth + 8 : 0;
+
+    const maxAllowedWidth = Math.max(
+      MIN_ARTIFACT_PANEL_WIDTH,
+      Math.min(680, containerWidth - MIN_MAIN_PANEL_WIDTH - reservedDetailWidth - 24),
+    );
+
+    return Math.min(Math.max(nextWidth, MIN_ARTIFACT_PANEL_WIDTH), maxAllowedWidth);
   }
 
   function handleDetailResizeStart(event: PointerEvent<HTMLButtonElement>) {
@@ -97,6 +157,35 @@ function WorkbenchInner() {
     const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       setDetailPanelWidth(clampDetailPanelWidth(startWidth - deltaX));
+    };
+
+    const handlePointerUp = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }
+
+  function handleArtifactResizeStart(event: PointerEvent<HTMLButtonElement>) {
+    if (!state.artifactPanelOpen) return;
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = artifactPanelWidth;
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      setArtifactPanelWidth(clampArtifactPanelWidth(startWidth - deltaX));
     };
 
     const handlePointerUp = () => {
@@ -157,16 +246,17 @@ function WorkbenchInner() {
   }, [runtimeClient, dispatch]);
 
   useEffect(() => {
-    if (!state.detailDrawerOpen) return;
+    if (!state.detailDrawerOpen && !state.artifactPanelOpen) return;
 
     const syncPanelWidth = () => {
       setDetailPanelWidth((currentWidth) => clampDetailPanelWidth(currentWidth));
+      setArtifactPanelWidth((currentWidth) => clampArtifactPanelWidth(currentWidth));
     };
 
     syncPanelWidth();
     window.addEventListener("resize", syncPanelWidth);
     return () => window.removeEventListener("resize", syncPanelWidth);
-  }, [state.detailDrawerOpen]);
+  }, [state.detailDrawerOpen, state.artifactPanelOpen, detailPanelWidth, artifactPanelWidth]);
 
   useEffect(() => {
     const title = windowTitleForView(state.activeView, state.settingsOpen);
@@ -228,10 +318,35 @@ function WorkbenchInner() {
     };
   }, [runtimeClient, state.activeSessionDetail, turnSnapshots]);
 
+  const activeSessionTurnSnapshots = useMemo(() => {
+    const detail = state.activeSessionDetail;
+    if (!detail) return {};
+
+    const activeSessionId = detail.session.sessionId;
+    const activeRunIds = new Set(detail.turns.map((turn) => turn.runId));
+    const scopedSnapshots: Record<string, OraStateSnapshot> = {};
+    for (const [runId, snapshot] of Object.entries(turnSnapshots)) {
+      if (activeRunIds.has(runId) || snapshot.sessionId === activeSessionId) {
+        scopedSnapshots[runId] = snapshot;
+      }
+    }
+    return scopedSnapshots;
+  }, [state.activeSessionDetail, turnSnapshots]);
+
   // Chat messages derived from events
   const chatMessages = useMemo(() => {
-    return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], turnSnapshots);
-  }, [state.activeSessionDetail, turnSnapshots]);
+    return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], activeSessionTurnSnapshots);
+  }, [activeSessionTurnSnapshots, state.activeSessionDetail]);
+  const selectedArtifact = useMemo(() => {
+    if (!state.selectedArtifactId) return undefined;
+
+    const activeArtifact = viewModel?.artifacts.find((artifact) => artifact.id === state.selectedArtifactId);
+    if (activeArtifact) return activeArtifact;
+
+    return chatMessages
+      .flatMap((message) => message.turn?.artifacts ?? [])
+      .find((artifact) => artifact.id === state.selectedArtifactId);
+  }, [chatMessages, state.selectedArtifactId, viewModel?.artifacts]);
   const settingsDialog = state.settingsOpen ? (
     <SettingsView
       open={state.settingsOpen}
@@ -245,7 +360,7 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <div className="flex h-full items-center justify-center">
+          <div className="flex h-full w-full items-center justify-center">
             <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
               <p className="text-sm font-semibold">{state.bridgeStatus?.label ?? "Loading"}</p>
               <p className="mt-2 max-w-sm text-xs leading-5 text-bench-700">{state.bridgeStatus?.detail ?? "Connecting..."}</p>
@@ -287,6 +402,19 @@ function WorkbenchInner() {
     );
   }
 
+  if (state.activeView === "skills") {
+    return (
+      <AppShell>
+        {settingsDialog}
+        <WorkspacePane className="w-full">
+          <Suspense fallback={<LoadingPane label="Loading skills..." />}>
+            <SkillsView runtimeClient={runtimeClient} />
+          </Suspense>
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
   if (state.activeView === "modes") {
     return (
       <AppShell>
@@ -304,21 +432,15 @@ function WorkbenchInner() {
   const { actions: actionRecords, agents, artifacts, checkpoints, modeCards, planItems, streamLines, topologyEdges, topologyNodes, activeMode } = viewModel;
   const isRunning = selectedSession.status === "running";
   const isApprovalRequired = selectedSession.status === "approval_required";
-  const pendingApprovals = actionRecords.filter((a) => a.state === "approval_required");
-  const nextApproval = pendingApprovals[0];
 
   return (
     <AppShell>
       {settingsDialog}
-      {isApprovalRequired && nextApproval && (
-        <ApprovalModal action={nextApproval} onResume={actions.resumeRun} onCancel={actions.cancelRun} disabled={state.busyCommand !== undefined} />
-      )}
       <div ref={splitContainerRef} className="flex h-full min-h-0 items-stretch gap-0.5">
         <WorkspacePane className="min-w-0 flex-1">
           <ChatView
             activeMode={activeMode}
-            sessionTurns={viewModel.turns}
-            selectedTurnRunId={state.selectedTurnRunId}
+            actionRecords={actionRecords}
             selectedCustomAgentId={state.selectedCustomAgentId}
             activeSnapshot={state.activeSnapshot}
             agents={agents}
@@ -342,9 +464,9 @@ function WorkbenchInner() {
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
             onCancelRun={actions.cancelRun}
+            onOpenArtifact={(artifactId) => dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })}
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
-            onSelectTurn={actions.selectTurn}
             onStartRun={actions.startRun}
             onToggleDetailDrawer={() => dispatch({ type: "TOGGLE_DETAIL_DRAWER" })}
             detailDrawerOpen={state.detailDrawerOpen}
@@ -390,15 +512,53 @@ function WorkbenchInner() {
             </WorkspacePane>
           </>
         )}
+
+        {state.artifactPanelOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Resize artifact panel"
+              onPointerDown={handleArtifactResizeStart}
+              className="group flex h-full w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-transparent"
+            >
+              <span className="h-10 w-0.5 rounded-full bg-black/90 transition-colors group-hover:bg-black" />
+            </button>
+
+            <WorkspacePane
+              className="min-w-0 shrink-0 flex-none"
+              style={{ width: artifactPanelWidth }}
+            >
+              <ArtifactDrawer
+                artifact={selectedArtifact ? toArtifactRecord(selectedArtifact) : undefined}
+                onClose={() => dispatch({ type: "CLOSE_ARTIFACT_PANEL" })}
+              />
+            </WorkspacePane>
+          </>
+        )}
       </div>
     </AppShell>
   );
 }
 
+function toArtifactRecord(artifact: ArtifactRecord): ArtifactRecord {
+  return {
+    id: artifact.id,
+    label: artifact.label,
+    kind: artifact.kind,
+    mimeType: artifact.mimeType,
+    createdAt: artifact.createdAt,
+    uri: artifact.uri,
+    sizeBytes: artifact.sizeBytes,
+    payload: artifact.payload,
+  };
+}
+
 export function App() {
   return (
     <WorkbenchProvider>
-      <WorkbenchInner />
+      <WorkbenchErrorBoundary>
+        <WorkbenchInner />
+      </WorkbenchErrorBoundary>
     </WorkbenchProvider>
   );
 }

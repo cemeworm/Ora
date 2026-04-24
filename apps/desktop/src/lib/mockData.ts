@@ -70,18 +70,18 @@ export const patternCards: PatternCard[] = [
 ];
 
 export const topologyNodes: TopologyNode[] = [
-  { id: "operator", label: "Operator", role: "human gate", status: "idle", x: 50, y: 50 },
-  { id: "orchestrator", label: "Orchestrator", role: "plan owner", status: "active", x: 255, y: 84 },
-  { id: "designer", label: "UI Worker", role: "surface design", status: "done", x: 470, y: 38 },
-  { id: "runtime", label: "Runtime Worker", role: "sidecar bridge", status: "idle", x: 470, y: 138 },
-  { id: "approval", label: "Approval Gate", role: "policy pause", status: "blocked", x: 675, y: 88 },
+  { id: "operator", label: "Operator", kind: "agent", role: "human gate", status: "idle", x: 50, y: 50 },
+  { id: "orchestrator", label: "Orchestrator", kind: "agent", role: "plan owner", status: "active", x: 255, y: 84 },
+  { id: "designer", label: "UI Worker", kind: "agent", role: "surface design", status: "done", x: 470, y: 38 },
+  { id: "runtime", label: "Runtime Worker", kind: "agent", role: "sidecar bridge", status: "idle", x: 470, y: 138 },
+  { id: "approval", label: "Approval Gate", kind: "capability", role: "policy pause", status: "blocked", active: true, x: 675, y: 88 },
 ];
 
 export const topologyEdges: TopologyEdge[] = [
-  { from: "operator", to: "orchestrator", label: "task" },
-  { from: "orchestrator", to: "designer", label: "dispatch" },
-  { from: "orchestrator", to: "runtime", label: "dispatch" },
-  { from: "runtime", to: "approval", label: "action" },
+  { from: "operator", to: "orchestrator", label: "task", kind: "control" },
+  { from: "orchestrator", to: "designer", label: "dispatch", kind: "delegation" },
+  { from: "orchestrator", to: "runtime", label: "dispatch", kind: "delegation" },
+  { from: "runtime", to: "approval", label: "action", kind: "control" },
 ];
 
 export const streamLines = [

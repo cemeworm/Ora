@@ -51,6 +51,16 @@ interface TrailsTabsProps {
   onCancelRun: () => void;
 }
 
+interface PendingApprovalItem {
+  actionId: string;
+  nodeId?: string;
+  nodeLabel: string;
+  actionLabel: string;
+  riskLevel: "low" | "medium" | "high";
+  reason: string;
+  eventId?: string;
+}
+
 export function TrailsTabs({
   actions,
   agents,
@@ -128,6 +138,21 @@ export function TrailsTabs({
     .map((agentId) => agents.find((agent) => agent.id === agentId)?.label ?? agentId)
     .filter(Boolean);
   const trace = trail?.trace ?? activeSnapshot.trace;
+  const pendingApprovalItems = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
+  const pendingClarificationItems = activeSnapshot.pendingClarifications;
+  const blockingNodeMap = useMemo(
+    () => buildBlockingNodeMap(pendingApprovalItems, pendingClarificationItems),
+    [pendingApprovalItems, pendingClarificationItems],
+  );
+  const blockingEventIds = useMemo(
+    () => buildBlockingEventIds(activeSnapshot, pendingApprovalItems),
+    [activeSnapshot, pendingApprovalItems],
+  );
+  const blockingGateLabel = pendingClarificationItems[0]
+    ? `Clarification · ${pendingClarificationItems[0].nodeLabel}`
+    : pendingApprovalItems[0]
+      ? `Approval · ${pendingApprovalItems[0].nodeLabel}`
+      : "None";
   const selectedNodeObservations = (trail?.observations ?? []).filter((observation) => {
     if (!selectedNode) {
       return false;
@@ -175,6 +200,7 @@ export function TrailsTabs({
             <div className="grid gap-3 sm:grid-cols-2">
               <MetricRow label="Status" value={selectedSession.status.replace(/_/g, " ")} />
               <MetricRow label="Mode" value={(activeSnapshot.modeId ?? activeSnapshot.pattern).replace(/_/g, " ")} />
+              <MetricRow label="Blocking gate" value={blockingGateLabel} />
               <MetricRow label="Selected node" value={selectedNode?.label ?? "Run overview"} />
               <MetricRow label="Active agents" value={activeAgentLabels.join(", ") || "Idle"} />
               <MetricRow label="Events / sec" value={formatRate(liveMetrics.eventCount, liveMetrics.runtimeMs)} />
@@ -219,6 +245,50 @@ export function TrailsTabs({
               </div>
             </DockCard>
 
+            <DockCard title="Blocking Gates" icon={<Workflow size={16} />}>
+              {pendingApprovalItems.length === 0 && pendingClarificationItems.length === 0 ? (
+                <p className="text-xs leading-5 text-bench-700">This run is not currently paused behind a manual gate.</p>
+              ) : (
+                <div className="space-y-2">
+                  {pendingApprovalItems.map((item) => (
+                    <div key={item.actionId} className="rounded-md bg-white px-3 py-3 ring-1 ring-inset ring-bench-200">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-bench-900">{item.nodeLabel}</p>
+                          <p className="mt-1 text-[11px] text-bench-700">
+                            {item.actionLabel}{item.nodeId ? ` · ${item.nodeId}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className="rounded-full bg-bench-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-bench-700">
+                            approval
+                          </span>
+                          <span className={riskPillClassName(item.riskLevel)}>
+                            {item.riskLevel}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-bench-700">{item.reason}</p>
+                    </div>
+                  ))}
+                  {pendingClarificationItems.map((item) => (
+                    <div key={item.id} className="rounded-md bg-white px-3 py-3 ring-1 ring-inset ring-bench-200">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-bench-900">{item.nodeLabel}</p>
+                          <p className="mt-1 text-[11px] text-bench-700">{item.nodeId}</p>
+                        </div>
+                        <span className="rounded-full bg-sky-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-900">
+                          clarification
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-bench-700">{item.question}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </DockCard>
+
             <DockCard title="Anomalies" icon={<Radar size={16} />}>
               <div className="space-y-2">
                 {anomalies.map((anomaly) => (
@@ -237,13 +307,33 @@ export function TrailsTabs({
               <div
                 key={item.id}
                 className={`rounded-lg p-3 ring-1 ring-inset ${
-                  selectedBeat?.id === item.id ? "bg-bench-50 ring-bench-900" : "bg-white ring-bench-200"
+                  selectedBeat?.id === item.id
+                    ? "bg-bench-50 ring-bench-900"
+                    : blockingEventIds.has(item.id)
+                      ? item.eventType === "clarification.required"
+                        ? "bg-sky-50 ring-sky-300"
+                        : "bg-amber-50 ring-amber-300"
+                      : "bg-white ring-bench-200"
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold text-bench-900">{item.label}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-bench-900">{item.label}</p>
+                      {blockingEventIds.has(item.id) ? (
+                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${
+                          item.eventType === "clarification.required"
+                            ? "bg-sky-100 text-sky-900"
+                            : "bg-amber-100 text-amber-900"
+                        }`}>
+                          current gate
+                        </span>
+                      ) : null}
+                    </div>
                     <p className="mt-1 text-xs leading-5 text-bench-700">{item.detail}</p>
+                    {item.nodeLabel ? (
+                      <p className="mt-1 text-[11px] font-medium text-bench-700">{item.nodeLabel}</p>
+                    ) : null}
                   </div>
                   <div className="shrink-0 text-right">
                     <p className="font-mono text-[11px] text-bench-700">#{item.seq}</p>
@@ -260,10 +350,23 @@ export function TrailsTabs({
             <DockCard title="Topology State" icon={<Network size={16} />}>
               <div className="space-y-2">
                 {activeSnapshot.topology.nodes.map((node) => (
+                  (() => {
+                    const blockingNode = blockingNodeMap.get(node.id);
+                    return (
                   <div
                     key={node.id}
                     className={`rounded-lg px-3 py-2 ring-1 ring-inset ${
-                      node.id === selectedNode?.id ? "bg-bench-50 ring-bench-900" : "bg-white ring-bench-200"
+                      node.id === selectedNode?.id
+                        ? blockingNode
+                          ? blockingNode.kind === "clarification"
+                            ? "bg-sky-50 ring-sky-500"
+                            : "bg-amber-50 ring-amber-500"
+                          : "bg-bench-50 ring-bench-900"
+                        : blockingNode
+                          ? blockingNode.kind === "clarification"
+                            ? "bg-sky-50 ring-sky-300"
+                            : "bg-amber-50 ring-amber-300"
+                          : "bg-white ring-bench-200"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -271,11 +374,32 @@ export function TrailsTabs({
                         <p className="text-sm font-semibold text-bench-900">{node.label}</p>
                         <p className="text-[11px] text-bench-700">{node.kind}{node.agentId ? ` · ${node.agentId}` : ""}</p>
                       </div>
-                      <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold capitalize text-bench-800">
-                        {node.status}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        {blockingNode ? (
+                          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize ${
+                            blockingNode.kind === "clarification"
+                              ? "bg-sky-100 text-sky-900"
+                              : "bg-amber-100 text-amber-900"
+                          }`}>
+                            {blockingNode.kind}
+                          </span>
+                        ) : null}
+                        {blockingNode?.kind === "approval" ? (
+                          <span className={riskPillClassName(blockingNode.riskLevel)}>
+                            {blockingNode.riskLevel}
+                          </span>
+                        ) : null}
+                        <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold capitalize text-bench-800">
+                          {node.status}
+                        </span>
+                      </div>
                     </div>
+                    {blockingNode ? (
+                      <p className="mt-2 text-xs leading-5 text-bench-700">{blockingNode.reason}</p>
+                    ) : null}
                   </div>
+                    );
+                  })()
                 ))}
               </div>
             </DockCard>
@@ -284,8 +408,23 @@ export function TrailsTabs({
               {selectedNode ? (
                 <div className="space-y-3">
                   <SignalLine label="Selected node" value={selectedNode.label} />
+                  {blockingNodeMap.get(selectedNode.id) ? (
+                    <SignalLine
+                      label="Blocking gate"
+                      value={
+                        blockingNodeMap.get(selectedNode.id)?.kind === "approval"
+                          ? `Approval · ${blockingNodeMap.get(selectedNode.id)?.riskLevel}`
+                          : "Clarification"
+                      }
+                    />
+                  ) : null}
                   <SignalLine label="Linked trace rows" value={String(selectedNodeObservations.length)} />
                   <SignalLine label="Edges" value={String(activeSnapshot.topology.edges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id).length)} />
+                  {blockingNodeMap.get(selectedNode.id)?.reason ? (
+                    <p className="rounded-md bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+                      {blockingNodeMap.get(selectedNode.id)?.reason}
+                    </p>
+                  ) : null}
                   {selectedNodeObservations.length > 0 ? (
                     <div className="space-y-2">
                       {selectedNodeObservations.slice(0, 6).map((observation) => (
@@ -427,13 +566,92 @@ function SignalLine({ label, value }: { label: string; value: string }) {
 }
 
 function buildTimelineItems(snapshot: OraStateSnapshot) {
+  const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   return snapshot.events.map((event) => ({
     id: event.id,
     seq: event.seq,
     createdAt: event.createdAt,
+    eventType: event.type,
+    nodeId: event.nodeId,
+    nodeLabel: event.nodeId ? topologyNodeLabels.get(event.nodeId) ?? event.nodeId : undefined,
     label: timelineLabel(event.type),
     detail: timelineDetail(event),
   }));
+}
+
+function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {
+  const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
+  const pendingActionIds = snapshot.pendingApprovals.length > 0
+    ? snapshot.pendingApprovals
+    : snapshot.actions.filter((action) => action.status === "approval_required").map((action) => action.id);
+
+  return pendingActionIds.map((actionId) => {
+    const action = snapshot.actions.find((candidate) => candidate.id === actionId);
+    const event = [...snapshot.events].reverse().find((candidate) =>
+      candidate.type === "approval.required" && readApprovalEventActionId(candidate.payload) === actionId,
+    );
+    const nodeId = event?.nodeId ?? readActionNodeId(action?.input);
+    return {
+      actionId,
+      nodeId,
+      nodeLabel: nodeId ? topologyNodeLabels.get(nodeId) ?? nodeId : humanizeActionType(action?.type),
+      actionLabel: humanizeActionType(action?.type),
+      riskLevel: action?.riskLevel ?? "low",
+      reason: readApprovalReason(event?.payload) ?? fallbackApprovalReason(action?.riskLevel),
+      eventId: event?.id,
+    };
+  });
+}
+
+function buildBlockingNodeMap(
+  pendingApprovalItems: PendingApprovalItem[],
+  pendingClarifications: OraStateSnapshot["pendingClarifications"],
+) {
+  const result = new Map<string, {
+    kind: "approval" | "clarification";
+    riskLevel: "low" | "medium" | "high";
+    reason: string;
+  }>();
+  for (const item of pendingApprovalItems) {
+    if (!item.nodeId) {
+      continue;
+    }
+    result.set(item.nodeId, {
+      kind: "approval",
+      riskLevel: item.riskLevel,
+      reason: item.reason,
+    });
+  }
+  for (const item of pendingClarifications) {
+    result.set(item.nodeId, {
+      kind: "clarification",
+      riskLevel: "low",
+      reason: item.question,
+    });
+  }
+  return result;
+}
+
+function buildBlockingEventIds(
+  snapshot: OraStateSnapshot,
+  pendingApprovalItems: PendingApprovalItem[],
+) {
+  const result = new Set<string>();
+  for (const item of pendingApprovalItems) {
+    if (item.eventId) {
+      result.add(item.eventId);
+    }
+  }
+  const events = [...snapshot.events].reverse();
+  for (const clarification of snapshot.pendingClarifications) {
+    const event = events.find((candidate) =>
+      candidate.type === "clarification.required" && matchesClarificationEvent(candidate.payload, clarification.id, clarification.key),
+    );
+    if (event) {
+      result.add(event.id);
+    }
+  }
+  return result;
 }
 
 function timelineLabel(eventType: string) {
@@ -536,4 +754,58 @@ function formatTimestamp(value?: number | string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function readApprovalEventActionId(payload: unknown): string | undefined {
+  if (!isRecord(payload) || typeof payload.actionId !== "string") {
+    return undefined;
+  }
+  return payload.actionId;
+}
+
+function readApprovalReason(payload: unknown): string | undefined {
+  if (!isRecord(payload) || !isRecord(payload.decision) || typeof payload.decision.reason !== "string") {
+    return undefined;
+  }
+  return payload.decision.reason;
+}
+
+function readActionNodeId(input: unknown): string | undefined {
+  if (!isRecord(input) || typeof input.nodeId !== "string") {
+    return undefined;
+  }
+  return input.nodeId;
+}
+
+function humanizeActionType(type?: string) {
+  if (!type) {
+    return "approval gate";
+  }
+  return type.replace(/^graph\./, "").replace(/\./g, " ");
+}
+
+function matchesClarificationEvent(payload: unknown, clarificationId: string, clarificationKey: string) {
+  if (!isRecord(payload) || !isRecord(payload.clarification)) {
+    return false;
+  }
+  const clarification = payload.clarification;
+  return clarification.id === clarificationId || clarification.key === clarificationKey;
+}
+
+function fallbackApprovalReason(riskLevel?: "low" | "medium" | "high") {
+  return riskLevel === "high"
+    ? "High-risk action requires explicit operator approval before execution."
+    : "Manual approval is required before this node can continue.";
+}
+
+function riskPillClassName(riskLevel: "low" | "medium" | "high") {
+  const base = "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]";
+  switch (riskLevel) {
+    case "high":
+      return `${base} bg-rose-100 text-rose-900`;
+    case "medium":
+      return `${base} bg-amber-100 text-amber-900`;
+    default:
+      return `${base} bg-slate-100 text-slate-700`;
+  }
 }

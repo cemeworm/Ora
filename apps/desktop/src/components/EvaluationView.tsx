@@ -209,15 +209,11 @@ export function EvaluationView({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-transparent">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col bg-transparent">
       <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Evaluation</p>
-            <h2 className="text-lg font-semibold">Benchmark datasets, batch runs, and regression analysis</h2>
-            <p className="mt-1 text-xs text-bench-700">
-              {bridgeStatus.detail}
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -251,11 +247,7 @@ export function EvaluationView({
       </div>
 
       <div className="flex min-h-0 flex-1 gap-0.5 p-1.5 md:p-2">
-        <section className="flex w-[22rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-black/[0.025] bg-sidebar shadow-[0_1px_1px_rgba(23,23,23,0.04),0_8px_18px_rgba(23,23,23,0.024)]">
-          <div className="border-b border-border px-4 py-4">
-            <h3 className="text-sm font-semibold">Setup</h3>
-            <p className="mt-1 text-xs leading-5 text-bench-700">Import a dataset, pick a profile, then expand a config matrix across Ora agent modes.</p>
-          </div>
+        <section className="flex w-[22rem] shrink-0 flex-col overflow-hidden bg-sidebar">
           <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 text-sm">
             <label className="block space-y-1.5">
               <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Dataset</span>

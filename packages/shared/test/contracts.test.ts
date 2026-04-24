@@ -9,6 +9,7 @@ import {
   CustomAgentSummarySchema,
   CustomAgentUpdateParamsSchema,
   DEFAULT_PROVIDERS,
+  DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
   EvaluationBaselineSchema,
   EvaluationDatasetDetailSchema,
@@ -65,12 +66,18 @@ import {
   SessionSummarySchema,
   SessionTranscriptMessageSchema,
   SessionTurnSchema,
+  SkillCheckNameResultSchema,
+  SkillCreateParamsSchema,
+  SkillDetailSchema,
+  SkillSetEnabledParamsSchema,
+  SkillUpdateParamsSchema,
   StateSnapshotSchema,
   SkillRegistrySchema,
   TodoItemSchema,
   autoLayoutModeSpec,
   ensureModeNodePositions,
   getModeNodeRuntimeTemplateDefinition,
+  projectModeRuntimeTopology,
   validateModeSpec,
   ToolDescriptorSchema,
   ToolRegistrySchema
@@ -79,7 +86,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(6);
+    expect(MVP_MODES).toHaveLength(7);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -90,6 +97,7 @@ describe("Ora shared contracts", () => {
     expect(MVP_MODES.map((mode) => mode.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
+      DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
       "agent_teams",
       "message_bus",
@@ -112,8 +120,18 @@ describe("Ora shared contracts", () => {
       expect(mode.nodes.length).toBeGreaterThan(0);
       expect(mode.nodes.every((node) => node.position)).toBe(true);
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
+      expect(validateModeSpec(mode).valid).toBe(true);
       expect(ModeValidationResultSchema.parse({ valid: true, errors: [], warnings: [] }).valid).toBe(true);
     }
+
+    const deerflowHarness = MVP_MODES.find((mode) => mode.id === DEERFLOW_HARNESS_MODE_ID)!;
+    expect(deerflowHarness.systemPreset).toBe(true);
+    expect(deerflowHarness.family).toBe("orchestrator_subagent");
+    expect(deerflowHarness.capabilityFlags.toolIds).toContain("model.handoff");
+    expect(deerflowHarness.nodes.filter((node) => Array.isArray(node.config.atoms) && node.config.atoms.includes("subagent_delegate")).map((node) => node.id)).toEqual([
+      "research",
+      "review",
+    ]);
   });
 
   it("accepts legacy mode specs without stored node positions", () => {
@@ -223,6 +241,38 @@ describe("Ora shared contracts", () => {
     expect(validation.valid).toBe(false);
     expect(validation.errors.join(" ")).toContain("shared_blackboard");
     expect(validation.errors.join(" ")).toContain("persistent_worker_memory");
+  });
+
+  it("projects active runtime atoms into capability topology without duplicating family built-ins", () => {
+    const projected = projectModeRuntimeTopology({
+      ...MVP_MODES[1]!,
+      runtimeAtoms: [...MVP_MODES[1]!.runtimeAtoms, "token_usage_trace"],
+      nodes: MVP_MODES[1]!.nodes.map((node) =>
+        node.id === "research"
+          ? { ...node, config: { ...node.config, atoms: ["subagent_delegate"] } }
+          : node,
+      ),
+    });
+
+    expect(projected.nodes.some((node) => node.id === "capability:memory_capture")).toBe(true);
+    expect(projected.nodes.some((node) => node.id === "capability:token_usage_trace")).toBe(true);
+    expect(projected.nodes.some((node) => node.id === "capability:research:subagent_delegate")).toBe(true);
+    expect(projected.edges.some((edge) => edge.target === "capability:research:subagent_delegate")).toBe(true);
+
+    const deerflowHarnessProjected = projectModeRuntimeTopology(MVP_MODES.find((mode) => mode.id === DEERFLOW_HARNESS_MODE_ID)!);
+    expect(deerflowHarnessProjected.nodes.some((node) => node.id === "capability:research:subagent_delegate")).toBe(true);
+    expect(deerflowHarnessProjected.nodes.some((node) => node.id === "capability:review:subagent_delegate")).toBe(true);
+    expect(deerflowHarnessProjected.edges.some((edge) => edge.target === "capability:research:subagent_delegate")).toBe(true);
+    expect(deerflowHarnessProjected.edges.some((edge) => edge.target === "capability:review:subagent_delegate")).toBe(true);
+
+    const messageBusProjected = projectModeRuntimeTopology(MVP_MODES[5]!);
+    expect(messageBusProjected.nodes.filter((node) => node.id === "triage_topic")).toHaveLength(1);
+    expect(messageBusProjected.nodes.find((node) => node.id === "triage_topic")?.metadata).toMatchObject({
+      atomId: "event_routing",
+      atomPresentation: "family_capability",
+      atomActive: true,
+    });
+    expect(messageBusProjected.nodes.some((node) => node.id === "capability:event_routing")).toBe(false);
   });
 
   it("accepts a run-scoped custom provider config", () => {
@@ -371,6 +421,15 @@ describe("Ora shared contracts", () => {
       JsonRpcRequestSchema.parse({
         jsonrpc: "2.0",
         id: 3,
+        method: "skills.setEnabled",
+        params: { name: "custom-review", enabled: true }
+      }).method
+    ).toBe("skills.setEnabled");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 4,
         method: "projects.list"
       }).method
     ).toBe("projects.list");
@@ -929,6 +988,27 @@ describe("SkillRegistrySchema", () => {
       "orchestrator_subagent",
       "message_bus"
     ]);
+    expect(parsed.skills[0]?.category).toBe("public");
+    expect(parsed.skills[0]?.enabled).toBe(true);
+    expect(parsed.skills[0]?.editable).toBe(false);
+  });
+
+  it("accepts managed skill detail and mutation params", () => {
+    const detail = SkillDetailSchema.parse({
+      id: "custom-review",
+      name: "custom-review",
+      description: "Review with local project rules.",
+      category: "custom",
+      enabled: false,
+      editable: true,
+      content: "---\nname: custom-review\ndescription: Review with local project rules.\n---\n\n# custom-review"
+    });
+
+    expect(detail.name).toBe("custom-review");
+    expect(SkillCreateParamsSchema.parse({ name: "custom-review" }).enabled).toBe(true);
+    expect(SkillUpdateParamsSchema.parse({ name: "custom-review", content: detail.content }).name).toBe("custom-review");
+    expect(SkillSetEnabledParamsSchema.parse({ name: "custom-review", enabled: true }).enabled).toBe(true);
+    expect(SkillCheckNameResultSchema.parse({ name: "custom-review", available: false }).available).toBe(false);
   });
 });
 
@@ -968,7 +1048,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes).toHaveLength(6);
+    expect(parsed.modes).toHaveLength(7);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

@@ -48,7 +48,12 @@ import type {
   SessionSummary as OraSessionSummary,
   SessionTranscriptMessage as OraSessionTranscriptMessage,
   SessionTurn as OraSessionTurn,
+  SkillCheckNameResult as OraSkillCheckNameResult,
+  SkillCreateParams as OraSkillCreateParams,
+  SkillDetail as OraSkillDetail,
   SkillRegistry as OraSkillRegistry,
+  SkillSetEnabledParams as OraSkillSetEnabledParams,
+  SkillUpdateParams as OraSkillUpdateParams,
   StateSnapshot as OraStateSnapshot,
   TodoItem as OraTodoItem,
   TopologyEdge as OraTopologyEdge,
@@ -106,10 +111,15 @@ export type {
   OraSessionSummary,
   OraSessionTranscriptMessage,
   OraSessionTurn,
+  OraSkillCheckNameResult,
+  OraSkillCreateParams,
+  OraSkillDetail,
   OraStateSnapshot,
   OraTodoItem,
   OraToolRegistry,
   OraSkillRegistry,
+  OraSkillSetEnabledParams,
+  OraSkillUpdateParams,
   OraTopologyEdge,
   OraTopologyNode,
   OraTrailGenerationRef,
@@ -303,6 +313,27 @@ export function createRuntimeClient() {
     },
     async listAgents(): Promise<OraCustomAgentSummary[]> {
       return call<OraCustomAgentSummary[]>("agents.list");
+    },
+    async listSkills(params: { category?: "public" | "custom"; enabledOnly?: boolean; query?: string } = {}): Promise<OraSkillRegistry> {
+      return call<OraSkillRegistry>("skills.list", params);
+    },
+    async getSkill(name: string): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.get", { name });
+    },
+    async createSkill(params: OraSkillCreateParams): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.create", params);
+    },
+    async updateSkill(params: OraSkillUpdateParams): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.update", params);
+    },
+    async deleteSkill(name: string): Promise<{ deleted: true; name: string }> {
+      return call<{ deleted: true; name: string }>("skills.delete", { name });
+    },
+    async checkSkillName(name: string): Promise<OraSkillCheckNameResult> {
+      return call<OraSkillCheckNameResult>("skills.checkName", { name });
+    },
+    async setSkillEnabled(params: OraSkillSetEnabledParams): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.setEnabled", params);
     },
     async listModes(): Promise<OraModeSpec[]> {
       return call<OraModeSpec[]>("modes.list");
@@ -637,6 +668,8 @@ class LocalJsonRpcRuntime {
   private sessions = new Map<string, OraSessionSummary>();
   private runs = new Map<string, OraStateSnapshot>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
+  private customSkills = new Map<string, OraSkillDetail>();
+  private skillEnabled = new Map<string, boolean>();
   private modes = new Map<string, OraModeSpec>();
   private evaluationDatasets = new Map<string, OraEvaluationDatasetDetail>();
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
@@ -690,7 +723,7 @@ class LocalJsonRpcRuntime {
           defaultPolicyId: "runtime.default_policy",
           },
           skills: {
-            skills: MVP_SKILLS,
+            skills: this.listSkills().skills,
           },
           providers: {
             providers: DEFAULT_PROVIDERS,
@@ -722,8 +755,26 @@ class LocalJsonRpcRuntime {
         };
       case "skills.list":
         return {
-          skills: MVP_SKILLS,
+          skills: this.listSkills(params).skills,
         };
+      case "skills.get": {
+        const name = normalizeMockSkillName(isRecord(params) ? params.name : undefined);
+        const skill = this.findSkill(name);
+        if (!skill) {
+          throw new Error(`Skill not found: ${name}`);
+        }
+        return skill;
+      }
+      case "skills.create":
+        return this.createSkill(params);
+      case "skills.update":
+        return this.updateSkill(params);
+      case "skills.delete":
+        return this.deleteSkill(params);
+      case "skills.checkName":
+        return this.checkSkillName(params);
+      case "skills.setEnabled":
+        return this.setSkillEnabled(params);
       case "providers.list":
         return {
           providers: DEFAULT_PROVIDERS,
@@ -1082,6 +1133,159 @@ class LocalJsonRpcRuntime {
     return detail;
   }
 
+  private listSkills(params: unknown = {}): OraSkillRegistry {
+    const filter = isRecord(params) ? params : {};
+    const category = filter.category === "public" || filter.category === "custom" ? filter.category : undefined;
+    const enabledOnly = filter.enabledOnly === true;
+    const query = typeof filter.query === "string" ? filter.query.trim().toLowerCase() : "";
+    const publicSkills = MVP_SKILLS.map((skill) => {
+      const id = skill.id;
+      return {
+        ...skill,
+        id,
+        category: "public" as const,
+        enabled: this.skillEnabled.get(id) ?? true,
+        editable: false,
+        content: skill.promptSnippet ?? skill.description,
+      };
+    });
+    const skills = [...publicSkills, ...this.customSkills.values()]
+      .filter((skill) => !category || skill.category === category)
+      .filter((skill) => !enabledOnly || skill.enabled)
+      .filter((skill) => !query || [skill.name, skill.description, skill.path ?? ""].some((value) => value.toLowerCase().includes(query)))
+      .map((skill) => {
+        if ("content" in skill) {
+          const { content: _content, ...descriptor } = skill;
+          return descriptor;
+        }
+        return skill;
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    return { skills };
+  }
+
+  private findSkill(name: string): OraSkillDetail | undefined {
+    const custom = this.customSkills.get(name);
+    if (custom) {
+      return custom;
+    }
+    const publicSkill = MVP_SKILLS.find((skill) => skill.id === name || skill.name === name);
+    if (!publicSkill) {
+      return undefined;
+    }
+    return {
+      ...publicSkill,
+      id: publicSkill.id,
+      category: "public",
+      enabled: this.skillEnabled.get(publicSkill.id) ?? true,
+      editable: false,
+      content: publicSkill.promptSnippet ?? publicSkill.description,
+    };
+  }
+
+  private createSkill(params: unknown): OraSkillDetail {
+    if (!isRecord(params)) {
+      throw new Error("Skill params are required.");
+    }
+    const name = normalizeMockSkillName(params.name);
+    if (this.findSkill(name)) {
+      throw new Error(`Skill '${name}' already exists.`);
+    }
+    const description = typeof params.description === "string" ? params.description : "";
+    const content = typeof params.content === "string" && params.content.trim()
+      ? params.content
+      : defaultMockSkillContent(name, description);
+    const metadata = parseMockSkillContent(name, content);
+    const now = Date.now();
+    const skill: OraSkillDetail = {
+      id: name,
+      name,
+      description: metadata.description,
+      promptSnippet: metadata.description,
+      path: `.ora/skills/custom/${name}/SKILL.md`,
+      category: "custom",
+      enabled: params.enabled === false ? false : true,
+      editable: true,
+      createdAt: now,
+      updatedAt: now,
+      allowedPatterns: [],
+      tags: [],
+      content,
+    };
+    this.customSkills.set(name, skill);
+    this.skillEnabled.set(name, skill.enabled);
+    return skill;
+  }
+
+  private updateSkill(params: unknown): OraSkillDetail {
+    if (!isRecord(params) || typeof params.content !== "string") {
+      throw new Error("Skill content is required.");
+    }
+    const name = normalizeMockSkillName(params.name);
+    const existing = this.customSkills.get(name);
+    if (!existing) {
+      throw new Error(`Custom skill not found: ${name}`);
+    }
+    const metadata = parseMockSkillContent(name, params.content);
+    const next: OraSkillDetail = {
+      ...existing,
+      description: metadata.description,
+      promptSnippet: metadata.description,
+      content: params.content,
+      updatedAt: Date.now(),
+    };
+    this.customSkills.set(name, next);
+    return next;
+  }
+
+  private deleteSkill(params: unknown): { deleted: true; name: string } {
+    const name = normalizeMockSkillName(isRecord(params) ? params.name : undefined);
+    if (!this.customSkills.has(name)) {
+      throw new Error(`Custom skill not found: ${name}`);
+    }
+    this.customSkills.delete(name);
+    this.skillEnabled.delete(name);
+    return { deleted: true, name };
+  }
+
+  private checkSkillName(params: unknown): OraSkillCheckNameResult {
+    if (!isRecord(params) || typeof params.name !== "string") {
+      throw new Error("Skill name is required.");
+    }
+    const name = normalizeMockSkillName(params.name);
+    return {
+      available: !this.findSkill(name),
+      name,
+    };
+  }
+
+  private setSkillEnabled(params: unknown): OraSkillDetail {
+    if (!isRecord(params) || typeof params.enabled !== "boolean") {
+      throw new Error("Skill enabled state is required.");
+    }
+    const name = normalizeMockSkillName(params.name);
+    const skill = this.findSkill(name);
+    if (!skill) {
+      throw new Error(`Skill not found: ${name}`);
+    }
+    this.skillEnabled.set(skill.id, params.enabled);
+    if (skill.category === "custom") {
+      const next = {
+        ...skill,
+        enabled: params.enabled,
+        updatedAt: Date.now(),
+      };
+      this.customSkills.set(name, next);
+      return next;
+    }
+    return {
+      ...skill,
+      enabled: params.enabled,
+      updatedAt: Date.now(),
+    };
+  }
+
   private listModes(): OraModeSpec[] {
     return [...MVP_MODES, ...this.modes.values()]
       .sort((left, right) =>
@@ -1318,7 +1522,7 @@ class LocalJsonRpcRuntime {
     const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
     const startedAt = Date.now();
     const turnIndex = [...this.runs.values()].filter((snapshot) => snapshot.sessionId === sessionId).length + 1;
-    const snapshot = this.createSnapshot(runId, mode, parsed.input.prompt, startedAt, "succeeded", undefined, {
+    const snapshot = this.createSnapshot(runId, mode, parsed.input.prompt, startedAt, "interrupted", undefined, {
       providerId: parsed.config?.providerId ?? "local-smoke",
       modelRef: parsed.config?.modelRef ?? "local/smoke-model",
       customAgentId: parsed.config?.customAgentId,
@@ -1505,16 +1709,7 @@ class LocalJsonRpcRuntime {
   ): OraStateSnapshot {
     const runId = asRunId(params);
     const snapshot = this.getRunState({ runId });
-    const event = createEvent(snapshot.runId, snapshot.events.length, type, { status }, snapshot.pattern);
-    const updated = {
-      ...snapshot,
-      status,
-      events: [...snapshot.events, event],
-      actions: snapshot.actions.map((action) =>
-        status === "cancelled" && action.status === "approval_required" ? { ...action, status: "denied" as const } : action,
-      ),
-      updatedAt: event.createdAt,
-    };
+    const updated = transitionMockLifecycleSnapshot(snapshot, status, type);
     this.runs.set(runId, updated);
     this.updateSessionFromSnapshot(updated);
     return updated;
@@ -1570,48 +1765,100 @@ class LocalJsonRpcRuntime {
     const pattern = mode.family;
     const definition = modeSpecToPatternDefinition(mode);
     const eventBase = startedAt || Date.parse("2026-04-22T13:00:00.000Z");
+    const approvalNodeId = definition.topology.nodes.find((node) => node.kind !== "run")?.id ?? definition.topology.nodes[0]?.id;
+    const sidecarActionId = `${runId}:action-sidecar`;
+    const sidecarAction = {
+      id: sidecarActionId,
+      runId,
+      planItemId: `${runId}:${definition.planTemplate[1]?.id ?? definition.planTemplate[0].id}`,
+      agentId: definition.profiles[1]?.id ?? definition.profiles[0].id,
+      type: "runtime.sidecar.preview",
+      riskLevel: "medium" as const,
+      status: "approval_required" as const,
+      input: { command: "ora-runtime-sidecar --transport stdio", ...(approvalNodeId ? { nodeId: approvalNodeId } : {}) },
+      artifactIds: [],
+    };
+    const reportAction = {
+      id: `${runId}:action-report`,
+      runId,
+      agentId: definition.profiles[0].id,
+      type: "report.export",
+      riskLevel: "low" as const,
+      status: status === "succeeded" ? "succeeded" as const : "proposed" as const,
+      input: { format: "application/json" },
+      output: status === "succeeded" ? { artifactId: `${runId}:report-0` } : undefined,
+      artifactIds: status === "succeeded" ? [`${runId}:report-0`] : [],
+    };
+    const events: OraEventEnvelope[] = [];
+    const appendEvent = (
+      type: OraEventEnvelope["type"],
+      payload: unknown,
+      createdAt: number,
+      options?: { nodeId?: string; checkpointId?: string },
+    ) => {
+      events.push(createEvent(runId, events.length, type, payload, pattern, createdAt, options?.checkpointId, options?.nodeId));
+    };
     const checkpoint: OraCheckpointMeta = {
       id: `${runId}:checkpoint-0`,
       runId,
       label: status === "succeeded" ? "Smoke checkpoint" : "Preview checkpoint",
       createdAt: eventBase + 5000,
-      eventSeq: 5,
+      eventSeq: 0,
       stateHash: `${pattern}:${definition.planTemplate.length}:${definition.topology.nodes.length}`,
     };
-
-    const events: OraEventEnvelope[] = [
-      createEvent(runId, 0, "run.started", { message: "Smoke run started.", prompt }, pattern, eventBase),
-      ...(forkedFrom
-        ? [createEvent(runId, 1, "run.forked", { sourceRunId: forkedFrom.runId, checkpointId: forkedFrom.checkpointId, eventSeq: forkedFrom.eventSeq }, pattern, eventBase + 1000)]
-        : []),
-      createEvent(runId, forkedFrom ? 2 : 1, "topology.updated", definition.topology, pattern, eventBase + 1000),
-      createEvent(runId, forkedFrom ? 3 : 2, "plan.updated", { items: definition.planTemplate }, pattern, eventBase + 2000),
-      createEvent(
-        runId,
-        forkedFrom ? 4 : 3,
-        "message.delta",
-        { role: "assistant", content: `${definition.label} accepted a local smoke task: ${prompt}` },
-        pattern,
-        eventBase + 3000,
-      ),
-      createEvent(
-        runId,
-        forkedFrom ? 5 : 4,
-        "checkpoint.created",
-        { checkpoint, summary: "Deterministic checkpoint captured after smoke stream." },
-        pattern,
-        eventBase + 4000,
-        checkpoint.id,
-      ),
-      createEvent(
-        runId,
-        forkedFrom ? 6 : 5,
+    appendEvent("run.started", { message: "Smoke run started.", prompt }, eventBase);
+    if (forkedFrom) {
+      appendEvent(
+        "run.forked",
+        { sourceRunId: forkedFrom.runId, checkpointId: forkedFrom.checkpointId, eventSeq: forkedFrom.eventSeq },
+        eventBase + 1000,
+      );
+    }
+    appendEvent("topology.updated", definition.topology, eventBase + 1000);
+    appendEvent("plan.updated", { items: definition.planTemplate }, eventBase + 2000);
+    appendEvent(
+      "message.delta",
+      { role: "assistant", content: `${definition.label} accepted a local smoke task: ${prompt}` },
+      eventBase + 3000,
+    );
+    if (status === "interrupted") {
+      appendEvent(
+        "approval.required",
+        {
+          actionId: sidecarActionId,
+          decision: {
+            requiredApproval: true,
+            reason: "Manual approval is required before this node can continue.",
+          },
+        },
+        eventBase + 3500,
+        approvalNodeId ? { nodeId: approvalNodeId } : undefined,
+      );
+      appendEvent(
+        "action.updated",
+        {
+          actionId: sidecarActionId,
+          status: "approval_required",
+          record: sidecarAction,
+        },
+        eventBase + 3600,
+        approvalNodeId ? { nodeId: approvalNodeId } : undefined,
+      );
+    }
+    appendEvent(
+      "checkpoint.created",
+      { checkpoint, summary: "Deterministic checkpoint captured after smoke stream." },
+      eventBase + 4000,
+      { checkpointId: checkpoint.id },
+    );
+    if (status === "failed" || status === "succeeded") {
+      appendEvent(
         status === "failed" ? "run.failed" : "run.done",
         { status, summary: "Deterministic local smoke run completed." },
-        pattern,
         eventBase + 5000,
-      ),
-    ];
+      );
+    }
+    checkpoint.eventSeq = events.find((event) => event.type === "checkpoint.created")?.seq ?? Math.max(0, events.length - 1);
 
     return {
       runId,
@@ -1650,7 +1897,13 @@ class LocalJsonRpcRuntime {
       topology: {
         nodes: definition.topology.nodes.map((node) => ({
           ...node,
-          status: status === "succeeded" ? "done" : node.kind === "run" ? "running" : node.status,
+          status: status === "succeeded"
+            ? "done"
+            : status === "interrupted" && node.id === approvalNodeId
+              ? "blocked"
+              : node.kind === "run"
+                ? "running"
+                : node.status,
         })),
         edges: definition.topology.edges,
       },
@@ -1660,36 +1913,19 @@ class LocalJsonRpcRuntime {
         id: `${runId}:${item.id}`,
         runId,
         ownerAgentId: item.ownerAgentId,
-        status: status === "succeeded" ? "done" : index === 0 ? "running" : "planned",
+        status: status === "succeeded"
+          ? "done"
+          : status === "interrupted" && index === 1
+            ? "blocked"
+            : index === 0
+              ? "running"
+              : "planned",
         title: item.title,
         dependencies: item.dependencies.map((dependency) => `${runId}:${dependency}`),
-        linkedActionIds: index === 1 ? [`${runId}:action-sidecar`] : [],
+        linkedActionIds: index === 1 ? [sidecarActionId] : [],
         checkpointIds: [checkpoint.id],
       })),
-      actions: [
-        {
-          id: `${runId}:action-sidecar`,
-          runId,
-          planItemId: `${runId}:${definition.planTemplate[1]?.id ?? definition.planTemplate[0].id}`,
-          agentId: definition.profiles[1]?.id ?? definition.profiles[0].id,
-          type: "runtime.sidecar.preview",
-          riskLevel: "medium",
-          status: "approval_required",
-          input: { command: "ora-runtime-sidecar --transport stdio" },
-          artifactIds: [],
-        },
-        {
-          id: `${runId}:action-report`,
-          runId,
-          agentId: definition.profiles[0].id,
-          type: "report.export",
-          riskLevel: "low",
-          status: status === "succeeded" ? "succeeded" : "proposed",
-          input: { format: "application/json" },
-          output: status === "succeeded" ? { artifactId: `${runId}:report-0` } : undefined,
-          artifactIds: status === "succeeded" ? [`${runId}:report-0`] : [],
-        },
-      ],
+      actions: [sidecarAction, reportAction],
       policyDecisions: [],
       checkpoints: [checkpoint],
       events,
@@ -1698,12 +1934,18 @@ class LocalJsonRpcRuntime {
         id: `${runId}:todo-${index}`,
         runId,
         sourcePlanItemId: `${runId}:${item.id}`,
-        status: status === "succeeded" ? "done" : index === 0 && status === "running" ? "running" : "planned",
+        status: status === "succeeded"
+          ? "done"
+          : status === "interrupted" && index === 1
+            ? "blocked"
+            : index === 0
+              ? "running"
+              : "planned",
         label: item.title,
         createdAt: eventBase + 400,
         updatedAt: eventBase + (status === "succeeded" ? 5200 : 1800),
       })),
-      activeAgents: status === "running" ? definition.profiles.slice(0, 1).map((profile) => profile.id) : [],
+      activeAgents: status === "running" || status === "interrupted" ? definition.profiles.slice(0, 1).map((profile) => profile.id) : [],
     queueSummary: {
       mode: definition.coordinationKind === "bus"
         ? "event_bus"
@@ -1713,7 +1955,7 @@ class LocalJsonRpcRuntime {
               ? "backlog"
               : "dag",
         pending: Math.max(0, definition.planTemplate.length - 1),
-        inProgress: status === "running" ? 1 : 0,
+        inProgress: status === "running" || status === "interrupted" ? 1 : 0,
         completed: status === "succeeded" ? definition.planTemplate.length : 0,
         topics: definition.supportsEventRouting ? ["task.input", "task.findings", "task.response"] : [],
     },
@@ -1751,13 +1993,15 @@ class LocalJsonRpcRuntime {
             topicCounts: {},
           },
     pendingClarifications: [],
-    pendingApprovals: [],
+    pendingApprovals: status === "interrupted" ? [sidecarActionId] : [],
     modeSpec: mode,
-      output: {
-        text: `Smoke result for ${mode.label}: ${prompt}`,
-      },
+      output: status === "succeeded"
+        ? {
+            text: `Smoke result for ${mode.label}: ${prompt}`,
+          }
+        : undefined,
       trace: createMockTraceMetadata(runId, provider?.providerId, provider?.modelRef),
-      updatedAt: eventBase + 6000,
+      updatedAt: events.at(-1)?.createdAt ?? eventBase + 4000,
     };
   }
 
@@ -1825,6 +2069,7 @@ function createEvent(
   pattern: CoordinationPattern,
   createdAt = Date.now(),
   checkpointId?: string,
+  nodeId?: string,
 ): OraEventEnvelope {
   return {
     id: `${runId}:evt-${seq}`,
@@ -1833,8 +2078,54 @@ function createEvent(
     type,
     createdAt,
     pattern,
+    nodeId,
     checkpointId,
     payload,
+  };
+}
+
+export function transitionMockLifecycleSnapshot(
+  snapshot: OraStateSnapshot,
+  status: "interrupted" | "cancelled",
+  type: "run.interrupted" | "run.cancelled",
+): OraStateSnapshot {
+  const event = createEvent(snapshot.runId, snapshot.events.length, type, { status }, snapshot.pattern);
+  const updatedAt = event.createdAt;
+  const topologyStatus = status === "cancelled" ? "failed" as const : "blocked" as const;
+  const plan = snapshot.plan.map((item) => ({
+    ...item,
+    status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
+  }));
+  const todos = snapshot.todos.map((item) => ({
+    ...item,
+    status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
+    updatedAt,
+  }));
+
+  return {
+    ...snapshot,
+    status,
+    topology: {
+      ...snapshot.topology,
+      nodes: snapshot.topology.nodes.map((node) => ({ ...node, status: topologyStatus })),
+    },
+    plan,
+    todos,
+    events: [...snapshot.events, event],
+    actions: snapshot.actions.map((action) =>
+      status === "cancelled" && action.status === "approval_required" ? { ...action, status: "denied" as const } : action,
+    ),
+    pendingApprovals: status === "cancelled" ? [] : snapshot.pendingApprovals,
+    activeAgents: status === "cancelled" ? [] : snapshot.activeAgents,
+    queueSummary: status === "cancelled"
+      ? {
+          ...snapshot.queueSummary,
+          inProgress: 0,
+          pending: plan.filter((item) => item.status !== "done" && item.status !== "skipped").length,
+          completed: plan.filter((item) => item.status === "done" || item.status === "skipped").length,
+        }
+      : snapshot.queueSummary,
+    updatedAt,
   };
 }
 
@@ -2025,6 +2316,54 @@ function normalizeMockAgentName(value: unknown): string {
     throw new Error("Custom agent names must contain only letters, digits, and hyphens.");
   }
   return normalized;
+}
+
+function normalizeMockSkillName(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Skill name is required.");
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalized)) {
+    throw new Error("Skill names must be lowercase hyphen-case.");
+  }
+  return normalized;
+}
+
+function defaultMockSkillContent(name: string, description: string): string {
+  return [
+    "---",
+    `name: ${name}`,
+    `description: ${description.trim() || "Describe what this skill helps the agent do."}`,
+    "---",
+    "",
+    `# ${name}`,
+    "",
+    description.trim() || "Describe the workflow, rules, and examples for this skill.",
+    "",
+  ].join("\n");
+}
+
+function parseMockSkillContent(expectedName: string, content: string): { description: string } {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (!match) {
+    throw new Error("Skill content must start with YAML frontmatter.");
+  }
+  const frontmatter: Record<string, string> = {};
+  for (const line of (match[1] ?? "").split(/\r?\n/)) {
+    const item = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (item) {
+      frontmatter[item[1]!] = (item[2] ?? "").trim().replace(/^["']|["']$/g, "");
+    }
+  }
+  const name = normalizeMockSkillName(frontmatter.name);
+  if (name !== expectedName) {
+    throw new Error(`Frontmatter name '${name}' must match requested skill name '${expectedName}'.`);
+  }
+  const description = frontmatter.description?.trim();
+  if (!description) {
+    throw new Error("Skill frontmatter description is required.");
+  }
+  return { description };
 }
 
 function inferMockDatasetFormat(sourceFileName?: string): "json" | "jsonl" | "csv" | "inline" {

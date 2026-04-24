@@ -4,11 +4,15 @@ import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
 import { invokeRunProvider } from "../providers/index.js";
 import { assessGeneratorVerifierResponse } from "./generator-verifier-utils.js";
+import { ensureGraphClarification, ensureGraphManualApproval } from "./hitl.js";
+import { withGraphPersona } from "./system-prompt.js";
 
 // Deterministic generator-verifier pattern graph.
 // Nodes: draft -> verify -> decide (conditional to END or retry draft, max 3)
 
 async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "draft", "Draft");
+  ensureGraphManualApproval(state, "draft", "Draft");
   const retryCount = (state.output as Record<string, number> | undefined)?.retryCount ?? 0;
   const model = await invokeRunProvider(state.config, {
     prompt: [
@@ -17,7 +21,10 @@ async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
       `Previous verifier notes: ${String((state.output as Record<string, unknown> | undefined)?.verifierText ?? "")}`,
       "Write a better candidate answer. Return only the candidate response.",
     ].join("\n"),
-    system: "You are the generator in Ora's Generator-Verifier pattern. Return only the candidate response.",
+    system: withGraphPersona(
+      state,
+      "You are the generator in Ora's Generator-Verifier pattern. Return only the candidate response.",
+    ),
     maxTokens: state.config.budget?.maxTokens
   });
   const candidate = model.text;
@@ -36,6 +43,8 @@ async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
 }
 
 async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "verify", "Verify");
+  ensureGraphManualApproval(state, "verify", "Verify");
   const output = state.output as Record<string, unknown>;
   const candidate = (output?.candidate as string) ?? "no candidate";
   const retryCount = (output?.retryCount as number) ?? 0;
@@ -49,7 +58,10 @@ async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>>
       candidate,
       "Return JSON with keys verdict ('pass'|'fail'), rationale, and missingRequirements (array of strings).",
     ].join("\n"),
-    system: "You are the verifier in Ora's Generator-Verifier pattern. Return only JSON with verdict, rationale, and missingRequirements.",
+    system: withGraphPersona(
+      state,
+      "You are the verifier in Ora's Generator-Verifier pattern. Return only JSON with verdict, rationale, and missingRequirements.",
+    ),
     maxTokens: state.config.budget?.maxTokens
   });
   const assessment = assessGeneratorVerifierResponse({
@@ -78,7 +90,34 @@ async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>>
 // The "decide" node is a no-op that just passes state through.
 // The actual routing decision is made by the conditional edge function.
 function decideNode(state: OraGraphState): Partial<OraGraphState> {
-  return {};
+  const output = state.output as Record<string, unknown> | undefined;
+  const candidate = typeof output?.candidate === "string" ? output.candidate : "";
+  const verifierText = typeof output?.verifierText === "string" ? output.verifierText : "";
+  const verdict = output?.verdict === "pass" ? "pass" : "fail";
+  const rationale = typeof output?.rationale === "string" ? output.rationale : verifierText;
+  const missingRequirements = Array.isArray(output?.missingRequirements)
+    ? output?.missingRequirements
+    : [];
+  return {
+    output: {
+      text: candidate,
+      pattern: state.pattern,
+      generator: {
+        candidate,
+      },
+      verifier: {
+        verdict,
+        notes: verifierText,
+        rubric: output?.rubric,
+        missingRequirements,
+      },
+      retryCount: output?.retryCount,
+      provider: output?.provider,
+      verifierText,
+      rationale,
+      missingRequirements,
+    },
+  };
 }
 
 function routeAfterDecide(state: OraGraphState): typeof END | "draft" {

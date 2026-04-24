@@ -9,6 +9,20 @@ const nodeTone: Record<TopologyNode["status"], string> = {
   done: "border-emerald-200 bg-emerald-50",
 };
 
+function nodeClass(node: TopologyNode): string {
+  if (node.kind !== "capability") {
+    return nodeTone[node.status];
+  }
+
+  if (node.active === false) {
+    return "border-dashed border-bench-300 bg-bench-100 text-bench-600";
+  }
+
+  return node.atomPresentation === "stage_attachment"
+    ? "border-sky-200 bg-sky-50 shadow-[0_0_0_3px_rgba(14,165,233,0.08)]"
+    : "border-violet-200 bg-violet-50 shadow-[0_0_0_3px_rgba(139,92,246,0.08)]";
+}
+
 interface TopologyPanelProps {
   topologyNodes: TopologyNode[];
   topologyEdges: TopologyEdge[];
@@ -68,13 +82,21 @@ export function TopologyPanel({
           <button
             key={node.id}
             onClick={() => onSelectNode(node.id)}
-            className={`absolute w-[124px] rounded-md border p-2 text-left transition duration-150 hover:shadow-lift active:scale-[0.98] ${
-              nodeTone[node.status]
-            } ${selectedNodeId === node.id ? "outline outline-2 outline-offset-2 outline-bench-900" : ""}`}
+            className={`absolute rounded-md border p-2 text-left transition duration-150 hover:shadow-lift active:scale-[0.98] ${
+              node.kind === "capability" ? "w-[132px]" : "w-[124px]"
+            } ${nodeClass(node)} ${selectedNodeId === node.id ? "outline outline-2 outline-offset-2 outline-bench-900" : ""}`}
             style={{ left: node.x, top: node.y }}
           >
             <div className="flex items-center gap-2">
-              <span className={`h-2.5 w-2.5 rounded-full ${node.status === "active" ? "bg-signal-acid" : "bg-bench-300"}`} />
+              <span className={`h-2.5 w-2.5 rounded-full ${
+                node.kind === "capability"
+                  ? node.active === false
+                    ? "bg-bench-300"
+                    : "bg-sky-500"
+                  : node.status === "active"
+                    ? "bg-signal-acid"
+                    : "bg-bench-300"
+              }`} />
               <span className="truncate text-xs font-semibold">{node.label}</span>
             </div>
             <p className="mt-1 truncate text-[11px] text-bench-700">{node.role}</p>

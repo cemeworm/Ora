@@ -3,15 +3,19 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { OraGraphAnnotation } from "../graph/ora-state.js";
 import type { OraGraphState } from "../graph/ora-state.js";
 import { invokeRunProvider } from "../providers/index.js";
+import { ensureGraphClarification, ensureGraphManualApproval } from "./hitl.js";
+import { withGraphPersona } from "./system-prompt.js";
 
 // Deterministic agent-teams pattern graph.
 // Nodes: triage -> build -> check -> handoff -> END
 // Worker memory is namespaced by worker ID.
 
 async function triageNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "triage", "Triage");
+  ensureGraphManualApproval(state, "triage", "Triage");
   const model = await invokeRunProvider(state.config, {
     prompt: `Triage this work into a team backlog: ${state.input.prompt}`,
-    system: "You are Ora's team lead. Keep ownership explicit.",
+    system: withGraphPersona(state, "You are Ora's team lead. Keep ownership explicit."),
     maxTokens: state.config.budget?.maxTokens
   });
 
@@ -26,10 +30,12 @@ async function triageNode(state: OraGraphState): Promise<Partial<OraGraphState>>
 }
 
 async function buildNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "build", "Build");
+  ensureGraphManualApproval(state, "build", "Build");
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Complete the builder assignment for: ${state.input.prompt}`,
-    system: "You are Ora's persistent builder teammate.",
+    system: withGraphPersona(state, "You are Ora's persistent builder teammate."),
     maxTokens: state.config.budget?.maxTokens
   });
 
@@ -45,10 +51,12 @@ async function buildNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
 }
 
 async function checkNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
+  ensureGraphClarification(state, "check", "Check");
+  ensureGraphManualApproval(state, "check", "Check");
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Validate the builder output for: ${state.input.prompt}`,
-    system: "You are Ora's persistent checker teammate.",
+    system: withGraphPersona(state, "You are Ora's persistent checker teammate."),
     maxTokens: state.config.budget?.maxTokens
   });
 

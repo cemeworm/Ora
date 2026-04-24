@@ -33,6 +33,9 @@ const DEV_RUNTIME_COMMAND_DISPLAY: &str =
     "node <workspace-tsx>/cli.mjs apps/runtime/src/sidecar-entry.ts";
 const PROD_RUNTIME_COMMAND_DISPLAY: &str =
     "runtime-sidecar/bin/node runtime-sidecar/app/runtime-sidecar.cjs";
+const MANAGED_LANGFUSE_BASE_URL: &str = "http://localhost:3000";
+const MANAGED_LANGFUSE_PUBLIC_KEY: &str = "lf_pk_ora_local_runtime";
+const MANAGED_LANGFUSE_SECRET_KEY: &str = "lf_sk_ora_local_runtime";
 
 #[derive(Default)]
 pub struct RuntimeFacade {
@@ -1626,8 +1629,30 @@ fn dev_runtime_command() -> Option<RuntimeCommandSpec> {
             sidecar_entry.to_string_lossy().into_owned(),
         ],
         Some(repo_root),
-        Vec::new(),
+        managed_langfuse_runtime_env(),
     ))
+}
+
+fn managed_langfuse_runtime_env() -> Vec<(String, String)> {
+    vec![
+        ("ORA_LANGFUSE_ENABLED".to_string(), "true".to_string()),
+        (
+            "LANGFUSE_BASE_URL".to_string(),
+            MANAGED_LANGFUSE_BASE_URL.to_string(),
+        ),
+        (
+            "LANGFUSE_PUBLIC_KEY".to_string(),
+            MANAGED_LANGFUSE_PUBLIC_KEY.to_string(),
+        ),
+        (
+            "LANGFUSE_SECRET_KEY".to_string(),
+            MANAGED_LANGFUSE_SECRET_KEY.to_string(),
+        ),
+        (
+            "LANGFUSE_TRACING_ENVIRONMENT".to_string(),
+            "local".to_string(),
+        ),
+    ]
 }
 
 fn workspace_root() -> Option<PathBuf> {
@@ -1674,6 +1699,17 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
     let runtime_data_dir = app_data_dir.join("runtime");
     let runtime_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_STORE_DB);
     let checkpoint_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_CHECKPOINT_DB);
+    let mut environment = managed_langfuse_runtime_env();
+    environment.extend([
+        (
+            "ORA_RUNTIME_STORE_DIR".to_string(),
+            runtime_db_path.to_string_lossy().into_owned(),
+        ),
+        (
+            "ORA_LANGGRAPH_CHECKPOINT_DB".to_string(),
+            checkpoint_db_path.to_string_lossy().into_owned(),
+        ),
+    ]);
 
     Some(RuntimeCommandSpec::new(
         format!(
@@ -1684,16 +1720,7 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
         node_path,
         vec![entrypoint_path.to_string_lossy().into_owned()],
         Some(working_directory),
-        vec![
-            (
-                "ORA_RUNTIME_STORE_DIR".to_string(),
-                runtime_db_path.to_string_lossy().into_owned(),
-            ),
-            (
-                "ORA_LANGGRAPH_CHECKPOINT_DB".to_string(),
-                checkpoint_db_path.to_string_lossy().into_owned(),
-            ),
-        ],
+        environment,
     ))
 }
 
@@ -3172,6 +3199,26 @@ mod tests {
         assert_eq!(status.command, DEV_RUNTIME_COMMAND_DISPLAY);
         assert!(status.process_spawn_available);
         assert!(status.sidecar_process_spawn_enabled);
+    }
+
+    #[test]
+    fn dev_runtime_command_enables_managed_langfuse_env() {
+        let command = dev_runtime_command().expect("workspace tsx cli should be available in tests");
+
+        assert!(command
+            .environment
+            .iter()
+            .any(|(key, value)| key == "ORA_LANGFUSE_ENABLED" && value == "true"));
+        assert!(command
+            .environment
+            .iter()
+            .any(|(key, value)| key == "LANGFUSE_BASE_URL" && value == MANAGED_LANGFUSE_BASE_URL));
+        assert!(command.environment.iter().any(|(key, value)| {
+            key == "LANGFUSE_PUBLIC_KEY" && value == MANAGED_LANGFUSE_PUBLIC_KEY
+        }));
+        assert!(command.environment.iter().any(|(key, value)| {
+            key == "LANGFUSE_SECRET_KEY" && value == MANAGED_LANGFUSE_SECRET_KEY
+        }));
     }
 
     #[test]

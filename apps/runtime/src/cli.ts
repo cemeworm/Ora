@@ -31,6 +31,16 @@ async function main() {
 
 async function runSmoke() {
   const handle = createRuntimeMethodHandler();
+  const modes = await handle({
+    jsonrpc: "2.0",
+    id: 0,
+    method: "modes.list",
+    params: {}
+  }) as Array<{ id: string; family: string }>;
+  const smokeMode = modes[0];
+  if (!smokeMode) {
+    throw new Error("No Ora modes are available for runtime smoke.");
+  }
   const run = await handle({
     jsonrpc: "2.0",
     id: 1,
@@ -40,7 +50,8 @@ async function runSmoke() {
         prompt: "Verify the Ora runtime smoke path."
       },
       config: {
-        pattern: "orchestrator_subagent"
+        pattern: smokeMode.family,
+        modeId: smokeMode.id
       }
     }
   });

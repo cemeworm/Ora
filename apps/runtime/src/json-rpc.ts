@@ -8,7 +8,7 @@ import { ZodError } from "zod";
 import { LocalRunStore, OraRuntimeError } from "./run-store.js";
 import { SessionManager } from "./session/session-manager.js";
 import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
-import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
+import { RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
@@ -19,7 +19,6 @@ export function createRuntimeMethodHandler(
 ): JsonRpcMethodHandler {
   const providerRegistry = createDefaultProviderRegistry().config;
   const toolRegistry = new RuntimeToolRegistry().snapshot();
-  const skillRegistry = new RuntimeSkillRegistry().snapshot();
   return (request) => {
     switch (request.method) {
       case "runtime.health":
@@ -35,7 +34,7 @@ export function createRuntimeMethodHandler(
           modes: store.listModes(),
           atoms: MVP_MODE_RUNTIME_ATOMS,
           tools: toolRegistry,
-          skills: skillRegistry,
+          skills: store.listSkills(),
           providers: providerRegistry
         });
       case "patterns.list":
@@ -57,7 +56,19 @@ export function createRuntimeMethodHandler(
       case "tools.list":
         return ToolRegistrySchema.parse(toolRegistry);
       case "skills.list":
-        return SkillRegistrySchema.parse(skillRegistry);
+        return SkillRegistrySchema.parse(store.listSkills(request.params));
+      case "skills.get":
+        return store.getSkill(request.params);
+      case "skills.create":
+        return store.createSkill(request.params);
+      case "skills.update":
+        return store.updateSkill(request.params);
+      case "skills.delete":
+        return store.deleteSkill(request.params);
+      case "skills.checkName":
+        return store.checkSkillName(request.params);
+      case "skills.setEnabled":
+        return store.setSkillEnabled(request.params);
       case "providers.list":
         return providerRegistry;
       case "providers.verify": {
@@ -90,8 +101,14 @@ export function createRuntimeMethodHandler(
         return store.getSession(request.params);
       case "runs.start":
         if (sessionManager.isEnabled()) {
-          return store.startRunWithSnapshot(request.params, ({ runId, input, config, modeSpec, definition, conversationMessages }) =>
-            sessionManager.startRun(runId, input, config, conversationMessages, { modeSpec, definition })
+          return store.startRunWithSnapshot(request.params, ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay }) =>
+            sessionManager.startRun(runId, input, config, conversationMessages, {
+              modeSpec,
+              definition,
+              customAgentOverlay,
+              sessionId,
+              turnIndex,
+            })
           );
         }
         return store.startRun(request.params);
@@ -100,12 +117,51 @@ export function createRuntimeMethodHandler(
       case "runs.stream":
         return store.streamRun(request.params);
       case "runs.interrupt":
+        if (sessionManager.isEnabled()) {
+          return withManagedSnapshot(
+            store,
+            sessionManager.interruptRun(
+              readRunId(request.params),
+              readOptionalReason(request.params)
+            ),
+            () => store.interruptRun(request.params)
+          );
+        }
         return store.interruptRun(request.params);
       case "runs.resume":
+        if (sessionManager.isEnabled()) {
+          return withManagedSnapshot(
+            store,
+            sessionManager.resumeRun(
+              readRunId(request.params),
+              readOptionalPatch(request.params),
+              readOptionalReason(request.params)
+            ),
+            () => store.resumeRun(request.params)
+          );
+        }
         return store.resumeRun(request.params);
       case "runs.cancel":
+        if (sessionManager.isEnabled()) {
+          return withManagedSnapshot(
+            store,
+            sessionManager.cancelRun(
+              readRunId(request.params),
+              readOptionalReason(request.params)
+            ),
+            () => store.cancelRun(request.params)
+          );
+        }
         return store.cancelRun(request.params);
       case "runs.state":
+        if (sessionManager.isEnabled()) {
+          return withManagedSnapshot(
+            store,
+            sessionManager.getRunState(readRunId(request.params)),
+            () => store.getRunState(request.params),
+            { persist: false }
+          );
+        }
         return store.getRunState(request.params);
       case "runs.trail":
         return store.getRunTrail(request.params);
@@ -131,8 +187,14 @@ export function createRuntimeMethodHandler(
                 input,
                 config,
               },
-              ({ runId, input: nextInput, config: nextConfig, modeSpec, definition }) =>
-                sessionManager.startRun(runId, nextInput, nextConfig, undefined, { modeSpec, definition })
+              ({ runId, input: nextInput, config: nextConfig, modeSpec, definition, sessionId, turnIndex, customAgentOverlay }) =>
+                sessionManager.startRun(runId, nextInput, nextConfig, undefined, {
+                  modeSpec,
+                  definition,
+                  customAgentOverlay,
+                  sessionId,
+                  turnIndex,
+                })
             );
             if (!handle) {
               throw new OraRuntimeError("LangGraph evaluation run did not produce a snapshot.", -32003);
@@ -160,6 +222,47 @@ export function createRuntimeMethodHandler(
         });
     }
   };
+}
+
+async function withManagedSnapshot(
+  store: LocalRunStore,
+  managedSnapshot: Promise<unknown> | unknown,
+  fallback: () => Promise<unknown> | unknown,
+  options: { persist?: boolean } = {}
+): Promise<unknown> {
+  const snapshot = await managedSnapshot;
+  if (snapshot) {
+    return options.persist === false
+      ? snapshot
+      : store.persistExternalSnapshot(snapshot as Parameters<LocalRunStore["persistExternalSnapshot"]>[0]);
+  }
+  return fallback();
+}
+
+function readRunId(params: unknown): string {
+  if (!params || typeof params !== "object" || typeof (params as { runId?: unknown }).runId !== "string") {
+    throw new OraRuntimeError("Run id is required.", -32602, { params });
+  }
+  return (params as { runId: string }).runId;
+}
+
+function readOptionalReason(params: unknown): string | undefined {
+  if (!params || typeof params !== "object") {
+    return undefined;
+  }
+  return typeof (params as { reason?: unknown }).reason === "string"
+    ? (params as { reason: string }).reason
+    : undefined;
+}
+
+function readOptionalPatch(params: unknown): Record<string, unknown> | undefined {
+  if (!params || typeof params !== "object") {
+    return undefined;
+  }
+  const patch = (params as { patch?: unknown }).patch;
+  return patch && typeof patch === "object" && patch !== null
+    ? patch as Record<string, unknown>
+    : undefined;
 }
 
 export async function handleJsonRpcLine(

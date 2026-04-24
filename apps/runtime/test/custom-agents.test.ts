@@ -30,7 +30,7 @@ vi.mock("../src/providers/index.js", async () => {
   };
 });
 
-import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
+import { LocalRunStore, SessionManager, createRuntimeMethodHandler } from "../src/index.js";
 
 const FIXED_TIME = 1_700_100_000_000;
 const clock = () => FIXED_TIME;
@@ -113,6 +113,43 @@ describe("custom agent runtime behavior", () => {
     expect(capturedSystems.some((system) =>
       system.includes("Custom Agent Persona: review-bot") &&
       system.includes("Look for regressions before polish.")
+    )).toBe(true);
+  });
+
+  it("propagates the selected custom agent persona through the SessionManager path", async () => {
+    const handle = createRuntimeMethodHandler(
+      new LocalRunStore({ dataDir: freshStoreDir(), clock }),
+      new SessionManager(true),
+    );
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agents.create",
+      params: {
+        name: "langgraph-review-bot",
+        description: "LangGraph review mindset",
+        soul: "Keep the persona visible even on managed runtime paths.",
+        toolGroups: ["files"],
+      },
+    });
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Inspect this managed change." },
+        config: {
+          pattern: "orchestrator_subagent",
+          customAgentId: "langgraph-review-bot",
+        },
+      },
+    });
+
+    expect(capturedSystems.some((system) =>
+      system.includes("Custom Agent Persona: langgraph-review-bot") &&
+      system.includes("Keep the persona visible even on managed runtime paths.")
     )).toBe(true);
   });
 });

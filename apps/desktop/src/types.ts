@@ -88,9 +88,15 @@ export interface ModeCard {
 export interface TopologyNode {
   id: string;
   label: string;
+  kind: "run" | "agent" | "capability" | "checkpoint" | "artifact";
   role: string;
   agentId?: string;
   status: "active" | "idle" | "blocked" | "done";
+  atomId?: string;
+  atomScope?: "mode" | "node";
+  atomPresentation?: "mode_capability" | "stage_attachment" | "family_capability";
+  sourceNodeId?: string;
+  active?: boolean;
   x: number;
   y: number;
 }
@@ -99,6 +105,7 @@ export interface TopologyEdge {
   from: string;
   to: string;
   label: string;
+  kind?: "control" | "delegation" | "verification" | "memory" | "artifact";
 }
 
 export interface RunBeat {
@@ -154,6 +161,8 @@ export interface ArtifactRecord {
   mimeType: string;
   createdAt: string;
   uri?: string;
+  sizeBytes?: number;
+  payload?: unknown;
 }
 
 export interface TurnProcessStep {
@@ -183,6 +192,8 @@ export interface TurnArtifactAttachment {
   mimeType: string;
   createdAt: string;
   uri?: string;
+  sizeBytes?: number;
+  payload?: unknown;
   previewable: boolean;
 }
 
@@ -207,7 +218,7 @@ export interface RuntimeBridgeStatus {
   detail: string;
 }
 
-export type AppView = "chat" | "agents" | "modes" | "evaluation";
+export type AppView = "chat" | "agents" | "skills" | "modes" | "evaluation";
 
 export interface ChatMessage {
   id: string;

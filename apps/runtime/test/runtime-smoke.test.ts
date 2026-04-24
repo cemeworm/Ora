@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { OraEventEnvelopeSchema, StateSnapshotSchema } from "@ora/shared";
+import { DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, handleJsonRpcLine } from "../src/index.js";
 
 function createTempStore() {
@@ -86,6 +86,8 @@ describe("Ora runtime smoke path", () => {
     expect(state.pendingApprovals).toEqual([]);
     expect(state.activeAgents).toEqual([]);
     expect(state.events.map((event) => event.type)).toContain("todo.updated");
+    expect(state.topology.nodes.some((node) => node.kind === "capability" && node.metadata.atomId === "memory_capture")).toBe(true);
+    expect(state.topology.nodes.some((node) => node.kind === "capability" && node.metadata.atomId === "tool_error_boundary")).toBe(true);
     expect(state.output).toMatchObject({
       text: expect.stringContaining("[local-smoke]"),
       pattern: "generator_verifier",
@@ -209,6 +211,7 @@ describe("Ora runtime smoke path", () => {
     expect(bootstrap.modes.map((mode) => mode.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
+      DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
       "agent_teams",
       "message_bus",
@@ -296,6 +299,76 @@ describe("Ora runtime smoke path", () => {
     expect(state.modeSpec?.id).toBe(cloned.id);
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.plan.some((item) => item.id.endsWith(":review"))).toBe(false);
+  });
+
+  it("runs and clones the built-in DeerFlow-like harness preset", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: DEERFLOW_HARNESS_MODE_ID,
+        modeId: "deerflow-harness-custom",
+        label: "DeerFlow Harness Custom",
+      },
+    }) as any;
+
+    expect(cloned.id).toBe("deerflow-harness-custom");
+    expect(cloned.systemPreset).toBe(false);
+    expect(cloned.editorConstraints.readOnly).toBe(false);
+    expect(cloned.nodes.filter((node: { config?: { atoms?: unknown } }) =>
+      Array.isArray(node.config?.atoms) && node.config.atoms.includes("subagent_delegate"),
+    ).map((node: { id: string }) => node.id)).toEqual(["research", "review"]);
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Use the DeerFlow-like harness." },
+        config: { modeId: DEERFLOW_HARNESS_MODE_ID },
+      },
+    }) as { runId: string; status: string };
+
+    expect(run.status).toBe("succeeded");
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    const taskStartedPayloads = state.events
+      .filter((event) => event.type === "task.started")
+      .map((event) => event.payload);
+
+    expect(state.modeId).toBe(DEERFLOW_HARNESS_MODE_ID);
+    expect(state.modeSpec?.id).toBe(DEERFLOW_HARNESS_MODE_ID);
+    expect(state.pattern).toBe("orchestrator_subagent");
+    expect(state.profiles.map((profile) => profile.id)).toEqual([
+      "lead_agent",
+      "research_subagent",
+      "review_subagent",
+    ]);
+    expect(taskStartedPayloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: "task:research", nodeId: "research" }),
+      expect.objectContaining({ taskId: "task:review", nodeId: "review" }),
+    ]));
+    expect(state.events.filter((event) => event.type === "task.completed")).toHaveLength(2);
+    expect(state.topology.nodes.some((node) =>
+      node.kind === "capability"
+      && node.metadata.atomId === "subagent_delegate"
+      && node.metadata.sourceNodeId === "research",
+    )).toBe(true);
+    expect(state.topology.nodes.some((node) =>
+      node.kind === "capability"
+      && node.metadata.atomId === "subagent_delegate"
+      && node.metadata.sourceNodeId === "review",
+    )).toBe(true);
   });
 
   it("runs the built-in single-agent preset without cloning a custom mode", async () => {
@@ -456,6 +529,13 @@ describe("Ora runtime smoke path", () => {
       taskId: "task:research",
       nodeId: "research",
     });
+    expect(
+      state.topology.nodes.some((node) =>
+        node.kind === "capability"
+        && node.metadata.atomId === "subagent_delegate"
+        && node.metadata.sourceNodeId === "research",
+      ),
+    ).toBe(true);
   });
 
   it("degrades provider failures into runtime state when tool_error_boundary is enabled", async () => {
@@ -719,6 +799,10 @@ describe("Ora runtime smoke path", () => {
     expect(resumed.input.context.clarifications).toMatchObject({
       research: "Focus on the harness package first.",
     });
+    expect(resumed.output).toMatchObject({
+      text: expect.stringContaining("[local-smoke]"),
+      pattern: "orchestrator_subagent",
+    });
   });
 
   it("starts all five coordination patterns through the unified runtime kernel", async () => {
@@ -968,13 +1052,24 @@ describe("Ora runtime smoke path", () => {
 
     expect(run.status).toBe("interrupted");
     expect(blocked.actions[0]?.status).toBe("approval_required");
+    expect(blocked.pendingApprovals).toEqual([blocked.actions[0]!.id]);
     expect(blocked.events.map((event) => event.type)).toContain("approval.required");
     expect(blocked.todos.every((todo) => todo.status === "blocked")).toBe(true);
-    expect(resumed.actions[0]?.status).toBe("succeeded");
-    expect(resumed.memory).toHaveLength(1);
+    expect(resumed.actions.every((action) => action.status === "succeeded")).toBe(true);
+    expect(resumed.memory.length).toBeGreaterThan(0);
+    expect(
+      resumed.memory.some((record) => record.namespace.join(":").includes("orchestrator_subagent")),
+    ).toBe(true);
     expect(resumed.events.map((event) => event.type)).toContain("approval.resolved");
     expect(resumed.events.map((event) => event.type)).toContain("todo.updated");
     expect(resumed.todos.every((todo) => todo.status === "done")).toBe(true);
+    expect(resumed.output).toMatchObject({
+      text: expect.stringContaining("[local-smoke]"),
+      pattern: "orchestrator_subagent",
+      orchestrator: {
+        plan: expect.stringContaining("[local-smoke]"),
+      },
+    });
   });
 
   it("forks a run from a checkpoint without exposing engine internals", async () => {

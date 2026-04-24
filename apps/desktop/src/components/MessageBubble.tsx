@@ -6,12 +6,11 @@ import { cn } from "../lib/utils";
 interface MessageBubbleProps {
   role: ChatMessage["role"];
   content: string;
-  timestamp: string;
   children?: ReactNode;
   className?: string;
 }
 
-export function MessageBubble({ role, content, timestamp, children, className }: MessageBubbleProps) {
+export function MessageBubble({ role, content, children, className }: MessageBubbleProps) {
   const isUser = role === "user";
 
   if (role === "system") {
@@ -44,7 +43,6 @@ export function MessageBubble({ role, content, timestamp, children, className }:
             )}
           >
             {content ? <p className="whitespace-pre-wrap break-words">{content}</p> : null}
-            <p className={cn("mt-2 text-[11px] text-muted-foreground", isUser && "text-right")}>{timestamp}</p>
           </div>
           {children}
         </div>

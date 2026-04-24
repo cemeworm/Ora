@@ -1,5 +1,4 @@
 import {
-  SINGLE_AGENT_MODE_ID,
   createModeSpecFromPattern,
   getModeNodeRuntimeTemplateDefinition,
   type RunConfig,
@@ -164,6 +163,18 @@ function nodeAtomIds(node: ModeNodeSpec): Set<string> {
       ? node.config.atoms.filter((value): value is string => typeof value === "string")
       : [],
   );
+}
+
+function modeUsesSingleOwner(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): boolean {
+  const fallbackAgentId = modeSpec.profiles[0]?.id;
+  const ownerIds = new Set(
+    nodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
+  );
+  return ownerIds.size <= 1 && !nodes.some((node) => nodeAtomIds(node).has("subagent_delegate"));
+}
+
+function primaryOwnerAgentId(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): string {
+  return nodes.find((node) => node.ownerAgentId)?.ownerAgentId ?? modeSpec.profiles[0]?.id ?? "agent";
 }
 
 function initializeQueueSummary(
@@ -383,8 +394,9 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
 
 async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, modeSpec } = input;
-  const singleAgentMode = modeSpec.id === SINGLE_AGENT_MODE_ID;
   const nodes = orderedEnabledModeNodes(modeSpec);
+  const singleOwnerMode = modeUsesSingleOwner(modeSpec, nodes);
+  const primaryAgentId = primaryOwnerAgentId(modeSpec, nodes);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: ExecutionBag = { prompt };
@@ -403,7 +415,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             bag,
           ),
           system: context.systemPrompt(
-            singleAgentMode
+            singleOwnerMode
               ? "You are the solo agent. Frame the task briefly, keep the plan compact, and do not delegate."
               : "You are the orchestrator. Keep delegation explicit and inspectable."
           ),
@@ -455,7 +467,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             bag,
           ),
           system: context.systemPrompt(
-            singleAgentMode
+            singleOwnerMode
               ? "You are the solo agent. Use your framing notes and produce the final answer directly."
               : "You are the orchestrator. Synthesize delegated results into one answer."
           ),
@@ -468,19 +480,19 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
 
   context.remember({
     id: `mode-${modeSpec.id}-result`,
-    namespace: ["session", context.projectId, singleAgentMode ? SINGLE_AGENT_MODE_ID : "orchestrator_subagent"],
+    namespace: ["session", context.projectId, modeSpec.id],
     kind: "session",
     value: { plan: bag.plan, research: bag.research, review: bag.review, synthesis: bag.synthesis },
   });
 
-  if (singleAgentMode) {
+  if (singleOwnerMode) {
     return {
       output: {
         text: asText(bag.synthesis || bag.plan),
-        pattern: "orchestrator_subagent",
+        pattern: modeSpec.family,
         modeId: modeSpec.id,
         agent: {
-          id: "solo_agent",
+          id: primaryAgentId,
           plan: bag.plan,
           response: bag.synthesis,
         },
@@ -491,7 +503,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
   return {
     output: {
       text: asText(bag.synthesis || bag.review || bag.research || bag.plan),
-      pattern: "orchestrator_subagent",
+      pattern: modeSpec.family,
       modeId: modeSpec.id,
       orchestrator: {
         decomposition: nodes.map((node) => node.template),
