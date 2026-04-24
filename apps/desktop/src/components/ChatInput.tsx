@@ -43,6 +43,19 @@ const inputModeOptions: Array<{ mode: InputMode; label: string; icon: typeof Zap
   { mode: "ultra", label: "Ultra", icon: Rocket },
 ];
 
+export function getComposerInteractivity({
+  composerPrompt,
+  isLoading,
+}: {
+  composerPrompt: string;
+  isLoading: boolean;
+}) {
+  return {
+    canEditText: true,
+    canSubmit: composerPrompt.trim().length > 0 && !isLoading,
+  };
+}
+
 export function ChatInput({
   composerPrompt,
   isLoading,
@@ -63,6 +76,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [openPicker, setOpenPicker] = useState<"pattern" | "provider" | "mode" | undefined>();
+  const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -71,7 +85,7 @@ export function ChatInput({
         onStopRun();
         return;
       }
-      if (composerPrompt.trim() && !isLoading) {
+      if (interactivity.canSubmit) {
         onStartRun();
       }
     }
@@ -91,7 +105,7 @@ export function ChatInput({
               onChange={(e) => onPromptChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={isRunning ? "Run in progress..." : "Message Ora..."}
-              disabled={isLoading}
+              disabled={!interactivity.canEditText}
               rows={2}
               className="min-h-[96px] max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 pt-4 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
               style={{ height: "auto", overflow: "hidden" }}
@@ -232,7 +246,7 @@ export function ChatInput({
                 variant="outline"
                 className="rounded-full"
                 onClick={isRunning ? onStopRun : onStartRun}
-                disabled={!isRunning && (!composerPrompt.trim() || isLoading)}
+                disabled={!isRunning && !interactivity.canSubmit}
                 title={isRunning ? "Stop run" : "Send message"}
               >
                 {isRunning ? <Square size={14} /> : <ArrowUp size={16} />}

@@ -99,6 +99,7 @@ export type WorkbenchAction =
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
   | { type: "SET_PROMPT"; text: string }
+  | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_BUSY_COMMAND"; command: string | undefined }
   | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
@@ -115,7 +116,7 @@ export type WorkbenchAction =
 
 const initialSelectedPattern = CoordinationPatternSchema.options[0] as CoordinationPattern;
 
-const initialState: WorkbenchState = {
+export const initialWorkbenchState: WorkbenchState = {
   selectedPattern: initialSelectedPattern,
   selectedModeId: "",
   selectedSessionId: undefined,
@@ -176,7 +177,7 @@ function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraM
   return modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
 }
 
-function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
+export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   switch (action.type) {
     case "RESET_RUNTIME_VIEW":
       return {
@@ -427,6 +428,9 @@ function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): Workb
     case "SET_PROMPT":
       return { ...state, promptText: action.text };
 
+    case "CLEAR_PROMPT_IF_MATCH":
+      return state.promptText === action.text ? { ...state, promptText: "" } : state;
+
     case "SET_LOADING":
       return { ...state, isLoading: action.loading };
 
@@ -479,7 +483,7 @@ interface WorkbenchContextValue {
 const WorkbenchContext = createContext<WorkbenchContextValue | null>(null);
 
 export function WorkbenchProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(workbenchReducer, initialState);
+  const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
   return <WorkbenchContext.Provider value={value}>{children}</WorkbenchContext.Provider>;
 }

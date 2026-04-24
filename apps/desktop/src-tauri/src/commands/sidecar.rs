@@ -1588,25 +1588,18 @@ fn run_process_json_rpc(
         )
     })?;
 
-    let status = child.wait().map_err(|error| {
-        runtime_error(
-            -32058,
-            "Runtime sidecar wait failed",
-            Some(json!({
-                "command": command.display,
-                "error": error.to_string()
-            })),
-        )
-    })?;
-    if !status.success() {
-        return Err(runtime_error(
-            -32059,
-            "Runtime sidecar exited unsuccessfully",
-            Some(json!({
-                "command": command.display,
-                "status": status.code()
-            })),
-        ));
+    // The sidecar process is one-shot; once a valid JSON-RPC response is read,
+    // post-response cleanup must not block the desktop command path.
+    match child.try_wait() {
+        Ok(Some(_status)) => {}
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Err(_error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     Ok(response)
@@ -3241,6 +3234,36 @@ mod tests {
             .try_process_json_rpc(&request("runtime.health", None))
             .unwrap_or_else(|| facade.handle_runtime_json_rpc(request("runtime.health", None)));
 
+        assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
+        assert_eq!(response.id, Some(json!(1)));
+        assert_eq!(response.result.unwrap()["bridge"], json!("process"));
+    }
+
+    #[test]
+    fn process_bridge_returns_valid_response_before_child_cleanup_finishes() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c delayed-cleanup-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'; sleep 3; exit 1".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        let started = std::time::Instant::now();
+        let response = manager
+            .try_process_json_rpc(&request("runtime.health", None))
+            .expect("valid JSON-RPC response should be returned before child cleanup");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "process bridge should not block on post-response child cleanup"
+        );
         assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
         assert_eq!(response.id, Some(json!(1)));
         assert_eq!(response.result.unwrap()["bridge"], json!("process"));

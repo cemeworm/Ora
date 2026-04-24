@@ -698,7 +698,7 @@ function beatLabel(event: OraEventEnvelope): string {
     case "clarification.resolved":
       return "Clarified";
     case "tool.called":
-      return "Tool";
+      return isRecord(event.payload) ? toolCallLabel(event.payload) : "Tool";
     case "message.delta":
       return "Stream";
     case "message.published":
@@ -956,8 +956,11 @@ function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurn
 }
 
 function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
-  return snapshot.events
-    .filter(shouldShowProcessEvent)
+  const events = snapshot.events.filter(shouldShowProcessEvent);
+  const hasWorkEvent = events.some(isWorkProcessEvent);
+
+  return events
+    .filter((event) => hasWorkEvent || !isLifecycleProcessEvent(event))
     .map((event) => ({
       id: event.id,
       eventType: event.type,
@@ -982,6 +985,7 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "clarification.required":
     case "clarification.resolved":
     case "tool.called":
+      return hasToolId(event);
     case "checkpoint.created":
     case "artifact.exported":
     case "artifact.degraded":
@@ -1003,15 +1007,16 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
 function processStepDetail(event: OraEventEnvelope): string {
   const detail = eventText(event);
   if (event.type === "tool.called" && isRecord(event.payload)) {
-    const title = typeof event.payload.title === "string" ? event.payload.title : "Runtime call";
+    const title = toolCallLabel(event.payload);
     const status = typeof event.payload.status === "string" ? event.payload.status : undefined;
+    const actionDetail = toolCallDetail(event.payload);
     if (status === "failed" && typeof event.payload.error === "string") {
-      return `${title} failed: ${event.payload.error}`;
+      return `${actionDetail ?? title} failed: ${event.payload.error}`;
     }
-    if (status) {
-      return `${title} ${status}.`;
+    if (actionDetail) {
+      return status === "failed" ? `${actionDetail} failed.` : `${actionDetail}.`;
     }
-    return `${title} completed.`;
+    return status ? `${title} ${status}.` : `${title} completed.`;
   }
   if ((event.type === "artifact.exported" || event.type === "artifact.degraded") && isRecord(event.payload)) {
     const label = isRecord(event.payload.artifact) && typeof event.payload.artifact.label === "string"
@@ -1031,6 +1036,138 @@ function processStepDetail(event: OraEventEnvelope): string {
     return `Checkpoint created: ${event.payload.checkpoint.label}.`;
   }
   return detail;
+}
+
+function isWorkProcessEvent(event: OraEventEnvelope): boolean {
+  switch (event.type) {
+    case "task.started":
+    case "task.progress":
+    case "task.completed":
+    case "task.failed":
+    case "approval.required":
+    case "approval.resolved":
+    case "clarification.required":
+    case "clarification.resolved":
+    case "tool.called":
+    case "artifact.exported":
+    case "artifact.degraded":
+    case "recovery.detected":
+    case "recovery.retry_scheduled":
+    case "recovery.applied":
+    case "recovery.exhausted":
+    case "node.skipped":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isLifecycleProcessEvent(event: OraEventEnvelope): boolean {
+  return event.type === "checkpoint.created" || event.type === "run.done" || event.type === "run.failed";
+}
+
+function hasToolId(event: OraEventEnvelope): boolean {
+  return isRecord(event.payload) && typeof event.payload.toolId === "string" && event.payload.toolId.length > 0;
+}
+
+function toolCallLabel(payload: Record<string, unknown>): string {
+  return typeof payload.toolId === "string" && payload.toolId.length > 0
+    ? payload.toolId
+    : typeof payload.title === "string" && payload.title.length > 0
+      ? payload.title
+      : "Runtime call";
+}
+
+function toolCallDetail(payload: Record<string, unknown>): string | undefined {
+  const toolId = typeof payload.toolId === "string" ? payload.toolId : undefined;
+  const input = isRecord(payload.input) ? payload.input : {};
+  const output = isRecord(payload.output) ? payload.output : {};
+  const targetPath = stringValue(output.path) ?? stringValue(input.path);
+
+  switch (toolId) {
+    case "file.read":
+      return targetPath ? `Read ${targetPath}${sizeSuffix(output.sizeBytes)}` : undefined;
+    case "file.list":
+      return targetPath ? `Listed ${targetPath}${countSuffix(output.entries, "entry", "entries")}` : undefined;
+    case "file.glob": {
+      const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
+      const basePath = stringValue(input.path);
+      if (!pattern) {
+        return undefined;
+      }
+      return `Matched ${pattern}${basePath ? ` under ${basePath}` : ""}${countSuffix(output.matches, "match", "matches")}`;
+    }
+    case "file.grep": {
+      const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
+      if (!pattern) {
+        return undefined;
+      }
+      const scope = stringValue(input.include) ?? stringValue(input.path);
+      const truncated = output.truncated === true ? ", truncated" : "";
+      return `Searched for "${pattern}"${scope ? ` in ${scope}` : ""}${countSuffix(output.matches, "match", "matches")}${truncated}`;
+    }
+    case "file.write":
+      return targetPath ? `Wrote ${targetPath}${sizeSuffix(output.sizeBytes)}` : undefined;
+    case "file.patch": {
+      const replacements = typeof output.replacements === "number" ? ` (${output.replacements} replacement${output.replacements === 1 ? "" : "s"})` : "";
+      return targetPath ? `Patched ${targetPath}${replacements}` : undefined;
+    }
+    case "shell.execute": {
+      const command = stringValue(output.command) ?? stringValue(input.command);
+      const exitCode = typeof output.exitCode === "number" ? ` (exit ${output.exitCode})` : "";
+      return command ? `Ran ${command}${exitCode}` : undefined;
+    }
+    case "web.fetch": {
+      const url = stringValue(output.url) ?? stringValue(input.url);
+      const status = typeof output.status === "number" ? ` (${output.status})` : "";
+      return url ? `Fetched ${url}${status}` : undefined;
+    }
+    case "web.search": {
+      const query = stringValue(output.query) ?? stringValue(input.query);
+      return query ? `Searched the web for "${query}"${countSuffix(output.results, "result", "results")}` : undefined;
+    }
+    case "mcp.listTools": {
+      const server = stringValue(input.server);
+      return server ? `Listed MCP tools from ${server}` : "Listed MCP tools";
+    }
+    case "mcp.readResource": {
+      const uri = stringValue(input.uri);
+      const server = stringValue(input.server);
+      return uri ? `Read MCP resource ${uri}${server ? ` from ${server}` : ""}` : undefined;
+    }
+    case "mcp.call": {
+      const name = stringValue(input.name);
+      const server = stringValue(input.server);
+      return name ? `Called MCP tool ${name}${server ? ` on ${server}` : ""}` : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function sizeSuffix(value: unknown): string {
+  return typeof value === "number" ? ` (${formatBytes(value)})` : "";
+}
+
+function countSuffix(value: unknown, singular: string, plural: string): string {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  return ` (${value.length} ${value.length === 1 ? singular : plural})`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function processStepStatus(event: OraEventEnvelope): TurnProcessStep["status"] {
@@ -1093,6 +1230,11 @@ function processContextLabel(event: OraEventEnvelope): string | undefined {
     return undefined;
   }
 
+  const toolTarget = processToolTargetLabel(event.payload);
+  if (toolTarget) {
+    return toolTarget;
+  }
+
   if (typeof event.payload.path === "string") {
     return event.payload.path;
   }
@@ -1112,6 +1254,25 @@ function processContextLabel(event: OraEventEnvelope): string | undefined {
   return undefined;
 }
 
+function processToolTargetLabel(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.toolId !== "string") {
+    return undefined;
+  }
+
+  const input = isRecord(payload.input) ? payload.input : {};
+  const output = isRecord(payload.output) ? payload.output : {};
+  return stringValue(output.path)
+    ?? stringValue(input.path)
+    ?? stringValue(output.url)
+    ?? stringValue(input.url)
+    ?? stringValue(output.query)
+    ?? stringValue(input.query)
+    ?? stringValue(input.uri)
+    ?? stringValue(input.name)
+    ?? stringValue(input.command)
+    ?? payload.toolId;
+}
+
 function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
   return {
     id: artifact.id,
@@ -1128,8 +1289,12 @@ function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
 
 function deriveTurnTodos(snapshot: OraStateSnapshot): TurnTodoItem[] {
   const runtimeTodos = readRuntimeTodos(snapshot.todos);
-  if (runtimeTodos.length > 0) {
+  if (runtimeTodos.length > 0 && !todosMirrorPlan(snapshot)) {
     return runtimeTodos;
+  }
+
+  if (planLooksLikeTemplate(snapshot)) {
+    return [];
   }
 
   return snapshot.plan.map((item) => ({
@@ -1141,8 +1306,42 @@ function deriveTurnTodos(snapshot: OraStateSnapshot): TurnTodoItem[] {
   }));
 }
 
-function readRuntimeTodos(todos: OraStateSnapshot["todos"]): TurnTodoItem[] {
-  return todos.map((item, index) => ({
+function todosMirrorPlan(snapshot: OraStateSnapshot): boolean {
+  if (!snapshot.todos || snapshot.todos.length === 0 || snapshot.todos.length !== snapshot.plan.length) {
+    return false;
+  }
+
+  const planById = new Map(snapshot.plan.map((item) => [item.id, item]));
+  return snapshot.todos.every((todo) => {
+    const planItem = todo.sourcePlanItemId ? planById.get(todo.sourcePlanItemId) : undefined;
+    return planItem
+      && todo.label === planItem.title
+      && todo.status === planItem.status
+      && !todo.detail;
+  });
+}
+
+function planLooksLikeTemplate(snapshot: OraStateSnapshot): boolean {
+  if (!snapshot.modeSpec || snapshot.plan.length === 0) {
+    return false;
+  }
+
+  const template = modeSpecToPatternDefinition(snapshot.modeSpec).planTemplate;
+  if (template.length !== snapshot.plan.length) {
+    return false;
+  }
+
+  return snapshot.plan.every((item, index) => {
+    const templateItem = template[index];
+    return templateItem
+      && item.id === `${snapshot.runId}:${templateItem.id}`
+      && item.title === templateItem.title
+      && item.ownerAgentId === templateItem.ownerAgentId;
+  });
+}
+
+function readRuntimeTodos(todos: OraStateSnapshot["todos"] | undefined): TurnTodoItem[] {
+  return (todos ?? []).map((item, index) => ({
     id: item.id || `todo-${index}`,
     label: item.label,
     status: todoStatusFromPlan(item.status),

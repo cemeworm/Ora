@@ -3,6 +3,15 @@ import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig,
 import { useWorkbench } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
+const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
+
+function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
+  if (!projectId) {
+    return [...(modeToolIds ?? [])];
+  }
+  return [...new Set([...(modeToolIds ?? []), ...PROJECT_CHAT_SAFE_TOOL_IDS])];
+}
+
 async function pickProjectDirectory(): Promise<string | null> {
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -157,13 +166,15 @@ export function useRunActions() {
 
   async function startRun() {
     if (!state.selectedSessionId || !state.promptText.trim()) return;
+    const submittedPrompt = state.promptText;
     dispatch({ type: "SET_LOADING", loading: true });
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
+    const projectId = state.activeSessionDetail?.session.projectId;
     try {
       const snapshot = await runtimeClient.startRun(
         {
-          prompt: state.promptText,
-          projectId: state.activeSessionDetail?.session.projectId,
+          prompt: submittedPrompt,
+          projectId,
           context: { source: "desktop-workbench" },
         },
         {
@@ -173,6 +184,7 @@ export function useRunActions() {
           providerConfig: provider,
           customAgentId: state.selectedCustomAgentId,
           modelRef: provider?.modelId ?? "local/smoke-model",
+          toolIds: toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId),
           metadata: {
             providerId: state.selectedProviderId,
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
@@ -181,7 +193,7 @@ export function useRunActions() {
         state.selectedSessionId,
       );
       await refreshCurrentSession(snapshot, `Added turn ${snapshot.turnIndex ?? "?"} to the current session.`);
-      dispatch({ type: "SET_PROMPT", text: "" });
+      dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
       const health = runtimeClient.getHealth();
       if (health) {
         dispatch({ type: "SET_BRIDGE_STATUS", status: { mode: health.mode, ok: health.ok, label: health.service, detail: health.detail } });
