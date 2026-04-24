@@ -718,7 +718,18 @@ function beatLabel(event: OraEventEnvelope): string {
     case "checkpoint.created":
       return "Checkpoint";
     case "artifact.exported":
+    case "artifact.degraded":
       return "Artifact";
+    case "recovery.detected":
+      return "Recovery";
+    case "recovery.retry_scheduled":
+      return "Retry";
+    case "recovery.applied":
+      return "Recovered";
+    case "recovery.exhausted":
+      return "Recovery exhausted";
+    case "node.skipped":
+      return "Node skipped";
     case "run.interrupted":
       return "Interrupted";
     case "run.cancelled":
@@ -973,6 +984,12 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "tool.called":
     case "checkpoint.created":
     case "artifact.exported":
+    case "artifact.degraded":
+    case "recovery.detected":
+    case "recovery.retry_scheduled":
+    case "recovery.applied":
+    case "recovery.exhausted":
+    case "node.skipped":
     case "run.done":
     case "run.failed":
       return true;
@@ -996,8 +1013,19 @@ function processStepDetail(event: OraEventEnvelope): string {
     }
     return `${title} completed.`;
   }
-  if (event.type === "artifact.exported" && isRecord(event.payload) && typeof event.payload.label === "string") {
-    return `Published ${event.payload.label}.`;
+  if ((event.type === "artifact.exported" || event.type === "artifact.degraded") && isRecord(event.payload)) {
+    const label = isRecord(event.payload.artifact) && typeof event.payload.artifact.label === "string"
+      ? event.payload.artifact.label
+      : typeof event.payload.label === "string"
+        ? event.payload.label
+        : "artifact";
+    return event.type === "artifact.degraded" ? `Degraded ${label}.` : `Published ${label}.`;
+  }
+  if (event.type.startsWith("recovery.") && isRecord(event.payload) && isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
+    return event.payload.decision.summary;
+  }
+  if (event.type === "node.skipped" && isRecord(event.payload) && typeof event.payload.nodeLabel === "string") {
+    return `Skipped ${event.payload.nodeLabel}.`;
   }
   if (event.type === "checkpoint.created" && isRecord(event.payload) && isRecord(event.payload.checkpoint) && typeof event.payload.checkpoint.label === "string") {
     return `Checkpoint created: ${event.payload.checkpoint.label}.`;
@@ -1023,8 +1051,11 @@ function processStepStatus(event: OraEventEnvelope): TurnProcessStep["status"] {
     case "clarification.required":
     case "action.updated":
     case "task.failed":
+    case "recovery.exhausted":
     case "run.failed":
       return "blocked";
+    case "recovery.retry_scheduled":
+      return "active";
     default:
       return "complete";
   }
@@ -1044,8 +1075,14 @@ function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
     case "clarification.required":
       return "warning";
     case "artifact.exported":
+    case "artifact.degraded":
+    case "recovery.applied":
+    case "node.skipped":
     case "checkpoint.created":
       return "accent";
+    case "recovery.retry_scheduled":
+    case "recovery.exhausted":
+      return "warning";
     default:
       return "neutral";
   }

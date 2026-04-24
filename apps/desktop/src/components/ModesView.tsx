@@ -6,6 +6,8 @@ import {
   ensureModeNodePositions,
   getModeNodeRuntimeTemplateDefinition,
   getPatternDefinition,
+  RecoveryActionSchema,
+  RecoveryErrorTypeSchema,
   type CoordinationPattern,
 } from "@ora/shared";
 import ReactFlow, {
@@ -816,6 +818,11 @@ function ModeInspector({
         />
       )}
 
+      <RecoveryPolicyPanel
+        draft={draft}
+        onPatchDraft={onPatchDraft}
+      />
+
       <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} />
 
       {onDeleteMode && (
@@ -938,6 +945,237 @@ function WorkspaceToolsPanel({
       </div>
     </div>
   );
+}
+
+function RecoveryPolicyPanel({
+  draft,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  const recoveryEnabled = draft.runtimeAtoms.includes("recovery_policy");
+  const enabledTools = draft.capabilityFlags.toolIds;
+  const nodeTemplates = [...new Set(draft.nodes.map((node) => node.template))];
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Recovery</p>
+          <h4 className="mt-1 text-sm font-semibold">Runtime policy</h4>
+        </div>
+        <button
+          type="button"
+          onClick={() => onPatchDraft((current) => ({
+            ...current,
+            runtimeAtoms: current.runtimeAtoms.includes("recovery_policy")
+              ? current.runtimeAtoms.filter((atomId) => atomId !== "recovery_policy")
+              : [...current.runtimeAtoms, "recovery_policy"],
+          }))}
+          className={cn(
+            "inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition",
+            recoveryEnabled
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-bench-200 bg-white text-bench-700 hover:bg-bench-50",
+          )}
+        >
+          <Check size={13} />
+          {recoveryEnabled ? "On" : "Off"}
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Attempts</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.recoveryPolicy.defaults.maxAttempts}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              recoveryPolicy: {
+                ...current.recoveryPolicy,
+                defaults: {
+                  ...current.recoveryPolicy.defaults,
+                  maxAttempts: Math.max(0, Number(event.target.value) || 0),
+                },
+              },
+            }))}
+            className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+          />
+        </label>
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Backoff ms</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.recoveryPolicy.defaults.backoffMs}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              recoveryPolicy: {
+                ...current.recoveryPolicy,
+                defaults: {
+                  ...current.recoveryPolicy.defaults,
+                  backoffMs: Math.max(0, Number(event.target.value) || 0),
+                },
+              },
+            }))}
+            className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+          />
+        </label>
+      </div>
+
+      <label className="mt-3 flex items-center gap-2 text-xs font-medium text-bench-700">
+        <input
+          type="checkbox"
+          checked={draft.recoveryPolicy.defaults.fallbackArtifact}
+          onChange={(event) => onPatchDraft((current) => ({
+            ...current,
+            recoveryPolicy: {
+              ...current.recoveryPolicy,
+              defaults: {
+                ...current.recoveryPolicy.defaults,
+                fallbackArtifact: event.target.checked,
+              },
+            },
+          }))}
+        />
+        Degraded artifact
+      </label>
+
+      <div className="mt-5 grid gap-3">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-bench-500">Rules</p>
+          <button
+            type="button"
+            onClick={() => onPatchDraft((current) => ({
+              ...current,
+              recoveryPolicy: {
+                ...current.recoveryPolicy,
+                rules: [
+                  ...current.recoveryPolicy.rules,
+                  {
+                    id: `custom-${current.recoveryPolicy.rules.length + 1}`,
+                    enabled: true,
+                    errorTypes: ["tool_error"],
+                    nodeIds: [],
+                    nodeTemplates: [],
+                    toolIds: [],
+                    action: "fallback_artifact",
+                    alternateToolIds: [],
+                    skipAllowed: false,
+                  },
+                ],
+              },
+            }))}
+            className="inline-flex h-8 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold text-bench-800 transition hover:bg-bench-50"
+          >
+            <Plus size={13} />
+            Add
+          </button>
+        </div>
+
+        {draft.recoveryPolicy.rules.map((rule, index) => (
+          <div key={rule.id} className="grid gap-3 rounded-lg border border-bench-200 bg-bench-50/70 p-3">
+            <div className="flex items-center gap-2">
+              <input
+                value={rule.id}
+                onChange={(event) => onPatchDraft((current) => ({
+                  ...current,
+                  recoveryPolicy: {
+                    ...current.recoveryPolicy,
+                    rules: current.recoveryPolicy.rules.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, id: event.target.value } : item,
+                    ),
+                  },
+                }))}
+                className="h-8 min-w-0 flex-1 rounded-md border border-bench-200 px-2 text-xs outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => onPatchDraft((current) => ({
+                  ...current,
+                  recoveryPolicy: {
+                    ...current.recoveryPolicy,
+                    rules: current.recoveryPolicy.rules.filter((_item, itemIndex) => itemIndex !== index),
+                  },
+                }))}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-bench-200 bg-white text-bench-700 transition hover:bg-bench-50"
+                title="Delete rule"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={rule.errorTypes[0] ?? "tool_error"}
+                onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { errorTypes: [event.target.value as OraModeSpec["recoveryPolicy"]["rules"][number]["errorTypes"][number]] })}
+                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+              >
+                {RecoveryErrorTypeSchema.options.map((errorType) => (
+                  <option key={errorType} value={errorType}>{errorType}</option>
+                ))}
+              </select>
+              <select
+                value={rule.action}
+                onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { action: event.target.value as OraModeSpec["recoveryPolicy"]["rules"][number]["action"] })}
+                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+              >
+                {RecoveryActionSchema.options.map((action) => (
+                  <option key={action} value={action}>{action}</option>
+                ))}
+              </select>
+              <select
+                value={rule.nodeTemplates[0] ?? ""}
+                onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { nodeTemplates: event.target.value ? [event.target.value] : [] })}
+                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+              >
+                <option value="">any node</option>
+                {nodeTemplates.map((template) => (
+                  <option key={template} value={template}>{template}</option>
+                ))}
+              </select>
+              <select
+                value={rule.alternateToolIds[0] ?? ""}
+                onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { alternateToolIds: event.target.value ? [event.target.value] : [] })}
+                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+              >
+                <option value="">no alternate</option>
+                {enabledTools.map((toolId) => (
+                  <option key={toolId} value={toolId}>{toolId}</option>
+                ))}
+              </select>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-bench-700">
+              <input
+                type="checkbox"
+                checked={rule.skipAllowed}
+                onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { skipAllowed: event.target.checked })}
+              />
+              Skip allowed
+            </label>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function onPatchRecoveryRule(
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void,
+  index: number,
+  patch: Partial<OraModeSpec["recoveryPolicy"]["rules"][number]>,
+) {
+  onPatchDraft((current) => ({
+    ...current,
+    recoveryPolicy: {
+      ...current.recoveryPolicy,
+      rules: current.recoveryPolicy.rules.map((rule, ruleIndex) =>
+        ruleIndex === index ? { ...rule, ...patch } : rule,
+      ),
+    },
+  }));
 }
 
 function ModeSummaryCards({
@@ -1495,7 +1733,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, recoveryPolicy } = spec;
   return {
     id,
     family,
@@ -1512,6 +1750,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     defaultBudget,
     profiles,
     runtimeAtoms,
+    recoveryPolicy,
   };
 }
 

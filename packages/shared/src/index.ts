@@ -150,6 +150,131 @@ export const PolicyDecisionSchema = z.object({
 });
 export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
 
+export const RecoveryErrorTypeSchema = z.enum([
+  "provider_transient",
+  "provider_busy",
+  "provider_auth",
+  "provider_quota",
+  "tool_error",
+  "tool_policy_denied",
+  "tool_output_invalid",
+  "model_output_invalid",
+  "node_exception",
+  "node_timeout",
+  "loop_detected",
+  "subagent_limit",
+  "approval_required",
+  "clarification_required",
+]);
+export type RecoveryErrorType = z.infer<typeof RecoveryErrorTypeSchema>;
+
+export const RecoveryActionSchema = z.enum([
+  "retry",
+  "alternate_tool",
+  "skip_node",
+  "fallback_artifact",
+  "interrupt",
+  "fail",
+]);
+export type RecoveryAction = z.infer<typeof RecoveryActionSchema>;
+
+export const RecoveryPolicyDefaultsSchema = z.object({
+  maxAttempts: z.number().int().nonnegative().default(1),
+  backoffMs: z.number().int().nonnegative().default(250),
+  backoffMultiplier: z.number().min(1).default(2),
+  capDelayMs: z.number().int().nonnegative().default(2000),
+  fallbackArtifact: z.boolean().default(true),
+});
+export type RecoveryPolicyDefaults = z.infer<typeof RecoveryPolicyDefaultsSchema>;
+
+export const RecoveryRuleSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1).optional(),
+  enabled: z.boolean().default(true),
+  errorTypes: z.array(RecoveryErrorTypeSchema).min(1),
+  nodeIds: z.array(z.string().min(1)).default([]),
+  nodeTemplates: z.array(z.string().min(1)).default([]),
+  toolIds: z.array(z.string().min(1)).default([]),
+  action: RecoveryActionSchema,
+  maxAttempts: z.number().int().nonnegative().optional(),
+  alternateToolIds: z.array(z.string().min(1)).default([]),
+  skipAllowed: z.boolean().default(false),
+  fallbackSummary: z.string().min(1).optional(),
+  fallbackUsableOutput: z.unknown().optional(),
+});
+export type RecoveryRule = z.infer<typeof RecoveryRuleSchema>;
+
+export const ModeRecoveryPolicySchema = z.object({
+  version: z.literal(1).default(1),
+  defaults: RecoveryPolicyDefaultsSchema.default({
+    maxAttempts: 1,
+    backoffMs: 250,
+    backoffMultiplier: 2,
+    capDelayMs: 2000,
+    fallbackArtifact: true,
+  }),
+  rules: z.array(RecoveryRuleSchema).default([]),
+});
+export type ModeRecoveryPolicy = z.infer<typeof ModeRecoveryPolicySchema>;
+
+export const RecoveryArtifactSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  nodeId: z.string().min(1).optional(),
+  toolId: z.string().min(1).optional(),
+  errorType: RecoveryErrorTypeSchema,
+  decision: RecoveryActionSchema,
+  summary: z.string().min(1),
+  usableOutput: z.unknown().optional(),
+  originalError: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+});
+export type RecoveryArtifact = z.infer<typeof RecoveryArtifactSchema>;
+
+export const DEFAULT_MODE_RECOVERY_POLICY = ModeRecoveryPolicySchema.parse({
+  version: 1,
+  defaults: {
+    maxAttempts: 1,
+    backoffMs: 250,
+    backoffMultiplier: 2,
+    capDelayMs: 2000,
+    fallbackArtifact: true,
+  },
+  rules: [
+    {
+      id: "provider-transient-retry",
+      label: "Provider transient retry",
+      errorTypes: ["provider_transient", "provider_busy"],
+      action: "retry",
+      maxAttempts: 3,
+    },
+    {
+      id: "provider-hard-fallback",
+      label: "Provider hard fallback",
+      errorTypes: ["provider_auth", "provider_quota"],
+      action: "fallback_artifact",
+    },
+    {
+      id: "tool-error-fallback",
+      label: "Tool error fallback",
+      errorTypes: ["tool_error", "tool_policy_denied", "tool_output_invalid"],
+      action: "fallback_artifact",
+    },
+    {
+      id: "runtime-node-fail",
+      label: "Runtime node fail",
+      errorTypes: ["model_output_invalid", "node_exception", "node_timeout", "loop_detected", "subagent_limit"],
+      action: "fail",
+    },
+    {
+      id: "human-interrupt",
+      label: "Human interrupt",
+      errorTypes: ["approval_required", "clarification_required"],
+      action: "interrupt",
+    },
+  ],
+});
+
 export const UserTaskInputSchema = z.object({
   taskId: z.string().min(1).optional(),
   prompt: z.string().min(1),
@@ -268,6 +393,12 @@ export const OraEventTypeSchema = z.enum([
   "worker.released",
   "checkpoint.created",
   "artifact.exported",
+  "artifact.degraded",
+  "recovery.detected",
+  "recovery.retry_scheduled",
+  "recovery.applied",
+  "recovery.exhausted",
+  "node.skipped",
   "run.interrupted",
   "run.cancelled",
   "run.done",
@@ -1123,6 +1254,7 @@ export type ModeEdgeSpec = z.infer<typeof ModeEdgeSpecSchema>;
 
 export const ModeRuntimeAtomIdSchema = z.enum([
   "thread_workspace",
+  "recovery_policy",
   "tool_error_boundary",
   "loop_guard",
   "clarification_interrupt",
@@ -1206,6 +1338,7 @@ export const ModeSpecSchema = z.object({
   defaultBudget: ResourceBudgetSchema,
   profiles: z.array(AgentProfileSchema).min(1),
   runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
+  recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -1478,6 +1611,21 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
       presentation: "mode_capability",
       edgeKind: "control",
       edgeLabel: "workspace",
+    },
+    defaultEnabled: true,
+  },
+  {
+    id: "recovery_policy",
+    scope: "mode",
+    label: "Recovery Policy",
+    description: "Apply configured retry, alternate-tool, skip, and degraded-artifact recovery rules across runtime boundaries.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "recover",
     },
     defaultEnabled: true,
   },
@@ -2719,6 +2867,60 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
       if (activeRuntimeAtoms.has(atom.id)) {
         warnings.push(`Node '${node.id}' redundantly enables runtime atom '${atom.id}' that is already active for the mode.`);
       }
+    }
+  }
+
+  const nodeById = new Map(spec.nodes.map((node) => [node.id, node]));
+  const requiredTemplates = new Set(rule.requiredTemplates);
+  for (const recoveryRule of spec.recoveryPolicy.rules.filter((item) => item.enabled)) {
+    for (const nodeId of recoveryRule.nodeIds) {
+      if (!nodeIds.has(nodeId)) {
+        errors.push(`Recovery rule '${recoveryRule.id}' references unknown node '${nodeId}'.`);
+      }
+    }
+    for (const template of recoveryRule.nodeTemplates) {
+      const parsed = ModeNodeTemplateSchema.safeParse(template);
+      if (!parsed.success) {
+        errors.push(`Recovery rule '${recoveryRule.id}' references unknown node template '${template}'.`);
+      }
+    }
+    for (const toolId of recoveryRule.toolIds) {
+      if (!spec.capabilityFlags.toolIds.includes(toolId)) {
+        errors.push(`Recovery rule '${recoveryRule.id}' references disabled tool '${toolId}'.`);
+      }
+    }
+    if (recoveryRule.action === "alternate_tool") {
+      if (recoveryRule.alternateToolIds.length === 0) {
+        errors.push(`Recovery rule '${recoveryRule.id}' must configure at least one alternate tool.`);
+      }
+      for (const alternateToolId of recoveryRule.alternateToolIds) {
+        if (!spec.capabilityFlags.toolIds.includes(alternateToolId)) {
+          errors.push(`Recovery rule '${recoveryRule.id}' alternate tool '${alternateToolId}' is not enabled for the mode.`);
+        }
+      }
+    }
+    if (recoveryRule.action === "skip_node") {
+      if (!recoveryRule.skipAllowed) {
+        errors.push(`Recovery rule '${recoveryRule.id}' must set skipAllowed before it can skip nodes.`);
+      }
+      for (const template of recoveryRule.nodeTemplates) {
+        if (requiredTemplates.has(template as ModeNodeTemplate)) {
+          errors.push(`Recovery rule '${recoveryRule.id}' cannot skip required node template '${template}'.`);
+        }
+      }
+      for (const nodeId of recoveryRule.nodeIds) {
+        const node = nodeById.get(nodeId);
+        if (node && requiredTemplates.has(node.template)) {
+          errors.push(`Recovery rule '${recoveryRule.id}' cannot skip required node '${nodeId}'.`);
+        }
+      }
+    }
+    if (
+      recoveryRule.errorTypes.some((errorType) => errorType === "approval_required" || errorType === "clarification_required") &&
+      recoveryRule.action !== "interrupt" &&
+      recoveryRule.action !== "fail"
+    ) {
+      errors.push(`Recovery rule '${recoveryRule.id}' cannot automatically recover approval or clarification interrupts.`);
     }
   }
 

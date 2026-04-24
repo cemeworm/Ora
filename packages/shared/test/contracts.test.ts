@@ -26,6 +26,7 @@ import {
   MVP_MODES,
   MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
+  ModeRecoveryPolicySchema,
   ModeSpecSchema,
   ModeValidationResultSchema,
   MVP_TOOLS,
@@ -47,6 +48,8 @@ import {
   ProviderSecretWriteSchema,
   ProviderStatusSchema,
   ProviderVerifyParamsSchema,
+  RecoveryActionSchema,
+  RecoveryErrorTypeSchema,
   ResourceBudgetSchema,
   RuntimeBootstrapSchema,
   RunConfigSchema,
@@ -145,6 +148,64 @@ describe("Ora shared contracts", () => {
 
     const hydrated = ensureModeNodePositions(parsed);
     expect(hydrated.nodes.every((node) => node.position)).toBe(true);
+  });
+
+  it("accepts legacy mode specs without a recovery policy", () => {
+    const { recoveryPolicy: _recoveryPolicy, ...legacy } = MVP_MODES[1]!;
+    const parsed = ModeSpecSchema.parse(legacy);
+
+    expect(parsed.recoveryPolicy.version).toBe(1);
+    expect(ModeRecoveryPolicySchema.parse(parsed.recoveryPolicy).rules.length).toBeGreaterThan(0);
+    expect(RecoveryErrorTypeSchema.parse("provider_transient")).toBe("provider_transient");
+    expect(RecoveryActionSchema.parse("fallback_artifact")).toBe("fallback_artifact");
+  });
+
+  it("validates recovery policy tool and skip constraints", () => {
+    const alternateToolValidation = validateModeSpec({
+      ...MVP_MODES[1]!,
+      recoveryPolicy: {
+        ...MVP_MODES[1]!.recoveryPolicy,
+        rules: [
+          {
+            id: "bad-alternate",
+            enabled: true,
+            errorTypes: ["tool_error"],
+            nodeIds: [],
+            nodeTemplates: [],
+            toolIds: [],
+            action: "alternate_tool",
+            alternateToolIds: ["file.read"],
+            skipAllowed: false,
+          },
+        ],
+      },
+    });
+
+    expect(alternateToolValidation.valid).toBe(false);
+    expect(alternateToolValidation.errors.join(" ")).toContain("alternate tool 'file.read' is not enabled");
+
+    const skipValidation = validateModeSpec({
+      ...MVP_MODES[1]!,
+      recoveryPolicy: {
+        ...MVP_MODES[1]!.recoveryPolicy,
+        rules: [
+          {
+            id: "bad-skip",
+            enabled: true,
+            errorTypes: ["node_exception"],
+            nodeIds: [],
+            nodeTemplates: ["decompose"],
+            toolIds: [],
+            action: "skip_node",
+            alternateToolIds: [],
+            skipAllowed: true,
+          },
+        ],
+      },
+    });
+
+    expect(skipValidation.valid).toBe(false);
+    expect(skipValidation.errors.join(" ")).toContain("cannot skip required node template 'decompose'");
   });
 
   it("keeps validation and layout semantics independent", () => {

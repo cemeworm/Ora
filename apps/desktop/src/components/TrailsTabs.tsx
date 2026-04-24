@@ -670,6 +670,18 @@ function timelineLabel(eventType: string) {
       return "Task failed";
     case "checkpoint.created":
       return "Checkpoint captured";
+    case "artifact.degraded":
+      return "Degraded artifact";
+    case "recovery.detected":
+      return "Recovery detected";
+    case "recovery.retry_scheduled":
+      return "Retry scheduled";
+    case "recovery.applied":
+      return "Recovery applied";
+    case "recovery.exhausted":
+      return "Recovery exhausted";
+    case "node.skipped":
+      return "Node skipped";
     case "message.delta":
       return "Assistant message";
     case "run.started":
@@ -685,6 +697,9 @@ function timelineLabel(eventType: string) {
 
 function timelineDetail(event: OraStateSnapshot["events"][number]) {
   if (isRecord(event.payload)) {
+    if (isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
+      return event.payload.decision.summary;
+    }
     if (typeof event.payload.summary === "string") {
       return event.payload.summary;
     }

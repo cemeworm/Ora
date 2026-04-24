@@ -678,6 +678,103 @@ describe("Ora runtime smoke path", () => {
     });
   });
 
+  it("retries transient provider failures before completing the run", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.RETRY_PROVIDER_KEY;
+    process.env.RETRY_PROVIDER_KEY = "test";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls < 3) {
+        return new Response("server busy", { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "Recovered provider answer." } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const cloned = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "modes.cloneFromPreset",
+        params: {
+          sourceModeId: "orchestrator_subagent",
+          modeId: "orchestrator-retry-provider",
+          label: "Orchestrator Retry Provider",
+        },
+      }) as any;
+
+      await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "modes.update",
+        params: {
+          modeId: cloned.id,
+          spec: {
+            ...cloned,
+            recoveryPolicy: {
+              ...cloned.recoveryPolicy,
+              defaults: {
+                ...cloned.recoveryPolicy.defaults,
+                backoffMs: 0,
+                capDelayMs: 0,
+              },
+            },
+          },
+        },
+      });
+
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Retry transient provider errors." },
+          config: {
+            modeId: cloned.id,
+            providerId: "retry-provider",
+            providerConfig: {
+              id: "retry-provider",
+              label: "Retry Provider",
+              type: "openai_compatible",
+              modelId: "retry-chat",
+              baseUrl: "https://example.test/v1",
+              apiKeyEnv: "RETRY_PROVIDER_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(
+        await handle({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "runs.state",
+          params: { runId: run.runId },
+        }),
+      );
+
+      expect(calls).toBeGreaterThanOrEqual(3);
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(state.events.filter((event) => event.type === "recovery.retry_scheduled")).toHaveLength(2);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Recovered provider answer."),
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.RETRY_PROVIDER_KEY;
+      } else {
+        process.env.RETRY_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
   it("fails the run when tool_error_boundary is removed from the mode", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const cloned = await handle({
@@ -700,7 +797,7 @@ describe("Ora runtime smoke path", () => {
         spec: {
           ...cloned,
           summary: "Custom orchestrator mode without the tool error boundary.",
-          runtimeAtoms: cloned.runtimeAtoms.filter((atom: string) => atom !== "tool_error_boundary"),
+          runtimeAtoms: cloned.runtimeAtoms.filter((atom: string) => atom !== "tool_error_boundary" && atom !== "recovery_policy"),
         },
       },
     });

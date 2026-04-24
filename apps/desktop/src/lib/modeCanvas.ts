@@ -53,6 +53,18 @@ export function hydrateModeDraft(mode: OraModeSpec): OraModeSpec {
     editorConstraints: { ...mode.editorConstraints, readOnly: false },
     defaultBudget: { ...mode.defaultBudget },
     profiles: mode.profiles.map((profile) => ({ ...profile })),
+    recoveryPolicy: {
+      ...mode.recoveryPolicy,
+      defaults: { ...mode.recoveryPolicy.defaults },
+      rules: mode.recoveryPolicy.rules.map((rule) => ({
+        ...rule,
+        errorTypes: [...rule.errorTypes],
+        nodeIds: [...rule.nodeIds],
+        nodeTemplates: [...rule.nodeTemplates],
+        toolIds: [...rule.toolIds],
+        alternateToolIds: [...rule.alternateToolIds],
+      })),
+    },
     systemPreset: false,
     createdAt: mode.createdAt ?? Date.now(),
     updatedAt: Date.now(),
@@ -81,6 +93,18 @@ export function resetModeDraftFamily(mode: OraModeSpec, family: CoordinationPatt
     failureMode: preset.failureMode,
     defaultBudget: { ...preset.defaultBudget },
     profiles: preset.profiles.map((profile) => ({ ...profile })),
+    recoveryPolicy: {
+      ...preset.recoveryPolicy,
+      defaults: { ...preset.recoveryPolicy.defaults },
+      rules: preset.recoveryPolicy.rules.map((rule) => ({
+        ...rule,
+        errorTypes: [...rule.errorTypes],
+        nodeIds: [...rule.nodeIds],
+        nodeTemplates: [...rule.nodeTemplates],
+        toolIds: [...rule.toolIds],
+        alternateToolIds: [...rule.alternateToolIds],
+      })),
+    },
     updatedAt: Date.now(),
   };
 }

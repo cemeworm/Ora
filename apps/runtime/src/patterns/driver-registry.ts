@@ -23,6 +23,12 @@ export interface PatternExecutionContext {
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
   setQueueSummary(patch: Partial<QueueSummary>): void;
+  runRecoverableNode<T>(params: {
+    nodeId: string;
+    nodeTemplate: string;
+    nodeLabel: string;
+    agentId?: string;
+  }, execute: () => Promise<T>): Promise<{ status: "completed"; output: T } | { status: "skipped"; output?: unknown }>;
   runDelegatedTask<T>(params: {
     taskId: string;
     nodeId: string;
@@ -227,15 +233,33 @@ async function runNode(
     inProgress: 1,
     completed: completedNodes,
   });
-  const result = nodeAtomIds(node).has("subagent_delegate")
-    ? await context.runDelegatedTask({
-        taskId: `task:${node.id}`,
-        nodeId: node.id,
-        nodeLabel: node.label,
-        agentId: node.ownerAgentId ?? node.id,
-        title: titleForNode(node, node.label),
-      }, execute)
-    : await execute();
+  const recovered = await context.runRecoverableNode({
+    nodeId: node.id,
+    nodeTemplate: node.template,
+    nodeLabel: node.label,
+    agentId: node.ownerAgentId ?? node.id,
+  }, () => (
+    nodeAtomIds(node).has("subagent_delegate")
+      ? context.runDelegatedTask({
+          taskId: `task:${node.id}`,
+          nodeId: node.id,
+          nodeLabel: node.label,
+          agentId: node.ownerAgentId ?? node.id,
+          title: titleForNode(node, node.label),
+        }, execute)
+      : execute()
+  ));
+  const result = recovered.output;
+  const nextCompleted = completedNodes + 1;
+  if (recovered.status === "skipped") {
+    context.setPlanStatus(node.id, "skipped");
+    context.setQueueSummary({
+      pending: Math.max(0, totalActiveNodes - nextCompleted),
+      inProgress: 0,
+      completed: nextCompleted,
+    });
+    return nextCompleted;
+  }
   if (modeSpec.runtimeAtoms.includes("memory_capture") && result !== undefined) {
     context.captureMemory({
       id: `atom-memory-${node.id}-${completedNodes + 1}`,
@@ -261,7 +285,6 @@ async function runNode(
       },
     });
   }
-  const nextCompleted = completedNodes + 1;
   context.setPlanStatus(node.id, "done");
   context.setQueueSummary({
     pending: Math.max(0, totalActiveNodes - nextCompleted),

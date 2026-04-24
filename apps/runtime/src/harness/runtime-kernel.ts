@@ -15,6 +15,7 @@ import {
   type BusStats,
   type MemoryKind,
   type PendingClarification,
+  RecoveryArtifactSchema,
   OraEventEnvelopeSchema,
   PendingClarificationSchema,
   StateSnapshotSchema,
@@ -22,7 +23,8 @@ import {
 import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
 import { configuredProviderId, invokeRunProvider } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
-import { RuntimeToolExecutor } from "./runtime-tool-executor.js";
+import { RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
+import { classifyRecoveryError, RecoveryCoordinator, type RecoveryDecision, type RecoveryIncident } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { ModelMessage, ModelResponse } from "../providers/index.js";
 
@@ -59,6 +61,13 @@ class ApprovalInterruptError extends Error {
 }
 
 const RUNTIME_TOOL_LOOP_LIMIT = 4;
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function workspaceSystemPrompt(workspace: unknown): string | undefined {
   if (!workspace || typeof workspace !== "object" || workspace === null) {
@@ -187,6 +196,49 @@ export async function executeRuntimeKernel(
     });
     events.push(envelope);
     return envelope;
+  };
+
+  const recoveryCoordinator = new RecoveryCoordinator(modeSpec, runtimeToolExecutor.enabledToolIds(config.toolIds));
+
+  const publishRecoveryArtifact = (incident: RecoveryIncident, decision: RecoveryDecision) => {
+    const recoveryArtifact = RecoveryArtifactSchema.parse({
+      id: `${runId}:recovery:${artifacts.length}`,
+      runId,
+      nodeId: incident.nodeId,
+      toolId: incident.toolId,
+      errorType: incident.errorType,
+      decision: decision.action,
+      summary: decision.summary,
+      usableOutput: decision.usableOutput,
+      originalError: incident.detail,
+      createdAt: now(),
+    });
+    const artifact = ArtifactRefSchema.parse({
+      id: recoveryArtifact.id,
+      runId,
+      kind: "log",
+      label: "Recovery artifact",
+      mimeType: "application/json",
+      createdAt: recoveryArtifact.createdAt,
+      payload: recoveryArtifact,
+    });
+    artifacts.push(artifact);
+    emit("artifact.degraded", { artifact, recovery: recoveryArtifact }, {
+      nodeId: incident.nodeId,
+      agentId: incident.agentId,
+    });
+    return recoveryArtifact;
+  };
+
+  const emitRecoveryDecision = (incident: RecoveryIncident, decision: RecoveryDecision) => {
+    emit("recovery.detected", { incident }, { nodeId: incident.nodeId, agentId: incident.agentId });
+    if (decision.action === "retry") {
+      emit("recovery.retry_scheduled", { incident, decision }, { nodeId: incident.nodeId, agentId: incident.agentId });
+    } else if (decision.action === "fail") {
+      emit("recovery.exhausted", { incident, decision }, { nodeId: incident.nodeId, agentId: incident.agentId });
+    } else {
+      emit("recovery.applied", { incident, decision }, { nodeId: incident.nodeId, agentId: incident.agentId });
+    }
   };
 
   const emitPlanUpdated = () => {
@@ -349,6 +401,98 @@ export async function executeRuntimeKernel(
           error: detail,
         }, { agentId: params.agentId, nodeId: params.agentId });
         emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
+
+        const incident = classifyRecoveryError(error, {
+          surface: "tool",
+          nodeId: params.agentId,
+          agentId: params.agentId,
+          toolId: toolCall.tool,
+          actionId: action.id,
+        });
+        const recoveryDecision = recoveryCoordinator.resolve(incident);
+        emitRecoveryDecision(incident, recoveryDecision);
+
+        if (recoveryDecision.action === "retry") {
+          await sleep(recoveryDecision.retryDelayMs ?? 0);
+          continue;
+        }
+
+        if (recoveryDecision.action === "alternate_tool" && recoveryDecision.alternateToolId) {
+          const alternateCall: RuntimeToolCall = {
+            tool: recoveryDecision.alternateToolId as RuntimeToolCall["tool"],
+            args: toolCall.args,
+          };
+          const alternateAction = actionLedger.propose({
+            id: `${params.agentId}-tool-recovery-${events.length}`,
+            type: alternateCall.tool,
+            riskLevel: runtimeToolExecutor.riskLevel(alternateCall),
+            input: alternateCall.args,
+            agentId: params.agentId,
+          });
+          emit("action.updated", { actionId: alternateAction.id, status: "proposed", record: alternateAction }, { agentId: params.agentId, nodeId: params.agentId });
+          const alternateDecision = policyService.evaluate(alternateAction);
+          const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
+          if (alternateDecision.requiredApproval && config.approvalMode !== "auto" && !approvedActionIds.has(alternateAction.id)) {
+            const blocked = actionLedger.transition(alternateAction.id, "approval_required");
+            emit("approval.required", { actionId: alternateAction.id, decision: alternateDecision }, { agentId: params.agentId, nodeId: params.agentId });
+            emit("action.updated", { actionId: alternateAction.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
+            throw new ApprovalInterruptError(alternateAction.id);
+          }
+          const alternateRunning = actionLedger.transition(alternateAction.id, "running");
+          emit("action.updated", { actionId: alternateAction.id, status: "running", record: alternateRunning }, { agentId: params.agentId, nodeId: params.agentId });
+          const alternateOutput = await runtimeToolExecutor.execute(alternateCall, {
+            allowRisky: !alternateDecision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(alternateAction.id),
+          });
+          const alternateSucceeded = actionLedger.transition(alternateAction.id, "succeeded", { output: alternateOutput });
+          emit("tool.called", {
+            actionId: alternateAction.id,
+            toolId: alternateCall.tool,
+            status: "succeeded",
+            input: alternateCall.args,
+            output: alternateOutput,
+            recoveredFrom: toolCall.tool,
+          }, { agentId: params.agentId, nodeId: params.agentId });
+          emit("action.updated", { actionId: alternateAction.id, status: "succeeded", record: alternateSucceeded }, { agentId: params.agentId, nodeId: params.agentId });
+          messages = [
+            ...messages,
+            { role: "assistant", content: response.text },
+            { role: "user", content: `Workspace tool result for ${alternateCall.tool}:\n${JSON.stringify(alternateOutput, null, 2)}` },
+          ];
+          response = await invokeRunProvider(config, {
+            messages,
+            system: params.system,
+            maxTokens: config.budget?.maxTokens,
+          });
+          continue;
+        }
+
+        if (recoveryDecision.action === "fallback_artifact") {
+          const recoveryArtifact = publishRecoveryArtifact(incident, recoveryDecision);
+          const fallbackPrefix = modeSpec.runtimeAtoms.includes("tool_error_boundary") ? "[tool-error-boundary]" : "[recovery:fallback]";
+          emit("message.delta", {
+            role: "assistant",
+            content: `${fallbackPrefix} ${toolCall.tool} degraded after ${incident.errorType}: ${incident.detail}`,
+            boundary: modeSpec.runtimeAtoms.includes("recovery_policy") ? "recovery_policy" : "tool_error_boundary",
+          }, { agentId: params.agentId, nodeId: params.agentId });
+          const fallbackOutput = recoveryDecision.usableOutput ?? {
+            degraded: true,
+            recoveryArtifactId: recoveryArtifact.id,
+            errorType: incident.errorType,
+            error: incident.detail,
+          };
+          messages = [
+            ...messages,
+            { role: "assistant", content: response.text },
+            { role: "user", content: `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}` },
+          ];
+          response = await invokeRunProvider(config, {
+            messages,
+            system: params.system,
+            maxTokens: config.budget?.maxTokens,
+          });
+          continue;
+        }
+
         throw error;
       }
     }
@@ -414,64 +558,95 @@ export async function executeRuntimeKernel(
 
     const running = actionLedger.transition(action.id, "running");
     emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
-    try {
-      const response = await invokeProviderWithWorkspaceTools({
-        agentId: params.agentId,
-        title: params.title,
-        prompt: params.prompt,
-        system: params.system,
-      });
+    while (true) {
+      try {
+        const response = await invokeProviderWithWorkspaceTools({
+          agentId: params.agentId,
+          title: params.title,
+          prompt: params.prompt,
+          system: params.system,
+        });
 
-      emit("tool.called", {
-        actionId: action.id,
-        providerId: response.providerId,
-        modelId: response.modelId,
-        title: params.title,
-        status: "succeeded",
-      }, { agentId: params.agentId, nodeId: params.agentId });
-      emit("message.delta", { role: "assistant", content: response.text }, { agentId: params.agentId, nodeId: params.agentId });
-      emit("token.delta", {
-        text: response.text.slice(0, 32),
-        tokenCount: Math.max(1, response.text.split(/\s+/).filter(Boolean).length),
-        budget: config.budget,
-      }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("tool.called", {
+          actionId: action.id,
+          providerId: response.providerId,
+          modelId: response.modelId,
+          title: params.title,
+          status: "succeeded",
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("message.delta", { role: "assistant", content: response.text }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("token.delta", {
+          text: response.text.slice(0, 32),
+          tokenCount: Math.max(1, response.text.split(/\s+/).filter(Boolean).length),
+          budget: config.budget,
+        }, { agentId: params.agentId, nodeId: params.agentId });
 
-      const succeeded = actionLedger.transition(action.id, "succeeded", {
-        output: response.raw,
-      });
-      emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
-      emit("agent.completed", { title: params.title }, { agentId: params.agentId, nodeId: params.agentId });
-      activeAgents.delete(params.agentId);
-      setTopologyStatus(params.agentId, "done");
-      return response.text;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const failed = actionLedger.transition(action.id, "failed", { error: detail });
-      emit("tool.called", {
-        actionId: action.id,
-        providerId: configuredProviderId(config) ?? "unknown",
-        title: params.title,
-        status: "failed",
-        error: detail,
-      }, { agentId: params.agentId, nodeId: params.agentId });
-      emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
-
-      if (!modeSpec.runtimeAtoms.includes("tool_error_boundary")) {
+        const succeeded = actionLedger.transition(action.id, "succeeded", {
+          output: response.raw,
+        });
+        emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("agent.completed", { title: params.title }, { agentId: params.agentId, nodeId: params.agentId });
         activeAgents.delete(params.agentId);
-        setTopologyStatus(params.agentId, "failed");
-        throw error;
-      }
+        setTopologyStatus(params.agentId, "done");
+        return response.text;
+      } catch (error) {
+        if (error instanceof ApprovalInterruptError || error instanceof ClarificationInterruptError) {
+          activeAgents.delete(params.agentId);
+          setTopologyStatus(params.agentId, "blocked");
+          throw error;
+        }
 
-      const fallback = `[tool-error-boundary] ${params.title} degraded after provider failure: ${detail}`;
-      emit("message.delta", {
-        role: "assistant",
-        content: fallback,
-        boundary: "tool_error_boundary",
-      }, { agentId: params.agentId, nodeId: params.agentId });
-      emit("agent.completed", { title: params.title, degraded: true }, { agentId: params.agentId, nodeId: params.agentId });
-      activeAgents.delete(params.agentId);
-      setTopologyStatus(params.agentId, "done");
-      return fallback;
+        const detail = error instanceof Error ? error.message : String(error);
+        const failed = actionLedger.transition(action.id, "failed", { error: detail });
+        emit("tool.called", {
+          actionId: action.id,
+          providerId: configuredProviderId(config) ?? "unknown",
+          title: params.title,
+          status: "failed",
+          error: detail,
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
+
+        const incident = classifyRecoveryError(error, {
+          surface: "provider",
+          nodeId: params.agentId,
+          agentId: params.agentId,
+          actionId: action.id,
+        });
+        const recoveryDecision = recoveryCoordinator.resolve(incident);
+        emitRecoveryDecision(incident, recoveryDecision);
+
+        if (recoveryDecision.action === "retry") {
+          await sleep(recoveryDecision.retryDelayMs ?? 0);
+          const retrying = actionLedger.transition(action.id, "running");
+          emit("action.updated", { actionId: action.id, status: "running", record: retrying }, { agentId: params.agentId, nodeId: params.agentId });
+          continue;
+        }
+
+        if (recoveryDecision.action !== "fallback_artifact") {
+          activeAgents.delete(params.agentId);
+          setTopologyStatus(params.agentId, "failed");
+          throw error;
+        }
+
+        const recoveryArtifact = publishRecoveryArtifact(incident, recoveryDecision);
+        const fallbackPrefix = modeSpec.runtimeAtoms.includes("tool_error_boundary") ? "[tool-error-boundary]" : "[recovery:fallback]";
+        const fallback = `${fallbackPrefix} ${params.title} degraded after ${incident.errorType}: ${detail}`;
+        const degraded = actionLedger.transition(action.id, "failed", {
+          output: { recoveryArtifactId: recoveryArtifact.id, text: fallback },
+          artifactIds: [recoveryArtifact.id],
+        });
+        emit("action.updated", { actionId: action.id, status: "failed", record: degraded }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("message.delta", {
+          role: "assistant",
+          content: fallback,
+          boundary: modeSpec.runtimeAtoms.includes("recovery_policy") ? "recovery_policy" : "tool_error_boundary",
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        emit("agent.completed", { title: params.title, degraded: true }, { agentId: params.agentId, nodeId: params.agentId });
+        activeAgents.delete(params.agentId);
+        setTopologyStatus(params.agentId, "done");
+        return fallback;
+      }
     }
   };
 
@@ -558,6 +733,63 @@ export async function executeRuntimeKernel(
       pending: pendingClarifications.length,
     }, { nodeId: params.nodeId });
     throw new ClarificationInterruptError(clarification);
+  };
+
+  const runRecoverableNode = async <T>(params: {
+    nodeId: string;
+    nodeTemplate: string;
+    nodeLabel: string;
+    agentId?: string;
+  }, execute: () => Promise<T>): Promise<{ status: "completed"; output: T } | { status: "skipped"; output?: unknown }> => {
+    while (true) {
+      try {
+        const output = await execute();
+        return { status: "completed", output };
+      } catch (error) {
+        if (error instanceof ApprovalInterruptError || error instanceof ClarificationInterruptError) {
+          throw error;
+        }
+        const incident = classifyRecoveryError(error, {
+          surface: "node",
+          nodeId: params.nodeId,
+          nodeTemplate: params.nodeTemplate,
+          agentId: params.agentId,
+        });
+        const recoveryDecision = recoveryCoordinator.resolve(incident);
+        emitRecoveryDecision(incident, recoveryDecision);
+
+        if (recoveryDecision.action === "retry") {
+          await sleep(recoveryDecision.retryDelayMs ?? 0);
+          continue;
+        }
+
+        if (recoveryDecision.action === "skip_node") {
+          emit("node.skipped", {
+            nodeId: params.nodeId,
+            nodeLabel: params.nodeLabel,
+            decision: recoveryDecision,
+            error: incident.detail,
+          }, { nodeId: params.nodeId, agentId: params.agentId });
+          return { status: "skipped", output: recoveryDecision.usableOutput };
+        }
+
+        if (recoveryDecision.action === "fallback_artifact") {
+          const recoveryArtifact = publishRecoveryArtifact(incident, recoveryDecision);
+          return {
+            status: "completed",
+            output: (recoveryDecision.usableOutput ?? {
+              degraded: true,
+              recoveryArtifactId: recoveryArtifact.id,
+              nodeId: params.nodeId,
+              errorType: incident.errorType,
+              error: incident.detail,
+            }) as T,
+          };
+        }
+
+        throw error;
+      }
+    }
   };
 
   const runDelegatedTask = async <T>(params: {
@@ -709,6 +941,7 @@ export async function executeRuntimeKernel(
           queueSummary = { ...queueSummary, ...patch };
           emit("queue.updated", { summary: queueSummary, busStats });
         },
+        runRecoverableNode,
         runDelegatedTask,
         ensureClarification,
         claimWorker,
