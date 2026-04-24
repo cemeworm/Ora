@@ -2892,6 +2892,7 @@ export const ToolDescriptorSchema = z.object({
   riskLevel: z.enum(["safe", "low_risk", "requires_approval"]),
   parameters: z.record(z.unknown()).default({}),
   requiresApproval: z.boolean().default(false),
+  implemented: z.boolean().default(true),
   allowedForProfiles: z.array(z.string().min(1)).default([]),
 });
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
@@ -3113,16 +3114,23 @@ export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
 // ---------------------------------------------------------------------------
 
 export const MVP_TOOLS: ToolDescriptor[] = [
-  { id: "file.read", label: "Read File", description: "Read file contents from local filesystem.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
-  { id: "file.write", label: "Write File", description: "Write content to a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
-  { id: "file.delete", label: "Delete File", description: "Delete a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
-  { id: "shell.execute", label: "Execute Command", description: "Run a shell command.", category: "shell", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
-  { id: "web.fetch", label: "Fetch URL", description: "Fetch content from a URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
-  { id: "mcp.call", label: "MCP Tool Call", description: "Invoke an MCP tool.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
-  { id: "model.handoff", label: "Model Handoff", description: "Delegate to another model.", category: "model", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
-  { id: "message.publish", label: "Publish Message", description: "Publish an event to the runtime message bus.", category: "internal", riskLevel: "low_risk", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
-  { id: "shared_state.write", label: "Write Shared State", description: "Write a versioned update to the shared blackboard.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, allowedForProfiles: [] },
-  { id: "export.report", label: "Export Report", description: "Export a run report.", category: "export", riskLevel: "safe", parameters: {}, requiresApproval: false, allowedForProfiles: [] },
+  { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.glob", label: "Glob Files", description: "Find project files by glob pattern.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.grep", label: "Search Files", description: "Search project file contents for a literal pattern.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.write", label: "Write File", description: "Write content to a local project file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.patch", label: "Patch File", description: "Replace one exact string in a local project file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.delete", label: "Delete File", description: "Delete a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },
+  { id: "shell.execute", label: "Execute Command", description: "Run an approved command in the selected project folder.", category: "shell", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "web.fetch", label: "Fetch URL", description: "Fetch content from an HTTP or HTTPS URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "web.search", label: "Search Web", description: "Search the web for lightweight research results.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "mcp.listTools", label: "List MCP Tools", description: "List tools exposed by configured MCP servers.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "mcp.readResource", label: "Read MCP Resource", description: "Read a resource from a configured MCP server.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "mcp.call", label: "MCP Tool Call", description: "Invoke a tool on a configured MCP server.", category: "mcp", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "model.handoff", label: "Model Handoff", description: "Delegate to another model.", category: "model", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
+  { id: "message.publish", label: "Publish Message", description: "Publish an event to the runtime message bus.", category: "internal", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
+  { id: "shared_state.write", label: "Write Shared State", description: "Write a versioned update to the shared blackboard.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },
+  { id: "export.report", label: "Export Report", description: "Export a run report.", category: "export", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
 ];
 
 export const MVP_SKILLS: SkillDescriptor[] = [

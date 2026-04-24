@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, Copy, FileText, GitBranchPlus, Plus, RefreshCcw, Save, Terminal, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, FileText, GitBranchPlus, Globe, ListTree, PencilLine, Plug, Plus, RefreshCcw, Save, Search, Terminal, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
@@ -842,20 +842,32 @@ function WorkspaceToolsPanel({
   toolRegistry: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["toolRegistry"];
   onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
 }) {
-  const tools = [
-    {
-      id: "file.read",
-      label: "Read files",
-      description: "Allow runs to read files inside the selected project folder.",
-      icon: FileText,
-    },
-    {
-      id: "shell.execute",
-      label: "Shell commands",
-      description: "Allow read-only commands in the project root, with high-risk calls routed through approval.",
-      icon: Terminal,
-    },
-  ].filter((tool) => toolRegistry.tools.some((entry) => entry.id === tool.id));
+  const toolIcons = {
+    "file.read": FileText,
+    "file.list": ListTree,
+    "file.glob": Search,
+    "file.grep": Search,
+    "file.write": PencilLine,
+    "file.patch": PencilLine,
+    "shell.execute": Terminal,
+    "web.fetch": Globe,
+    "web.search": Globe,
+    "mcp.listTools": Plug,
+    "mcp.readResource": Plug,
+    "mcp.call": Plug,
+  };
+  const tools = toolRegistry.tools
+    .filter((tool) => tool.implemented !== false)
+    .filter((tool) => ["file", "shell", "network", "mcp"].includes(tool.category))
+    .map((tool) => ({
+      ...tool,
+      icon: toolIcons[tool.id as keyof typeof toolIcons] ?? FileText,
+    }));
+  const groupedTools = [
+    { risk: "safe", label: "Safe", tools: tools.filter((tool) => tool.riskLevel === "safe") },
+    { risk: "low_risk", label: "Low risk", tools: tools.filter((tool) => tool.riskLevel === "low_risk") },
+    { risk: "requires_approval", label: "Approval", tools: tools.filter((tool) => tool.riskLevel === "requires_approval") },
+  ].filter((group) => group.tools.length > 0);
 
   if (tools.length === 0) {
     return null;
@@ -873,51 +885,56 @@ function WorkspaceToolsPanel({
         </span>
       </div>
 
-      <div className="mt-4 grid gap-2">
-        {tools.map((tool) => {
-          const active = draft.capabilityFlags.toolIds.includes(tool.id);
-          const Icon = tool.icon;
-          return (
-            <button
-              key={tool.id}
-              type="button"
-              onClick={() => onPatchDraft((current) => ({
-                ...current,
-                capabilityFlags: {
-                  ...current.capabilityFlags,
-                  toolIds: active
-                    ? current.capabilityFlags.toolIds.filter((toolId) => toolId !== tool.id)
-                    : [...new Set([...current.capabilityFlags.toolIds, tool.id])],
-                },
-              }))}
-              className={cn(
-                "flex min-h-[4.5rem] w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition active:scale-[0.99]",
-                active
-                  ? "border-bench-400 bg-bench-50 text-bench-950"
-                  : "border-bench-200 bg-white text-bench-800 hover:bg-bench-50",
-              )}
-            >
-              <span className={cn(
-                "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
-                active ? "bg-bench-900 text-white" : "bg-bench-100 text-bench-700",
-              )}>
-                <Icon size={15} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold">{tool.label}</span>
+      <div className="mt-4 grid gap-4">
+        {groupedTools.map((group) => (
+          <div key={group.risk} className="grid gap-2">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-bench-500">{group.label}</p>
+            {group.tools.map((tool) => {
+              const active = draft.capabilityFlags.toolIds.includes(tool.id);
+              const Icon = tool.icon;
+              return (
+                <button
+                  key={tool.id}
+                  type="button"
+                  onClick={() => onPatchDraft((current) => ({
+                    ...current,
+                    capabilityFlags: {
+                      ...current.capabilityFlags,
+                      toolIds: active
+                        ? current.capabilityFlags.toolIds.filter((toolId) => toolId !== tool.id)
+                        : [...new Set([...current.capabilityFlags.toolIds, tool.id])],
+                    },
+                  }))}
+                  className={cn(
+                    "flex min-h-[4.5rem] w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition active:scale-[0.99]",
+                    active
+                      ? "border-bench-400 bg-bench-50 text-bench-950"
+                      : "border-bench-200 bg-white text-bench-800 hover:bg-bench-50",
+                  )}
+                >
                   <span className={cn(
-                    "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]",
-                    active ? "bg-emerald-100 text-emerald-900" : "bg-bench-100 text-bench-600",
+                    "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+                    active ? "bg-bench-900 text-white" : "bg-bench-100 text-bench-700",
                   )}>
-                    {active ? "on" : "off"}
+                    <Icon size={15} />
                   </span>
-                </span>
-                <span className="mt-1 block text-xs leading-5 text-bench-700">{tool.description}</span>
-              </span>
-            </button>
-          );
-        })}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold">{tool.label}</span>
+                      <span className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]",
+                        active ? "bg-emerald-100 text-emerald-900" : "bg-bench-100 text-bench-600",
+                      )}>
+                        {active ? "on" : "off"}
+                      </span>
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-bench-700">{tool.description}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );

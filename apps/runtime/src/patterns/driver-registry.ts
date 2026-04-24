@@ -287,7 +287,8 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
     retryCount: 0,
     verdict: "fail",
   };
-  const selectedProviderId = config.providerConfig?.id ?? config.providerId;
+  const metadataProviderId = typeof config.metadata.providerId === "string" ? config.metadata.providerId : undefined;
+  const selectedProviderId = config.providerConfig?.id ?? config.providerId ?? metadataProviderId ?? "local-smoke";
 
   for (let attempt = 1; attempt <= maxIterations; attempt += 1) {
     bag.retryCount = attempt;
@@ -363,15 +364,6 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
     }
   }
 
-  if (bag.verdict !== "pass") {
-    const rationale = typeof bag.verifierAssessment === "object" && bag.verifierAssessment !== null
-      ? String((bag.verifierAssessment as Record<string, unknown>).rationale ?? "Verifier rejected the candidate.")
-      : "Verifier rejected the candidate.";
-    throw new Error(
-      `Generator-Verifier exhausted ${maxIterations} attempt(s) without a passing verification. ${rationale}`
-    );
-  }
-
   return {
     output: {
       text: asText(bag.candidate),
@@ -387,6 +379,7 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
         rationale: (bag.verifierAssessment as Record<string, unknown> | undefined)?.rationale,
         missingRequirements: (bag.verifierAssessment as Record<string, unknown> | undefined)?.missingRequirements,
         rubric: bag.rubric,
+        exhausted: bag.verdict !== "pass",
       },
     },
   };

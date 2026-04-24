@@ -1,6 +1,3 @@
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
 import {
   type ActionRiskLevel,
   type ArtifactRef,
@@ -25,6 +22,7 @@ import {
 import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
 import { configuredProviderId, invokeRunProvider } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
+import { RuntimeToolExecutor } from "./runtime-tool-executor.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { ModelMessage, ModelResponse } from "../providers/index.js";
 
@@ -60,18 +58,7 @@ class ApprovalInterruptError extends Error {
   }
 }
 
-type WorkspaceToolId = "file.read" | "shell.execute";
-
-interface WorkspaceToolCall {
-  tool: WorkspaceToolId;
-  args: Record<string, unknown>;
-}
-
-const WORKSPACE_TOOL_LOOP_LIMIT = 4;
-const WORKSPACE_FILE_READ_MAX_BYTES = 96_000;
-const WORKSPACE_SHELL_MAX_OUTPUT_BYTES = 48_000;
-const WORKSPACE_SHELL_TIMEOUT_MS = 8_000;
-const WORKSPACE_SHELL_ALLOWED_COMMANDS = new Set(["cat", "find", "ls", "pwd", "rg", "wc"]);
+const RUNTIME_TOOL_LOOP_LIMIT = 4;
 
 function workspaceSystemPrompt(workspace: unknown): string | undefined {
   if (!workspace || typeof workspace !== "object" || workspace === null) {
@@ -114,180 +101,6 @@ function workspaceSystemPrompt(workspace: unknown): string | undefined {
   ].filter(Boolean).join("\n");
 }
 
-function workspaceToolsSystemPrompt(enabledTools: readonly string[], workspace: unknown): string | undefined {
-  const rootPath = workspaceRootPath(workspace);
-  const tools = enabledWorkspaceTools(enabledTools);
-  if (!rootPath || tools.length === 0) {
-    return undefined;
-  }
-
-  const toolLines = tools.map((toolId) => {
-    if (toolId === "file.read") {
-      return '- file.read: {"tool":"file.read","args":{"path":"relative/path.md"}}';
-    }
-    return '- shell.execute: {"tool":"shell.execute","args":{"command":"rg --files -g *.md"}}';
-  });
-
-  return [
-    "Workspace tool protocol:",
-    "When local project information is needed and a workspace tool is available, respond with exactly one JSON object and no prose.",
-    ...toolLines,
-    "Use paths relative to the project root. Shell commands run inside the project root and are limited to safe read-only commands.",
-    "After a tool result is returned, answer the user normally unless another tool call is required.",
-  ].join("\n");
-}
-
-function workspaceRootPath(workspace: unknown): string | undefined {
-  if (!workspace || typeof workspace !== "object" || workspace === null) {
-    return undefined;
-  }
-  const rootPath = (workspace as Record<string, unknown>).rootPath;
-  return typeof rootPath === "string" && rootPath.trim() ? rootPath : undefined;
-}
-
-function enabledWorkspaceTools(toolIds: readonly string[]): WorkspaceToolId[] {
-  return toolIds.filter((toolId): toolId is WorkspaceToolId => toolId === "file.read" || toolId === "shell.execute");
-}
-
-function extractWorkspaceToolCall(text: string, enabledTools: readonly string[]): WorkspaceToolCall | undefined {
-  const enabled = new Set(enabledWorkspaceTools(enabledTools));
-  if (enabled.size === 0) {
-    return undefined;
-  }
-
-  const trimmed = text.trim();
-  const candidates = [
-    trimmed,
-    ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi), (match) => match[1]?.trim() ?? ""),
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      if (!parsed || typeof parsed !== "object") {
-        continue;
-      }
-      const record = parsed as Record<string, unknown>;
-      if ((record.tool === "file.read" || record.tool === "shell.execute") && enabled.has(record.tool)) {
-        return {
-          tool: record.tool,
-          args: record.args && typeof record.args === "object" && !Array.isArray(record.args)
-            ? record.args as Record<string, unknown>
-            : {},
-        };
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return undefined;
-}
-
-function resolveWorkspacePath(rootPath: string, requestedPath: unknown): string {
-  if (typeof requestedPath !== "string" || !requestedPath.trim()) {
-    throw new Error("file.read requires a non-empty relative path.");
-  }
-  const resolved = path.resolve(rootPath, requestedPath);
-  const relative = path.relative(rootPath, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Workspace tool path must stay inside the project root.");
-  }
-  return resolved;
-}
-
-function readWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
-  const absolutePath = resolveWorkspacePath(rootPath, args.path);
-  const stat = fs.statSync(absolutePath);
-  if (!stat.isFile()) {
-    throw new Error("file.read target must be a file.");
-  }
-  if (stat.size > WORKSPACE_FILE_READ_MAX_BYTES) {
-    throw new Error(`file.read target is too large (${stat.size} bytes).`);
-  }
-  return {
-    path: path.relative(rootPath, absolutePath),
-    sizeBytes: stat.size,
-    content: fs.readFileSync(absolutePath, "utf8"),
-  };
-}
-
-function parseShellCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: "'" | "\"" | undefined;
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index]!;
-    if (quote) {
-      if (char === quote) {
-        quote = undefined;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (quote) {
-    throw new Error("Unclosed quote in shell command.");
-  }
-  if (current) {
-    tokens.push(current);
-  }
-  return tokens;
-}
-
-function assertWorkspaceShellArgsStayLocal(argv: readonly string[]) {
-  for (const arg of argv) {
-    if (!arg || arg.startsWith("-")) {
-      continue;
-    }
-    if (path.isAbsolute(arg) || arg.split(/[\\/]/).includes("..")) {
-      throw new Error("shell.execute arguments must stay inside the project root.");
-    }
-  }
-}
-
-function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>) {
-  const command = typeof args.command === "string" ? args.command.trim() : "";
-  if (!command) {
-    throw new Error("shell.execute requires a non-empty command.");
-  }
-  if (/[|;&<>`$\\]/.test(command)) {
-    throw new Error("shell.execute only supports a single read-only command without shell metacharacters.");
-  }
-  const [executable, ...argv] = parseShellCommand(command);
-  if (!executable || !WORKSPACE_SHELL_ALLOWED_COMMANDS.has(executable)) {
-    throw new Error(`shell.execute command must be one of: ${[...WORKSPACE_SHELL_ALLOWED_COMMANDS].join(", ")}.`);
-  }
-  assertWorkspaceShellArgsStayLocal(argv);
-
-  const output = execFileSync(executable, argv, {
-    cwd: rootPath,
-    encoding: "utf8",
-    timeout: WORKSPACE_SHELL_TIMEOUT_MS,
-    maxBuffer: WORKSPACE_SHELL_MAX_OUTPUT_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  return {
-    command,
-    cwd: rootPath,
-    output,
-  };
-}
-
 export async function executeRuntimeKernel(
   runId: string,
   input: UserTaskInput,
@@ -308,6 +121,10 @@ export async function executeRuntimeKernel(
   const skillRegistry = options.skillRegistry ?? new RuntimeSkillRegistry();
   const toolRegistry = options.toolRegistry ?? new RuntimeToolRegistry();
   const tools = toolRegistry.snapshot();
+  const runtimeToolExecutor = new RuntimeToolExecutor({
+    workspace: input.context?.projectWorkspace,
+    toolDescriptors: tools.tools,
+  });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const profiles = new AgentProfileRegistry(definition).list(config.profileIds);
   const memoryService = new MemoryService(runId, now);
@@ -434,7 +251,7 @@ export async function executeRuntimeKernel(
     return [
       extra,
       workspaceSystemPrompt(input.context?.projectWorkspace),
-      workspaceToolsSystemPrompt(config.toolIds, input.context?.projectWorkspace),
+      runtimeToolExecutor.systemPrompt(config.toolIds),
       options.customAgentOverlay,
       ...snippets,
     ]
@@ -448,8 +265,7 @@ export async function executeRuntimeKernel(
     prompt: string;
     system: string;
   }): Promise<ModelResponse> => {
-    const rootPath = workspaceRootPath(input.context?.projectWorkspace);
-    const enabledTools = enabledWorkspaceTools(config.toolIds);
+    const enabledTools = runtimeToolExecutor.enabledToolIds(config.toolIds);
     let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
     let response = await invokeRunProvider(config, {
       prompt: params.prompt,
@@ -458,12 +274,12 @@ export async function executeRuntimeKernel(
       maxTokens: config.budget?.maxTokens,
     });
 
-    if (!rootPath || enabledTools.length === 0) {
+    if (enabledTools.length === 0) {
       return response;
     }
 
-    for (let iteration = 0; iteration < WORKSPACE_TOOL_LOOP_LIMIT; iteration += 1) {
-      const toolCall = extractWorkspaceToolCall(response.text, config.toolIds);
+    for (let iteration = 0; iteration < RUNTIME_TOOL_LOOP_LIMIT; iteration += 1) {
+      const toolCall = runtimeToolExecutor.extractToolCall(response.text, config.toolIds);
       if (!toolCall) {
         return response;
       }
@@ -471,15 +287,15 @@ export async function executeRuntimeKernel(
       const action = actionLedger.propose({
         id: `${params.agentId}-tool-${events.length}`,
         type: toolCall.tool,
-        riskLevel: toolCall.tool === "shell.execute" ? "high" : "low",
+        riskLevel: runtimeToolExecutor.riskLevel(toolCall),
         input: toolCall.args,
         agentId: params.agentId,
       });
       emit("action.updated", { actionId: action.id, status: "proposed", record: action }, { agentId: params.agentId, nodeId: params.agentId });
 
       const decision = policyService.evaluate(action);
+      const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
       if (decision.requiredApproval && config.approvalMode !== "auto") {
-        const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
         if (!approvedActionIds.has(action.id)) {
           const blocked = actionLedger.transition(action.id, "approval_required");
           emit("approval.required", { actionId: action.id, decision }, { agentId: params.agentId, nodeId: params.agentId });
@@ -499,9 +315,9 @@ export async function executeRuntimeKernel(
       emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
 
       try {
-        const output = toolCall.tool === "file.read"
-          ? readWorkspaceFile(rootPath, toolCall.args)
-          : executeWorkspaceShell(rootPath, toolCall.args);
+        const output = await runtimeToolExecutor.execute(toolCall, {
+          allowRisky: !decision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(action.id),
+        });
         const succeeded = actionLedger.transition(action.id, "succeeded", { output });
         emit("tool.called", {
           actionId: action.id,
@@ -539,7 +355,7 @@ export async function executeRuntimeKernel(
 
     return {
       ...response,
-      text: `${response.text}\n\n[Ora stopped after ${WORKSPACE_TOOL_LOOP_LIMIT} workspace tool calls.]`,
+      text: `${response.text}\n\n[Ora stopped after ${RUNTIME_TOOL_LOOP_LIMIT} runtime tool calls.]`,
     };
   };
 

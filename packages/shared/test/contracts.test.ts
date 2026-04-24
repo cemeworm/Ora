@@ -921,6 +921,7 @@ describe("ToolDescriptorSchema", () => {
   it("applies defaults for optional fields", () => {
     const parsed = ToolDescriptorSchema.parse(validTool);
     expect(parsed.parameters).toEqual({});
+    expect(parsed.implemented).toBe(true);
     expect(parsed.allowedForProfiles).toEqual([]);
   });
 
@@ -1476,6 +1477,17 @@ describe("MVP_TOOLS", () => {
   it("has unique tool IDs", () => {
     const ids = MVP_TOOLS.map((tool) => tool.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("marks deferred tool descriptors explicitly", () => {
+    const deferred = MVP_TOOLS.filter((tool) => tool.implemented === false).map((tool) => tool.id);
+    expect(deferred).toEqual(expect.arrayContaining([
+      "file.delete",
+      "model.handoff",
+      "message.publish",
+      "shared_state.write",
+      "export.report",
+    ]));
   });
 });
 

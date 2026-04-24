@@ -87,7 +87,7 @@ function parseJsonAssessment(text: string): GeneratorVerifierAssessment | undefi
 }
 
 function parseKeywordAssessment(text: string): GeneratorVerifierAssessment | undefined {
-  const verdictMatch = text.match(/\bverdict\b\s*[:=-]\s*["']?(pass|fail)["']?/i)
+  const verdictMatch = text.match(/^\s*verdict\s*[:=-]\s*["']?(pass|fail)["']?/im)
     ?? text.match(/^\s*(pass|fail)\b/i);
   if (!verdictMatch) {
     return undefined;

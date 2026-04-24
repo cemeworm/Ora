@@ -151,6 +151,82 @@ describe("Ora runtime smoke path", () => {
     ).toBe(true);
   });
 
+  it("keeps generator-verifier turns usable when verifier output is not parseable", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.MOCK_OPENAI_KEY;
+    process.env.MOCK_OPENAI_KEY = "test";
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content)
+        .join("\n") ?? "";
+      const content = systemText.includes("verifier")
+        ? "This looks acceptable to me, but I am not returning JSON."
+        : "Candidate answer from mocked provider.";
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const run = (await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "What tools can you use?" },
+          config: {
+            pattern: "generator_verifier",
+            providerId: "mock-openai",
+            modelRef: "mock-chat",
+            metadata: { providerId: "mock-openai" },
+            providerConfig: {
+              id: "mock-openai",
+              label: "Mock OpenAI",
+              type: "openai_compatible",
+              modelId: "mock-chat",
+              baseUrl: "https://example.test/v1",
+              apiKeyEnv: "MOCK_OPENAI_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+          },
+        },
+      })) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(
+        await handle({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "runs.state",
+          params: { runId: run.runId },
+        })
+      );
+
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(state.error).toBeUndefined();
+      expect(state.output).toMatchObject({
+        pattern: "generator_verifier",
+        verifier: {
+          verdict: "fail",
+          exhausted: true,
+        },
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.MOCK_OPENAI_KEY;
+      } else {
+        process.env.MOCK_OPENAI_KEY = previousKey;
+      }
+    }
+  });
+
   it("serves JSON-RPC over newline-delimited request payloads", async () => {
     const response = await handleJsonRpcLine(
       JSON.stringify({
