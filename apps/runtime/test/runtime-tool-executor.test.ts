@@ -27,6 +27,13 @@ function createWorkspace() {
   };
 }
 
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 afterEach(() => {
   for (const cleanupPath of cleanupPaths.splice(0)) {
     fs.rmSync(cleanupPath, { recursive: true, force: true });
@@ -124,7 +131,134 @@ describe("RuntimeToolExecutor", () => {
     }
   });
 
-  it("discovers, calls, and reads resources from a configured stdio MCP server", async () => {
+  it("normalizes stable web.search provider responses", async () => {
+    const cases = [
+      {
+        providerId: "brave" as const,
+        env: { BRAVE_SEARCH_API_KEY: "brave-key" },
+        payload: { web: { results: [{ title: "Brave Result", url: "https://example.com/brave", description: "brave snippet" }] } },
+        expectedTitle: "Brave Result",
+      },
+      {
+        providerId: "tavily" as const,
+        env: { TAVILY_API_KEY: "tavily-key" },
+        payload: { results: [{ title: "Tavily Result", url: "https://example.com/tavily", content: "tavily snippet" }] },
+        expectedTitle: "Tavily Result",
+      },
+      {
+        providerId: "serpapi" as const,
+        env: { SERPAPI_API_KEY: "serp-key" },
+        payload: { organic_results: [{ title: "Serp Result", link: "https://example.com/serp", snippet: "serp snippet" }] },
+        expectedTitle: "Serp Result",
+      },
+      {
+        providerId: "kagi" as const,
+        env: { KAGI_API_KEY: "kagi-key" },
+        payload: { data: [{ title: "Kagi Result", url: "https://example.com/kagi", snippet: "kagi snippet" }] },
+        expectedTitle: "Kagi Result",
+      },
+    ];
+
+    for (const entry of cases) {
+      const fetchImpl = (async () => jsonResponse(entry.payload)) as typeof fetch;
+      const executor = new RuntimeToolExecutor({
+        toolDescriptors: MVP_TOOLS,
+        fetchImpl,
+        searchEnv: entry.env,
+        searchProviderConfig: { id: entry.providerId },
+      });
+      const result = await executor.execute({ tool: "web.search", args: { query: "ora search", limit: 3 } }) as {
+        providerId: string;
+        results: Array<{ title: string; url: string; snippet?: string; source?: string }>;
+      };
+
+      expect(result.providerId).toBe(entry.providerId);
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          title: entry.expectedTitle,
+          source: entry.providerId,
+        }),
+      ]);
+    }
+  });
+
+  it("honors env provider selection when search config only sets neutral limits", async () => {
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async () => jsonResponse({
+        web: { results: [{ title: "Brave Env Result", url: "https://example.com/env", description: "env snippet" }] },
+      })) as typeof fetch,
+      searchEnv: { BRAVE_SEARCH_API_KEY: "brave-key" },
+      searchProviderConfig: { maxResults: 3 },
+    });
+
+    const result = await executor.execute({ tool: "web.search", args: { query: "ora search", limit: 3 } }) as {
+      providerId: string;
+      results: Array<{ title: string }>;
+    };
+
+    expect(result.providerId).toBe("brave");
+    expect(result.results[0]?.title).toBe("Brave Env Result");
+  });
+
+
+  it("handles web.search provider key, timeout, and malformed response edges", async () => {
+    const missingKeyExecutor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async () => jsonResponse({})) as typeof fetch,
+      searchEnv: {},
+      searchProviderConfig: { id: "brave" },
+    });
+    await expect(missingKeyExecutor.execute({ tool: "web.search", args: { query: "ora" } })).rejects.toThrow("Missing BRAVE_SEARCH_API_KEY");
+
+    const timeoutExecutor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async (_input, init) => {
+        await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+        });
+        return jsonResponse({});
+      }) as typeof fetch,
+      searchEnv: { BRAVE_SEARCH_API_KEY: "brave-key" },
+      searchProviderConfig: { id: "brave", timeoutMs: 1 },
+    });
+    await expect(timeoutExecutor.execute({ tool: "web.search", args: { query: "ora" } })).rejects.toThrow("timed out");
+
+    const malformedExecutor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl: (async () => jsonResponse({ web: { results: [{ title: "Missing URL" }] } })) as typeof fetch,
+      searchEnv: { BRAVE_SEARCH_API_KEY: "brave-key" },
+      searchProviderConfig: { id: "brave" },
+    });
+    const malformed = await malformedExecutor.execute({ tool: "web.search", args: { query: "ora" } }) as { results: unknown[] };
+    expect(malformed.results).toEqual([]);
+  });
+
+  it("uses DuckDuckGo as the explicit fallback web.search provider", async () => {
+    const fetchImpl = (async () => new Response(`
+      <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs">Example <b>Docs</b></a>
+      <a class="result__snippet">Example snippet</a>
+    `)) as typeof fetch;
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      fetchImpl,
+      searchProviderConfig: { id: "duckduckgo" },
+    });
+
+    const result = await executor.execute({ tool: "web.search", args: { query: "ora docs" } }) as {
+      providerId: string;
+      results: Array<{ title: string; url: string; snippet?: string }>;
+    };
+
+    expect(result.providerId).toBe("duckduckgo");
+    expect(result.results[0]).toMatchObject({
+      title: "Example Docs",
+      url: "https://example.com/docs",
+      snippet: "Example snippet",
+    });
+  });
+
+  it("discovers, calls, reads resources, and searches from a configured stdio MCP server", async () => {
     const { rootPath, workspace } = createWorkspace();
     const serverPath = path.join(rootPath, "fake-mcp.cjs");
     const configPath = path.join(rootPath, ".ora", "mcp.json");
@@ -136,9 +270,13 @@ rl.on("line", (line) => {
   const request = JSON.parse(line);
   let result = {};
   if (request.method === "tools/list") {
-    result = { tools: [{ name: "echo", description: "Echo input" }] };
+    result = { tools: [{ name: "echo", description: "Echo input" }, { name: "search", description: "Search docs" }] };
   } else if (request.method === "tools/call") {
-    result = { content: [{ type: "text", text: JSON.stringify(request.params.arguments) }] };
+    if (request.params.name === "search") {
+      result = { content: [{ type: "text", text: JSON.stringify({ results: [{ title: "MCP Result", url: "https://example.com/mcp", snippet: request.params.arguments.query }] }) }] };
+    } else {
+      result = { content: [{ type: "text", text: JSON.stringify(request.params.arguments) }] };
+    }
   } else if (request.method === "resources/read") {
     result = { contents: [{ uri: request.params.uri, text: "resource text" }] };
   }
@@ -158,7 +296,9 @@ rl.on("line", (line) => {
       workspace,
       toolDescriptors: MVP_TOOLS,
       mcpConfigPaths: [configPath],
+      searchProviderConfig: { id: "mcp", mcpServerId: "fake", mcpToolName: "search" },
     });
+    const searchCall = { tool: "web.search" as const, args: { query: "ora", limit: 1 } };
 
     const tools = await executor.execute({ tool: "mcp.listTools", args: { server: "fake" } }) as { tools: Array<{ name: string }> };
     const call = await executor.execute(
@@ -168,9 +308,16 @@ rl.on("line", (line) => {
     const resource = await executor.execute({ tool: "mcp.readResource", args: { server: "fake", uri: "docs://intro" } }) as {
       contents: Array<{ uri: string; text: string }>;
     };
+    const search = await executor.execute(searchCall) as {
+      providerId: string;
+      results: Array<{ title: string; url: string; snippet?: string }>;
+    };
 
+    expect(executor.riskLevel(searchCall)).toBe("high");
     expect(tools.tools[0]?.name).toBe("echo");
     expect(call.content[0]?.text).toBe("{\"q\":\"ora\"}");
     expect(resource.contents[0]).toEqual({ uri: "docs://intro", text: "resource text" });
+    expect(search.providerId).toBe("mcp");
+    expect(search.results[0]).toMatchObject({ title: "MCP Result", url: "https://example.com/mcp", snippet: "ora" });
   });
 });

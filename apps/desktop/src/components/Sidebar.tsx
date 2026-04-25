@@ -141,7 +141,7 @@ export function Sidebar() {
       title: session.title,
       status: statusFromSession(session.status),
     }));
-  const showSectionDivider = projects.length > 0 && recentChats.length > 0;
+  const showSectionDivider = projects.length > 0;
 
   return (
     <aside
@@ -349,27 +349,29 @@ export function Sidebar() {
                 </div>
               </section>
 
-              {recentChats.length > 0 && (
-                <section className={cn("mt-4", showSectionDivider && "border-t border-sidebar-border/70 pt-4")}>
-                  <SidebarSectionHeader
-                    title="Recent Chats"
-                    action={(
-                      <button
-                        type="button"
-                        onClick={() => {
-                          dispatch({ type: "SET_VIEW", view: "chat" });
-                          void actions.createSession();
-                        }}
-                        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground"
-                        title="New chat"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    )}
-                  />
-                  <div className="px-2">
-                    <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
-                      {recentChats.map((session) => {
+              <section className={cn("mt-4", showSectionDivider && "border-t border-sidebar-border/70 pt-4")}>
+                <SidebarSectionHeader
+                  title="Chats"
+                  action={(
+                    <button
+                      type="button"
+                      onClick={() => {
+                        dispatch({ type: "SET_VIEW", view: "chat" });
+                        void actions.createSession();
+                      }}
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground"
+                      title="New chat"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  )}
+                />
+                <div className="px-2">
+                  <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
+                    {recentChats.length === 0 ? (
+                      <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                    ) : (
+                      recentChats.map((session) => {
                         const selected = session.id === state.selectedSessionId;
                         return (
                           <SessionRow
@@ -380,11 +382,11 @@ export function Sidebar() {
                             onClick={() => void actions.selectSession(session.id)}
                           />
                         );
-                      })}
-                    </div>
+                      })
+                    )}
                   </div>
-                </section>
-              )}
+                </div>
+              </section>
             </div>
           </div>
         )}

@@ -10,6 +10,7 @@ import type { AppView, ArtifactRecord } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
 import type { OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
+import { translateCopy, useDocumentTranslations, type AppLanguage } from "./lib/i18n";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
 const EvaluationView = lazy(() => import("./components/EvaluationView").then((module) => ({ default: module.EvaluationView })));
@@ -23,21 +24,22 @@ const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora Operator Workbench";
 
-function windowTitleForView(activeView: AppView, settingsOpen: boolean) {
-  if (settingsOpen) return `${WINDOW_TITLE_BASE} · Settings`;
+function windowTitleForView(activeView: AppView, settingsOpen: boolean, language: AppLanguage) {
+  const base = translateCopy(language, WINDOW_TITLE_BASE);
+  if (settingsOpen) return `${base} · ${translateCopy(language, "Settings")}`;
 
   switch (activeView) {
     case "agents":
-      return `${WINDOW_TITLE_BASE} · Agents`;
+      return `${base} · ${translateCopy(language, "Agents")}`;
     case "skills":
-      return `${WINDOW_TITLE_BASE} · Skills`;
+      return `${base} · ${translateCopy(language, "Skills")}`;
     case "modes":
-      return `${WINDOW_TITLE_BASE} · Modes`;
+      return `${base} · ${translateCopy(language, "Modes")}`;
     case "evaluation":
-      return `${WINDOW_TITLE_BASE} · Evaluation`;
+      return `${base} · ${translateCopy(language, "Evaluation")}`;
     case "chat":
     default:
-      return `${WINDOW_TITLE_BASE} · Chat`;
+      return `${base} · ${translateCopy(language, "Chat")}`;
   }
 }
 
@@ -129,6 +131,7 @@ function WorkbenchInner() {
   const [detailPanelWidth, setDetailPanelWidth] = useState(DEFAULT_DETAIL_PANEL_WIDTH);
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(DEFAULT_ARTIFACT_PANEL_WIDTH);
   const [turnSnapshots, setTurnSnapshots] = useState<Record<string, OraStateSnapshot>>({});
+  useDocumentTranslations(state.language);
 
   function clampDetailPanelWidth(nextWidth: number) {
     const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
@@ -274,13 +277,13 @@ function WorkbenchInner() {
   }, [state.detailDrawerOpen, state.artifactPanelOpen, detailPanelWidth, artifactPanelWidth]);
 
   useEffect(() => {
-    const title = windowTitleForView(state.activeView, state.settingsOpen);
+    const title = windowTitleForView(state.activeView, state.settingsOpen, state.language);
     document.title = title;
 
     void import("@tauri-apps/api/webviewWindow")
       .then(({ getCurrentWebviewWindow }) => getCurrentWebviewWindow().setTitle(title))
       .catch(() => {});
-  }, [state.activeView, state.settingsOpen]);
+  }, [state.activeView, state.settingsOpen, state.language]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;

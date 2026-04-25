@@ -1,10 +1,44 @@
 import { describe, expect, it } from "vitest";
 import { getComposerInteractivity } from "../../desktop/src/components/ChatInput";
+import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
 import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
 import { adaptChatMessages } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
 describe("desktop composer pending-run behavior", () => {
+  it("builds run search config from desktop settings", () => {
+    expect(buildRunSearchConfig({
+      enabled: true,
+      providerId: "mcp",
+      apiKeyEnv: "",
+      maxResults: "4",
+      timeoutMs: "1500",
+      mcpServerId: "local-docs",
+      mcpToolName: "search_docs",
+    })).toEqual({
+      searchProvider: {
+        id: "mcp",
+        maxResults: 4,
+        timeoutMs: 1500,
+        mcpServerId: "local-docs",
+        mcpToolName: "search_docs",
+      },
+      metadata: {},
+    });
+
+    expect(buildRunSearchConfig({
+      enabled: false,
+      providerId: "auto",
+      apiKeyEnv: "",
+      maxResults: "5",
+      timeoutMs: "8000",
+      mcpServerId: "",
+      mcpToolName: "search",
+    })).toEqual({
+      metadata: { disableDefaultWebTools: true },
+    });
+  });
+
   it("keeps text entry editable while a run request is pending", () => {
     expect(getComposerInteractivity({ composerPrompt: "next question", isLoading: true })).toEqual({
       canEditText: true,

@@ -135,6 +135,7 @@ export async function executeRuntimeKernel(
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
     toolDescriptors: tools.tools,
+    searchProviderConfig: config.searchProvider,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const profiles = new AgentProfileRegistry(definition).list(config.profileIds);

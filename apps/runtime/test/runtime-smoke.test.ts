@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema } from "@ora/shared";
+import { DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, handleJsonRpcLine } from "../src/index.js";
 
 function createTempStore() {
@@ -159,6 +159,169 @@ describe("Ora runtime smoke path", () => {
         && (event.payload as Record<string, unknown>).providerId === "deepseek",
       ),
     ).toBe(true);
+  });
+
+  it("adds default web tools to cloned modes and effective runtime configs", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "single_agent",
+        modeId: "single-agent-web-defaults",
+        label: "Single Agent Web Defaults",
+      },
+    }) as any;
+
+    for (const toolId of DEFAULT_WEB_TOOL_IDS) {
+      expect(cloned.capabilityFlags.toolIds).toContain(toolId);
+    }
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Keep web tools even when config passes custom tools." },
+        config: { modeId: cloned.id, toolIds: ["shell.execute", "web.search"] },
+      },
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(state.config.toolIds).toEqual(expect.arrayContaining(["shell.execute", ...DEFAULT_WEB_TOOL_IDS]));
+    expect(state.config.toolIds.filter((toolId) => toolId === "web.search")).toHaveLength(1);
+
+    const optOutRun = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Respect explicit network policy opt-out." },
+        config: {
+          modeId: cloned.id,
+          toolIds: ["shell.execute"],
+          metadata: { disableDefaultWebTools: true },
+        },
+      },
+    }) as { runId: string };
+    const optOutState = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "runs.state",
+        params: { runId: optOutRun.runId },
+      }),
+    );
+
+    expect(optOutState.config.toolIds).toEqual(["shell.execute"]);
+  });
+
+  it("executes web.search for a provider without native browsing", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousProviderKey = process.env.MOCK_CHAT_KEY;
+    const previousSearchKey = process.env.MOCK_BRAVE_KEY;
+    process.env.MOCK_CHAT_KEY = "provider-key";
+    process.env.MOCK_BRAVE_KEY = "search-key";
+    let providerCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url.includes("api.search.brave.com")) {
+        return new Response(JSON.stringify({
+          web: {
+            results: [
+              { title: "Example Result", url: "https://example.com/result", description: "Search result snippet" },
+            ],
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("mock-chat.test")) {
+        const body = String(init?.body ?? "");
+        providerCalls += 1;
+        const content = providerCalls === 1 && !body.includes("Workspace tool result")
+          ? "{\"tool\":\"web.search\",\"args\":{\"query\":\"Ora web search\",\"limit\":1}}"
+          : "Search answer from Example Result";
+        return new Response(JSON.stringify({
+          choices: [{ message: { content } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Search for Ora web search." },
+          config: {
+            modeId: "single_agent",
+            providerId: "mock-chat",
+            modelRef: "mock-chat-model",
+            providerConfig: {
+              id: "mock-chat",
+              label: "Mock Chat",
+              type: "openai_compatible",
+              modelId: "mock-chat-model",
+              baseUrl: "https://mock-chat.test/v1",
+              apiKeyEnv: "MOCK_CHAT_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+            searchProvider: {
+              id: "brave",
+              apiKeyEnv: "MOCK_BRAVE_KEY",
+            },
+          },
+        },
+      }) as { runId: string };
+
+      const state = StateSnapshotSchema.parse(
+        await handle({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "runs.state",
+          params: { runId: run.runId },
+        }),
+      );
+      const searchEvent = state.events.find((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "web.search"
+      );
+
+      expect(searchEvent?.payload).toMatchObject({
+        status: "succeeded",
+        output: {
+          providerId: "brave",
+          results: [expect.objectContaining({ title: "Example Result", url: "https://example.com/result" })],
+        },
+      });
+      expect(state.output).toMatchObject({ text: expect.stringContaining("Search answer from Example Result") });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousProviderKey === undefined) {
+        delete process.env.MOCK_CHAT_KEY;
+      } else {
+        process.env.MOCK_CHAT_KEY = previousProviderKey;
+      }
+      if (previousSearchKey === undefined) {
+        delete process.env.MOCK_BRAVE_KEY;
+      } else {
+        process.env.MOCK_BRAVE_KEY = previousSearchKey;
+      }
+    }
   });
 
   it("keeps generator-verifier turns usable when verifier output is not parseable", async () => {

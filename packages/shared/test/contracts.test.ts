@@ -9,6 +9,7 @@ import {
   CustomAgentSummarySchema,
   CustomAgentUpdateParamsSchema,
   DEFAULT_PROVIDERS,
+  DEFAULT_WEB_TOOL_IDS,
   DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
   EvaluationBaselineSchema,
@@ -123,6 +124,9 @@ describe("Ora shared contracts", () => {
       expect(mode.nodes.length).toBeGreaterThan(0);
       expect(mode.nodes.every((node) => node.position)).toBe(true);
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
+      for (const toolId of DEFAULT_WEB_TOOL_IDS) {
+        expect(mode.capabilityFlags.toolIds).toContain(toolId);
+      }
       expect(validateModeSpec(mode).valid).toBe(true);
       expect(ModeValidationResultSchema.parse({ valid: true, errors: [], warnings: [] }).valid).toBe(true);
     }

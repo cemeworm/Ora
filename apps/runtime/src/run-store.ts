@@ -71,7 +71,8 @@ import {
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput,
-  UserTaskInputSchema
+  UserTaskInputSchema,
+  withDefaultWebToolIds
 } from "@ora/shared";
 import {
   ActionLedger,
@@ -1239,6 +1240,11 @@ export class LocalRunStore {
           ? metadataApprovalMode
           : modeSpec.capabilityFlags.approvalMode);
     const skillIds = Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds;
+    const defaultWebToolsDisabled = parsed.metadata.disableDefaultWebTools === true;
+    const toolIds = withDefaultWebToolIds(
+      Array.isArray(config?.toolIds) ? config.toolIds : modeSpec.capabilityFlags.toolIds,
+      { disabled: defaultWebToolsDisabled },
+    );
     const skillWarnings = this.skillRegistry.warnings(skillIds);
     const skillPromptOverlay = this.skillRegistry.promptSnippets(skillIds).join("\n\n");
     const fullConfig = RunConfigSchema.parse({
@@ -1248,7 +1254,7 @@ export class LocalRunStore {
       budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
       approvalMode: resolvedApprovalMode,
       skillIds,
-      toolIds: Array.isArray(config?.toolIds) ? config.toolIds : modeSpec.capabilityFlags.toolIds,
+      toolIds,
       metadata: {
         ...parsed.metadata,
         modeId: modeSpec.id,

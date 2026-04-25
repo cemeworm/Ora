@@ -1,5 +1,5 @@
 import type { ProviderCapability } from "@ora/shared";
-import { Activity, Bot, ChevronDown, ChevronUp, Settings, Sparkles, Wrench, X } from "lucide-react";
+import { Activity, Bot, ChevronDown, ChevronUp, Globe2, Settings, Sparkles, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkbench } from "../lib/state";
 import {
@@ -13,18 +13,27 @@ import {
   findPresetForProvider,
   type ProviderDraft,
 } from "../lib/providerPresets";
+import {
+  DEFAULT_SEARCH_SETTINGS,
+  loadDesktopSearchSettings,
+  saveDesktopSearchSettings,
+  type DesktopSearchProviderId,
+  type DesktopSearchSettings,
+} from "../lib/searchSettings";
 import { useRunActions } from "../lib/useRunActions";
 import { cn } from "../lib/utils";
+import { LANGUAGE_OPTIONS } from "../lib/i18n";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
 
-type SettingsSection = "providers" | "runtime" | "tools" | "skills";
+type SettingsSection = "general" | "providers" | "runtime" | "tools" | "skills";
 
 const settingsSections: Array<{
   id: SettingsSection;
   label: string;
   icon: typeof Settings;
 }> = [
+  { id: "general", label: "General", icon: Globe2 },
   { id: "providers", label: "Providers", icon: Bot },
   { id: "runtime", label: "Runtime", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -37,6 +46,16 @@ const capabilityOptions: Array<{ id: ProviderCapability; label: string }> = [
   { id: "image_input", label: "Images" },
   { id: "json_mode", label: "JSON" },
   { id: "reasoning", label: "Reasoning" },
+];
+
+const searchProviderOptions: Array<{ id: DesktopSearchProviderId; label: string }> = [
+  { id: "auto", label: "Auto" },
+  { id: "brave", label: "Brave" },
+  { id: "tavily", label: "Tavily" },
+  { id: "serpapi", label: "SerpAPI" },
+  { id: "kagi", label: "Kagi" },
+  { id: "duckduckgo", label: "DuckDuckGo" },
+  { id: "mcp", label: "MCP" },
 ];
 
 interface SettingsViewProps {
@@ -82,10 +101,11 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const { state, dispatch } = useWorkbench();
   const { actions } = useRunActions();
   const secretInputRef = useRef<HTMLInputElement>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("providers");
+  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("openai-compatible-generic");
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(emptyDraft());
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [searchSettings, setSearchSettings] = useState<DesktopSearchSettings>(() => loadDesktopSearchSettings());
 
   const providers = state.providerRegistry?.providers ?? [];
   const selectedProvider = providers.find((provider) => provider.id === state.selectedProviderId) ?? providers[0];
@@ -166,6 +186,21 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     });
   }
 
+  function updateSearchSettings(patch: Partial<DesktopSearchSettings>) {
+    setSearchSettings((current) => ({ ...current, ...patch }));
+  }
+
+  function saveSearchSettings() {
+    saveDesktopSearchSettings(searchSettings);
+    dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Web search settings saved for future turns." });
+  }
+
+  function resetSearchSettings() {
+    setSearchSettings(DEFAULT_SEARCH_SETTINGS);
+    saveDesktopSearchSettings(DEFAULT_SEARCH_SETTINGS);
+    dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Web search settings reset to auto." });
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[min(88vh,860px)] w-[min(1120px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[28px] border border-black/[0.03] bg-background p-0 shadow-lift">
@@ -222,6 +257,40 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
 
           <div className="min-h-0 overflow-y-auto overscroll-contain bg-background px-5 py-5 lg:px-6 lg:py-6">
             <div className="space-y-6">
+              {activeSection === "general" && (
+                <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="mb-2 flex items-center gap-2">
+                        <Globe2 size={18} />
+                        <h3 className="text-sm font-semibold">Display Language</h3>
+                      </div>
+                      <p className="text-sm leading-6 text-bench-700">
+                        Choose the language used by the desktop workbench. Chinese is the default for new installs.
+                      </p>
+                    </div>
+                    <div className="inline-flex rounded-xl bg-bench-50 p-1 ring-1 ring-inset ring-bench-200">
+                      {LANGUAGE_OPTIONS.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => dispatch({ type: "SET_LANGUAGE", language: option.id })}
+                          className={cn(
+                            "h-9 rounded-lg px-3 text-sm font-semibold transition",
+                            state.language === option.id
+                              ? "bg-bench-900 text-white shadow-xs"
+                              : "text-bench-700 hover:bg-white",
+                          )}
+                          aria-pressed={state.language === option.id}
+                        >
+                          {option.nativeLabel}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {activeSection === "providers" && (
                 <>
                   <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
@@ -532,19 +601,130 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
               )}
 
               {activeSection === "runtime" && state.bridgeStatus && (
-                <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-                  <h3 className="text-sm font-semibold">Runtime Status</h3>
-                  <div className="mt-5 rounded-2xl bg-bench-50 p-4 ring-1 ring-inset ring-bench-200">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className={cn("h-2.5 w-2.5 rounded-full", state.bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500")} />
-                      <span className="font-semibold">{state.bridgeStatus.label}</span>
-                      <span className="text-bench-700">{state.bridgeStatus.detail}</span>
+                <>
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <h3 className="text-sm font-semibold">Runtime Status</h3>
+                    <div className="mt-5 rounded-2xl bg-bench-50 p-4 ring-1 ring-inset ring-bench-200">
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className={cn("h-2.5 w-2.5 rounded-full", state.bridgeStatus.ok ? "bg-signal-acid" : "bg-red-500")} />
+                        <span className="font-semibold">{state.bridgeStatus.label}</span>
+                        <span className="text-bench-700">{state.bridgeStatus.detail}</span>
+                      </div>
+                      {state.busyCommand && (
+                        <p className="mt-3 text-xs text-bench-700">{state.busyCommand} in progress.</p>
+                      )}
                     </div>
-                    {state.busyCommand && (
-                      <p className="mt-3 text-xs text-bench-700">{state.busyCommand} in progress.</p>
-                    )}
-                  </div>
-                </section>
+                  </section>
+
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold">Web Search</h3>
+                        <p className="mt-2 text-sm leading-6 text-bench-700">
+                          Runtime tool: web.search and web.fetch. Provider-native browsing is not required.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateSearchSettings({ enabled: !searchSettings.enabled })}
+                        className={cn(
+                          "rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset transition",
+                          searchSettings.enabled
+                            ? "bg-bench-900 text-white ring-bench-900"
+                            : "bg-white text-bench-700 ring-bench-200 hover:bg-bench-50",
+                        )}
+                      >
+                        {searchSettings.enabled ? "Enabled" : "Disabled"}
+                      </button>
+                    </div>
+
+                    <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Search Provider</span>
+                        <select
+                          value={searchSettings.providerId}
+                          disabled={!searchSettings.enabled}
+                          onChange={(event) => updateSearchSettings({ providerId: event.target.value as DesktopSearchProviderId })}
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {searchProviderOptions.map((provider) => (
+                            <option key={provider.id} value={provider.id}>{provider.label}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">API Key Env</span>
+                        <input
+                          value={searchSettings.apiKeyEnv}
+                          disabled={!searchSettings.enabled || searchSettings.providerId === "duckduckgo" || searchSettings.providerId === "mcp"}
+                          onChange={(event) => updateSearchSettings({ apiKeyEnv: event.target.value.toUpperCase() })}
+                          placeholder={searchSettings.providerId === "auto" ? "Use provider default env" : `${searchSettings.providerId.toUpperCase()}_API_KEY`}
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Max Results</span>
+                        <input
+                          value={searchSettings.maxResults}
+                          disabled={!searchSettings.enabled}
+                          onChange={(event) => updateSearchSettings({ maxResults: event.target.value })}
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Timeout Ms</span>
+                        <input
+                          value={searchSettings.timeoutMs}
+                          disabled={!searchSettings.enabled}
+                          onChange={(event) => updateSearchSettings({ timeoutMs: event.target.value })}
+                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                      </label>
+
+                      {searchSettings.providerId === "mcp" && (
+                        <>
+                          <label className="space-y-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">MCP Server ID</span>
+                            <input
+                              value={searchSettings.mcpServerId}
+                              disabled={!searchSettings.enabled}
+                              onChange={(event) => updateSearchSettings({ mcpServerId: event.target.value })}
+                              placeholder="local-docs"
+                              className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                            />
+                          </label>
+
+                          <label className="space-y-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">MCP Tool Name</span>
+                            <input
+                              value={searchSettings.mcpToolName}
+                              disabled={!searchSettings.enabled}
+                              onChange={(event) => updateSearchSettings({ mcpToolName: event.target.value })}
+                              placeholder="search"
+                              className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                            />
+                          </label>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-5 rounded-2xl bg-bench-50 px-4 py-3 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+                      Auto checks `ORA_SEARCH_PROVIDER`, then configured provider API key env vars, then DuckDuckGo fallback. MCP search uses configured MCP servers and requires approval because it calls an MCP tool.
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap justify-end gap-2">
+                      <Button type="button" variant="outline" className="rounded-xl" onClick={resetSearchSettings}>
+                        Reset
+                      </Button>
+                      <Button type="button" className="rounded-xl" onClick={saveSearchSettings}>
+                        Save Search Settings
+                      </Button>
+                    </div>
+                  </section>
+                </>
               )}
 
               {activeSection === "tools" && state.toolRegistry && (

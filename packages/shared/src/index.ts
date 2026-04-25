@@ -284,6 +284,44 @@ export const UserTaskInputSchema = z.object({
 });
 export type UserTaskInput = z.infer<typeof UserTaskInputSchema>;
 
+export const DEFAULT_WEB_TOOL_IDS = ["web.fetch", "web.search"] as const;
+export type DefaultWebToolId = typeof DEFAULT_WEB_TOOL_IDS[number];
+
+export function withDefaultWebToolIds(toolIds: readonly string[] = [], options: { disabled?: boolean } = {}): string[] {
+  if (options.disabled) {
+    return [...new Set(toolIds.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as DefaultWebToolId)))];
+  }
+  return [...new Set([...toolIds, ...DEFAULT_WEB_TOOL_IDS])];
+}
+
+export const SearchProviderIdSchema = z.enum(["brave", "tavily", "serpapi", "kagi", "duckduckgo", "mcp"]);
+export type SearchProviderId = z.infer<typeof SearchProviderIdSchema>;
+
+export const SearchProviderConfigSchema = z.object({
+  id: SearchProviderIdSchema.optional(),
+  apiKeyEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
+  maxResults: z.number().int().positive().max(10).default(5),
+  timeoutMs: z.number().int().positive().max(30_000).default(8_000),
+  mcpServerId: z.string().min(1).optional(),
+  mcpToolName: z.string().min(1).optional(),
+});
+export type SearchProviderConfig = z.infer<typeof SearchProviderConfigSchema>;
+
+export const WebSearchResultSchema = z.object({
+  title: z.string().min(1),
+  url: z.string().url(),
+  snippet: z.string().optional(),
+  source: z.string().min(1).optional(),
+});
+export type WebSearchResult = z.infer<typeof WebSearchResultSchema>;
+
+export const WebSearchResponseSchema = z.object({
+  query: z.string().min(1),
+  providerId: SearchProviderIdSchema,
+  results: z.array(WebSearchResultSchema),
+});
+export type WebSearchResponse = z.infer<typeof WebSearchResponseSchema>;
+
 export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
   modeId: ModeIdSchema.optional(),
@@ -295,6 +333,7 @@ export const RunConfigSchema = z.object({
   budget: ResourceBudgetSchema.optional(),
   skillIds: z.array(z.string().min(1)).default([]),
   toolIds: z.array(z.string().min(1)).default([]),
+  searchProvider: SearchProviderConfigSchema.optional(),
   approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
   patternOptions: z.record(z.unknown()).default({}),
   metadata: z.record(z.unknown()).default({}),
@@ -2543,7 +2582,7 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
       supportsEventRouting: definition.supportsEventRouting,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: [],
+      toolIds: withDefaultWebToolIds(),
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily(pattern),
     editorConstraints: {
@@ -2647,7 +2686,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: ["model.handoff"],
+      toolIds: withDefaultWebToolIds(["model.handoff"]),
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
     editorConstraints: {
@@ -2737,7 +2776,7 @@ function createSingleAgentModeSpec(): ModeSpec {
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: [],
+      toolIds: withDefaultWebToolIds(),
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
     editorConstraints: {

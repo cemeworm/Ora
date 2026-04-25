@@ -173,7 +173,7 @@ export function AgentsView({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-transparent">
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-transparent">
       <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -187,10 +187,6 @@ export function AgentsView({
             )}
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Agents</p>
-              <h2 className="text-lg font-semibold">Custom agent workspace</h2>
-              <p className="mt-1 text-xs text-bench-700">
-                Manage DeerFlow-style agent personas backed by `.ora/agents`, then start a chat with that persona overlay.
-              </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">

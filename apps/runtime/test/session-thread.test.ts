@@ -311,7 +311,7 @@ describe("session thread runtime behavior", () => {
       method: "runs.start",
       params: {
         input: { prompt: "Fork source" },
-        config: { pattern: "orchestrator_subagent" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
       },
     }) as { runId: string; sessionId: string; turnIndex: number };
 
@@ -459,7 +459,7 @@ describe("session thread runtime behavior", () => {
       method: "runs.start",
       params: {
         input: { prompt: "First managed turn" },
-        config: { pattern: "orchestrator_subagent" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
       },
     }) as { sessionId: string };
 
@@ -470,7 +470,7 @@ describe("session thread runtime behavior", () => {
       params: {
         sessionId: first.sessionId,
         input: { prompt: "Second managed turn" },
-        config: { pattern: "orchestrator_subagent" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
       },
     });
 

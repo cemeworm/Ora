@@ -365,7 +365,7 @@ describe("SessionManager", () => {
       method: "runs.start",
       params: {
         input: { prompt: "Clarify the managed graph." },
-        config: { modeId: cloned.id },
+        config: { modeId: cloned.id, metadata: { disableDefaultWebTools: true } },
       },
     }) as { runId: string; status: string };
 
@@ -432,7 +432,7 @@ describe("SessionManager", () => {
         input: { prompt: "Approve the first graph node." },
         config: {
           pattern: "orchestrator_subagent",
-          metadata: { approvalMode: "manual" },
+          metadata: { approvalMode: "manual", disableDefaultWebTools: true },
         },
       },
     }) as { runId: string; status: string };
@@ -560,6 +560,7 @@ describe("SessionManager", () => {
         config: {
           modeId: cloned.id,
           approvalMode: "high_risk_only",
+          metadata: { disableDefaultWebTools: true },
         },
       },
     }) as { runId: string; status: string };

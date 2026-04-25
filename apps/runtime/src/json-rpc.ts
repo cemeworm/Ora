@@ -9,6 +9,7 @@ import { LocalRunStore, OraRuntimeError } from "./run-store.js";
 import { SessionManager } from "./session/session-manager.js";
 import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
+import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
 import type { RunEventStream } from "@ora/shared";
 
@@ -107,15 +108,24 @@ export function createRuntimeMethodHandler(
         return store.getSession(request.params);
       case "runs.start":
         if (sessionManager.isEnabled()) {
-          return store.startRunWithSnapshot(request.params, ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay }) =>
-            sessionManager.startRun(runId, input, config, conversationMessages, {
+          return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay }) => {
+            if (config.toolIds.some((toolId) => toolId === "web.search" || toolId === "web.fetch")) {
+              const { snapshot } = await executeRuntimeKernel(runId, input, config, {
+                modeSpec,
+                definition,
+                customAgentOverlay,
+                conversationMessages,
+              });
+              return snapshot;
+            }
+            return sessionManager.startRun(runId, input, config, conversationMessages, {
               modeSpec,
               definition,
               customAgentOverlay,
               sessionId,
               turnIndex,
-            })
-          );
+            });
+          });
         }
         return store.startRun(request.params);
       case "runs.startStreaming":

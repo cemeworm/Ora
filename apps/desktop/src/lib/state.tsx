@@ -1,6 +1,7 @@
 import { CoordinationPatternSchema } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
+import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
 import type {
   OraModeSpec,
   OraPatternDefinition,
@@ -54,6 +55,7 @@ export interface WorkbenchState {
   artifactPanelOpen: boolean;
   selectedArtifactId: string | undefined;
   inputMode: "flash" | "thinking" | "pro" | "ultra";
+  language: AppLanguage;
 }
 
 export type WorkbenchAction =
@@ -114,7 +116,8 @@ export type WorkbenchAction =
   | { type: "TOGGLE_ARTIFACT_PANEL" }
   | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
   | { type: "CLOSE_ARTIFACT_PANEL" }
-  | { type: "SET_INPUT_MODE"; mode: WorkbenchState["inputMode"] };
+  | { type: "SET_INPUT_MODE"; mode: WorkbenchState["inputMode"] }
+  | { type: "SET_LANGUAGE"; language: AppLanguage };
 
 const initialSelectedPattern = CoordinationPatternSchema.options[0] as CoordinationPattern;
 
@@ -159,6 +162,7 @@ export const initialWorkbenchState: WorkbenchState = {
   artifactPanelOpen: false,
   selectedArtifactId: undefined,
   inputMode: "pro",
+  language: readStoredLanguage(),
 };
 
 function replaceSessionSummary(sessions: OraSessionSummary[], session: OraSessionSummary): OraSessionSummary[] {
@@ -589,6 +593,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "SET_INPUT_MODE":
       return { ...state, inputMode: action.mode };
+
+    case "SET_LANGUAGE":
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LANGUAGE_STORAGE_KEY, action.language);
+      }
+      return { ...state, language: action.language };
 
     default:
       return state;

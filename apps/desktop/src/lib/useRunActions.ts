@@ -1,15 +1,18 @@
 import { useMemo } from "react";
+import { withDefaultWebToolIds } from "@ora/shared";
 import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
+import { buildRunSearchConfig } from "./searchSettings";
 import { useWorkbench } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
 function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
+  const toolIds = withDefaultWebToolIds(modeToolIds ?? []);
   if (!projectId) {
-    return [...(modeToolIds ?? [])];
+    return toolIds;
   }
-  return [...new Set([...(modeToolIds ?? []), ...PROJECT_CHAT_SAFE_TOOL_IDS])];
+  return [...new Set([...toolIds, ...PROJECT_CHAT_SAFE_TOOL_IDS])];
 }
 
 async function pickProjectDirectory(): Promise<string | null> {
@@ -170,6 +173,7 @@ export function useRunActions() {
     dispatch({ type: "SET_LOADING", loading: true });
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
+    const searchConfig = buildRunSearchConfig();
     try {
       const handle = await runtimeClient.startStreamingRun(
         {
@@ -185,8 +189,10 @@ export function useRunActions() {
           customAgentId: state.selectedCustomAgentId,
           modelRef: provider?.modelId ?? "local/smoke-model",
           toolIds: toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId),
+          searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
+            ...searchConfig.metadata,
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
           },
         },

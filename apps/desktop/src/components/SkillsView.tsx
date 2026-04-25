@@ -180,7 +180,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-transparent">
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-transparent">
       <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -199,10 +199,6 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
             )}
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Skills</p>
-              <h2 className="text-lg font-semibold">Local skill library</h2>
-              <p className="mt-1 text-xs text-bench-700">
-                Load bundled skills, create custom skills, and control which capabilities can be injected into runs.
-              </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -226,8 +222,8 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(300px,380px)_1fr] gap-0 overflow-hidden">
-        <aside className="min-h-0 border-r border-border bg-white/55 p-4">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]">
+        <aside className="min-h-0 border-b border-border bg-white/55 p-4 lg:border-b-0 lg:border-r">
           <div className="space-y-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-bench-500" size={14} />
