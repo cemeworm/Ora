@@ -5,6 +5,10 @@ import {
   type CheckpointMeta,
   type ModeSpec,
   type OraEventEnvelope,
+  type OraToolCallEnvelope,
+  OraToolCallEnvelopeSchema,
+  type OraToolCallSource,
+  type OraToolCallStatus,
   type PatternDefinition,
   type QueueSummary,
   type RunConfig,
@@ -23,10 +27,10 @@ import {
 import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
 import { configuredProviderId, invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
-import { RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
+import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import { classifyRecoveryError, RecoveryCoordinator, type RecoveryDecision, type RecoveryIncident } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
-import type { ModelMessage, ModelResponse } from "../providers/index.js";
+import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
 
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
@@ -63,6 +67,33 @@ class ApprovalInterruptError extends Error {
 }
 
 const RUNTIME_TOOL_LOOP_LIMIT = 4;
+const TOOL_REPAIR_CONTENT = "Tool call was interrupted before a result was produced. Continue from available context or choose another action.";
+
+type RuntimeToolAttempt = RuntimeToolCall & {
+  providerCallId?: string;
+  source: OraToolCallSource;
+};
+
+function providerSupportsNativeTools(config: RunConfig): boolean {
+  const capabilities = config.providerConfig?.capabilities ?? [];
+  if (capabilities.includes("tool_use")) {
+    return true;
+  }
+  return config.providerConfig === undefined
+    && (config.providerId === "openai-gpt" || config.providerId === "anthropic-claude");
+}
+
+function providerToolCallToAttempt(call: ModelToolCall): RuntimeToolAttempt | undefined {
+  if (!isRuntimeToolImplemented(call.toolId)) {
+    return undefined;
+  }
+  return {
+    tool: call.toolId,
+    args: call.args,
+    providerCallId: call.id,
+    source: "provider_native",
+  };
+}
 
 function checkpointLabelForStatus(status: StateSnapshot["status"]): string {
   switch (status) {
@@ -163,6 +194,7 @@ export async function executeRuntimeKernel(
   const policyService = new PolicyService(runId, now);
   const events: OraEventEnvelope[] = [];
   const artifacts: ArtifactRef[] = [];
+  const toolCallLedger: OraToolCallEnvelope[] = [];
   const pendingClarifications: PendingClarification[] = [];
   const activeAgents = new Set<string>();
   const busTopicCounts: Record<string, number> = {};
@@ -269,6 +301,52 @@ export async function executeRuntimeKernel(
     emit("todo.updated", { items: todoService.list() });
   };
 
+  const appendToolCall = (params: {
+    id?: string;
+    providerCallId?: string;
+    toolId: string;
+    args: Record<string, unknown>;
+    source: OraToolCallSource;
+    status: OraToolCallStatus;
+    actionId?: string;
+    agentId?: string;
+    nodeId?: string;
+    result?: OraToolCallEnvelope["result"];
+    error?: string;
+    repairReason?: string;
+  }) => {
+    const updatedAt = now();
+    const existingIndex = params.id
+      ? toolCallLedger.findIndex((call) => call.id === params.id)
+      : params.providerCallId
+        ? toolCallLedger.findIndex((call) => call.providerCallId === params.providerCallId && call.source === params.source)
+        : -1;
+    const existing = existingIndex >= 0 ? toolCallLedger[existingIndex] : undefined;
+    const envelope = OraToolCallEnvelopeSchema.parse({
+      id: params.id ?? existing?.id ?? `${runId}:tool-call-${toolCallLedger.length}`,
+      providerCallId: params.providerCallId ?? existing?.providerCallId,
+      runId,
+      nodeId: params.nodeId ?? existing?.nodeId,
+      agentId: params.agentId ?? existing?.agentId,
+      actionId: params.actionId ?? existing?.actionId,
+      toolId: params.toolId,
+      args: params.args,
+      source: params.source,
+      status: params.status,
+      requestedAt: existing?.requestedAt ?? updatedAt,
+      updatedAt,
+      result: params.result ?? existing?.result,
+      error: params.error ?? existing?.error,
+      repairReason: params.repairReason ?? existing?.repairReason,
+    });
+    if (existingIndex >= 0) {
+      toolCallLedger[existingIndex] = envelope;
+    } else {
+      toolCallLedger.push(envelope);
+    }
+    return envelope;
+  };
+
   const clarificationAnswer = (key: string, id: string): unknown => {
     const resumeClarifications = options.resumeContext?.clarifications;
     if (resumeClarifications && typeof resumeClarifications === "object") {
@@ -342,6 +420,9 @@ export async function executeRuntimeKernel(
     system: string;
   }): Promise<ModelResponse> => {
     const enabledTools = runtimeToolExecutor.enabledToolIds(config.toolIds);
+    const nativeTools = providerSupportsNativeTools(config)
+      ? runtimeToolExecutor.toolDefinitions(config.toolIds)
+      : [];
     let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
     const invokeProvider = options.streamProvider ? invokeRunProviderStream : invokeRunProvider;
     const streamCallbacks = options.streamProvider
@@ -363,11 +444,68 @@ export async function executeRuntimeKernel(
           },
         }
       : undefined;
+    const repairDanglingToolCalls = (candidateMessages: ModelMessage[]) => {
+      const pending = new Map<string, { call: ModelToolCall; messageIndex: number }>();
+      for (let index = 0; index < candidateMessages.length; index += 1) {
+        const message = candidateMessages[index];
+        if (message.role === "assistant" && message.toolCalls?.length) {
+          for (const call of message.toolCalls) {
+            pending.set(call.id, { call, messageIndex: index });
+          }
+          continue;
+        }
+        if (message.role === "tool" && message.toolCallId) {
+          pending.delete(message.toolCallId);
+        }
+      }
+      if (pending.size === 0) {
+        return candidateMessages;
+      }
+      const repairedMessages = [...candidateMessages];
+      for (const { call } of pending.values()) {
+        appendToolCall({
+          providerCallId: call.id,
+          toolId: call.toolId,
+          args: call.args,
+          source: "manual_repair",
+          status: "repaired",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          result: {
+            status: "interrupted",
+            error: TOOL_REPAIR_CONTENT,
+            content: TOOL_REPAIR_CONTENT,
+            createdAt: now(),
+            updatedAt: now(),
+          },
+          error: TOOL_REPAIR_CONTENT,
+          repairReason: "missing_provider_tool_result",
+        });
+        emit("tool.repaired", {
+          providerCallId: call.id,
+          toolId: call.toolId,
+          status: "repaired",
+          resultStatus: "interrupted",
+          repairReason: "missing_provider_tool_result",
+          content: TOOL_REPAIR_CONTENT,
+        }, { agentId: params.agentId, nodeId: params.agentId });
+        repairedMessages.push({
+          role: "tool",
+          toolCallId: call.id,
+          toolName: call.toolId,
+          content: TOOL_REPAIR_CONTENT,
+        });
+      }
+      return repairedMessages;
+    };
+    messages = repairDanglingToolCalls(messages);
     let response = await invokeProvider(config, {
       prompt: params.prompt,
       messages,
       system: params.system,
       maxTokens: config.budget?.maxTokens,
+      tools: nativeTools,
+      toolChoice: nativeTools.length > 0 ? "auto" : undefined,
     }, streamCallbacks);
 
     if (enabledTools.length === 0) {
@@ -375,7 +513,12 @@ export async function executeRuntimeKernel(
     }
 
     for (let iteration = 0; iteration < RUNTIME_TOOL_LOOP_LIMIT; iteration += 1) {
-      const toolCall = runtimeToolExecutor.extractToolCall(response.text, config.toolIds);
+      const nativeToolCall = response.toolCalls?.map(providerToolCallToAttempt).find(Boolean);
+      const fallbackToolCall = nativeToolCall
+        ? undefined
+        : runtimeToolExecutor.extractToolCall(response.text, config.toolIds);
+      const toolCall: RuntimeToolAttempt | undefined = nativeToolCall
+        ?? (fallbackToolCall ? { ...fallbackToolCall, source: "json_fallback" } : undefined);
       if (!toolCall) {
         return response;
       }
@@ -387,6 +530,16 @@ export async function executeRuntimeKernel(
         input: toolCall.args,
         agentId: params.agentId,
       });
+      const toolCallRecord = appendToolCall({
+        providerCallId: toolCall.providerCallId,
+        toolId: toolCall.tool,
+        args: toolCall.args,
+        source: toolCall.source,
+        status: "proposed",
+        actionId: action.id,
+        agentId: params.agentId,
+        nodeId: params.agentId,
+      });
       emit("action.updated", { actionId: action.id, status: "proposed", record: action }, { agentId: params.agentId, nodeId: params.agentId });
 
       const decision = policyService.evaluate(action);
@@ -394,6 +547,7 @@ export async function executeRuntimeKernel(
       if (decision.requiredApproval && config.approvalMode !== "auto") {
         if (!approvedActionIds.has(action.id)) {
           const blocked = actionLedger.transition(action.id, "approval_required");
+          appendToolCall({ ...toolCallRecord, status: "approval_required" });
           emit("approval.required", { actionId: action.id, decision }, { agentId: params.agentId, nodeId: params.agentId });
           emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
           throw new ApprovalInterruptError(action.id);
@@ -404,10 +558,12 @@ export async function executeRuntimeKernel(
           mode: "resume",
         }, { agentId: params.agentId, nodeId: params.agentId });
         const approved = actionLedger.transition(action.id, "approved");
+        appendToolCall({ ...toolCallRecord, status: "approved" });
         emit("action.updated", { actionId: action.id, status: "approved", record: approved }, { agentId: params.agentId, nodeId: params.agentId });
       }
 
       const running = actionLedger.transition(action.id, "running");
+      appendToolCall({ ...toolCallRecord, status: "running" });
       emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
 
       try {
@@ -415,31 +571,70 @@ export async function executeRuntimeKernel(
           allowRisky: !decision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(action.id),
         });
         const succeeded = actionLedger.transition(action.id, "succeeded", { output });
+        const resultText = JSON.stringify(output, null, 2);
+        appendToolCall({
+          ...toolCallRecord,
+          status: "succeeded",
+          result: {
+            status: "succeeded",
+            output,
+            content: resultText,
+            createdAt: now(),
+            updatedAt: now(),
+          },
+        });
         emit("tool.called", {
+          toolCallId: toolCallRecord.id,
+          providerCallId: toolCall.providerCallId,
           actionId: action.id,
           toolId: toolCall.tool,
+          source: toolCall.source,
           status: "succeeded",
           input: toolCall.args,
           output,
         }, { agentId: params.agentId, nodeId: params.agentId });
         emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
 
-        messages = [
-          ...messages,
-          { role: "assistant", content: response.text },
-          { role: "user", content: `Workspace tool result for ${toolCall.tool}:\n${JSON.stringify(output, null, 2)}` },
-        ];
+        messages = toolCall.source === "provider_native" && toolCall.providerCallId
+          ? [
+              ...messages,
+              { role: "assistant", content: response.text, toolCalls: response.toolCalls },
+              { role: "tool", toolCallId: toolCall.providerCallId, toolName: toolCall.tool, content: resultText },
+            ]
+          : [
+              ...messages,
+              { role: "assistant", content: response.text },
+              { role: "user", content: `Workspace tool result for ${toolCall.tool}:\n${resultText}` },
+            ];
+        messages = repairDanglingToolCalls(messages);
         response = await invokeProvider(config, {
           messages,
           system: params.system,
           maxTokens: config.budget?.maxTokens,
+          tools: nativeTools,
+          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
         }, streamCallbacks);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         const failed = actionLedger.transition(action.id, "failed", { error: detail });
+        appendToolCall({
+          ...toolCallRecord,
+          status: "failed",
+          result: {
+            status: "failed",
+            error: detail,
+            content: detail,
+            createdAt: now(),
+            updatedAt: now(),
+          },
+          error: detail,
+        });
         emit("tool.called", {
+          toolCallId: toolCallRecord.id,
+          providerCallId: toolCall.providerCallId,
           actionId: action.id,
           toolId: toolCall.tool,
+          source: toolCall.source,
           status: "failed",
           input: toolCall.args,
           error: detail,
@@ -506,6 +701,8 @@ export async function executeRuntimeKernel(
             messages,
             system: params.system,
             maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
           }, streamCallbacks);
           continue;
         }
@@ -533,6 +730,8 @@ export async function executeRuntimeKernel(
             messages,
             system: params.system,
             maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
           }, streamCallbacks);
           continue;
         }
@@ -1083,6 +1282,7 @@ export async function executeRuntimeKernel(
     plan: planService.list(),
     todos: todoService.list(),
     actions: actionLedger.list(),
+    toolCalls: toolCallLedger,
     policyDecisions: [],
     checkpoints: [checkpoint],
     events,

@@ -9,23 +9,49 @@ import {
   FileText,
   ListTodo,
   LoaderCircle,
+  MessageSquareWarning,
+  Send,
 } from "lucide-react";
 import type { AssistantTurnAttachment, TurnArtifactAttachment, TurnProcessStep, TurnTodoItem } from "../types";
 import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
 import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
 import { TaskItem, TaskItemMeta, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
 interface AssistantTurnCardProps {
   content: string;
   turn?: AssistantTurnAttachment;
   isPlaceholder?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
+  onSubmitFeedback?: (params: { turn: AssistantTurnAttachment; feedbackText: string }) => Promise<void>;
 }
 
-export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact }: AssistantTurnCardProps) {
+export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
   const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
+
+  async function handleSubmitFeedback() {
+    if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
+      return;
+    }
+    setFeedbackSubmitting(true);
+    setFeedbackError(undefined);
+    try {
+      await onSubmitFeedback({ turn, feedbackText: feedbackText.trim() });
+      setFeedbackText("");
+      setFeedbackOpen(false);
+    } catch (error) {
+      setFeedbackError(error instanceof Error ? error.message : "Feedback submission failed.");
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  }
 
   return (
     <Message from="assistant" className="w-full">
@@ -73,8 +99,54 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               ))}
             </CollapsibleCard>
           ) : null}
+
+          {canSubmitFeedback ? (
+            <div className="flex">
+              <button
+                type="button"
+                onClick={() => setFeedbackOpen(true)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-accent/35 hover:text-foreground"
+              >
+                <MessageSquareWarning size={13} />
+                Feedback
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
+      <Dialog open={feedbackOpen} onOpenChange={setFeedbackOpen}>
+        <DialogContent className="w-full max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Feedback</DialogTitle>
+          </DialogHeader>
+          <textarea
+            value={feedbackText}
+            onChange={(event) => setFeedbackText(event.target.value)}
+            placeholder="Describe what was wrong, missing, confusing, or should be evaluated next time."
+            className="min-h-32 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-bench-900/15"
+          />
+          {feedbackError ? <p className="mt-2 text-xs text-red-700">{feedbackError}</p> : null}
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setFeedbackOpen(false)}
+              className="inline-flex h-9 items-center rounded-md border border-border bg-background px-3 text-sm font-medium"
+              disabled={feedbackSubmitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSubmitFeedback()}
+              disabled={!feedbackText.trim() || feedbackSubmitting}
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {feedbackSubmitting ? <LoaderCircle size={14} className="animate-spin" /> : <Send size={14} />}
+              Submit
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Message>
   );
 }

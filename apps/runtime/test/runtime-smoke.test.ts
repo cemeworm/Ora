@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema } from "@ora/shared";
-import { LocalRunStore, createRuntimeMethodHandler, handleJsonRpcLine } from "../src/index.js";
+import { DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
+import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 
 function createTempStore() {
   return new LocalRunStore({
@@ -308,6 +308,14 @@ describe("Ora runtime smoke path", () => {
           results: [expect.objectContaining({ title: "Example Result", url: "https://example.com/result" })],
         },
       });
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          toolId: "web.search",
+          source: "json_fallback",
+          status: "succeeded",
+          result: expect.objectContaining({ status: "succeeded" }),
+        }),
+      ]);
       expect(state.output).toMatchObject({ text: expect.stringContaining("Search answer from Example Result") });
     } finally {
       globalThis.fetch = previousFetch;
@@ -322,6 +330,166 @@ describe("Ora runtime smoke path", () => {
         process.env.MOCK_BRAVE_KEY = previousSearchKey;
       }
     }
+  });
+
+  it("executes OpenAI-compatible native tool calls and returns matching tool results", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-native-tool-"));
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "Native tool result\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NATIVE_TOOL_KEY;
+    process.env.NATIVE_TOOL_KEY = "test";
+    let providerCalls = 0;
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        tools?: unknown[];
+        messages?: Array<{ role: string; tool_call_id?: string; content?: string }>;
+      };
+      expect(body.tools?.length).toBeGreaterThan(0);
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-readme",
+                type: "function",
+                function: {
+                  name: "file__read",
+                  arguments: "{\"path\":\"README.md\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 2) {
+        expect(body.messages?.some((message) =>
+          message.role === "tool"
+          && message.tool_call_id === "call-readme"
+          && String(message.content ?? "").includes("Native tool result")
+        )).toBe(true);
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Read README through native tool." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Read the README.",
+            context: {
+              projectWorkspace: { label: "Native Tool Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            modeId: "single_agent",
+            providerId: "native-tool",
+            modelRef: "native-tool-model",
+            providerConfig: {
+              id: "native-tool",
+              label: "Native Tool",
+              type: "openai_compatible",
+              modelId: "native-tool-model",
+              baseUrl: "https://native-tool.test/v1",
+              apiKeyEnv: "NATIVE_TOOL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-readme",
+          toolId: "file.read",
+          source: "provider_native",
+          status: "succeeded",
+        }),
+      ]);
+      expect(state.output).toMatchObject({ text: expect.stringContaining("Read README through native tool.") });
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.NATIVE_TOOL_KEY;
+      } else {
+        process.env.NATIVE_TOOL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("repairs dangling provider tool calls before the next model invocation", async () => {
+    const modeSpec = getModePreset("single_agent");
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const { snapshot } = await executeRuntimeKernel(
+      "run-repair",
+      { prompt: "Continue after repair.", createdAt: 1, context: {} },
+      {
+        pattern: "orchestrator_subagent",
+        modeId: "single_agent",
+        providerId: "local-smoke",
+        modelRef: "smoke-model",
+        providerConfig: {
+          id: "local-smoke",
+          type: "local_smoke",
+          label: "Smoke",
+          modelId: "smoke-model",
+          capabilities: ["chat"],
+          headers: {},
+        },
+        metadata: {},
+        deterministicSeed: "repair-test",
+        profileIds: ["solo_agent"],
+        skillIds: [],
+        toolIds: [],
+        approvalMode: "auto",
+        budget: {
+          maxTokens: 1024,
+          maxToolCalls: 4,
+          maxRuntimeMs: 60_000,
+        },
+      },
+      {
+        modeSpec,
+        definition,
+        conversationMessages: [{
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "dangling-call", toolId: "web.search", args: { query: "Ora" } }],
+        }],
+      },
+    );
+
+    expect(snapshot.events.map((event) => event.type)).toContain("tool.repaired");
+    expect(snapshot.toolCalls).toEqual([
+      expect.objectContaining({
+        providerCallId: "dangling-call",
+        toolId: "web.search",
+        source: "manual_repair",
+        status: "repaired",
+        repairReason: "missing_provider_tool_result",
+        result: expect.objectContaining({ status: "interrupted" }),
+      }),
+    ]);
   });
 
   it("keeps generator-verifier turns usable when verifier output is not parseable", async () => {

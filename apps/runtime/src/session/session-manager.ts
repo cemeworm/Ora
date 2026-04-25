@@ -5,6 +5,8 @@ import {
   type BusStats,
   type CheckpointMeta,
   type OraEventEnvelope,
+  type OraToolCallEnvelope,
+  OraToolCallEnvelopeSchema,
   OraEventEnvelopeSchema,
   type QueueSummary,
   StateSnapshotSchema,
@@ -324,6 +326,7 @@ function createInitialGraphState(
     memory: [],
     plan,
     actions: [],
+    toolCalls: [],
     policyDecisions: [],
     events: [],
     checkpoints: [],
@@ -569,6 +572,7 @@ function buildSnapshotFromGraph(params: {
     plan,
     todos,
     actions: buildActionRecords(params.runId, nextEvents),
+    toolCalls: buildToolCallLedger(params.runId, nextEvents, Array.isArray(values.toolCalls) ? values.toolCalls : []),
     policyDecisions: Array.isArray(values.policyDecisions) ? values.policyDecisions : [],
     checkpoints,
     events: nextEvents,
@@ -673,6 +677,75 @@ function buildActionRecords(runId: string, events: OraEventEnvelope[]): ActionRe
     });
   }
   return [...actions.values()];
+}
+
+function buildToolCallLedger(
+  runId: string,
+  events: OraEventEnvelope[],
+  existing: OraToolCallEnvelope[],
+): OraToolCallEnvelope[] {
+  const calls = new Map<string, OraToolCallEnvelope>();
+  for (const call of existing) {
+    const parsed = OraToolCallEnvelopeSchema.safeParse(call);
+    if (parsed.success) {
+      calls.set(parsed.data.id, parsed.data);
+    }
+  }
+  for (const event of events) {
+    if ((event.type !== "tool.called" && event.type !== "tool.repaired") || typeof event.payload !== "object" || event.payload === null) {
+      continue;
+    }
+    const payload = event.payload as Record<string, unknown>;
+    const toolId = typeof payload.toolId === "string" ? payload.toolId : undefined;
+    if (!toolId) {
+      continue;
+    }
+    const id = typeof payload.toolCallId === "string" ? payload.toolCallId : `${runId}:tool-call:${event.seq}`;
+    const status = payload.status === "repaired"
+      ? "repaired"
+      : payload.status === "failed"
+        ? "failed"
+        : payload.status === "succeeded"
+          ? "succeeded"
+          : "running";
+    const input = payload.input && typeof payload.input === "object" && !Array.isArray(payload.input)
+      ? payload.input as Record<string, unknown>
+      : {};
+    const detail = typeof payload.error === "string"
+      ? payload.error
+      : typeof payload.content === "string"
+        ? payload.content
+        : undefined;
+    calls.set(id, OraToolCallEnvelopeSchema.parse({
+      id,
+      providerCallId: typeof payload.providerCallId === "string" ? payload.providerCallId : undefined,
+      runId,
+      nodeId: event.nodeId,
+      agentId: event.agentId,
+      actionId: typeof payload.actionId === "string" ? payload.actionId : undefined,
+      toolId,
+      args: input,
+      source: payload.source === "provider_native" || payload.source === "manual_repair" || payload.source === "replay"
+        ? payload.source
+        : "json_fallback",
+      status,
+      requestedAt: event.createdAt,
+      updatedAt: event.createdAt,
+      result: status === "succeeded" || status === "failed" || status === "repaired"
+        ? {
+            status: status === "repaired" ? "interrupted" : status,
+            output: payload.output,
+            error: detail,
+            content: detail,
+            createdAt: event.createdAt,
+            updatedAt: event.createdAt,
+          }
+        : undefined,
+      error: detail,
+      repairReason: typeof payload.repairReason === "string" ? payload.repairReason : undefined,
+    }));
+  }
+  return [...calls.values()];
 }
 
 function extractPendingInterrupts(graphState: unknown): {
@@ -811,6 +884,23 @@ function appendLifecycleEvent(
       status: item.status === "done" || item.status === "skipped" ? item.status : "blocked",
       updatedAt,
     })),
+    toolCalls: snapshot.toolCalls.map((call) =>
+      call.status === "running" || call.status === "proposed" || call.status === "approval_required" || call.status === "approved"
+        ? OraToolCallEnvelopeSchema.parse({
+            ...call,
+            status: "interrupted",
+            updatedAt,
+            result: {
+              status: "interrupted",
+              error: "Run was interrupted before this tool call completed.",
+              content: "Run was interrupted before this tool call completed.",
+              createdAt: updatedAt,
+              updatedAt,
+            },
+            error: "Run was interrupted before this tool call completed.",
+          })
+        : call
+    ),
     events: [...snapshot.events, event],
     updatedAt,
   });

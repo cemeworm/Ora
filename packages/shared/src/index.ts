@@ -183,6 +183,56 @@ export const ActionRecordSchema = z.object({
 });
 export type ActionRecord = z.infer<typeof ActionRecordSchema>;
 
+export const OraToolCallSourceSchema = z.enum([
+  "provider_native",
+  "json_fallback",
+  "manual_repair",
+  "replay"
+]);
+export type OraToolCallSource = z.infer<typeof OraToolCallSourceSchema>;
+
+export const OraToolCallStatusSchema = z.enum([
+  "proposed",
+  "approval_required",
+  "approved",
+  "running",
+  "succeeded",
+  "failed",
+  "denied",
+  "interrupted",
+  "repaired"
+]);
+export type OraToolCallStatus = z.infer<typeof OraToolCallStatusSchema>;
+
+export const OraToolCallResultSchema = z.object({
+  status: OraToolCallStatusSchema,
+  output: z.unknown().optional(),
+  error: z.string().optional(),
+  content: z.string().optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type OraToolCallResult = z.infer<typeof OraToolCallResultSchema>;
+
+export const OraToolCallEnvelopeSchema = z.object({
+  id: z.string().min(1),
+  providerCallId: z.string().min(1).optional(),
+  runId: z.string().min(1),
+  nodeId: z.string().min(1).optional(),
+  agentId: z.string().min(1).optional(),
+  actionId: z.string().min(1).optional(),
+  toolId: z.string().min(1),
+  args: z.record(z.unknown()).default({}),
+  source: OraToolCallSourceSchema,
+  status: OraToolCallStatusSchema,
+  requestedAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  result: OraToolCallResultSchema.optional(),
+  error: z.string().optional(),
+  repairReason: z.string().optional(),
+});
+export type OraToolCallEnvelope = z.infer<typeof OraToolCallEnvelopeSchema>;
+
 export const PolicyDecisionSchema = z.object({
   id: z.string().min(1),
   runId: z.string().min(1),
@@ -466,6 +516,7 @@ export const OraEventTypeSchema = z.enum([
   "approval.required",
   "approval.resolved",
   "tool.called",
+  "tool.repaired",
   "message.delta",
   "message.published",
   "message.routed",
@@ -792,6 +843,7 @@ export const StateSnapshotSchema = z.object({
   plan: z.array(PlanItemSchema),
   todos: z.array(TodoItemSchema).default([]),
   actions: z.array(ActionRecordSchema),
+  toolCalls: z.array(OraToolCallEnvelopeSchema).default([]),
   policyDecisions: z.array(PolicyDecisionSchema).default([]),
   checkpoints: z.array(CheckpointMetaSchema),
   events: z.array(OraEventEnvelopeSchema),
@@ -1149,6 +1201,87 @@ export const EvaluationExportResultSchema = z.object({
 });
 export type EvaluationExportResult = z.infer<typeof EvaluationExportResultSchema>;
 
+export const EvaluationFeedbackStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "rejected",
+  "failed",
+]);
+export type EvaluationFeedbackStatus = z.infer<typeof EvaluationFeedbackStatusSchema>;
+
+export const EvaluationFeedbackCuratorStatusSchema = z.enum([
+  "generated",
+  "fallback",
+  "failed",
+]);
+export type EvaluationFeedbackCuratorStatus = z.infer<typeof EvaluationFeedbackCuratorStatusSchema>;
+
+export const EvaluationFeedbackSubmitParamsSchema = z.object({
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  turnIndex: z.number().int().positive().optional(),
+  messageId: z.string().min(1).optional(),
+  feedbackText: z.string().min(1),
+});
+export type EvaluationFeedbackSubmitParams = z.infer<typeof EvaluationFeedbackSubmitParamsSchema>;
+
+export const EvaluationFeedbackDraftCaseSchema = z.object({
+  case: EvaluationCaseSchema,
+  curatorStatus: EvaluationFeedbackCuratorStatusSchema,
+  curatorRationale: z.string().min(1).optional(),
+  error: z.string().min(1).optional(),
+});
+export type EvaluationFeedbackDraftCase = z.infer<typeof EvaluationFeedbackDraftCaseSchema>;
+
+export const EvaluationFeedbackRecordSchema = z.object({
+  id: z.string().min(1),
+  status: EvaluationFeedbackStatusSchema,
+  feedbackText: z.string().min(1),
+  sourceRunId: z.string().min(1),
+  sourceSessionId: z.string().min(1).optional(),
+  sourceTurnIndex: z.number().int().positive().optional(),
+  sourceMessageId: z.string().min(1).optional(),
+  sourceContext: z.record(z.unknown()).default({}),
+  draft: EvaluationFeedbackDraftCaseSchema,
+  datasetId: z.string().min(1).optional(),
+  acceptedCaseId: z.string().min(1).optional(),
+  rejectionReason: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type EvaluationFeedbackRecord = z.infer<typeof EvaluationFeedbackRecordSchema>;
+
+export const EvaluationFeedbackListParamsSchema = z.object({
+  status: EvaluationFeedbackStatusSchema.optional(),
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type EvaluationFeedbackListParams = z.infer<typeof EvaluationFeedbackListParamsSchema>;
+
+export const EvaluationFeedbackGetParamsSchema = z.object({
+  feedbackId: z.string().min(1),
+});
+export type EvaluationFeedbackGetParams = z.infer<typeof EvaluationFeedbackGetParamsSchema>;
+
+export const EvaluationFeedbackUpdateParamsSchema = z.object({
+  feedbackId: z.string().min(1),
+  feedbackText: z.string().min(1).optional(),
+  draftCase: EvaluationCaseSchema.optional(),
+  curatorRationale: z.string().min(1).optional(),
+});
+export type EvaluationFeedbackUpdateParams = z.infer<typeof EvaluationFeedbackUpdateParamsSchema>;
+
+export const EvaluationFeedbackAcceptParamsSchema = z.object({
+  feedbackId: z.string().min(1),
+  datasetId: z.string().min(1).optional(),
+});
+export type EvaluationFeedbackAcceptParams = z.infer<typeof EvaluationFeedbackAcceptParamsSchema>;
+
+export const EvaluationFeedbackRejectParamsSchema = z.object({
+  feedbackId: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+export type EvaluationFeedbackRejectParams = z.infer<typeof EvaluationFeedbackRejectParamsSchema>;
+
 export const JsonRpcIdSchema = z.union([z.string(), z.number().int()]);
 
 export const RuntimeJsonRpcMethodSchema = z.enum([
@@ -1207,7 +1340,13 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "evaluation.runs.stream",
   "evaluation.runs.promoteBaseline",
   "evaluation.runs.export",
-  "evaluation.baselines.list"
+  "evaluation.baselines.list",
+  "evaluation.feedback.submit",
+  "evaluation.feedback.list",
+  "evaluation.feedback.get",
+  "evaluation.feedback.update",
+  "evaluation.feedback.accept",
+  "evaluation.feedback.reject"
 ]);
 export type RuntimeJsonRpcMethod = z.infer<typeof RuntimeJsonRpcMethodSchema>;
 
@@ -1347,6 +1486,7 @@ export const ModeRuntimeAtomIdSchema = z.enum([
   "loop_guard",
   "clarification_interrupt",
   "memory_capture",
+  "long_term_memory",
   "deferred_tool_discovery",
   "subagent_delegate",
   "persistent_worker_memory",
@@ -1388,6 +1528,17 @@ export const ModeRuntimeAtomDefinitionSchema = z.object({
 });
 export type ModeRuntimeAtomDefinition = z.infer<typeof ModeRuntimeAtomDefinitionSchema>;
 
+export const ModeMemoryPolicySchema = z.object({
+  enabled: z.boolean().default(true),
+  updater: z.enum(["provider", "heuristic"]).default("provider"),
+  debounceMs: z.number().int().min(0).max(60_000).default(0),
+  factConfidenceThreshold: z.number().min(0).max(1).default(0.7),
+  maxFacts: z.number().int().positive().max(500).default(120),
+  injectionMaxFacts: z.number().int().positive().max(100).default(24),
+  updaterProviderId: z.string().min(1).optional(),
+});
+export type ModeMemoryPolicy = z.infer<typeof ModeMemoryPolicySchema>;
+
 export const ModeCapabilityFlagsSchema = z.object({
   supportsPersistentWorkers: z.boolean().default(false),
   supportsSharedState: z.boolean().default(false),
@@ -1427,6 +1578,7 @@ export const ModeSpecSchema = z.object({
   profiles: z.array(AgentProfileSchema).min(1),
   runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
   recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
+  memoryPolicy: ModeMemoryPolicySchema.default({}),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -1774,6 +1926,21 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
       presentation: "mode_capability",
       edgeKind: "memory",
       edgeLabel: "capture",
+    },
+    defaultEnabled: true,
+  },
+  {
+    id: "long_term_memory",
+    scope: "mode",
+    label: "Long-term Memory",
+    description: "Update a durable user memory profile from conversation context and inject relevant facts into future runs.",
+    compatibleFamilies: ALL_COORDINATION_PATTERNS,
+    requiresTools: [],
+    requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "memory",
+      edgeLabel: "profile",
     },
     defaultEnabled: true,
   },

@@ -247,6 +247,33 @@ export function TrailsTabs({
               </div>
             </DockCard>
 
+            <DockCard title="Tool Calls" icon={<Workflow size={16} />}>
+              {activeSnapshot.toolCalls.length === 0 ? (
+                <p className="text-xs leading-5 text-bench-700">No structured tool calls were recorded for this run.</p>
+              ) : (
+                <div className="space-y-2">
+                  {activeSnapshot.toolCalls.map((call) => (
+                    <div key={call.id} className="rounded-md bg-white px-3 py-3 ring-1 ring-inset ring-bench-200">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-bench-900">{call.toolId}</p>
+                          <p className="mt-1 text-[11px] text-bench-700">
+                            {call.source.replace(/_/g, " ")}{call.providerCallId ? ` · ${call.providerCallId}` : ""}
+                          </p>
+                        </div>
+                        <span className={toolCallStatusClassName(call.status)}>
+                          {call.status.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      {call.repairReason ? (
+                        <p className="mt-2 text-xs leading-5 text-amber-800">{call.repairReason.replace(/_/g, " ")}</p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </DockCard>
+
             <DockCard title="Blocking Gates" icon={<Workflow size={16} />}>
               {pendingApprovalItems.length === 0 && pendingClarificationItems.length === 0 ? (
                 <p className="text-xs leading-5 text-bench-700">This run is not currently paused behind a manual gate.</p>
@@ -685,6 +712,10 @@ function timelineLabel(eventType: string) {
       return "Task completed";
     case "task.failed":
       return "Task failed";
+    case "tool.called":
+      return "Tool call";
+    case "tool.repaired":
+      return "Tool repaired";
     case "checkpoint.created":
       return "Checkpoint captured";
     case "artifact.degraded":
@@ -714,6 +745,11 @@ function timelineLabel(eventType: string) {
 
 function timelineDetail(event: OraStateSnapshot["events"][number]) {
   if (isRecord(event.payload)) {
+    if (event.type === "tool.called" || event.type === "tool.repaired") {
+      const toolId = typeof event.payload.toolId === "string" ? event.payload.toolId : "tool";
+      const status = typeof event.payload.status === "string" ? event.payload.status : "updated";
+      return `${toolId} ${status.replace(/_/g, " ")}.`;
+    }
     if (isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
       return event.payload.decision.summary;
     }
@@ -747,6 +783,13 @@ export function collectAnomalies(
   }
   if (actions.some((action) => action.state === "approval_required")) {
     items.add("A pending approval is blocking forward progress.");
+  }
+  const toolCalls = snapshot.toolCalls ?? [];
+  if (toolCalls.some((call) => call.status === "repaired")) {
+    items.add("A dangling provider tool call was repaired as interrupted before the next model call.");
+  }
+  if (toolCalls.some((call) => call.status === "interrupted")) {
+    items.add("A tool call was interrupted before completion.");
   }
   if (!trace?.enabled) {
     items.add("Langfuse tracing is disabled, so Trails is operating in local-only mode.");
@@ -876,4 +919,18 @@ function riskPillClassName(riskLevel: "low" | "medium" | "high") {
     default:
       return `${base} bg-slate-100 text-slate-700`;
   }
+}
+
+function toolCallStatusClassName(status: OraStateSnapshot["toolCalls"][number]["status"]) {
+  const base = "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]";
+  if (status === "succeeded") {
+    return `${base} bg-emerald-100 text-emerald-900`;
+  }
+  if (status === "failed" || status === "interrupted" || status === "repaired") {
+    return `${base} bg-amber-100 text-amber-900`;
+  }
+  if (status === "approval_required") {
+    return `${base} bg-sky-100 text-sky-900`;
+  }
+  return `${base} bg-bench-100 text-bench-700`;
 }

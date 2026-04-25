@@ -24,6 +24,16 @@ import {
   EvaluationExportParamsSchema,
   EvaluationExportResult,
   EvaluationExportResultSchema,
+  EvaluationFeedbackAcceptParamsSchema,
+  EvaluationFeedbackDraftCase,
+  EvaluationFeedbackDraftCaseSchema,
+  EvaluationFeedbackGetParamsSchema,
+  EvaluationFeedbackListParamsSchema,
+  EvaluationFeedbackRecord,
+  EvaluationFeedbackRecordSchema,
+  EvaluationFeedbackRejectParamsSchema,
+  EvaluationFeedbackSubmitParamsSchema,
+  EvaluationFeedbackUpdateParamsSchema,
   EvaluationImportParamsSchema,
   EvaluationProfileKind,
   EvaluationPromoteBaselineParamsSchema,
@@ -57,6 +67,7 @@ const EvaluationManifestSchema = z.object({
   nextDatasetNumber: z.number().int().positive().default(1),
   nextEvaluationRunNumber: z.number().int().positive().default(1),
   nextBaselineNumber: z.number().int().positive().default(1),
+  nextFeedbackNumber: z.number().int().positive().default(1),
 });
 
 const PersistedEvaluationRunSchema = z.object({
@@ -68,17 +79,26 @@ type EvaluationManifest = z.infer<typeof EvaluationManifestSchema>;
 type PersistedEvaluationRun = z.infer<typeof PersistedEvaluationRunSchema>;
 
 type RunExecutor = (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>;
+type FeedbackCurator = (params: {
+  feedbackId: string;
+  feedbackText: string;
+  sourceContext: Record<string, unknown>;
+}) => Promise<EvaluationFeedbackDraftCase>;
+
+const FEEDBACK_DATASET_ID = "feedback-chat";
 
 export class LocalEvaluationStore {
   private readonly manifestPath: string;
   private readonly datasetsDir: string;
   private readonly runsDir: string;
   private readonly baselinesDir: string;
+  private readonly feedbackDir: string;
   private readonly clock: () => number;
   private manifest: EvaluationManifest;
   private datasets = new Map<string, EvaluationDatasetDetail>();
   private runs = new Map<string, PersistedEvaluationRun>();
   private baselines = new Map<string, EvaluationBaseline>();
+  private feedback = new Map<string, EvaluationFeedbackRecord>();
 
   constructor(private readonly baseDir: string, clock: () => number = Date.now) {
     this.clock = clock;
@@ -86,6 +106,7 @@ export class LocalEvaluationStore {
     this.datasetsDir = path.join(baseDir, "datasets");
     this.runsDir = path.join(baseDir, "runs");
     this.baselinesDir = path.join(baseDir, "baselines");
+    this.feedbackDir = path.join(baseDir, "feedback");
     this.ensureDirs();
     this.manifest = this.readJsonFile(this.manifestPath, EvaluationManifestSchema, EvaluationManifestSchema.parse({}));
     const originalManifest = JSON.stringify(this.manifest);
@@ -377,6 +398,128 @@ export class LocalEvaluationStore {
     });
   }
 
+  async submitFeedback(
+    params: unknown,
+    sourceContext: Record<string, unknown>,
+    curateDraft?: FeedbackCurator
+  ): Promise<EvaluationFeedbackRecord> {
+    const parsed = EvaluationFeedbackSubmitParamsSchema.parse(params);
+    const feedbackId = this.nextFeedbackId();
+    const now = this.now();
+    const draft = await this.curateFeedbackDraft(feedbackId, parsed.feedbackText, sourceContext, curateDraft);
+    const record = EvaluationFeedbackRecordSchema.parse({
+      id: feedbackId,
+      status: draft.curatorStatus === "failed" ? "failed" : "pending",
+      feedbackText: parsed.feedbackText.trim(),
+      sourceRunId: parsed.runId,
+      sourceSessionId: parsed.sessionId,
+      sourceTurnIndex: parsed.turnIndex,
+      sourceMessageId: parsed.messageId,
+      sourceContext,
+      draft,
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.feedback.set(record.id, record);
+    this.saveFeedback(record);
+    return record;
+  }
+
+  listFeedback(params: unknown = {}): EvaluationFeedbackRecord[] {
+    const parsed = EvaluationFeedbackListParamsSchema.parse(params);
+    return [...this.feedback.values()]
+      .filter((record) => parsed.status ? record.status === parsed.status : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+      .slice(0, parsed.limit)
+      .map((record) => EvaluationFeedbackRecordSchema.parse(record));
+  }
+
+  getFeedback(params: unknown): EvaluationFeedbackRecord {
+    const parsed = EvaluationFeedbackGetParamsSchema.parse(params);
+    const record = this.feedback.get(parsed.feedbackId);
+    if (!record) {
+      throw new Error(`Evaluation feedback not found: ${parsed.feedbackId}`);
+    }
+    return EvaluationFeedbackRecordSchema.parse(record);
+  }
+
+  updateFeedback(params: unknown): EvaluationFeedbackRecord {
+    const parsed = EvaluationFeedbackUpdateParamsSchema.parse(params);
+    const record = this.getFeedback({ feedbackId: parsed.feedbackId });
+    if (record.status === "accepted" || record.status === "rejected") {
+      throw new Error(`Evaluation feedback ${record.id} is already ${record.status}.`);
+    }
+    const next = EvaluationFeedbackRecordSchema.parse({
+      ...record,
+      feedbackText: parsed.feedbackText?.trim() ?? record.feedbackText,
+      draft: parsed.draftCase
+        ? {
+            ...record.draft,
+            case: parsed.draftCase,
+            curatorStatus: "generated",
+            curatorRationale: parsed.curatorRationale ?? record.draft.curatorRationale,
+            error: undefined,
+          }
+        : record.draft,
+      status: "pending",
+      updatedAt: this.now(),
+    });
+    this.feedback.set(next.id, next);
+    this.saveFeedback(next);
+    return next;
+  }
+
+  acceptFeedback(params: unknown): EvaluationFeedbackRecord {
+    const parsed = EvaluationFeedbackAcceptParamsSchema.parse(params);
+    const record = this.getFeedback({ feedbackId: parsed.feedbackId });
+    if (record.status === "accepted") {
+      return record;
+    }
+    if (record.status === "rejected") {
+      throw new Error(`Evaluation feedback ${record.id} was rejected and cannot be accepted.`);
+    }
+    const datasetId = parsed.datasetId ?? FEEDBACK_DATASET_ID;
+    const caseRecord = EvaluationCaseSchema.parse({
+      ...record.draft.case,
+      metadata: {
+        ...record.draft.case.metadata,
+        feedbackId: record.id,
+        source: "chat_feedback",
+        sourceRunId: record.sourceRunId,
+        sourceSessionId: record.sourceSessionId,
+        sourceTurnIndex: record.sourceTurnIndex,
+      },
+    });
+    this.appendCaseToFeedbackDataset(datasetId, caseRecord);
+    const next = EvaluationFeedbackRecordSchema.parse({
+      ...record,
+      status: "accepted",
+      datasetId,
+      acceptedCaseId: caseRecord.id,
+      updatedAt: this.now(),
+    });
+    this.feedback.set(next.id, next);
+    this.saveFeedback(next);
+    return next;
+  }
+
+  rejectFeedback(params: unknown): EvaluationFeedbackRecord {
+    const parsed = EvaluationFeedbackRejectParamsSchema.parse(params);
+    const record = this.getFeedback({ feedbackId: parsed.feedbackId });
+    if (record.status === "accepted") {
+      throw new Error(`Evaluation feedback ${record.id} is already accepted.`);
+    }
+    const next = EvaluationFeedbackRecordSchema.parse({
+      ...record,
+      status: "rejected",
+      rejectionReason: parsed.reason?.trim(),
+      updatedAt: this.now(),
+    });
+    this.feedback.set(next.id, next);
+    this.saveFeedback(next);
+    return next;
+  }
+
   private loadAll() {
     for (const name of fs.readdirSync(this.datasetsDir).filter((entry) => entry.endsWith(".json"))) {
       const detail = this.readJsonFile(path.join(this.datasetsDir, name), EvaluationDatasetDetailSchema);
@@ -390,11 +533,16 @@ export class LocalEvaluationStore {
       const baseline = this.readJsonFile(path.join(this.baselinesDir, name), EvaluationBaselineSchema);
       this.baselines.set(baseline.id, baseline);
     }
+    for (const name of fs.readdirSync(this.feedbackDir).filter((entry) => entry.endsWith(".json"))) {
+      const record = this.readJsonFile(path.join(this.feedbackDir, name), EvaluationFeedbackRecordSchema);
+      this.feedback.set(record.id, record);
+    }
     this.manifest = EvaluationManifestSchema.parse({
       ...this.manifest,
       nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
       nextEvaluationRunNumber: Math.max(this.manifest.nextEvaluationRunNumber, nextCounter([...this.runs.keys()], /^eval-run-(\d+)$/)),
       nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
+      nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
     });
   }
 
@@ -402,6 +550,7 @@ export class LocalEvaluationStore {
     fs.mkdirSync(this.datasetsDir, { recursive: true });
     fs.mkdirSync(this.runsDir, { recursive: true });
     fs.mkdirSync(this.baselinesDir, { recursive: true });
+    fs.mkdirSync(this.feedbackDir, { recursive: true });
   }
 
   private nextDatasetId() {
@@ -425,6 +574,13 @@ export class LocalEvaluationStore {
     return id;
   }
 
+  private nextFeedbackId() {
+    const id = `feedback-${String(this.manifest.nextFeedbackNumber).padStart(4, "0")}`;
+    this.manifest.nextFeedbackNumber += 1;
+    this.saveManifest();
+    return id;
+  }
+
   private saveManifest() {
     this.writeJsonFile(this.manifestPath, EvaluationManifestSchema.parse(this.manifest));
   }
@@ -441,6 +597,71 @@ export class LocalEvaluationStore {
 
   private saveBaseline(baseline: EvaluationBaseline) {
     this.writeJsonFile(path.join(this.baselinesDir, `${encodeURIComponent(baseline.id)}.json`), baseline);
+  }
+
+  private saveFeedback(record: EvaluationFeedbackRecord) {
+    this.writeJsonFile(path.join(this.feedbackDir, `${encodeURIComponent(record.id)}.json`), record);
+  }
+
+  private async curateFeedbackDraft(
+    feedbackId: string,
+    feedbackText: string,
+    sourceContext: Record<string, unknown>,
+    curateDraft?: FeedbackCurator
+  ): Promise<EvaluationFeedbackDraftCase> {
+    if (!curateDraft) {
+      return fallbackFeedbackDraft(feedbackId, feedbackText, sourceContext);
+    }
+    try {
+      return EvaluationFeedbackDraftCaseSchema.parse(await curateDraft({ feedbackId, feedbackText, sourceContext }));
+    } catch (error) {
+      return fallbackFeedbackDraft(feedbackId, feedbackText, sourceContext, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private appendCaseToFeedbackDataset(datasetId: string, evaluationCase: EvaluationCase) {
+    const current = this.datasets.get(datasetId) ?? this.createFeedbackDataset(datasetId);
+    if (current.cases.some((candidate) => candidate.id === evaluationCase.id)) {
+      throw new Error(`Evaluation feedback case already exists: ${evaluationCase.id}`);
+    }
+    const nextCases = [...current.cases, evaluationCase];
+    const nextDetail = EvaluationDatasetDetailSchema.parse({
+      dataset: {
+        ...current.dataset,
+        caseCount: nextCases.length,
+        updatedAt: this.now(),
+      },
+      cases: nextCases,
+      metadataKeys: collectMetadataKeys(nextCases),
+      tagCounts: collectTagCounts(nextCases),
+    });
+    this.datasets.set(datasetId, nextDetail);
+    this.saveDataset(nextDetail);
+  }
+
+  private createFeedbackDataset(datasetId: string): EvaluationDatasetDetail {
+    const now = this.now();
+    const dataset = EvaluationDatasetSchema.parse({
+      id: datasetId,
+      name: "Chat Feedback",
+      description: "Accepted natural-language chat feedback converted into evaluation cases.",
+      sourceFileName: `${datasetId}.json`,
+      sourceFormat: "inline",
+      schemaVersion: 1,
+      caseCount: 0,
+      tags: ["chat_feedback"],
+      createdAt: now,
+      updatedAt: now,
+    });
+    const detail = EvaluationDatasetDetailSchema.parse({
+      dataset,
+      cases: [],
+      metadataKeys: [],
+      tagCounts: {},
+    });
+    this.datasets.set(datasetId, detail);
+    this.saveDataset(detail);
+    return detail;
   }
 
   private readJsonFile<T>(filePath: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, fallback?: T): T {
@@ -889,6 +1110,87 @@ function extractOutputText(snapshot: StateSnapshot) {
     return String((event.payload as Record<string, unknown>).content);
   }
   return "";
+}
+
+function fallbackFeedbackDraft(
+  feedbackId: string,
+  feedbackText: string,
+  sourceContext: Record<string, unknown>,
+  error?: string
+): EvaluationFeedbackDraftCase {
+  const feedbackLower = feedbackText.toLowerCase();
+  const failureMode = inferFailureMode(feedbackLower);
+  const severity = inferSeverity(feedbackLower);
+  const sourceRunId = typeof sourceContext.runId === "string" ? sourceContext.runId : undefined;
+  const sourceSessionId = typeof sourceContext.sessionId === "string" ? sourceContext.sessionId : undefined;
+  const sourceTurnIndex = typeof sourceContext.turnIndex === "number" ? sourceContext.turnIndex : undefined;
+  const prompt = typeof sourceContext.userPrompt === "string" && sourceContext.userPrompt.trim()
+    ? sourceContext.userPrompt
+    : "Review the original Ora chat turn using the attached feedback.";
+  const sourceAssistantOutput = typeof sourceContext.assistantOutput === "string"
+    ? sourceContext.assistantOutput
+    : undefined;
+  const tags = ["chat_feedback", failureMode, severity];
+  return EvaluationFeedbackDraftCaseSchema.parse({
+    curatorStatus: error ? "failed" : "fallback",
+    curatorRationale: error
+      ? `Curator generation failed, so Ora created a conservative fallback draft: ${error}`
+      : "Ora created a deterministic fallback draft from the user's natural-language feedback.",
+    error,
+    case: {
+      id: `feedback-case-${feedbackId.replace(/^feedback-/, "")}`,
+      input: {
+        prompt,
+        context: {
+          sourceAssistantOutput,
+          userFeedback: feedbackText,
+          sourceContext,
+        },
+      },
+      expected: {
+        structured: {
+          failureMode,
+          severity,
+          idealBehavior: "Address the user's feedback while preserving the original task intent.",
+          mustAddress: [feedbackText],
+          shouldAvoid: ["Repeating the same issue identified by the user."],
+          rubric: [
+            {
+              criterion: "feedback_resolution",
+              weight: 1,
+              description: "The response resolves the concrete issue described in the user feedback.",
+            },
+          ],
+        },
+      },
+      metadata: {
+        source: "chat_feedback",
+        feedbackId,
+        sourceRunId,
+        sourceSessionId,
+        sourceTurnIndex,
+        failureMode,
+        severity,
+        tags,
+      },
+    },
+  });
+}
+
+function inferFailureMode(feedbackLower: string) {
+  if (/(format|格式|结构|排版|json|表格|citation|引用)/i.test(feedbackLower)) return "bad_format";
+  if (/(tool|工具|搜索|文件|轨迹|trace|process|流程)/i.test(feedbackLower)) return "tool_process_issue";
+  if (/(unsafe|危险|删除|权限|approval|安全)/i.test(feedbackLower)) return "safety_issue";
+  if (/(miss|漏|没有|忽略|requirement|需求|要求)/i.test(feedbackLower)) return "missed_requirement";
+  if (/(wrong|错误|不对|事实|hallucinat|幻觉)/i.test(feedbackLower)) return "factual_error";
+  if (/(reason|逻辑|推理|分析)/i.test(feedbackLower)) return "poor_reasoning";
+  return "user_reported_issue";
+}
+
+function inferSeverity(feedbackLower: string) {
+  if (/(critical|严重|危险|不能用|block|阻塞|错得离谱)/i.test(feedbackLower)) return "high";
+  if (/(minor|小问题|轻微|typo|错别字)/i.test(feedbackLower)) return "low";
+  return "medium";
 }
 
 function textSimilarity(expectedText: string, outputText: string) {

@@ -15,6 +15,7 @@ interface ChatMessagesProps {
   onResumeRun?: () => void;
   onCancelRun?: () => void;
   onOpenArtifact?: (artifactId: string) => void;
+  onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
   busyCommand?: string;
 }
 
@@ -27,6 +28,7 @@ export function ChatMessages({
   onResumeRun,
   onCancelRun,
   onOpenArtifact,
+  onSubmitFeedback,
   busyCommand,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -51,6 +53,9 @@ export function ChatMessages({
                   turn={message.turn}
                   isPlaceholder={message.isPlaceholder}
                   onOpenArtifact={onOpenArtifact}
+                  onSubmitFeedback={message.turn && onSubmitFeedback
+                    ? ({ feedbackText }) => onSubmitFeedback(message, feedbackText)
+                    : undefined}
                 />
               </div>
             );

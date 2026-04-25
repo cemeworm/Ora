@@ -4,6 +4,8 @@ export type {
   ModelProvider,
   ModelRequest,
   ModelResponse,
+  ModelToolCall,
+  ModelToolDefinition,
   ProviderRegistry,
   ProviderRuntimeOptions,
 } from "./types.js";

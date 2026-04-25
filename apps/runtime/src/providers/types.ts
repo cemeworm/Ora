@@ -2,11 +2,29 @@ import type { ProviderConfig, ProviderRegistry as SharedProviderRegistry, Provid
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export type ModelRole = "system" | "developer" | "user" | "assistant";
+export type ModelRole = "system" | "developer" | "user" | "assistant" | "tool";
+
+export interface ModelToolDefinition {
+  id: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export type ModelToolChoice = "auto" | "none";
+
+export interface ModelToolCall {
+  id: string;
+  toolId: string;
+  args: Record<string, unknown>;
+  raw?: unknown;
+}
 
 export interface ModelMessage {
   role: ModelRole;
   content: string;
+  toolCalls?: readonly ModelToolCall[];
+  toolCallId?: string;
+  toolName?: string;
 }
 
 export interface ModelRequest {
@@ -15,6 +33,8 @@ export interface ModelRequest {
   system?: string;
   temperature?: number;
   maxTokens?: number;
+  tools?: readonly ModelToolDefinition[];
+  toolChoice?: ModelToolChoice;
   signal?: AbortSignal;
 }
 
@@ -24,6 +44,8 @@ export interface ModelResponse {
   modelId: string;
   text: string;
   raw: unknown;
+  toolCalls?: ModelToolCall[];
+  finishReason?: string;
 }
 
 export interface ModelStreamChunk {

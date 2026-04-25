@@ -7,12 +7,35 @@ import {
   LongTermMemoryProfileSchema,
   MemoryRecord,
   MemoryRecordSchema,
+  ModeMemoryPolicy,
   StateSnapshot,
 } from "@ora/shared";
 
 const MEMORY_VERSION = "1.0";
 const MAX_FACTS = 120;
 const MAX_INJECTION_FACTS = 24;
+
+export interface MemoryConversationMessage {
+  role: "system" | "developer" | "user" | "assistant";
+  content: string;
+}
+
+export interface MemoryModelInvoker {
+  (request: {
+    prompt: string;
+    messages: MemoryConversationMessage[];
+    system: string;
+    maxTokens?: number;
+  }): Promise<string>;
+}
+
+export interface LongTermMemoryUpdateTask {
+  snapshot: StateSnapshot;
+  assistantText: string;
+  conversationMessages: MemoryConversationMessage[];
+  policy: ModeMemoryPolicy;
+  invokeModel?: MemoryModelInvoker;
+}
 
 const CORRECTION_RE = /\b(wrong|incorrect|misunderstood|redo|try again|instead)\b|不对|理解错|理解有误|不是这样|重试|重新来|改用|不要/im;
 const REINFORCEMENT_RE = /\b(exactly|perfect|that'?s right|keep doing that|just like this)\b|完全正确|就是这样|正是我想要的|继续保持/im;
@@ -95,6 +118,59 @@ export class FileLongTermMemoryStore {
   }
 }
 
+export class LongTermMemoryUpdateQueue {
+  private readonly queue = new Map<string, LongTermMemoryUpdateTask>();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private processing: Promise<void> | undefined;
+
+  constructor(
+    private readonly processor: (task: LongTermMemoryUpdateTask) => Promise<void>,
+  ) {}
+
+  enqueue(task: LongTermMemoryUpdateTask, debounceMs: number): void {
+    this.queue.set(task.snapshot.runId, task);
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.flush();
+    }, Math.max(0, debounceMs));
+  }
+
+  async flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    if (this.processing) {
+      await this.processing;
+      return;
+    }
+
+    const tasks = [...this.queue.values()];
+    this.queue.clear();
+    if (tasks.length === 0) {
+      return;
+    }
+
+    this.processing = (async () => {
+      for (const task of tasks) {
+        await this.processor(task);
+      }
+    })();
+    try {
+      await this.processing;
+    } finally {
+      this.processing = undefined;
+    }
+  }
+
+  get pendingCount(): number {
+    return this.queue.size;
+  }
+}
+
 export class LongTermMemoryManager {
   constructor(
     private readonly store: FileLongTermMemoryStore,
@@ -147,12 +223,18 @@ export class LongTermMemoryManager {
     return sections.join("\n\n");
   }
 
-  updateFromRun(snapshot: StateSnapshot, assistantText = ""): { memory: LongTermMemoryProfile; factsAdded: LongTermMemoryFact[] } {
+  updateFromRun(
+    snapshot: StateSnapshot,
+    assistantText = "",
+    policy: Partial<ModeMemoryPolicy> = {},
+  ): { memory: LongTermMemoryProfile; factsAdded: LongTermMemoryFact[] } {
     if (snapshot.config.metadata.disableMemoryUpdate === true || snapshot.input.context?.disableMemoryUpdate === true) {
       return { memory: this.get(), factsAdded: [] };
     }
 
-    const candidates = memoryCandidatesFromRun(snapshot, assistantText, this.nowIso());
+    const effectivePolicy = { factConfidenceThreshold: 0.7, maxFacts: MAX_FACTS, ...policy };
+    const candidates = memoryCandidatesFromRun(snapshot, assistantText, this.nowIso())
+      .filter((fact) => fact.confidence >= effectivePolicy.factConfidenceThreshold);
     if (candidates.length === 0) {
       return { memory: this.get(), factsAdded: [] };
     }
@@ -177,7 +259,7 @@ export class LongTermMemoryManager {
     const now = this.nowIso();
     const facts = [...current.facts, ...factsAdded]
       .sort((left, right) => right.confidence - left.confidence || right.createdAt.localeCompare(left.createdAt))
-      .slice(0, MAX_FACTS);
+      .slice(0, effectivePolicy.maxFacts);
     const memory = LongTermMemoryProfileSchema.parse({
       ...current,
       lastUpdated: now,
@@ -198,6 +280,35 @@ export class LongTermMemoryManager {
       facts,
     });
     return { memory: this.store.save(memory), factsAdded };
+  }
+
+  async updateFromRunWithProvider(task: LongTermMemoryUpdateTask): Promise<{ memory: LongTermMemoryProfile; factsAdded: LongTermMemoryFact[] }> {
+    if (!task.policy.enabled || task.snapshot.config.metadata.disableMemoryUpdate === true || task.snapshot.input.context?.disableMemoryUpdate === true) {
+      return { memory: this.get(), factsAdded: [] };
+    }
+    if (task.policy.updater !== "provider" || !task.invokeModel) {
+      return this.updateFromRun(task.snapshot, task.assistantText, task.policy);
+    }
+
+    const current = this.get();
+    const conversation = formatConversationForMemory(task.conversationMessages);
+    if (!conversation.trim()) {
+      return { memory: current, factsAdded: [] };
+    }
+
+    try {
+      const prompt = buildMemoryUpdatePrompt(current, conversation);
+      const responseText = await task.invokeModel({
+        prompt,
+        messages: [{ role: "user", content: prompt }],
+        system: "You are Ora's memory updater. Return only valid JSON.",
+        maxTokens: 1800,
+      });
+      const patch = parseMemoryPatch(responseText);
+      return this.applyProviderPatch(current, patch, task.snapshot.runId, task.policy);
+    } catch {
+      return this.updateFromRun(task.snapshot, task.assistantText, task.policy);
+    }
   }
 
   createRunMemoryRecords(snapshot: StateSnapshot, facts: LongTermMemoryFact[]): MemoryRecord[] {
@@ -224,6 +335,67 @@ export class LongTermMemoryManager {
   private nowIso(): string {
     return new Date(this.clock()).toISOString();
   }
+
+  private applyProviderPatch(
+    current: LongTermMemoryProfile,
+    patch: MemoryPatch,
+    source: string,
+    policy: ModeMemoryPolicy,
+  ): { memory: LongTermMemoryProfile; factsAdded: LongTermMemoryFact[] } {
+    const now = this.nowIso();
+    const next = LongTermMemoryProfileSchema.parse({
+      ...current,
+      lastUpdated: now,
+    });
+
+    for (const section of ["workContext", "personalContext", "topOfMind"] as const) {
+      const update = patch.user?.[section];
+      if (update?.shouldUpdate && typeof update.summary === "string" && update.summary.trim()) {
+        next.user[section] = { summary: update.summary.trim(), updatedAt: now };
+      }
+    }
+    for (const section of ["recentMonths", "earlierContext", "longTermBackground"] as const) {
+      const update = patch.history?.[section];
+      if (update?.shouldUpdate && typeof update.summary === "string" && update.summary.trim()) {
+        next.history[section] = { summary: update.summary.trim(), updatedAt: now };
+      }
+    }
+
+    const removeIds = new Set((patch.factsToRemove ?? []).filter((id): id is string => typeof id === "string" && id.length > 0));
+    const existingFacts = next.facts.filter((fact) => !removeIds.has(fact.id));
+    const existingKeys = new Set(existingFacts.map((fact) => fact.content.trim().toLowerCase()));
+    const factsAdded: LongTermMemoryFact[] = [];
+    for (const fact of patch.newFacts ?? []) {
+      if (!fact || typeof fact.content !== "string") {
+        continue;
+      }
+      const confidence = coerceConfidence(fact.confidence);
+      const content = fact.content.trim();
+      const key = content.toLowerCase();
+      if (!content || confidence < policy.factConfidenceThreshold || existingKeys.has(key) || TEMPORARY_RE.test(content)) {
+        continue;
+      }
+      const category = normalizeCategory(fact.category);
+      const nextFact = createFact({
+        content,
+        category,
+        confidence,
+        source,
+        now,
+        sourceError: category === "correction" && typeof fact.sourceError === "string" ? fact.sourceError : undefined,
+      });
+      factsAdded.push(nextFact);
+      existingKeys.add(key);
+    }
+
+    const memory = LongTermMemoryProfileSchema.parse({
+      ...next,
+      facts: [...existingFacts, ...factsAdded]
+        .sort((left, right) => right.confidence - left.confidence || right.createdAt.localeCompare(left.createdAt))
+        .slice(0, policy.maxFacts),
+    });
+    return { memory: this.store.save(memory), factsAdded };
+  }
 }
 
 function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string, now: string): LongTermMemoryFact[] {
@@ -248,6 +420,76 @@ function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string,
     }));
   }
   return candidates;
+}
+
+interface MemoryPatchSection {
+  summary?: unknown;
+  shouldUpdate?: unknown;
+}
+
+interface MemoryPatchFact {
+  content?: unknown;
+  category?: unknown;
+  confidence?: unknown;
+  sourceError?: unknown;
+}
+
+interface MemoryPatch {
+  user?: {
+    workContext?: MemoryPatchSection;
+    personalContext?: MemoryPatchSection;
+    topOfMind?: MemoryPatchSection;
+  };
+  history?: {
+    recentMonths?: MemoryPatchSection;
+    earlierContext?: MemoryPatchSection;
+    longTermBackground?: MemoryPatchSection;
+  };
+  newFacts?: MemoryPatchFact[];
+  factsToRemove?: unknown[];
+}
+
+function buildMemoryUpdatePrompt(current: LongTermMemoryProfile, conversation: string): string {
+  return [
+    "Analyze this conversation and update Ora's long-term memory profile.",
+    "",
+    "Current memory:",
+    "<current_memory>",
+    JSON.stringify(current, null, 2),
+    "</current_memory>",
+    "",
+    "Conversation:",
+    "<conversation>",
+    conversation,
+    "</conversation>",
+    "",
+    "Return only JSON with this shape:",
+    "{\"user\":{\"workContext\":{\"summary\":\"\",\"shouldUpdate\":false},\"personalContext\":{\"summary\":\"\",\"shouldUpdate\":false},\"topOfMind\":{\"summary\":\"\",\"shouldUpdate\":false}},\"history\":{\"recentMonths\":{\"summary\":\"\",\"shouldUpdate\":false},\"earlierContext\":{\"summary\":\"\",\"shouldUpdate\":false},\"longTermBackground\":{\"summary\":\"\",\"shouldUpdate\":false}},\"newFacts\":[{\"content\":\"\",\"category\":\"preference|knowledge|context|behavior|goal|correction\",\"confidence\":0.0,\"sourceError\":\"optional\"}],\"factsToRemove\":[\"fact_id\"]}",
+    "",
+    "Rules:",
+    "- Record durable preferences, goals, project constraints, corrections, and reinforced working patterns.",
+    "- Do not record transient file uploads, temporary paths, or one-off session events.",
+    "- Use correction with confidence >= 0.95 when the user corrects the assistant.",
+    "- Remove contradicted facts by id.",
+  ].join("\n");
+}
+
+function formatConversationForMemory(messages: MemoryConversationMessage[]): string {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${message.content.slice(0, 1500)}`)
+    .join("\n\n");
+}
+
+function parseMemoryPatch(text: string): MemoryPatch {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  const parsed = JSON.parse(trimmed) as MemoryPatch;
+  return {
+    user: parsed.user,
+    history: parsed.history,
+    newFacts: Array.isArray(parsed.newFacts) ? parsed.newFacts : [],
+    factsToRemove: Array.isArray(parsed.factsToRemove) ? parsed.factsToRemove : [],
+  };
 }
 
 function createFact(params: {
@@ -295,6 +537,28 @@ function categoryForText(text: string): LongTermMemoryFactCategory | undefined {
     return "preference";
   }
   return "context";
+}
+
+function normalizeCategory(value: unknown): LongTermMemoryFactCategory {
+  if (
+    value === "preference" ||
+    value === "knowledge" ||
+    value === "context" ||
+    value === "behavior" ||
+    value === "goal" ||
+    value === "correction"
+  ) {
+    return value;
+  }
+  return "context";
+}
+
+function coerceConfidence(value: unknown): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0.5;
+  }
+  return Math.max(0, Math.min(1, numeric));
 }
 
 function normalizeFactContent(text: string): string {

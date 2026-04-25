@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import type { ProviderConfig } from "@ora/shared";
-import type { ModelMessage, ModelRequest } from "./types.js";
+import type { ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
 
 export function normalizeMessages(request: ModelRequest): ModelMessage[] {
   if (request.messages && request.messages.length > 0) {
@@ -40,10 +40,163 @@ export function toInputText(content: string) {
   return [{ type: "input_text", text: content }];
 }
 
+export function providerToolName(toolId: string): string {
+  const normalized = toolId.replace(/[^A-Za-z0-9_-]/g, "__").slice(0, 64);
+  return normalized || "tool";
+}
+
+export function runtimeToolIdFromProviderName(name: string, tools: readonly ModelToolDefinition[] | undefined): string {
+  return tools?.find((tool) => providerToolName(tool.id) === name)?.id ?? name;
+}
+
+export function toolParametersSchema(tool: ModelToolDefinition): Record<string, unknown> {
+  const parameters = tool.parameters;
+  if (parameters && typeof parameters.type === "string") {
+    return parameters;
+  }
+  return {
+    type: "object",
+    properties: {},
+    additionalProperties: true,
+  };
+}
+
+export function openAiChatTools(tools: readonly ModelToolDefinition[] | undefined) {
+  if (!tools?.length) {
+    return undefined;
+  }
+  return tools.map((tool) => ({
+    type: "function",
+    function: {
+      name: providerToolName(tool.id),
+      description: tool.description ?? tool.id,
+      parameters: toolParametersSchema(tool),
+    },
+  }));
+}
+
+export function openAiResponsesTools(tools: readonly ModelToolDefinition[] | undefined) {
+  if (!tools?.length) {
+    return undefined;
+  }
+  return tools.map((tool) => ({
+    type: "function",
+    name: providerToolName(tool.id),
+    description: tool.description ?? tool.id,
+    parameters: toolParametersSchema(tool),
+  }));
+}
+
+export function anthropicTools(tools: readonly ModelToolDefinition[] | undefined) {
+  if (!tools?.length) {
+    return undefined;
+  }
+  return tools.map((tool) => ({
+    name: providerToolName(tool.id),
+    description: tool.description ?? tool.id,
+    input_schema: toolParametersSchema(tool),
+  }));
+}
+
+export function parseToolArgs(value: unknown): Record<string, unknown> {
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+export function extractOpenAiChatToolCalls(raw: unknown, tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).choices)) {
+    return [];
+  }
+  const calls: ModelToolCall[] = [];
+  for (const choice of (raw as Record<string, unknown>).choices as unknown[]) {
+    const message = choice && typeof choice === "object" ? (choice as Record<string, unknown>).message : undefined;
+    if (!message || typeof message !== "object" || !Array.isArray((message as Record<string, unknown>).tool_calls)) {
+      continue;
+    }
+    for (const rawCall of (message as Record<string, unknown>).tool_calls as unknown[]) {
+      if (!rawCall || typeof rawCall !== "object") {
+        continue;
+      }
+      const record = rawCall as Record<string, unknown>;
+      const fn = record.function && typeof record.function === "object" ? record.function as Record<string, unknown> : {};
+      const id = typeof record.id === "string" ? record.id : `tool-call-${calls.length + 1}`;
+      const name = typeof fn.name === "string" ? fn.name : "";
+      calls.push({
+        id,
+        toolId: runtimeToolIdFromProviderName(name, tools),
+        args: parseToolArgs(fn.arguments),
+        raw: record,
+      });
+    }
+  }
+  return calls;
+}
+
+export function extractOpenAiResponsesToolCalls(raw: unknown, tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).output)) {
+    return [];
+  }
+  const calls: ModelToolCall[] = [];
+  for (const item of (raw as Record<string, unknown>).output as unknown[]) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (record.type !== "function_call") {
+      continue;
+    }
+    const id = typeof record.call_id === "string" ? record.call_id : typeof record.id === "string" ? record.id : `tool-call-${calls.length + 1}`;
+    const name = typeof record.name === "string" ? record.name : "";
+    calls.push({
+      id,
+      toolId: runtimeToolIdFromProviderName(name, tools),
+      args: parseToolArgs(record.arguments),
+      raw: record,
+    });
+  }
+  return calls;
+}
+
+export function extractAnthropicToolCalls(raw: unknown, tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).content)) {
+    return [];
+  }
+  const calls: ModelToolCall[] = [];
+  for (const block of (raw as Record<string, unknown>).content as unknown[]) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const record = block as Record<string, unknown>;
+    if (record.type !== "tool_use") {
+      continue;
+    }
+    const id = typeof record.id === "string" ? record.id : `tool-call-${calls.length + 1}`;
+    const name = typeof record.name === "string" ? record.name : "";
+    calls.push({
+      id,
+      toolId: runtimeToolIdFromProviderName(name, tools),
+      args: parseToolArgs(record.input),
+      raw: record,
+    });
+  }
+  return calls;
+}
+
 export function buildResponsesInput(request: ModelRequest) {
   const messages = normalizeMessages(request);
   const { instructions, dialog } = splitInstructionMessages(messages);
-  return [
+  const input: Array<Record<string, unknown>> = [
     ...(instructions
       ? [
           {
@@ -55,12 +208,40 @@ export function buildResponsesInput(request: ModelRequest) {
       : request.system?.trim()
         ? [{ type: "message", role: "developer", content: toInputText(request.system.trim()) }]
         : []),
-    ...dialog.map((message) => ({
-      type: "message",
-      role: message.role,
-      content: toInputText(message.content),
-    })),
+    ...dialog.flatMap((message): Array<Record<string, unknown>> => {
+      if (message.role === "tool") {
+        return [{
+          type: "function_call_output",
+          call_id: message.toolCallId ?? "",
+          output: message.content,
+        }];
+      }
+      if (message.role === "assistant" && message.toolCalls?.length) {
+        const textMessage = message.content.trim()
+          ? [{
+              type: "message",
+              role: "assistant",
+              content: toInputText(message.content),
+            }]
+          : [];
+        return [
+          ...textMessage,
+          ...message.toolCalls.map((call) => ({
+            type: "function_call",
+            call_id: call.id,
+            name: providerToolName(call.toolId),
+            arguments: JSON.stringify(call.args ?? {}),
+          })),
+        ];
+      }
+      return [{
+        type: "message",
+        role: message.role,
+        content: toInputText(message.content),
+      }];
+    }),
   ];
+  return input;
 }
 
 export function appendIfDefined<T extends object, K extends string, V>(

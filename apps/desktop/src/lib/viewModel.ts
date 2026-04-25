@@ -144,6 +144,7 @@ function createEmptySessionPreview(
     memory: [],
     plan: [],
     actions: [],
+    toolCalls: [],
     policyDecisions: [],
     checkpoints: [],
     events: [],
@@ -699,6 +700,8 @@ function beatLabel(event: OraEventEnvelope): string {
       return "Clarified";
     case "tool.called":
       return isRecord(event.payload) ? toolCallLabel(event.payload) : "Tool";
+    case "tool.repaired":
+      return "Tool repaired";
     case "message.delta":
       return "Stream";
     case "message.published":
@@ -1035,6 +1038,7 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "clarification.required":
     case "clarification.resolved":
     case "tool.called":
+    case "tool.repaired":
       return hasToolId(event);
     case "checkpoint.created":
     case "artifact.exported":
@@ -1056,7 +1060,7 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
 
 function processStepDetail(event: OraEventEnvelope): string {
   const detail = eventText(event);
-  if (event.type === "tool.called" && isRecord(event.payload)) {
+  if ((event.type === "tool.called" || event.type === "tool.repaired") && isRecord(event.payload)) {
     const title = toolCallLabel(event.payload);
     const status = typeof event.payload.status === "string" ? event.payload.status : undefined;
     const actionDetail = toolCallDetail(event.payload);
@@ -1234,6 +1238,8 @@ function processStepStatus(event: OraEventEnvelope): TurnProcessStep["status"] {
       }
       return "complete";
     }
+    case "tool.repaired":
+      return "blocked";
     case "approval.required":
     case "clarification.required":
     case "action.updated":
@@ -1260,6 +1266,7 @@ function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
   switch (event.type) {
     case "approval.required":
     case "clarification.required":
+    case "tool.repaired":
       return "warning";
     case "artifact.exported":
     case "artifact.degraded":

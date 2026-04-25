@@ -16,6 +16,14 @@ import {
   EvaluationDatasetDetailSchema,
   EvaluationDatasetSchema,
   EvaluationExportResultSchema,
+  EvaluationFeedbackAcceptParamsSchema,
+  EvaluationFeedbackDraftCaseSchema,
+  EvaluationFeedbackGetParamsSchema,
+  EvaluationFeedbackListParamsSchema,
+  EvaluationFeedbackRecordSchema,
+  EvaluationFeedbackRejectParamsSchema,
+  EvaluationFeedbackSubmitParamsSchema,
+  EvaluationFeedbackUpdateParamsSchema,
   EvaluationImportParamsSchema,
   EvaluationRunDetailSchema,
   EvaluationRunSchema,
@@ -33,6 +41,7 @@ import {
   MVP_TOOLS,
   MemoryRecordSchema,
   OraEventEnvelopeSchema,
+  OraToolCallEnvelopeSchema,
   OpenAICompatibleProtocolSchema,
   PatternDefinitionSchema,
   PlanItemSchema,
@@ -465,6 +474,50 @@ describe("Ora shared contracts", () => {
     ).toEqual([]);
   });
 
+  it("validates structured tool-call envelopes and snapshot defaults", () => {
+    const toolCall = OraToolCallEnvelopeSchema.parse({
+      id: "run-1:tool-call-0",
+      providerCallId: "call-provider-1",
+      runId: "run-1",
+      nodeId: "agent-1",
+      agentId: "agent-1",
+      actionId: "agent-1-tool-1",
+      toolId: "web.search",
+      args: { query: "Ora" },
+      source: "provider_native",
+      status: "succeeded",
+      requestedAt: 1,
+      updatedAt: 2,
+      result: {
+        status: "succeeded",
+        output: { ok: true },
+        content: "{\"ok\":true}",
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    });
+
+    expect(toolCall.providerCallId).toBe("call-provider-1");
+    expect(
+      StateSnapshotSchema.parse({
+        runId: "run-1",
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "single_agent",
+        input: { prompt: "Search", createdAt: 1, context: {} },
+        config: { pattern: "orchestrator_subagent", modeId: "single_agent" },
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        actions: [],
+        checkpoints: [],
+        events: [],
+        updatedAt: 1
+      }).toolCalls
+    ).toEqual([]);
+  });
+
   it("validates JSON-RPC request and response shapes", () => {
     expect(
       JsonRpcRequestSchema.parse({
@@ -792,6 +845,71 @@ describe("Ora shared contracts", () => {
       format: "json",
       content: "{}",
     }).format).toBe("json");
+  });
+
+  it("validates evaluation feedback inbox contracts", () => {
+    const submit = EvaluationFeedbackSubmitParamsSchema.parse({
+      runId: "run-0001",
+      sessionId: "session-0001",
+      turnIndex: 1,
+      messageId: "run-0001:assistant",
+      feedbackText: "The answer ignored the required citation format.",
+    });
+    expect(submit.feedbackText).toContain("citation");
+
+    const draft = EvaluationFeedbackDraftCaseSchema.parse({
+      curatorStatus: "generated",
+      curatorRationale: "Feedback names a missing formatting requirement.",
+      case: {
+        id: "feedback-feedback-0001",
+        input: {
+          prompt: "Summarize the report with citations.",
+          context: {
+            sourceAssistantOutput: "Here is a summary.",
+          },
+        },
+        expected: {
+          structured: {
+            failureMode: "bad_format",
+            idealBehavior: "Use the requested citation format.",
+            mustAddress: ["citation format"],
+            shouldAvoid: ["uncited claims"],
+            rubric: [{ criterion: "citation_format", weight: 1 }],
+          },
+        },
+        metadata: {
+          source: "chat_feedback",
+          sourceRunId: "run-0001",
+          severity: "medium",
+          tags: ["bad_format"],
+        },
+      },
+    });
+    expect(draft.case.metadata.source).toBe("chat_feedback");
+
+    const record = EvaluationFeedbackRecordSchema.parse({
+      id: "feedback-0001",
+      status: "pending",
+      feedbackText: submit.feedbackText,
+      sourceRunId: submit.runId,
+      sourceSessionId: submit.sessionId,
+      sourceTurnIndex: submit.turnIndex,
+      sourceMessageId: submit.messageId,
+      sourceContext: { traceRunIds: ["run-0001"] },
+      draft,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(record.draft.curatorStatus).toBe("generated");
+
+    expect(EvaluationFeedbackListParamsSchema.parse({ status: "pending", limit: 50 }).status).toBe("pending");
+    expect(EvaluationFeedbackGetParamsSchema.parse({ feedbackId: record.id }).feedbackId).toBe(record.id);
+    expect(EvaluationFeedbackUpdateParamsSchema.parse({
+      feedbackId: record.id,
+      draftCase: draft.case,
+    }).draftCase?.id).toBe(draft.case.id);
+    expect(EvaluationFeedbackAcceptParamsSchema.parse({ feedbackId: record.id, datasetId: "feedback-chat" }).datasetId).toBe("feedback-chat");
+    expect(EvaluationFeedbackRejectParamsSchema.parse({ feedbackId: record.id, reason: "Duplicate" }).reason).toBe("Duplicate");
   });
 });
 

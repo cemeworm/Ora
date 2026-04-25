@@ -190,6 +190,61 @@ describe("provider adapters", () => {
     expect(response.text).toBe("Compatible hello.");
   });
 
+  it("maps OpenAI-compatible chat tool calls", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        tools?: Array<{ type: string; function: { name: string } }>;
+        tool_choice?: string;
+      };
+      expect(body.tools?.[0]).toMatchObject({
+        type: "function",
+        function: { name: "web__search" },
+      });
+      expect(body.tool_choice).toBe("auto");
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-1",
+              type: "function",
+              function: {
+                name: "web__search",
+                arguments: "{\"query\":\"Ora\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "tool-model",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        headers: {},
+      },
+      { env: { OPENROUTER_API_KEY: "test-openrouter-key" }, fetchImpl },
+    );
+
+    const response = await provider({
+      prompt: "Search.",
+      tools: [{ id: "web.search", description: "Search web" }],
+      toolChoice: "auto",
+    });
+
+    expect(response.toolCalls).toEqual([
+      expect.objectContaining({ id: "call-1", toolId: "web.search", args: { query: "Ora" } }),
+    ]);
+    expect(response.finishReason).toBe("tool_calls");
+  });
+
   it("sends an OpenAI-compatible responses request when requested", async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe("https://gateway.example.com/v1/responses");
@@ -237,6 +292,47 @@ describe("provider adapters", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(response.text).toBe("Responses hello.");
+  });
+
+  it("maps OpenAI Responses function calls", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        tools?: Array<{ type: string; name: string }>;
+      };
+      expect(body.tools?.[0]).toMatchObject({ type: "function", name: "file__read" });
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: [{
+          type: "function_call",
+          call_id: "call-read",
+          name: "file__read",
+          arguments: "{\"path\":\"README.md\"}",
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "gateway",
+        type: "openai_compatible",
+        label: "Gateway",
+        modelId: "gateway-reasoner",
+        baseUrl: "https://gateway.example.com",
+        apiKeyEnv: "GATEWAY_API_KEY",
+        protocol: "responses",
+        headers: {},
+      },
+      { env: { GATEWAY_API_KEY: "test-gateway-key" }, fetchImpl },
+    );
+
+    const response = await provider({
+      prompt: "Read file.",
+      tools: [{ id: "file.read", description: "Read file" }],
+    });
+
+    expect(response.toolCalls).toEqual([
+      expect.objectContaining({ id: "call-read", toolId: "file.read", args: { path: "README.md" } }),
+    ]);
   });
 
   it("blocks custom provider base URLs unless explicitly enabled", async () => {
@@ -313,6 +409,46 @@ describe("provider adapters", () => {
     expect(response.raw).toMatchObject({
       content: [{ type: "text", text: "Anthropic says hello." }],
     });
+  });
+
+  it("maps Anthropic tool_use blocks", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        tools?: Array<{ name: string; input_schema: unknown }>;
+      };
+      expect(body.tools?.[0]).toMatchObject({ name: "file__grep" });
+      return new Response(JSON.stringify({
+        content: [{
+          type: "tool_use",
+          id: "toolu-1",
+          name: "file__grep",
+          input: { pattern: "ToolCall" },
+        }],
+        role: "assistant",
+        stop_reason: "tool_use",
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "anthropic-claude",
+        type: "anthropic",
+        label: "Claude",
+        modelId: "claude-test",
+        headers: {},
+      },
+      { env: { ANTHROPIC_API_KEY: "test-anthropic-key" }, fetchImpl },
+    );
+
+    const response = await provider({
+      prompt: "Search files.",
+      tools: [{ id: "file.grep", description: "Search files" }],
+    });
+
+    expect(response.toolCalls).toEqual([
+      expect.objectContaining({ id: "toolu-1", toolId: "file.grep", args: { pattern: "ToolCall" } }),
+    ]);
+    expect(response.finishReason).toBe("tool_use");
   });
 
   it("sends an Anthropic-compatible Messages API request", async () => {

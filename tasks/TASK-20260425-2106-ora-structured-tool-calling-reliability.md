@@ -1,7 +1,7 @@
 # TASK-20260425-2106-ora-structured-tool-calling-reliability
 
 **Created:** 2026-04-25 21:06 CST
-**Status:** Planning
+**Status:** Done
 
 ---
 
@@ -144,16 +144,23 @@
 - tasks/TASK-20260425-2106-ora-structured-tool-calling-reliability.md
 - packages/shared/src/index.ts
 - apps/runtime/src/providers/types.ts
+- apps/runtime/src/providers/openai.ts
 - apps/runtime/src/providers/openai-compatible.ts
 - apps/runtime/src/providers/anthropic.ts
+- apps/runtime/src/providers/provider-utils.ts
 - apps/runtime/src/harness/runtime-kernel.ts
 - apps/runtime/src/harness/runtime-tool-executor.ts
 - apps/runtime/src/session/session-manager.ts
 - apps/runtime/src/graph/ora-state.ts
+- apps/runtime/src/run-store.ts
+- apps/desktop/src/components/ModesView.tsx
 - apps/desktop/src/lib/viewModel.ts
+- apps/desktop/src/lib/runtimeClient.ts
 - apps/desktop/src/components/TrailsTabs.tsx
-- apps/runtime/test/runtime-tool-executor.test.ts
+- packages/shared/test/contracts.test.ts
+- apps/runtime/test/providers/provider-registry.test.ts
 - apps/runtime/test/runtime-smoke.test.ts
+- apps/runtime/test/runtime-integration.test.ts
 - apps/runtime/test/sqlite-checkpointer.test.ts
 - apps/runtime/test/desktop-composer-state.test.ts
 
@@ -162,44 +169,44 @@
 ### Checkpoint 1: Shared IR Contract
 - Requirement: shared schemas accept current JSON fallback calls and provider-native calls with stable ids/statuses.
 - Verification method: shared contract tests.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `pnpm --filter @ora/shared test -- contracts.test.ts` passed 72 tests. Added `OraToolCallEnvelopeSchema`, result/source/status enums, and `StateSnapshot.toolCalls` default compatibility coverage.
 
 ### Checkpoint 2: JSON Fallback Parity
 - Requirement: existing text JSON tool calls continue to execute, now recorded as `source: "json_fallback"` ToolCall IR.
 - Verification method: runtime tool-loop tests.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts` passed; `web.search` JSON fallback still executes and records `state.toolCalls[0].source === "json_fallback"`.
 
 ### Checkpoint 3: OpenAI-Compatible Native Tool Calls
 - Requirement: OpenAI-compatible provider can send native tool schemas, parse returned tool calls, execute tools, and send matching tool result messages.
 - Verification method: mocked provider registry/runtime smoke test.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `test/providers/provider-registry.test.ts` covers Chat Completions `tool_calls` and Responses `function_call`; `test/runtime-smoke.test.ts` covers native `file.read` execution and matching `tool` result message.
 
 ### Checkpoint 4: Anthropic-Compatible Native Tool Calls
 - Requirement: Anthropic-compatible provider can map `tool_use` / `tool_result` blocks into the same Ora ToolCall IR.
 - Verification method: provider unit tests with mocked Anthropic responses.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `test/providers/provider-registry.test.ts` covers Anthropic `tools` request mapping and `tool_use` parsing into `ModelResponse.toolCalls`.
 
 ### Checkpoint 5: Dangling Repair
 - Requirement: interrupted structured tool calls are repaired before the next model invocation and never masquerade as success.
 - Verification method: deterministic and LangGraph resume tests with missing tool result.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `test/runtime-smoke.test.ts` covers a dangling provider-native call repaired as `source: "manual_repair"` / `status: "repaired"` with result `status: "interrupted"` before the next invocation. `test/sqlite-checkpointer.test.ts` passed with `OraGraphAnnotation.toolCalls` and `SessionManager` ledger derivation.
 
 ### Checkpoint 6: Trails Visibility
 - Requirement: Trails exposes lifecycle and repair status for structured tool calls.
 - Verification method: desktop/view-model tests.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `test/desktop-composer-state.test.ts` passed; Trails now renders a Tool Calls block and anomaly copy for repaired/interrupted calls.
 
 ### Checkpoint 7: No Regression
 - Requirement: existing runtime/provider/session tests still pass.
 - Verification method: focused runtime/shared/desktop tests and typecheck.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending.
+- Status: [x] Pass / [ ] Fail
+- Evidence: Passed `pnpm --filter @ora/runtime exec vitest run` (129 tests), `pnpm --filter @ora/runtime typecheck`, and `pnpm --filter @ora/desktop typecheck`.
 
 ## Test Plan
 - Shared:
@@ -233,37 +240,43 @@
   - Avoid redesigning tools, approvals, LangGraph, and Trails all at once. Phase 1 must preserve behavior while adding the IR spine.
 
 ## Open Issues
-- [ ] Decide whether `toolCalls` belongs only on `StateSnapshot` or also on each event payload.
-- [ ] Decide whether provider-native tool calling is enabled by default per provider or gated behind runtime metadata during rollout.
-- [ ] Decide the minimum JSON Schema subset supported by `RuntimeToolRegistry` for provider tool schemas.
-- [ ] Decide whether local-smoke should simulate native tool calls for tests or remain JSON fallback only.
+- [x] `toolCalls` is top-level snapshot ledger; lifecycle events also carry `toolCallId`/`providerCallId` where useful for timeline reconstruction.
+- [x] Provider-native tool calling is gated by provider tool-use capability / known native defaults; unsupported providers continue JSON fallback.
+- [x] Runtime tool schemas currently use descriptor `parameters` when present, otherwise a permissive object schema. Richer per-tool JSON schemas remain a future registry refinement.
+- [x] `local-smoke` remains JSON/text fallback only; native tool-call behavior is tested through mocked OpenAI-compatible/Anthropic providers.
 
 ## TODO
-- [ ] Phase 1: add shared ToolCall IR schemas.
-- [ ] Phase 1: wrap JSON fallback tool extraction into ToolCall IR.
-- [ ] Phase 1: persist deterministic runtime tool-call ledger.
-- [ ] Phase 2: add OpenAI-compatible native tool call support.
-- [ ] Phase 2: add Anthropic-compatible native tool call support.
-- [ ] Phase 3: persist and repair structured tool calls across LangGraph checkpoints.
-- [ ] Phase 4: expose structured tool-call lifecycle in Trails.
-- [ ] Run verification and update all checkpoint evidence.
+- [x] Phase 1: add shared ToolCall IR schemas.
+- [x] Phase 1: wrap JSON fallback tool extraction into ToolCall IR.
+- [x] Phase 1: persist deterministic runtime tool-call ledger.
+- [x] Phase 2: add OpenAI-compatible native tool call support.
+- [x] Phase 2: add Anthropic-compatible native tool call support.
+- [x] Phase 3: persist and repair structured tool calls across LangGraph checkpoints.
+- [x] Phase 4: expose structured tool-call lifecycle in Trails.
+- [x] Run verification and update all checkpoint evidence.
+
+## Verification
+- `pnpm --filter @ora/shared build` passed.
+- `pnpm --filter @ora/shared test -- contracts.test.ts` passed: 72 tests.
+- `pnpm --filter @ora/runtime exec vitest run test/providers/provider-registry.test.ts test/runtime-smoke.test.ts test/desktop-composer-state.test.ts test/runtime-integration.test.ts test/sqlite-checkpointer.test.ts` passed: 90 tests.
+- `pnpm --filter @ora/runtime exec vitest run` passed: 129 tests.
+- `pnpm --filter @ora/runtime typecheck` passed.
+- `pnpm --filter @ora/desktop typecheck` passed.
+- `bash /Users/quintenchen/developer/quantfox/.codex/skills/long-task-protocol/scripts/todo_scan.sh` passed, but the helper resolves the Quantfox latest task in this environment; this task's TODO section is manually checked above.
 
 ## Retrospective
-- Pending. Record 0-3 highest-value implementation pitfalls before marking DONE.
+- Status: local_only. Evidence: provider-native tool calls are unsafe to turn on purely by provider type because existing mocked/custom compatible providers may not support `tools`; the runtime now gates native tools by explicit `tool_use` capability or known defaults and keeps JSON fallback.
+- Status: local_only. Evidence: adding `tool` as a provider message role widened `ModelMessage`; memory ingestion had to filter out tool-result messages because long-term memory only accepts system/developer/user/assistant transcript roles.
+- Status: local_only. Evidence: `pnpm --filter @ora/runtime test -- file.test.ts` still collected broader runtime tests, so verification used `pnpm --filter @ora/runtime exec vitest run ...` with explicit test paths.
+
+## Progress Log
+- 2026-04-25 21:37 CST: Implemented shared ToolCall IR, provider-native mappings, runtime ledger, dangling repair, LangGraph state compatibility, Trails visibility, and focused tests. Verification passed. Next: none for this task.
 
 ## Compressed State (<= 20 lines)
 - Objective: make Ora tool calling reliable for long-running agents through native provider tools plus a persistent Ora ToolCall IR.
-- Done: design task created as the source of truth.
-- In-progress: planning only; no runtime code changed in this task.
-- Active files: this task journal.
-- Next actions (top 3): implement shared ToolCall schemas; wrap current JSON fallback into IR; add runtime snapshot/tests for lifecycle ledger.
-- Blockers/Risks: provider-native OpenAI/Anthropic shapes differ; keep JSON fallback until native paths prove stable.
-- Verification status: pending.
-
-## Verification
-
-### Environment
-- Environment: `/Users/quintenchen/developer/ora`, pnpm TypeScript monorepo, 2026-04-25 CST.
-
-### Commands run + outputs
-- Planning task only; no verification commands run yet.
+- Done: shared IR, JSON fallback ledger, OpenAI-compatible/Responses/Anthropic native mappings, runtime execution loop, LangGraph snapshot compatibility, dangling repair, Trails visibility, and verification.
+- In-progress: none.
+- Active files: shared contracts, provider adapters, runtime kernel/executor/session graph state, Trails/view-model, focused tests, this task journal.
+- Next actions (top 3): none; future refinement can add richer per-tool JSON schemas and Langfuse tool observations.
+- Blockers/Risks: no blocker; provider-native tools remain gated so unsupported compatible providers keep JSON fallback.
+- Verification status: passed.

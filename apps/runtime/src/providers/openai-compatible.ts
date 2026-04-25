@@ -2,9 +2,14 @@ import type { ProviderConfig } from "@ora/shared";
 import {
   appendIfDefined,
   buildResponsesInput,
+  extractOpenAiChatToolCalls,
+  extractOpenAiResponsesToolCalls,
   extractTextFromValue,
   failMissingApiKey,
   normalizeMessages,
+  openAiChatTools,
+  openAiResponsesTools,
+  providerToolName,
   readProviderApiKey,
   resolveCompatibleProviderEndpoint,
   splitInstructionMessages,
@@ -37,9 +42,13 @@ function createResponsesPayload(config: ProviderConfig, request: Parameters<Mode
     "max_output_tokens",
     request.maxTokens ?? config.maxTokens
   );
+  const withTools = appendIfDefined(body, "tools", openAiResponsesTools(request.tools));
+  const withChoice = request.tools?.length
+    ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
+    : withTools;
 
   return configuredPayload(
-    appendIfDefined(body, "temperature", request.temperature ?? config.temperature),
+    appendIfDefined(withChoice, "temperature", request.temperature ?? config.temperature),
     config.dropParams ?? []
   );
 }
@@ -50,10 +59,33 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
   const chatMessages = [
     ...(request.system?.trim() ? [{ role: "system", content: request.system.trim() }] : []),
     ...(instructions ? [{ role: "system", content: instructions }] : []),
-    ...dialog.map((message) => ({
-      role: message.role === "developer" ? "system" : message.role,
-      content: message.content,
-    })),
+    ...dialog.map((message) => {
+      if (message.role === "tool") {
+        return {
+          role: "tool",
+          tool_call_id: message.toolCallId,
+          content: message.content,
+        };
+      }
+      if (message.role === "assistant" && message.toolCalls?.length) {
+        return {
+          role: "assistant",
+          content: message.content.trim() ? message.content : null,
+          tool_calls: message.toolCalls.map((call) => ({
+            id: call.id,
+            type: "function",
+            function: {
+              name: providerToolName(call.toolId),
+              arguments: JSON.stringify(call.args ?? {}),
+            },
+          })),
+        };
+      }
+      return {
+        role: message.role === "developer" ? "system" : message.role,
+        content: message.content,
+      };
+    }),
   ];
 
   const body = appendIfDefined(
@@ -64,9 +96,13 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     "max_tokens",
     request.maxTokens ?? config.maxTokens
   );
+  const withTools = appendIfDefined(body, "tools", openAiChatTools(request.tools));
+  const withChoice = request.tools?.length
+    ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
+    : withTools;
 
   return configuredPayload(
-    appendIfDefined(body, "temperature", request.temperature ?? config.temperature),
+    appendIfDefined(withChoice, "temperature", request.temperature ?? config.temperature),
     config.dropParams ?? []
   );
 }
@@ -115,12 +151,24 @@ export function createOpenAICompatibleProvider(
 
     const raw = rawText ? JSON.parse(rawText) : {};
     const text = extractTextFromValue(raw);
+    const toolCalls = protocol === "responses"
+      ? extractOpenAiResponsesToolCalls(raw, request.tools)
+      : extractOpenAiChatToolCalls(raw, request.tools);
+    const choice = Array.isArray((raw as Record<string, unknown>).choices)
+      ? ((raw as Record<string, unknown>).choices as Array<Record<string, unknown>>)[0]
+      : undefined;
     return {
       providerId: config.id,
       providerType: config.type,
       modelId: config.modelId,
       text,
       raw,
+      toolCalls,
+      finishReason: typeof choice?.finish_reason === "string"
+        ? choice.finish_reason
+        : typeof (raw as Record<string, unknown>).status === "string"
+          ? (raw as Record<string, unknown>).status as string
+          : undefined,
     } satisfies ModelResponse;
   };
 

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ActionRiskLevel, SearchProviderConfig, ToolDescriptor } from "@ora/shared";
+import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
 
 export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
@@ -103,11 +104,28 @@ export class RuntimeToolExecutor {
 
   private readonly workspace: unknown;
 
-  enabledToolIds(toolIds: readonly string[]): RuntimeToolId[] {
+  enabledToolIds(toolIds: readonly string[] = []): RuntimeToolId[] {
     return toolIds.filter(isRuntimeToolImplemented);
   }
 
-  systemPrompt(toolIds: readonly string[]): string | undefined {
+  toolDefinitions(toolIds: readonly string[] = []): ModelToolDefinition[] {
+    return this.enabledToolIds(toolIds).map((toolId) => {
+      const descriptor = this.toolDescriptors.find((tool) => tool.id === toolId);
+      return {
+        id: toolId,
+        description: descriptor?.description ?? toolId,
+        parameters: descriptor?.parameters && Object.keys(descriptor.parameters).length > 0
+          ? descriptor.parameters
+          : {
+              type: "object",
+              properties: {},
+              additionalProperties: true,
+            },
+      };
+    });
+  }
+
+  systemPrompt(toolIds: readonly string[] = []): string | undefined {
     const rootPath = workspaceRootPath(this.workspace);
     const enabled = this.enabledToolIds(toolIds);
     if (enabled.length === 0) {
@@ -140,7 +158,7 @@ export class RuntimeToolExecutor {
     ].filter(Boolean).join("\n");
   }
 
-  extractToolCall(text: string, toolIds: readonly string[]): RuntimeToolCall | undefined {
+  extractToolCall(text: string, toolIds: readonly string[] = []): RuntimeToolCall | undefined {
     const enabled = new Set(this.enabledToolIds(toolIds));
     if (enabled.size === 0) {
       return undefined;

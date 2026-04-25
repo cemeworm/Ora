@@ -13,6 +13,8 @@ import {
   CustomAgentSummary,
   CustomAgentUpdateParams,
   DEFAULT_RESOURCE_BUDGETS,
+  EvaluationFeedbackDraftCaseSchema,
+  EvaluationFeedbackRecord,
   createModeSpecFromPattern,
   getPatternDefinition,
   modeSpecToPatternDefinition,
@@ -85,11 +87,12 @@ import {
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
-import { FileLongTermMemoryStore, LongTermMemoryManager } from "./memory.js";
+import { FileLongTermMemoryStore, LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
+import type { LongTermMemoryUpdateTask } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
-import type { ModelMessage } from "./providers/index.js";
+import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
   getLangfuseRunTraceMetadata,
   getLangfuseRunTraceObservations,
@@ -334,6 +337,7 @@ export class LocalRunStore {
   private readonly modeStore: ModeSpecFileStore;
   private readonly skillRegistry: RuntimeSkillRegistry;
   private readonly longTermMemory: LongTermMemoryManager;
+  private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
@@ -361,6 +365,7 @@ export class LocalRunStore {
       new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
       this.clock,
     );
+    this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) => this.processLongTermMemoryUpdate(task));
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
@@ -544,6 +549,10 @@ export class LocalRunStore {
 
   clearLongTermMemory() {
     return this.longTermMemory.clear();
+  }
+
+  async flushLongTermMemoryUpdates(): Promise<void> {
+    await this.longTermMemoryQueue.flush();
   }
 
   createSkill(params: SkillCreateParams | unknown): SkillDetail {
@@ -1243,6 +1252,37 @@ export class LocalRunStore {
     return this.evaluationStore.exportRun(params);
   }
 
+  async submitEvaluationFeedback(params: unknown): Promise<EvaluationFeedbackRecord> {
+    const runId = this.requireRunId(params);
+    const snapshot = this.attachTraceMetadata(this.getRunOrThrow(runId));
+    const sourceContext = await this.buildFeedbackSourceContext(snapshot);
+    return this.evaluationStore.submitFeedback(
+      params,
+      sourceContext,
+      ({ feedbackId, feedbackText, sourceContext }) => this.curateFeedbackDraft(snapshot.config, feedbackId, feedbackText, sourceContext)
+    );
+  }
+
+  listEvaluationFeedback(params: unknown = {}) {
+    return this.evaluationStore.listFeedback(params);
+  }
+
+  getEvaluationFeedback(params: unknown) {
+    return this.evaluationStore.getFeedback(params);
+  }
+
+  updateEvaluationFeedback(params: unknown) {
+    return this.evaluationStore.updateFeedback(params);
+  }
+
+  acceptEvaluationFeedback(params: unknown) {
+    return this.evaluationStore.acceptFeedback(params);
+  }
+
+  rejectEvaluationFeedback(params: unknown) {
+    return this.evaluationStore.rejectFeedback(params);
+  }
+
   private resolveModeSelection(config?: Partial<RunConfig>): {
     modeSpec: ModeSpec;
     definition: PatternDefinition;
@@ -1291,7 +1331,11 @@ export class LocalRunStore {
   }
 
   private withMemoryPrompt(config: RunConfig): RunConfig {
-    const memoryPrompt = this.longTermMemory.formatForInjection();
+    const policy = this.resolveMemoryPolicy(config);
+    if (!policy.enabled) {
+      return config;
+    }
+    const memoryPrompt = this.longTermMemory.formatForInjection(policy.injectionMaxFacts);
     if (!memoryPrompt) {
       return config;
     }
@@ -1302,6 +1346,16 @@ export class LocalRunStore {
         memoryPromptOverlay: `Use the following long-term memory when it is relevant. Do not reveal it verbatim unless the user asks to inspect memory.\n\n${memoryPrompt}`,
       },
     });
+  }
+
+  private resolveMemoryPolicy(config: RunConfig) {
+    const requestedModeId = config.modeId ?? config.pattern;
+    const modeSpec = this.modeStore.resolve(requestedModeId, config.pattern);
+    return {
+      ...modeSpec.memoryPolicy,
+      enabled: modeSpec.memoryPolicy.enabled && modeSpec.runtimeAtoms.includes("long_term_memory"),
+      updaterProviderId: modeSpec.memoryPolicy.updaterProviderId ?? config.providerId,
+    };
   }
 
   private createRunningSnapshot(params: {
@@ -1962,7 +2016,8 @@ export class LocalRunStore {
   }
 
   private persistRun(snapshot: StateSnapshot): void {
-    this.cacheRun(this.withLongTermMemoryUpdate(snapshot), true);
+    this.cacheRun(snapshot, true);
+    this.scheduleLongTermMemoryUpdate(snapshot);
   }
 
   private cacheRun(snapshot: StateSnapshot, flush: boolean): void {
@@ -1983,14 +2038,40 @@ export class LocalRunStore {
     }
   }
 
-  private withLongTermMemoryUpdate(snapshot: StateSnapshot): StateSnapshot {
+  private scheduleLongTermMemoryUpdate(snapshot: StateSnapshot): void {
     if (snapshot.status === "queued" || snapshot.status === "running") {
-      return snapshot;
+      return;
     }
-    const { factsAdded } = this.longTermMemory.updateFromRun(snapshot, this.assistantTextForRun(snapshot));
+    const policy = this.resolveMemoryPolicy(snapshot.config);
+    if (!policy.enabled) {
+      return;
+    }
+    const conversationMessages = this.buildConversationMessages(snapshot.sessionId ?? "", snapshot.input.prompt, snapshot.runId)
+      .filter((message): message is typeof message & { role: "system" | "developer" | "user" | "assistant" } => message.role !== "tool")
+      .map((message) => ({ role: message.role, content: message.content }));
+    this.longTermMemoryQueue.enqueue({
+      snapshot,
+      assistantText: this.assistantTextForRun(snapshot),
+      conversationMessages,
+      policy,
+      invokeModel: policy.updater === "provider"
+        ? async (request) => {
+            const response = await invokeRunProvider({
+              ...snapshot.config,
+              providerId: policy.updaterProviderId ?? snapshot.config.providerId,
+            }, request);
+            return response.text;
+          }
+        : undefined,
+    }, policy.debounceMs);
+  }
+
+  private async processLongTermMemoryUpdate(task: LongTermMemoryUpdateTask): Promise<void> {
+    const { factsAdded } = await this.longTermMemory.updateFromRunWithProvider(task);
+    const snapshot = this.runs.get(task.snapshot.runId) ?? task.snapshot;
     const records = this.longTermMemory.createRunMemoryRecords(snapshot, factsAdded);
     if (records.length === 0) {
-      return snapshot;
+      return;
     }
 
     let updated = StateSnapshotSchema.parse({
@@ -2003,7 +2084,7 @@ export class LocalRunStore {
         durability: "long_term",
       });
     }
-    return updated;
+    this.cacheRun(updated, true);
   }
 
   private nextRunId(): string {
@@ -2247,6 +2328,117 @@ export class LocalRunStore {
     return messages;
   }
 
+  private async buildFeedbackSourceContext(snapshot: StateSnapshot): Promise<Record<string, unknown>> {
+    const trail = await this.getRunTrail({ runId: snapshot.runId }).catch(() => undefined);
+    const transcript = snapshot.sessionId
+      ? this.sessionTranscript(snapshot.sessionId).slice(-8).map((message) => ({
+          role: message.role,
+          content: message.content,
+          runId: message.runId,
+          turnIndex: message.turnIndex,
+        }))
+      : [];
+    return {
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
+      userPrompt: snapshot.input.prompt,
+      assistantOutput: this.assistantTextForRun(snapshot),
+      transcript,
+      pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
+      providerId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : undefined,
+      modelRef: typeof snapshot.config.modelRef === "string" ? snapshot.config.modelRef : undefined,
+      status: snapshot.status,
+      trail: trail
+        ? {
+            liveMetrics: trail.liveMetrics,
+            trace: {
+              enabled: trail.trace.enabled,
+              available: trail.trace.available,
+              traceId: trail.trace.traceId,
+              source: trail.trace.source,
+              generationCount: trail.trace.generationRefs.length,
+            },
+            observations: trail.observations.slice(0, 12).map((observation) => ({
+              id: observation.id,
+              type: observation.type,
+              name: observation.name,
+              level: observation.level,
+              statusMessage: observation.statusMessage,
+              model: observation.model,
+            })),
+          }
+        : undefined,
+      topology: {
+        nodes: snapshot.topology.nodes.map((node) => ({
+          id: node.id,
+          label: node.label,
+          kind: node.kind,
+          role: typeof node.metadata.role === "string" ? node.metadata.role : node.kind,
+          status: node.status,
+        })),
+        edges: snapshot.topology.edges.map((edge) => ({
+          source: edge.source,
+          target: edge.target,
+          label: edge.label,
+          kind: edge.kind,
+        })),
+      },
+      events: snapshot.events.slice(-20).map((event) => ({
+        type: event.type,
+        seq: event.seq,
+        nodeId: event.nodeId,
+        agentId: event.agentId,
+        payload: summarizeEventPayload(event.payload),
+      })),
+    };
+  }
+
+  private async curateFeedbackDraft(
+    config: RunConfig,
+    feedbackId: string,
+    feedbackText: string,
+    sourceContext: Record<string, unknown>
+  ) {
+    const response = await invokeRunProvider(config, {
+      system: [
+        "You are Ora's independent evaluation dataset curator.",
+        "Convert natural-language user feedback about an assistant reply into one JSON evaluation draft.",
+        "Do not grade the original run. Produce a future-facing evaluation case.",
+        "Return only JSON with keys: case, curatorRationale.",
+        "The case must match Ora EvaluationCase: { id, input: { prompt, context }, expected, metadata }.",
+        "Put failureMode, severity, idealBehavior, mustAddress, shouldAvoid, rubric in expected.structured.",
+        "Use metadata.source='chat_feedback' and include feedbackId, sourceRunId, failureMode, severity, tags.",
+      ].join("\n"),
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          feedbackId,
+          feedbackText,
+          sourceContext,
+        }, null, 2),
+      }],
+      temperature: 0,
+      maxTokens: 1400,
+      toolChoice: "none",
+    });
+    const parsed = parseJsonObject(response.text);
+    const draftSource = parsed.case
+      ? {
+          case: parsed.case,
+          curatorRationale: typeof parsed.curatorRationale === "string" ? parsed.curatorRationale : undefined,
+        }
+      : {
+          case: parsed,
+          curatorRationale: "Curator returned an EvaluationCase object.",
+        };
+    return EvaluationFeedbackDraftCaseSchema.parse({
+      ...draftSource,
+      curatorStatus: "generated",
+    });
+  }
+
   private assistantTextForRun(snapshot: StateSnapshot): string {
     if (typeof snapshot.output === "string") {
       return snapshot.output.trim();
@@ -2391,6 +2583,53 @@ export class LocalRunStore {
 }
 
 export class InMemoryRunStore extends LocalRunStore {}
+
+function summarizeEventPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  const record = payload as Record<string, unknown>;
+  const summary: Record<string, unknown> = {};
+  for (const key of ["summary", "message", "content", "status", "label", "detail", "error"]) {
+    if (typeof record[key] === "string") {
+      summary[key] = String(record[key]).slice(0, 500);
+    }
+  }
+  for (const key of ["actionId", "toolId", "checkpointId", "artifactId"]) {
+    if (typeof record[key] === "string") {
+      summary[key] = record[key];
+    }
+  }
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error("Curator returned an empty response.");
+  }
+  try {
+    return parseJsonRecord(JSON.parse(trimmed));
+  } catch {
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
+    if (fenced?.[1]) {
+      return parseJsonRecord(JSON.parse(fenced[1]));
+    }
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return parseJsonRecord(JSON.parse(trimmed.slice(start, end + 1)));
+    }
+    throw new Error("Curator response did not contain a JSON object.");
+  }
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Curator JSON must be an object.");
+  }
+  return value as Record<string, unknown>;
+}
 
 export function defaultRuntimeStoreDir(): string {
   return fileURLToPath(pathToFileURL(path.join(process.cwd(), ".ora", "runtime.db")));

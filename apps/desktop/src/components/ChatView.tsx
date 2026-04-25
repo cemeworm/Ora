@@ -34,6 +34,7 @@ interface ChatViewProps {
   onReplaySelection: () => void;
   onResumeRun: () => void;
   onOpenArtifact: (artifactId: string) => void;
+  onSubmitFeedback: (message: ChatMessage, feedbackText: string) => Promise<void>;
   onSelectMode: (modeId: string) => void;
   onSelectNode: (id: string) => void;
   onStartRun: () => void;
@@ -61,6 +62,7 @@ export function ChatView({
   onCancelRun,
   onExportReport,
   onOpenArtifact,
+  onSubmitFeedback,
   onToggleDetailDrawer,
   detailDrawerOpen,
   onSelectMode,
@@ -108,6 +110,7 @@ export function ChatView({
             onResumeRun={onResumeRun}
             onCancelRun={onCancelRun}
             onOpenArtifact={onOpenArtifact}
+            onSubmitFeedback={onSubmitFeedback}
             busyCommand={busyCommand}
           />
         </div>

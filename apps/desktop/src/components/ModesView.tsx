@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, Copy, FileText, GitBranchPlus, Globe, ListTree, PencilLine, Plug, Plus, RefreshCcw, Save, Search, Terminal, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, Database, FileText, GitBranchPlus, Globe, ListTree, PencilLine, Plug, Plus, RefreshCcw, Save, Search, Terminal, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
@@ -823,6 +823,11 @@ function ModeInspector({
         onPatchDraft={onPatchDraft}
       />
 
+      <MemoryPolicyPanel
+        draft={draft}
+        onPatchDraft={onPatchDraft}
+      />
+
       <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} />
 
       {onDeleteMode && (
@@ -942,6 +947,161 @@ function WorkspaceToolsPanel({
             })}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function MemoryPolicyPanel({
+  draft,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  const memoryAtom: OraModeSpec["runtimeAtoms"][number] = "long_term_memory";
+  const memoryEnabled = draft.runtimeAtoms.includes("long_term_memory") && draft.memoryPolicy.enabled;
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Memory</p>
+          <h4 className="mt-1 text-sm font-semibold">Long-term memory policy</h4>
+        </div>
+        <button
+          type="button"
+          onClick={() => onPatchDraft((current) => {
+            const nextEnabled = !(current.runtimeAtoms.includes(memoryAtom) && current.memoryPolicy.enabled);
+            return {
+              ...current,
+              runtimeAtoms: nextEnabled
+                ? [...new Set([...current.runtimeAtoms, memoryAtom])]
+                : current.runtimeAtoms.filter((atomId) => atomId !== memoryAtom),
+              memoryPolicy: {
+                ...current.memoryPolicy,
+                enabled: nextEnabled,
+              },
+            };
+          })}
+          className={cn(
+            "inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition",
+            memoryEnabled
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-bench-200 bg-white text-bench-700 hover:bg-bench-50",
+          )}
+        >
+          <Database size={13} />
+          {memoryEnabled ? "On" : "Off"}
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Updater</span>
+          <select
+            value={draft.memoryPolicy.updater}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              memoryPolicy: {
+                ...current.memoryPolicy,
+                updater: event.target.value as OraModeSpec["memoryPolicy"]["updater"],
+              },
+            }))}
+            className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+          >
+            <option value="provider">provider JSON patch</option>
+            <option value="heuristic">heuristic fallback</option>
+          </select>
+        </label>
+
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Updater provider id</span>
+          <input
+            value={draft.memoryPolicy.updaterProviderId ?? ""}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              memoryPolicy: {
+                ...current.memoryPolicy,
+                updaterProviderId: event.target.value.trim() || undefined,
+              },
+            }))}
+            placeholder="inherit selected provider"
+            className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Debounce ms</span>
+            <input
+              type="number"
+              min={0}
+              max={60000}
+              value={draft.memoryPolicy.debounceMs}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                memoryPolicy: {
+                  ...current.memoryPolicy,
+                  debounceMs: Math.max(0, Math.min(60000, Number(event.target.value) || 0)),
+                },
+              }))}
+              className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Confidence</span>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={draft.memoryPolicy.factConfidenceThreshold}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                memoryPolicy: {
+                  ...current.memoryPolicy,
+                  factConfidenceThreshold: Math.max(0, Math.min(1, Number(event.target.value) || 0)),
+                },
+              }))}
+              className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Max facts</span>
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={draft.memoryPolicy.maxFacts}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                memoryPolicy: {
+                  ...current.memoryPolicy,
+                  maxFacts: Math.max(1, Math.min(500, Number(event.target.value) || 1)),
+                },
+              }))}
+              className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Inject facts</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={draft.memoryPolicy.injectionMaxFacts}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                memoryPolicy: {
+                  ...current.memoryPolicy,
+                  injectionMaxFacts: Math.max(1, Math.min(100, Number(event.target.value) || 1)),
+                },
+              }))}
+              className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+            />
+          </label>
+        </div>
       </div>
     </div>
   );
@@ -1733,7 +1893,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, recoveryPolicy } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, recoveryPolicy, memoryPolicy } = spec;
   return {
     id,
     family,
@@ -1751,6 +1911,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     profiles,
     runtimeAtoms,
     recoveryPolicy,
+    memoryPolicy,
   };
 }
 

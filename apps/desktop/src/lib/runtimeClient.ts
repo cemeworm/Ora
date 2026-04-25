@@ -14,6 +14,7 @@ import type {
   EvaluationDataset as OraEvaluationDataset,
   EvaluationDatasetDetail as OraEvaluationDatasetDetail,
   EvaluationExportResult as OraEvaluationExportResult,
+  EvaluationFeedbackRecord as OraEvaluationFeedbackRecord,
   EvaluationRun as OraEvaluationRun,
   EvaluationRunDetail as OraEvaluationRunDetail,
   EvaluationRunStream as OraEvaluationRunStream,
@@ -81,6 +82,7 @@ export type {
   OraEvaluationDataset,
   OraEvaluationDatasetDetail,
   OraEvaluationExportResult,
+  OraEvaluationFeedbackRecord,
   OraEvaluationRun,
   OraEvaluationRunDetail,
   OraEvaluationRunStream,
@@ -318,6 +320,35 @@ export function createRuntimeClient() {
     },
     async exportEvaluationRun(evaluationRunId: string, format: "json" | "csv"): Promise<OraEvaluationExportResult> {
       return call<OraEvaluationExportResult>("evaluation.runs.export", { evaluationRunId, format });
+    },
+    async submitEvaluationFeedback(params: {
+      runId: string;
+      sessionId?: string;
+      turnIndex?: number;
+      messageId?: string;
+      feedbackText: string;
+    }): Promise<OraEvaluationFeedbackRecord> {
+      return call<OraEvaluationFeedbackRecord>("evaluation.feedback.submit", params);
+    },
+    async listEvaluationFeedback(params: { status?: "pending" | "accepted" | "rejected" | "failed"; limit?: number } = {}): Promise<OraEvaluationFeedbackRecord[]> {
+      return call<OraEvaluationFeedbackRecord[]>("evaluation.feedback.list", params);
+    },
+    async getEvaluationFeedback(feedbackId: string): Promise<OraEvaluationFeedbackRecord> {
+      return call<OraEvaluationFeedbackRecord>("evaluation.feedback.get", { feedbackId });
+    },
+    async updateEvaluationFeedback(params: {
+      feedbackId: string;
+      feedbackText?: string;
+      draftCase?: OraEvaluationFeedbackRecord["draft"]["case"];
+      curatorRationale?: string;
+    }): Promise<OraEvaluationFeedbackRecord> {
+      return call<OraEvaluationFeedbackRecord>("evaluation.feedback.update", params);
+    },
+    async acceptEvaluationFeedback(feedbackId: string, datasetId?: string): Promise<OraEvaluationFeedbackRecord> {
+      return call<OraEvaluationFeedbackRecord>("evaluation.feedback.accept", { feedbackId, datasetId });
+    },
+    async rejectEvaluationFeedback(feedbackId: string, reason?: string): Promise<OraEvaluationFeedbackRecord> {
+      return call<OraEvaluationFeedbackRecord>("evaluation.feedback.reject", { feedbackId, reason });
     },
     async getSession(sessionId: string): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.get", { sessionId });
@@ -726,12 +757,14 @@ class LocalJsonRpcRuntime {
   private evaluationDatasets = new Map<string, OraEvaluationDatasetDetail>();
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
+  private evaluationFeedback = new Map<string, OraEvaluationFeedbackRecord>();
   private nextProjectNumber = 1;
   private nextSessionNumber = 1;
   private nextRunNumber = 1;
   private nextEvaluationDatasetNumber = 1;
   private nextEvaluationRunNumber = 1;
   private nextEvaluationBaselineNumber = 1;
+  private nextEvaluationFeedbackNumber = 1;
 
   async handle(request: JsonRpcRequest): Promise<JsonRpcResponse> {
     try {
@@ -949,6 +982,28 @@ class LocalJsonRpcRuntime {
         return this.exportEvaluationRun(params);
       case "evaluation.baselines.list":
         return [...this.evaluationBaselines.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+      case "evaluation.feedback.submit":
+        return this.submitEvaluationFeedback(params);
+      case "evaluation.feedback.list": {
+        const status = typeof params === "object" && params !== null && "status" in params ? String((params as { status: unknown }).status) : undefined;
+        const limit = typeof params === "object" && params !== null && "limit" in params ? Number((params as { limit: unknown }).limit) : undefined;
+        return [...this.evaluationFeedback.values()]
+          .filter((record) => status ? record.status === status : true)
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+          .slice(0, Number.isFinite(limit) ? limit : undefined);
+      }
+      case "evaluation.feedback.get": {
+        const feedbackId = typeof params === "object" && params !== null && "feedbackId" in params ? String((params as { feedbackId: unknown }).feedbackId) : "";
+        const record = this.evaluationFeedback.get(feedbackId);
+        if (!record) throw new Error(`Evaluation feedback not found: ${feedbackId}`);
+        return record;
+      }
+      case "evaluation.feedback.update":
+        return this.updateEvaluationFeedback(params);
+      case "evaluation.feedback.accept":
+        return this.acceptEvaluationFeedback(params);
+      case "evaluation.feedback.reject":
+        return this.rejectEvaluationFeedback(params);
       case "runs.start":
         return this.startRun(params);
       case "runs.startStreaming":
@@ -1796,6 +1851,177 @@ class LocalJsonRpcRuntime {
     return { evaluationRunId: run.run.id, format: "json", content: `${JSON.stringify(run, null, 2)}\n` };
   }
 
+  private submitEvaluationFeedback(params: unknown): OraEvaluationFeedbackRecord {
+    const parsed = params as {
+      runId?: string;
+      sessionId?: string;
+      turnIndex?: number;
+      messageId?: string;
+      feedbackText?: string;
+    };
+    const runId = parsed.runId ?? "";
+    const snapshot = this.runs.get(runId);
+    if (!snapshot) throw new Error(`Run not found: ${runId}`);
+    const feedbackText = parsed.feedbackText?.trim();
+    if (!feedbackText) throw new Error("Feedback text is required.");
+    const id = `feedback-${String(this.nextEvaluationFeedbackNumber++).padStart(4, "0")}`;
+    const sourceContext = this.buildMockFeedbackSourceContext(snapshot);
+    const now = Date.now();
+    const record: OraEvaluationFeedbackRecord = {
+      id,
+      status: "pending",
+      feedbackText,
+      sourceRunId: runId,
+      sourceSessionId: parsed.sessionId ?? snapshot.sessionId,
+      sourceTurnIndex: parsed.turnIndex ?? snapshot.turnIndex,
+      sourceMessageId: parsed.messageId,
+      sourceContext,
+      draft: buildMockFeedbackDraft(id, feedbackText, sourceContext),
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.evaluationFeedback.set(id, record);
+    return record;
+  }
+
+  private updateEvaluationFeedback(params: unknown): OraEvaluationFeedbackRecord {
+    const parsed = params as {
+      feedbackId?: string;
+      feedbackText?: string;
+      draftCase?: OraEvaluationFeedbackRecord["draft"]["case"];
+      curatorRationale?: string;
+    };
+    const record = this.requireEvaluationFeedback(parsed.feedbackId);
+    if (record.status === "accepted" || record.status === "rejected") {
+      throw new Error(`Evaluation feedback ${record.id} is already ${record.status}.`);
+    }
+    const next: OraEvaluationFeedbackRecord = {
+      ...record,
+      status: "pending",
+      feedbackText: parsed.feedbackText?.trim() || record.feedbackText,
+      draft: parsed.draftCase
+        ? {
+            ...record.draft,
+            case: parsed.draftCase,
+            curatorStatus: "generated",
+            curatorRationale: parsed.curatorRationale ?? record.draft.curatorRationale,
+            error: undefined,
+          }
+        : record.draft,
+      updatedAt: Date.now(),
+    };
+    this.evaluationFeedback.set(next.id, next);
+    return next;
+  }
+
+  private acceptEvaluationFeedback(params: unknown): OraEvaluationFeedbackRecord {
+    const parsed = params as { feedbackId?: string; datasetId?: string };
+    const record = this.requireEvaluationFeedback(parsed.feedbackId);
+    if (record.status === "rejected") throw new Error(`Evaluation feedback ${record.id} was rejected.`);
+    if (record.status === "accepted") return record;
+    const datasetId = parsed.datasetId ?? "feedback-chat";
+    const dataset = this.ensureMockFeedbackDataset(datasetId);
+    const evaluationCase = {
+      ...record.draft.case,
+      metadata: {
+        ...record.draft.case.metadata,
+        feedbackId: record.id,
+        source: "chat_feedback",
+        sourceRunId: record.sourceRunId,
+        sourceSessionId: record.sourceSessionId,
+        sourceTurnIndex: record.sourceTurnIndex,
+      },
+    };
+    const cases = [...dataset.cases, evaluationCase];
+    const nextDataset: OraEvaluationDatasetDetail = {
+      dataset: {
+        ...dataset.dataset,
+        caseCount: cases.length,
+        updatedAt: Date.now(),
+      },
+      cases,
+      metadataKeys: [...new Set(cases.flatMap((item) => Object.keys(item.metadata ?? {})))].sort((a, b) => a.localeCompare(b)),
+      tagCounts: collectMockTagCounts(cases),
+    };
+    this.evaluationDatasets.set(datasetId, nextDataset);
+    const next: OraEvaluationFeedbackRecord = {
+      ...record,
+      status: "accepted",
+      datasetId,
+      acceptedCaseId: evaluationCase.id,
+      updatedAt: Date.now(),
+    };
+    this.evaluationFeedback.set(next.id, next);
+    return next;
+  }
+
+  private rejectEvaluationFeedback(params: unknown): OraEvaluationFeedbackRecord {
+    const parsed = params as { feedbackId?: string; reason?: string };
+    const record = this.requireEvaluationFeedback(parsed.feedbackId);
+    if (record.status === "accepted") throw new Error(`Evaluation feedback ${record.id} is already accepted.`);
+    const next: OraEvaluationFeedbackRecord = {
+      ...record,
+      status: "rejected",
+      rejectionReason: parsed.reason?.trim(),
+      updatedAt: Date.now(),
+    };
+    this.evaluationFeedback.set(next.id, next);
+    return next;
+  }
+
+  private requireEvaluationFeedback(feedbackId: unknown): OraEvaluationFeedbackRecord {
+    const id = typeof feedbackId === "string" ? feedbackId : "";
+    const record = this.evaluationFeedback.get(id);
+    if (!record) throw new Error(`Evaluation feedback not found: ${id}`);
+    return record;
+  }
+
+  private ensureMockFeedbackDataset(datasetId: string): OraEvaluationDatasetDetail {
+    const current = this.evaluationDatasets.get(datasetId);
+    if (current) return current;
+    const now = Date.now();
+    const detail: OraEvaluationDatasetDetail = {
+      dataset: {
+        id: datasetId,
+        name: "Chat Feedback",
+        description: "Accepted natural-language chat feedback converted into evaluation cases.",
+        sourceFileName: `${datasetId}.json`,
+        sourceFormat: "inline",
+        schemaVersion: 1,
+        caseCount: 0,
+        tags: ["chat_feedback"],
+        createdAt: now,
+        updatedAt: now,
+      },
+      cases: [],
+      metadataKeys: [],
+      tagCounts: {},
+    };
+    this.evaluationDatasets.set(datasetId, detail);
+    return detail;
+  }
+
+  private buildMockFeedbackSourceContext(snapshot: OraStateSnapshot): Record<string, unknown> {
+    return {
+      runId: snapshot.runId,
+      sessionId: snapshot.sessionId,
+      turnIndex: snapshot.turnIndex,
+      userPrompt: snapshot.input.prompt,
+      assistantOutput: assistantTextFromMockSnapshot(snapshot),
+      pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
+      providerId: snapshot.config.providerId,
+      modelRef: snapshot.config.modelRef,
+      trail: buildMockRunTrail(snapshot).liveMetrics,
+      events: snapshot.events.slice(-12).map((event) => ({
+        type: event.type,
+        seq: event.seq,
+        agentId: event.agentId,
+        nodeId: event.nodeId,
+      })),
+    };
+  }
+
   private getRunState(params: unknown): OraStateSnapshot {
     const runId = asRunId(params);
     const snapshot = this.runs.get(runId);
@@ -2039,6 +2265,7 @@ class LocalJsonRpcRuntime {
         checkpointIds: [checkpoint.id],
       })),
       actions: [sidecarAction, reportAction],
+      toolCalls: [],
       policyDecisions: [],
       checkpoints: [checkpoint],
       events,
@@ -2587,6 +2814,99 @@ function defaultMockProjectLabel(rootPath: string): string {
   const normalized = normalizeMockProjectPath(rootPath);
   const segments = normalized.split(/[\\/]/).filter(Boolean);
   return segments.at(-1) ?? normalized;
+}
+
+function assistantTextFromMockSnapshot(snapshot: OraStateSnapshot): string {
+  if (snapshot.output && typeof snapshot.output === "object" && "text" in snapshot.output && typeof snapshot.output.text === "string") {
+    return snapshot.output.text;
+  }
+  const lastMessage = [...snapshot.events].reverse().find((event) =>
+    event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string",
+  );
+  return lastMessage && isRecord(lastMessage.payload) && typeof lastMessage.payload.content === "string"
+    ? lastMessage.payload.content
+    : "";
+}
+
+function buildMockFeedbackDraft(
+  feedbackId: string,
+  feedbackText: string,
+  sourceContext: Record<string, unknown>
+): OraEvaluationFeedbackRecord["draft"] {
+  const feedbackLower = feedbackText.toLowerCase();
+  const failureMode = inferMockFeedbackFailureMode(feedbackLower);
+  const severity = inferMockFeedbackSeverity(feedbackLower);
+  const sourceRunId = typeof sourceContext.runId === "string" ? sourceContext.runId : undefined;
+  const sourceSessionId = typeof sourceContext.sessionId === "string" ? sourceContext.sessionId : undefined;
+  const sourceTurnIndex = typeof sourceContext.turnIndex === "number" ? sourceContext.turnIndex : undefined;
+  const prompt = typeof sourceContext.userPrompt === "string" && sourceContext.userPrompt.trim()
+    ? sourceContext.userPrompt
+    : "Review the original Ora chat turn using the attached feedback.";
+  return {
+    curatorStatus: "fallback",
+    curatorRationale: "Browser fallback generated a deterministic feedback draft.",
+    case: {
+      id: `feedback-case-${feedbackId.replace(/^feedback-/, "")}`,
+      input: {
+        prompt,
+        context: {
+          userFeedback: feedbackText,
+          sourceAssistantOutput: sourceContext.assistantOutput,
+          sourceContext,
+        },
+      },
+      expected: {
+        structured: {
+          failureMode,
+          severity,
+          idealBehavior: "Address the user's feedback while preserving the original task intent.",
+          mustAddress: [feedbackText],
+          shouldAvoid: ["Repeating the same issue identified by the user."],
+          rubric: [{
+            criterion: "feedback_resolution",
+            weight: 1,
+            description: "The response resolves the concrete issue described in the user feedback.",
+          }],
+        },
+      },
+      metadata: {
+        source: "chat_feedback",
+        feedbackId,
+        sourceRunId,
+        sourceSessionId,
+        sourceTurnIndex,
+        failureMode,
+        severity,
+        tags: ["chat_feedback", failureMode, severity],
+      },
+    },
+  };
+}
+
+function inferMockFeedbackFailureMode(feedbackLower: string) {
+  if (/(format|格式|结构|排版|json|表格|citation|引用)/i.test(feedbackLower)) return "bad_format";
+  if (/(tool|工具|搜索|文件|轨迹|trace|process|流程)/i.test(feedbackLower)) return "tool_process_issue";
+  if (/(unsafe|危险|删除|权限|approval|安全)/i.test(feedbackLower)) return "safety_issue";
+  if (/(miss|漏|没有|忽略|requirement|需求|要求)/i.test(feedbackLower)) return "missed_requirement";
+  if (/(wrong|错误|不对|事实|hallucinat|幻觉)/i.test(feedbackLower)) return "factual_error";
+  if (/(reason|逻辑|推理|分析)/i.test(feedbackLower)) return "poor_reasoning";
+  return "user_reported_issue";
+}
+
+function inferMockFeedbackSeverity(feedbackLower: string) {
+  if (/(critical|严重|危险|不能用|block|阻塞|错得离谱)/i.test(feedbackLower)) return "high";
+  if (/(minor|小问题|轻微|typo|错别字)/i.test(feedbackLower)) return "low";
+  return "medium";
+}
+
+function collectMockTagCounts(cases: OraEvaluationDatasetDetail["cases"]): Record<string, number> {
+  return cases.reduce<Record<string, number>>((acc, item) => {
+    const tags = Array.isArray(item.metadata?.tags) ? item.metadata.tags : [];
+    for (const tag of tags) {
+      if (typeof tag === "string") acc[tag] = (acc[tag] ?? 0) + 1;
+    }
+    return acc;
+  }, {});
 }
 
 function scoreMockEvaluationCase(profileId: "outcome" | "orchestration" | "task_completion", evaluationCase: OraEvaluationDatasetDetail["cases"][number], snapshot: OraStateSnapshot) {

@@ -7,6 +7,7 @@ import type {
   CoordinationPattern,
   MemoryRecord,
   OraEventEnvelope,
+  OraToolCallEnvelope,
   PlanItem,
   PolicyDecision,
   RunConfig,
@@ -29,6 +30,10 @@ export const OraGraphAnnotation = Annotation.Root({
   plan: Annotation<PlanItem[]>,
   actions: Annotation<ActionRecord[]>({
     reducer: (a: ActionRecord[], b: ActionRecord[]) => [...a, ...b],
+    default: () => [],
+  }),
+  toolCalls: Annotation<OraToolCallEnvelope[]>({
+    reducer: (a: OraToolCallEnvelope[], b: OraToolCallEnvelope[]) => [...a, ...b],
     default: () => [],
   }),
   policyDecisions: Annotation<PolicyDecision[]>({

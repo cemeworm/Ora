@@ -8,6 +8,7 @@ import {
   EvaluationBaselineSchema,
   EvaluationDatasetDetailSchema,
   EvaluationExportResultSchema,
+  EvaluationFeedbackRecordSchema,
   EvaluationRunDetailSchema,
   EvaluationRunSchema,
   ProviderRegistrySchema,
@@ -186,6 +187,69 @@ describe("LongTermMemoryManager", () => {
     const reloaded = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir), clock).get();
     expect(reloaded.facts[0]?.content).toContain("长期画像");
     expect(manager.formatForInjection()).toContain("Long-term Facts");
+  });
+
+  it("uses provider patches before falling back to heuristic extraction", async () => {
+    const manager = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir), clock);
+    const snapshot = StateSnapshotSchema.parse({
+      runId: "run-memory-provider",
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "orchestrator_subagent",
+      input: { prompt: "Please remember my preferred memory design.", context: {}, createdAt: clock() },
+      config: {
+        pattern: "orchestrator_subagent",
+        profileIds: [],
+        skillIds: [],
+        toolIds: [],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "test",
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: clock(),
+    });
+
+    const { memory, factsAdded } = await manager.updateFromRunWithProvider({
+      snapshot,
+      assistantText: "",
+      conversationMessages: [{ role: "user", content: snapshot.input.prompt }],
+      policy: {
+        enabled: true,
+        updater: "provider",
+        debounceMs: 0,
+        factConfidenceThreshold: 0.7,
+        maxFacts: 120,
+        injectionMaxFacts: 24,
+      },
+      invokeModel: async () => JSON.stringify({
+        user: { topOfMind: { shouldUpdate: true, summary: "Prefers provider-backed memory patches." } },
+        history: { recentMonths: { shouldUpdate: true, summary: "Iterated on Ora memory." } },
+        newFacts: [{ content: "User prefers provider-backed memory patches over raw session dumps.", category: "preference", confidence: 0.94 }],
+        factsToRemove: [],
+      }),
+    });
+
+    expect(factsAdded).toHaveLength(1);
+    expect(memory.user.topOfMind.summary).toContain("provider-backed");
+    expect(memory.facts[0]?.content).toContain("provider-backed memory patches");
   });
 });
 
@@ -401,6 +465,7 @@ describe("LocalRunStore", () => {
         config: { pattern: "generator_verifier" }
       }
     }) as { runId: string };
+    await store.flushLongTermMemoryUpdates();
 
     const firstState = StateSnapshotSchema.parse(await handle({
       jsonrpc: "2.0",
@@ -426,6 +491,8 @@ describe("LocalRunStore", () => {
         config: { pattern: "generator_verifier" }
       }
     }) as { runId: string };
+    await store.flushLongTermMemoryUpdates();
+
     const secondState = StateSnapshotSchema.parse(await handle({
       jsonrpc: "2.0",
       id: 5,
@@ -754,5 +821,84 @@ describe("LocalRunStore", () => {
       params: { evaluationRunId: detail.run.id, format: "csv" }
     }));
     expect(exportResult.content).toContain("case_id,config_id,overall_score");
+  });
+
+  it("turns chat feedback into reviewable evaluation cases", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Summarize this with citations." },
+        config: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" }
+      }
+    }) as { runId: string };
+
+    const submitted = EvaluationFeedbackRecordSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.feedback.submit",
+      params: {
+        runId: run.runId,
+        turnIndex: 1,
+        messageId: `${run.runId}:assistant`,
+        feedbackText: "It ignored the required citation format.",
+      }
+    }));
+    expect(submitted.status).toMatch(/pending|failed/);
+    expect(submitted.feedbackText).toContain("citation");
+    expect(submitted.draft.case.metadata.source).toBe("chat_feedback");
+
+    const listed = EvaluationFeedbackRecordSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.feedback.list",
+      params: { limit: 10 }
+    }));
+    expect(listed.map((record) => record.id)).toContain(submitted.id);
+
+    const accepted = EvaluationFeedbackRecordSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "evaluation.feedback.accept",
+      params: { feedbackId: submitted.id }
+    }));
+    expect(accepted.status).toBe("accepted");
+    expect(accepted.datasetId).toBe("feedback-chat");
+
+    const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "evaluation.datasets.get",
+      params: { datasetId: "feedback-chat" }
+    }));
+    expect(dataset.dataset.caseCount).toBe(1);
+    expect(dataset.cases[0]?.metadata.feedbackId).toBe(submitted.id);
+
+    const second = EvaluationFeedbackRecordSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "evaluation.feedback.submit",
+      params: {
+        runId: run.runId,
+        feedbackText: "This is a minor wording issue.",
+      }
+    }));
+    const rejected = EvaluationFeedbackRecordSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "evaluation.feedback.reject",
+      params: { feedbackId: second.id, reason: "Duplicate signal" }
+    }));
+    expect(rejected.status).toBe("rejected");
+
+    const unchanged = EvaluationDatasetDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "evaluation.datasets.get",
+      params: { datasetId: "feedback-chat" }
+    }));
+    expect(unchanged.dataset.caseCount).toBe(1);
   });
 });

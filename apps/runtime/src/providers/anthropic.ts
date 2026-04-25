@@ -1,6 +1,6 @@
 import type { ProviderConfig } from "@ora/shared";
-import { appendIfDefined, extractTextFromValue, failMissingApiKey, normalizeMessages, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
-import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
+import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractTextFromValue, failMissingApiKey, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
+import type { ModelMessage, ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { anthropicTextDelta, emitTextDelta, readSseMessages } from "./streaming.js";
 
 export function createAnthropicStyleProvider(
@@ -21,23 +21,54 @@ export function createAnthropicStyleProvider(
     const messages = normalizeMessages(request);
     const { instructions, dialog } = splitInstructionMessages(messages);
     const system = [request.system?.trim(), instructions].filter(Boolean).join("\n\n");
-    const conversation = dialog.length > 0 ? dialog : [{ role: "user", content: request.prompt?.trim() || "" }];
+    const conversation: ModelMessage[] = dialog.length > 0 ? dialog : [{ role: "user", content: request.prompt?.trim() || "" }];
 
     const body = appendIfDefined(
       {
         model: config.modelId,
         max_tokens: request.maxTokens ?? config.maxTokens ?? 1024,
-        messages: conversation.map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
+        messages: conversation.map((message) => {
+          if (message.role === "tool") {
+            return {
+              role: "user",
+              content: [{
+                type: "tool_result",
+                tool_use_id: message.toolCallId,
+                content: message.content,
+                is_error: false,
+              }],
+            };
+          }
+          if (message.role === "assistant" && message.toolCalls?.length) {
+            return {
+              role: "assistant",
+              content: [
+                ...(message.content.trim() ? [{ type: "text", text: message.content }] : []),
+                ...message.toolCalls.map((call) => ({
+                  type: "tool_use",
+                  id: call.id,
+                  name: providerToolName(call.toolId),
+                  input: call.args ?? {},
+                })),
+              ],
+            };
+          }
+          return {
+            role: message.role === "developer" ? "assistant" : message.role,
+            content: message.content,
+          };
+        }),
       },
       "system",
       system || undefined
     );
+    const withTools = appendIfDefined(body, "tools", anthropicTools(request.tools));
+    const withChoice = request.tools?.length && request.toolChoice === "none"
+      ? appendIfDefined(withTools, "tool_choice", { type: "none" })
+      : withTools;
 
     return appendIfDefined(
-      body,
+      withChoice,
       "temperature",
       request.temperature ?? config.temperature
     );
@@ -85,6 +116,10 @@ export function createAnthropicStyleProvider(
       modelId: config.modelId,
       text,
       raw,
+      toolCalls: extractAnthropicToolCalls(raw, request.tools),
+      finishReason: typeof (raw as Record<string, unknown>).stop_reason === "string"
+        ? (raw as Record<string, unknown>).stop_reason as string
+        : undefined,
     } satisfies ModelResponse;
   };
 

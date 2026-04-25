@@ -6,7 +6,7 @@ import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
-import type { AppView, ArtifactRecord } from "./types";
+import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
 import type { OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
@@ -387,6 +387,22 @@ function WorkbenchInner() {
       .flatMap((message) => message.turn?.artifacts ?? [])
       .find((artifact) => artifact.id === state.selectedArtifactId);
   }, [chatMessages, state.selectedArtifactId, viewModel?.artifacts]);
+  async function handleSubmitFeedback(message: ChatMessage, feedbackText: string) {
+    if (!message.turn) {
+      throw new Error("Feedback requires an assistant turn.");
+    }
+    const record = await runtimeClient.submitEvaluationFeedback({
+      runId: message.turn.runId,
+      sessionId: state.activeSessionDetail?.session.sessionId,
+      turnIndex: message.turn.turnIndex,
+      messageId: message.id,
+      feedbackText,
+    });
+    dispatch({
+      type: "SET_COMMAND_FEEDBACK",
+      feedback: `Feedback captured as ${record.id}. Review it in Evaluation.`,
+    });
+  }
   const settingsDialog = state.settingsOpen ? (
     <SettingsView
       open={state.settingsOpen}
@@ -505,6 +521,7 @@ function WorkbenchInner() {
             onResumeRun={actions.resumeRun}
             onCancelRun={actions.cancelRun}
             onOpenArtifact={(artifactId) => dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })}
+            onSubmitFeedback={handleSubmitFeedback}
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
             onStartRun={actions.startRun}

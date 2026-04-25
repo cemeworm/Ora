@@ -238,6 +238,18 @@ export function createRuntimeMethodHandler(
         return store.exportEvaluationRun(request.params);
       case "evaluation.baselines.list":
         return store.listEvaluationBaselines(request.params);
+      case "evaluation.feedback.submit":
+        return store.submitEvaluationFeedback(request.params);
+      case "evaluation.feedback.list":
+        return store.listEvaluationFeedback(request.params);
+      case "evaluation.feedback.get":
+        return store.getEvaluationFeedback(request.params);
+      case "evaluation.feedback.update":
+        return store.updateEvaluationFeedback(request.params);
+      case "evaluation.feedback.accept":
+        return store.acceptEvaluationFeedback(request.params);
+      case "evaluation.feedback.reject":
+        return store.rejectEvaluationFeedback(request.params);
       default:
         throw new OraRuntimeError(`Method not found: ${request.method}`, -32601, {
           method: request.method

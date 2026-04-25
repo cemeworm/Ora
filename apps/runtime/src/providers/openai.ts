@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "@ora/shared";
-import { appendIfDefined, buildResponsesInput, extractTextFromValue, failMissingApiKey, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
+import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesToolCalls, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
 
@@ -28,9 +28,13 @@ export function createOpenAIProvider(
       "max_output_tokens",
       request.maxTokens ?? config.maxTokens
     );
+    const withTools = appendIfDefined(body, "tools", openAiResponsesTools(request.tools));
+    const withChoice = request.tools?.length
+      ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
+      : withTools;
 
     const payload = appendIfDefined(
-      body,
+      withChoice,
       "temperature",
       request.temperature ?? config.temperature
     );
@@ -65,6 +69,10 @@ export function createOpenAIProvider(
       modelId: config.modelId,
       text,
       raw,
+      toolCalls: extractOpenAiResponsesToolCalls(raw, request.tools),
+      finishReason: typeof (raw as Record<string, unknown>).status === "string"
+        ? (raw as Record<string, unknown>).status as string
+        : undefined,
     } satisfies ModelResponse;
   };
 
@@ -83,9 +91,13 @@ export function createOpenAIProvider(
       "max_output_tokens",
       request.maxTokens ?? config.maxTokens
     );
+    const withTools = appendIfDefined(body, "tools", openAiResponsesTools(request.tools));
+    const withChoice = request.tools?.length
+      ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
+      : withTools;
 
     const payload = appendIfDefined(
-      body,
+      withChoice,
       "temperature",
       request.temperature ?? config.temperature
     );

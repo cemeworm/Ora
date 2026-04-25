@@ -102,6 +102,7 @@ describe("desktop composer pending-run behavior", () => {
       plan: [],
       todos: [],
       actions: [],
+      toolCalls: [],
       policyDecisions: [],
       checkpoints: [],
       events: [],
@@ -154,6 +155,7 @@ describe("desktop composer pending-run behavior", () => {
       plan: [],
       todos: [],
       actions: [],
+      toolCalls: [],
       policyDecisions: [],
       checkpoints: [],
       events: [],
@@ -410,6 +412,56 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
       "Run failed: Verifier response did not contain a parseable pass/fail verdict.",
+    );
+  });
+
+  it("shows repaired tool calls in Trails anomalies", () => {
+    const snapshot = {
+      runId: "run-repaired",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Continue.", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [{
+        id: "run-repaired:tool-call-0",
+        providerCallId: "call-1",
+        runId: "run-repaired",
+        toolId: "web.search",
+        args: { query: "Ora" },
+        source: "manual_repair",
+        status: "repaired",
+        requestedAt: 1,
+        updatedAt: 2,
+        repairReason: "missing_provider_tool_result",
+        result: {
+          status: "interrupted",
+          error: "interrupted",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      }],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: 2,
+    } as unknown as OraStateSnapshot;
+
+    expect(collectAnomalies(snapshot, undefined, { enabled: true, available: true } as any, [])).toContain(
+      "A dangling provider tool call was repaired as interrupted before the next model call.",
     );
   });
 
