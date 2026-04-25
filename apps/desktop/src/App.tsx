@@ -2,6 +2,7 @@ import { Component, Suspense, lazy, useEffect, useMemo, useRef, useState, type C
 import { AppShell } from "./components/AppShell";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
 import { ChatView } from "./components/ChatView";
+import { DocumentsDrawer } from "./components/DocumentsDrawer";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
@@ -9,7 +10,7 @@ import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages } from "./lib/viewModel";
-import type { OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
+import type { OraProjectFileReadResult, OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
 import { translateCopy, useDocumentTranslations, type AppLanguage } from "./lib/i18n";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
@@ -131,6 +132,7 @@ function WorkbenchInner() {
   const [detailPanelWidth, setDetailPanelWidth] = useState(DEFAULT_DETAIL_PANEL_WIDTH);
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(DEFAULT_ARTIFACT_PANEL_WIDTH);
   const [turnSnapshots, setTurnSnapshots] = useState<Record<string, OraStateSnapshot>>({});
+  const [projectFileArtifact, setProjectFileArtifact] = useState<ArtifactRecord>();
   useDocumentTranslations(state.language);
 
   function clampDetailPanelWidth(nextWidth: number) {
@@ -149,7 +151,7 @@ function WorkbenchInner() {
   function clampArtifactPanelWidth(nextWidth: number) {
     const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
     if (containerWidth <= 0) return nextWidth;
-    const reservedDetailWidth = state.detailDrawerOpen ? detailPanelWidth + 8 : 0;
+    const reservedDetailWidth = state.detailDrawer ? detailPanelWidth + 8 : 0;
 
     const maxAllowedWidth = Math.max(
       MIN_ARTIFACT_PANEL_WIDTH,
@@ -160,7 +162,7 @@ function WorkbenchInner() {
   }
 
   function handleDetailResizeStart(event: PointerEvent<HTMLButtonElement>) {
-    if (!state.detailDrawerOpen) return;
+    if (!state.detailDrawer) return;
 
     event.preventDefault();
     const startX = event.clientX;
@@ -264,7 +266,7 @@ function WorkbenchInner() {
   }, [runtimeClient, dispatch]);
 
   useEffect(() => {
-    if (!state.detailDrawerOpen && !state.artifactPanelOpen) return;
+    if (!state.detailDrawer && !state.artifactPanelOpen) return;
 
     const syncPanelWidth = () => {
       setDetailPanelWidth((currentWidth) => clampDetailPanelWidth(currentWidth));
@@ -274,7 +276,7 @@ function WorkbenchInner() {
     syncPanelWidth();
     window.addEventListener("resize", syncPanelWidth);
     return () => window.removeEventListener("resize", syncPanelWidth);
-  }, [state.detailDrawerOpen, state.artifactPanelOpen, detailPanelWidth, artifactPanelWidth]);
+  }, [state.detailDrawer, state.artifactPanelOpen, detailPanelWidth, artifactPanelWidth]);
 
   useEffect(() => {
     const title = windowTitleForView(state.activeView, state.settingsOpen, state.language);
@@ -380,13 +382,31 @@ function WorkbenchInner() {
   const selectedArtifact = useMemo(() => {
     if (!state.selectedArtifactId) return undefined;
 
+    if (projectFileArtifact?.id === state.selectedArtifactId) {
+      return projectFileArtifact;
+    }
+
     const activeArtifact = viewModel?.artifacts.find((artifact) => artifact.id === state.selectedArtifactId);
     if (activeArtifact) return activeArtifact;
 
     return chatMessages
       .flatMap((message) => message.turn?.artifacts ?? [])
       .find((artifact) => artifact.id === state.selectedArtifactId);
-  }, [chatMessages, state.selectedArtifactId, viewModel?.artifacts]);
+  }, [chatMessages, projectFileArtifact, state.selectedArtifactId, viewModel?.artifacts]);
+
+  async function handleOpenProjectFile(projectId: string, path: string) {
+    try {
+      const file = await runtimeClient.readProjectFile(projectId, path);
+      const artifact = projectFileToArtifact(file);
+      setProjectFileArtifact(artifact);
+      dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId: artifact.id });
+    } catch (error) {
+      dispatch({
+        type: "SET_COMMAND_FEEDBACK",
+        feedback: error instanceof Error ? error.message : "Project file preview failed.",
+      });
+    }
+  }
   async function handleSubmitFeedback(message: ChatMessage, feedbackText: string) {
     if (!message.turn) {
       throw new Error("Feedback requires an assistant turn.");
@@ -488,6 +508,9 @@ function WorkbenchInner() {
   const { actions: actionRecords, agents, artifacts, checkpoints, modeCards, planItems, streamLines, topologyEdges, topologyNodes, activeMode } = viewModel;
   const isRunning = selectedSession.status === "running";
   const isApprovalRequired = selectedSession.status === "approval_required";
+  const selectedProject = selectedSession.projectId
+    ? state.projects.find((project) => project.projectId === selectedSession.projectId)
+    : undefined;
 
   return (
     <AppShell>
@@ -523,14 +546,15 @@ function WorkbenchInner() {
             onOpenArtifact={(artifactId) => dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })}
             onSubmitFeedback={handleSubmitFeedback}
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
+            onSelectModeSelection={(selection) => dispatch({ type: "SET_MODE_SELECTION", selection })}
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
             onStartRun={actions.startRun}
-            onToggleDetailDrawer={() => dispatch({ type: "TOGGLE_DETAIL_DRAWER" })}
-            detailDrawerOpen={state.detailDrawerOpen}
+            onToggleDetailDrawer={(drawer) => dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer })}
+            detailDrawer={state.detailDrawer}
           />
         </WorkspacePane>
 
-        {state.detailDrawerOpen && (
+        {state.detailDrawer && (
           <>
             <button
               type="button"
@@ -545,27 +569,37 @@ function WorkbenchInner() {
               className="min-w-0 shrink-0 flex-none"
               style={{ width: detailPanelWidth }}
             >
-              <TrailsDrawer
-                open={state.detailDrawerOpen}
-                onClose={() => dispatch({ type: "TOGGLE_DETAIL_DRAWER" })}
-                actions={actionRecords}
-                agents={agents}
-                artifacts={artifacts}
-                activeSnapshot={state.activeSnapshot}
-                busyCommand={state.busyCommand}
-                checkpoints={checkpoints}
-                commandFeedback={state.commandFeedback}
-                planItems={planItems}
-                selectedAgent={selectedAgent}
-                selectedBeat={selectedBeat}
-                selectedCheckpoint={selectedCheckpoint}
-                selectedNode={selectedNode}
-                selectedSession={selectedSession}
-                onExportReport={actions.exportReport}
-                onForkRun={actions.forkRun}
-                onResumeRun={actions.resumeRun}
-                onCancelRun={actions.cancelRun}
-              />
+              {state.detailDrawer === "documents" && selectedSession.projectId ? (
+                <DocumentsDrawer
+                  projectId={selectedSession.projectId}
+                  projectLabel={selectedProject?.label ?? selectedSession.project}
+                  runtimeClient={runtimeClient}
+                  onClose={() => dispatch({ type: "CLOSE_DETAIL_DRAWER" })}
+                  onOpenFile={(path) => void handleOpenProjectFile(selectedSession.projectId!, path)}
+                />
+              ) : (
+                <TrailsDrawer
+                  open={state.detailDrawer === "trails"}
+                  onClose={() => dispatch({ type: "CLOSE_DETAIL_DRAWER" })}
+                  actions={actionRecords}
+                  agents={agents}
+                  artifacts={artifacts}
+                  activeSnapshot={state.activeSnapshot}
+                  busyCommand={state.busyCommand}
+                  checkpoints={checkpoints}
+                  commandFeedback={state.commandFeedback}
+                  planItems={planItems}
+                  selectedAgent={selectedAgent}
+                  selectedBeat={selectedBeat}
+                  selectedCheckpoint={selectedCheckpoint}
+                  selectedNode={selectedNode}
+                  selectedSession={selectedSession}
+                  onExportReport={actions.exportReport}
+                  onForkRun={actions.forkRun}
+                  onResumeRun={actions.resumeRun}
+                  onCancelRun={actions.cancelRun}
+                />
+              )}
             </WorkspacePane>
           </>
         )}
@@ -608,6 +642,26 @@ function toArtifactRecord(artifact: ArtifactRecord): ArtifactRecord {
     sizeBytes: artifact.sizeBytes,
     payload: artifact.payload,
   };
+}
+
+function projectFileToArtifact(file: OraProjectFileReadResult): ArtifactRecord {
+  return {
+    id: `project-file:${file.projectId}:${file.path}`,
+    label: file.path,
+    kind: "file",
+    mimeType: file.mimeType,
+    createdAt: formatArtifactTime(file.modifiedAt),
+    uri: file.uri,
+    sizeBytes: file.sizeBytes,
+    payload: file.payload,
+  };
+}
+
+function formatArtifactTime(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "Unknown";
+  }
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export function App() {

@@ -104,6 +104,10 @@ export function createRuntimeMethodHandler(
         return store.listProjects(request.params);
       case "projects.get":
         return store.getProject(request.params);
+      case "projects.files":
+        return store.listProjectFiles(request.params);
+      case "projects.file.read":
+        return store.readProjectFile(request.params);
       case "sessions.create":
         return store.createSession(request.params);
       case "sessions.list":

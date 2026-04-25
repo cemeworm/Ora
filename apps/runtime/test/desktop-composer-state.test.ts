@@ -26,7 +26,84 @@ describe("desktop composer pending-run behavior", () => {
     });
 
     expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
+    expect(next.selectedModeSelection).toBe("manual");
     expect(next.selectedPattern).toBe("orchestrator_subagent");
+  });
+
+  it("tracks auto mode selection separately from the concrete fallback mode", () => {
+    const next = workbenchReducer(
+      { ...initialWorkbenchState, selectedModeId: SINGLE_AGENT_MODE_ID },
+      { type: "SET_MODE_SELECTION", selection: "auto" },
+    );
+
+    expect(next.selectedModeSelection).toBe("auto");
+    expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
+  });
+
+  it("hydrates auto mode selection from the active snapshot config", () => {
+    const state = workbenchReducer(initialWorkbenchState, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [{
+        sessionId: "session-1",
+        title: "Auto Session",
+        status: "running",
+        updatedAt: 1,
+        latestRunId: "run-1",
+        latestPattern: "orchestrator_subagent",
+        latestModeId: SINGLE_AGENT_MODE_ID,
+        latestProviderId: "local-smoke",
+        latestModelRef: "local/smoke-model",
+        turnCount: 1,
+      }] as any,
+      detail: {
+        session: {
+          sessionId: "session-1",
+          title: "Auto Session",
+          status: "running",
+          updatedAt: 1,
+          latestRunId: "run-1",
+          latestPattern: "orchestrator_subagent",
+          latestModeId: SINGLE_AGENT_MODE_ID,
+          latestProviderId: "local-smoke",
+          latestModelRef: "local/smoke-model",
+          turnCount: 1,
+        },
+        turns: [],
+        latestSnapshot: {
+          runId: "run-1",
+          sessionId: "session-1",
+          turnIndex: 1,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          coordinationKind: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt: "auto", createdAt: 1, context: {} },
+          config: { pattern: "orchestrator_subagent", modeId: SINGLE_AGENT_MODE_ID, modeSelection: "auto", metadata: {} },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: {},
+          sharedStateSummary: {},
+          busStats: {},
+          pendingClarifications: [],
+          pendingApprovals: [],
+          updatedAt: 1,
+        },
+      } as any,
+    });
+
+    expect(state.selectedModeSelection).toBe("auto");
+    expect(state.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
   });
 
   it("builds run search config from desktop settings", () => {

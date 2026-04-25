@@ -52,6 +52,7 @@ export function useRunActions() {
   const selectedMode = state.modes.find((mode) => mode.id === state.selectedModeId);
   const selectedRunPattern = selectedMode?.family ?? state.selectedPattern;
   const selectedRunModeId = selectedMode?.id ?? state.selectedModeId;
+  const selectedRunModeSelection = state.selectedModeSelection;
   const selectedNode = viewModel?.topologyNodes.find((node) => node.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
   const selectedBeat = viewModel?.beats.find((beat) => beat.id === state.selectedBeatId) ?? viewModel?.beats[0];
   const selectedAgent =
@@ -184,6 +185,7 @@ export function useRunActions() {
         {
           pattern: selectedRunPattern,
           modeId: selectedRunModeId,
+          modeSelection: selectedRunModeSelection,
           providerId: state.selectedProviderId,
           providerConfig: provider,
           customAgentId: state.selectedCustomAgentId,
@@ -265,7 +267,12 @@ export function useRunActions() {
       const snapshot = await runtimeClient.forkRun(
         state.selectedTurnRunId,
         selectedCheckpoint.id,
-        { pattern: selectedRunPattern, modeId: selectedRunModeId, metadata: { source: "desktop-workbench" } },
+        {
+          pattern: selectedRunPattern,
+          modeId: selectedRunModeId,
+          modeSelection: selectedRunModeSelection,
+          metadata: { source: "desktop-workbench" },
+        },
         { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } },
       );
       await refreshCurrentSession(snapshot, `Fork completed against ${snapshot.runId}.`);

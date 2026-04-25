@@ -1,4 +1,4 @@
-import { CoordinationPatternSchema, SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { CoordinationPatternSchema, SINGLE_AGENT_MODE_ID, type ModeSelection } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
@@ -22,6 +22,7 @@ import type {
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
   selectedModeId: string;
+  selectedModeSelection: ModeSelection;
   selectedSessionId: string | undefined;
   selectedTurnRunId: string | undefined;
   selectedDockTab: DockTab;
@@ -51,7 +52,7 @@ export interface WorkbenchState {
   activeView: AppView;
   settingsOpen: boolean;
   sidebarCollapsed: boolean;
-  detailDrawerOpen: boolean;
+  detailDrawer: "trails" | "documents" | undefined;
   artifactPanelOpen: boolean;
   selectedArtifactId: string | undefined;
   inputMode: "flash" | "thinking" | "pro" | "ultra";
@@ -74,6 +75,7 @@ export type WorkbenchAction =
   | { type: "RESET_RUNTIME_VIEW" }
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
   | { type: "SET_MODE"; modeId: string }
+  | { type: "SET_MODE_SELECTION"; selection: ModeSelection }
   | {
       type: "HYDRATE_SESSION";
       projects: OraProjectSummary[];
@@ -112,7 +114,8 @@ export type WorkbenchAction =
   | { type: "SET_VIEW"; view: AppView }
   | { type: "SET_SETTINGS_OPEN"; open: boolean }
   | { type: "TOGGLE_SIDEBAR" }
-  | { type: "TOGGLE_DETAIL_DRAWER" }
+  | { type: "TOGGLE_DETAIL_DRAWER"; drawer: "trails" | "documents" }
+  | { type: "CLOSE_DETAIL_DRAWER" }
   | { type: "TOGGLE_ARTIFACT_PANEL" }
   | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
   | { type: "CLOSE_ARTIFACT_PANEL" }
@@ -124,6 +127,7 @@ const initialSelectedPattern = CoordinationPatternSchema.options[0] as Coordinat
 export const initialWorkbenchState: WorkbenchState = {
   selectedPattern: initialSelectedPattern,
   selectedModeId: "",
+  selectedModeSelection: "manual",
   selectedSessionId: undefined,
   selectedTurnRunId: undefined,
   selectedDockTab: "Overview",
@@ -158,7 +162,7 @@ export const initialWorkbenchState: WorkbenchState = {
   activeView: "chat",
   settingsOpen: false,
   sidebarCollapsed: false,
-  detailDrawerOpen: false,
+  detailDrawer: undefined,
   artifactPanelOpen: false,
   selectedArtifactId: undefined,
   inputMode: "pro",
@@ -325,6 +329,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         providerStatuses: action.providerStatuses,
         selectedProviderId: action.providerRegistry.defaultProviderId,
         selectedModeId: selectedMode?.id ?? state.selectedModeId,
+        selectedModeSelection: state.selectedModeSelection,
         selectedPattern: selectedMode?.family ?? state.selectedPattern,
         bridgeStatus: {
           mode: action.health.mode,
@@ -356,6 +361,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
         selectedPattern: snapshot?.pattern ?? state.selectedPattern,
         selectedModeId: snapshot?.modeId ?? state.selectedModeId,
+        selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId: snapshot?.config.providerId ?? state.selectedProviderId,
         selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
         selectedBeatId: snapshot?.events.at(-1)?.id,
@@ -398,12 +404,22 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return {
         ...state,
         selectedModeId: action.modeId,
+        selectedModeSelection: "manual",
         selectedPattern: mode?.family ?? state.selectedPattern,
         commandFeedback: mode
           ? `${mode.label} selected for the next turn.`
           : `Mode ${action.modeId} selected for the next turn.`,
       };
     }
+
+    case "SET_MODE_SELECTION":
+      return {
+        ...state,
+        selectedModeSelection: action.selection,
+        commandFeedback: action.selection === "auto"
+          ? "Auto mode selected for the next turn."
+          : "Manual mode selection restored for the next turn.",
+      };
 
     case "SET_PROVIDER": {
       const provider = state.providerRegistry?.providers.find((entry) => entry.id === action.providerId);
@@ -513,6 +529,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSessionDetail: undefined,
         activeSnapshot: undefined,
         selectedArtifactId: undefined,
+        detailDrawer: undefined,
         artifactPanelOpen: false,
       };
 
@@ -523,6 +540,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSnapshot: action.snapshot ?? state.activeSnapshot,
         selectedPattern: action.snapshot?.pattern ?? state.selectedPattern,
         selectedModeId: action.snapshot?.modeId ?? state.selectedModeId,
+        selectedModeSelection: action.snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedNodeId: action.snapshot?.topology.nodes[1]?.id ?? action.snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
         selectedBeatId: action.snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
       };
@@ -537,6 +555,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSnapshot,
         selectedTurnRunId: state.selectedTurnRunId ?? action.stream.runId,
         selectedBeatId: action.stream.events.at(-1)?.id ?? state.selectedBeatId,
+        selectedModeSelection: activeSnapshot?.config.modeSelection ?? state.selectedModeSelection,
         isLoading: action.stream.status === "running" || action.stream.status === "queued",
         commandFeedback: action.stream.status === "succeeded"
           ? "Run completed."
@@ -586,7 +605,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return { ...state, sidebarCollapsed: !state.sidebarCollapsed };
 
     case "TOGGLE_DETAIL_DRAWER":
-      return { ...state, detailDrawerOpen: !state.detailDrawerOpen };
+      return { ...state, detailDrawer: state.detailDrawer === action.drawer ? undefined : action.drawer };
+
+    case "CLOSE_DETAIL_DRAWER":
+      return { ...state, detailDrawer: undefined };
 
     case "TOGGLE_ARTIFACT_PANEL":
       return { ...state, artifactPanelOpen: !state.artifactPanelOpen };

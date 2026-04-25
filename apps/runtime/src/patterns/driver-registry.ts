@@ -882,6 +882,7 @@ export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
         config: {
           pattern,
           modeId: modeSpec.id,
+          modeSelection: "manual",
           profileIds: [],
           modelRef: "local/smoke-model",
           skillIds: [],

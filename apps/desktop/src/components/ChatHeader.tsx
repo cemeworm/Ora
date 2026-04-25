@@ -1,4 +1,4 @@
-import { Download, Files, Pause, PanelRightOpen } from "lucide-react";
+import { BookOpenText, Download, Files, Pause, PanelRightOpen } from "lucide-react";
 import { Button } from "./ui/button";
 import type { SessionRun } from "../types";
 import { cn } from "../lib/utils";
@@ -10,8 +10,8 @@ interface ChatHeaderProps {
   selectedSession: SessionRun;
   onExportReport: () => void;
   onInterruptRun: () => void;
-  onToggleDetailDrawer: () => void;
-  detailDrawerOpen: boolean;
+  onToggleDetailDrawer: (drawer: "trails" | "documents") => void;
+  detailDrawer: "trails" | "documents" | undefined;
 }
 
 export function ChatHeader({
@@ -22,8 +22,10 @@ export function ChatHeader({
   onExportReport,
   onInterruptRun,
   onToggleDetailDrawer,
-  detailDrawerOpen,
+  detailDrawer,
 }: ChatHeaderProps) {
+  const trailsOpen = detailDrawer === "trails";
+  const documentsOpen = detailDrawer === "documents";
   return (
     <header
       className={cn(
@@ -46,14 +48,25 @@ export function ChatHeader({
           <span className="hidden sm:inline">Export</span>
         </Button>
         <Button
-          variant={detailDrawerOpen ? "secondary" : "ghost"}
+          variant={trailsOpen ? "secondary" : "ghost"}
           size="sm"
-          onClick={onToggleDetailDrawer}
+          onClick={() => onToggleDetailDrawer("trails")}
           title="Toggle trails"
         >
-          {detailDrawerOpen ? <Files size={14} /> : <PanelRightOpen size={14} />}
+          {trailsOpen ? <Files size={14} /> : <PanelRightOpen size={14} />}
           <span className="hidden sm:inline">Trails</span>
         </Button>
+        {selectedSession.projectId ? (
+          <Button
+            variant={documentsOpen ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => onToggleDetailDrawer("documents")}
+            title="Toggle documents"
+          >
+            <BookOpenText size={14} />
+            <span className="hidden sm:inline">Documents</span>
+          </Button>
+        ) : null}
       </div>
     </header>
   );

@@ -129,6 +129,7 @@ function createEmptySessionPreview(
     config: {
       pattern: definition.id,
       modeId,
+      modeSelection: "manual",
       profileIds: definition.profiles.map((profile) => profile.id),
       skillIds: [],
       toolIds: [],
@@ -201,6 +202,7 @@ function createPreviewFromPattern(
       ...snapshot.config,
       pattern: definition.id,
       modeId: selectedMode?.id ?? snapshot.config.modeId,
+      modeSelection: snapshot.config.modeSelection ?? "manual",
     },
     topology: definition.topology,
     profiles: definition.profiles,
@@ -249,6 +251,7 @@ function adaptSession(session: OraSessionSummary, fallbackPattern: CoordinationP
     id: session.sessionId,
     title: session.title,
     project: session.projectId ?? "Recent chat",
+    projectId: session.projectId,
     status: adaptRunStatus(session.status ?? "succeeded"),
     pattern: session.latestPattern ?? fallbackPattern,
     modeId: session.latestModeId,

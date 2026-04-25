@@ -44,6 +44,7 @@ export interface SessionRun {
   id: string;
   title: string;
   project: string;
+  projectId?: string;
   status: RunStatus;
   pattern: CoordinationPattern;
   modeId?: string;

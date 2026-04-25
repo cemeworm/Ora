@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
+import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 
 function createTempStore() {
@@ -31,6 +31,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
 }
 
 describe("Ora runtime smoke path", () => {
+  it("defaults run config mode selection to manual", () => {
+    expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
+  });
+
   it("starts a deterministic smoke run with ordered Ora events", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const run = (await handle({
@@ -739,6 +743,54 @@ describe("Ora runtime smoke path", () => {
     expect(skills.skills).toEqual(bootstrap.skills.skills);
   });
 
+  it("lists and previews project files inside the selected project root", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-project-files-"));
+    try {
+      fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+      fs.mkdirSync(path.join(workspaceRoot, "node_modules", "ignored"), { recursive: true });
+      fs.writeFileSync(path.join(workspaceRoot, "README.md"), "# Project\n", "utf8");
+      fs.writeFileSync(path.join(workspaceRoot, "src", "index.ts"), "export const value = 1;\n", "utf8");
+      fs.writeFileSync(path.join(workspaceRoot, "node_modules", "ignored", "package.json"), "{}", "utf8");
+
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const project = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "projects.create",
+        params: { rootPath: workspaceRoot, label: "Project Files" }
+      }) as { projectId: string };
+      const files = await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "projects.files",
+        params: { projectId: project.projectId }
+      }) as { totalFiles: number; files: { path: string }[]; skippedDirs: string[] };
+      const preview = await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "projects.file.read",
+        params: { projectId: project.projectId, path: "README.md" }
+      }) as { path: string; previewKind: string; payload: string };
+
+      expect(files.totalFiles).toBe(2);
+      expect(files.files.map((file) => file.path)).toEqual(["README.md", "src/index.ts"]);
+      expect(files.skippedDirs).toContain("node_modules");
+      expect(preview).toMatchObject({
+        path: "README.md",
+        previewKind: "text",
+        payload: "# Project\n"
+      });
+      await expect(Promise.resolve().then(() => handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "projects.file.read",
+        params: { projectId: project.projectId, path: "../outside.md" }
+      }))).rejects.toThrow("inside the project root");
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("creates, validates, lists, and runs a custom mode preset", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const cloned = await handle({
@@ -814,6 +866,122 @@ describe("Ora runtime smoke path", () => {
     expect(state.modeSpec?.id).toBe(cloned.id);
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.plan.some((item) => item.id.endsWith(":review"))).toBe(false);
+  });
+
+  it("falls back to single agent when auto mode routing does not return valid JSON", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Choose the best mode automatically." },
+        config: { modeSelection: "auto" },
+      },
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(
+      await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }),
+    );
+
+    expect(state.config.modeSelection).toBe("auto");
+    expect(state.modeId).toBe(SINGLE_AGENT_MODE_ID);
+    expect(state.config.metadata.autoModeRouter).toMatchObject({
+      selectedModeId: SINGLE_AGENT_MODE_ID,
+      status: "fallback",
+    });
+  });
+
+  it("routes auto mode to a selected custom mode", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "agent_teams",
+        modeId: "agent-teams-auto-custom",
+        label: "Agent Teams Auto Custom",
+      },
+    }) as { id: string };
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.AUTO_MODE_KEY;
+    process.env.AUTO_MODE_KEY = "test";
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      const content = systemText.includes("agent mode router")
+        ? JSON.stringify({
+            modeId: cloned.id,
+            confidence: 0.91,
+            reason: "This task benefits from a team workflow.",
+          })
+        : "Mock provider content.";
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Work this as a coordinated team." },
+          config: {
+            modeSelection: "auto",
+            providerId: "auto-router",
+            modelRef: "auto-router-model",
+            metadata: { providerId: "auto-router" },
+            providerConfig: {
+              id: "auto-router",
+              label: "Auto Router",
+              type: "openai_compatible",
+              modelId: "auto-router-model",
+              baseUrl: "https://example.test/v1",
+              apiKeyEnv: "AUTO_MODE_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+          },
+        },
+      }) as { runId: string };
+
+      const state = StateSnapshotSchema.parse(
+        await handle({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "runs.state",
+          params: { runId: run.runId },
+        }),
+      );
+
+      expect(state.config.modeSelection).toBe("auto");
+      expect(state.modeId).toBe(cloned.id);
+      expect(state.modeSpec?.id).toBe(cloned.id);
+      expect(state.config.metadata.autoModeRouter).toMatchObject({
+        selectedModeId: cloned.id,
+        status: "selected",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.AUTO_MODE_KEY;
+      } else {
+        process.env.AUTO_MODE_KEY = previousKey;
+      }
+    }
   });
 
   it("runs and clones the built-in DeerFlow-like harness preset", async () => {

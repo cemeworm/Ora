@@ -28,11 +28,15 @@ import type {
   ModeSpec as OraModeSpec,
   ModeUpdateParams as OraModeUpdateParams,
   ModeValidationResult as OraModeValidationResult,
+  ModeSelection as OraModeSelection,
   OraEventEnvelope,
   PatternDefinition as OraPatternDefinition,
   PlanItem as OraPlanItem,
   ProjectCreateParams as OraProjectCreateParams,
   ProjectDetail as OraProjectDetail,
+  ProjectFileEntry as OraProjectFileEntry,
+  ProjectFileReadResult as OraProjectFileReadResult,
+  ProjectFilesResult as OraProjectFilesResult,
   ProjectSummary as OraProjectSummary,
   ProviderConfig as OraProviderConfig,
   ProviderRegistry as OraProviderRegistry,
@@ -65,7 +69,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_PROVIDERS, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -103,6 +107,9 @@ export type {
   OraPlanItem,
   OraProjectCreateParams,
   OraProjectDetail,
+  OraProjectFileEntry,
+  OraProjectFileReadResult,
+  OraProjectFilesResult,
   OraProjectSummary,
   OraRunConfig,
   OraRunEventStream,
@@ -280,6 +287,12 @@ export function createRuntimeClient() {
     },
     async getProject(projectId: string): Promise<OraProjectDetail> {
       return call<OraProjectDetail>("projects.get", { projectId });
+    },
+    async listProjectFiles(projectId: string): Promise<OraProjectFilesResult> {
+      return call<OraProjectFilesResult>("projects.files", { projectId });
+    },
+    async readProjectFile(projectId: string, path: string): Promise<OraProjectFileReadResult> {
+      return call<OraProjectFileReadResult>("projects.file.read", { projectId, path });
     },
     async listSessions(): Promise<OraSessionSummary[]> {
       return call<OraSessionSummary[]>("sessions.list");
@@ -932,6 +945,10 @@ class LocalJsonRpcRuntime {
         return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId));
       case "projects.get":
         return this.getProjectDetail(params);
+      case "projects.files":
+        return this.listProjectFiles(params);
+      case "projects.file.read":
+        return this.readProjectFile(params);
       case "sessions.create":
         return this.createSession(params);
       case "sessions.list":
@@ -1111,7 +1128,10 @@ class LocalJsonRpcRuntime {
         if (!checkpoint) {
           throw new Error(`Checkpoint not found: ${parsed.checkpointId}`);
         }
-        const mode = this.resolveMode(parsed.config?.modeId ?? source.modeId, parsed.config?.pattern ?? source.pattern);
+        const modeSelection = parsed.config?.modeSelection ?? "manual";
+        const mode = modeSelection === "auto"
+          ? this.resolveMode(SINGLE_AGENT_MODE_ID, parsed.config?.pattern ?? source.pattern)
+          : this.resolveMode(parsed.config?.modeId ?? source.modeId, parsed.config?.pattern ?? source.pattern);
         const pattern = mode.family;
         const prompt = parsed.input?.prompt ?? `${source.input.prompt} (forked from ${checkpoint.label})`;
         const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
@@ -1132,6 +1152,15 @@ class LocalJsonRpcRuntime {
             modelRef: parsed.config?.modelRef ?? source.config.modelRef,
             customAgentId: parsed.config?.customAgentId ?? source.config.customAgentId,
             projectId: source.input.projectId,
+            modeSelection,
+            autoModeRouter: modeSelection === "auto"
+              ? {
+                  selectedModeId: mode.id,
+                  confidence: 0.5,
+                  reason: "Browser mock resolved Auto mode deterministically to Single Agent.",
+                  status: "selected",
+                }
+              : undefined,
           },
           sessionId,
           (source.turnIndex ?? 0) + 1,
@@ -1229,6 +1258,76 @@ class LocalJsonRpcRuntime {
       project,
       sessions,
     };
+  }
+
+  private listProjectFiles(params: unknown): OraProjectFilesResult {
+    const project = this.requireMockProject(params);
+    const now = Date.now();
+    const files = [
+      {
+        path: "README.md",
+        name: "README.md",
+        sizeBytes: 96,
+        modifiedAt: now,
+        mimeType: "text/markdown",
+      },
+      {
+        path: "src/App.tsx",
+        name: "App.tsx",
+        sizeBytes: 128,
+        modifiedAt: now,
+        mimeType: "text/typescript",
+      },
+    ];
+    return {
+      projectId: project.projectId,
+      rootPath: project.rootPath,
+      totalFiles: files.length,
+      files,
+      truncated: false,
+      skippedDirs: [".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules", "target"],
+    };
+  }
+
+  private readProjectFile(params: unknown): OraProjectFileReadResult {
+    const project = this.requireMockProject(params);
+    const requestedPath = isRecord(params) && typeof params.path === "string" ? params.path : "";
+    if (!requestedPath || requestedPath.startsWith("../") || requestedPath.includes("/../")) {
+      throw new Error("Project file path must stay inside the project root.");
+    }
+    const label = requestedPath.split("/").at(-1) || requestedPath;
+    const mimeType = requestedPath.endsWith(".json")
+      ? "application/json"
+      : requestedPath.endsWith(".md")
+        ? "text/markdown"
+        : requestedPath.endsWith(".tsx") || requestedPath.endsWith(".ts")
+          ? "text/typescript"
+          : "text/plain";
+    const payload = mimeType.includes("json")
+      ? { mock: true, path: requestedPath }
+      : `Browser mock preview for ${requestedPath} in ${project.label}.`;
+    return {
+      projectId: project.projectId,
+      rootPath: project.rootPath,
+      path: requestedPath,
+      label,
+      mimeType,
+      previewKind: mimeType.includes("json") ? "json" : "text",
+      sizeBytes: typeof payload === "string" ? payload.length : JSON.stringify(payload).length,
+      modifiedAt: Date.now(),
+      payload,
+    };
+  }
+
+  private requireMockProject(params: unknown): OraProjectSummary {
+    if (!isRecord(params) || typeof params.projectId !== "string") {
+      throw new Error("Missing projectId");
+    }
+    const project = this.projects.get(params.projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${params.projectId}`);
+    }
+    return project;
   }
 
   private createAgent(params: unknown): OraCustomAgentDetail {
@@ -1639,7 +1738,10 @@ class LocalJsonRpcRuntime {
     if (!this.sessions.has(sessionId)) {
       throw new Error(`Session not found: ${sessionId}`);
     }
-    const mode = this.resolveMode(parsed.config?.modeId, parsed.config?.pattern ?? "orchestrator_subagent");
+    const modeSelection = parsed.config?.modeSelection ?? "manual";
+    const mode = modeSelection === "auto"
+      ? this.resolveMode(SINGLE_AGENT_MODE_ID, parsed.config?.pattern ?? "orchestrator_subagent")
+      : this.resolveMode(parsed.config?.modeId, parsed.config?.pattern ?? "orchestrator_subagent");
     const pattern = mode.family;
     const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
     const startedAt = Date.now();
@@ -1649,6 +1751,15 @@ class LocalJsonRpcRuntime {
       modelRef: parsed.config?.modelRef ?? "local/smoke-model",
       customAgentId: parsed.config?.customAgentId,
       projectId: parsed.input.projectId ?? this.sessions.get(sessionId)?.projectId,
+      modeSelection,
+      autoModeRouter: modeSelection === "auto"
+        ? {
+            selectedModeId: mode.id,
+            confidence: 0.5,
+            reason: "Browser mock resolved Auto mode deterministically to Single Agent.",
+            status: "selected",
+          }
+        : undefined,
     }, sessionId, turnIndex);
     this.updateMockMemoryFromPrompt(snapshot);
     this.runs.set(runId, snapshot);
@@ -2091,7 +2202,14 @@ class LocalJsonRpcRuntime {
     startedAt: number,
     status: OraStateSnapshot["status"],
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number },
-    provider?: { providerId?: string; modelRef?: string; customAgentId?: string; projectId?: string },
+    provider?: {
+      providerId?: string;
+      modelRef?: string;
+      customAgentId?: string;
+      projectId?: string;
+      modeSelection?: OraModeSelection;
+      autoModeRouter?: Record<string, unknown>;
+    },
     sessionId?: string,
     turnIndex = 1,
   ): OraStateSnapshot {
@@ -2216,6 +2334,7 @@ class LocalJsonRpcRuntime {
       config: {
         pattern,
         modeId: mode.id,
+        modeSelection: provider?.modeSelection ?? "manual",
         profileIds: definition.profiles.map((profile) => profile.id),
         skillIds: mode.capabilityFlags.skillIds,
         toolIds: mode.capabilityFlags.toolIds,
@@ -2229,6 +2348,7 @@ class LocalJsonRpcRuntime {
           source: "desktop-smoke",
           modeId: mode.id,
           providerId: provider?.providerId ?? "local-smoke",
+          ...(provider?.autoModeRouter ? { autoModeRouter: provider.autoModeRouter } : {}),
           ...(provider?.customAgentId ? { customAgentId: provider.customAgentId } : {}),
         },
         deterministicSeed: "ora-smoke",

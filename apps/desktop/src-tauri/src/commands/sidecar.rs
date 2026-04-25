@@ -31,6 +31,18 @@ const STATUS_REASON_PROCESS: &str =
 const STATUS_REASON_UNAVAILABLE: &str =
     "Runtime sidecar command is configured but unavailable; Rust is falling back to deterministic Ora facade responses.";
 const DEFAULT_PATTERN: &str = "orchestrator_subagent";
+const PROJECT_WORKSPACE_MAX_FILES: usize = 20_000;
+const PROJECT_FILE_PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
+const PROJECT_WORKSPACE_SKIPPED_DIRS: [&str; 8] = [
+    ".git",
+    ".next",
+    ".turbo",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+];
 const DEV_RUNTIME_COMMAND_DISPLAY: &str =
     "node <workspace-tsx>/cli.mjs apps/runtime/src/sidecar-entry.ts";
 const PROD_RUNTIME_COMMAND_DISPLAY: &str =
@@ -622,6 +634,8 @@ impl RuntimeFacade {
             "projects.create" => self.projects_create(params.as_ref()),
             "projects.list" => self.projects_list(params.as_ref()),
             "projects.get" => self.projects_get(params.as_ref()),
+            "projects.files" => self.projects_files(params.as_ref()),
+            "projects.file.read" => self.projects_file_read(params.as_ref()),
             "sessions.create" => self.sessions_create(params.as_ref()),
             "sessions.list" => self.sessions_list(params.as_ref()),
             "sessions.get" => self.sessions_get(params.as_ref()),
@@ -903,6 +917,89 @@ impl RuntimeFacade {
         Ok(json!({
             "project": project,
             "sessions": sessions,
+        }))
+    }
+
+    fn projects_files(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let project_id = require_project_id(params)?;
+        let project = {
+            let state = self.lock_state()?;
+            get_project(&state, &project_id)?.clone()
+        };
+        let root_path = project_root_directory(&project, &project_id)?;
+        let mut files = Vec::new();
+        let mut total_files = 0usize;
+        let mut truncated = false;
+
+        visit_project_files(&root_path, &root_path, &mut files, &mut total_files, &mut truncated);
+        files.sort_by(|left, right| {
+            left["path"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["path"].as_str().unwrap_or_default())
+        });
+
+        Ok(json!({
+            "projectId": project_id,
+            "rootPath": root_path.to_string_lossy(),
+            "totalFiles": total_files,
+            "files": files,
+            "truncated": truncated,
+            "skippedDirs": skipped_project_dirs(),
+        }))
+    }
+
+    fn projects_file_read(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let project_id = require_project_id(params)?;
+        let requested_path = params
+            .and_then(|value| value.get("path"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| runtime_error(-32602, "Missing project file path", None))?;
+        let project = {
+            let state = self.lock_state()?;
+            get_project(&state, &project_id)?.clone()
+        };
+        let root_path = project_root_directory(&project, &project_id)?;
+        let file_path = resolve_project_file_path(&root_path, requested_path)?;
+        let metadata = file_path.metadata().map_err(|error| {
+            runtime_error(
+                -32004,
+                "Project file metadata is unavailable",
+                Some(json!({ "path": requested_path, "error": error.to_string() })),
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(runtime_error(
+                -32004,
+                "Project file preview target must be a file",
+                Some(json!({ "path": requested_path })),
+            ));
+        }
+
+        let mime_type = mime_type_for_path(&file_path);
+        let preview_kind = project_file_preview_kind(mime_type);
+        let payload = if metadata.len() <= PROJECT_FILE_PREVIEW_MAX_BYTES {
+            match preview_kind {
+                "text" => fs::read_to_string(&file_path).ok().map(Value::String),
+                "json" => read_json_preview_payload(&file_path),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "projectId": project_id,
+            "rootPath": root_path.to_string_lossy(),
+            "path": relative_project_path(&root_path, &file_path),
+            "label": file_path.file_name().and_then(|name| name.to_str()).unwrap_or(requested_path),
+            "mimeType": mime_type,
+            "previewKind": preview_kind,
+            "sizeBytes": metadata.len(),
+            "modifiedAt": modified_at_ms(&metadata),
+            "uri": if preview_kind == "image" { Some(file_uri(&file_path)) } else { None },
+            "payload": payload,
         }))
     }
 
@@ -3178,6 +3275,181 @@ fn default_project_label(root_path: &str) -> String {
         .to_string()
 }
 
+fn project_root_directory(project: &Value, project_id: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
+    let root_path = project
+        .get("rootPath")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            runtime_error(
+                -32004,
+                "Project root path is unavailable",
+                Some(json!({ "projectId": project_id })),
+            )
+        })?;
+    let path = PathBuf::from(root_path);
+    let metadata = path.metadata().map_err(|error| {
+        runtime_error(
+            -32004,
+            "Project root path is unavailable",
+            Some(json!({ "projectId": project_id, "error": error.to_string() })),
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(runtime_error(
+            -32004,
+            "Project root path must be a directory",
+            Some(json!({ "projectId": project_id })),
+        ));
+    }
+    Ok(fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn resolve_project_file_path(root_path: &Path, requested_path: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
+    let joined = root_path.join(requested_path);
+    let resolved = joined.canonicalize().map_err(|error| {
+        runtime_error(
+            -32004,
+            "Project file is unavailable",
+            Some(json!({ "path": requested_path, "error": error.to_string() })),
+        )
+    })?;
+    if !resolved.starts_with(root_path) {
+        return Err(runtime_error(
+            -32602,
+            "Project file path must stay inside the project root",
+            Some(json!({ "path": requested_path })),
+        ));
+    }
+    Ok(resolved)
+}
+
+fn visit_project_files(
+    root_path: &Path,
+    directory: &Path,
+    files: &mut Vec<Value>,
+    total_files: &mut usize,
+    truncated: &mut bool,
+) {
+    if *truncated {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+
+    for entry in entries {
+        if *truncated {
+            return;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !PROJECT_WORKSPACE_SKIPPED_DIRS.contains(&name.as_ref()) {
+                visit_project_files(root_path, &path, files, total_files, truncated);
+            }
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        *total_files += 1;
+        if let Ok(metadata) = path.metadata() {
+            files.push(json!({
+                "path": relative_project_path(root_path, &path),
+                "name": entry.file_name().to_string_lossy(),
+                "sizeBytes": metadata.len(),
+                "modifiedAt": modified_at_ms(&metadata),
+                "mimeType": mime_type_for_path(&path),
+            }));
+        }
+        if *total_files >= PROJECT_WORKSPACE_MAX_FILES {
+            *truncated = true;
+        }
+    }
+}
+
+fn relative_project_path(root_path: &Path, file_path: &Path) -> String {
+    file_path
+        .strip_prefix(root_path)
+        .unwrap_or(file_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn modified_at_ms(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn skipped_project_dirs() -> Vec<&'static str> {
+    let mut dirs = PROJECT_WORKSPACE_SKIPPED_DIRS.to_vec();
+    dirs.sort();
+    dirs
+}
+
+fn mime_type_for_path(file_path: &Path) -> &'static str {
+    match file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "gif" => "image/gif",
+        "htm" | "html" => "text/html",
+        "jpeg" | "jpg" => "image/jpeg",
+        "js" | "jsx" | "mjs" | "cjs" => "text/javascript",
+        "json" | "jsonc" => "application/json",
+        "md" | "mdx" => "text/markdown",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "rs" => "text/rust",
+        "svg" => "image/svg+xml",
+        "toml" => "text/toml",
+        "ts" | "tsx" => "text/typescript",
+        "txt" => "text/plain",
+        "webp" => "image/webp",
+        "yaml" | "yml" => "text/yaml",
+        _ => "application/octet-stream",
+    }
+}
+
+fn project_file_preview_kind(mime_type: &str) -> &'static str {
+    if mime_type.starts_with("image/") {
+        "image"
+    } else if mime_type.contains("json") {
+        "json"
+    } else if mime_type.starts_with("text/") {
+        "text"
+    } else {
+        "binary"
+    }
+}
+
+fn read_json_preview_payload(file_path: &Path) -> Option<Value> {
+    let text = fs::read_to_string(file_path).ok()?;
+    serde_json::from_str(&text).ok().or_else(|| Some(Value::String(text)))
+}
+
+fn file_uri(file_path: &Path) -> String {
+    format!("file://{}", file_path.to_string_lossy())
+}
+
 fn require_checkpoint_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
     params
         .and_then(|value| value.get("checkpointId"))
@@ -4002,6 +4274,56 @@ mod tests {
         assert_eq!(detail["turns"].as_array().unwrap().len(), 2);
         assert_eq!(detail["transcript"].as_array().unwrap().len(), 4);
         assert_eq!(detail["latestSnapshot"]["runId"], second["runId"]);
+    }
+
+    #[test]
+    fn project_files_list_preview_and_reject_path_escape() {
+        let root = env::temp_dir().join(format!("ora-project-files-{}", now_ms()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("node_modules/ignored")).unwrap();
+        fs::write(root.join("README.md"), "# Project\n").unwrap();
+        fs::write(root.join("src/index.ts"), "export const value = 1;\n").unwrap();
+        fs::write(root.join("node_modules/ignored/package.json"), "{}").unwrap();
+        let outside_name = format!("ora-project-outside-{}.md", now_ms());
+        let outside_path = root.parent().unwrap().join(&outside_name);
+        fs::write(&outside_path, "outside").unwrap();
+
+        let facade = RuntimeFacade::default();
+        let project = facade
+            .handle_method(
+                "projects.create",
+                Some(json!({ "rootPath": root.to_string_lossy(), "label": "project-files" })),
+            )
+            .unwrap();
+        let project_id = project["projectId"].as_str().unwrap();
+        let files = facade
+            .handle_method("projects.files", Some(json!({ "projectId": project_id })))
+            .unwrap();
+        let preview = facade
+            .handle_method(
+                "projects.file.read",
+                Some(json!({ "projectId": project_id, "path": "README.md" })),
+            )
+            .unwrap();
+        let rejected = facade.handle_method(
+            "projects.file.read",
+            Some(json!({ "projectId": project_id, "path": format!("../{}", outside_name) })),
+        );
+
+        assert_eq!(files["totalFiles"], json!(2));
+        let paths = files["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["README.md".to_string(), "src/index.ts".to_string()]);
+        assert_eq!(preview["previewKind"], json!("text"));
+        assert_eq!(preview["payload"], json!("# Project\n"));
+        assert!(rejected.unwrap_err().message.contains("inside the project root"));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside_path).unwrap();
     }
 
     #[test]

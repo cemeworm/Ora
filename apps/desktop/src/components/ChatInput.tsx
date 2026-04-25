@@ -1,5 +1,6 @@
 import {
   ArrowUp,
+  BrainCircuit,
   Bot,
   GraduationCap,
   Lightbulb,
@@ -14,6 +15,7 @@ import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import type { ModeCard } from "../types";
 import type { OraProviderConfig } from "../lib/runtimeClient";
+import type { ModeSelection } from "@ora/shared";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
 
@@ -23,12 +25,14 @@ interface ChatInputProps {
   isRunning: boolean;
   activeMode?: ModeCard;
   modeOptions: ModeCard[];
+  selectedModeSelection: ModeSelection;
   activeProvider?: OraProviderConfig;
   providerOptions: OraProviderConfig[];
   selectedCustomAgentId?: string;
   inputMode: InputMode;
   onInputModeChange: (mode: InputMode) => void;
   onModeChange: (modeId: string) => void;
+  onModeSelectionChange: (selection: ModeSelection) => void;
   onProviderChange: (providerId: string) => void;
   onPromptChange: (prompt: string) => void;
   onClearSelectedCustomAgent?: () => void;
@@ -62,12 +66,14 @@ export function ChatInput({
   isRunning,
   activeMode,
   modeOptions,
+  selectedModeSelection,
   activeProvider,
   providerOptions,
   selectedCustomAgentId,
   inputMode,
   onInputModeChange,
   onModeChange,
+  onModeSelectionChange,
   onProviderChange,
   onPromptChange,
   onClearSelectedCustomAgent,
@@ -93,6 +99,9 @@ export function ChatInput({
 
   const selectedMode = inputModeOptions.find((option) => option.mode === inputMode) ?? inputModeOptions[2];
   const SelectedIcon = selectedMode.icon;
+  const modeTriggerLabel = selectedModeSelection === "auto"
+    ? "Auto"
+    : activeMode?.label ?? "Default";
 
   return (
     <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
@@ -181,23 +190,45 @@ export function ChatInput({
                   onOpenChange={(open) => setOpenPicker(open ? "pattern" : undefined)}
                   trigger={
                     <>
-                      <Rocket size={13} />
+                      {selectedModeSelection === "auto" ? <BrainCircuit size={13} /> : <Rocket size={13} />}
                       <span className="hidden xl:inline">工作模式</span>
-                      <span className="max-w-[150px] truncate text-foreground">{activeMode?.label ?? "Default"}</span>
+                      <span className="max-w-[150px] truncate text-foreground">{modeTriggerLabel}</span>
                     </>
                   }
                 >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onModeSelectionChange("auto");
+                      setOpenPicker(undefined);
+                    }}
+                    className={cn(
+                      "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                      selectedModeSelection === "auto" && "bg-accent text-accent-foreground",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs font-medium">
+                      <span>Auto</span>
+                      <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        router
+                      </span>
+                    </div>
+                    <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                      Let Ora choose the best mode from the current mode list for this turn.
+                    </div>
+                  </button>
                   {modeOptions.map((mode) => (
                     <button
                       key={mode.id}
                       type="button"
                       onClick={() => {
                         onModeChange(mode.id);
+                        onModeSelectionChange("manual");
                         setOpenPicker(undefined);
                       }}
                       className={cn(
                         "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                        activeMode?.id === mode.id && "bg-accent text-accent-foreground",
+                        selectedModeSelection === "manual" && activeMode?.id === mode.id && "bg-accent text-accent-foreground",
                       )}
                     >
                       <div className="flex items-center justify-between gap-2 text-xs font-medium">

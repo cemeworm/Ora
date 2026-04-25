@@ -31,6 +31,12 @@ import {
   ProjectCreateParamsSchema,
   ProjectDetail,
   ProjectDetailSchema,
+  ProjectFileReadParamsSchema,
+  ProjectFileReadResult,
+  ProjectFileReadResultSchema,
+  ProjectFilesParamsSchema,
+  ProjectFilesResult,
+  ProjectFilesResultSchema,
   ProjectGetParamsSchema,
   ProjectListParamsSchema,
   ProjectSummary,
@@ -64,6 +70,7 @@ import {
   SessionTranscriptMessageSchema,
   SessionTurn,
   SessionTurnSchema,
+  SINGLE_AGENT_MODE_ID,
   SkillCheckNameResult,
   SkillCreateParams,
   SkillDetail,
@@ -129,6 +136,8 @@ type StoredProject = ProjectSummary;
 
 const PROJECT_WORKSPACE_MAX_FILES = 20_000;
 const PROJECT_WORKSPACE_SAMPLE_LIMIT = 120;
+const PROJECT_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
+const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
 const PROJECT_WORKSPACE_SKIPPED_DIRS = new Set([
   ".git",
   ".next",
@@ -139,6 +148,12 @@ const PROJECT_WORKSPACE_SKIPPED_DIRS = new Set([
   "node_modules",
   "target",
 ]);
+
+const AutoModeRouterResponseSchema = z.object({
+  modeId: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1),
+});
 
 export interface LocalRunStoreOptions {
   dataDir?: string;
@@ -459,6 +474,106 @@ export class LocalRunStore {
     });
   }
 
+  listProjectFiles(params: unknown): ProjectFilesResult {
+    const parsed = ProjectFilesParamsSchema.parse(params);
+    const project = this.getProjectOrThrow(parsed.projectId);
+    const rootPath = this.requireProjectRootDirectory(project);
+    const files: ProjectFilesResult["files"] = [];
+    let totalFiles = 0;
+    let truncated = false;
+
+    const visit = (directory: string) => {
+      if (truncated) {
+        return;
+      }
+
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        if (truncated) {
+          return;
+        }
+
+        const absolutePath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (!PROJECT_WORKSPACE_SKIPPED_DIRS.has(entry.name)) {
+            visit(absolutePath);
+          }
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        totalFiles += 1;
+        try {
+          const stat = fs.statSync(absolutePath);
+          files.push({
+            path: this.relativeProjectFilePath(rootPath, absolutePath),
+            name: entry.name,
+            sizeBytes: stat.size,
+            modifiedAt: Math.max(0, Math.floor(stat.mtimeMs)),
+            mimeType: mimeTypeForPath(absolutePath),
+          });
+        } catch {
+          // Ignore files that disappear or become unreadable during the scan.
+        }
+        if (totalFiles >= PROJECT_WORKSPACE_MAX_FILES) {
+          truncated = true;
+        }
+      }
+    };
+
+    visit(rootPath);
+
+    return ProjectFilesResultSchema.parse({
+      projectId: project.projectId,
+      rootPath,
+      totalFiles,
+      files: files.sort((left, right) => left.path.localeCompare(right.path)),
+      truncated,
+      skippedDirs: [...PROJECT_WORKSPACE_SKIPPED_DIRS].sort(),
+    });
+  }
+
+  readProjectFile(params: unknown): ProjectFileReadResult {
+    const parsed = ProjectFileReadParamsSchema.parse(params);
+    const project = this.getProjectOrThrow(parsed.projectId);
+    const rootPath = this.requireProjectRootDirectory(project);
+    const absolutePath = this.resolveProjectFilePath(rootPath, parsed.path);
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) {
+      throw new OraRuntimeError("Project file preview target must be a file.", -32004, { path: parsed.path });
+    }
+
+    const mimeType = mimeTypeForPath(absolutePath);
+    const previewKind = projectFilePreviewKind(mimeType);
+    const payload = previewKind === "text" && stat.size <= PROJECT_FILE_PREVIEW_MAX_BYTES
+      ? fs.readFileSync(absolutePath, "utf8")
+      : previewKind === "json" && stat.size <= PROJECT_FILE_PREVIEW_MAX_BYTES
+        ? readJsonPreviewPayload(absolutePath)
+        : undefined;
+
+    return ProjectFileReadResultSchema.parse({
+      projectId: project.projectId,
+      rootPath,
+      path: this.relativeProjectFilePath(rootPath, absolutePath),
+      label: path.basename(absolutePath),
+      mimeType,
+      previewKind,
+      sizeBytes: stat.size,
+      modifiedAt: Math.max(0, Math.floor(stat.mtimeMs)),
+      uri: previewKind === "image" ? pathToFileURL(absolutePath).toString() : undefined,
+      payload,
+    });
+  }
+
   createSession(params: unknown = {}): SessionSummary {
     const parsed = SessionCreateParamsSchema.parse(params ?? {});
     if (parsed.projectId) {
@@ -578,12 +693,12 @@ export class LocalRunStore {
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const resolved = this.resolveModeSelection(parsed.config);
-    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const input = this.enrichInputForSession(UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
+    const resolved = await this.resolveModeSelection(parsed.config, input, session);
+    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
@@ -617,7 +732,7 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = this.resolveModeSelection(parsed.config);
+    const resolved = await this.resolveModeSelection(parsed.config, input, session);
     const { modeSpec, definition } = resolved;
     const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const runId = this.nextRunId();
@@ -726,7 +841,7 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = this.resolveModeSelection(parsed.config);
+    const resolved = await this.resolveModeSelection(parsed.config, input, session);
     const { modeSpec, definition } = resolved;
     const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const runId = this.nextRunId();
@@ -775,7 +890,7 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = this.resolveModeSelection(parsed.config);
+    const resolved = await this.resolveModeSelection(parsed.config, input, session);
     const { modeSpec, definition } = resolved;
     const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const runId = this.nextRunId();
@@ -1283,13 +1398,21 @@ export class LocalRunStore {
     return this.evaluationStore.rejectFeedback(params);
   }
 
-  private resolveModeSelection(config?: Partial<RunConfig>): {
+  private async resolveModeSelection(
+    config?: Partial<RunConfig>,
+    input?: UserTaskInput,
+    session?: SessionSummary,
+  ): Promise<{
     modeSpec: ModeSpec;
     definition: PatternDefinition;
     fullConfig: RunConfig;
-  } {
+  }> {
     const parsed = RunConfigSchema.parse(config ?? {});
-    const requestedModeId = typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern;
+    const autoRoute = parsed.modeSelection === "auto" && input
+      ? await this.routeAutoMode(parsed, input, session)
+      : undefined;
+    const requestedModeId = autoRoute?.modeId
+      ?? (typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern);
     const modeSpec = this.modeStore.resolve(requestedModeId, parsed.pattern);
     const definition = modeSpecToPatternDefinition(modeSpec);
     const metadataApprovalMode = parsed.metadata.approvalMode;
@@ -1302,8 +1425,13 @@ export class LocalRunStore {
           : modeSpec.capabilityFlags.approvalMode);
     const skillIds = Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds;
     const defaultWebToolsDisabled = parsed.metadata.disableDefaultWebTools === true;
+    const configuredToolIds = Array.isArray(config?.toolIds)
+      ? (parsed.modeSelection === "auto"
+        ? [...modeSpec.capabilityFlags.toolIds, ...config.toolIds]
+        : config.toolIds)
+      : modeSpec.capabilityFlags.toolIds;
     const toolIds = withDefaultWebToolIds(
-      Array.isArray(config?.toolIds) ? config.toolIds : modeSpec.capabilityFlags.toolIds,
+      configuredToolIds,
       { disabled: defaultWebToolsDisabled },
     );
     const skillWarnings = this.skillRegistry.warnings(skillIds);
@@ -1312,6 +1440,7 @@ export class LocalRunStore {
       ...parsed,
       pattern: modeSpec.family,
       modeId: modeSpec.id,
+      modeSelection: parsed.modeSelection,
       budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
       approvalMode: resolvedApprovalMode,
       skillIds,
@@ -1319,6 +1448,7 @@ export class LocalRunStore {
       metadata: {
         ...parsed.metadata,
         modeId: modeSpec.id,
+        ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
         ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
         ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
       },
@@ -1328,6 +1458,84 @@ export class LocalRunStore {
       definition,
       fullConfig,
     };
+  }
+
+  private async routeAutoMode(
+    config: RunConfig,
+    input: UserTaskInput,
+    session?: SessionSummary,
+  ): Promise<{ modeId: string; metadata: Record<string, unknown> }> {
+    const candidates = this.modeStore.list().map((mode) => ({
+      id: mode.id,
+      label: mode.label,
+      family: mode.family,
+      summary: mode.summary,
+      recommendedUse: mode.recommendedUse,
+      failureMode: mode.failureMode,
+      systemPreset: mode.systemPreset,
+    }));
+    const candidateIds = new Set(candidates.map((mode) => mode.id));
+    const fallbackModeId = candidateIds.has(SINGLE_AGENT_MODE_ID)
+      ? SINGLE_AGENT_MODE_ID
+      : candidates[0]?.id ?? config.pattern;
+    const fallback = (reason: string, detail?: unknown) => ({
+      modeId: fallbackModeId,
+      metadata: {
+        selectedModeId: fallbackModeId,
+        confidence: 0,
+        reason,
+        status: "fallback",
+        detail,
+      },
+    });
+
+    if (candidates.length === 0) {
+      return fallback("No modes were available to route.");
+    }
+
+    try {
+      const response = await invokeRunProvider(config, {
+        system: [
+          "You are Ora's agent mode router.",
+          "Choose exactly one modeId from the provided candidates for the next run.",
+          "Return only compact JSON with keys modeId, confidence, and reason.",
+          "confidence must be a number from 0 to 1.",
+          "Do not include markdown or extra text.",
+        ].join(" "),
+        prompt: JSON.stringify({
+          task: input.prompt,
+          projectId: input.projectId,
+          context: input.context ?? {},
+          recentMessages: session ? this.buildConversationMessages(session.sessionId, input.prompt).slice(-6) : [],
+          candidates,
+          fallbackModeId,
+        }),
+        temperature: 0,
+        maxTokens: 300,
+      });
+      const parsed = parseAutoModeRouterResponse(response.text);
+      if (!candidateIds.has(parsed.modeId)) {
+        return fallback(`Router selected unknown mode '${parsed.modeId}'.`, { raw: response.text });
+      }
+      if (parsed.confidence < AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD) {
+        return fallback(`Router confidence ${parsed.confidence} was below ${AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD}.`, {
+          raw: response.text,
+          selectedModeId: parsed.modeId,
+          reason: parsed.reason,
+        });
+      }
+      return {
+        modeId: parsed.modeId,
+        metadata: {
+          selectedModeId: parsed.modeId,
+          confidence: parsed.confidence,
+          reason: parsed.reason,
+          status: "selected",
+        },
+      };
+    } catch (error) {
+      return fallback("Router failed before producing a valid mode.", error instanceof Error ? error.message : String(error));
+    }
   }
 
   private withMemoryPrompt(config: RunConfig): RunConfig {
@@ -1432,17 +1640,17 @@ export class LocalRunStore {
     });
   }
 
-  private createCompletedRun(params: {
+  private async createCompletedRun(params: {
     input: UserTaskInput;
     config?: Partial<RunConfig>;
     session: SessionSummary;
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
-  }): StoredRun {
+  }): Promise<StoredRun> {
     const input = UserTaskInputSchema.parse({
       ...params.input,
       createdAt: params.input.createdAt ?? this.now()
     });
-    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(params.config);
+    const { modeSpec, definition, fullConfig } = await this.resolveModeSelection(params.config, input, params.session);
     const pattern = fullConfig.pattern;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(params.session.sessionId);
@@ -2255,6 +2463,28 @@ export class LocalRunStore {
     };
   }
 
+  private requireProjectRootDirectory(project: ProjectSummary): string {
+    const rootPath = path.resolve(project.rootPath);
+    const stat = fs.statSync(rootPath);
+    if (!stat.isDirectory()) {
+      throw new OraRuntimeError("Project root path must be a directory.", -32004, { projectId: project.projectId });
+    }
+    return rootPath;
+  }
+
+  private resolveProjectFilePath(rootPath: string, requestedPath: string): string {
+    const absolutePath = path.resolve(rootPath, requestedPath);
+    const relative = path.relative(rootPath, absolutePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new OraRuntimeError("Project file path must stay inside the project root.", -32602, { path: requestedPath });
+    }
+    return absolutePath;
+  }
+
+  private relativeProjectFilePath(rootPath: string, absolutePath: string): string {
+    return path.relative(rootPath, absolutePath) || ".";
+  }
+
   private upsertSessionFromRun(snapshot: StateSnapshot): SessionSummary {
     const sessionId = snapshot.sessionId;
     if (!sessionId) {
@@ -2583,6 +2813,87 @@ export class LocalRunStore {
 }
 
 export class InMemoryRunStore extends LocalRunStore {}
+
+function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRouterResponseSchema> {
+  const trimmed = text.trim();
+  const jsonText = trimmed.startsWith("{")
+    ? trimmed
+    : trimmed.match(/\{[\s\S]*\}/)?.[0] ?? trimmed;
+  return AutoModeRouterResponseSchema.parse(JSON.parse(jsonText));
+}
+
+function mimeTypeForPath(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  switch (extension) {
+    case ".css":
+      return "text/css";
+    case ".csv":
+      return "text/csv";
+    case ".gif":
+      return "image/gif";
+    case ".htm":
+    case ".html":
+      return "text/html";
+    case ".jpeg":
+    case ".jpg":
+      return "image/jpeg";
+    case ".js":
+    case ".jsx":
+    case ".mjs":
+    case ".cjs":
+      return "text/javascript";
+    case ".json":
+    case ".jsonc":
+      return "application/json";
+    case ".md":
+    case ".mdx":
+      return "text/markdown";
+    case ".pdf":
+      return "application/pdf";
+    case ".png":
+      return "image/png";
+    case ".rs":
+      return "text/rust";
+    case ".svg":
+      return "image/svg+xml";
+    case ".toml":
+      return "text/toml";
+    case ".ts":
+    case ".tsx":
+      return "text/typescript";
+    case ".txt":
+      return "text/plain";
+    case ".webp":
+      return "image/webp";
+    case ".yaml":
+    case ".yml":
+      return "text/yaml";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function projectFilePreviewKind(mimeType: string): ProjectFileReadResult["previewKind"] {
+  if (mimeType.startsWith("image/")) {
+    return "image";
+  }
+  if (mimeType.includes("json")) {
+    return "json";
+  }
+  if (mimeType.startsWith("text/")) {
+    return "text";
+  }
+  return "binary";
+}
+
+function readJsonPreviewPayload(filePath: string): unknown {
+  const text = fs.readFileSync(filePath, "utf8");
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
 
 function summarizeEventPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object") {

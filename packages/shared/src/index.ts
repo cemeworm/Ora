@@ -418,9 +418,13 @@ export const WebSearchResponseSchema = z.object({
 });
 export type WebSearchResponse = z.infer<typeof WebSearchResponseSchema>;
 
+export const ModeSelectionSchema = z.enum(["manual", "auto"]);
+export type ModeSelection = z.infer<typeof ModeSelectionSchema>;
+
 export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
   modeId: ModeIdSchema.optional(),
+  modeSelection: ModeSelectionSchema.default("manual"),
   profileIds: z.array(z.string().min(1)).default([]),
   providerId: z.string().min(1).optional(),
   providerConfig: z.lazy(() => ProviderConfigSchema).optional(),
@@ -607,6 +611,53 @@ export const ProjectGetParamsSchema = z.object({
   projectId: z.string().min(1),
 });
 export type ProjectGetParams = z.infer<typeof ProjectGetParamsSchema>;
+
+export const ProjectFilesParamsSchema = z.object({
+  projectId: z.string().min(1),
+});
+export type ProjectFilesParams = z.infer<typeof ProjectFilesParamsSchema>;
+
+export const ProjectFileReadParamsSchema = z.object({
+  projectId: z.string().min(1),
+  path: z.string().min(1),
+});
+export type ProjectFileReadParams = z.infer<typeof ProjectFileReadParamsSchema>;
+
+export const ProjectFileEntrySchema = z.object({
+  path: z.string().min(1),
+  name: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+  modifiedAt: z.number().int().nonnegative(),
+  mimeType: z.string().min(1),
+});
+export type ProjectFileEntry = z.infer<typeof ProjectFileEntrySchema>;
+
+export const ProjectFilesResultSchema = z.object({
+  projectId: z.string().min(1),
+  rootPath: z.string().min(1),
+  totalFiles: z.number().int().nonnegative(),
+  files: z.array(ProjectFileEntrySchema),
+  truncated: z.boolean(),
+  skippedDirs: z.array(z.string().min(1)),
+});
+export type ProjectFilesResult = z.infer<typeof ProjectFilesResultSchema>;
+
+export const ProjectFilePreviewKindSchema = z.enum(["text", "json", "image", "binary"]);
+export type ProjectFilePreviewKind = z.infer<typeof ProjectFilePreviewKindSchema>;
+
+export const ProjectFileReadResultSchema = z.object({
+  projectId: z.string().min(1),
+  rootPath: z.string().min(1),
+  path: z.string().min(1),
+  label: z.string().min(1),
+  mimeType: z.string().min(1),
+  previewKind: ProjectFilePreviewKindSchema,
+  sizeBytes: z.number().int().nonnegative(),
+  modifiedAt: z.number().int().nonnegative(),
+  uri: z.string().min(1).optional(),
+  payload: z.unknown().optional(),
+});
+export type ProjectFileReadResult = z.infer<typeof ProjectFileReadResultSchema>;
 
 export const ProjectSummarySchema = z.object({
   projectId: z.string().min(1),
@@ -1317,6 +1368,8 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "projects.create",
   "projects.list",
   "projects.get",
+  "projects.files",
+  "projects.file.read",
   "sessions.create",
   "sessions.list",
   "sessions.get",

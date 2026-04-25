@@ -50,6 +50,10 @@ import {
   ProjectConfigSchema,
   ProjectCreateParamsSchema,
   ProjectDetailSchema,
+  ProjectFileReadParamsSchema,
+  ProjectFileReadResultSchema,
+  ProjectFilesParamsSchema,
+  ProjectFilesResultSchema,
   ProjectGetParamsSchema,
   ProjectListParamsSchema,
   ProjectSummarySchema,
@@ -552,9 +556,10 @@ describe("Ora shared contracts", () => {
       JsonRpcRequestSchema.parse({
         jsonrpc: "2.0",
         id: 4,
-        method: "projects.list"
+        method: "projects.files",
+        params: { projectId: "project-0001" }
       }).method
-    ).toBe("projects.list");
+    ).toBe("projects.files");
 
     expect(
       JsonRpcResponseSchema.parse({
@@ -1470,6 +1475,43 @@ describe("Project thread contracts", () => {
     expect(getParams.projectId).toBe("project-0001");
     expect(detail.project.sessionCount).toBe(2);
     expect(detail.sessions[0]?.projectId).toBe("project-0001");
+  });
+
+  it("accepts project file list and preview payloads", () => {
+    const filesParams = ProjectFilesParamsSchema.parse({ projectId: "project-0001" });
+    const readParams = ProjectFileReadParamsSchema.parse({ projectId: "project-0001", path: "README.md" });
+    const files = ProjectFilesResultSchema.parse({
+      projectId: "project-0001",
+      rootPath: "/Users/quintenchen/developer/ora",
+      totalFiles: 1,
+      files: [
+        {
+          path: "README.md",
+          name: "README.md",
+          sizeBytes: 42,
+          modifiedAt: 1200,
+          mimeType: "text/markdown",
+        },
+      ],
+      truncated: false,
+      skippedDirs: [".git", "node_modules"],
+    });
+    const preview = ProjectFileReadResultSchema.parse({
+      projectId: "project-0001",
+      rootPath: "/Users/quintenchen/developer/ora",
+      path: "README.md",
+      label: "README.md",
+      mimeType: "text/markdown",
+      previewKind: "text",
+      sizeBytes: 42,
+      modifiedAt: 1200,
+      payload: "# Ora",
+    });
+
+    expect(filesParams.projectId).toBe("project-0001");
+    expect(readParams.path).toBe("README.md");
+    expect(files.files[0]?.mimeType).toBe("text/markdown");
+    expect(preview.previewKind).toBe("text");
   });
 });
 

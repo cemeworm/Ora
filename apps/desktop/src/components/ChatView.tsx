@@ -1,4 +1,5 @@
 import { Sparkles } from "lucide-react";
+import type { ModeSelection } from "@ora/shared";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
@@ -36,10 +37,11 @@ interface ChatViewProps {
   onOpenArtifact: (artifactId: string) => void;
   onSubmitFeedback: (message: ChatMessage, feedbackText: string) => Promise<void>;
   onSelectMode: (modeId: string) => void;
+  onSelectModeSelection: (selection: ModeSelection) => void;
   onSelectNode: (id: string) => void;
   onStartRun: () => void;
-  onToggleDetailDrawer: () => void;
-  detailDrawerOpen: boolean;
+  onToggleDetailDrawer: (drawer: "trails" | "documents") => void;
+  detailDrawer: "trails" | "documents" | undefined;
 }
 
 export function ChatView({
@@ -64,8 +66,9 @@ export function ChatView({
   onOpenArtifact,
   onSubmitFeedback,
   onToggleDetailDrawer,
-  detailDrawerOpen,
+  detailDrawer,
   onSelectMode,
+  onSelectModeSelection,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
   const showWelcome = chatMessages.length === 0 && !isRunning;
@@ -89,7 +92,7 @@ export function ChatView({
         onExportReport={onExportReport}
         onInterruptRun={onInterruptRun}
         onToggleDetailDrawer={onToggleDetailDrawer}
-        detailDrawerOpen={detailDrawerOpen}
+        detailDrawer={detailDrawer}
       />
       <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col pt-12">
         {showWelcome && (
@@ -120,12 +123,14 @@ export function ChatView({
           isRunning={isRunning}
           activeMode={activeMode}
           modeOptions={modeCards}
+          selectedModeSelection={state.selectedModeSelection}
           activeProvider={activeProvider}
           providerOptions={providerOptions}
           selectedCustomAgentId={selectedCustomAgentId}
           inputMode={state.inputMode}
           onInputModeChange={(mode) => dispatch({ type: "SET_INPUT_MODE", mode })}
           onModeChange={onSelectMode}
+          onModeSelectionChange={onSelectModeSelection}
           onProviderChange={(providerId) => dispatch({ type: "SET_PROVIDER", providerId })}
           onPromptChange={onComposerPromptChange}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
