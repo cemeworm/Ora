@@ -755,11 +755,27 @@ function buildGraphCheckpoint(
       ? `${runId}:${configurable.checkpoint_id}`
       : `${runId}:checkpoint-0`,
     runId,
-    label: status === "succeeded" ? "LangGraph checkpoint" : "LangGraph lifecycle checkpoint",
+    label: graphCheckpointLabelForStatus(status),
     createdAt: now(),
     eventSeq: 0,
     stateHash: JSON.stringify(output ?? { error, status }),
   };
+}
+
+function graphCheckpointLabelForStatus(status: StateSnapshot["status"]): string {
+  switch (status) {
+    case "succeeded":
+      return "LangGraph checkpoint";
+    case "interrupted":
+      return "LangGraph interrupted checkpoint";
+    case "failed":
+      return "LangGraph failed checkpoint";
+    case "cancelled":
+      return "LangGraph cancelled checkpoint";
+    case "queued":
+    case "running":
+      return "LangGraph lifecycle checkpoint";
+  }
 }
 
 function appendLifecycleEvent(

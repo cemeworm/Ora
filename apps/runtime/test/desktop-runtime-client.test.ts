@@ -13,6 +13,8 @@ describe("desktop browser-mock runtime lifecycle", () => {
     );
     const legacySnapshot = { ...snapshot };
     delete (legacySnapshot as { todos?: unknown }).todos;
+    delete (legacySnapshot as { pendingApprovals?: unknown }).pendingApprovals;
+    delete (legacySnapshot as { pendingClarifications?: unknown }).pendingClarifications;
 
     const messages = adaptChatMessages(
       [

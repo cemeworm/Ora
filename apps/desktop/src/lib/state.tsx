@@ -1,4 +1,4 @@
-import { CoordinationPatternSchema } from "@ora/shared";
+import { CoordinationPatternSchema, SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
@@ -180,7 +180,13 @@ function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStat
 }
 
 function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraModeSpec | undefined {
-  return modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
+  if (selectedModeId) {
+    const selectedMode = modes.find((mode) => mode.id === selectedModeId);
+    if (selectedMode) {
+      return selectedMode;
+    }
+  }
+  return modes.find((mode) => mode.id === SINGLE_AGENT_MODE_ID) ?? modes[0];
 }
 
 function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {

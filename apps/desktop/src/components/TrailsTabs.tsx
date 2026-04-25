@@ -139,7 +139,7 @@ export function TrailsTabs({
     .filter(Boolean);
   const trace = trail?.trace ?? activeSnapshot.trace;
   const pendingApprovalItems = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
-  const pendingClarificationItems = activeSnapshot.pendingClarifications;
+  const pendingClarificationItems = snapshotPendingClarifications(activeSnapshot);
   const blockingNodeMap = useMemo(
     () => buildBlockingNodeMap(pendingApprovalItems, pendingClarificationItems),
     [pendingApprovalItems, pendingClarificationItems],
@@ -162,15 +162,17 @@ export function TrailsTabs({
   });
   const anomalies = collectAnomalies(activeSnapshot, trailError, trace, actions);
   const timelineItems = buildTimelineItems(activeSnapshot);
-  const traceOpenDisabled = !trace?.traceUrl || openingTrace;
+  const traceOpenUnavailable = !canOpenLangfuseTrace(trace);
+  const traceOpenDisabled = traceOpenUnavailable || openingTrace;
 
   async function handleOpenTrace() {
-    if (!trace?.traceUrl) {
+    const traceUrl = trace?.traceUrl;
+    if (!traceUrl || !canOpenLangfuseTrace(trace)) {
       return;
     }
     setOpeningTrace(true);
     try {
-      await runtimeClient.openExternalUrl(trace.traceUrl);
+      await runtimeClient.openExternalUrl(traceUrl);
     } finally {
       setOpeningTrace(false);
     }
@@ -462,9 +464,15 @@ export function TrailsTabs({
               </div>
               {trace?.reason && <p className="mt-3 text-xs leading-5 text-bench-700">{trace.reason}</p>}
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button variant="secondary" size="sm" onClick={handleOpenTrace} disabled={traceOpenDisabled}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleOpenTrace}
+                  disabled={traceOpenDisabled}
+                  title={traceOpenUnavailable ? "Langfuse is not reachable for this trace yet." : undefined}
+                >
                   <ExternalLink size={14} />
-                  Open in Langfuse
+                  {traceOpenUnavailable ? "Langfuse unavailable" : "Open in Langfuse"}
                 </Button>
               </div>
             </DockCard>
@@ -581,8 +589,9 @@ function buildTimelineItems(snapshot: OraStateSnapshot) {
 
 function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {
   const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
-  const pendingActionIds = snapshot.pendingApprovals.length > 0
-    ? snapshot.pendingApprovals
+  const pendingApprovals = snapshotPendingApprovals(snapshot);
+  const pendingActionIds = pendingApprovals.length > 0
+    ? pendingApprovals
     : snapshot.actions.filter((action) => action.status === "approval_required").map((action) => action.id);
 
   return pendingActionIds.map((actionId) => {
@@ -643,7 +652,7 @@ function buildBlockingEventIds(
     }
   }
   const events = [...snapshot.events].reverse();
-  for (const clarification of snapshot.pendingClarifications) {
+  for (const clarification of snapshotPendingClarifications(snapshot)) {
     const event = events.find((candidate) =>
       candidate.type === "clarification.required" && matchesClarificationEvent(candidate.payload, clarification.id, clarification.key),
     );
@@ -652,6 +661,14 @@ function buildBlockingEventIds(
     }
   }
   return result;
+}
+
+function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
+  return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
+}
+
+function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
+  return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
 }
 
 function timelineLabel(eventType: string) {
@@ -713,7 +730,7 @@ function timelineDetail(event: OraStateSnapshot["events"][number]) {
   return "Runtime state updated.";
 }
 
-function collectAnomalies(
+export function collectAnomalies(
   snapshot: OraStateSnapshot,
   trailError: string | undefined,
   trace: OraRunTrail["trace"] | OraStateSnapshot["trace"],
@@ -721,7 +738,12 @@ function collectAnomalies(
 ) {
   const items = new Set<string>();
   if (snapshot.status === "failed") {
-    items.add("The run ended in a failed state. Inspect the latest events and trace rows for the failing branch.");
+    const failureDetail = latestFailureDetail(snapshot);
+    items.add(
+      failureDetail
+        ? `Run failed: ${failureDetail}`
+        : "The run ended in a failed state. Inspect the latest events and trace rows for the failing branch.",
+    );
   }
   if (actions.some((action) => action.state === "approval_required")) {
     items.add("A pending approval is blocking forward progress.");
@@ -738,6 +760,37 @@ function collectAnomalies(
     items.add("No runtime events were recorded for this run.");
   }
   return [...items];
+}
+
+export function canOpenLangfuseTrace(
+  trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined,
+) {
+  if (!trace?.traceUrl) {
+    return false;
+  }
+  if (trace.source === "degraded") {
+    return false;
+  }
+  return !trace.reason?.toLowerCase().includes("fetch failed");
+}
+
+function latestFailureDetail(snapshot: OraStateSnapshot): string | undefined {
+  if (snapshot.error?.trim()) {
+    return snapshot.error.trim();
+  }
+  const failedEvent = [...snapshot.events].reverse().find((event) => event.type === "run.failed");
+  if (!failedEvent || !isRecord(failedEvent.payload)) {
+    return undefined;
+  }
+  const error = failedEvent.payload.error;
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+  const reason = failedEvent.payload.reason;
+  if (typeof reason === "string" && reason.trim()) {
+    return reason.trim();
+  }
+  return undefined;
 }
 
 function formatRate(eventCount: number, runtimeMs: number) {

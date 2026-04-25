@@ -10,6 +10,7 @@ DESKTOP_BUNDLE_PATTERN='target/release/bundle/macos/Ora.app/Contents/MacOS/ora-d
 ORA_BUNDLE_ID='dev.ora.workbench'
 PNPM_STATE_FILE="$ROOT_DIR/node_modules/.modules.yaml"
 RUNTIME_SIDECAR_DIR="$ROOT_DIR/apps/desktop/src-tauri/resources/runtime-sidecar"
+LANGFUSE_RESOURCE_DIR="$ROOT_DIR/apps/desktop/src-tauri/resources/langfuse"
 
 if [ -f "$HOME/.cargo/env" ]; then
   # Tauri CLI depends on Cargo being on PATH in local dev.
@@ -68,6 +69,11 @@ pnpm --filter @ora/runtime package:sidecar
 
 if [ ! -d "$RUNTIME_SIDECAR_DIR" ]; then
   echo "Expected packaged runtime sidecar at $RUNTIME_SIDECAR_DIR, but it was not created." >&2
+  exit 1
+fi
+
+if [ ! -f "$LANGFUSE_RESOURCE_DIR/docker-compose.yml" ]; then
+  echo "Expected managed Langfuse compose resource at $LANGFUSE_RESOURCE_DIR/docker-compose.yml, but it was not created." >&2
   exit 1
 fi
 

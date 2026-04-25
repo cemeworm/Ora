@@ -78,6 +78,10 @@ export function createRuntimeMethodHandler(
         return store.setSkillEnabled(request.params);
       case "providers.list":
         return providerRegistry;
+      case "memory.get":
+        return store.getLongTermMemory();
+      case "memory.clear":
+        return store.clearLongTermMemory();
       case "providers.verify": {
         const parsed = ProviderVerifyParamsSchema.parse(request.params);
         return verifyProviderConfig(parsed.provider);

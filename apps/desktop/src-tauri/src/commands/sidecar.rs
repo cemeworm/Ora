@@ -3,12 +3,13 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const JSON_RPC_VERSION: &str = "2.0";
@@ -37,6 +38,12 @@ const PROD_RUNTIME_COMMAND_DISPLAY: &str =
 const MANAGED_LANGFUSE_BASE_URL: &str = "http://localhost:3000";
 const MANAGED_LANGFUSE_PUBLIC_KEY: &str = "lf_pk_ora_local_runtime";
 const MANAGED_LANGFUSE_SECRET_KEY: &str = "lf_sk_ora_local_runtime";
+const MANAGED_LANGFUSE_SERVICE_ENV: &str = "ORA_MANAGED_LANGFUSE_SERVICE";
+const MANAGED_LANGFUSE_COMMAND_ENV: &str = "ORA_MANAGED_LANGFUSE_COMMAND";
+const MANAGED_LANGFUSE_COMPOSE_DIR_ENV: &str = "ORA_MANAGED_LANGFUSE_COMPOSE_DIR";
+const MANAGED_LANGFUSE_RESOURCE_DIR: &str = "langfuse";
+const MANAGED_LANGFUSE_HEALTH_TIMEOUT_MS: u64 = 500;
+const MANAGED_LANGFUSE_READY_PATH: &str = "/api/public/ready";
 
 #[derive(Default)]
 pub struct RuntimeFacade {
@@ -58,6 +65,7 @@ pub struct RuntimeSidecarManager {
     configured_command: Option<RuntimeCommandSpec>,
     process_spawn_available: Mutex<bool>,
     configured_from_env: bool,
+    managed_langfuse: Mutex<ManagedLangfuseStatus>,
 }
 
 impl Default for RuntimeSidecarManager {
@@ -66,6 +74,7 @@ impl Default for RuntimeSidecarManager {
             configured_command: None,
             process_spawn_available: Mutex::new(false),
             configured_from_env: false,
+            managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
         }
     }
 }
@@ -73,6 +82,7 @@ impl Default for RuntimeSidecarManager {
 impl RuntimeSidecarManager {
     pub fn new(app: AppHandle) -> Self {
         let (configured_command, configured_from_env) = resolve_runtime_command(&app);
+        let managed_langfuse = ensure_managed_langfuse_service(Some(&app));
         let process_spawn_available = configured_command
             .as_ref()
             .map(|command| command_is_available(command.executable()))
@@ -81,6 +91,7 @@ impl RuntimeSidecarManager {
             configured_command,
             process_spawn_available: Mutex::new(process_spawn_available),
             configured_from_env,
+            managed_langfuse: Mutex::new(managed_langfuse),
         }
     }
 
@@ -94,10 +105,12 @@ impl RuntimeSidecarManager {
             configured_command: command,
             process_spawn_available: Mutex::new(process_spawn_available),
             configured_from_env,
+            managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
         }
     }
 
     fn status(&self) -> SidecarStatus {
+        self.refresh_managed_langfuse_health();
         let configured_command = self.configured_command.as_ref();
         let active_process = self
             .process_spawn_available
@@ -137,6 +150,7 @@ impl RuntimeSidecarManager {
             } else {
                 STATUS_REASON_FACADE
             },
+            managed_langfuse: self.managed_langfuse_status(),
         }
     }
 
@@ -157,6 +171,7 @@ impl RuntimeSidecarManager {
         request: &RuntimeJsonRpcRequest,
         app: Option<&AppHandle>,
     ) -> Option<RuntimeJsonRpcResponse> {
+        self.refresh_managed_langfuse_health();
         if !self
             .process_spawn_available
             .lock()
@@ -179,6 +194,25 @@ impl RuntimeSidecarManager {
     fn disable_process_bridge(&self) {
         if let Ok(mut process_spawn_available) = self.process_spawn_available.lock() {
             *process_spawn_available = false;
+        }
+    }
+
+    fn managed_langfuse_status(&self) -> ManagedLangfuseStatus {
+        self.managed_langfuse
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|_| disabled_managed_langfuse_status())
+    }
+
+    fn refresh_managed_langfuse_health(&self) {
+        if let Ok(mut status) = self.managed_langfuse.lock() {
+            if !status.enabled {
+                return;
+            }
+            status.available = langfuse_base_url_available(&status.base_url);
+            if status.available {
+                status.reason = "Managed Langfuse is reachable.".to_string();
+            }
         }
     }
 }
@@ -238,6 +272,20 @@ pub struct SidecarStatus {
     process_spawn_available: bool,
     shell_authority_exposed: bool,
     reason: &'static str,
+    managed_langfuse: ManagedLangfuseStatus,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ManagedLangfuseStatus {
+    enabled: bool,
+    #[serde(rename = "baseUrl")]
+    base_url: String,
+    available: bool,
+    #[serde(rename = "startAttempted")]
+    start_attempted: bool,
+    #[serde(rename = "startCommand", skip_serializing_if = "Option::is_none")]
+    start_command: Option<String>,
+    reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1478,6 +1526,295 @@ fn command_is_available(executable: &Path) -> bool {
     }
 
     false
+}
+
+fn ensure_managed_langfuse_service(app: Option<&AppHandle>) -> ManagedLangfuseStatus {
+    let base_url = env::var("LANGFUSE_BASE_URL")
+        .unwrap_or_else(|_| MANAGED_LANGFUSE_BASE_URL.to_string());
+    if env::var(MANAGED_LANGFUSE_SERVICE_ENV)
+        .map(|value| {
+            value.trim().eq_ignore_ascii_case("false")
+                || value.trim().eq_ignore_ascii_case("off")
+        })
+        .unwrap_or(false)
+    {
+        return ManagedLangfuseStatus {
+            enabled: false,
+            base_url,
+            available: false,
+            start_attempted: false,
+            start_command: None,
+            reason: "Managed Langfuse service startup is disabled.".to_string(),
+        };
+    }
+
+    if langfuse_base_url_available(&base_url) {
+        return ManagedLangfuseStatus {
+            enabled: true,
+            base_url,
+            available: true,
+            start_attempted: false,
+            start_command: None,
+            reason: "Managed Langfuse is already reachable.".to_string(),
+        };
+    }
+
+    let start_spec = resolve_managed_langfuse_start_spec(app);
+    let Some(start_spec) = start_spec else {
+        return ManagedLangfuseStatus {
+            enabled: true,
+            base_url,
+            available: false,
+            start_attempted: false,
+            start_command: None,
+            reason: format!(
+                "Managed Langfuse is not reachable and no start command or compose directory is configured. \
+                 Set {MANAGED_LANGFUSE_COMPOSE_DIR_ENV} or bundle resources/{MANAGED_LANGFUSE_RESOURCE_DIR}."
+            ),
+        };
+    };
+
+    let start_command = start_spec.display.clone();
+    match spawn_background_command(&start_spec) {
+        Ok(()) => ManagedLangfuseStatus {
+            enabled: true,
+            base_url,
+            available: false,
+            start_attempted: true,
+            start_command: Some(start_command),
+            reason: "Managed Langfuse startup was requested; health is pending.".to_string(),
+        },
+        Err(error) => ManagedLangfuseStatus {
+            enabled: true,
+            base_url,
+            available: false,
+            start_attempted: true,
+            start_command: Some(start_command),
+            reason: format!("Managed Langfuse startup failed: {error}"),
+        },
+    }
+}
+
+fn disabled_managed_langfuse_status() -> ManagedLangfuseStatus {
+    ManagedLangfuseStatus {
+        enabled: false,
+        base_url: MANAGED_LANGFUSE_BASE_URL.to_string(),
+        available: false,
+        start_attempted: false,
+        start_command: None,
+        reason: "Managed Langfuse was not checked in this runtime mode.".to_string(),
+    }
+}
+
+fn langfuse_base_url_available(base_url: &str) -> bool {
+    http_get_status(base_url, MANAGED_LANGFUSE_READY_PATH)
+        .map(|status| status == 200)
+        .unwrap_or(false)
+}
+
+fn http_get_status(base_url: &str, path: &str) -> Option<u16> {
+    let parsed = parsed_http_url(base_url, path)?;
+    let mut stream = TcpStream::connect_timeout(
+        &parsed.address,
+        Duration::from_millis(MANAGED_LANGFUSE_HEALTH_TIMEOUT_MS),
+    )
+    .ok()?;
+    let timeout = Some(Duration::from_millis(MANAGED_LANGFUSE_HEALTH_TIMEOUT_MS));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        parsed.path, parsed.host_header
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    stream.flush().ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let status = response.lines().next()?.split_whitespace().nth(1)?;
+    status.parse().ok()
+}
+
+struct ParsedHttpUrl {
+    address: SocketAddr,
+    host_header: String,
+    path: String,
+}
+
+fn parsed_http_url(base_url: &str, path: &str) -> Option<ParsedHttpUrl> {
+    let (scheme, authority, base_path) = base_url_parts(base_url)?;
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let host_port = if authority.rsplit_once(':').is_some() {
+        authority.to_string()
+    } else {
+        format!("{authority}:{default_port}")
+    };
+    let address = host_port.to_socket_addrs().ok()?.next()?;
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let merged_path = if base_path.is_empty() || base_path == "/" {
+        path
+    } else {
+        format!("{}{}", base_path.trim_end_matches('/'), path)
+    };
+    Some(ParsedHttpUrl {
+        address,
+        host_header: authority.to_string(),
+        path: merged_path,
+    })
+}
+
+fn base_url_parts(base_url: &str) -> Option<(&str, &str, &str)> {
+    let trimmed = base_url.trim();
+    let (scheme, without_scheme) = if let Some(value) = trimmed.strip_prefix("http://") {
+        ("http", value)
+    } else if let Some(value) = trimmed.strip_prefix("https://") {
+        ("https", value)
+    } else {
+        return None;
+    };
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    if authority.is_empty() {
+        return None;
+    }
+    let path = if without_scheme.len() > authority.len() {
+        &without_scheme[authority.len()..]
+    } else {
+        ""
+    };
+    Some((scheme, authority, path))
+}
+
+fn resolve_managed_langfuse_start_spec(app: Option<&AppHandle>) -> Option<RuntimeCommandSpec> {
+    if let Ok(command) = env::var(MANAGED_LANGFUSE_COMMAND_ENV) {
+        let trimmed = command.trim();
+        if !trimmed.is_empty() {
+            return Some(shell_command_spec(trimmed));
+        }
+    }
+
+    if let Ok(compose_dir) = env::var(MANAGED_LANGFUSE_COMPOSE_DIR_ENV) {
+        let path = PathBuf::from(compose_dir);
+        if compose_file_exists(&path) {
+            return Some(langfuse_compose_command_spec(path));
+        }
+    }
+
+    let resource_dir = app
+        .and_then(|app| app.path().resource_dir().ok())
+        .map(|path| path.join(MANAGED_LANGFUSE_RESOURCE_DIR));
+    if let Some(path) = resource_dir {
+        if compose_file_exists(&path) {
+            return Some(langfuse_compose_command_spec(path));
+        }
+    }
+
+    None
+}
+
+fn shell_command_spec(command: &str) -> RuntimeCommandSpec {
+    #[cfg(target_os = "windows")]
+    {
+        RuntimeCommandSpec::new(
+            command,
+            "cmd",
+            vec!["/C".to_string(), command.to_string()],
+            None,
+            managed_langfuse_bootstrap_env(),
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        RuntimeCommandSpec::new(
+            command,
+            "sh",
+            vec!["-lc".to_string(), command.to_string()],
+            None,
+            managed_langfuse_bootstrap_env(),
+        )
+    }
+}
+
+fn langfuse_compose_command_spec(compose_dir: PathBuf) -> RuntimeCommandSpec {
+    RuntimeCommandSpec::new(
+        format!("docker compose up -d ({})", compose_dir.to_string_lossy()),
+        "docker",
+        vec![
+            "compose".to_string(),
+            "--project-name".to_string(),
+            "ora-langfuse".to_string(),
+            "up".to_string(),
+            "-d".to_string(),
+        ],
+        Some(compose_dir),
+        managed_langfuse_bootstrap_env(),
+    )
+}
+
+fn managed_langfuse_bootstrap_env() -> Vec<(String, String)> {
+    vec![
+        ("NEXTAUTH_URL".to_string(), MANAGED_LANGFUSE_BASE_URL.to_string()),
+        ("LANGFUSE_INIT_ORG_ID".to_string(), "ora-local".to_string()),
+        ("LANGFUSE_INIT_ORG_NAME".to_string(), "Ora Local".to_string()),
+        (
+            "LANGFUSE_INIT_PROJECT_ID".to_string(),
+            "ora-runtime".to_string(),
+        ),
+        (
+            "LANGFUSE_INIT_PROJECT_NAME".to_string(),
+            "Ora Runtime".to_string(),
+        ),
+        (
+            "LANGFUSE_INIT_PROJECT_PUBLIC_KEY".to_string(),
+            MANAGED_LANGFUSE_PUBLIC_KEY.to_string(),
+        ),
+        (
+            "LANGFUSE_INIT_PROJECT_SECRET_KEY".to_string(),
+            MANAGED_LANGFUSE_SECRET_KEY.to_string(),
+        ),
+        (
+            "LANGFUSE_INIT_USER_EMAIL".to_string(),
+            "ora-local@localhost".to_string(),
+        ),
+        ("LANGFUSE_INIT_USER_NAME".to_string(), "Ora Local".to_string()),
+        (
+            "LANGFUSE_INIT_USER_PASSWORD".to_string(),
+            "ora-local-langfuse".to_string(),
+        ),
+    ]
+}
+
+fn compose_file_exists(path: &Path) -> bool {
+    [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ]
+    .iter()
+    .any(|file_name| path.join(file_name).is_file())
+}
+
+fn spawn_background_command(command: &RuntimeCommandSpec) -> Result<(), String> {
+    let mut process = Command::new(command.executable());
+    process
+        .args(command.args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(working_directory) = command.working_directory.as_ref() {
+        process.current_dir(working_directory);
+    }
+    for (key, value) in &command.environment {
+        process.env(key, value);
+    }
+    process
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn run_process_json_rpc_for_app(
@@ -3241,6 +3578,7 @@ mod tests {
         assert!(!status.process_spawn_available);
         assert!(!status.sidecar_process_spawn_enabled);
         assert!(status.sidecar_spawn_enabled);
+        assert!(!status.managed_langfuse.enabled);
     }
 
     #[test]
@@ -3261,7 +3599,8 @@ mod tests {
 
     #[test]
     fn dev_runtime_command_enables_managed_langfuse_env() {
-        let command = dev_runtime_command().expect("workspace tsx cli should be available in tests");
+        let command =
+            dev_runtime_command().expect("workspace tsx cli should be available in tests");
 
         assert!(command
             .environment
@@ -3270,13 +3609,77 @@ mod tests {
         assert!(command
             .environment
             .iter()
-            .any(|(key, value)| key == "LANGFUSE_BASE_URL" && value == MANAGED_LANGFUSE_BASE_URL));
+            .any(|(key, value)| key == "LANGFUSE_BASE_URL"
+                && value == MANAGED_LANGFUSE_BASE_URL));
         assert!(command.environment.iter().any(|(key, value)| {
             key == "LANGFUSE_PUBLIC_KEY" && value == MANAGED_LANGFUSE_PUBLIC_KEY
         }));
         assert!(command.environment.iter().any(|(key, value)| {
             key == "LANGFUSE_SECRET_KEY" && value == MANAGED_LANGFUSE_SECRET_KEY
         }));
+    }
+
+    #[test]
+    fn managed_langfuse_health_parses_localhost_url() {
+        let parsed = parsed_http_url(
+            "http://127.0.0.1:3000/project/ora-runtime",
+            MANAGED_LANGFUSE_READY_PATH,
+        )
+        .expect("base URL should parse");
+
+        assert_eq!(parsed.address.port(), 3000);
+        assert_eq!(
+            parsed.path,
+            "/project/ora-runtime/api/public/ready".to_string()
+        );
+    }
+
+    #[test]
+    fn managed_langfuse_health_uses_readiness_endpoint() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("test listener should bind");
+        let port = listener.local_addr().expect("listener addr").port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("health request");
+            let mut request = [0_u8; 512];
+            let bytes = stream.read(&mut request).expect("read request");
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("GET /api/public/ready HTTP/1.1"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .expect("write response");
+        });
+
+        assert!(langfuse_base_url_available(&format!("http://127.0.0.1:{port}")));
+        handle.join().expect("health thread should finish");
+    }
+
+    #[test]
+    fn managed_langfuse_compose_command_injects_bootstrap_env() {
+        let compose_dir = env::temp_dir().join(format!("ora-langfuse-test-{}", now_ms()));
+        fs::create_dir_all(&compose_dir).expect("temp compose dir should be created");
+        fs::write(compose_dir.join("docker-compose.yml"), "services: {}\n")
+            .expect("compose file should be written");
+
+        assert!(compose_file_exists(&compose_dir));
+        let command = langfuse_compose_command_spec(compose_dir.clone());
+
+        assert_eq!(command.executable(), Path::new("docker"));
+        assert_eq!(command.working_directory.as_ref(), Some(&compose_dir));
+        assert_eq!(
+            command.args(),
+            &["compose", "--project-name", "ora-langfuse", "up", "-d"]
+        );
+        assert!(command
+            .environment
+            .iter()
+            .any(|(key, value)| key == "LANGFUSE_INIT_PROJECT_ID" && value == "ora-runtime"));
+        assert!(command.environment.iter().any(|(key, value)| {
+            key == "LANGFUSE_INIT_PROJECT_PUBLIC_KEY" && value == MANAGED_LANGFUSE_PUBLIC_KEY
+        }));
+
+        let _ = fs::remove_file(compose_dir.join("docker-compose.yml"));
+        let _ = fs::remove_dir(compose_dir);
     }
 
     #[test]

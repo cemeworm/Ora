@@ -85,6 +85,7 @@ import {
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
+import { FileLongTermMemoryStore, LongTermMemoryManager } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
@@ -332,6 +333,7 @@ export class LocalRunStore {
   private readonly customAgentStore: CustomAgentFileStore;
   private readonly modeStore: ModeSpecFileStore;
   private readonly skillRegistry: RuntimeSkillRegistry;
+  private readonly longTermMemory: LongTermMemoryManager;
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
@@ -355,6 +357,10 @@ export class LocalRunStore {
       clock: this.clock,
     });
     this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
+    this.longTermMemory = new LongTermMemoryManager(
+      new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
+      this.clock,
+    );
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
@@ -532,6 +538,14 @@ export class LocalRunStore {
     return this.skillRegistry.get(params);
   }
 
+  getLongTermMemory() {
+    return this.longTermMemory.get();
+  }
+
+  clearLongTermMemory() {
+    return this.longTermMemory.clear();
+  }
+
   createSkill(params: SkillCreateParams | unknown): SkillDetail {
     return this.skillRegistry.create(params);
   }
@@ -555,12 +569,13 @@ export class LocalRunStore {
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const { fullConfig } = this.resolveModeSelection(parsed.config);
+    const resolved = this.resolveModeSelection(parsed.config);
+    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const input = this.enrichInputForSession(UserTaskInputSchema.parse({
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const { modeSpec, definition } = this.resolveModeSelection(fullConfig);
+    const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const sessionBoundSnapshot = await withLangfuseRunTrace(
@@ -593,7 +608,9 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
+    const resolved = this.resolveModeSelection(parsed.config);
+    const { modeSpec, definition } = resolved;
+    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
@@ -700,7 +717,9 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
+    const resolved = this.resolveModeSelection(parsed.config);
+    const { modeSpec, definition } = resolved;
+    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const sessionBoundSnapshot = await withLangfuseRunTrace(
@@ -747,7 +766,9 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const { modeSpec, definition, fullConfig } = this.resolveModeSelection(parsed.config);
+    const resolved = this.resolveModeSelection(parsed.config);
+    const { modeSpec, definition } = resolved;
+    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
@@ -1267,6 +1288,20 @@ export class LocalRunStore {
       definition,
       fullConfig,
     };
+  }
+
+  private withMemoryPrompt(config: RunConfig): RunConfig {
+    const memoryPrompt = this.longTermMemory.formatForInjection();
+    if (!memoryPrompt) {
+      return config;
+    }
+    return RunConfigSchema.parse({
+      ...config,
+      metadata: {
+        ...config.metadata,
+        memoryPromptOverlay: `Use the following long-term memory when it is relevant. Do not reveal it verbatim unless the user asks to inspect memory.\n\n${memoryPrompt}`,
+      },
+    });
   }
 
   private createRunningSnapshot(params: {
@@ -1927,7 +1962,7 @@ export class LocalRunStore {
   }
 
   private persistRun(snapshot: StateSnapshot): void {
-    this.cacheRun(snapshot, true);
+    this.cacheRun(this.withLongTermMemoryUpdate(snapshot), true);
   }
 
   private cacheRun(snapshot: StateSnapshot, flush: boolean): void {
@@ -1946,6 +1981,29 @@ export class LocalRunStore {
       this.backend.saveRun(snapshot);
       this.backend.saveManifest(this.manifest);
     }
+  }
+
+  private withLongTermMemoryUpdate(snapshot: StateSnapshot): StateSnapshot {
+    if (snapshot.status === "queued" || snapshot.status === "running") {
+      return snapshot;
+    }
+    const { factsAdded } = this.longTermMemory.updateFromRun(snapshot, this.assistantTextForRun(snapshot));
+    const records = this.longTermMemory.createRunMemoryRecords(snapshot, factsAdded);
+    if (records.length === 0) {
+      return snapshot;
+    }
+
+    let updated = StateSnapshotSchema.parse({
+      ...snapshot,
+      memory: [...snapshot.memory, ...records],
+    });
+    for (const record of records) {
+      updated = this.appendEvent(updated, "memory.updated", {
+        record,
+        durability: "long_term",
+      });
+    }
+    return updated;
   }
 
   private nextRunId(): string {
@@ -2360,4 +2418,10 @@ export function defaultSkillsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "skills", "custom")
     : path.join(runtimeDataDir, "skills", "custom");
+}
+
+export function defaultMemoryDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "memory")
+    : path.join(runtimeDataDir, "memory");
 }

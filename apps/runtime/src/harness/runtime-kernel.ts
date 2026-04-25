@@ -64,6 +64,22 @@ class ApprovalInterruptError extends Error {
 
 const RUNTIME_TOOL_LOOP_LIMIT = 4;
 
+function checkpointLabelForStatus(status: StateSnapshot["status"]): string {
+  switch (status) {
+    case "succeeded":
+      return "Pattern checkpoint";
+    case "interrupted":
+      return "Interrupted checkpoint";
+    case "failed":
+      return "Failed checkpoint";
+    case "cancelled":
+      return "Cancelled checkpoint";
+    case "queued":
+    case "running":
+      return "Runtime checkpoint";
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve();
@@ -304,9 +320,13 @@ export async function executeRuntimeKernel(
 
   const systemPrompt = (extra: string) => {
     const snippets = skillRegistry.promptSnippets(config.skillIds);
+    const memoryOverlay = typeof config.metadata.memoryPromptOverlay === "string"
+      ? config.metadata.memoryPromptOverlay
+      : undefined;
     return [
       extra,
       workspaceSystemPrompt(input.context?.projectWorkspace),
+      memoryOverlay,
       runtimeToolExecutor.systemPrompt(config.toolIds),
       options.customAgentOverlay,
       ...snippets,
@@ -1036,7 +1056,7 @@ export async function executeRuntimeKernel(
   const checkpoint: CheckpointMeta = {
     id: `${runId}:checkpoint-0`,
     runId,
-    label: status === "succeeded" ? "Pattern checkpoint" : "Interrupted checkpoint",
+    label: checkpointLabelForStatus(status),
     createdAt: now(),
     // Match the historic Ora replay contract: the checkpoint references the
     // `checkpoint.created` event itself, not the event immediately before it.

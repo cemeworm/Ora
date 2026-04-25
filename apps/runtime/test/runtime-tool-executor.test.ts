@@ -48,6 +48,18 @@ describe("RuntimeToolExecutor", () => {
     expect(implementedDescriptors.map((tool) => tool.id).sort()).toEqual([...implementedIds].sort());
   });
 
+  it("tells agents to answer tool-capability questions from Ora runtime tools", () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const prompt = executor.systemPrompt(["file.read", "file.list", "web.fetch"]) ?? "";
+
+    expect(prompt).toContain("If the user asks what tools you can use");
+    expect(prompt).toContain("- file.read:");
+    expect(prompt).toContain("- file.list:");
+    expect(prompt).toContain("- web.fetch:");
+  });
+
   it("reads, lists, globs, and greps files inside the workspace root", async () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });

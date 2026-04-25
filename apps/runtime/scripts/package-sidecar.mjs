@@ -8,7 +8,8 @@ import {
   mkdirSync,
   realpathSync,
   readdirSync,
-  rmSync
+  rmSync,
+  writeFileSync
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "../../..");
 const runtimeDir = path.join(repoRoot, "apps", "runtime");
 const stageRoot = path.join(repoRoot, "apps", "desktop", "src-tauri", "resources", "runtime-sidecar");
+const langfuseSourceDir = path.join(repoRoot, "infra", "observability", "langfuse");
+const langfuseStageRoot = path.join(repoRoot, "apps", "desktop", "src-tauri", "resources", "langfuse");
 const stageBinDir = path.join(stageRoot, "bin");
 const stageAppDir = path.join(stageRoot, "app");
 const stageNodeModulesDir = path.join(stageAppDir, "node_modules");
@@ -26,8 +29,11 @@ const stagedNodePath = path.join(stageBinDir, nodeBinaryName);
 const bundledRuntimePath = path.join(stageAppDir, "runtime-sidecar.cjs");
 
 rmSync(stageRoot, { recursive: true, force: true });
+rmSync(langfuseStageRoot, { recursive: true, force: true });
 mkdirSync(stageBinDir, { recursive: true });
 mkdirSync(stageNodeModulesDir, { recursive: true });
+mkdirSync(langfuseStageRoot, { recursive: true });
+writeFileSync(path.join(langfuseStageRoot, ".keep"), "\n");
 
 copyFileSync(nodeSource, stagedNodePath);
 chmodSync(stagedNodePath, 0o755);
@@ -49,6 +55,8 @@ run(
 for (const packageName of ["better-sqlite3", "bindings", "file-uri-to-path"]) {
   copyRuntimePackage(packageName);
 }
+
+copyLangfuseBundle();
 
 if (!existsSync(bundledRuntimePath)) {
   throw new Error(`Missing packaged sidecar bundle at ${bundledRuntimePath}`);
@@ -78,6 +86,15 @@ function copyRuntimePackage(packageName) {
   if (destinationStat.isSymbolicLink()) {
     throw new Error(`Expected ${packageDestination} to be materialized, but it is still a symlink.`);
   }
+}
+
+function copyLangfuseBundle() {
+  const composeSource = path.join(langfuseSourceDir, "docker-compose.yml");
+  const composeDestination = path.join(langfuseStageRoot, "docker-compose.yml");
+  if (!existsSync(composeSource)) {
+    throw new Error(`Missing managed Langfuse compose file at ${composeSource}`);
+  }
+  copyFileSync(composeSource, composeDestination);
 }
 
 function resolveInstalledPackageDir(packageName) {

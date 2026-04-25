@@ -32,7 +32,8 @@
     "category": "DeveloperTool",
     "externalBin": [],
     "resources": {
-      "resources/runtime-sidecar/": "runtime-sidecar/"
+      "resources/runtime-sidecar/": "runtime-sidecar/",
+      "resources/langfuse/": "langfuse/"
     }
   }
 }

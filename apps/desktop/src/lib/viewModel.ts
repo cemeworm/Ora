@@ -855,6 +855,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
+  return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
+}
+
+function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
+  return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
+}
+
 export function adaptChatMessages(
   transcript: OraSessionTranscriptMessage[],
   turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
@@ -992,8 +1000,8 @@ function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurn
     processSteps: deriveProcessSteps(snapshot),
     artifacts: snapshot.artifacts.map(adaptTurnArtifact),
     todos: deriveTurnTodos(snapshot),
-    approvalCount: snapshot.pendingApprovals.length,
-    clarificationCount: snapshot.pendingClarifications.length,
+    approvalCount: snapshotPendingApprovals(snapshot).length,
+    clarificationCount: snapshotPendingClarifications(snapshot).length,
   };
 }
 
@@ -1413,11 +1421,11 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
     return "Working on it...";
   }
 
-  if (snapshot.pendingClarifications.length > 0) {
+  if (snapshotPendingClarifications(snapshot).length > 0) {
     return "I need a bit more information before I can continue this turn.";
   }
 
-  if (snapshot.pendingApprovals.length > 0 || snapshot.actions.some((action) => action.status === "approval_required")) {
+  if (snapshotPendingApprovals(snapshot).length > 0 || snapshot.actions.some((action) => action.status === "approval_required")) {
     return "I'm waiting for approval before continuing this turn.";
   }
 

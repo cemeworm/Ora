@@ -39,9 +39,9 @@ export function ChatMessages({
   }, [chatMessages.length, isApprovalRequired, pendingApprovals.length]);
 
   return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+    <div ref={scrollRef} className="min-h-0 w-full flex-1 overflow-y-auto">
       <Conversation className="min-h-0 flex-1">
-        <ConversationContent className="min-h-full w-full gap-8 px-4 pb-44 pt-20 md:px-6 xl:px-8">
+        <ConversationContent className="mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pb-44 pt-8 md:px-6 xl:px-8">
         {chatMessages.map((message) => {
           if (message.role === "assistant") {
             return (

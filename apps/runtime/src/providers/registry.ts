@@ -8,10 +8,15 @@ import { createOpenAICompatibleProvider } from "./openai-compatible.js";
 import { traceLangfuseGeneration } from "../telemetry/langfuse.js";
 import type { ModelProvider, ModelRequest, ModelStreamCallbacks, ProviderRegistry, ProviderRuntimeOptions } from "./types.js";
 import { streamFallback } from "./streaming.js";
+import { defaultProviderHealthGuard, type ProviderHealthGuard } from "./provider-health.js";
+
+type ProviderRegistryOptions = ProviderRuntimeOptions & {
+  providerHealthGuard?: ProviderHealthGuard;
+};
 
 export function createModelProvider(
   config: ProviderConfig,
-  options: ProviderRuntimeOptions = {}
+  options: ProviderRegistryOptions = {}
 ): ModelProvider {
   switch (config.type) {
     case "anthropic":
@@ -29,10 +34,11 @@ export function createModelProvider(
 
 export function createProviderRegistry(
   config: SharedProviderRegistry,
-  options: ProviderRuntimeOptions = {}
+  options: ProviderRegistryOptions = {}
 ): ProviderRegistry {
   const providerConfigs = [...config.providers];
   const cache = new Map<string, ModelProvider>();
+  const providerHealthGuard = options.providerHealthGuard ?? defaultProviderHealthGuard;
 
   const resolveConfig = (providerId?: string) => {
     const id = providerId ?? config.defaultProviderId;
@@ -68,34 +74,40 @@ export function createProviderRegistry(
     async invoke(providerId: string | undefined, request: ModelRequest) {
       const providerConfig = resolveConfig(providerId);
       const provider = resolve(providerConfig.id);
-      return traceLangfuseGeneration(
-        {
-          providerId: providerConfig.id,
-          modelId: providerConfig.modelId,
-          providerType: providerConfig.type,
-          request
-        },
-        () => provider(request)
+      return providerHealthGuard.run(
+        providerConfig.id,
+        () => traceLangfuseGeneration(
+          {
+            providerId: providerConfig.id,
+            modelId: providerConfig.modelId,
+            providerType: providerConfig.type,
+            request
+          },
+          () => provider(request)
+        )
       );
     },
     async invokeStream(providerId: string | undefined, request: ModelRequest, callbacks?: ModelStreamCallbacks) {
       const providerConfig = resolveConfig(providerId);
       const provider = resolve(providerConfig.id);
       const stream = provider.stream ?? streamFallback(provider);
-      return traceLangfuseGeneration(
-        {
-          providerId: providerConfig.id,
-          modelId: providerConfig.modelId,
-          providerType: providerConfig.type,
-          request
-        },
-        () => stream(request, callbacks)
+      return providerHealthGuard.run(
+        providerConfig.id,
+        () => traceLangfuseGeneration(
+          {
+            providerId: providerConfig.id,
+            modelId: providerConfig.modelId,
+            providerType: providerConfig.type,
+            request
+          },
+          () => stream(request, callbacks)
+        )
       );
     },
   };
 }
 
-export function createDefaultProviderRegistry(options: ProviderRuntimeOptions = {}) {
+export function createDefaultProviderRegistry(options: ProviderRegistryOptions = {}) {
   return createProviderRegistry(
     {
       providers: DEFAULT_PROVIDERS,
@@ -107,7 +119,7 @@ export function createDefaultProviderRegistry(options: ProviderRuntimeOptions = 
 
 export function createProviderRegistryForRun(
   runConfig: RunConfig,
-  options: ProviderRuntimeOptions = {}
+  options: ProviderRegistryOptions = {}
 ): ProviderRegistry {
   const providers = runConfig.providerConfig
     ? [
@@ -133,7 +145,7 @@ export function configuredProviderId(config: RunConfig): string | undefined {
 export async function invokeRunProvider(
   config: RunConfig,
   request: ModelRequest,
-  options: ProviderRuntimeOptions = {}
+  options: ProviderRegistryOptions = {}
 ) {
   return createProviderRegistryForRun(config, options).invoke(configuredProviderId(config), request);
 }
@@ -142,7 +154,7 @@ export async function invokeRunProviderStream(
   config: RunConfig,
   request: ModelRequest,
   callbacks?: ModelStreamCallbacks,
-  options: ProviderRuntimeOptions = {}
+  options: ProviderRegistryOptions = {}
 ) {
   return createProviderRegistryForRun(config, options).invokeStream(configuredProviderId(config), request, callbacks);
 }

@@ -1,5 +1,5 @@
 import type { ProviderCapability } from "@ora/shared";
-import { Activity, Bot, ChevronDown, ChevronUp, Globe2, Settings, Sparkles, Wrench, X } from "lucide-react";
+import { Activity, Bot, ChevronDown, ChevronUp, Database, Globe2, Settings, Sparkles, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkbench } from "../lib/state";
 import {
@@ -21,12 +21,13 @@ import {
   type DesktopSearchSettings,
 } from "../lib/searchSettings";
 import { useRunActions } from "../lib/useRunActions";
+import type { OraLongTermMemoryProfile } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { LANGUAGE_OPTIONS } from "../lib/i18n";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
 
-type SettingsSection = "general" | "providers" | "runtime" | "tools" | "skills";
+type SettingsSection = "general" | "providers" | "runtime" | "memory" | "tools" | "skills";
 
 const settingsSections: Array<{
   id: SettingsSection;
@@ -36,6 +37,7 @@ const settingsSections: Array<{
   { id: "general", label: "General", icon: Globe2 },
   { id: "providers", label: "Providers", icon: Bot },
   { id: "runtime", label: "Runtime", icon: Activity },
+  { id: "memory", label: "Memory", icon: Database },
   { id: "tools", label: "Tools", icon: Wrench },
   { id: "skills", label: "Skills", icon: Sparkles },
 ];
@@ -97,20 +99,79 @@ function emptyDraft(): ProviderDraft {
   return createDraftFromPreset(PROVIDER_PRESETS[0], []);
 }
 
+function memoryValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value && typeof value === "object" && "summary" in value && typeof value.summary === "string") {
+    return value.summary;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function memoryTimestamp(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "unknown";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function memoryKindClasses(kind: string) {
+  switch (kind) {
+    case "project":
+      return "bg-emerald-50 text-bench-900 ring-emerald-200";
+    case "worker":
+      return "bg-violet-50 text-bench-900 ring-violet-200";
+    case "artifact":
+      return "bg-sky-50 text-bench-900 ring-sky-200";
+    case "profile":
+      return "bg-amber-50 text-bench-900 ring-amber-200";
+    default:
+      return "bg-bench-50 text-bench-900 ring-bench-200";
+  }
+}
+
 export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const { state, dispatch } = useWorkbench();
-  const { actions } = useRunActions();
+  const { runtimeClient, actions } = useRunActions();
   const secretInputRef = useRef<HTMLInputElement>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("openai-compatible-generic");
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(emptyDraft());
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [searchSettings, setSearchSettings] = useState<DesktopSearchSettings>(() => loadDesktopSearchSettings());
+  const [longTermMemory, setLongTermMemory] = useState<OraLongTermMemoryProfile | undefined>();
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | undefined>();
 
   const providers = state.providerRegistry?.providers ?? [];
   const selectedProvider = providers.find((provider) => provider.id === state.selectedProviderId) ?? providers[0];
   const selectedPreset = useMemo(() => findPresetById(selectedTemplateId), [selectedTemplateId]);
   const activePreset = useMemo(() => findPresetById(providerDraft.presetId), [providerDraft.presetId]);
+  const memoryRecords = state.activeSnapshot?.memory ?? [];
+  const longTermFacts = longTermMemory?.facts ?? [];
+  const longTermSections = longTermMemory
+    ? [
+        { label: "Work Context", value: longTermMemory.user.workContext },
+        { label: "Personal Context", value: longTermMemory.user.personalContext },
+        { label: "Top of Mind", value: longTermMemory.user.topOfMind },
+        { label: "Recent Months", value: longTermMemory.history.recentMonths },
+        { label: "Earlier Context", value: longTermMemory.history.earlierContext },
+        { label: "Long-term Background", value: longTermMemory.history.longTermBackground },
+      ].filter((section) => section.value.summary.trim().length > 0)
+    : [];
+  const memoryNamespaces = useMemo(() => {
+    const namespaces = new Set<string>();
+    for (const record of memoryRecords) {
+      namespaces.add(record.namespace.join("/"));
+    }
+    for (const profile of state.activeSnapshot?.profiles ?? []) {
+      for (const namespace of profile.memoryNamespaces) {
+        namespaces.add(`${namespace}/${profile.id}`);
+      }
+    }
+    return [...namespaces].sort((left, right) => left.localeCompare(right));
+  }, [memoryRecords, state.activeSnapshot?.profiles]);
 
   useEffect(() => {
     if (!selectedProvider) {
@@ -120,6 +181,13 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     setSelectedTemplateId(preset.id);
     setProviderDraft(createDraftFromProvider(selectedProvider));
   }, [selectedProvider]);
+
+  useEffect(() => {
+    if (!open || activeSection !== "memory") {
+      return;
+    }
+    void loadMemory();
+  }, [activeSection, open]);
 
   const draftProvider = useMemo(() => buildProviderConfigFromDraft(providerDraft), [providerDraft]);
   const draftSecretStatus = state.providerSecretStatuses.find((status) => status.providerId === providerDraft.id);
@@ -199,6 +267,31 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     setSearchSettings(DEFAULT_SEARCH_SETTINGS);
     saveDesktopSearchSettings(DEFAULT_SEARCH_SETTINGS);
     dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Web search settings reset to auto." });
+  }
+
+  async function loadMemory() {
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    try {
+      setLongTermMemory(await runtimeClient.getMemory());
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : "Failed to load memory.");
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
+  async function clearMemory() {
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    try {
+      setLongTermMemory(await runtimeClient.clearMemory());
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Long-term memory cleared." });
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : "Failed to clear memory.");
+    } finally {
+      setMemoryLoading(false);
+    }
   }
 
   return (
@@ -723,6 +816,166 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                         Save Search Settings
                       </Button>
                     </div>
+                  </section>
+                </>
+              )}
+
+              {activeSection === "memory" && (
+                <>
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="mb-2 flex items-center gap-2">
+                          <Database size={18} />
+                          <h3 className="text-sm font-semibold">Memory</h3>
+                        </div>
+                        <p className="text-sm leading-6 text-bench-700">
+                          Long-term memory is persisted across runs, summarized into profile sections, and injected into future prompts when relevant.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
+                          {longTermFacts.length} facts
+                        </span>
+                        <Button type="button" variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={loadMemory} disabled={memoryLoading}>
+                          Refresh
+                        </Button>
+                        <Button type="button" variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={clearMemory} disabled={memoryLoading || !longTermMemory}>
+                          Clear Memory
+                        </Button>
+                      </div>
+                    </div>
+
+                    {memoryError && (
+                      <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-bench-900 ring-1 ring-inset ring-red-200">
+                        {memoryError}
+                      </p>
+                    )}
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <div className="rounded-2xl bg-bench-50/80 px-4 py-3 ring-1 ring-inset ring-bench-200">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Last updated</p>
+                        <p className="mt-2 break-all font-mono text-xs text-bench-900">
+                          {longTermMemory?.lastUpdated ?? (memoryLoading ? "Loading memory..." : "No long-term memory loaded")}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-bench-50/80 px-4 py-3 ring-1 ring-inset ring-bench-200">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Selected run</p>
+                        <p className="mt-2 break-all font-mono text-xs text-bench-900">
+                          {state.activeSnapshot?.runId ?? "No active run selected"}
+                        </p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <h3 className="text-sm font-semibold">Memory Profile</h3>
+                    {longTermSections.length > 0 ? (
+                      <div className="mt-5 grid gap-3 md:grid-cols-2">
+                        {longTermSections.map((section) => (
+                          <article key={section.label} className="rounded-2xl bg-bench-50 px-4 py-4 ring-1 ring-inset ring-bench-200">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <h4 className="text-sm font-semibold text-bench-900">{section.label}</h4>
+                              {section.value.updatedAt && (
+                                <span className="rounded-full bg-white px-2 py-0.5 font-mono text-[11px] text-bench-700 ring-1 ring-inset ring-bench-200">
+                                  {section.value.updatedAt}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-3 text-sm leading-6 text-bench-700">{section.value.summary}</p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-2xl bg-bench-50 px-4 py-5 text-sm text-bench-700 ring-1 ring-inset ring-bench-200">
+                        <p className="font-semibold text-bench-900">No long-term memory profile yet.</p>
+                        <p className="mt-2 leading-6">
+                          Ora records durable memory from explicit preferences, corrections, goals, and reinforced working patterns.
+                        </p>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <h3 className="text-sm font-semibold">Memory Facts</h3>
+                    {longTermFacts.length > 0 ? (
+                      <div className="mt-5 space-y-3">
+                        {longTermFacts.map((fact) => (
+                          <article key={fact.id} className="rounded-2xl bg-bench-50 px-4 py-4 ring-1 ring-inset ring-bench-200">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="break-all font-mono text-xs font-semibold text-bench-900">
+                                  {fact.id}
+                                </p>
+                                <p className="mt-1 break-all font-mono text-[11px] text-bench-700">source: {fact.source}</p>
+                              </div>
+                              <div className="flex shrink-0 flex-wrap gap-2">
+                                <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset", memoryKindClasses(fact.category))}>
+                                  {fact.category}
+                                </span>
+                                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
+                                  {Math.round(fact.confidence * 100)}%
+                                </span>
+                              </div>
+                            </div>
+                            <p className="mt-3 text-sm leading-6 text-bench-900">{fact.content}</p>
+                            {fact.sourceError && <p className="mt-2 text-xs leading-5 text-bench-700">Avoid: {fact.sourceError}</p>}
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-2xl bg-bench-50 px-4 py-5 text-sm text-bench-700 ring-1 ring-inset ring-bench-200">
+                        <p className="font-semibold text-bench-900">No long-term facts captured yet.</p>
+                        <p className="mt-2 leading-6">Facts appear here after runs include durable preference, correction, goal, or behavior signals.</p>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <h3 className="text-sm font-semibold">Run Memory Records</h3>
+                    {memoryRecords.length > 0 ? (
+                      <div className="mt-5 space-y-3">
+                        {memoryRecords.map((record) => (
+                          <article key={record.id} className="rounded-2xl bg-bench-50 px-4 py-4 ring-1 ring-inset ring-bench-200">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="break-all font-mono text-xs font-semibold text-bench-900">
+                                  {record.namespace.join("/")}
+                                </p>
+                                <p className="mt-1 break-all font-mono text-[11px] text-bench-700">{record.id}</p>
+                              </div>
+                              <div className="flex shrink-0 flex-wrap gap-2">
+                                <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset", memoryKindClasses(record.kind))}>
+                                  {record.kind}
+                                </span>
+                                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
+                                  {memoryTimestamp(record.updatedAt)}
+                                </span>
+                              </div>
+                            </div>
+                            <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-white px-3 py-3 text-xs leading-5 text-bench-900 ring-1 ring-inset ring-bench-200">
+                              {memoryValue(record.value)}
+                            </pre>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-2xl bg-bench-50 px-4 py-5 text-sm text-bench-700 ring-1 ring-inset ring-bench-200">
+                        <p className="font-semibold text-bench-900">No memory recorded for the selected run yet.</p>
+                        <p className="mt-2 leading-6">
+                          Run-scoped records are kept here for debugging; long-term memory lives in the profile and facts above.
+                        </p>
+                      </div>
+                    )}
+                    {memoryNamespaces.length > 0 && (
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {memoryNamespaces.map((namespace) => (
+                          <span key={namespace} className="rounded-full bg-bench-50 px-3 py-1.5 font-mono text-xs text-bench-700 ring-1 ring-inset ring-bench-200">
+                            {namespace}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </section>
                 </>
               )}

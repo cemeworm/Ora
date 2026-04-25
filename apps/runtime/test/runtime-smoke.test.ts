@@ -388,6 +388,7 @@ describe("Ora runtime smoke path", () => {
         verifier: {
           verdict: "fail",
           exhausted: true,
+          failureKind: "verification_failed",
         },
       });
     } finally {
@@ -1000,6 +1001,7 @@ describe("Ora runtime smoke path", () => {
     expect(run.status).toBe("failed");
     expect(state.status).toBe("failed");
     expect(state.events.map((event) => event.type)).toContain("run.failed");
+    expect(state.checkpoints[0]?.label).toBe("Failed checkpoint");
     expect(state.events.map((event) => event.type)).not.toContain("run.done");
     expect(state.actions.some((action) => action.status === "failed")).toBe(true);
   });
@@ -1062,6 +1064,7 @@ describe("Ora runtime smoke path", () => {
 
     expect(run.status).toBe("interrupted");
     expect(state.status).toBe("interrupted");
+    expect(state.checkpoints[0]?.label).toBe("Interrupted checkpoint");
     expect(state.pendingClarifications).toHaveLength(1);
     expect(state.pendingClarifications[0]).toMatchObject({
       nodeId: "research",

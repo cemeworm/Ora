@@ -128,6 +128,7 @@ export class RuntimeToolExecutor {
       "When a tool is needed, respond with exactly one JSON object and no prose.",
       "Tool call shape: {\"tool\":\"tool.id\",\"args\":{...}}",
       rootPath ? "Workspace file and shell tools are rooted inside the selected project folder." : "Workspace file and shell tools are unavailable unless a project folder is selected.",
+      "If the user asks what tools you can use, answer from this available-tools list and the selected workspace context; do not claim you have no local tools when tools are listed here.",
       "Available tools:",
       descriptions,
       enabled.some((toolId) => toolId.startsWith("web.") || toolId.startsWith("mcp."))

@@ -8,3 +8,5 @@ target/
 *.tsbuildinfo
 .ora/
 apps/desktop/src-tauri/resources/runtime-sidecar/
+apps/desktop/src-tauri/resources/langfuse/*
+!apps/desktop/src-tauri/resources/langfuse/.keep

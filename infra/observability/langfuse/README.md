@@ -4,17 +4,25 @@ Ora runtime can export local run traces and model generations to Langfuse. In th
 
 ## Start Langfuse locally
 
-Use the official Langfuse Docker Compose setup with Ora's managed bootstrap environment:
+Ora ships a managed Docker Compose project at `infra/observability/langfuse/docker-compose.yml`. The desktop packaging step stages this file into `apps/desktop/src-tauri/resources/langfuse/`, and Tauri bundles it into `Ora.app/Contents/Resources/langfuse/`.
+
+For local development, you can run the same managed bundle directly:
 
 ```sh
-git clone https://github.com/langfuse/langfuse.git
-cd langfuse
-cp /path/to/ora/infra/observability/langfuse/.env.managed.example .env.ora
-# Merge .env.ora into the Langfuse compose environment for langfuse-web and langfuse-worker.
-docker compose up
+cd infra/observability/langfuse
+docker compose --project-name ora-langfuse up -d
 ```
 
 Langfuse will create the local organization, project, user, and API keys on startup via `LANGFUSE_INIT_*` variables.
+
+For desktop development, the normal sidecar packaging step stages the managed compose file automatically:
+
+```sh
+pnpm --filter @ora/runtime package:sidecar
+pnpm --filter @ora/desktop tauri dev
+```
+
+If a different startup path is needed, set `ORA_MANAGED_LANGFUSE_COMMAND` to a background-safe command that starts Langfuse. To opt out of managed startup entirely, set `ORA_MANAGED_LANGFUSE_SERVICE=false`.
 
 ## Point Ora at Managed Langfuse
 

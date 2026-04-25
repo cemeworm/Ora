@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
+import { SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { getComposerInteractivity } from "../../desktop/src/components/ChatInput";
+import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
 import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
 import { adaptChatMessages } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
 describe("desktop composer pending-run behavior", () => {
+  it("defaults fresh desktop mode selection to single agent", () => {
+    const next = workbenchReducer(initialWorkbenchState, {
+      type: "BOOTSTRAP",
+      patterns: [],
+      modes: [
+        { id: "generator_verifier", family: "generator_verifier" },
+        { id: SINGLE_AGENT_MODE_ID, family: "orchestrator_subagent" },
+      ] as any,
+      projects: [],
+      providerRegistry: { defaultProviderId: "local-smoke", providers: [] } as any,
+      toolRegistry: { tools: [] } as any,
+      skillRegistry: { skills: [] } as any,
+      providerSecretStatuses: [],
+      providerStatuses: [],
+      health: { ok: true, mode: "browser_mock", service: "Runtime", detail: "ok" },
+    });
+
+    expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
+    expect(next.selectedPattern).toBe("orchestrator_subagent");
+  });
+
   it("builds run search config from desktop settings", () => {
     expect(buildRunSearchConfig({
       enabled: true,
@@ -348,5 +371,76 @@ describe("desktop composer pending-run behavior", () => {
     const messages = adaptChatMessages([], { "run-gv": snapshot });
 
     expect(messages.find((message) => message.role === "assistant")?.content).toBe("Draft answer.");
+  });
+
+  it("shows concrete failure details in Trails anomalies", () => {
+    const snapshot = {
+      runId: "run-failed",
+      turnIndex: 1,
+      status: "failed",
+      pattern: "generator_verifier",
+      input: { prompt: "What tools can you use?", createdAt: 1 },
+      config: { pattern: "generator_verifier", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-failed:evt-0",
+        runId: "run-failed",
+        seq: 0,
+        type: "run.failed",
+        createdAt: 2,
+        pattern: "generator_verifier",
+        payload: { status: "failed", error: "Verifier response did not contain a parseable pass/fail verdict." },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: 2,
+    } as unknown as OraStateSnapshot;
+
+    expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
+      "Run failed: Verifier response did not contain a parseable pass/fail verdict.",
+    );
+  });
+
+  it("does not offer Langfuse deep links for degraded traces", () => {
+    expect(canOpenLangfuseTrace({
+      provider: "langfuse",
+      enabled: true,
+      available: true,
+      traceUrl: "http://localhost:3000/project/ora-runtime/traces/trace-1",
+      source: "degraded",
+      reason: "fetch failed",
+      generationRefs: [],
+    })).toBe(false);
+
+    expect(canOpenLangfuseTrace({
+      provider: "langfuse",
+      enabled: true,
+      available: true,
+      traceUrl: "http://localhost:3000/project/ora-runtime/traces/trace-2",
+      source: "local_synthesized",
+      reason: "fetch failed",
+      generationRefs: [],
+    })).toBe(false);
+
+    expect(canOpenLangfuseTrace({
+      provider: "langfuse",
+      enabled: true,
+      available: true,
+      traceUrl: "http://localhost:3000/project/ora-runtime/traces/trace-3",
+      source: "managed_local",
+      generationRefs: [],
+    })).toBe(true);
   });
 });

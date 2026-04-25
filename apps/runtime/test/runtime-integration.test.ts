@@ -25,6 +25,7 @@ import {
   PlanService,
   PolicyService
 } from "../src/capabilities.js";
+import { FileLongTermMemoryStore, LongTermMemoryManager } from "../src/memory.js";
 import { shutdownLangfuseTelemetry } from "../src/telemetry/langfuse.js";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
@@ -130,6 +131,61 @@ describe("MemoryService", () => {
     const list = service.list();
     expect(list).toHaveLength(1);
     expect(list[0]?.id).toBe(record.id);
+  });
+});
+
+describe("LongTermMemoryManager", () => {
+  it("persists durable facts and formats them for prompt injection", () => {
+    const manager = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir), clock);
+    const snapshot = StateSnapshotSchema.parse({
+      runId: "run-memory-1",
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "orchestrator_subagent",
+      input: {
+        prompt: "记住：以后默认把 Ora memory 做成长期画像和 facts，而不是只展示 session 上下文。",
+        context: {},
+        createdAt: clock(),
+      },
+      config: {
+        pattern: "orchestrator_subagent",
+        profileIds: [],
+        skillIds: [],
+        toolIds: [],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "test",
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: clock(),
+    });
+
+    const { memory, factsAdded } = manager.updateFromRun(snapshot);
+
+    expect(factsAdded).toHaveLength(1);
+    expect(memory.facts[0]?.category).toBe("preference");
+    expect(memory.user.topOfMind.summary).toContain("长期画像");
+
+    const reloaded = new LongTermMemoryManager(new FileLongTermMemoryStore(tempDir), clock).get();
+    expect(reloaded.facts[0]?.content).toContain("长期画像");
+    expect(manager.formatForInjection()).toContain("Long-term Facts");
   });
 });
 
@@ -331,6 +387,54 @@ describe("LocalRunStore", () => {
     expect(state.events.length).toBeGreaterThan(0);
     expect(state.profiles.length).toBeGreaterThan(0);
     expect(state.actions.length).toBeGreaterThan(0);
+  });
+
+  it("updates long-term memory after durable user signals and injects it into later runs", async () => {
+    const store = createStore();
+    const handle = createRuntimeMethodHandler(store);
+    const first = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "记住：以后默认把 Ora memory 做成长期画像和 facts，而不是只展示 session 上下文。" },
+        config: { pattern: "generator_verifier" }
+      }
+    }) as { runId: string };
+
+    const firstState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.state",
+      params: { runId: first.runId }
+    }));
+    const memory = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "memory.get",
+    });
+
+    expect(firstState.memory.some((record) => record.namespace.join("/") === "profile/long-term/preference")).toBe(true);
+    expect(JSON.stringify(memory)).toContain("长期画像");
+
+    const second = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Use the default memory approach." },
+        config: { pattern: "generator_verifier" }
+      }
+    }) as { runId: string };
+    const secondState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "runs.state",
+      params: { runId: second.runId }
+    }));
+
+    expect(String(secondState.config.metadata.memoryPromptOverlay)).toContain("Long-term Facts");
+    expect(String(secondState.config.metadata.memoryPromptOverlay)).toContain("长期画像");
   });
 
   it("returns a disabled trail when Langfuse tracing is off", async () => {

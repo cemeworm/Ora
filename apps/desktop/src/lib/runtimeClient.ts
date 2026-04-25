@@ -20,6 +20,7 @@ import type {
   EvaluationSpec as OraEvaluationSpec,
   JsonRpcRequest,
   JsonRpcResponse,
+  LongTermMemoryProfile as OraLongTermMemoryProfile,
   MemoryRecord as OraMemoryRecord,
   ModeRuntimeAtomDefinition as OraModeRuntimeAtomDefinition,
   ModeCreateParams as OraModeCreateParams,
@@ -63,7 +64,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_PROVIDERS, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -85,6 +86,7 @@ export type {
   OraEvaluationRunStream,
   OraEvaluationSpec,
   OraEventEnvelope,
+  OraLongTermMemoryProfile,
   OraMemoryRecord,
   OraModeRuntimeAtomDefinition,
   OraModeCreateParams,
@@ -157,6 +159,7 @@ export function createRuntimeClient() {
   let lastHealth: RuntimeHealth | undefined;
   let processBridgeEnabled = false;
   let tauriUnavailableReason = "Runtime sidecar is unavailable.";
+  let managedLangfuseDetail: string | undefined;
 
   async function call<T>(method: string, params?: unknown): Promise<T> {
     const request: JsonRpcRequest = {
@@ -176,7 +179,10 @@ export function createRuntimeClient() {
         mode: "tauri",
         service: "ora-runtime",
         detail: processBridgeEnabled
-          ? "Tauri command bridge is serving Ora JSON-RPC."
+          ? compactDetails([
+            "Tauri command bridge is serving Ora JSON-RPC.",
+            managedLangfuseDetail,
+          ])
           : tauriUnavailableReason,
       };
       return unwrapJsonRpc<T>(tauriResponse.response);
@@ -206,8 +212,12 @@ export function createRuntimeClient() {
     async bootstrap(): Promise<RuntimeBootstrap> {
       const sidecarStatus = await readTauriSidecarStatus();
       processBridgeEnabled = Boolean(sidecarStatus?.process_spawn_available);
+      managedLangfuseDetail = formatManagedLangfuseStatus(sidecarStatus);
       tauriUnavailableReason = sidecarStatus
-        ? String(sidecarStatus.reason ?? "Runtime sidecar process bridge is unavailable.")
+        ? compactDetails([
+          String(sidecarStatus.reason ?? "Runtime sidecar process bridge is unavailable."),
+          managedLangfuseDetail,
+        ])
         : "Runtime sidecar process bridge is unavailable.";
 
       if (isTauriAvailable() && !processBridgeEnabled) {
@@ -311,6 +321,12 @@ export function createRuntimeClient() {
     },
     async getSession(sessionId: string): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.get", { sessionId });
+    },
+    async getMemory(): Promise<OraLongTermMemoryProfile> {
+      return call<OraLongTermMemoryProfile>("memory.get");
+    },
+    async clearMemory(): Promise<OraLongTermMemoryProfile> {
+      return call<OraLongTermMemoryProfile>("memory.clear");
     },
     async listAgents(): Promise<OraCustomAgentSummary[]> {
       return call<OraCustomAgentSummary[]>("agents.list");
@@ -591,6 +607,24 @@ async function readTauriSidecarStatus(): Promise<Record<string, unknown> | undef
   }
 }
 
+function compactDetails(items: Array<string | undefined>) {
+  return items
+    .map((item) => item?.trim())
+    .filter((item): item is string => Boolean(item))
+    .join(" ");
+}
+
+function formatManagedLangfuseStatus(sidecarStatus: Record<string, unknown> | undefined): string | undefined {
+  const rawStatus = sidecarStatus?.managed_langfuse;
+  const status = isRecord(rawStatus) ? rawStatus : undefined;
+  if (!status) {
+    return undefined;
+  }
+  const available = status.available === true;
+  const reason = typeof status.reason === "string" ? status.reason : undefined;
+  return `Langfuse ${available ? "ready" : "not ready"}${reason ? `: ${reason}` : "."}`;
+}
+
 async function getProviderSecretStatuses(providers: OraProviderConfig[]): Promise<OraProviderSecretStatus[]> {
   if (!isTauriAvailable()) {
     return providers.map((provider) => ({
@@ -682,6 +716,13 @@ class LocalJsonRpcRuntime {
   private customSkills = new Map<string, OraSkillDetail>();
   private skillEnabled = new Map<string, boolean>();
   private modes = new Map<string, OraModeSpec>();
+  private memory = LongTermMemoryProfileSchema.parse({
+    version: "1.0",
+    lastUpdated: new Date(0).toISOString(),
+    user: {},
+    history: {},
+    facts: [],
+  });
   private evaluationDatasets = new Map<string, OraEvaluationDatasetDetail>();
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
@@ -821,6 +862,17 @@ class LocalJsonRpcRuntime {
           checkedAt: Date.now(),
         } satisfies OraProviderStatus;
       }
+      case "memory.get":
+        return this.memory;
+      case "memory.clear":
+        this.memory = LongTermMemoryProfileSchema.parse({
+          version: "1.0",
+          lastUpdated: new Date().toISOString(),
+          user: {},
+          history: {},
+          facts: [],
+        });
+        return this.memory;
       case "agents.list":
         return [...this.customAgents.values()]
           .map(({ soul, ...summary }) => summary)
@@ -1543,6 +1595,7 @@ class LocalJsonRpcRuntime {
       customAgentId: parsed.config?.customAgentId,
       projectId: parsed.input.projectId ?? this.sessions.get(sessionId)?.projectId,
     }, sessionId, turnIndex);
+    this.updateMockMemoryFromPrompt(snapshot);
     this.runs.set(runId, snapshot);
     this.updateSessionFromSnapshot(snapshot);
 
@@ -1555,6 +1608,45 @@ class LocalJsonRpcRuntime {
       modeId: mode.id,
       startedAt,
     };
+  }
+
+  private updateMockMemoryFromPrompt(snapshot: OraStateSnapshot) {
+    const prompt = snapshot.input.prompt.trim();
+    if (!/(记住|记下来|以后|下次|默认|偏好|不要|remember|prefer|always|never|next time)/i.test(prompt)) {
+      return;
+    }
+    const now = new Date().toISOString();
+    const content = prompt.replace(/^请?(记住|记下来)[:：,，]?\s*/i, "").slice(0, 700);
+    const fact = {
+      id: `fact_${snapshot.runId.replace(/[^a-z0-9]+/gi, "_")}`,
+      content,
+      category: /不要|不对|wrong|incorrect/i.test(prompt) ? "correction" : "preference",
+      confidence: /不要|不对|wrong|incorrect/i.test(prompt) ? 0.95 : 0.85,
+      createdAt: now,
+      source: snapshot.runId,
+    };
+    this.memory = LongTermMemoryProfileSchema.parse({
+      ...this.memory,
+      lastUpdated: now,
+      user: {
+        ...this.memory.user,
+        topOfMind: {
+          summary: content,
+          updatedAt: now,
+        },
+      },
+      history: {
+        ...this.memory.history,
+        recentMonths: {
+          summary: content,
+          updatedAt: now,
+        },
+      },
+      facts: [
+        fact,
+        ...this.memory.facts.filter((item) => item.content !== content),
+      ],
+    });
   }
 
   private importEvaluationDataset(params: unknown): OraEvaluationDatasetDetail {
@@ -1816,7 +1908,13 @@ class LocalJsonRpcRuntime {
     const checkpoint: OraCheckpointMeta = {
       id: `${runId}:checkpoint-0`,
       runId,
-      label: status === "succeeded" ? "Smoke checkpoint" : "Preview checkpoint",
+      label: status === "succeeded"
+        ? "Smoke checkpoint"
+        : status === "failed"
+          ? "Failed checkpoint"
+          : status === "interrupted"
+            ? "Interrupted checkpoint"
+            : "Preview checkpoint",
       createdAt: eventBase + 5000,
       eventSeq: 0,
       stateHash: `${pattern}:${definition.planTemplate.length}:${definition.topology.nodes.length}`,

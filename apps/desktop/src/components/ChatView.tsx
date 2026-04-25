@@ -77,8 +77,6 @@ export function ChatView({
     providerOptions.find((provider) => provider.id === state.selectedProviderId) ??
     allProviders.find((provider) => provider.id === state.selectedProviderId) ??
     providerOptions[0];
-  const workspaceContentClassName = "mx-auto flex min-h-0 w-full max-w-[88rem]";
-
   return (
     <div className="relative flex h-full min-h-0 w-full bg-transparent">
       <ChatHeader
@@ -91,7 +89,7 @@ export function ChatView({
         onToggleDetailDrawer={onToggleDetailDrawer}
         detailDrawerOpen={detailDrawerOpen}
       />
-      <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col pt-12">
         {showWelcome && (
           <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center px-6">
             <div className="flex w-full max-w-container-md flex-col items-center gap-2 text-center">
@@ -103,17 +101,15 @@ export function ChatView({
           </div>
         )}
         <div className="flex min-h-0 flex-1">
-          <div className={workspaceContentClassName}>
-            <ChatMessages
-              chatMessages={chatMessages}
-              actionRecords={actionRecords}
-              isApprovalRequired={isApprovalRequired}
-              onResumeRun={onResumeRun}
-              onCancelRun={onCancelRun}
-              onOpenArtifact={onOpenArtifact}
-              busyCommand={busyCommand}
-            />
-          </div>
+          <ChatMessages
+            chatMessages={chatMessages}
+            actionRecords={actionRecords}
+            isApprovalRequired={isApprovalRequired}
+            onResumeRun={onResumeRun}
+            onCancelRun={onCancelRun}
+            onOpenArtifact={onOpenArtifact}
+            busyCommand={busyCommand}
+          />
         </div>
         <ChatInput
           composerPrompt={composerPrompt}

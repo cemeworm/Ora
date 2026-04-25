@@ -350,8 +350,10 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
               },
             ),
             system: context.systemPrompt(
-              "You are the verifier. Return only JSON with keys verdict, rationale, and missingRequirements. "
-              + "Use verdict=\"pass\" only when the candidate fully satisfies the rubric."
+              "You are the verifier. Return only one compact JSON object with keys verdict, rationale, and missingRequirements. "
+              + "Use verdict=\"pass\" only when the candidate fully satisfies the rubric. "
+              + "If the candidate fails or you cannot verify it, return {\"verdict\":\"fail\",\"rationale\":\"...\",\"missingRequirements\":[\"...\"]}. "
+              + "Do not include markdown, prose, greetings, or role explanations outside the JSON object."
             ),
             riskLevel: node.riskLevel,
           });
@@ -403,6 +405,7 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
         missingRequirements: (bag.verifierAssessment as Record<string, unknown> | undefined)?.missingRequirements,
         rubric: bag.rubric,
         exhausted: bag.verdict !== "pass",
+        failureKind: bag.verdict !== "pass" ? "verification_failed" : undefined,
       },
     },
   };
