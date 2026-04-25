@@ -380,12 +380,14 @@ export type UserTaskInput = z.infer<typeof UserTaskInputSchema>;
 
 export const DEFAULT_WEB_TOOL_IDS = ["web.fetch", "web.search"] as const;
 export type DefaultWebToolId = typeof DEFAULT_WEB_TOOL_IDS[number];
+export const DEFAULT_SKILL_TOOL_IDS = ["skills.list", "skills.get"] as const;
 
 export function withDefaultWebToolIds(toolIds: readonly string[] = [], options: { disabled?: boolean } = {}): string[] {
+  const withSkillTools = [...new Set([...toolIds, ...DEFAULT_SKILL_TOOL_IDS])];
   if (options.disabled) {
-    return [...new Set(toolIds.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as DefaultWebToolId)))];
+    return withSkillTools.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as DefaultWebToolId));
   }
-  return [...new Set([...toolIds, ...DEFAULT_WEB_TOOL_IDS])];
+  return [...new Set([...withSkillTools, ...DEFAULT_WEB_TOOL_IDS])];
 }
 
 export const SearchProviderIdSchema = z.enum(["brave", "tavily", "serpapi", "kagi", "duckduckgo", "mcp"]);
@@ -3581,6 +3583,8 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "shell.execute", label: "Execute Command", description: "Run an approved command in the selected project folder.", category: "shell", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "web.fetch", label: "Fetch URL", description: "Fetch content from an HTTP or HTTPS URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "web.search", label: "Search Web", description: "Search the web for lightweight research results.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.list", label: "List Skills", description: "List installed Ora skills by name, description, category, and enabled state so an agent can discover relevant skills before answering.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.get", label: "Read Skill", description: "Read the full instructions for one installed Ora skill by name before applying that skill to the conversation.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "mcp.listTools", label: "List MCP Tools", description: "List tools exposed by configured MCP servers.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "mcp.readResource", label: "Read MCP Resource", description: "Read a resource from a configured MCP server.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "mcp.call", label: "MCP Tool Call", description: "Invoke a tool on a configured MCP server.", category: "mcp", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },

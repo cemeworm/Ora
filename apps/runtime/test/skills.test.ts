@@ -66,6 +66,15 @@ describe("managed skill runtime behavior", () => {
       skill.category === "public" &&
       skill.editable === false
     )).toBe(true);
+    expect(listed.skills.some((skill) =>
+      skill.name === "frontend-design" &&
+      skill.category === "public" &&
+      skill.editable === false
+    )).toBe(true);
+    expect(listed.skills.some((skill) =>
+      skill.name === "bootstrap" &&
+      skill.description.includes("Generate a personalized SOUL.md")
+    )).toBe(true);
   });
 
   it("creates, updates, reloads, toggles, and deletes custom skills", () => {

@@ -9,6 +9,7 @@ import {
   CustomAgentSummarySchema,
   CustomAgentUpdateParamsSchema,
   DEFAULT_PROVIDERS,
+  DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
   DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
@@ -133,6 +134,9 @@ describe("Ora shared contracts", () => {
       expect(mode.nodes.length).toBeGreaterThan(0);
       expect(mode.nodes.every((node) => node.position)).toBe(true);
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
+      for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
+        expect(mode.capabilityFlags.toolIds).toContain(toolId);
+      }
       for (const toolId of DEFAULT_WEB_TOOL_IDS) {
         expect(mode.capabilityFlags.toolIds).toContain(toolId);
       }

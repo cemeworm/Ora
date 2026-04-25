@@ -17,6 +17,7 @@ import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
 import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
 import { TaskItem, TaskItemMeta, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
+import { MarkdownContent } from "./MarkdownContent";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
 interface AssistantTurnCardProps {
@@ -82,7 +83,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
           ) : null}
 
           <MessageContent className="w-full">
-            <p className={cn("whitespace-pre-wrap break-words", isPlaceholder && "text-muted-foreground")}>{content}</p>
+            <MarkdownContent content={content} className={cn(isPlaceholder && "text-muted-foreground")} />
           </MessageContent>
 
           {turn && turn.artifacts.length > 0 ? (

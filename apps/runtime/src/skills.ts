@@ -353,12 +353,25 @@ function parseSkillFile(content: string): ParsedSkillFile | undefined {
 
 function parseFrontmatter(value: string): Record<string, string> {
   const record: Record<string, string> = {};
-  for (const line of value.split(/\r?\n/)) {
+  const lines = value.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
     const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (!match) {
       continue;
     }
-    record[match[1]!] = stripQuotes(match[2] ?? "");
+    const key = match[1]!;
+    const rawValue = match[2] ?? "";
+    if (/^[>|][+-]?$/.test(rawValue.trim())) {
+      const parts: string[] = [];
+      while (index + 1 < lines.length && (/^\s+/.test(lines[index + 1]!) || lines[index + 1] === "")) {
+        index += 1;
+        parts.push(lines[index]!.trim());
+      }
+      record[key] = rawValue.trim().startsWith("|") ? parts.join("\n").trim() : parts.join(" ").trim();
+      continue;
+    }
+    record[key] = stripQuotes(rawValue);
   }
   return record;
 }

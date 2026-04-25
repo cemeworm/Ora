@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
+import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 
 function createTempStore() {
@@ -177,6 +177,9 @@ describe("Ora runtime smoke path", () => {
     for (const toolId of DEFAULT_WEB_TOOL_IDS) {
       expect(cloned.capabilityFlags.toolIds).toContain(toolId);
     }
+    for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
+      expect(cloned.capabilityFlags.toolIds).toContain(toolId);
+    }
 
     const run = await handle({
       jsonrpc: "2.0",
@@ -197,7 +200,7 @@ describe("Ora runtime smoke path", () => {
       }),
     );
 
-    expect(state.config.toolIds).toEqual(expect.arrayContaining(["shell.execute", ...DEFAULT_WEB_TOOL_IDS]));
+    expect(state.config.toolIds).toEqual(expect.arrayContaining(["shell.execute", ...DEFAULT_WEB_TOOL_IDS, ...DEFAULT_SKILL_TOOL_IDS]));
     expect(state.config.toolIds.filter((toolId) => toolId === "web.search")).toHaveLength(1);
 
     const optOutRun = await handle({
@@ -222,7 +225,7 @@ describe("Ora runtime smoke path", () => {
       }),
     );
 
-    expect(optOutState.config.toolIds).toEqual(["shell.execute"]);
+    expect(optOutState.config.toolIds).toEqual(["shell.execute", ...DEFAULT_SKILL_TOOL_IDS]);
   });
 
   it("executes web.search for a provider without native browsing", async () => {

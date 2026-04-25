@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ActionRiskLevel, SearchProviderConfig, ToolDescriptor } from "@ora/shared";
+import type { ActionRiskLevel, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
 import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
 
@@ -17,6 +17,8 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "shell.execute",
   "web.fetch",
   "web.search",
+  "skills.list",
+  "skills.get",
   "mcp.listTools",
   "mcp.readResource",
   "mcp.call",
@@ -32,11 +34,17 @@ export interface RuntimeToolCall {
 export interface RuntimeToolExecutorOptions {
   workspace?: unknown;
   toolDescriptors?: readonly ToolDescriptor[];
+  skillRegistry?: SkillRegistryTools;
   fetchImpl?: typeof fetch;
   mcpConfigPaths?: string[];
   searchProvider?: SearchProvider;
   searchProviderConfig?: SearchProviderConfig;
   searchEnv?: NodeJS.ProcessEnv;
+}
+
+interface SkillRegistryTools {
+  list(params?: SkillListParams): SkillDescriptor[];
+  get(params: { name: string }): SkillDetail;
 }
 
 interface McpServerConfig {
@@ -83,12 +91,14 @@ export function isRuntimeToolImplemented(toolId: string): toolId is RuntimeToolI
 export class RuntimeToolExecutor {
   private readonly fetchImpl: typeof fetch;
   private readonly toolDescriptors: readonly ToolDescriptor[];
+  private readonly skillRegistry?: SkillRegistryTools;
   private readonly mcpConfigPaths?: string[];
   private readonly searchProvider: SearchProvider;
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.toolDescriptors = options.toolDescriptors ?? [];
+    this.skillRegistry = options.skillRegistry;
     this.mcpConfigPaths = options.mcpConfigPaths;
     this.workspace = options.workspace;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
@@ -147,6 +157,9 @@ export class RuntimeToolExecutor {
       "Tool call shape: {\"tool\":\"tool.id\",\"args\":{...}}",
       rootPath ? "Workspace file and shell tools are rooted inside the selected project folder." : "Workspace file and shell tools are unavailable unless a project folder is selected.",
       "If the user asks what tools you can use, answer from this available-tools list and the selected workspace context; do not claim you have no local tools when tools are listed here.",
+      enabled.some((toolId) => toolId.startsWith("skills."))
+        ? "Use skills.list to discover enabled skills when a specialized workflow may help; use skills.get to read a relevant skill before applying it."
+        : undefined,
       "Available tools:",
       descriptions,
       enabled.some((toolId) => toolId.startsWith("web.") || toolId.startsWith("mcp."))
@@ -228,6 +241,10 @@ export class RuntimeToolExecutor {
         return fetchUrl(this.fetchImpl, call.args);
       case "web.search":
         return searchWithProvider(this.searchProvider, call.args);
+      case "skills.list":
+        return listRuntimeSkills(this.skillRegistry, call.args);
+      case "skills.get":
+        return getRuntimeSkill(this.skillRegistry, call.args);
       case "mcp.listTools":
         return listMcpTools(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
       case "mcp.readResource":
@@ -262,6 +279,10 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"web.fetch\",\"args\":{\"url\":\"https://example.com\"}}";
     case "web.search":
       return "{\"tool\":\"web.search\",\"args\":{\"query\":\"Model Context Protocol docs\"}}";
+    case "skills.list":
+      return "{\"tool\":\"skills.list\",\"args\":{\"query\":\"frontend design\"}}";
+    case "skills.get":
+      return "{\"tool\":\"skills.get\",\"args\":{\"name\":\"frontend-design\"}}";
     case "mcp.listTools":
       return "{\"tool\":\"mcp.listTools\",\"args\":{\"server\":\"local-docs\"}}";
     case "mcp.readResource":
@@ -608,6 +629,47 @@ async function searchWithProvider(searchProvider: SearchProvider, args: Record<s
   }
   const limit = readPositiveInt(args.limit, 5, 10);
   return searchProvider.search({ query, limit });
+}
+
+function listRuntimeSkills(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.list.");
+  }
+  const category = args.category === "public" || args.category === "custom" ? args.category : undefined;
+  const params: SkillListParams = {
+    ...(category ? { category } : {}),
+    enabledOnly: args.enabledOnly === false ? false : true,
+    ...(typeof args.query === "string" && args.query.trim() ? { query: args.query.trim() } : {}),
+  };
+  const limit = readPositiveInt(args.limit, 25, 100);
+  const allSkills = skillRegistry.list(params);
+  const skills = allSkills.slice(0, limit);
+  return {
+    skills,
+    count: skills.length,
+    truncated: allSkills.length > skills.length,
+  };
+}
+
+function getRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.get.");
+  }
+  const name = typeof args.name === "string" && args.name.trim() ? args.name.trim() : undefined;
+  if (!name) {
+    throw new Error("skills.get requires a skill name.");
+  }
+  const detail = skillRegistry.get({ name });
+  const localDirectory = detail.path ? path.dirname(detail.path) : undefined;
+  return {
+    ...detail,
+    localDirectory,
+    usageHint: [
+      localDirectory ? `This skill is installed at ${localDirectory}; resolve relative references such as scripts/, references/, templates/, assets/, and evals/ from that directory.` : undefined,
+      "If upstream instructions mention /mnt/skills/public or /mnt/skills/user, use this installed skill directory instead.",
+      "If upstream instructions mention /mnt/user-data, use the selected Ora workspace or explicit user-provided file paths instead.",
+    ].filter(Boolean).join(" "),
+  };
 }
 
 function parseHttpUrl(value: unknown, toolName: string): string {

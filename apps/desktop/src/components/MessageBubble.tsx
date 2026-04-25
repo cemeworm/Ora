@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Bot, UserRound } from "lucide-react";
 import type { ChatMessage } from "../types";
 import { cn } from "../lib/utils";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface MessageBubbleProps {
   role: ChatMessage["role"];
@@ -42,7 +43,7 @@ export function MessageBubble({ role, content, children, className }: MessageBub
                 : "rounded-[22px] border border-transparent bg-transparent text-foreground",
             )}
           >
-            {content ? <p className="whitespace-pre-wrap break-words">{content}</p> : null}
+            {content ? <MarkdownContent content={content} /> : null}
           </div>
           {children}
         </div>

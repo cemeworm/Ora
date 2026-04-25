@@ -8,6 +8,7 @@ import {
   IMPLEMENTED_RUNTIME_TOOL_IDS,
   RuntimeToolExecutor,
 } from "../src/harness/runtime-tool-executor.js";
+import { RuntimeSkillRegistry } from "../src/harness/capability-registries.js";
 
 const cleanupPaths: string[] = [];
 
@@ -52,12 +53,34 @@ describe("RuntimeToolExecutor", () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
 
-    const prompt = executor.systemPrompt(["file.read", "file.list", "web.fetch"]) ?? "";
+    const prompt = executor.systemPrompt(["file.read", "file.list", "web.fetch", "skills.list", "skills.get"]) ?? "";
 
     expect(prompt).toContain("If the user asks what tools you can use");
     expect(prompt).toContain("- file.read:");
     expect(prompt).toContain("- file.list:");
     expect(prompt).toContain("- web.fetch:");
+    expect(prompt).toContain("- skills.list:");
+    expect(prompt).toContain("- skills.get:");
+    expect(prompt).toContain("Use skills.list to discover enabled skills");
+  });
+
+  it("lists and reads skills so agents can discover skill instructions during a conversation", async () => {
+    const skillRegistry = new RuntimeSkillRegistry();
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS, skillRegistry });
+
+    const listed = await executor.execute({
+      tool: "skills.list",
+      args: { query: "frontend", limit: 5 },
+    }) as { skills: Array<{ name: string; description: string }> };
+    expect(listed.skills.some((skill) => skill.name === "frontend-design")).toBe(true);
+
+    const detail = await executor.execute({
+      tool: "skills.get",
+      args: { name: "frontend-design" },
+    }) as { name: string; content: string; usageHint: string };
+    expect(detail.name).toBe("frontend-design");
+    expect(detail.content).toContain("## Output Requirements");
+    expect(detail.usageHint).toContain("frontend-design");
   });
 
   it("reads, lists, globs, and greps files inside the workspace root", async () => {
