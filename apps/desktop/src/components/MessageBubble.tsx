@@ -29,7 +29,7 @@ export function MessageBubble({ role, content, children, className }: MessageBub
         <div
           className={cn(
             "mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs",
-            isUser && "bg-secondary text-foreground",
+            isUser && "mt-2.5 bg-secondary text-foreground",
           )}
         >
           {isUser ? <UserRound size={14} /> : <Bot size={14} />}

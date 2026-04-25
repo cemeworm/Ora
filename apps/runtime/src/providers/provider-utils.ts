@@ -143,6 +143,26 @@ export function extractOpenAiChatToolCalls(raw: unknown, tools: readonly ModelTo
   return calls;
 }
 
+export function extractOpenAiChatReasoningContent(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).choices)) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const choice of (raw as Record<string, unknown>).choices as unknown[]) {
+    const message = choice && typeof choice === "object" ? (choice as Record<string, unknown>).message : undefined;
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const reasoning = (message as Record<string, unknown>).reasoning_content;
+    if (typeof reasoning === "string") {
+      parts.push(reasoning);
+    }
+  }
+
+  return parts.length > 0 ? parts.join("") : undefined;
+}
+
 export function extractOpenAiResponsesToolCalls(raw: unknown, tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).output)) {
     return [];
@@ -166,6 +186,131 @@ export function extractOpenAiResponsesToolCalls(raw: unknown, tools: readonly Mo
     });
   }
   return calls;
+}
+
+export function extractOpenAiChatStreamReasoningContent(rawEvents: readonly unknown[]): string | undefined {
+  const parts: string[] = [];
+  for (const event of rawEvents) {
+    if (!event || typeof event !== "object" || !Array.isArray((event as Record<string, unknown>).choices)) {
+      continue;
+    }
+    for (const choice of (event as Record<string, unknown>).choices as unknown[]) {
+      if (!choice || typeof choice !== "object") {
+        continue;
+      }
+      const delta = (choice as Record<string, unknown>).delta;
+      if (!delta || typeof delta !== "object") {
+        continue;
+      }
+      const reasoning = (delta as Record<string, unknown>).reasoning_content;
+      if (typeof reasoning === "string") {
+        parts.push(reasoning);
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join("") : undefined;
+}
+
+export function extractOpenAiChatStreamToolCalls(rawEvents: readonly unknown[], tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
+  const calls = new Map<number, {
+    id?: string;
+    name?: string;
+    arguments: string;
+    raw: unknown[];
+  }>();
+
+  for (const event of rawEvents) {
+    if (!event || typeof event !== "object" || !Array.isArray((event as Record<string, unknown>).choices)) {
+      continue;
+    }
+    for (const choice of (event as Record<string, unknown>).choices as unknown[]) {
+      if (!choice || typeof choice !== "object") {
+        continue;
+      }
+      const delta = (choice as Record<string, unknown>).delta;
+      if (!delta || typeof delta !== "object" || !Array.isArray((delta as Record<string, unknown>).tool_calls)) {
+        continue;
+      }
+      for (const rawCall of (delta as Record<string, unknown>).tool_calls as unknown[]) {
+        if (!rawCall || typeof rawCall !== "object") {
+          continue;
+        }
+        const record = rawCall as Record<string, unknown>;
+        const index = typeof record.index === "number" ? record.index : calls.size;
+        const existing = calls.get(index) ?? { arguments: "", raw: [] };
+        const fn = record.function && typeof record.function === "object" ? record.function as Record<string, unknown> : {};
+        calls.set(index, {
+          id: typeof record.id === "string" ? record.id : existing.id,
+          name: typeof fn.name === "string" ? fn.name : existing.name,
+          arguments: existing.arguments + (typeof fn.arguments === "string" ? fn.arguments : ""),
+          raw: [...existing.raw, record],
+        });
+      }
+    }
+  }
+
+  return [...calls.values()]
+    .filter((call) => call.name)
+    .map((call, index) => ({
+      id: call.id ?? `tool-call-${index + 1}`,
+      toolId: runtimeToolIdFromProviderName(call.name ?? "", tools),
+      args: parseToolArgs(call.arguments),
+      raw: call.raw,
+    }));
+}
+
+export function extractOpenAiResponsesStreamToolCalls(rawEvents: readonly unknown[], tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
+  const completedOutput = rawEvents
+    .map((event) => event && typeof event === "object" ? (event as Record<string, unknown>).item : undefined)
+    .filter((item) => item && typeof item === "object" && (item as Record<string, unknown>).type === "function_call");
+
+  if (completedOutput.length > 0) {
+    return extractOpenAiResponsesToolCalls({ output: completedOutput }, tools);
+  }
+
+  const calls = new Map<string, {
+    id?: string;
+    callId?: string;
+    name?: string;
+    arguments: string;
+    raw: unknown[];
+  }>();
+
+  for (const event of rawEvents) {
+    if (!event || typeof event !== "object") {
+      continue;
+    }
+    const record = event as Record<string, unknown>;
+    const item = record.item && typeof record.item === "object" ? record.item as Record<string, unknown> : undefined;
+    const key = typeof record.item_id === "string"
+      ? record.item_id
+      : typeof item?.id === "string"
+        ? item.id
+        : typeof record.output_index === "number"
+          ? `output-${record.output_index}`
+          : undefined;
+    if (!key) {
+      continue;
+    }
+    const existing = calls.get(key) ?? { arguments: "", raw: [] };
+    calls.set(key, {
+      id: typeof item?.id === "string" ? item.id : existing.id,
+      callId: typeof item?.call_id === "string" ? item.call_id : existing.callId,
+      name: typeof item?.name === "string" ? item.name : existing.name,
+      arguments: existing.arguments + (typeof record.delta === "string" ? record.delta : ""),
+      raw: [...existing.raw, record],
+    });
+  }
+
+  return [...calls.values()]
+    .filter((call) => call.name)
+    .map((call, index) => ({
+      id: call.callId ?? call.id ?? `tool-call-${index + 1}`,
+      toolId: runtimeToolIdFromProviderName(call.name ?? "", tools),
+      args: parseToolArgs(call.arguments),
+      raw: call.raw,
+    }));
 }
 
 export function extractAnthropicToolCalls(raw: unknown, tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {

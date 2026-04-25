@@ -22,6 +22,7 @@ export interface ModelToolCall {
 export interface ModelMessage {
   role: ModelRole;
   content: string;
+  reasoningContent?: string;
   toolCalls?: readonly ModelToolCall[];
   toolCallId?: string;
   toolName?: string;
@@ -43,6 +44,7 @@ export interface ModelResponse {
   providerType: ProviderType;
   modelId: string;
   text: string;
+  reasoningContent?: string;
   raw: unknown;
   toolCalls?: ModelToolCall[];
   finishReason?: string;

@@ -437,6 +437,100 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("reuses identical web.fetch results inside one runtime tool loop", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.REPEAT_FETCH_KEY;
+    process.env.REPEAT_FETCH_KEY = "test";
+    let providerCalls = 0;
+    let webFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/repeat") {
+        webFetchCalls += 1;
+        return new Response("Repeatable content", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      providerCalls += 1;
+      if (providerCalls <= 2) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: `call-repeat-${providerCalls}`,
+                type: "function",
+                function: {
+                  name: "web__fetch",
+                  arguments: "{\"url\":\"https://example.com/repeat\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Used repeated fetch result once." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch the same URL twice." },
+          config: {
+            modeId: "single_agent",
+            providerId: "repeat-fetch",
+            modelRef: "repeat-fetch-model",
+            providerConfig: {
+              id: "repeat-fetch",
+              label: "Repeat Fetch",
+              type: "openai_compatible",
+              modelId: "repeat-fetch-model",
+              baseUrl: "https://repeat-fetch.test/v1",
+              apiKeyEnv: "REPEAT_FETCH_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const fetchEvents = state.events.filter((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "web.fetch"
+      );
+
+      expect(run.status).toBe("succeeded");
+      expect(webFetchCalls).toBe(1);
+      expect(fetchEvents).toHaveLength(2);
+      expect(fetchEvents[0]?.payload).toMatchObject({ cacheHit: false });
+      expect(fetchEvents[1]?.payload).toMatchObject({ cacheHit: true });
+      expect(state.output).toMatchObject({ text: expect.stringContaining("Used repeated fetch result once.") });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.REPEAT_FETCH_KEY;
+      } else {
+        process.env.REPEAT_FETCH_KEY = previousKey;
+      }
+    }
+  });
+
   it("repairs dangling provider tool calls before the next model invocation", async () => {
     const modeSpec = getModePreset("single_agent");
     const definition = modeSpecToPatternDefinition(modeSpec);
@@ -1528,6 +1622,113 @@ describe("Ora runtime smoke path", () => {
     }));
     expect(state.status).toBe("succeeded");
     expect(state.events.some((event) => event.type === "run.done")).toBe(true);
+  });
+
+  it("executes OpenAI-compatible native tool calls during streaming runs", async () => {
+    const streams: Array<{ status?: string; events: Array<{ type: string; payload: unknown }>; snapshot?: unknown }> = [];
+    const handle = createRuntimeMethodHandler(createTempStore(), undefined, {
+      onRunStream(stream) {
+        streams.push(stream);
+      },
+    });
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-stream-native-tool-"));
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "Streaming native tool result\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.STREAM_NATIVE_TOOL_KEY;
+    process.env.STREAM_NATIVE_TOOL_KEY = "test";
+    let providerCalls = 0;
+    const providerRequestBodies: unknown[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        stream?: boolean;
+        tools?: unknown[];
+        messages?: Array<{ role: string; tool_call_id?: string; content?: string }>;
+      };
+      providerRequestBodies.push(body);
+      expect(body.stream).toBe(true);
+      expect(body.tools?.length).toBeGreaterThan(0);
+
+      if (providerCalls === 1) {
+        return new Response([
+          "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"I need to inspect README before answering.\"}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"content\":\"好的，我先查看。\"}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-readme\",\"type\":\"function\",\"function\":{\"name\":\"file__read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+          "data: [DONE]\n\n",
+        ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+
+      return new Response([
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Read README through streaming native tool.\"}}]}\n\n",
+        "data: [DONE]\n\n",
+      ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    try {
+      const run = (await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.startStreaming",
+        params: {
+          input: {
+            prompt: "Read the README.",
+            context: {
+              projectWorkspace: { label: "Streaming Native Tool Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            modeId: "single_agent",
+            providerId: "stream-native-tool",
+            modelRef: "stream-native-tool-model",
+            providerConfig: {
+              id: "stream-native-tool",
+              label: "Streaming Native Tool",
+              type: "openai_compatible",
+              modelId: "stream-native-tool-model",
+              baseUrl: "https://stream-native-tool.test/v1",
+              apiKeyEnv: "STREAM_NATIVE_TOOL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read"],
+          },
+        },
+      })) as { runId: string; status: string };
+
+      expect(run.status).toBe("running");
+      await waitFor(() => streams.some((stream) => stream.status === "succeeded" || stream.snapshot !== undefined));
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(providerRequestBodies.some((body) =>
+        JSON.stringify(body).includes("call-readme")
+        && JSON.stringify(body).includes("I need to inspect README before answering.")
+      )).toBe(true);
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-readme",
+          toolId: "file.read",
+          source: "provider_native",
+          status: "succeeded",
+        }),
+      ]);
+      expect(state.output).toMatchObject({ text: expect.stringContaining("Read README through streaming native tool.") });
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.STREAM_NATIVE_TOOL_KEY;
+      } else {
+        process.env.STREAM_NATIVE_TOOL_KEY = previousKey;
+      }
+    }
   });
 
   it("resumes an interrupted run with an Ora-owned transition event", async () => {

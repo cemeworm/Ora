@@ -1,5 +1,5 @@
 import type { ProviderConfig } from "@ora/shared";
-import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesToolCalls, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
+import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
 
@@ -141,6 +141,7 @@ export function createOpenAIProvider(
         streamMode: "sse",
         events: rawEvents,
       },
+      toolCalls: extractOpenAiResponsesStreamToolCalls(rawEvents, request.tools),
     } satisfies ModelResponse;
   };
 

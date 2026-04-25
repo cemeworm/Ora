@@ -375,6 +375,77 @@ describe("desktop composer pending-run behavior", () => {
     expect(messages.find((message) => message.role === "assistant")?.content).toBe("Draft answer.");
   });
 
+  it("hides cached duplicate web.fetch events from chat turn steps", () => {
+    const snapshot = {
+      runId: "run-fetch-cache",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Fetch once.", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-fetch-cache:evt-0",
+          runId: "run-fetch-cache",
+          seq: 0,
+          type: "run.started",
+          createdAt: 1,
+          pattern: "orchestrator_subagent",
+          payload: { message: "started" },
+        },
+        {
+          id: "run-fetch-cache:evt-1",
+          runId: "run-fetch-cache",
+          seq: 1,
+          type: "tool.called",
+          createdAt: 2,
+          pattern: "orchestrator_subagent",
+          payload: { toolId: "web.fetch", status: "succeeded", input: { url: "https://example.com" }, output: { url: "https://example.com", status: 200 }, cacheHit: false },
+        },
+        {
+          id: "run-fetch-cache:evt-2",
+          runId: "run-fetch-cache",
+          seq: 2,
+          type: "tool.called",
+          createdAt: 3,
+          pattern: "orchestrator_subagent",
+          payload: { toolId: "web.fetch", status: "succeeded", input: { url: "https://example.com" }, output: { url: "https://example.com", status: 200 }, cacheHit: true },
+        },
+        {
+          id: "run-fetch-cache:evt-3",
+          runId: "run-fetch-cache",
+          seq: 3,
+          type: "run.done",
+          createdAt: 4,
+          pattern: "orchestrator_subagent",
+          payload: { status: "succeeded" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Done." },
+      updatedAt: 4,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages([], { "run-fetch-cache": snapshot }).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.processSteps.filter((step) => step.eventType === "tool.called")).toHaveLength(1);
+  });
+
   it("shows concrete failure details in Trails anomalies", () => {
     const snapshot = {
       runId: "run-failed",

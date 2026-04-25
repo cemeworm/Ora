@@ -118,6 +118,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cacheKeyForRuntimeTool(call: RuntimeToolCall): string | undefined {
+  if (call.tool !== "web.fetch") {
+    return undefined;
+  }
+  const url = typeof call.args.url === "string" ? call.args.url.trim() : "";
+  return url ? `${call.tool}:${url}` : undefined;
+}
+
 function workspaceSystemPrompt(workspace: unknown): string | undefined {
   if (!workspace || typeof workspace !== "object" || workspace === null) {
     return undefined;
@@ -195,6 +203,7 @@ export async function executeRuntimeKernel(
   const events: OraEventEnvelope[] = [];
   const artifacts: ArtifactRef[] = [];
   const toolCallLedger: OraToolCallEnvelope[] = [];
+  const runtimeToolResultCache = new Map<string, unknown>();
   const pendingClarifications: PendingClarification[] = [];
   const activeAgents = new Set<string>();
   const busTopicCounts: Record<string, number> = {};
@@ -567,9 +576,16 @@ export async function executeRuntimeKernel(
       emit("action.updated", { actionId: action.id, status: "running", record: running }, { agentId: params.agentId, nodeId: params.agentId });
 
       try {
-        const output = await runtimeToolExecutor.execute(toolCall, {
-          allowRisky: !decision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(action.id),
-        });
+        const cacheKey = cacheKeyForRuntimeTool(toolCall);
+        const cacheHit = cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
+        const output = cacheHit
+          ? runtimeToolResultCache.get(cacheKey)
+          : await runtimeToolExecutor.execute(toolCall, {
+              allowRisky: !decision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(action.id),
+            });
+        if (cacheKey && !cacheHit) {
+          runtimeToolResultCache.set(cacheKey, output);
+        }
         const succeeded = actionLedger.transition(action.id, "succeeded", { output });
         const resultText = JSON.stringify(output, null, 2);
         appendToolCall({
@@ -592,13 +608,14 @@ export async function executeRuntimeKernel(
           status: "succeeded",
           input: toolCall.args,
           output,
+          cacheHit,
         }, { agentId: params.agentId, nodeId: params.agentId });
         emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
 
         messages = toolCall.source === "provider_native" && toolCall.providerCallId
           ? [
               ...messages,
-              { role: "assistant", content: response.text, toolCalls: response.toolCalls },
+              { role: "assistant", content: response.text, reasoningContent: response.reasoningContent, toolCalls: response.toolCalls },
               { role: "tool", toolCallId: toolCall.providerCallId, toolName: toolCall.tool, content: resultText },
             ]
           : [

@@ -207,6 +207,7 @@ describe("provider adapters", () => {
           finish_reason: "tool_calls",
           message: {
             content: null,
+            reasoning_content: "I should search before answering.",
             tool_calls: [{
               id: "call-1",
               type: "function",
@@ -242,7 +243,105 @@ describe("provider adapters", () => {
     expect(response.toolCalls).toEqual([
       expect.objectContaining({ id: "call-1", toolId: "web.search", args: { query: "Ora" } }),
     ]);
+    expect(response.reasoningContent).toBe("I should search before answering.");
     expect(response.finishReason).toBe("tool_calls");
+  });
+
+  it("passes reasoning_content back with OpenAI-compatible chat tool call history", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; reasoning_content?: string; tool_calls?: unknown[] }>;
+      };
+      expect(body.messages.some((message) =>
+        message.role === "assistant"
+        && message.reasoning_content === "Need the README before answering."
+        && Array.isArray(message.tool_calls)
+      )).toBe(true);
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Done." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-v4-flash",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        headers: {},
+      },
+      { env: { DEEPSEEK_API_KEY: "test-deepseek-key" }, fetchImpl },
+    );
+
+    await provider({
+      messages: [
+        { role: "user", content: "Install this repo." },
+        {
+          role: "assistant",
+          content: "Let me inspect the README.",
+          reasoningContent: "Need the README before answering.",
+          toolCalls: [{ id: "call-readme", toolId: "web.fetch", args: { url: "https://github.com/tw93/Waza" } }],
+        },
+        { role: "tool", toolCallId: "call-readme", toolName: "web.fetch", content: "{\"status\":200}" },
+      ],
+      tools: [{ id: "web.fetch", description: "Fetch URL" }],
+      toolChoice: "auto",
+    });
+  });
+
+  it("maps OpenAI-compatible streaming chat tool call deltas", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        stream?: boolean;
+        tools?: Array<{ type: string; function: { name: string } }>;
+      };
+      expect(body.stream).toBe(true);
+      expect(body.tools?.[0]).toMatchObject({
+        type: "function",
+        function: { name: "file__read" },
+      });
+
+      return new Response([
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Need README.\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"好的，我先看看。\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-readme\",\"type\":\"function\",\"function\":{\"name\":\"file__read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+      ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "tool-model",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        headers: {},
+      },
+      { env: { OPENROUTER_API_KEY: "test-openrouter-key" }, fetchImpl },
+    );
+    const chunks: string[] = [];
+
+    const response = await provider.stream?.(
+      {
+        prompt: "Read README.",
+        tools: [{ id: "file.read", description: "Read file" }],
+        toolChoice: "auto",
+      },
+      { onTextDelta: (chunk) => { chunks.push(chunk.delta); } },
+    );
+
+    expect(response?.text).toBe("好的，我先看看。");
+    expect(chunks).toEqual(["好的，我先看看。"]);
+    expect(response?.reasoningContent).toBe("Need README.");
+    expect(response?.toolCalls).toEqual([
+      expect.objectContaining({ id: "call-readme", toolId: "file.read", args: { path: "README.md" } }),
+    ]);
   });
 
   it("sends an OpenAI-compatible responses request when requested", async () => {
@@ -332,6 +431,40 @@ describe("provider adapters", () => {
 
     expect(response.toolCalls).toEqual([
       expect.objectContaining({ id: "call-read", toolId: "file.read", args: { path: "README.md" } }),
+    ]);
+  });
+
+  it("maps OpenAI Responses streaming function call events", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { stream?: boolean };
+      expect(body.stream).toBe(true);
+      return new Response([
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call-search\",\"name\":\"web__search\",\"arguments\":\"{\\\"query\\\":\\\"Ora\\\"}\"}}\n\n",
+        "data: [DONE]\n\n",
+      ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "gateway",
+        type: "openai_compatible",
+        label: "Gateway",
+        modelId: "gateway-reasoner",
+        baseUrl: "https://gateway.example.com",
+        apiKeyEnv: "GATEWAY_API_KEY",
+        protocol: "responses",
+        headers: {},
+      },
+      { env: { GATEWAY_API_KEY: "test-gateway-key" }, fetchImpl },
+    );
+
+    const response = await provider.stream?.({
+      prompt: "Search.",
+      tools: [{ id: "web.search", description: "Search web" }],
+    });
+
+    expect(response?.toolCalls).toEqual([
+      expect.objectContaining({ id: "call-search", toolId: "web.search", args: { query: "Ora" } }),
     ]);
   });
 

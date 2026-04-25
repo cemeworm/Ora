@@ -1038,6 +1038,10 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "clarification.required":
     case "clarification.resolved":
     case "tool.called":
+      if (isCachedWebFetchEvent(event)) {
+        return false;
+      }
+      return hasToolId(event);
     case "tool.repaired":
       return hasToolId(event);
     case "checkpoint.created":
@@ -1056,6 +1060,12 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     default:
       return false;
   }
+}
+
+function isCachedWebFetchEvent(event: OraEventEnvelope): boolean {
+  return isRecord(event.payload)
+    && event.payload.toolId === "web.fetch"
+    && event.payload.cacheHit === true;
 }
 
 function processStepDetail(event: OraEventEnvelope): string {

@@ -2,8 +2,12 @@ import type { ProviderConfig } from "@ora/shared";
 import {
   appendIfDefined,
   buildResponsesInput,
+  extractOpenAiChatReasoningContent,
+  extractOpenAiChatStreamReasoningContent,
   extractOpenAiChatToolCalls,
+  extractOpenAiChatStreamToolCalls,
   extractOpenAiResponsesToolCalls,
+  extractOpenAiResponsesStreamToolCalls,
   extractTextFromValue,
   failMissingApiKey,
   normalizeMessages,
@@ -71,6 +75,7 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
         return {
           role: "assistant",
           content: message.content.trim() ? message.content : null,
+          ...(message.reasoningContent?.trim() ? { reasoning_content: message.reasoningContent } : {}),
           tool_calls: message.toolCalls.map((call) => ({
             id: call.id,
             type: "function",
@@ -151,6 +156,9 @@ export function createOpenAICompatibleProvider(
 
     const raw = rawText ? JSON.parse(rawText) : {};
     const text = extractTextFromValue(raw);
+    const reasoningContent = protocol === "chat_completions"
+      ? extractOpenAiChatReasoningContent(raw)
+      : undefined;
     const toolCalls = protocol === "responses"
       ? extractOpenAiResponsesToolCalls(raw, request.tools)
       : extractOpenAiChatToolCalls(raw, request.tools);
@@ -162,6 +170,7 @@ export function createOpenAICompatibleProvider(
       providerType: config.type,
       modelId: config.modelId,
       text,
+      reasoningContent,
       raw,
       toolCalls,
       finishReason: typeof choice?.finish_reason === "string"
@@ -218,17 +227,24 @@ export function createOpenAICompatibleProvider(
       text += delta;
       await emitTextDelta(callbacks, { delta, text, raw: data });
     });
+    const reasoningContent = protocol === "chat_completions"
+      ? extractOpenAiChatStreamReasoningContent(rawEvents)
+      : undefined;
 
     return {
       providerId: config.id,
       providerType: config.type,
       modelId: config.modelId,
       text,
+      reasoningContent,
       raw: {
         streamMode: "sse",
         protocol,
         events: rawEvents,
       },
+      toolCalls: protocol === "responses"
+        ? extractOpenAiResponsesStreamToolCalls(rawEvents, request.tools)
+        : extractOpenAiChatStreamToolCalls(rawEvents, request.tools),
     } satisfies ModelResponse;
   };
 

@@ -34,6 +34,8 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const processSteps = turn?.processSteps ?? [];
+  const hasProcessSteps = processSteps.length > 0;
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
 
   async function handleSubmitFeedback() {
@@ -56,27 +58,32 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   return (
     <Message from="assistant" className="w-full">
       <div className="flex max-w-full gap-3">
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs">
+        <div
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs",
+            hasProcessSteps ? "mt-[13px]" : "mt-1",
+          )}
+        >
           <TurnStatusIcon status={turn?.status} isPlaceholder={isPlaceholder} />
         </div>
-        <div className="min-w-0 flex-1 space-y-3">
-          <MessageContent className="w-full">
-            <p className={cn("whitespace-pre-wrap break-words", isPlaceholder && "text-muted-foreground")}>{content}</p>
-          </MessageContent>
-
-          {turn && turn.processSteps.length > 0 ? (
+        <div className="min-w-0 flex-1 space-y-3 pt-1">
+          {hasProcessSteps ? (
             <CollapsibleCard
               open={processOpen}
               onToggle={() => setProcessOpen((current) => !current)}
-              title={`Steps ${turn.processSteps.length}`}
+              title={`Steps ${processSteps.length}`}
               icon={<Clock3 size={14} />}
-              summary={processSummary(turn.processSteps)}
+              summary={processSummary(processSteps)}
             >
-              {turn.processSteps.map((step) => (
+              {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
               ))}
             </CollapsibleCard>
           ) : null}
+
+          <MessageContent className="w-full">
+            <p className={cn("whitespace-pre-wrap break-words", isPlaceholder && "text-muted-foreground")}>{content}</p>
+          </MessageContent>
 
           {turn && turn.artifacts.length > 0 ? (
             <div className="space-y-3">
