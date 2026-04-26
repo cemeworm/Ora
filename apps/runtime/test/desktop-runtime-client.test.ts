@@ -166,4 +166,16 @@ describe("desktop browser-mock runtime lifecycle", () => {
     expect(cancelled.actions.find((action) => action.status === "approval_required")).toBeUndefined();
     expect(cancelled.events.at(-1)?.type).toBe("run.cancelled");
   });
+
+  it("persists browser fallback feedback-loop rule updates", async () => {
+    const client = createRuntimeClient();
+    const project = await client.createProject({ label: "Signals", rootPath: "/tmp/ora-signals" });
+    const rules = await client.listFeedbackLoopRules({ projectId: project.projectId });
+    const recoveryRule = rules.find((rule) => rule.id.endsWith(":rule:repeated_recovery_exhausted"));
+    expect(recoveryRule?.enabled).toBe(true);
+
+    await client.updateFeedbackLoopRule({ ...recoveryRule!, enabled: false });
+    const nextRules = await client.listFeedbackLoopRules({ projectId: project.projectId });
+    expect(nextRules.find((rule) => rule.id === recoveryRule!.id)?.enabled).toBe(false);
+  });
 });

@@ -104,11 +104,12 @@ import type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js"
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
   getLangfuseRunTraceMetadata,
-  getLangfuseRunTraceObservations,
   readLangfuseRunTrace,
   withLangfuseRunTrace
 } from "./telemetry/langfuse.js";
+import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
+import { LocalFeedbackLoopStore } from "./feedback-loop-store.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -350,6 +351,7 @@ export class LocalRunStore {
   private readonly clock: () => number;
   private readonly persistenceType: "sqlite" | "json-file";
   private readonly evaluationStore: LocalEvaluationStore;
+  private readonly feedbackLoopStore: LocalFeedbackLoopStore;
   private readonly customAgentStore: CustomAgentFileStore;
   private readonly modeStore: ModeSpecFileStore;
   private readonly skillRegistry: RuntimeSkillRegistry;
@@ -374,10 +376,12 @@ export class LocalRunStore {
     this.customAgentStore = new CustomAgentFileStore(defaultCustomAgentsDir(dataDir), this.clock);
     this.modeStore = new ModeSpecFileStore(defaultModesDir(dataDir), this.clock);
     this.skillRegistry = new RuntimeSkillRegistry({
-      customRootDir: defaultSkillsDir(dataDir),
+      privateRootDir: defaultSkillsDir(dataDir),
+      publicRootDir: defaultPublicSkillsDir(dataDir),
       clock: this.clock,
     });
     this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
+    this.feedbackLoopStore = new LocalFeedbackLoopStore(defaultFeedbackLoopStoreDir(dataDir), this.clock);
     this.longTermMemory = new LongTermMemoryManager(
       new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
       this.clock,
@@ -1200,12 +1204,21 @@ export class LocalRunStore {
   async getRunTrail(params: unknown): Promise<RunTrail> {
     const parsed = RunTrailParamsSchema.parse(params);
     const snapshot = this.getRunOrThrow(parsed.runId);
-    const { trace, observations } = await readLangfuseRunTrace(snapshot.runId, snapshot.trace);
+    const localTrail = synthesizeLocalTrail(snapshot, snapshot.trace);
+    const langfuseTrail = await readLangfuseRunTrace(snapshot.runId, snapshot.trace);
+    const useLangfuseTrace =
+      langfuseTrail.trace.enabled
+      && (langfuseTrail.trace.source === "managed_local" || langfuseTrail.trace.provider === "langfuse")
+      && (langfuseTrail.observations.length > 0 || langfuseTrail.trace.traceId !== undefined);
+    const trace = useLangfuseTrace ? langfuseTrail.trace : localTrail.trace;
+    const observations = useLangfuseTrace
+      ? mergeTrailObservations(localTrail.observations, langfuseTrail.observations)
+      : localTrail.observations;
     return RunTrailSchema.parse({
       run: this.toRunSummary(snapshot),
       trace,
       observations,
-      liveMetrics: this.buildRunTrailMetrics(snapshot, trace),
+      liveMetrics: this.buildRunTrailMetrics(snapshot, trace, observations),
     });
   }
 
@@ -1398,6 +1411,38 @@ export class LocalRunStore {
 
   rejectEvaluationFeedback(params: unknown) {
     return this.evaluationStore.rejectFeedback(params);
+  }
+
+  listProjectSignals(params: unknown = {}) {
+    return this.feedbackLoopStore.listSignals(params, this.feedbackLoopInput());
+  }
+
+  listProjectInsights(params: unknown = {}) {
+    return this.feedbackLoopStore.listInsights(params, this.feedbackLoopInput());
+  }
+
+  getProjectInsight(params: unknown) {
+    return this.feedbackLoopStore.getInsight(params, this.feedbackLoopInput());
+  }
+
+  dismissProjectInsight(params: unknown) {
+    return this.feedbackLoopStore.dismissInsight(params, this.feedbackLoopInput());
+  }
+
+  previewProjectSignalAction(params: unknown) {
+    return this.feedbackLoopStore.previewAction(params, this.feedbackLoopInput());
+  }
+
+  applyProjectSignalAction(params: unknown) {
+    return this.feedbackLoopStore.applyAction(params, this.feedbackLoopInput());
+  }
+
+  listFeedbackLoopRules(params: unknown = {}) {
+    return this.feedbackLoopStore.listRules(params, this.feedbackLoopInput());
+  }
+
+  updateFeedbackLoopRule(params: unknown) {
+    return this.feedbackLoopStore.updateRule(params);
   }
 
   private async resolveModeSelection(
@@ -2210,12 +2255,12 @@ export class LocalRunStore {
     };
   }
 
-  private buildRunTrailMetrics(snapshot: StateSnapshot, trace: RunTraceMetadata): RunTrailMetrics {
+  private buildRunTrailMetrics(snapshot: StateSnapshot, trace: RunTraceMetadata, observations: readonly { level?: string }[]): RunTrailMetrics {
     const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt));
     const topologyChangeCount = snapshot.events.filter((event) => event.type === "topology.updated").length;
     const messageCount = snapshot.events.filter((event) => event.type === "message.delta").length;
-    const warningCount = getLangfuseRunTraceObservations(snapshot.runId).filter((observation) => observation.level === "WARNING").length;
-    const errorCount = getLangfuseRunTraceObservations(snapshot.runId).filter((observation) => observation.level === "ERROR").length;
+    const warningCount = observations.filter((observation) => observation.level === "WARNING").length;
+    const errorCount = observations.filter((observation) => observation.level === "ERROR").length;
     const tracedCost = trace.generationRefs.reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0);
     return {
       runtimeMs,
@@ -2735,6 +2780,16 @@ export class LocalRunStore {
     return transcript;
   }
 
+  private feedbackLoopInput() {
+    return {
+      projects: [...this.projects.values()],
+      sessions: [...this.sessions.values()],
+      runs: [...this.runs.values()],
+      evaluationRuns: this.evaluationStore.listRuns(),
+      feedbackRecords: this.evaluationStore.listFeedback(),
+    };
+  }
+
   private migrateLegacyRunsIntoSessions(): void {
     let mutated = false;
     for (const [runId, existing] of this.runs.entries()) {
@@ -2959,6 +3014,12 @@ export function defaultEvaluationStoreDir(runtimeDataDir: string): string {
     : path.join(runtimeDataDir, "evaluation-store");
 }
 
+export function defaultFeedbackLoopStoreDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "feedback-loop-store")
+    : path.join(runtimeDataDir, "feedback-loop-store");
+}
+
 export function defaultCustomAgentsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "agents")
@@ -2973,8 +3034,14 @@ export function defaultModesDir(runtimeDataDir: string): string {
 
 export function defaultSkillsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "skills", "custom")
-    : path.join(runtimeDataDir, "skills", "custom");
+    ? path.join(path.dirname(runtimeDataDir), "skills", "private")
+    : path.join(runtimeDataDir, "skills", "private");
+}
+
+export function defaultPublicSkillsDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "skills", "public")
+    : path.join(runtimeDataDir, "skills", "public");
 }
 
 export function defaultMemoryDir(runtimeDataDir: string): string {

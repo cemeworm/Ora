@@ -39,8 +39,12 @@ function publicSkillsRoot(): string {
   return path.join(repoRoot(), "skills");
 }
 
-function defaultCustomSkillsRoot(): string {
-  return path.join(repoRoot(), ".ora", "skills", "custom");
+function defaultPrivateSkillsRoot(): string {
+  return path.join(repoRoot(), ".ora", "skills", "private");
+}
+
+function defaultPublicSkillsRoot(): string {
+  return path.join(repoRoot(), ".ora", "skills", "public");
 }
 
 export class RuntimeToolRegistry {
@@ -68,8 +72,9 @@ export class RuntimeSkillRegistry {
     this.store = options instanceof SkillFileStore
       ? options
       : new SkillFileStore({
-        customRootDir: options.customRootDir ?? defaultCustomSkillsRoot(),
-        publicRootDir: options.publicRootDir ?? publicSkillsRoot(),
+        privateRootDir: options.privateRootDir ?? options.customRootDir ?? defaultPrivateSkillsRoot(),
+        publicRootDir: options.publicRootDir ?? defaultPublicSkillsRoot(),
+        bundledPublicRootDir: options.bundledPublicRootDir ?? publicSkillsRoot(),
         clock: options.clock,
         bundledSkills: options.bundledSkills ?? MVP_SKILLS,
       });

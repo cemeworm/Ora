@@ -1,4 +1,5 @@
 import { Component, Suspense, lazy, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type PointerEvent, type ReactNode } from "react";
+import { LoaderCircle } from "lucide-react";
 import { AppShell } from "./components/AppShell";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
 import { ChatView } from "./components/ChatView";
@@ -58,15 +59,11 @@ function WorkspacePane({ children, className, style }: { children: ReactNode; cl
   );
 }
 
-function LoadingPane({ label = "Loading view..." }: { label?: string }) {
+function LoadingPane() {
   return (
-    <WorkspacePane className="w-full">
-      <div className="flex h-full w-full items-center justify-center">
-        <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-          <p className="text-sm font-semibold">{label}</p>
-        </div>
-      </div>
-    </WorkspacePane>
+    <div className="flex h-full w-full items-center justify-center" role="status" aria-label="Loading">
+      <LoaderCircle size={24} className="animate-spin text-muted-foreground" />
+    </div>
   );
 }
 
@@ -452,12 +449,7 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <div className="flex h-full w-full items-center justify-center">
-            <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-              <p className="text-sm font-semibold">{state.bridgeStatus?.label ?? "Loading"}</p>
-              <p className="mt-2 max-w-sm text-xs leading-5 text-bench-700">{state.bridgeStatus?.detail ?? "Connecting..."}</p>
-            </div>
-          </div>
+          <LoadingPane />
         </WorkspacePane>
       </AppShell>
     );
@@ -468,7 +460,7 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <Suspense fallback={<LoadingPane label="Loading evaluation tools..." />}>
+          <Suspense fallback={<LoadingPane />}>
             <EvaluationView runtimeClient={runtimeClient} bridgeStatus={state.bridgeStatus} />
           </Suspense>
         </WorkspacePane>
@@ -481,7 +473,7 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <Suspense fallback={<LoadingPane label="Loading agents..." />}>
+          <Suspense fallback={<LoadingPane />}>
             <AgentsView
               runtimeClient={runtimeClient}
               selectedCustomAgentId={state.selectedCustomAgentId}
@@ -499,7 +491,7 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <Suspense fallback={<LoadingPane label="Loading skills..." />}>
+          <Suspense fallback={<LoadingPane />}>
             <SkillsView runtimeClient={runtimeClient} />
           </Suspense>
         </WorkspacePane>
@@ -512,7 +504,7 @@ function WorkbenchInner() {
       <AppShell>
         {settingsDialog}
         <WorkspacePane className="w-full">
-          <Suspense fallback={<LoadingPane label="Loading mode studio..." />}>
+          <Suspense fallback={<LoadingPane />}>
             <ModesView runtimeClient={runtimeClient} />
           </Suspense>
         </WorkspacePane>

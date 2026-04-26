@@ -19,6 +19,8 @@ import type {
   EvaluationRunDetail as OraEvaluationRunDetail,
   EvaluationRunStream as OraEvaluationRunStream,
   EvaluationSpec as OraEvaluationSpec,
+  FeedbackLoopActionResult as OraFeedbackLoopActionResult,
+  FeedbackLoopCalibrationRule as OraFeedbackLoopCalibrationRule,
   JsonRpcRequest,
   JsonRpcResponse,
   LongTermMemoryProfile as OraLongTermMemoryProfile,
@@ -32,6 +34,8 @@ import type {
   OraEventEnvelope,
   PatternDefinition as OraPatternDefinition,
   PlanItem as OraPlanItem,
+  ProjectInsight as OraProjectInsight,
+  ProjectSignal as OraProjectSignal,
   ProjectCreateParams as OraProjectCreateParams,
   ProjectDetail as OraProjectDetail,
   ProjectFileEntry as OraProjectFileEntry,
@@ -69,7 +73,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export type {
   OraActionRecord,
@@ -91,6 +95,8 @@ export type {
   OraEvaluationRunDetail,
   OraEvaluationRunStream,
   OraEvaluationSpec,
+  OraFeedbackLoopActionResult,
+  OraFeedbackLoopCalibrationRule,
   OraEventEnvelope,
   OraLongTermMemoryProfile,
   OraMemoryRecord,
@@ -105,6 +111,8 @@ export type {
   OraProviderSecretStatus,
   OraProviderStatus,
   OraPlanItem,
+  OraProjectInsight,
+  OraProjectSignal,
   OraProjectCreateParams,
   OraProjectDetail,
   OraProjectFileEntry,
@@ -363,6 +371,30 @@ export function createRuntimeClient() {
     async rejectEvaluationFeedback(feedbackId: string, reason?: string): Promise<OraEvaluationFeedbackRecord> {
       return call<OraEvaluationFeedbackRecord>("evaluation.feedback.reject", { feedbackId, reason });
     },
+    async listProjectSignals(params: { projectId?: string; source?: string; severity?: string; limit?: number } = {}): Promise<OraProjectSignal[]> {
+      return call<OraProjectSignal[]>("feedbackLoop.signals.list", params);
+    },
+    async listProjectInsights(params: { projectId?: string; status?: "open" | "dismissed" | "applied"; limit?: number } = {}): Promise<OraProjectInsight[]> {
+      return call<OraProjectInsight[]>("feedbackLoop.insights.list", params);
+    },
+    async getProjectInsight(insightId: string): Promise<OraProjectInsight> {
+      return call<OraProjectInsight>("feedbackLoop.insights.get", { insightId });
+    },
+    async dismissProjectInsight(insightId: string, reason?: string): Promise<OraProjectInsight> {
+      return call<OraProjectInsight>("feedbackLoop.insights.dismiss", { insightId, reason });
+    },
+    async previewProjectSignalAction(insightId: string, actionId: string): Promise<OraFeedbackLoopActionResult> {
+      return call<OraFeedbackLoopActionResult>("feedbackLoop.actions.preview", { insightId, actionId });
+    },
+    async applyProjectSignalAction(insightId: string, actionId: string): Promise<OraFeedbackLoopActionResult> {
+      return call<OraFeedbackLoopActionResult>("feedbackLoop.actions.apply", { insightId, actionId, confirmed: true });
+    },
+    async listFeedbackLoopRules(params: { projectId?: string } = {}): Promise<OraFeedbackLoopCalibrationRule[]> {
+      return call<OraFeedbackLoopCalibrationRule[]>("feedbackLoop.rules.list", params);
+    },
+    async updateFeedbackLoopRule(rule: OraFeedbackLoopCalibrationRule): Promise<OraFeedbackLoopCalibrationRule> {
+      return call<OraFeedbackLoopCalibrationRule>("feedbackLoop.rules.update", { rule });
+    },
     async getSession(sessionId: string): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.get", { sessionId });
     },
@@ -375,7 +407,7 @@ export function createRuntimeClient() {
     async listAgents(): Promise<OraCustomAgentSummary[]> {
       return call<OraCustomAgentSummary[]>("agents.list");
     },
-    async listSkills(params: { category?: "public" | "custom"; enabledOnly?: boolean; query?: string } = {}): Promise<OraSkillRegistry> {
+    async listSkills(params: { category?: "public" | "private"; enabledOnly?: boolean; query?: string } = {}): Promise<OraSkillRegistry> {
       return call<OraSkillRegistry>("skills.list", params);
     },
     async getSkill(name: string): Promise<OraSkillDetail> {
@@ -664,9 +696,12 @@ function formatManagedLangfuseStatus(sidecarStatus: Record<string, unknown> | un
   if (!status) {
     return undefined;
   }
+  if (status.enabled !== true) {
+    return undefined;
+  }
   const available = status.available === true;
   const reason = typeof status.reason === "string" ? status.reason : undefined;
-  return `Langfuse ${available ? "ready" : "not ready"}${reason ? `: ${reason}` : "."}`;
+  return `Optional Langfuse ${available ? "ready" : "not ready"}${reason ? `: ${reason}` : "."}`;
 }
 
 async function getProviderSecretStatuses(providers: OraProviderConfig[]): Promise<OraProviderSecretStatus[]> {
@@ -758,6 +793,7 @@ class LocalJsonRpcRuntime {
   private runs = new Map<string, OraStateSnapshot>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
   private customSkills = new Map<string, OraSkillDetail>();
+  private deletedSkills = new Set<string>();
   private skillEnabled = new Map<string, boolean>();
   private modes = new Map<string, OraModeSpec>();
   private memory = LongTermMemoryProfileSchema.parse({
@@ -771,6 +807,9 @@ class LocalJsonRpcRuntime {
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
   private evaluationFeedback = new Map<string, OraEvaluationFeedbackRecord>();
+  private feedbackLoopApplied = new Map<string, string>();
+  private feedbackLoopDismissed = new Set<string>();
+  private feedbackLoopRules = new Map<string, OraFeedbackLoopCalibrationRule>();
   private nextProjectNumber = 1;
   private nextSessionNumber = 1;
   private nextRunNumber = 1;
@@ -1021,6 +1060,34 @@ class LocalJsonRpcRuntime {
         return this.acceptEvaluationFeedback(params);
       case "evaluation.feedback.reject":
         return this.rejectEvaluationFeedback(params);
+      case "feedbackLoop.signals.list":
+        return this.listProjectSignals(params);
+      case "feedbackLoop.insights.list":
+        return this.listProjectInsights(params);
+      case "feedbackLoop.insights.get": {
+        const insightId = typeof params === "object" && params !== null && "insightId" in params ? String((params as { insightId: unknown }).insightId) : "";
+        const insight = this.listProjectInsights({}).find((candidate) => candidate.id === insightId);
+        if (!insight) throw new Error(`Feedback-loop insight not found: ${insightId}`);
+        return insight;
+      }
+      case "feedbackLoop.insights.dismiss": {
+        const insightId = typeof params === "object" && params !== null && "insightId" in params ? String((params as { insightId: unknown }).insightId) : "";
+        this.feedbackLoopDismissed.add(insightId);
+        const insight = this.listProjectInsights({}).find((candidate) => candidate.id === insightId);
+        if (!insight) throw new Error(`Feedback-loop insight not found: ${insightId}`);
+        return ProjectInsightSchema.parse({ ...insight, status: "dismissed", updatedAt: Date.now() });
+      }
+      case "feedbackLoop.actions.preview":
+        return this.previewProjectSignalAction(params);
+      case "feedbackLoop.actions.apply":
+        return this.applyProjectSignalAction(params);
+      case "feedbackLoop.rules.list":
+        return this.listFeedbackLoopRules(params);
+      case "feedbackLoop.rules.update": {
+        const parsed = FeedbackLoopRuleUpdateParamsSchema.parse(params);
+        this.feedbackLoopRules.set(parsed.rule.id, parsed.rule);
+        return parsed.rule;
+      }
       case "runs.start":
         return this.startRun(params);
       case "runs.startStreaming":
@@ -1180,6 +1247,243 @@ class LocalJsonRpcRuntime {
       default:
         throw new Error(`Method not found: ${method}`);
     }
+  }
+
+  private listProjectSignals(params: unknown): OraProjectSignal[] {
+    const projectId = typeof params === "object" && params !== null && "projectId" in params && typeof params.projectId === "string"
+      ? params.projectId
+      : undefined;
+    const signals: OraProjectSignal[] = [];
+    for (const snapshot of this.runs.values()) {
+      const signalProjectId = this.projectIdForSnapshot(snapshot);
+      if (projectId && signalProjectId !== projectId) continue;
+      if (snapshot.status === "failed" || snapshot.status === "cancelled" || snapshot.status === "interrupted") {
+        signals.push(ProjectSignalSchema.parse({
+          id: `${signalProjectId}:signal:run:${snapshot.runId}:${snapshot.status}`,
+          projectId: signalProjectId,
+          source: "run_event",
+          sourceRef: snapshot.runId,
+          title: snapshot.status === "failed" ? "Run failed" : `Run ${snapshot.status}`,
+          summary: snapshot.error ?? `${snapshot.runId} ended with status ${snapshot.status}.`,
+          severity: snapshot.status === "failed" ? "critical" : "warning",
+          confidence: 0.82,
+          createdAt: snapshot.updatedAt,
+          updatedAt: snapshot.updatedAt,
+          evidence: [{
+            id: `${snapshot.runId}:overview`,
+            label: "Open Trails",
+            target: { kind: "trail", id: snapshot.runId, runId: snapshot.runId, tabHint: "Overview" },
+          }],
+          metadata: { runId: snapshot.runId, runStatus: snapshot.status, modeId: snapshot.modeId ?? snapshot.pattern },
+        }));
+      }
+      for (const event of snapshot.events.filter((event) => event.type.startsWith("recovery.") || event.type === "node.skipped")) {
+        signals.push(ProjectSignalSchema.parse({
+          id: `${signalProjectId}:signal:event:${snapshot.runId}:${event.seq}`,
+          projectId: signalProjectId,
+          source: event.type.startsWith("recovery.") ? "recovery_event" : "run_event",
+          sourceRef: `${snapshot.runId}:${event.seq}`,
+          title: event.type === "recovery.exhausted" ? "Recovery exhausted" : event.type,
+          summary: `${event.type} occurred in ${snapshot.runId}.`,
+          severity: event.type === "recovery.exhausted" ? "critical" : "warning",
+          confidence: event.type === "recovery.exhausted" ? 0.9 : 0.74,
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+          evidence: [{
+            id: `${snapshot.runId}:evt-${event.seq}`,
+            label: "Open Trails event",
+            target: { kind: "trail", id: `${snapshot.runId}:evt-${event.seq}`, runId: snapshot.runId, eventSeq: event.seq, tabHint: "Events" },
+          }],
+          metadata: { runId: snapshot.runId, eventType: event.type, eventSeq: event.seq, modeId: snapshot.modeId ?? snapshot.pattern },
+        }));
+      }
+      if (snapshot.pendingApprovals.length > 0) {
+        signals.push(ProjectSignalSchema.parse({
+          id: `${signalProjectId}:signal:approval:${snapshot.runId}:pending`,
+          projectId: signalProjectId,
+          source: "approval_event",
+          sourceRef: `${snapshot.runId}:pending-approvals`,
+          title: "Approval is pending",
+          summary: `${snapshot.pendingApprovals.length} approval request${snapshot.pendingApprovals.length === 1 ? "" : "s"} remain pending.`,
+          severity: "warning",
+          confidence: 0.75,
+          createdAt: snapshot.updatedAt,
+          updatedAt: snapshot.updatedAt,
+          evidence: [{
+            id: `${snapshot.runId}:approvals`,
+            label: "Open approvals",
+            target: { kind: "trail", id: snapshot.runId, runId: snapshot.runId, tabHint: "Approvals" },
+          }],
+          metadata: { runId: snapshot.runId, approvalCount: snapshot.pendingApprovals.length, modeId: snapshot.modeId ?? snapshot.pattern },
+        }));
+      }
+    }
+
+    for (const record of this.evaluationFeedback.values()) {
+      if (record.status !== "pending" && record.status !== "failed" && record.status !== "accepted") continue;
+      const sourceRun = this.runs.get(record.sourceRunId);
+      const signalProjectId = sourceRun ? this.projectIdForSnapshot(sourceRun) : "local-project";
+      if (projectId && signalProjectId !== projectId) continue;
+      signals.push(ProjectSignalSchema.parse({
+        id: `${signalProjectId}:signal:feedback:${record.id}:${record.status}`,
+        projectId: signalProjectId,
+        source: "evaluation_feedback",
+        sourceRef: record.id,
+        title: record.status === "pending" ? "Feedback pending review" : "Feedback captured",
+        summary: record.feedbackText,
+        severity: record.status === "failed" ? "critical" : record.status === "pending" ? "warning" : "info",
+        confidence: 0.8,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        evidence: [{
+          id: record.id,
+          label: "Open feedback record",
+          target: { kind: "feedback", id: record.id, feedbackId: record.id, runId: record.sourceRunId, datasetId: record.datasetId },
+        }],
+        metadata: { feedbackId: record.id, feedbackStatus: record.status, sourceRunId: record.sourceRunId },
+      }));
+    }
+
+    return signals.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  }
+
+  private listProjectInsights(params: unknown): OraProjectInsight[] {
+    const projectId = typeof params === "object" && params !== null && "projectId" in params && typeof params.projectId === "string"
+      ? params.projectId
+      : undefined;
+    const statusFilter = typeof params === "object" && params !== null && "status" in params && typeof params.status === "string"
+      ? params.status
+      : undefined;
+    const signals = this.listProjectSignals({ projectId });
+    const projectIds = [...new Set(signals.map((signal) => signal.projectId))];
+    const insights: OraProjectInsight[] = [];
+    for (const nextProjectId of projectIds) {
+      const projectSignals = signals.filter((signal) => signal.projectId === nextProjectId);
+      const rules = this.listFeedbackLoopRules({ projectId: nextProjectId });
+      const recoveryRule = rules.find((rule) => rule.id.endsWith(":rule:repeated_recovery_exhausted"));
+      const recovery = projectSignals.filter((signal) => signal.source === "recovery_event" && signal.metadata.eventType === "recovery.exhausted");
+      if (recoveryRule && mockRuleAllows(recoveryRule, "recovery_event", "critical") && recovery.length >= 2) {
+        const action = {
+          id: `open-trails:${String(recovery[0]?.metadata.runId ?? "")}`,
+          kind: "open_trails" as const,
+          label: "Open Trails evidence",
+          payload: { runId: recovery[0]?.metadata.runId },
+          requiresConfirmation: true,
+        };
+        insights.push(ProjectInsightSchema.parse({
+          id: `${nextProjectId}:insight:repeated_recovery_exhausted:browser_mock`,
+          projectId: nextProjectId,
+          title: "Recovery is recurring",
+          summary: `${recovery.length} recent signals show exhausted recovery.`,
+          status: this.feedbackLoopApplied.has(`${nextProjectId}:insight:repeated_recovery_exhausted:browser_mock`)
+            ? "applied"
+            : this.feedbackLoopDismissed.has(`${nextProjectId}:insight:repeated_recovery_exhausted:browser_mock`) ? "dismissed" : "open",
+          signalIds: recovery.map((signal) => signal.id),
+          recommendedActions: mockRuleAllowsAction(recoveryRule, action) ? [action] : [],
+          confidence: 0.82,
+          createdAt: recovery[0]?.createdAt ?? Date.now(),
+          updatedAt: recovery[0]?.updatedAt ?? Date.now(),
+        }));
+      }
+      const feedbackRule = rules.find((rule) => rule.id.endsWith(":rule:feedback_pending_review"));
+      const feedback = projectSignals.filter((signal) => signal.source === "evaluation_feedback" && signal.metadata.feedbackStatus === "pending");
+      if (feedbackRule && mockRuleAllows(feedbackRule, "evaluation_feedback", "warning") && feedback.length > 0) {
+        const insightId = `${nextProjectId}:insight:feedback_pending_review`;
+        const action = {
+          id: "open-evaluation-feedback",
+          kind: "open_evaluation_feedback" as const,
+          label: "Open Feedback Inbox",
+          payload: { view: "evaluation.feedback" },
+          requiresConfirmation: true,
+        };
+        insights.push(ProjectInsightSchema.parse({
+          id: insightId,
+          projectId: nextProjectId,
+          title: "Feedback is waiting for review",
+          summary: `${feedback.length} feedback record${feedback.length === 1 ? "" : "s"} need curator review.`,
+          status: this.feedbackLoopApplied.has(insightId) ? "applied" : this.feedbackLoopDismissed.has(insightId) ? "dismissed" : "open",
+          signalIds: feedback.map((signal) => signal.id),
+          recommendedActions: mockRuleAllowsAction(feedbackRule, action) ? [action] : [],
+          confidence: 0.84,
+          createdAt: feedback[0]?.createdAt ?? Date.now(),
+          updatedAt: feedback[0]?.updatedAt ?? Date.now(),
+        }));
+      }
+    }
+    return insights
+      .filter((insight) => statusFilter ? insight.status === statusFilter : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  }
+
+  private previewProjectSignalAction(params: unknown): OraFeedbackLoopActionResult {
+    const { insight, action } = this.findProjectSignalAction(params);
+    return FeedbackLoopActionResultSchema.parse({
+      insight,
+      action,
+      status: "preview",
+      message: action.kind === "open_evaluation_feedback"
+        ? "This will open the Evaluation Feedback Inbox."
+        : "This will route you to the linked evidence surface.",
+    });
+  }
+
+  private applyProjectSignalAction(params: unknown): OraFeedbackLoopActionResult {
+    const parsed = FeedbackLoopActionApplyParamsSchema.parse(params);
+    const { insight, action } = this.findProjectSignalAction(parsed);
+    this.feedbackLoopApplied.set(insight.id, action.id);
+    return FeedbackLoopActionResultSchema.parse({
+      insight: { ...insight, status: "applied", updatedAt: Date.now() },
+      action,
+      status: "applied",
+      message: "Marked as applied in Project Signals.",
+    });
+  }
+
+  private listFeedbackLoopRules(params: unknown): OraFeedbackLoopCalibrationRule[] {
+    const projectId = typeof params === "object" && params !== null && "projectId" in params && typeof params.projectId === "string"
+      ? params.projectId
+      : this.projects.values().next().value?.projectId ?? "local-project";
+    return [
+      FeedbackLoopCalibrationRuleSchema.parse({
+        id: `${projectId}:rule:repeated_recovery_exhausted`,
+        projectId,
+        name: "Repeated recovery exhausted",
+        enabled: true,
+        sourceFilters: ["recovery_event"],
+        severityThreshold: "warning",
+        humanReviewRequired: true,
+        actionPolicy: { allowedActionKinds: ["open_trails"] },
+      }),
+      FeedbackLoopCalibrationRuleSchema.parse({
+        id: `${projectId}:rule:feedback_pending_review`,
+        projectId,
+        name: "Feedback pending review",
+        enabled: true,
+        sourceFilters: ["evaluation_feedback"],
+        severityThreshold: "info",
+        humanReviewRequired: true,
+        actionPolicy: { allowedActionKinds: ["open_evaluation_feedback"] },
+      }),
+    ].map((rule) => this.feedbackLoopRules.get(rule.id) ?? rule);
+  }
+
+  private findProjectSignalAction(params: unknown): { insight: OraProjectInsight; action: OraProjectInsight["recommendedActions"][number] } {
+    const insightId = typeof params === "object" && params !== null && "insightId" in params ? String((params as { insightId: unknown }).insightId) : "";
+    const actionId = typeof params === "object" && params !== null && "actionId" in params ? String((params as { actionId: unknown }).actionId) : "";
+    const insight = this.listProjectInsights({}).find((candidate) => candidate.id === insightId);
+    if (!insight) throw new Error(`Feedback-loop insight not found: ${insightId}`);
+    const action = insight.recommendedActions.find((candidate) => candidate.id === actionId);
+    if (!action) throw new Error(`Feedback-loop action not found: ${actionId}`);
+    return { insight, action };
+  }
+
+  private projectIdForSnapshot(snapshot: OraStateSnapshot): string {
+    if (snapshot.sessionId) {
+      const projectId = this.sessions.get(snapshot.sessionId)?.projectId;
+      if (projectId) return projectId;
+    }
+    const contextProjectId = snapshot.input.context.projectId;
+    return typeof contextProjectId === "string" && contextProjectId.trim() ? contextProjectId : "local-project";
   }
 
   private createSession(params: unknown): OraSessionSummary {
@@ -1356,7 +1660,11 @@ class LocalJsonRpcRuntime {
 
   private listSkills(params: unknown = {}): OraSkillRegistry {
     const filter = isRecord(params) ? params : {};
-    const category = filter.category === "public" || filter.category === "custom" ? filter.category : undefined;
+    const category = filter.category === "public" || filter.category === "private"
+      ? filter.category
+      : filter.category === "custom"
+        ? "private"
+        : undefined;
     const enabledOnly = filter.enabledOnly === true;
     const query = typeof filter.query === "string" ? filter.query.trim().toLowerCase() : "";
     const publicSkills = MVP_SKILLS.map((skill) => {
@@ -1366,10 +1674,10 @@ class LocalJsonRpcRuntime {
         id,
         category: "public" as const,
         enabled: this.skillEnabled.get(id) ?? true,
-        editable: false,
-        content: skill.promptSnippet ?? skill.description,
+        editable: true,
+        content: defaultMockSkillContent(skill.name, skill.promptSnippet ?? skill.description),
       };
-    });
+    }).filter((skill) => !this.deletedSkills.has(skill.name) && !this.customSkills.has(skill.name));
     const skills = [...publicSkills, ...this.customSkills.values()]
       .filter((skill) => !category || skill.category === category)
       .filter((skill) => !enabledOnly || skill.enabled)
@@ -1391,6 +1699,9 @@ class LocalJsonRpcRuntime {
     if (custom) {
       return custom;
     }
+    if (this.deletedSkills.has(name)) {
+      return undefined;
+    }
     const publicSkill = MVP_SKILLS.find((skill) => skill.id === name || skill.name === name);
     if (!publicSkill) {
       return undefined;
@@ -1400,8 +1711,8 @@ class LocalJsonRpcRuntime {
       id: publicSkill.id,
       category: "public",
       enabled: this.skillEnabled.get(publicSkill.id) ?? true,
-      editable: false,
-      content: publicSkill.promptSnippet ?? publicSkill.description,
+      editable: true,
+      content: defaultMockSkillContent(publicSkill.name, publicSkill.promptSnippet ?? publicSkill.description),
     };
   }
 
@@ -1424,8 +1735,8 @@ class LocalJsonRpcRuntime {
       name,
       description: metadata.description,
       promptSnippet: metadata.description,
-      path: `.ora/skills/custom/${name}/SKILL.md`,
-      category: "custom",
+      path: `.ora/skills/private/${name}/SKILL.md`,
+      category: "private",
       enabled: params.enabled === false ? false : true,
       editable: true,
       createdAt: now,
@@ -1435,6 +1746,7 @@ class LocalJsonRpcRuntime {
       content,
     };
     this.customSkills.set(name, skill);
+    this.deletedSkills.delete(name);
     this.skillEnabled.set(name, skill.enabled);
     return skill;
   }
@@ -1444,9 +1756,9 @@ class LocalJsonRpcRuntime {
       throw new Error("Skill content is required.");
     }
     const name = normalizeMockSkillName(params.name);
-    const existing = this.customSkills.get(name);
+    const existing = this.findSkill(name);
     if (!existing) {
-      throw new Error(`Custom skill not found: ${name}`);
+      throw new Error(`Skill not found: ${name}`);
     }
     const metadata = parseMockSkillContent(name, params.content);
     const next: OraSkillDetail = {
@@ -1457,16 +1769,21 @@ class LocalJsonRpcRuntime {
       updatedAt: Date.now(),
     };
     this.customSkills.set(name, next);
+    this.deletedSkills.delete(name);
     return next;
   }
 
   private deleteSkill(params: unknown): { deleted: true; name: string } {
     const name = normalizeMockSkillName(isRecord(params) ? params.name : undefined);
-    if (!this.customSkills.has(name)) {
-      throw new Error(`Custom skill not found: ${name}`);
+    const existing = this.findSkill(name);
+    if (!existing) {
+      throw new Error(`Skill not found: ${name}`);
     }
     this.customSkills.delete(name);
     this.skillEnabled.delete(name);
+    if (existing.category === "public") {
+      this.deletedSkills.add(name);
+    }
     return { deleted: true, name };
   }
 
@@ -1491,7 +1808,7 @@ class LocalJsonRpcRuntime {
       throw new Error(`Skill not found: ${name}`);
     }
     this.skillEnabled.set(skill.id, params.enabled);
-    if (skill.category === "custom") {
+    if (skill.category === "private") {
       const next = {
         ...skill,
         enabled: params.enabled,
@@ -2595,16 +2912,16 @@ function createMockTraceMetadata(
   modelRef?: string,
 ): OraRunTraceMetadata {
   return {
-    provider: "langfuse",
+    provider: "ora",
     enabled: true,
     available: true,
-    traceId: `trace-${runId}`,
+    traceId: `ora-local-${runId}`,
     rootObservationId: `${runId}:trace-root`,
-    traceUrl: `http://localhost:3000/project/ora-runtime/traces/trace-${runId}`,
-    source: "local_synthesized",
+    source: "local",
+    reason: "Ora-native Trails is using local runtime events; Langfuse is optional.",
     generationRefs: [{
       observationId: `${runId}:generation-0`,
-      traceId: `trace-${runId}`,
+      traceId: `ora-local-${runId}`,
       parentObservationId: `${runId}:trace-root`,
       name: "model.local-smoke",
       providerId: providerId ?? "local-smoke",
@@ -3191,6 +3508,22 @@ function buildMockEvaluationEvents(run: OraEvaluationRun, attempts: OraEvaluatio
       },
     },
   ];
+}
+
+function mockRuleAllows(rule: OraFeedbackLoopCalibrationRule, source: OraProjectSignal["source"], severity: OraProjectSignal["severity"]): boolean {
+  return rule.enabled
+    && (rule.sourceFilters.length === 0 || rule.sourceFilters.includes(source))
+    && mockSeverityRank(severity) >= mockSeverityRank(rule.severityThreshold);
+}
+
+function mockRuleAllowsAction(rule: OraFeedbackLoopCalibrationRule, action: OraProjectInsight["recommendedActions"][number]): boolean {
+  return rule.actionPolicy.allowedActionKinds.length === 0 || rule.actionPolicy.allowedActionKinds.includes(action.kind);
+}
+
+function mockSeverityRank(severity: OraProjectSignal["severity"]): number {
+  if (severity === "critical") return 3;
+  if (severity === "warning") return 2;
+  return 1;
 }
 
 function csvCell(value: string) {

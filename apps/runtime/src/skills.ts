@@ -34,28 +34,36 @@ interface PersistedSkillState {
   enabled?: boolean;
   createdAt?: number;
   updatedAt?: number;
+  deleted?: boolean;
 }
 
 const SKILL_FILE_NAME = "SKILL.md";
 
 export interface SkillFileStoreOptions {
-  customRootDir: string;
+  privateRootDir?: string;
+  customRootDir?: string;
+  legacyCustomRootDir?: string;
   publicRootDir?: string;
+  bundledPublicRootDir?: string;
   clock?: () => number;
   bundledSkills?: readonly SkillDescriptor[];
 }
 
 export class SkillFileStore {
-  private readonly customRootDir: string;
+  private readonly privateRootDir: string;
+  private readonly legacyCustomRootDir: string;
   private readonly publicRootDir: string;
+  private readonly bundledPublicRootDir: string;
   private readonly statePath: string;
   private readonly clock: () => number;
   private readonly bundledSkills: readonly SkillDescriptor[];
 
   constructor(options: SkillFileStoreOptions) {
-    this.customRootDir = options.customRootDir;
-    this.publicRootDir = options.publicRootDir ?? path.join(process.cwd(), "skills");
-    this.statePath = path.join(this.customRootDir, "..", "state.json");
+    this.privateRootDir = options.privateRootDir ?? options.customRootDir ?? path.join(process.cwd(), ".ora", "skills", "private");
+    this.legacyCustomRootDir = options.legacyCustomRootDir ?? path.join(path.dirname(this.privateRootDir), "custom");
+    this.publicRootDir = options.publicRootDir ?? path.join(path.dirname(this.privateRootDir), "public");
+    this.bundledPublicRootDir = options.bundledPublicRootDir ?? path.join(process.cwd(), "skills");
+    this.statePath = path.join(this.privateRootDir, "..", "state.json");
     this.clock = options.clock ?? Date.now;
     this.bundledSkills = options.bundledSkills ?? [];
   }
@@ -103,8 +111,8 @@ export class SkillFileStore {
     const content = parsed.content ?? defaultSkillContent(name, parsed.description);
     validateSkillContent(name, content);
     const now = this.clock();
-    this.writeCustomSkill(name, content);
-    this.updateState(name, { enabled: parsed.enabled, createdAt: now, updatedAt: now });
+    this.writePrivateSkill(name, content);
+    this.updateState(name, { enabled: parsed.enabled, createdAt: now, deleted: false, updatedAt: now });
     return this.get({ name });
   }
 
@@ -112,13 +120,17 @@ export class SkillFileStore {
     const parsed = SkillUpdateParamsSchema.parse(params);
     const name = normalizeSkillName(parsed.name);
     const existing = this.get({ name });
-    if (!existing.editable || existing.category !== "custom") {
-      throw new Error(`Skill '${name}' is built in and cannot be edited.`);
+    if (!existing.editable) {
+      throw new Error(`Skill '${name}' cannot be edited.`);
     }
 
     validateSkillContent(name, parsed.content);
-    this.writeCustomSkill(name, parsed.content);
-    this.updateState(name, { updatedAt: this.clock() });
+    if (existing.category === "public") {
+      this.writePublicSkill(name, parsed.content);
+    } else {
+      this.writePrivateSkill(name, parsed.content);
+    }
+    this.updateState(name, { deleted: false, updatedAt: this.clock() });
     return this.get({ name });
   }
 
@@ -126,11 +138,18 @@ export class SkillFileStore {
     const parsed = SkillDeleteParamsSchema.parse(params);
     const name = normalizeSkillName(parsed.name);
     const existing = this.get({ name });
-    if (!existing.editable || existing.category !== "custom") {
-      throw new Error(`Skill '${name}' is built in and cannot be deleted.`);
+    if (!existing.editable) {
+      throw new Error(`Skill '${name}' cannot be deleted.`);
     }
 
-    fs.rmSync(this.customSkillDir(name), { recursive: true, force: true });
+    if (existing.category === "public") {
+      fs.rmSync(this.publicSkillDir(name), { recursive: true, force: true });
+      this.updateState(name, { deleted: true, enabled: false, updatedAt: this.clock() });
+      return { deleted: true, name };
+    }
+
+    fs.rmSync(this.privateSkillDir(name), { recursive: true, force: true });
+    fs.rmSync(this.legacyCustomSkillDir(name), { recursive: true, force: true });
     this.removeState(name);
     return { deleted: true, name };
   }
@@ -191,30 +210,39 @@ export class SkillFileStore {
     for (const skill of this.bundledSkills) {
       const id = toSkillId(skill.id || skill.name);
       const record = state[id] ?? {};
+      if (record.deleted) {
+        continue;
+      }
       merged.set(id, SkillDetailSchema.parse({
         ...skill,
         id,
         name: skill.name,
         category: "public",
         enabled: record.enabled ?? skill.enabled ?? true,
-        editable: false,
+        editable: true,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
-        content: skill.promptSnippet ?? skill.description,
+        content: defaultSkillContent(skill.name, skill.promptSnippet ?? skill.description),
       }));
     }
 
+    for (const detail of this.scanSkillRoot(this.bundledPublicRootDir, "public", state)) {
+      merged.set(detail.id, detail);
+    }
     for (const detail of this.scanSkillRoot(this.publicRootDir, "public", state)) {
       merged.set(detail.id, detail);
     }
-    for (const detail of this.scanSkillRoot(this.customRootDir, "custom", state)) {
+    for (const detail of this.scanSkillRoot(this.legacyCustomRootDir, "private", state)) {
+      merged.set(detail.id, detail);
+    }
+    for (const detail of this.scanSkillRoot(this.privateRootDir, "private", state)) {
       merged.set(detail.id, detail);
     }
 
     return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  private scanSkillRoot(rootDir: string, category: "public" | "custom", state: Record<string, PersistedSkillState>): SkillDetail[] {
+  private scanSkillRoot(rootDir: string, category: "public" | "private", state: Record<string, PersistedSkillState>): SkillDetail[] {
     if (!fs.existsSync(rootDir)) {
       return [];
     }
@@ -244,6 +272,9 @@ export class SkillFileStore {
         const id = toSkillId(metadata.name);
         const stat = fs.statSync(fullPath);
         const record = state[id] ?? {};
+        if (record.deleted) {
+          continue;
+        }
         skills.push(SkillDetailSchema.parse({
           id,
           name: metadata.name,
@@ -253,7 +284,7 @@ export class SkillFileStore {
           path: path.relative(process.cwd(), fullPath),
           category,
           enabled: record.enabled ?? true,
-          editable: category === "custom",
+          editable: true,
           createdAt: record.createdAt ?? Math.floor(stat.birthtimeMs),
           updatedAt: record.updatedAt ?? Math.floor(stat.mtimeMs),
           allowedPatterns: [],
@@ -301,8 +332,14 @@ export class SkillFileStore {
     this.writeState(state);
   }
 
-  private writeCustomSkill(name: string, content: string) {
-    const target = this.customSkillFile(name);
+  private writePrivateSkill(name: string, content: string) {
+    const target = this.privateSkillFile(name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+  }
+
+  private writePublicSkill(name: string, content: string) {
+    const target = this.publicSkillFile(name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
   }
@@ -312,12 +349,24 @@ export class SkillFileStore {
     return this.readAllSkillDetails().find((skill) => skill.id === id || skill.name === name);
   }
 
-  private customSkillDir(name: string): string {
-    return path.join(this.customRootDir, normalizeSkillName(name));
+  private privateSkillDir(name: string): string {
+    return path.join(this.privateRootDir, normalizeSkillName(name));
   }
 
-  private customSkillFile(name: string): string {
-    return path.join(this.customSkillDir(name), SKILL_FILE_NAME);
+  private publicSkillDir(name: string): string {
+    return path.join(this.publicRootDir, normalizeSkillName(name));
+  }
+
+  private legacyCustomSkillDir(name: string): string {
+    return path.join(this.legacyCustomRootDir, normalizeSkillName(name));
+  }
+
+  private privateSkillFile(name: string): string {
+    return path.join(this.privateSkillDir(name), SKILL_FILE_NAME);
+  }
+
+  private publicSkillFile(name: string): string {
+    return path.join(this.publicSkillDir(name), SKILL_FILE_NAME);
   }
 }
 

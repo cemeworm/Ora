@@ -635,7 +635,11 @@ function listRuntimeSkills(skillRegistry: SkillRegistryTools | undefined, args: 
   if (!skillRegistry) {
     throw new Error("A skill registry is required for skills.list.");
   }
-  const category = args.category === "public" || args.category === "custom" ? args.category : undefined;
+  const category = args.category === "public" || args.category === "private"
+    ? args.category
+    : args.category === "custom"
+      ? "private"
+      : undefined;
   const params: SkillListParams = {
     ...(category ? { category } : {}),
     enabledOnly: args.enabledOnly === false ? false : true,

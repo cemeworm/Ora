@@ -483,7 +483,7 @@ export function TrailsTabs({
           <>
             <DockCard title="Trace Status" icon={<GitBranch size={16} />}>
               <div className="space-y-2">
-                <SignalLine label="Provider" value={trace?.provider ?? "langfuse"} />
+                <SignalLine label="Provider" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
                 <SignalLine label="Source" value={trace?.source ?? "trace unavailable"} />
                 <SignalLine label="Trace ID" value={trace?.traceId ?? "Not captured"} />
                 <SignalLine label="Root observation" value={trace?.rootObservationId ?? "Not captured"} />
@@ -496,10 +496,10 @@ export function TrailsTabs({
                   size="sm"
                   onClick={handleOpenTrace}
                   disabled={traceOpenDisabled}
-                  title={traceOpenUnavailable ? "Langfuse is not reachable for this trace yet." : undefined}
+                  title={traceOpenUnavailable ? "No Langfuse trace is attached to this local Trail." : undefined}
                 >
                   <ExternalLink size={14} />
-                  {traceOpenUnavailable ? "Langfuse unavailable" : "Open in Langfuse"}
+                  {traceOpenUnavailable ? "Local Trail only" : "Open in Langfuse"}
                 </Button>
               </div>
             </DockCard>
@@ -797,7 +797,9 @@ export function collectAnomalies(
   if (toolCalls.some((call) => call.status === "interrupted")) {
     items.add("A tool call was interrupted before completion.");
   }
-  if (!trace?.enabled) {
+  if (trace?.provider === "ora" || trace?.source === "local") {
+    items.add("Ora-native Trails is active; Langfuse is optional for deeper observability.");
+  } else if (!trace?.enabled) {
     items.add("Langfuse tracing is disabled, so Trails is operating in local-only mode.");
   } else if (!trace.available) {
     items.add(trace.reason ?? "Remote trace data is unavailable; the drawer is using local synthesized observations.");
@@ -815,6 +817,9 @@ export function canOpenLangfuseTrace(
   trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined,
 ) {
   if (!trace?.traceUrl) {
+    return false;
+  }
+  if (trace.provider !== "langfuse" || trace.source === "local") {
     return false;
   }
   if (trace.source === "degraded") {

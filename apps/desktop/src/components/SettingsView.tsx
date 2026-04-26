@@ -24,10 +24,11 @@ import { useRunActions } from "../lib/useRunActions";
 import type { OraLongTermMemoryProfile } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { LANGUAGE_OPTIONS } from "../lib/i18n";
+import { ProjectSignalsView } from "./ProjectSignalsView";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
 
-type SettingsSection = "general" | "providers" | "runtime" | "memory" | "tools" | "skills";
+type SettingsSection = "general" | "providers" | "runtime" | "memory" | "signals" | "tools" | "skills";
 
 const settingsSections: Array<{
   id: SettingsSection;
@@ -38,6 +39,7 @@ const settingsSections: Array<{
   { id: "providers", label: "Providers", icon: Bot },
   { id: "runtime", label: "Runtime", icon: Activity },
   { id: "memory", label: "Memory", icon: Database },
+  { id: "signals", label: "Signals", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
   { id: "skills", label: "Skills", icon: Sparkles },
 ];
@@ -978,6 +980,16 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                     )}
                   </section>
                 </>
+              )}
+
+              {activeSection === "signals" && state.bridgeStatus && (
+                <section className="h-[680px] min-h-[520px] max-h-[calc(88vh-9rem)] overflow-hidden rounded-[22px] bg-card shadow-pane ring-1 ring-inset ring-bench-200">
+                  <ProjectSignalsView
+                    runtimeClient={runtimeClient}
+                    bridgeStatus={state.bridgeStatus}
+                    onOpenEvidence={() => onOpenChange(false)}
+                  />
+                </section>
               )}
 
               {activeSection === "tools" && state.toolRegistry && (

@@ -25,6 +25,16 @@ import {
   EvaluationFeedbackRejectParamsSchema,
   EvaluationFeedbackSubmitParamsSchema,
   EvaluationFeedbackUpdateParamsSchema,
+  FeedbackLoopActionApplyParamsSchema,
+  FeedbackLoopActionPreviewParamsSchema,
+  FeedbackLoopActionResultSchema,
+  FeedbackLoopCalibrationRuleSchema,
+  FeedbackLoopInsightDismissParamsSchema,
+  FeedbackLoopInsightGetParamsSchema,
+  FeedbackLoopInsightsListParamsSchema,
+  FeedbackLoopRuleUpdateParamsSchema,
+  FeedbackLoopRulesListParamsSchema,
+  FeedbackLoopSignalsListParamsSchema,
   EvaluationImportParamsSchema,
   EvaluationRunDetailSchema,
   EvaluationRunSchema,
@@ -55,7 +65,10 @@ import {
   ProjectFilesParamsSchema,
   ProjectFilesResultSchema,
   ProjectGetParamsSchema,
+  ProjectInsightSchema,
   ProjectListParamsSchema,
+  ProjectSignalActionSchema,
+  ProjectSignalSchema,
   ProjectSummarySchema,
   ProviderConfigSchema,
   ProviderRegistrySchema,
@@ -73,6 +86,7 @@ import {
   RunHandleSchema,
   RunReplayParamsSchema,
   RunResumeParamsSchema,
+  RuntimeJsonRpcMethodSchema,
   RunTraceMetadataSchema,
   RunTrailParamsSchema,
   RunTrailSchema,
@@ -1197,17 +1211,29 @@ describe("SkillRegistrySchema", () => {
   });
 
   it("accepts managed skill detail and mutation params", () => {
+    const publicDetail = SkillDetailSchema.parse({
+      id: "public-review",
+      name: "public-review",
+      description: "Packaged default review rules.",
+      category: "public",
+      editable: true,
+      content: "---\nname: public-review\ndescription: Packaged default review rules.\n---\n\n# public-review"
+    });
+    expect(publicDetail.editable).toBe(true);
+
     const detail = SkillDetailSchema.parse({
       id: "custom-review",
       name: "custom-review",
       description: "Review with local project rules.",
-      category: "custom",
+      category: "private",
       enabled: false,
       editable: true,
       content: "---\nname: custom-review\ndescription: Review with local project rules.\n---\n\n# custom-review"
     });
 
     expect(detail.name).toBe("custom-review");
+    expect(detail.category).toBe("private");
+    expect(SkillDetailSchema.parse({ ...detail, category: "custom" }).category).toBe("private");
     expect(SkillCreateParamsSchema.parse({ name: "custom-review" }).enabled).toBe(true);
     expect(SkillUpdateParamsSchema.parse({ name: "custom-review", content: detail.content }).name).toBe("custom-review");
     expect(SkillSetEnabledParamsSchema.parse({ name: "custom-review", enabled: true }).enabled).toBe(true);
@@ -1522,6 +1548,97 @@ describe("Project thread contracts", () => {
     expect(readParams.path).toBe("README.md");
     expect(files.files[0]?.mimeType).toBe("text/markdown");
     expect(preview.previewKind).toBe("text");
+  });
+
+  it("accepts feedback-loop signals, insights, actions, and rules", () => {
+    const signal = ProjectSignalSchema.parse({
+      id: "project-0001:signal:recovery:run-0001:4",
+      projectId: "project-0001",
+      source: "recovery_event",
+      sourceRef: "run-0001:4",
+      title: "Recovery exhausted",
+      summary: "Run run-0001 exhausted recovery on the browser tool.",
+      severity: "critical",
+      confidence: 0.92,
+      createdAt: 1200,
+      updatedAt: 1200,
+      evidence: [{
+        id: "run-0001:evt-4",
+        label: "Open Trails event",
+        summary: "recovery.exhausted",
+        target: {
+          kind: "trail",
+          id: "run-0001:evt-4",
+          runId: "run-0001",
+          eventSeq: 4,
+          tabHint: "Events",
+        },
+      }],
+      metadata: {
+        modeId: "agent_teams",
+        toolId: "web.search",
+      },
+    });
+
+    const action = ProjectSignalActionSchema.parse({
+      id: "open-trails-run-0001",
+      kind: "open_trails",
+      label: "Open Trails for run-0001",
+      payload: { runId: "run-0001" },
+      requiresConfirmation: true,
+    });
+
+    const insight = ProjectInsightSchema.parse({
+      id: "project-0001:insight:repeated-recovery",
+      projectId: "project-0001",
+      title: "Recovery is recurring in agent_teams",
+      summary: "Two recent runs exhausted recovery in the same mode.",
+      status: "open",
+      signalIds: [signal.id],
+      recommendedActions: [action],
+      confidence: 0.82,
+      createdAt: 1200,
+      updatedAt: 1200,
+    });
+
+    const rule = FeedbackLoopCalibrationRuleSchema.parse({
+      id: "project-0001:rule:repeated_recovery_exhausted",
+      projectId: "project-0001",
+      name: "Repeated recovery exhausted",
+      enabled: true,
+      sourceFilters: ["recovery_event"],
+      severityThreshold: "warning",
+      humanReviewRequired: true,
+      actionPolicy: {
+        allowedActionKinds: ["open_trails", "create_evaluation_case"],
+      },
+    });
+
+    expect(signal.evidence[0]?.target.kind).toBe("trail");
+    expect(insight.recommendedActions[0]?.kind).toBe("open_trails");
+    expect(rule.actionPolicy.allowedActionKinds).toContain("create_evaluation_case");
+
+    expect(FeedbackLoopSignalsListParamsSchema.parse({ projectId: "project-0001", source: "recovery_event", limit: 25 }).source).toBe("recovery_event");
+    expect(FeedbackLoopInsightsListParamsSchema.parse({ status: "open" }).status).toBe("open");
+    expect(FeedbackLoopInsightGetParamsSchema.parse({ insightId: insight.id }).insightId).toBe(insight.id);
+    expect(FeedbackLoopInsightDismissParamsSchema.parse({ insightId: insight.id, reason: "Handled elsewhere" }).reason).toBe("Handled elsewhere");
+    expect(FeedbackLoopActionPreviewParamsSchema.parse({ insightId: insight.id, actionId: action.id }).actionId).toBe(action.id);
+    expect(FeedbackLoopActionApplyParamsSchema.parse({ insightId: insight.id, actionId: action.id, confirmed: true }).confirmed).toBe(true);
+    expect(FeedbackLoopActionResultSchema.parse({
+      insight,
+      action,
+      status: "preview",
+      message: "Open Trails for run-level evidence.",
+    }).status).toBe("preview");
+    expect(FeedbackLoopRulesListParamsSchema.parse({ projectId: "project-0001" }).projectId).toBe("project-0001");
+    expect(FeedbackLoopRuleUpdateParamsSchema.parse({ rule }).rule.id).toBe(rule.id);
+  });
+
+  it("includes feedback-loop methods in the known JSON-RPC method enum", () => {
+    expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.signals.list")).toBe("feedbackLoop.signals.list");
+    expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.insights.list")).toBe("feedbackLoop.insights.list");
+    expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.actions.apply")).toBe("feedbackLoop.actions.apply");
+    expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.rules.update")).toBe("feedbackLoop.rules.update");
   });
 });
 

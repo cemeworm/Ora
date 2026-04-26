@@ -57,7 +57,7 @@
   Next: Follow up separately if Ora should bundle or install a container runtime instead of relying on Docker Compose availability.
 
 ## Open Issues
-- [ ] TODO(FOLLOWUP): Docker runtime itself is not bundled; app manages Langfuse when Docker Compose is available.
+- [x] TODO(FOLLOWUP): Superseded by `TASK-20260426-1531-ora-native-trails-no-docker.md`. Docker runtime is no longer part of the ordinary-user Trails baseline; Langfuse is optional developer/operator enrichment when explicitly enabled.
 
 ## TODO
 - None.
@@ -110,17 +110,15 @@
 ## Comparison (If Applicable)
 
 ### Reference
-- Reference implementation/template/similar task: _______
+- Not applicable for the original package-resource task; superseded product semantics are covered in `TASK-20260426-1531-ora-native-trails-no-docker.md`.
 
 ### Comparison Points
-- [ ] Comparison point 1: _______
-- [ ] Comparison point 2: _______
-- [ ] Comparison point 3: _______
+- [x] No comparison evidence required for this completed package-resource task.
 
 ### Findings
-- Consistency: _______
-- Differences: _______
-- Conclusion: _______
+- Consistency: Original packaging evidence remains useful for optional Langfuse resources.
+- Differences: Ordinary-user Trails no longer depends on the packaged Langfuse resource.
+- Conclusion: See `TASK-20260426-1531-ora-native-trails-no-docker.md` for the superseding local-first contract.
 
 ## Checkpoints
 
@@ -140,11 +138,11 @@
 
 ## Compressed State (<= 20 lines)
 - Objective: make Langfuse a packaged Ora-managed service resource for Mac app builds.
-- Done: added compose source, staging copy, Tauri resource mapping, readiness endpoint health check, health detail surfacing, docs, and focused Rust tests.
+- Done: added compose source, staging copy, Tauri resource mapping, readiness endpoint health check, health detail surfacing, docs, and focused Rust tests. Follow-up Docker-runtime assumption superseded by Ora-native local Trails.
 - In-progress: none.
 - Active files: package scripts, Tauri config, sidecar.rs, runtimeClient.ts, Langfuse infra docs/assets.
-- Next actions (top 3; exact file/function): optional follow-up to evaluate bundling/installing a container runtime; otherwise no task action pending.
-- Blockers/Risks: Docker runtime not bundled; readiness endpoint needs bounded check.
+- Next actions (top 3; exact file/function): none.
+- Blockers/Risks: Langfuse remains optional and requires a separately available compatible service when explicitly enabled.
 - Verification status: full Rust tests, desktop/runtime typechecks, bundle build, artifact inspection, and diff whitespace check passed.
 
 ## Verification
@@ -154,7 +152,7 @@ Must provide the following evidence:
 - [x] Code Verification output (compilation/tests/lint)
 - [x] Functional Verification output (feature verification)
 - [x] Retrospective Evidence (if applicable)
-- [ ] Comparison Evidence (if applicable)
+- [x] Comparison Evidence (if applicable)
 - [x] Checkpoints Evidence (if applicable)
 
 ### Environment

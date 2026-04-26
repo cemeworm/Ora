@@ -5,14 +5,14 @@ import type { OraSkillDetail, OraSkillRegistry, RuntimeClient } from "../lib/run
 import { cn } from "../lib/utils";
 
 type SkillMode = "gallery" | "create" | "edit";
-type CategoryFilter = "all" | "public" | "custom";
+type CategoryFilter = "all" | "public" | "private";
 type EnabledFilter = "all" | "enabled" | "disabled";
 
 const EMPTY_DETAIL: OraSkillDetail = {
   id: "",
   name: "",
   description: "",
-  category: "custom",
+  category: "private",
   enabled: true,
   editable: true,
   allowedPatterns: [],
@@ -154,7 +154,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
   }
 
   async function deleteSkill() {
-    if (!selectedSkill?.editable || !window.confirm(`Delete custom skill '${selectedSkill.name}'?`)) {
+    if (!selectedSkill?.editable || !window.confirm(`Delete ${selectedSkill.category} skill '${selectedSkill.name}'?`)) {
       return;
     }
     setBusy(`delete:${selectedSkill.name}`);
@@ -223,8 +223,8 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]">
-        <aside className="min-h-0 border-b border-border bg-white/55 p-4 lg:border-b-0 lg:border-r">
-          <div className="space-y-3">
+        <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border bg-white/55 p-4 lg:border-b-0 lg:border-r">
+          <div className="shrink-0 space-y-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-bench-500" size={14} />
               <input
@@ -242,7 +242,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
               >
                 <option value="all">All sources</option>
                 <option value="public">Public</option>
-                <option value="custom">Custom</option>
+                <option value="private">Private</option>
               </select>
               <select
                 value={enabledFilter}
@@ -257,12 +257,12 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
           </div>
 
           {error && (
-            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
+            <div className="mt-4 shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
               {error}
             </div>
           )}
 
-          <div className="mt-4 min-h-0 space-y-2 overflow-y-auto pr-1">
+          <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {visibleSkills.length === 0 ? (
               <div className="rounded-lg border border-dashed border-bench-200 bg-white px-4 py-8 text-center text-sm text-bench-700">
                 No skills match the current filters.
@@ -304,8 +304,8 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
             <section className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold">{mode === "create" ? "Create custom skill" : `Edit ${draft.name}`}</h3>
-                  <p className="mt-1 text-xs text-bench-700">Custom skills are stored as `.ora/skills/custom/&lt;name&gt;/SKILL.md`.</p>
+                  <h3 className="text-sm font-semibold">{mode === "create" ? "Create private skill" : `Edit ${draft.name}`}</h3>
+                  <p className="mt-1 text-xs text-bench-700">Private skills are stored as `.ora/skills/private/&lt;name&gt;/SKILL.md`.</p>
                 </div>
                 <button
                   onClick={saveSkill}
@@ -413,7 +413,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
             <div className="flex h-full min-h-[420px] items-center justify-center">
               <div className="rounded-lg bg-white p-6 text-center shadow-pane ring-1 ring-inset ring-bench-200">
                 <p className="text-sm font-semibold">Select a skill to inspect its full `SKILL.md`.</p>
-                <p className="mt-2 text-xs text-bench-700">Public skills are read-only; custom skills can be edited or deleted.</p>
+                <p className="mt-2 text-xs text-bench-700">Public skills are initialized from the package; private skills are added later by you.</p>
               </div>
             </div>
           )}

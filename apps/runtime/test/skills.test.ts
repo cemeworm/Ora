@@ -64,12 +64,12 @@ describe("managed skill runtime behavior", () => {
     expect(listed.skills.some((skill) =>
       skill.name === "long-task-protocol" &&
       skill.category === "public" &&
-      skill.editable === false
+      skill.editable === true
     )).toBe(true);
     expect(listed.skills.some((skill) =>
       skill.name === "frontend-design" &&
       skill.category === "public" &&
-      skill.editable === false
+      skill.editable === true
     )).toBe(true);
     expect(listed.skills.some((skill) =>
       skill.name === "bootstrap" &&
@@ -77,7 +77,7 @@ describe("managed skill runtime behavior", () => {
     )).toBe(true);
   });
 
-  it("creates, updates, reloads, toggles, and deletes custom skills", () => {
+  it("creates, updates, reloads, toggles, and deletes private skills", () => {
     const dataDir = freshStoreDir();
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
 
@@ -93,10 +93,11 @@ describe("managed skill runtime behavior", () => {
     }) as { name: string; category: string; editable: boolean; enabled: boolean };
     expect(created).toMatchObject({
       name: "runtime-review",
-      category: "custom",
+      category: "private",
       editable: true,
       enabled: true,
     });
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review", "SKILL.md"))).toBe(true);
 
     const updated = handle({
       jsonrpc: "2.0",
@@ -140,14 +141,24 @@ describe("managed skill runtime behavior", () => {
     }) as { available: boolean }).available).toBe(true);
   });
 
-  it("keeps public skills read-only but allows enabled state changes", () => {
-    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
-    expect(() => handle({
+  it("updates, disables, and deletes initialized public skills without resurrecting package defaults", () => {
+    const dataDir = freshStoreDir();
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+    const updated = handle({
       jsonrpc: "2.0",
       id: 1,
-      method: "skills.delete",
-      params: { name: "long-task-protocol" },
-    })).toThrow("built in");
+      method: "skills.update",
+      params: {
+        name: "long-task-protocol",
+        content: skillContent("long-task-protocol", "Edited public skill."),
+      },
+    }) as { category: string; description: string; editable: boolean };
+    expect(updated).toMatchObject({
+      category: "public",
+      description: "Edited public skill.",
+      editable: true,
+    });
+    expect(fs.existsSync(path.join(dataDir, "skills", "public", "long-task-protocol", "SKILL.md"))).toBe(true);
 
     const disabled = handle({
       jsonrpc: "2.0",
@@ -156,6 +167,45 @@ describe("managed skill runtime behavior", () => {
       params: { name: "long-task-protocol", enabled: false },
     }) as { enabled: boolean };
     expect(disabled.enabled).toBe(false);
+
+    expect(handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skills.delete",
+      params: { name: "long-task-protocol" },
+    })).toEqual({ deleted: true, name: "long-task-protocol" });
+
+    const reloaded = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+    expect((reloaded({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "skills.checkName",
+      params: { name: "long-task-protocol" },
+    }) as { available: boolean }).available).toBe(true);
+  });
+
+  it("loads legacy custom skills as private skills", () => {
+    const dataDir = freshStoreDir();
+    const legacyDir = path.join(dataDir, "skills", "custom", "legacy-review");
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, "SKILL.md"), skillContent("legacy-review", "Legacy review skill."), "utf8");
+
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+    const loaded = handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.get",
+      params: { name: "legacy-review" },
+    }) as { category: string; editable: boolean };
+
+    expect(loaded).toMatchObject({ category: "private", editable: true });
+    expect(handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skills.delete",
+      params: { name: "legacy-review" },
+    })).toEqual({ deleted: true, name: "legacy-review" });
+    expect(fs.existsSync(legacyDir)).toBe(false);
   });
 
   it("injects only enabled selected skills into provider system prompts", async () => {

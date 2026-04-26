@@ -11,7 +11,11 @@ import {
   EvaluationFeedbackRecordSchema,
   EvaluationRunDetailSchema,
   EvaluationRunSchema,
+  FeedbackLoopActionResultSchema,
+  FeedbackLoopCalibrationRuleSchema,
   ProviderRegistrySchema,
+  ProjectInsightSchema,
+  ProjectSignalSchema,
   RunTrailSchema,
   getPatternDefinition,
   MemoryRecordSchema,
@@ -504,7 +508,7 @@ describe("LocalRunStore", () => {
     expect(String(secondState.config.metadata.memoryPromptOverlay)).toContain("长期画像");
   });
 
-  it("returns a disabled trail when Langfuse tracing is off", async () => {
+  it("returns an Ora-native local trail when Langfuse tracing is off", async () => {
     const previous = process.env.ORA_LANGFUSE_ENABLED;
     process.env.ORA_LANGFUSE_ENABLED = "false";
     try {
@@ -526,9 +530,13 @@ describe("LocalRunStore", () => {
         params: { runId: result.runId }
       }));
 
-      expect(trail.trace.enabled).toBe(false);
-      expect(trail.trace.source).toBe("disabled");
-      expect(trail.observations).toEqual([]);
+      expect(trail.trace.provider).toBe("ora");
+      expect(trail.trace.enabled).toBe(true);
+      expect(trail.trace.available).toBe(true);
+      expect(trail.trace.source).toBe("local");
+      expect(trail.observations.length).toBeGreaterThan(0);
+      expect(trail.observations.some((observation) => observation.name === "run.started")).toBe(true);
+      expect(trail.liveMetrics.eventCount).toBeGreaterThan(0);
     } finally {
       if (previous === undefined) {
         delete process.env.ORA_LANGFUSE_ENABLED;
@@ -571,6 +579,7 @@ describe("LocalRunStore", () => {
       expect(trail.trace.traceId).toBe(state.trace?.traceId);
       expect(["managed_local", "local_synthesized", "degraded"]).toContain(trail.trace.source);
       expect(trail.observations.length).toBeGreaterThan(0);
+      expect(trail.observations.some((observation) => observation.metadata.source === "ora-runtime-event")).toBe(true);
       expect(trail.liveMetrics.eventCount).toBe(state.events.length);
     } finally {
       if (previous === undefined) {
@@ -900,5 +909,161 @@ describe("LocalRunStore", () => {
       params: { datasetId: "feedback-chat" }
     }));
     expect(unchanged.dataset.caseCount).toBe(1);
+  });
+
+  it("derives project signals, insights, rules, and confirmed actions", async () => {
+    const store = createStore();
+    const handle = createRuntimeMethodHandler(store);
+    const project = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "projects.create",
+      params: { label: "Ora", rootPath: tempDir },
+    }) as { projectId: string };
+    const session = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sessions.create",
+      params: { label: "Signals", projectId: project.projectId },
+    }) as { sessionId: string };
+
+    for (const index of [1, 2]) {
+      store.persistExternalSnapshot(StateSnapshotSchema.parse({
+        runId: `run-feedback-${index}`,
+        sessionId: session.sessionId,
+        turnIndex: index,
+        status: "failed",
+        pattern: "agent_teams",
+        modeId: "agent_teams",
+        input: {
+          prompt: `Recover browser-search failure ${index}`,
+          context: { projectId: project.projectId },
+          createdAt: FIXED_TIME + index,
+        },
+        config: {
+          pattern: "agent_teams",
+          modeId: "agent_teams",
+          profileIds: [],
+          skillIds: [],
+          toolIds: ["web.search"],
+          modelRef: "local/smoke-model",
+          approvalMode: "high_risk_only",
+          patternOptions: {},
+          metadata: {},
+          deterministicSeed: "signals-test",
+        },
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        todos: [],
+        actions: [],
+        toolCalls: [],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [
+          {
+            id: `run-feedback-${index}:evt-0`,
+            runId: `run-feedback-${index}`,
+            seq: 0,
+            type: "recovery.exhausted",
+            createdAt: FIXED_TIME + index,
+            pattern: "agent_teams",
+            nodeId: "browser-search",
+            payload: { toolId: "web.search" },
+          },
+          {
+            id: `run-feedback-${index}:evt-1`,
+            runId: `run-feedback-${index}`,
+            seq: 1,
+            type: "run.failed",
+            createdAt: FIXED_TIME + index + 1,
+            pattern: "agent_teams",
+            payload: { error: "Search recovery exhausted." },
+          },
+        ],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: {},
+        sharedStateSummary: {},
+        busStats: {},
+        pendingClarifications: [],
+        pendingApprovals: index === 2 ? ["approval-1"] : [],
+        error: "Search recovery exhausted.",
+        updatedAt: FIXED_TIME + index + 1,
+      }));
+    }
+
+    const feedback = EvaluationFeedbackRecordSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.feedback.submit",
+      params: {
+        runId: "run-feedback-1",
+        sessionId: session.sessionId,
+        feedbackText: "The browser-search recovery loop kept failing and needs a benchmark case.",
+      },
+    }));
+
+    const signals = ProjectSignalSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "feedbackLoop.signals.list",
+      params: { projectId: project.projectId },
+    }));
+    expect(signals.some((signal) => signal.source === "recovery_event" && signal.severity === "critical")).toBe(true);
+    expect(signals.some((signal) => signal.source === "evaluation_feedback" && signal.metadata.feedbackId === feedback.id)).toBe(true);
+
+    const insights = ProjectInsightSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "feedbackLoop.insights.list",
+      params: { projectId: project.projectId },
+    }));
+    const recoveryInsight = insights.find((insight) => insight.id.includes("repeated_recovery_exhausted"));
+    expect(recoveryInsight?.signalIds.length).toBeGreaterThanOrEqual(2);
+    expect(recoveryInsight?.recommendedActions[0]?.requiresConfirmation).toBe(true);
+
+    const rules = FeedbackLoopCalibrationRuleSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "feedbackLoop.rules.list",
+      params: { projectId: project.projectId },
+    }));
+    expect(rules.map((rule) => rule.id)).toContain(`${project.projectId}:rule:repeated_recovery_exhausted`);
+
+    const preview = FeedbackLoopActionResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "feedbackLoop.actions.preview",
+      params: { insightId: recoveryInsight!.id, actionId: recoveryInsight!.recommendedActions[0]!.id },
+    }));
+    expect(preview.status).toBe("preview");
+
+    const applied = FeedbackLoopActionResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "feedbackLoop.actions.apply",
+      params: { insightId: recoveryInsight!.id, actionId: recoveryInsight!.recommendedActions[0]!.id, confirmed: true },
+    }));
+    expect(applied.status).toBe("applied");
+    expect(applied.insight.status).toBe("applied");
+
+    const recoveryRule = rules.find((rule) => rule.id === `${project.projectId}:rule:repeated_recovery_exhausted`)!;
+    const disabledRule = FeedbackLoopCalibrationRuleSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "feedbackLoop.rules.update",
+      params: { rule: { ...recoveryRule, enabled: false } },
+    }));
+    expect(disabledRule.enabled).toBe(false);
+
+    const recalibratedInsights = ProjectInsightSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "feedbackLoop.insights.list",
+      params: { projectId: project.projectId },
+    }));
+    expect(recalibratedInsights.find((insight) => insight.id.includes("repeated_recovery_exhausted"))).toBeUndefined();
   });
 });

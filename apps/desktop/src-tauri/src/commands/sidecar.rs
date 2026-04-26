@@ -1628,11 +1628,10 @@ fn command_is_available(executable: &Path) -> bool {
 fn ensure_managed_langfuse_service(app: Option<&AppHandle>) -> ManagedLangfuseStatus {
     let base_url = env::var("LANGFUSE_BASE_URL")
         .unwrap_or_else(|_| MANAGED_LANGFUSE_BASE_URL.to_string());
-    if env::var(MANAGED_LANGFUSE_SERVICE_ENV)
-        .map(|value| {
-            value.trim().eq_ignore_ascii_case("false")
-                || value.trim().eq_ignore_ascii_case("off")
-        })
+    let service_setting = env::var(MANAGED_LANGFUSE_SERVICE_ENV).ok();
+    if service_setting
+        .as_deref()
+        .map(is_disabled_env_value)
         .unwrap_or(false)
     {
         return ManagedLangfuseStatus {
@@ -1656,6 +1655,17 @@ fn ensure_managed_langfuse_service(app: Option<&AppHandle>) -> ManagedLangfuseSt
         };
     }
 
+    if !managed_langfuse_start_requested(service_setting.as_deref()) {
+        return ManagedLangfuseStatus {
+            enabled: false,
+            base_url,
+            available: false,
+            start_attempted: false,
+            start_command: None,
+            reason: "Ora-native Trails is active; Langfuse startup is optional and was not requested.".to_string(),
+        };
+    }
+
     let start_spec = resolve_managed_langfuse_start_spec(app);
     let Some(start_spec) = start_spec else {
         return ManagedLangfuseStatus {
@@ -1672,6 +1682,20 @@ fn ensure_managed_langfuse_service(app: Option<&AppHandle>) -> ManagedLangfuseSt
     };
 
     let start_command = start_spec.display.clone();
+    if !command_is_available(start_spec.executable()) {
+        return ManagedLangfuseStatus {
+            enabled: true,
+            base_url,
+            available: false,
+            start_attempted: false,
+            start_command: Some(start_command),
+            reason: format!(
+                "docker_unavailable: Managed Langfuse is optional and its start command is unavailable: {}.",
+                start_spec.executable().to_string_lossy()
+            ),
+        };
+    }
+
     match spawn_background_command(&start_spec) {
         Ok(()) => ManagedLangfuseStatus {
             enabled: true,
@@ -1690,6 +1714,34 @@ fn ensure_managed_langfuse_service(app: Option<&AppHandle>) -> ManagedLangfuseSt
             reason: format!("Managed Langfuse startup failed: {error}"),
         },
     }
+}
+
+fn managed_langfuse_start_requested(service_setting: Option<&str>) -> bool {
+    if service_setting.map(is_enabled_env_value).unwrap_or(false) {
+        return true;
+    }
+    env::var(MANAGED_LANGFUSE_COMMAND_ENV)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || env::var(MANAGED_LANGFUSE_COMPOSE_DIR_ENV)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+}
+
+fn is_enabled_env_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed == "1"
+        || trimmed.eq_ignore_ascii_case("true")
+        || trimmed.eq_ignore_ascii_case("on")
+        || trimmed.eq_ignore_ascii_case("yes")
+}
+
+fn is_disabled_env_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed == "0"
+        || trimmed.eq_ignore_ascii_case("false")
+        || trimmed.eq_ignore_ascii_case("off")
+        || trimmed.eq_ignore_ascii_case("no")
 }
 
 fn disabled_managed_langfuse_status() -> ManagedLangfuseStatus {
@@ -2121,8 +2173,16 @@ fn dev_runtime_command() -> Option<RuntimeCommandSpec> {
             sidecar_entry.to_string_lossy().into_owned(),
         ],
         Some(repo_root),
-        managed_langfuse_runtime_env(),
+        optional_langfuse_runtime_env(),
     ))
+}
+
+fn optional_langfuse_runtime_env() -> Vec<(String, String)> {
+    if managed_langfuse_start_requested(env::var(MANAGED_LANGFUSE_SERVICE_ENV).ok().as_deref()) {
+        managed_langfuse_runtime_env()
+    } else {
+        Vec::new()
+    }
 }
 
 fn managed_langfuse_runtime_env() -> Vec<(String, String)> {
@@ -2191,7 +2251,7 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
     let runtime_data_dir = app_data_dir.join("runtime");
     let runtime_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_STORE_DB);
     let checkpoint_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_CHECKPOINT_DB);
-    let mut environment = managed_langfuse_runtime_env();
+    let mut environment = optional_langfuse_runtime_env();
     environment.extend([
         (
             "ORA_RUNTIME_STORE_DIR".to_string(),
@@ -2743,16 +2803,16 @@ fn build_trace_metadata(
     model_ref: Option<&str>,
 ) -> Value {
     json!({
-        "provider": "langfuse",
+        "provider": "ora",
         "enabled": true,
         "available": true,
-        "traceId": format!("trace-{}", run_id),
+        "traceId": format!("ora-local-{}", run_id),
         "rootObservationId": format!("{}:trace-root", run_id),
-        "traceUrl": format!("http://localhost:3000/project/ora-runtime/traces/trace-{}", run_id),
-        "source": "local_synthesized",
+        "source": "local",
+        "reason": "Ora-native Trails is using local runtime events; Langfuse is optional.",
         "generationRefs": [{
             "observationId": format!("{}:generation-0", run_id),
-            "traceId": format!("trace-{}", run_id),
+            "traceId": format!("ora-local-{}", run_id),
             "parentObservationId": format!("{}:trace-root", run_id),
             "name": "model.local-smoke",
             "providerId": provider_id.unwrap_or("local-smoke"),
@@ -3870,23 +3930,31 @@ mod tests {
     }
 
     #[test]
-    fn dev_runtime_command_enables_managed_langfuse_env() {
+    fn dev_runtime_command_keeps_langfuse_env_optional_by_default() {
         let command =
             dev_runtime_command().expect("workspace tsx cli should be available in tests");
 
-        assert!(command
+        assert!(!command
             .environment
             .iter()
+            .any(|(key, _value)| key == "ORA_LANGFUSE_ENABLED"));
+    }
+
+    #[test]
+    fn managed_langfuse_runtime_env_contains_managed_credentials() {
+        let environment = managed_langfuse_runtime_env();
+
+        assert!(environment
+            .iter()
             .any(|(key, value)| key == "ORA_LANGFUSE_ENABLED" && value == "true"));
-        assert!(command
-            .environment
+        assert!(environment
             .iter()
             .any(|(key, value)| key == "LANGFUSE_BASE_URL"
                 && value == MANAGED_LANGFUSE_BASE_URL));
-        assert!(command.environment.iter().any(|(key, value)| {
+        assert!(environment.iter().any(|(key, value)| {
             key == "LANGFUSE_PUBLIC_KEY" && value == MANAGED_LANGFUSE_PUBLIC_KEY
         }));
-        assert!(command.environment.iter().any(|(key, value)| {
+        assert!(environment.iter().any(|(key, value)| {
             key == "LANGFUSE_SECRET_KEY" && value == MANAGED_LANGFUSE_SECRET_KEY
         }));
     }

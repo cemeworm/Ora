@@ -7,6 +7,8 @@ description: Create new skills, modify and improve existing skills, and measure 
 
 A skill for creating new skills and iteratively improving them.
 
+In Ora, user-created skills are private skills. Create them under `.ora/skills/private/<skill-name>/SKILL.md`. Public skills are packaged defaults seeded for first use; users can still edit or delete their initialized public copies in Ora.
+
 At a high level, the process of creating a skill goes like this:
 
 - Decide what you want the skill to do and roughly how it should do it

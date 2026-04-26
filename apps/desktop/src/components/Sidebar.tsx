@@ -142,6 +142,7 @@ export function Sidebar() {
       status: statusFromSession(session.status),
     }));
   const showSectionDivider = projects.length > 0;
+  const chatSessionSelected = state.activeView === "chat";
 
   return (
     <aside
@@ -300,7 +301,7 @@ export function Sidebar() {
                             ) : (
                               <div className="flex flex-col gap-0">
                                 {visibleSessions.map((session) => {
-                                  const selected = session.id === state.selectedSessionId;
+                                  const selected = chatSessionSelected && session.id === state.selectedSessionId;
                                   return (
                                     <SessionRow
                                       key={session.id}
@@ -372,7 +373,7 @@ export function Sidebar() {
                       <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
                     ) : (
                       recentChats.map((session) => {
-                        const selected = session.id === state.selectedSessionId;
+                        const selected = chatSessionSelected && session.id === state.selectedSessionId;
                         return (
                           <SessionRow
                             key={session.id}
