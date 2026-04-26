@@ -169,6 +169,8 @@ export const CustomAgentSummarySchema = z.object({
   description: z.string().default(""),
   model: z.string().min(1).optional(),
   toolGroups: z.array(z.string().min(1)).optional(),
+  toolIds: z.array(z.string().min(1)).default([]),
+  skillIds: z.array(z.string().min(1)).default([]),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -184,6 +186,8 @@ export const CustomAgentCreateParamsSchema = z.object({
   description: z.string().default(""),
   model: z.string().min(1).optional(),
   toolGroups: z.array(z.string().min(1)).optional(),
+  toolIds: z.array(z.string().min(1)).default([]),
+  skillIds: z.array(z.string().min(1)).default([]),
   soul: z.string().default(""),
 });
 export type CustomAgentCreateParams = z.infer<typeof CustomAgentCreateParamsSchema>;
@@ -193,6 +197,8 @@ export const CustomAgentUpdateParamsSchema = z.object({
   description: z.string().optional(),
   model: z.string().min(1).nullable().optional(),
   toolGroups: z.array(z.string().min(1)).nullable().optional(),
+  toolIds: z.array(z.string().min(1)).nullable().optional(),
+  skillIds: z.array(z.string().min(1)).nullable().optional(),
   soul: z.string().optional(),
 });
 export type CustomAgentUpdateParams = z.infer<typeof CustomAgentUpdateParamsSchema>;
@@ -229,6 +235,8 @@ export const CustomAgentGeneratedDraftSchema = z.object({
   description: z.string().default(""),
   model: z.string().min(1).optional(),
   toolGroups: z.array(z.string().min(1)).default([]),
+  toolIds: z.array(z.string().min(1)).default([]),
+  skillIds: z.array(z.string().min(1)).default([]),
   soul: z.string().default(""),
 });
 export type CustomAgentGeneratedDraft = z.infer<typeof CustomAgentGeneratedDraftSchema>;

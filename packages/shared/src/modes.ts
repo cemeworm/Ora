@@ -459,6 +459,8 @@ const profile = (
   role,
   modelRef: "local/smoke-model",
   toolPolicyId: `${pattern}.default_policy`,
+  toolIds: [],
+  skillIds: [],
   memoryNamespaces: namespaces,
   budget: DEFAULT_RESOURCE_BUDGETS[pattern]
 });

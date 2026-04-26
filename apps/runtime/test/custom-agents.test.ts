@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema } from "@ora/shared";
+import { CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset } from "@ora/shared";
 
 const capturedSystems: string[] = [];
 const providerResponses: string[] = [];
@@ -61,6 +61,8 @@ describe("custom agent runtime behavior", () => {
       description: "Research persona",
       model: "gpt-5.4",
       toolGroups: ["web", "files"],
+      toolIds: ["web.search", "file.read"],
+      skillIds: ["long-task-protocol"],
       soul: "Be concise and source-backed.",
     }));
 
@@ -73,16 +75,22 @@ describe("custom agent runtime behavior", () => {
       description: "Sharper research persona",
       model: null,
       toolGroups: ["web"],
+      toolIds: ["web.fetch"],
+      skillIds: ["review"],
       soul: "Prefer primary sources.",
     });
     expect(updated.model).toBeUndefined();
     expect(updated.toolGroups).toEqual(["web"]);
+    expect(updated.toolIds).toEqual(["web.fetch"]);
+    expect(updated.skillIds).toEqual(["review"]);
     expect(updated.soul).toContain("primary sources");
 
     const reloaded = new LocalRunStore({ dataDir: dir, clock });
     const loaded = reloaded.getAgent({ name: "research-bot" });
     expect(loaded.description).toBe("Sharper research persona");
     expect(loaded.toolGroups).toEqual(["web"]);
+    expect(loaded.toolIds).toEqual(["web.fetch"]);
+    expect(loaded.skillIds).toEqual(["review"]);
 
     const deleted = reloaded.deleteAgent({ name: "research-bot" });
     expect(deleted).toEqual({ deleted: true, name: "research-bot" });
@@ -159,6 +167,64 @@ describe("custom agent runtime behavior", () => {
       system.includes("Custom Agent Persona: langgraph-review-bot") &&
       system.includes("Keep the persona visible even on managed runtime paths.")
     )).toBe(true);
+  });
+
+  it("uses profile-bound custom agent capabilities without exceeding mode capabilities", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
+    await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agents.create",
+      params: {
+        name: "focused-builder",
+        description: "Focused builder persona",
+        soul: "Only use the narrow tools and skills assigned to this role.",
+        toolIds: ["file.read", "shell.execute"],
+        skillIds: ["long-task-protocol", "missing-skill"],
+      },
+    });
+
+    const preset = getModePreset("single_agent");
+    if (!preset) {
+      throw new Error("single_agent preset missing");
+    }
+    const mode = {
+      ...preset,
+      id: "profile-bound-agent-test",
+      label: "Profile Bound Agent Test",
+      systemPreset: false,
+      capabilityFlags: {
+        ...preset.capabilityFlags,
+        toolIds: ["file.read", "web.search"],
+        skillIds: ["long-task-protocol"],
+      },
+      profiles: preset.profiles.map((profile) => ({
+        ...profile,
+        customAgentId: profile.id === "solo_agent" ? "focused-builder" : profile.customAgentId,
+      })),
+    };
+    const { systemPreset: _systemPreset, createdAt: _createdAt, updatedAt: _updatedAt, ...payload } = mode;
+    store.createMode(payload);
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Read the project notes." },
+        config: {
+          modeId: "profile-bound-agent-test",
+        },
+      },
+    });
+
+    const system = capturedSystems.find((value) => value.includes("Custom Agent Persona: focused-builder")) ?? "";
+    expect(system).toContain("Only use the narrow tools and skills assigned to this role.");
+    expect(system).toContain("file.read");
+    expect(system).not.toContain("web.search");
+    expect(system).not.toContain("shell.execute");
+    expect(system).toContain("# Long-task Protocol");
   });
 
   it("asks for more input before generating a custom agent from a vague prompt", async () => {

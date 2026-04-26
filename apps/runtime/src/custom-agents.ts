@@ -23,6 +23,8 @@ interface PersistedCustomAgentConfig {
   description?: string;
   model?: string;
   tool_groups?: string[];
+  tool_ids?: string[];
+  skill_ids?: string[];
   created_at: number;
   updated_at: number;
 }
@@ -50,6 +52,8 @@ export class CustomAgentFileStore {
         description: agent.description,
         model: agent.model,
         toolGroups: agent.toolGroups,
+        toolIds: agent.toolIds,
+        skillIds: agent.skillIds,
         createdAt: agent.createdAt,
         updatedAt: agent.updatedAt,
       }));
@@ -76,6 +80,8 @@ export class CustomAgentFileStore {
       description: parsed.description,
       model: parsed.model,
       toolGroups: parsed.toolGroups,
+      toolIds: parsed.toolIds,
+      skillIds: parsed.skillIds,
       soul: parsed.soul,
       createdAt: now,
       updatedAt: now,
@@ -93,6 +99,8 @@ export class CustomAgentFileStore {
       description: parsed.description ?? existing.description,
       model: parsed.model === null ? undefined : parsed.model ?? existing.model,
       toolGroups: parsed.toolGroups === null ? undefined : parsed.toolGroups ?? existing.toolGroups,
+      toolIds: parsed.toolIds === null ? [] : parsed.toolIds ?? existing.toolIds,
+      skillIds: parsed.skillIds === null ? [] : parsed.skillIds ?? existing.skillIds,
       soul: parsed.soul ?? existing.soul,
       updatedAt: this.clock(),
     });
@@ -160,6 +168,8 @@ export class CustomAgentFileStore {
       description: decoded.description ?? "",
       model: decoded.model,
       toolGroups: decoded.tool_groups,
+      toolIds: decoded.tool_ids ?? [],
+      skillIds: decoded.skill_ids ?? [],
       soul,
       createdAt: decoded.created_at,
       updatedAt: decoded.updated_at,
@@ -175,6 +185,8 @@ export class CustomAgentFileStore {
       description: agent.description,
       model: agent.model,
       tool_groups: agent.toolGroups,
+      tool_ids: agent.toolIds,
+      skill_ids: agent.skillIds,
       created_at: agent.createdAt,
       updated_at: agent.updatedAt,
     };

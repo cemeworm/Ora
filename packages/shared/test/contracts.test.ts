@@ -420,11 +420,17 @@ describe("Ora shared contracts", () => {
       id: "reviewer",
       label: "Reviewer",
       role: "Check work",
+      customAgentId: "review-bot",
       modelRef: "local/smoke-model",
       toolPolicyId: "default",
+      toolIds: ["file.read"],
+      skillIds: ["review"],
       memoryNamespaces: ["session"],
       budget
     });
+    expect(profile.customAgentId).toBe("review-bot");
+    expect(profile.toolIds).toEqual(["file.read"]);
+    expect(profile.skillIds).toEqual(["review"]);
 
     const planItem = PlanItemSchema.parse({
       id: "plan-1",
@@ -1744,6 +1750,8 @@ describe("Custom agent contracts", () => {
       description: "Focuses on concise research synthesis.",
       model: "claude-sonnet-4-20250514",
       toolGroups: ["web", "files"],
+      toolIds: ["web.search", "web.fetch"],
+      skillIds: ["long-task-protocol"],
       createdAt: 1000,
       updatedAt: 1200,
     });
@@ -1754,6 +1762,8 @@ describe("Custom agent contracts", () => {
     });
 
     expect(detail.name).toBe("research-bot");
+    expect(detail.toolIds).toEqual(["web.search", "web.fetch"]);
+    expect(detail.skillIds).toEqual(["long-task-protocol"]);
     expect(detail.soul).toContain("source-backed");
   });
 
@@ -1762,11 +1772,15 @@ describe("Custom agent contracts", () => {
       name: "review-bot",
       description: "Surfaces risks before merge.",
       toolGroups: ["files"],
+      toolIds: ["file.read", "file.grep"],
+      skillIds: ["review"],
       soul: "Default to a review mindset.",
     });
     const updateParams = CustomAgentUpdateParamsSchema.parse({
       name: "review-bot",
       model: "gpt-5.4",
+      toolIds: null,
+      skillIds: ["check"],
       soul: "Look for regressions first.",
     });
     const checkResult = CustomAgentCheckNameResultSchema.parse({
@@ -1775,7 +1789,10 @@ describe("Custom agent contracts", () => {
     });
 
     expect(createParams.name).toBe("review-bot");
+    expect(createParams.toolIds).toEqual(["file.read", "file.grep"]);
     expect(updateParams.model).toBe("gpt-5.4");
+    expect(updateParams.toolIds).toBeNull();
+    expect(updateParams.skillIds).toEqual(["check"]);
     expect(checkResult.available).toBe(true);
   });
 });

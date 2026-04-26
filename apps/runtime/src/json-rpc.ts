@@ -118,12 +118,13 @@ export function createRuntimeMethodHandler(
         return store.getSession(request.params);
       case "runs.start":
         if (sessionManager.isEnabled()) {
-          return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay }) => {
+          return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay, customAgentContexts }) => {
             if (config.toolIds.some((toolId) => toolId === "web.search" || toolId === "web.fetch")) {
               const { snapshot } = await executeRuntimeKernel(runId, input, config, {
                 modeSpec,
                 definition,
                 customAgentOverlay,
+                customAgentContexts,
                 conversationMessages,
               });
               return snapshot;

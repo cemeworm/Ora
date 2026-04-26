@@ -22,6 +22,7 @@ import {
   PendingClarificationSchema,
   StateSnapshotSchema,
   type CompletionStopReason,
+  type CustomAgentDetail,
 } from "@ora/shared";
 import {
   ActionLedger,
@@ -96,6 +97,7 @@ export interface RuntimeKernelOptions {
   conversationMessages?: ModelMessage[];
   customAgentOverlay?: string;
   customAgentOverlays?: Record<string, string>;
+  customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
   modeSpec?: ModeSpec;
   definition?: PatternDefinition;
   resumeContext?: {
@@ -301,6 +303,7 @@ export async function executeRuntimeKernel(
     nodes: definition.topology.nodes.map((node) => ({ ...node })),
     edges: definition.topology.edges,
   };
+  const profilesById = new Map(modeSpec.profiles.map((profile) => [profile.id, profile]));
 
   const emit = (
     type: OraEventEnvelope["type"],
@@ -828,8 +831,43 @@ export async function executeRuntimeKernel(
     emit("queue.updated", { summary: queueSummary });
   };
 
+  const effectiveAgentToolIds = (agentId: string, customAgentId?: string): string[] => {
+    const profile = profilesById.get(agentId);
+    const profileToolIds = profile?.toolIds ?? [];
+    const customAgentToolIds = customAgentId ? options.customAgentContexts?.[customAgentId]?.toolIds ?? [] : [];
+    const requestedToolIds = profileToolIds.length > 0 ? profileToolIds : customAgentToolIds;
+    if (requestedToolIds.length === 0) {
+      return config.toolIds;
+    }
+    const requested = new Set(requestedToolIds);
+    return config.toolIds.filter((toolId) => requested.has(toolId));
+  };
+
+  const effectiveAgentSkillIds = (agentId: string, customAgentId?: string): string[] => {
+    const profile = profilesById.get(agentId);
+    const profileSkillIds = profile?.skillIds ?? [];
+    const customAgentSkillIds = customAgentId ? options.customAgentContexts?.[customAgentId]?.skillIds ?? [] : [];
+    const requestedSkillIds = profileSkillIds.length > 0 ? profileSkillIds : customAgentSkillIds;
+    if (requestedSkillIds.length === 0) {
+      return config.skillIds;
+    }
+    const requested = new Set(requestedSkillIds);
+    return config.skillIds.filter((skillId) => requested.has(skillId));
+  };
+
+  const customAgentIdForAgent = (agentId: string, nodeCustomAgentId?: string): string | undefined =>
+    profilesById.get(agentId)?.customAgentId ?? nodeCustomAgentId;
+
+  const customAgentOverlayFor = (customAgentId: string | undefined): string | undefined => {
+    if (!customAgentId) {
+      return options.customAgentOverlay;
+    }
+    return options.customAgentContexts?.[customAgentId]?.overlay
+      ?? options.customAgentOverlays?.[customAgentId]
+      ?? options.customAgentOverlay;
+  };
+
   const systemPrompt = (extra: string) => {
-    const snippets = skillRegistry.promptSnippets(config.skillIds);
     const memoryOverlay =
       typeof config.metadata.memoryPromptOverlay === "string"
         ? config.metadata.memoryPromptOverlay
@@ -839,23 +877,19 @@ export async function executeRuntimeKernel(
       workspaceSystemPrompt(input.context?.projectWorkspace),
       userClarificationContextPrompt(input.context),
       memoryOverlay,
-      runtimeToolExecutor.systemPrompt(config.toolIds),
-      options.customAgentOverlay,
-      ...snippets,
     ]
       .filter(Boolean)
       .join("\n\n");
   };
 
-  const withNodeCustomAgentOverlay = (
+  const withAgentRuntimeContext = (
     system: string,
-    customAgentId: string | undefined,
+    params: { agentId: string; customAgentId?: string },
   ) => {
-    if (!customAgentId) {
-      return system;
-    }
-    const overlay = options.customAgentOverlays?.[customAgentId];
-    return overlay ? [overlay, system].join("\n\n") : system;
+    const overlay = customAgentOverlayFor(params.customAgentId);
+    const toolPrompt = runtimeToolExecutor.systemPrompt(effectiveAgentToolIds(params.agentId, params.customAgentId));
+    const snippets = skillRegistry.promptSnippets(effectiveAgentSkillIds(params.agentId, params.customAgentId));
+    return [overlay, system, toolPrompt, ...snippets].filter(Boolean).join("\n\n");
   };
 
   const runNodeRuntimeLoop = async (params: {
@@ -863,10 +897,11 @@ export async function executeRuntimeKernel(
     title: string;
     prompt: string;
     system: string;
+    toolIds: string[];
   }): Promise<ModelResponse> => {
-    const enabledTools = runtimeToolExecutor.enabledToolIds(config.toolIds);
+    const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
     const nativeTools = providerSupportsNativeTools(config)
-      ? runtimeToolExecutor.toolDefinitions(config.toolIds)
+      ? runtimeToolExecutor.toolDefinitions(params.toolIds)
       : [];
     let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
     const invokeProvider = options.streamProvider
@@ -1049,7 +1084,7 @@ export async function executeRuntimeKernel(
         .find(Boolean);
       const fallbackToolCall = nativeToolCall
         ? undefined
-        : runtimeToolExecutor.extractToolCall(response.text, config.toolIds);
+        : runtimeToolExecutor.extractToolCall(response.text, params.toolIds);
       const toolCall: RuntimeToolAttempt | undefined =
         nativeToolCall ??
         (fallbackToolCall
@@ -1803,11 +1838,17 @@ export async function executeRuntimeKernel(
     );
     while (true) {
       try {
+        const effectiveCustomAgentId = customAgentIdForAgent(params.agentId, params.customAgentId);
+        const effectiveToolIds = effectiveAgentToolIds(params.agentId, effectiveCustomAgentId);
         const response = await runNodeRuntimeLoop({
           agentId: params.agentId,
           title: params.title,
           prompt: params.prompt,
-          system: withNodeCustomAgentOverlay(params.system, params.customAgentId),
+          system: withAgentRuntimeContext(params.system, {
+            agentId: params.agentId,
+            customAgentId: effectiveCustomAgentId,
+          }),
+          toolIds: effectiveToolIds,
         });
 
         emit(

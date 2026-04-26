@@ -1,4 +1,5 @@
 import { ArrowLeft, Bot, MessageSquarePlus, Pencil, Plus, RefreshCcw, Send, Sparkles, Trash2 } from "lucide-react";
+import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@ora/shared";
 import { useWorkbench } from "../lib/state";
@@ -12,6 +13,8 @@ interface AgentDraft {
   description: string;
   model: string;
   toolGroupsText: string;
+  toolIds: string[];
+  skillIds: string[];
   soul: string;
 }
 
@@ -25,6 +28,8 @@ const EMPTY_DRAFT: AgentDraft = {
   description: "",
   model: "",
   toolGroupsText: "",
+  toolIds: [],
+  skillIds: [],
   soul: "",
 };
 
@@ -66,6 +71,14 @@ export function AgentsView({
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.name === selectedCustomAgentId),
     [agents, selectedCustomAgentId],
+  );
+  const selectableTools = useMemo(
+    () => (state.toolRegistry?.tools ?? []).filter((tool) => tool.implemented !== false),
+    [state.toolRegistry],
+  );
+  const selectableSkills = useMemo(
+    () => (state.skillRegistry?.skills ?? []).filter((skill) => skill.enabled),
+    [state.skillRegistry],
   );
 
   async function loadAgents() {
@@ -112,6 +125,8 @@ export function AgentsView({
         description: agent.description,
         model: agent.model ?? "",
         toolGroupsText: (agent.toolGroups ?? []).join(", "),
+        toolIds: agent.toolIds,
+        skillIds: agent.skillIds,
         soul: agent.soul,
       });
       setEditingName(agent.name);
@@ -186,6 +201,8 @@ export function AgentsView({
           description: draft.description,
           model: draft.model.trim() || undefined,
           toolGroups,
+          toolIds: draft.toolIds,
+          skillIds: draft.skillIds,
           soul: draft.soul,
         });
         dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Created custom agent ${normalizedName}.` });
@@ -195,6 +212,8 @@ export function AgentsView({
           description: draft.description,
           model: draft.model.trim() ? draft.model.trim() : null,
           toolGroups: toolGroups.length > 0 ? toolGroups : null,
+          toolIds: draft.toolIds,
+          skillIds: draft.skillIds,
           soul: draft.soul,
         });
         dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Updated custom agent ${editingName ?? normalizedName}.` });
@@ -264,6 +283,9 @@ export function AgentsView({
               ...profile,
               label: agent.name,
               role: agent.description || profile.role,
+              customAgentId,
+              toolIds: agent.toolIds,
+              skillIds: agent.skillIds,
             }
           : profile;
       });
@@ -448,7 +470,11 @@ export function AgentsView({
 
                       <div className="mt-4 space-y-2 text-xs text-bench-700">
                         <div>Model: {agent.model ?? "inherit current chat model"}</div>
-                        <div>Tool groups: {agent.toolGroups?.join(", ") || "inherit runtime defaults"}</div>
+                        <div>Tools: {agent.toolIds.length > 0 ? agent.toolIds.join(", ") : "inherit mode tools"}</div>
+                        <div>Skills: {agent.skillIds.length > 0 ? agent.skillIds.join(", ") : "inherit mode skills"}</div>
+                        {agent.toolGroups && agent.toolGroups.length > 0 && (
+                          <div>Legacy groups: {agent.toolGroups.join(", ")}</div>
+                        )}
                         <div>Updated: {formatDate(agent.updatedAt)}</div>
                       </div>
 
@@ -602,6 +628,12 @@ export function AgentsView({
                     className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
                   />
                 </label>
+                <AgentCapabilitySelectors
+                  draft={draft}
+                  tools={selectableTools}
+                  skills={selectableSkills}
+                  onChange={setDraft}
+                />
                 <label className="space-y-1.5 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">SOUL</span>
                   <textarea
@@ -724,6 +756,12 @@ export function AgentsView({
                         className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
                       />
                     </label>
+                    <AgentCapabilitySelectors
+                      draft={draft}
+                      tools={selectableTools}
+                      skills={selectableSkills}
+                      onChange={setDraft}
+                    />
                     <label className="space-y-1.5 md:col-span-2">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">SOUL</span>
                       <textarea
@@ -745,11 +783,112 @@ export function AgentsView({
   );
 }
 
+function AgentCapabilitySelectors({
+  draft,
+  tools,
+  skills,
+  onChange,
+}: {
+  draft: AgentDraft;
+  tools: Array<{ id: string; label: string; category: string; riskLevel: string }>;
+  skills: Array<{ id: string; name: string; description: string }>;
+  onChange: Dispatch<SetStateAction<AgentDraft>>;
+}) {
+  return (
+    <div className="grid gap-4 md:col-span-2 md:grid-cols-2">
+      <CapabilityChecklist
+        title="Tools"
+        emptyLabel="Inherit mode tools"
+        selectedIds={draft.toolIds}
+        items={tools.map((tool) => ({
+          id: tool.id,
+          label: tool.label,
+          detail: `${tool.category} · ${tool.riskLevel.replace(/_/g, " ")}`,
+        }))}
+        onToggle={(toolId) => onChange((current) => ({
+          ...current,
+          toolIds: toggleId(current.toolIds, toolId),
+        }))}
+      />
+      <CapabilityChecklist
+        title="Skills"
+        emptyLabel="Inherit mode skills"
+        selectedIds={draft.skillIds}
+        items={skills.map((skill) => ({
+          id: skill.id,
+          label: skill.name,
+          detail: skill.description,
+        }))}
+        onToggle={(skillId) => onChange((current) => ({
+          ...current,
+          skillIds: toggleId(current.skillIds, skillId),
+        }))}
+      />
+    </div>
+  );
+}
+
+function CapabilityChecklist({
+  title,
+  emptyLabel,
+  selectedIds,
+  items,
+  onToggle,
+}: {
+  title: string;
+  emptyLabel: string;
+  selectedIds: string[];
+  items: Array<{ id: string; label: string; detail: string }>;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-bench-200 bg-bench-50 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">{title}</span>
+        <span className="text-[11px] font-semibold text-bench-600">
+          {selectedIds.length > 0 ? `${selectedIds.length} selected` : emptyLabel}
+        </span>
+      </div>
+      <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1">
+        {items.map((item) => {
+          const checked = selectedIds.includes(item.id);
+          return (
+            <label
+              key={item.id}
+              className={cn(
+                "flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-2 text-sm transition",
+                checked ? "border-bench-400 bg-white" : "border-transparent bg-white/60 hover:bg-white",
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => onToggle(item.id)}
+                className="mt-1"
+              />
+              <span className="min-w-0">
+                <span className="block font-semibold text-bench-900">{item.label}</span>
+                <span className="block truncate text-xs text-bench-600">{item.detail}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function parseToolGroups(value: string): string[] {
   return value
     .split(",")
     .map((item) => item.trim())
     .filter((item, index, items) => item.length > 0 && items.indexOf(item) === index);
+}
+
+function toggleId(values: string[], id: string): string[] {
+  return values.includes(id)
+    ? values.filter((value) => value !== id)
+    : [...values, id];
 }
 
 function draftFromEditor(draft: AgentDraft) {
@@ -758,6 +897,8 @@ function draftFromEditor(draft: AgentDraft) {
     description: draft.description.trim(),
     model: draft.model.trim() || undefined,
     toolGroups: parseToolGroups(draft.toolGroupsText),
+    toolIds: draft.toolIds,
+    skillIds: draft.skillIds,
     soul: draft.soul.trim(),
   };
 }
@@ -768,6 +909,8 @@ function editorDraftFromGenerated(draft: Partial<ReturnType<typeof draftFromEdit
     description: draft.description ?? "",
     model: draft.model ?? "",
     toolGroupsText: (draft.toolGroups ?? []).join(", "),
+    toolIds: draft.toolIds ?? [],
+    skillIds: draft.skillIds ?? [],
     soul: draft.soul ?? "",
   };
 }

@@ -358,6 +358,10 @@ struct PersistedCustomAgentConfig {
     model: Option<String>,
     #[serde(rename = "tool_groups", skip_serializing_if = "Option::is_none")]
     tool_groups: Option<Vec<String>>,
+    #[serde(rename = "tool_ids", default)]
+    tool_ids: Vec<String>,
+    #[serde(rename = "skill_ids", default)]
+    skill_ids: Vec<String>,
     created_at: u64,
     updated_at: u64,
 }
@@ -368,6 +372,8 @@ struct CustomAgentDetailRecord {
     description: String,
     model: Option<String>,
     tool_groups: Option<Vec<String>>,
+    tool_ids: Vec<String>,
+    skill_ids: Vec<String>,
     soul: String,
     created_at: u64,
     updated_at: u64,
@@ -726,6 +732,8 @@ impl RuntimeFacade {
                 .to_string(),
             model: optional_trimmed_string(params.get("model")),
             tool_groups: optional_string_array(params.get("toolGroups"))?,
+            tool_ids: optional_string_array(params.get("toolIds"))?.unwrap_or_default(),
+            skill_ids: optional_string_array(params.get("skillIds"))?.unwrap_or_default(),
             soul: params
                 .get("soul")
                 .and_then(Value::as_str)
@@ -752,6 +760,8 @@ impl RuntimeFacade {
                 .unwrap_or(existing.description),
             model: merge_optional_string_field(params.get("model"), existing.model),
             tool_groups: merge_optional_string_array_field(params.get("toolGroups"), existing.tool_groups)?,
+            tool_ids: merge_string_array_field(params.get("toolIds"), existing.tool_ids)?,
+            skill_ids: merge_string_array_field(params.get("skillIds"), existing.skill_ids)?,
             soul: params
                 .get("soul")
                 .and_then(Value::as_str)
@@ -2405,6 +2415,8 @@ fn read_custom_agent_detail(agent_dir: &Path) -> Result<CustomAgentDetailRecord,
         description: config.description,
         model: config.model,
         tool_groups: config.tool_groups,
+        tool_ids: config.tool_ids,
+        skill_ids: config.skill_ids,
         soul,
         created_at: config.created_at,
         updated_at: config.updated_at,
@@ -2425,6 +2437,8 @@ fn write_custom_agent(agent: &CustomAgentDetailRecord) -> Result<(), RuntimeJson
         description: agent.description.clone(),
         model: agent.model.clone(),
         tool_groups: agent.tool_groups.clone(),
+        tool_ids: agent.tool_ids.clone(),
+        skill_ids: agent.skill_ids.clone(),
         created_at: agent.created_at,
         updated_at: agent.updated_at,
     };
@@ -2460,6 +2474,8 @@ fn custom_agent_summary_value(agent: &CustomAgentDetailRecord) -> Value {
         "description": agent.description,
         "model": agent.model,
         "toolGroups": agent.tool_groups,
+        "toolIds": agent.tool_ids,
+        "skillIds": agent.skill_ids,
         "createdAt": agent.created_at,
         "updatedAt": agent.updated_at,
     })
@@ -2471,6 +2487,8 @@ fn custom_agent_detail_value(agent: &CustomAgentDetailRecord) -> Value {
         "description": agent.description,
         "model": agent.model,
         "toolGroups": agent.tool_groups,
+        "toolIds": agent.tool_ids,
+        "skillIds": agent.skill_ids,
         "soul": agent.soul,
         "createdAt": agent.created_at,
         "updatedAt": agent.updated_at,
@@ -2520,6 +2538,17 @@ fn merge_optional_string_array_field(
     match value {
         Some(Value::Null) => Ok(None),
         Some(other) => optional_string_array(Some(other)).map(|next| next.or(existing)),
+        None => Ok(existing),
+    }
+}
+
+fn merge_string_array_field(
+    value: Option<&Value>,
+    existing: Vec<String>,
+) -> Result<Vec<String>, RuntimeJsonRpcError> {
+    match value {
+        Some(Value::Null) => Ok(Vec::new()),
+        Some(other) => Ok(optional_string_array(Some(other))?.unwrap_or_default()),
         None => Ok(existing),
     }
 }
@@ -4248,11 +4277,15 @@ mod tests {
                     "description": "Tracks Hong Kong market research.",
                     "model": "claude-sonnet-4-20250514",
                     "toolGroups": ["web", "shell"],
+                    "toolIds": ["web.search", "file.read"],
+                    "skillIds": ["long-task-protocol"],
                     "soul": "Always collect evidence before summarizing."
                 })),
             )
             .unwrap();
         assert_eq!(created["name"], json!(name));
+        assert_eq!(created["toolIds"], json!(["web.search", "file.read"]));
+        assert_eq!(created["skillIds"], json!(["long-task-protocol"]));
         assert!(custom_agent_config_path(&agent_dir).is_file());
         assert!(custom_agent_soul_path(&agent_dir).is_file());
 
@@ -4284,6 +4317,8 @@ mod tests {
                     "description": "Updated description",
                     "model": null,
                     "toolGroups": null,
+                    "toolIds": null,
+                    "skillIds": ["review"],
                     "soul": "Updated SOUL"
                 })),
             )
@@ -4291,6 +4326,8 @@ mod tests {
         assert_eq!(updated["description"], json!("Updated description"));
         assert!(updated["model"].is_null());
         assert!(updated["toolGroups"].is_null());
+        assert_eq!(updated["toolIds"], json!([]));
+        assert_eq!(updated["skillIds"], json!(["review"]));
 
         let deleted = facade
             .handle_method("agents.delete", Some(json!({ "name": name })))

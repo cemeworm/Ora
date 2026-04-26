@@ -1660,9 +1660,9 @@ class LocalJsonRpcRuntime {
       name,
       description: typeof params.description === "string" ? params.description : "",
       model: typeof params.model === "string" && params.model.trim() ? params.model : undefined,
-      toolGroups: Array.isArray(params.toolGroups)
-        ? params.toolGroups.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        : undefined,
+      toolGroups: parseMockStringList(params.toolGroups, "optional") ?? undefined,
+      toolIds: parseMockStringList(params.toolIds) ?? [],
+      skillIds: parseMockStringList(params.skillIds) ?? [],
       soul: typeof params.soul === "string" ? params.soul : "",
       createdAt: now,
       updatedAt: now,
@@ -1965,9 +1965,13 @@ class LocalJsonRpcRuntime {
           : existing.model,
       toolGroups: params.toolGroups === null
         ? undefined
-        : Array.isArray(params.toolGroups)
-          ? params.toolGroups.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-          : existing.toolGroups,
+        : parseMockStringList(params.toolGroups, "optional") ?? existing.toolGroups,
+      toolIds: params.toolIds === null
+        ? []
+        : parseMockStringList(params.toolIds, "optional") ?? existing.toolIds,
+      skillIds: params.skillIds === null
+        ? []
+        : parseMockStringList(params.skillIds, "optional") ?? existing.skillIds,
       soul: typeof params.soul === "string" ? params.soul : existing.soul,
       updatedAt: Date.now(),
     };
@@ -2027,6 +2031,10 @@ class LocalJsonRpcRuntime {
       ...(wantsWeb ? ["web"] : []),
       ...(wantsGithub ? ["github"] : []),
     ];
+    const toolIds = [
+      ...(wantsWeb ? ["web.search", "web.fetch"] : []),
+      ...(wantsGithub ? ["file.grep"] : []),
+    ];
     return {
       status: "draft_ready",
       assistantMessage: "我生成了一版智能体草稿，请检查后确认创建。",
@@ -2035,6 +2043,8 @@ class LocalJsonRpcRuntime {
         description: `Custom agent for ${userText.slice(0, 120)}${userText.length > 120 ? "..." : ""}`,
         model: typeof params.modelRef === "string" ? params.modelRef : undefined,
         toolGroups,
+        toolIds,
+        skillIds: [],
         soul: [
           `You are ${name}, a custom Ora agent created from this user request: ${userText}`,
           "Clarify ambiguity before acting, keep outputs concise and directly useful, and make assumptions explicit.",
@@ -3224,6 +3234,15 @@ function normalizeMockAgentName(value: unknown): string {
     throw new Error("Custom agent names must contain only letters, digits, and hyphens.");
   }
   return normalized;
+}
+
+function parseMockStringList(value: unknown, mode: "required" | "optional" = "required"): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return mode === "optional" ? undefined : [];
+  }
+  return [...new Set(value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim()))];
 }
 
 function slugifyMockAgentName(value: string): string {

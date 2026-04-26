@@ -93,8 +93,11 @@ export const AgentProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   role: z.string().min(1),
+  customAgentId: z.string().min(1).optional(),
   modelRef: z.string().min(1),
   toolPolicyId: z.string().min(1),
+  toolIds: z.array(z.string().min(1)).default([]),
+  skillIds: z.array(z.string().min(1)).default([]),
   memoryNamespaces: z.array(z.string().min(1)),
   budget: ResourceBudgetSchema
 });

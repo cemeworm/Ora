@@ -46,7 +46,7 @@ import {
 } from "../lib/modeCanvas";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
-import type { OraModeCreateParams, OraModeSpec, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
+import type { OraCustomAgentSummary, OraModeCreateParams, OraModeSpec, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { Checkbox } from "./ui/checkbox";
 import { Select } from "./ui/select";
@@ -61,6 +61,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   const { state, dispatch } = useWorkbench();
   const [modes, setModes] = useState<OraModeSpec[]>(state.modes);
   const [atoms, setAtoms] = useState<Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"]>([]);
+  const [customAgents, setCustomAgents] = useState<OraCustomAgentSummary[]>([]);
   const [editorMode, setEditorMode] = useState<EditorMode>("gallery");
   const [draft, setDraft] = useState<OraModeSpec | undefined>();
   const [editingModeId, setEditingModeId] = useState<string | undefined>();
@@ -80,6 +81,10 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
 
   useEffect(() => {
     void refreshAtoms();
+  }, [runtimeClient]);
+
+  useEffect(() => {
+    void refreshCustomAgents();
   }, [runtimeClient]);
 
   const selectedMode = useMemo(
@@ -154,6 +159,14 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
       setAtoms(bootstrap.atoms);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load runtime atoms.");
+    }
+  }
+
+  async function refreshCustomAgents() {
+    try {
+      setCustomAgents(await runtimeClient.listAgents());
+    } catch {
+      setCustomAgents([]);
     }
   }
 
@@ -530,6 +543,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                     draft={draft}
                     node={selectedNode}
                     atoms={atoms}
+                    customAgents={customAgents}
                     allowedTemplates={allowedTemplates}
                     language={state.language}
                     onPatchNode={(updater) => patchDraft((current) => ({
@@ -584,6 +598,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                     draft={draft}
                     atoms={atoms}
                     toolRegistry={state.toolRegistry}
+                    customAgents={customAgents}
                     editingModeId={editingModeId}
                     definition={draftDefinition}
                     executionPreview={executionPreview}
@@ -753,6 +768,7 @@ function ModeInspector({
   draft,
   atoms,
   toolRegistry,
+  customAgents,
   editingModeId,
   definition,
   executionPreview,
@@ -763,6 +779,7 @@ function ModeInspector({
   draft: OraModeSpec;
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
   toolRegistry: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["toolRegistry"] | undefined;
+  customAgents: OraCustomAgentSummary[];
   editingModeId?: string;
   definition: ReturnType<typeof getPatternDefinition> | undefined;
   executionPreview: ReturnType<typeof getExecutionPreview> | undefined;
@@ -833,6 +850,12 @@ function ModeInspector({
         </div>
       </div>
 
+      <ModeAgentRosterPanel
+        draft={draft}
+        customAgents={customAgents}
+        onPatchDraft={onPatchDraft}
+      />
+
       <ModeCapabilityPanel
         draft={draft}
         atoms={atoms}
@@ -877,6 +900,82 @@ function ModeInspector({
         </div>
       )}
     </>
+  );
+}
+
+function ModeAgentRosterPanel({
+  draft,
+  customAgents,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  customAgents: OraCustomAgentSummary[];
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Agents</p>
+          <h4 className="mt-1 text-sm font-semibold">Team roster</h4>
+        </div>
+        <span className="rounded-full bg-bench-100 px-2.5 py-1 text-[11px] font-semibold text-bench-700">
+          {draft.profiles.length}
+        </span>
+      </div>
+      <div className="mt-4 grid gap-3">
+        {draft.profiles.map((profile) => {
+          const boundAgent = customAgents.find((agent) => agent.name === profile.customAgentId);
+          return (
+            <div key={profile.id} className="rounded-lg border border-bench-200 bg-bench-50 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-bench-900">{profile.label}</p>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-bench-700">{profile.role}</p>
+                </div>
+                <span className="shrink-0 rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-bench-700 ring-1 ring-inset ring-bench-200">
+                  {profile.id}
+                </span>
+              </div>
+              <Select
+                aria-label={`Bind custom agent for ${profile.label}`}
+                value={profile.customAgentId ?? ""}
+                onChange={(event) => {
+                  const customAgentId = event.target.value || undefined;
+                  const agent = customAgents.find((item) => item.name === customAgentId);
+                  onPatchDraft((current) => ({
+                    ...current,
+                    profiles: current.profiles.map((item) =>
+                      item.id !== profile.id
+                        ? item
+                        : {
+                            ...item,
+                            customAgentId,
+                            label: agent?.name ?? item.label,
+                            role: agent?.description || item.role,
+                            toolIds: agent?.toolIds ?? [],
+                            skillIds: agent?.skillIds ?? [],
+                          },
+                    ),
+                  }));
+                }}
+                className="mt-3"
+              >
+                <option value="">Use mode profile</option>
+                {customAgents.map((agent) => (
+                  <option key={agent.name} value={agent.name}>{agent.name}</option>
+                ))}
+              </Select>
+              <div className="mt-2 space-y-1 text-[11px] leading-5 text-bench-600">
+                <p>Tools: {profile.toolIds.length > 0 ? profile.toolIds.join(", ") : "inherit mode tools"}</p>
+                <p>Skills: {profile.skillIds.length > 0 ? profile.skillIds.join(", ") : "inherit mode skills"}</p>
+                {boundAgent && <p>Bound to saved agent: {boundAgent.name}</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1737,6 +1836,7 @@ function NodeInspector({
   draft,
   node,
   atoms,
+  customAgents,
   allowedTemplates,
   language,
   onPatchNode,
@@ -1745,6 +1845,7 @@ function NodeInspector({
   draft: OraModeSpec;
   node: OraModeSpec["nodes"][number];
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  customAgents: OraCustomAgentSummary[];
   allowedTemplates: OraModeSpec["editorConstraints"]["allowedNodeTemplates"];
   language: AppLanguage;
   onPatchNode: (updater: (current: OraModeSpec["nodes"][number]) => OraModeSpec["nodes"][number]) => void;
@@ -1755,6 +1856,8 @@ function NodeInspector({
   const canDelete = canDeleteModeNode(draft, node.id);
   const nodeAtoms = resolveNodeAtoms(node, atoms);
   const compatibleNodeAtoms = atoms.filter((atom) => atom.scope === "node" && atom.compatibleFamilies.includes(draft.family));
+  const ownerProfile = draft.profiles.find((profile) => profile.id === node.ownerAgentId);
+  const ownerCustomAgent = customAgents.find((agent) => agent.name === ownerProfile?.customAgentId);
 
   return (
     <>
@@ -1798,11 +1901,25 @@ function NodeInspector({
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Owner agent</span>
-            <input
+            <Select
+              aria-label="Owner agent"
               value={node.ownerAgentId ?? ""}
               onChange={(event) => onPatchNode((current) => ({ ...current, ownerAgentId: event.target.value || undefined }))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none"
-            />
+            >
+              <option value="">Runtime default</option>
+              {draft.profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.label} ({profile.id})
+                </option>
+              ))}
+            </Select>
+            {ownerProfile && (
+              <span className="text-xs leading-5 text-bench-600">
+                {ownerCustomAgent
+                  ? `Bound saved agent: ${ownerCustomAgent.name}`
+                  : "Uses this mode profile without a saved-agent binding."}
+              </span>
+            )}
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Risk level</span>

@@ -457,10 +457,7 @@ export class LocalRunStore {
 
   private customAgentOverlaysForMode(modeSpec: ModeSpec): Record<string, string> {
     const overlays: Record<string, string> = {};
-    for (const node of modeSpec.nodes) {
-      const customAgentId = typeof node.config?.customAgentId === "string"
-        ? node.config.customAgentId.trim()
-        : "";
+    for (const customAgentId of this.customAgentIdsForMode(modeSpec)) {
       if (!customAgentId || overlays[customAgentId]) {
         continue;
       }
@@ -474,6 +471,39 @@ export class LocalRunStore {
       }
     }
     return overlays;
+  }
+
+  private customAgentContextsForMode(modeSpec: ModeSpec): Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }> {
+    const contexts: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }> = {};
+    for (const customAgentId of this.customAgentIdsForMode(modeSpec)) {
+      if (!customAgentId || contexts[customAgentId]) {
+        continue;
+      }
+      try {
+        const agent = this.customAgentStore.get({ name: customAgentId });
+        const overlay = this.customAgentStore.personaOverlay(customAgentId);
+        if (overlay) {
+          contexts[customAgentId] = {
+            overlay,
+            model: agent.model,
+            toolIds: agent.toolIds,
+            skillIds: agent.skillIds,
+          };
+        }
+      } catch {
+        // A deleted custom agent should not make an otherwise valid mode unusable.
+      }
+    }
+    return contexts;
+  }
+
+  private customAgentIdsForMode(modeSpec: ModeSpec): string[] {
+    return [
+      ...modeSpec.profiles.map((profile) => profile.customAgentId?.trim() ?? ""),
+      ...modeSpec.nodes.map((node) =>
+        typeof node.config?.customAgentId === "string" ? node.config.customAgentId.trim() : "",
+      ),
+    ].filter(Boolean);
   }
 
   updateMode(params: ModeUpdateParams | unknown): ModeSpec {
@@ -880,6 +910,7 @@ export class LocalRunStore {
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          customAgentContexts: this.customAgentContextsForMode(modeSpec),
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
         return StateSnapshotSchema.parse({
@@ -965,6 +996,7 @@ export class LocalRunStore {
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          customAgentContexts: this.customAgentContextsForMode(modeSpec),
           conversationMessages,
           streamProvider: true,
           onEvent: applyLiveEvent,
@@ -1028,6 +1060,7 @@ export class LocalRunStore {
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          customAgentContexts: this.customAgentContextsForMode(modeSpec),
           forkedFrom,
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
@@ -1055,6 +1088,7 @@ export class LocalRunStore {
       turnIndex: number;
       conversationMessages: ModelMessage[];
       customAgentOverlay?: string;
+      customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
     }) => Promise<StateSnapshot | undefined>
   ): Promise<RunHandle | undefined> {
     const parsed = StartRunParamsSchema.parse(params);
@@ -1079,6 +1113,7 @@ export class LocalRunStore {
       turnIndex,
       conversationMessages,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+      customAgentContexts: this.customAgentContextsForMode(modeSpec),
     });
     if (!snapshot) {
       return undefined;
@@ -1186,6 +1221,7 @@ export class LocalRunStore {
             skillRegistry: this.skillRegistry,
             customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
             customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+            customAgentContexts: this.customAgentContextsForMode(modeSpec),
             conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
             resumeContext: {
               clarifications: clarificationPatch,
@@ -3402,6 +3438,8 @@ function normalizeGeneratedAgentDraft(draft: unknown): CustomAgentGeneratedDraft
     description: parsed.description.trim(),
     model: parsed.model?.trim() || undefined,
     toolGroups: [...new Set(parsed.toolGroups.map((group) => group.trim()).filter(Boolean))],
+    toolIds: [...new Set(parsed.toolIds.map((toolId) => toolId.trim()).filter(Boolean))],
+    skillIds: [...new Set(parsed.skillIds.map((skillId) => skillId.trim()).filter(Boolean))],
     soul: parsed.soul.trim(),
   };
 }
