@@ -144,6 +144,7 @@ export class ModeSpecFileStore {
       },
       defaultBudget: { ...source.defaultBudget },
       profiles: source.profiles.map((profile) => ({ ...profile })),
+      completionPolicy: { ...source.completionPolicy },
     });
   }
 

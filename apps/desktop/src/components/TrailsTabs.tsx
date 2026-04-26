@@ -720,6 +720,8 @@ function timelineLabel(eventType: string) {
       return "Checkpoint captured";
     case "artifact.degraded":
       return "Degraded artifact";
+    case "completion.updated":
+      return "Completion control";
     case "recovery.detected":
       return "Recovery detected";
     case "recovery.retry_scheduled":
@@ -785,6 +787,10 @@ export function collectAnomalies(
     items.add("A pending approval is blocking forward progress.");
   }
   const toolCalls = snapshot.toolCalls ?? [];
+  const stopReason = stopReasonFromSnapshot(snapshot);
+  if (stopReason) {
+    items.add(`Run stop reason: ${stopReason}.`);
+  }
   if (toolCalls.some((call) => call.status === "repaired")) {
     items.add("A dangling provider tool call was repaired as interrupted before the next model call.");
   }
@@ -907,6 +913,24 @@ function fallbackApprovalReason(riskLevel?: "low" | "medium" | "high") {
   return riskLevel === "high"
     ? "High-risk action requires explicit operator approval before execution."
     : "Manual approval is required before this node can continue.";
+}
+
+function stopReasonFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  const output = snapshot.output;
+  if (isRecord(output) && isRecord(output.metadata)) {
+    const metadata = output.metadata;
+    if (typeof metadata.stopReason === "string") {
+      return metadata.stopReason;
+    }
+    if (isRecord(metadata.completion) && typeof metadata.completion.stopReason === "string") {
+      return metadata.completion.stopReason;
+    }
+  }
+  const doneEvent = [...snapshot.events].reverse().find((event) => event.type === "run.done");
+  if (doneEvent && isRecord(doneEvent.payload) && typeof doneEvent.payload.stopReason === "string") {
+    return doneEvent.payload.stopReason;
+  }
+  return undefined;
 }
 
 function riskPillClassName(riskLevel: "low" | "medium" | "high") {

@@ -12,6 +12,8 @@ import {
   CustomAgentDetail,
   CustomAgentSummary,
   CustomAgentUpdateParams,
+  DEFAULT_SKILL_TOOL_IDS,
+  DEFAULT_WEB_TOOL_IDS,
   DEFAULT_RESOURCE_BUDGETS,
   EvaluationFeedbackDraftCaseSchema,
   EvaluationFeedbackRecord,
@@ -1424,16 +1426,20 @@ export class LocalRunStore {
           ? metadataApprovalMode
           : modeSpec.capabilityFlags.approvalMode);
     const skillIds = Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds;
-    const defaultWebToolsDisabled = parsed.metadata.disableDefaultWebTools === true;
+    const modeDisablesDefaultWebTools = DEFAULT_WEB_TOOL_IDS.some((toolId) => !modeSpec.capabilityFlags.toolIds.includes(toolId));
+    const defaultWebToolsDisabled = parsed.metadata.disableDefaultWebTools === true || modeDisablesDefaultWebTools;
     const configuredToolIds = Array.isArray(config?.toolIds)
       ? (parsed.modeSelection === "auto"
         ? [...modeSpec.capabilityFlags.toolIds, ...config.toolIds]
         : config.toolIds)
       : modeSpec.capabilityFlags.toolIds;
-    const toolIds = withDefaultWebToolIds(
-      configuredToolIds,
-      { disabled: defaultWebToolsDisabled },
-    );
+    const explicitRunToolIds = Array.isArray(config?.toolIds);
+    const webDisabledToolIds = parsed.metadata.disableDefaultWebTools === true && !explicitRunToolIds
+      ? configuredToolIds.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as typeof DEFAULT_WEB_TOOL_IDS[number]))
+      : configuredToolIds;
+    const toolIds = defaultWebToolsDisabled
+      ? [...new Set([...webDisabledToolIds, ...DEFAULT_SKILL_TOOL_IDS])]
+      : withDefaultWebToolIds(configuredToolIds);
     const skillWarnings = this.skillRegistry.warnings(skillIds);
     const skillPromptOverlay = this.skillRegistry.promptSnippets(skillIds).join("\n\n");
     const fullConfig = RunConfigSchema.parse({
@@ -1442,6 +1448,7 @@ export class LocalRunStore {
       modeId: modeSpec.id,
       modeSelection: parsed.modeSelection,
       budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
+      completionPolicy: parsed.completionPolicy ?? modeSpec.completionPolicy,
       approvalMode: resolvedApprovalMode,
       skillIds,
       toolIds,

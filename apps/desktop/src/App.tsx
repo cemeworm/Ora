@@ -9,7 +9,7 @@ import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
-import { adaptChatMessages } from "./lib/viewModel";
+import { adaptChatMessages, adaptPendingRunMessages } from "./lib/viewModel";
 import type { OraProjectFileReadResult, OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
 import { translateCopy, useDocumentTranslations, type AppLanguage } from "./lib/i18n";
 
@@ -376,9 +376,25 @@ function WorkbenchInner() {
   }, [state.activeSessionDetail, turnSnapshots]);
 
   // Chat messages derived from events
+  const pendingRunMessages = useMemo(() => {
+    const pendingRun = state.pendingRun;
+    if (!pendingRun || pendingRun.sessionId !== state.selectedSessionId) {
+      return [];
+    }
+    const runAlreadyMaterialized = Object.values(activeSessionTurnSnapshots).some((snapshot) => (
+      snapshot?.sessionId === pendingRun.sessionId
+      && snapshot.input.prompt === pendingRun.prompt
+      && (snapshot.status === "queued" || snapshot.status === "running")
+    ));
+    return runAlreadyMaterialized ? [] : adaptPendingRunMessages(pendingRun);
+  }, [activeSessionTurnSnapshots, state.pendingRun, state.selectedSessionId]);
+
   const chatMessages = useMemo(() => {
-    return adaptChatMessages(state.activeSessionDetail?.transcript ?? [], activeSessionTurnSnapshots);
-  }, [activeSessionTurnSnapshots, state.activeSessionDetail]);
+    return [
+      ...adaptChatMessages(state.activeSessionDetail?.transcript ?? [], activeSessionTurnSnapshots),
+      ...pendingRunMessages,
+    ];
+  }, [activeSessionTurnSnapshots, pendingRunMessages, state.activeSessionDetail]);
   const selectedArtifact = useMemo(() => {
     if (!state.selectedArtifactId) return undefined;
 

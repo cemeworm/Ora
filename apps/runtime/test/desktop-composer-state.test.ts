@@ -4,7 +4,7 @@ import { getComposerInteractivity } from "../../desktop/src/components/ChatInput
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
 import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
-import { adaptChatMessages } from "../../desktop/src/lib/viewModel";
+import { adaptChatMessages, adaptPendingRunMessages } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
 describe("desktop composer pending-run behavior", () => {
@@ -146,6 +146,34 @@ describe("desktop composer pending-run behavior", () => {
     });
   });
 
+  it("records a pending run immediately after submit", () => {
+    const next = workbenchReducer({ ...initialWorkbenchState, selectedSessionId: "session-1" }, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-1",
+      prompt: "hello",
+      createdAt: 10,
+    });
+
+    expect(next.isLoading).toBe(true);
+    expect(next.pendingRun).toEqual({
+      sessionId: "session-1",
+      prompt: "hello",
+      createdAt: 10,
+    });
+  });
+
+  it("renders pending run messages before the runtime snapshot arrives", () => {
+    const messages = adaptPendingRunMessages({
+      sessionId: "session-1",
+      prompt: "hello",
+      createdAt: 10,
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "Working on it...", isPlaceholder: true });
+  });
+
   it("only clears the submitted prompt when the user has not typed a new draft", () => {
     const pending = {
       ...initialWorkbenchState,
@@ -215,6 +243,7 @@ describe("desktop composer pending-run behavior", () => {
     expect(next.activeSnapshot?.events).toHaveLength(1);
     expect(next.activeSnapshot?.events[0]?.type).toBe("message.delta");
     expect(next.isLoading).toBe(true);
+    expect(next.pendingRun).toBeUndefined();
   });
 
   it("syncs settled live stream status into the active session and turn", () => {
@@ -397,7 +426,7 @@ describe("desktop composer pending-run behavior", () => {
     expect(messages.find((message) => message.role === "assistant")?.content).toBe("Final answer from the generator.");
   });
 
-  it("does not use generator-verifier verifier deltas as in-progress assistant text", () => {
+  it("does not promote in-progress deltas into assistant body text", () => {
     const snapshot = {
       runId: "run-gv",
       turnIndex: 1,
@@ -449,7 +478,7 @@ describe("desktop composer pending-run behavior", () => {
 
     const messages = adaptChatMessages([], { "run-gv": snapshot });
 
-    expect(messages.find((message) => message.role === "assistant")?.content).toBe("Draft answer.");
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe("Working on it...");
   });
 
   it("hides cached duplicate web.fetch events from chat turn steps", () => {

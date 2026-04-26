@@ -3,6 +3,7 @@ import {
   BrainCircuit,
   Bot,
   GraduationCap,
+  LoaderCircle,
   Lightbulb,
   Paperclip,
   Rocket,
@@ -280,7 +281,13 @@ export function ChatInput({
                 disabled={!isRunning && !interactivity.canSubmit}
                 title={isRunning ? "Stop run" : "Send message"}
               >
-                {isRunning ? <Square size={14} /> : <ArrowUp size={16} />}
+                {isRunning ? (
+                  <Square size={14} />
+                ) : isLoading ? (
+                  <LoaderCircle size={16} className="animate-spin" />
+                ) : (
+                  <ArrowUp size={16} />
+                )}
               </Button>
             </div>
           </div>

@@ -68,6 +68,7 @@ export function hydrateModeDraft(mode: OraModeSpec): OraModeSpec {
     systemPreset: false,
     createdAt: mode.createdAt ?? Date.now(),
     updatedAt: Date.now(),
+    completionPolicy: { ...mode.completionPolicy },
   });
 }
 
@@ -106,6 +107,7 @@ export function resetModeDraftFamily(mode: OraModeSpec, family: CoordinationPatt
       })),
     },
     updatedAt: Date.now(),
+    completionPolicy: { ...preset.completionPolicy },
   };
 }
 

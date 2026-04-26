@@ -98,7 +98,8 @@ import {
   projectModeRuntimeTopology,
   validateModeSpec,
   ToolDescriptorSchema,
-  ToolRegistrySchema
+  ToolRegistrySchema,
+  completionPolicyForPreset,
 } from "../src/index.js";
 
 describe("Ora shared contracts", () => {
@@ -138,6 +139,7 @@ describe("Ora shared contracts", () => {
       expect(mode.nodes.length).toBeGreaterThan(0);
       expect(mode.nodes.every((node) => node.position)).toBe(true);
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
+      expect(["decisive", "balanced", "persistent"]).toContain(mode.completionPolicy.preset);
       for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
         expect(mode.capabilityFlags.toolIds).toContain(toolId);
       }
@@ -151,6 +153,7 @@ describe("Ora shared contracts", () => {
     const deerflowHarness = MVP_MODES.find((mode) => mode.id === DEERFLOW_HARNESS_MODE_ID)!;
     expect(deerflowHarness.systemPreset).toBe(true);
     expect(deerflowHarness.family).toBe("orchestrator_subagent");
+    expect(deerflowHarness.completionPolicy.preset).toBe("persistent");
     expect(deerflowHarness.capabilityFlags.toolIds).toContain("model.handoff");
     expect(deerflowHarness.nodes.filter((node) => Array.isArray(node.config.atoms) && node.config.atoms.includes("subagent_delegate")).map((node) => node.id)).toEqual([
       "research",
@@ -179,6 +182,13 @@ describe("Ora shared contracts", () => {
     expect(ModeRecoveryPolicySchema.parse(parsed.recoveryPolicy).rules.length).toBeGreaterThan(0);
     expect(RecoveryErrorTypeSchema.parse("provider_transient")).toBe("provider_transient");
     expect(RecoveryActionSchema.parse("fallback_artifact")).toBe("fallback_artifact");
+  });
+
+  it("accepts legacy mode specs without a completion policy", () => {
+    const { completionPolicy: _completionPolicy, ...legacy } = MVP_MODES[1]!;
+    const parsed = ModeSpecSchema.parse(legacy);
+
+    expect(parsed.completionPolicy).toEqual(completionPolicyForPreset("balanced"));
   });
 
   it("validates recovery policy tool and skip constraints", () => {

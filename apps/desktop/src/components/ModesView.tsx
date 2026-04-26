@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
   CoordinationPatternSchema,
+  completionPolicyForPreset,
   ensureModeNodePositions,
   getModeNodeRuntimeTemplateDefinition,
   getPatternDefinition,
@@ -818,6 +819,11 @@ function ModeInspector({
         />
       )}
 
+      <CompletionPolicyPanel
+        draft={draft}
+        onPatchDraft={onPatchDraft}
+      />
+
       <RecoveryPolicyPanel
         draft={draft}
         onPatchDraft={onPatchDraft}
@@ -947,6 +953,144 @@ function WorkspaceToolsPanel({
             })}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function CompletionPolicyPanel({
+  draft,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  const loopGuardEnabled = draft.runtimeAtoms.includes("loop_guard");
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Completion</p>
+          <h4 className="mt-1 text-sm font-semibold">Answer control</h4>
+        </div>
+        <button
+          type="button"
+          onClick={() => onPatchDraft((current) => ({
+            ...current,
+            runtimeAtoms: current.runtimeAtoms.includes("loop_guard")
+              ? current.runtimeAtoms.filter((atomId) => atomId !== "loop_guard")
+              : [...current.runtimeAtoms, "loop_guard"],
+          }))}
+          className={cn(
+            "inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition",
+            loopGuardEnabled
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-bench-200 bg-white text-bench-700 hover:bg-bench-50",
+          )}
+        >
+          <Check size={13} />
+          {loopGuardEnabled ? "On" : "Off"}
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Preset</span>
+          <select
+            value={draft.completionPolicy.preset}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              completionPolicy: completionPolicyForPreset(event.target.value as OraModeSpec["completionPolicy"]["preset"]),
+            }))}
+            className="h-9 rounded-md border border-bench-200 bg-white px-2 text-sm outline-none"
+          >
+            <option value="decisive">Decisive</option>
+            <option value="balanced">Balanced</option>
+            <option value="persistent">Persistent</option>
+          </select>
+        </label>
+
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Max tool calls</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.defaultBudget.maxToolCalls}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              defaultBudget: {
+                ...current.defaultBudget,
+                maxToolCalls: Math.max(0, Number(event.target.value) || 0),
+              },
+            }))}
+            className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+          />
+        </label>
+
+        {loopGuardEnabled && (
+          <div className="grid gap-3 rounded-lg border border-bench-200 bg-bench-50/70 p-3">
+            <label className="grid gap-1 text-xs text-bench-700">
+              <span>Duplicate tolerance</span>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={draft.completionPolicy.maxRepeatedToolCalls}
+                onChange={(event) => onPatchDraft((current) => ({
+                  ...current,
+                  completionPolicy: {
+                    ...current.completionPolicy,
+                    maxRepeatedToolCalls: Math.max(1, Math.min(10, Number(event.target.value) || 1)),
+                  },
+                }))}
+                className="h-9 rounded-md border border-bench-200 bg-white px-2 text-sm outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs font-medium text-bench-700">
+              <input
+                type="checkbox"
+                checked={draft.completionPolicy.forceFinalOnRepeatedTool}
+                onChange={(event) => onPatchDraft((current) => ({
+                  ...current,
+                  completionPolicy: {
+                    ...current.completionPolicy,
+                    forceFinalOnRepeatedTool: event.target.checked,
+                  },
+                }))}
+              />
+              Force final after repeated tools
+            </label>
+            <label className="flex items-center gap-2 text-xs font-medium text-bench-700">
+              <input
+                type="checkbox"
+                checked={draft.completionPolicy.forceFinalOnBudgetExhausted}
+                onChange={(event) => onPatchDraft((current) => ({
+                  ...current,
+                  completionPolicy: {
+                    ...current.completionPolicy,
+                    forceFinalOnBudgetExhausted: event.target.checked,
+                  },
+                }))}
+              />
+              Force final when budget is exhausted
+            </label>
+            <label className="flex items-center gap-2 text-xs font-medium text-bench-700">
+              <input
+                type="checkbox"
+                checked={draft.completionPolicy.allowToolCallsAfterUsefulResult}
+                onChange={(event) => onPatchDraft((current) => ({
+                  ...current,
+                  completionPolicy: {
+                    ...current.completionPolicy,
+                    allowToolCallsAfterUsefulResult: event.target.checked,
+                  },
+                }))}
+              />
+              Allow more tools after a useful result
+            </label>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1367,6 +1511,7 @@ function ModeSummaryCards({
           <p>Skills: {mode.capabilityFlags.skillIds.join(", ") || "none"}</p>
           <p>Tools: {mode.capabilityFlags.toolIds.join(", ") || "none"}</p>
           <p>Stop policy: {formatStopPolicy(mode.stopPolicy)}</p>
+          <p>Completion: {mode.completionPolicy.preset} · {mode.defaultBudget.maxToolCalls} tools · duplicate tolerance {mode.completionPolicy.maxRepeatedToolCalls}</p>
         </div>
       </div>
 
@@ -1893,7 +2038,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, recoveryPolicy, memoryPolicy } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, completionPolicy, recoveryPolicy, memoryPolicy } = spec;
   return {
     id,
     family,
@@ -1910,6 +2055,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     defaultBudget,
     profiles,
     runtimeAtoms,
+    completionPolicy,
     recoveryPolicy,
     memoryPolicy,
   };

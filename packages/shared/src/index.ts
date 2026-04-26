@@ -37,6 +37,57 @@ export const ResourceBudgetSchema = z.object({
 });
 export type ResourceBudget = z.infer<typeof ResourceBudgetSchema>;
 
+export const CompletionPolicyPresetSchema = z.enum(["decisive", "balanced", "persistent"]);
+export type CompletionPolicyPreset = z.infer<typeof CompletionPolicyPresetSchema>;
+
+export const CompletionStopReasonSchema = z.enum([
+  "completed",
+  "tool_budget_exhausted",
+  "repeated_tool_blocked",
+  "verification_passed",
+  "verification_exhausted",
+  "forced_final_answer",
+  "runtime_tool_loop_limit",
+]);
+export type CompletionStopReason = z.infer<typeof CompletionStopReasonSchema>;
+
+export const ModeCompletionPolicySchema = z.object({
+  preset: CompletionPolicyPresetSchema.default("balanced"),
+  maxRepeatedToolCalls: z.number().int().positive().max(10).default(2),
+  forceFinalOnBudgetExhausted: z.boolean().default(true),
+  forceFinalOnRepeatedTool: z.boolean().default(true),
+  allowToolCallsAfterUsefulResult: z.boolean().default(true),
+});
+export type ModeCompletionPolicy = z.infer<typeof ModeCompletionPolicySchema>;
+
+export const COMPLETION_POLICY_PRESETS: Record<CompletionPolicyPreset, ModeCompletionPolicy> = {
+  decisive: ModeCompletionPolicySchema.parse({
+    preset: "decisive",
+    maxRepeatedToolCalls: 1,
+    forceFinalOnBudgetExhausted: true,
+    forceFinalOnRepeatedTool: true,
+    allowToolCallsAfterUsefulResult: false,
+  }),
+  balanced: ModeCompletionPolicySchema.parse({
+    preset: "balanced",
+    maxRepeatedToolCalls: 2,
+    forceFinalOnBudgetExhausted: true,
+    forceFinalOnRepeatedTool: true,
+    allowToolCallsAfterUsefulResult: true,
+  }),
+  persistent: ModeCompletionPolicySchema.parse({
+    preset: "persistent",
+    maxRepeatedToolCalls: 4,
+    forceFinalOnBudgetExhausted: true,
+    forceFinalOnRepeatedTool: true,
+    allowToolCallsAfterUsefulResult: true,
+  }),
+};
+
+export function completionPolicyForPreset(preset: CompletionPolicyPreset): ModeCompletionPolicy {
+  return { ...COMPLETION_POLICY_PRESETS[preset] };
+}
+
 export const AgentProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -431,6 +482,7 @@ export const RunConfigSchema = z.object({
   customAgentId: z.string().min(1).optional(),
   modelRef: z.string().min(1).default("local/smoke-model"),
   budget: ResourceBudgetSchema.optional(),
+  completionPolicy: ModeCompletionPolicySchema.optional(),
   skillIds: z.array(z.string().min(1)).default([]),
   toolIds: z.array(z.string().min(1)).default([]),
   searchProvider: SearchProviderConfigSchema.optional(),
@@ -534,6 +586,7 @@ export const OraEventTypeSchema = z.enum([
   "checkpoint.created",
   "artifact.exported",
   "artifact.degraded",
+  "completion.updated",
   "recovery.detected",
   "recovery.retry_scheduled",
   "recovery.applied",
@@ -1632,6 +1685,7 @@ export const ModeSpecSchema = z.object({
   defaultBudget: ResourceBudgetSchema,
   profiles: z.array(AgentProfileSchema).min(1),
   runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
+  completionPolicy: ModeCompletionPolicySchema.default(COMPLETION_POLICY_PRESETS.balanced),
   recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
   memoryPolicy: ModeMemoryPolicySchema.default({}),
   createdAt: z.number().int().nonnegative(),
@@ -2864,6 +2918,7 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
     },
     defaultBudget: definition.defaultBudget,
     profiles: definition.profiles,
+    completionPolicy: completionPolicyForPreset("balanced"),
     createdAt: now,
     updatedAt: now,
   }));
@@ -2967,6 +3022,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
       allowDisable: false,
     },
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+    completionPolicy: completionPolicyForPreset("persistent"),
     profiles: [
       profile(
         "lead_agent",
@@ -3057,6 +3113,7 @@ function createSingleAgentModeSpec(): ModeSpec {
       allowDisable: false,
     },
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+    completionPolicy: completionPolicyForPreset("decisive"),
     profiles: [
       profile(
         "solo_agent",

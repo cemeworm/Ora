@@ -360,19 +360,30 @@ describe("Ora runtime smoke path", () => {
             finish_reason: "tool_calls",
             message: {
               content: null,
-              tool_calls: [{
-                id: "call-readme",
-                type: "function",
-                function: {
-                  name: "file__read",
-                  arguments: "{\"path\":\"README.md\"}",
+              tool_calls: [
+                {
+                  id: "call-readme",
+                  type: "function",
+                  function: {
+                    name: "file__read",
+                    arguments: "{\"path\":\"README.md\"}",
+                  },
                 },
-              }],
+                {
+                  id: "call-list",
+                  type: "function",
+                  function: {
+                    name: "file__list",
+                    arguments: "{\"path\":\".\"}",
+                  },
+                },
+              ],
             },
           }],
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (providerCalls === 2) {
+        expect(JSON.stringify(body.messages ?? [])).not.toContain("call-list");
         expect(body.messages?.some((message) =>
           message.role === "tool"
           && message.tool_call_id === "call-readme"
@@ -410,7 +421,7 @@ describe("Ora runtime smoke path", () => {
               capabilities: ["chat", "tool_use"],
               headers: {},
             },
-            toolIds: ["file.read"],
+            toolIds: ["file.read", "file.list"],
           },
         },
       }) as { runId: string; status: string };
@@ -432,6 +443,7 @@ describe("Ora runtime smoke path", () => {
           status: "succeeded",
         }),
       ]);
+      expect(state.events.map((event) => event.type)).not.toContain("tool.repaired");
       expect(state.output).toMatchObject({ text: expect.stringContaining("Read README through native tool.") });
     } finally {
       globalThis.fetch = previousFetch;
@@ -444,7 +456,7 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
-  it("reuses identical web.fetch results inside one runtime tool loop", async () => {
+  it("forces a final no-tool answer after a useful web.fetch result in decisive mode", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
     const previousKey = process.env.REPEAT_FETCH_KEY;
@@ -459,7 +471,13 @@ describe("Ora runtime smoke path", () => {
       }
 
       providerCalls += 1;
-      if (providerCalls <= 2) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Used repeated fetch result once." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 1) {
         return new Response(JSON.stringify({
           choices: [{
             finish_reason: "tool_calls",
@@ -524,16 +542,361 @@ describe("Ora runtime smoke path", () => {
 
       expect(run.status).toBe("succeeded");
       expect(webFetchCalls).toBe(1);
-      expect(fetchEvents).toHaveLength(2);
+      expect(fetchEvents).toHaveLength(1);
       expect(fetchEvents[0]?.payload).toMatchObject({ cacheHit: false });
-      expect(fetchEvents[1]?.payload).toMatchObject({ cacheHit: true });
       expect(state.output).toMatchObject({ text: expect.stringContaining("Used repeated fetch result once.") });
+      expect(state.output).toMatchObject({ metadata: { completion: expect.objectContaining({ forcedFinal: true }) } });
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
         delete process.env.REPEAT_FETCH_KEY;
       } else {
         process.env.REPEAT_FETCH_KEY = previousKey;
+      }
+    }
+  });
+
+  it("forces a final no-tool answer after a useful web.search result in decisive mode", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousProviderKey = process.env.REPEAT_SEARCH_KEY;
+    const previousSearchKey = process.env.REPEAT_SEARCH_BRAVE_KEY;
+    process.env.REPEAT_SEARCH_KEY = "provider-key";
+    process.env.REPEAT_SEARCH_BRAVE_KEY = "search-key";
+    let providerCalls = 0;
+    let webSearchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url.includes("api.search.brave.com")) {
+        webSearchCalls += 1;
+        return new Response(JSON.stringify({
+          web: {
+            results: [
+              { title: "Repeated Search Result", url: "https://example.com/repeated", description: "Cached search snippet" },
+            ],
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Used repeated search result once." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: `call-search-${providerCalls}`,
+                type: "function",
+                function: {
+                  name: "web__search",
+                  arguments: "{\"query\":\"Ora repeated search\",\"limit\":1}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Used repeated search result once." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Search the same query twice." },
+          config: {
+            modeId: "single_agent",
+            providerId: "repeat-search",
+            modelRef: "repeat-search-model",
+            providerConfig: {
+              id: "repeat-search",
+              label: "Repeat Search",
+              type: "openai_compatible",
+              modelId: "repeat-search-model",
+              baseUrl: "https://repeat-search.test/v1",
+              apiKeyEnv: "REPEAT_SEARCH_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            searchProvider: {
+              id: "brave",
+              apiKeyEnv: "REPEAT_SEARCH_BRAVE_KEY",
+            },
+            toolIds: ["web.search"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const searchEvents = state.events.filter((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "web.search"
+      );
+
+      expect(run.status).toBe("succeeded");
+      expect(webSearchCalls).toBe(1);
+      expect(searchEvents).toHaveLength(1);
+      expect(searchEvents[0]?.payload).toMatchObject({ cacheHit: false });
+      expect(state.output).toMatchObject({ text: expect.stringContaining("Used repeated search result once.") });
+      expect(state.output).toMatchObject({ metadata: { completion: expect.objectContaining({ forcedFinal: true }) } });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousProviderKey === undefined) {
+        delete process.env.REPEAT_SEARCH_KEY;
+      } else {
+        process.env.REPEAT_SEARCH_KEY = previousProviderKey;
+      }
+      if (previousSearchKey === undefined) {
+        delete process.env.REPEAT_SEARCH_BRAVE_KEY;
+      } else {
+        process.env.REPEAT_SEARCH_BRAVE_KEY = previousSearchKey;
+      }
+    }
+  });
+
+  it("blocks repeated tool intent and finalizes from available context", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.DUPLICATE_TOOL_KEY;
+    process.env.DUPLICATE_TOOL_KEY = "test";
+    let providerCalls = 0;
+    let webFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/duplicate") {
+        webFetchCalls += 1;
+        return new Response("Duplicate content", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Stopped after detecting repeated tool intent." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-duplicate-${providerCalls}`,
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/duplicate\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Keep fetching the same URL." },
+          config: {
+            modeId: "single_agent",
+            providerId: "duplicate-tool",
+            modelRef: "duplicate-tool-model",
+            providerConfig: {
+              id: "duplicate-tool",
+              label: "Duplicate Tool",
+              type: "openai_compatible",
+              modelId: "duplicate-tool-model",
+              baseUrl: "https://duplicate-tool.test/v1",
+              apiKeyEnv: "DUPLICATE_TOOL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            completionPolicy: {
+              preset: "balanced",
+              maxRepeatedToolCalls: 1,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: true,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const fetchEvents = state.events.filter((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "web.fetch"
+      );
+      const completionEvents = state.events.filter((event) => event.type === "completion.updated");
+
+      expect(run.status).toBe("succeeded");
+      expect(webFetchCalls).toBe(1);
+      expect(fetchEvents).toHaveLength(1);
+      expect(completionEvents.some((event) =>
+        typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).reason === "repeated_tool_blocked"
+      )).toBe(true);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Stopped after detecting repeated tool intent."),
+        metadata: { completion: expect.objectContaining({ stopReason: "repeated_tool_blocked" }) },
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.DUPLICATE_TOOL_KEY;
+      } else {
+        process.env.DUPLICATE_TOOL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("enforces maxToolCalls globally and ignores provider tools during forced final", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.TOOL_BUDGET_KEY;
+    process.env.TOOL_BUDGET_KEY = "test";
+    let webFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/budget") {
+        webFetchCalls += 1;
+        return new Response("Budget content", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-ignored",
+                type: "function",
+                function: {
+                  name: "web__fetch",
+                  arguments: "{\"url\":\"https://example.com/ignored\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-budget",
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/budget\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Spend only one tool call." },
+          config: {
+            modeId: "single_agent",
+            providerId: "tool-budget",
+            modelRef: "tool-budget-model",
+            providerConfig: {
+              id: "tool-budget",
+              label: "Tool Budget",
+              type: "openai_compatible",
+              modelId: "tool-budget-model",
+              baseUrl: "https://tool-budget.test/v1",
+              apiKeyEnv: "TOOL_BUDGET_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            budget: {
+              maxTokens: 1024,
+              maxToolCalls: 1,
+              maxRuntimeMs: 60_000,
+            },
+            completionPolicy: {
+              preset: "balanced",
+              maxRepeatedToolCalls: 2,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: true,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(webFetchCalls).toBe(1);
+      expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(1);
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "tool_calls_ignored"
+      )).toBe(true);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("I need to stop using tools here."),
+        metadata: { completion: expect.objectContaining({ stopReason: "tool_budget_exhausted", toolAttempts: 1 }) },
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.TOOL_BUDGET_KEY;
+      } else {
+        process.env.TOOL_BUDGET_KEY = previousKey;
       }
     }
   });
@@ -806,6 +1169,7 @@ describe("Ora runtime smoke path", () => {
 
     expect(cloned.id).toBe("orchestrator-subagent-custom");
     expect(cloned.nodes.every((node: { position?: { x: number; y: number } }) => node.position)).toBe(true);
+    expect(cloned.completionPolicy?.preset).toBe("balanced");
 
     const updated = await handle({
       jsonrpc: "2.0",
@@ -816,6 +1180,11 @@ describe("Ora runtime smoke path", () => {
         spec: {
           ...cloned,
           summary: "Custom orchestrator mode.",
+          completionPolicy: {
+            ...cloned.completionPolicy,
+            preset: "persistent",
+            maxRepeatedToolCalls: 4,
+          },
           nodes: cloned.nodes.map((node, index) =>
             node.id === "review"
               ? { ...node, enabled: false, label: "Review (disabled)", position: { x: 900, y: 240 } }
@@ -827,6 +1196,7 @@ describe("Ora runtime smoke path", () => {
 
     expect(updated.nodes.find((node) => node.id === "review")?.enabled).toBe(false);
     expect(updated.nodes.find((node) => node.id === "review")?.position).toEqual({ x: 900, y: 240 });
+    expect(updated.completionPolicy.preset).toBe("persistent");
 
     const validation = await handle({
       jsonrpc: "2.0",
@@ -864,6 +1234,8 @@ describe("Ora runtime smoke path", () => {
 
     expect(state.modeId).toBe(cloned.id);
     expect(state.modeSpec?.id).toBe(cloned.id);
+    expect(state.modeSpec?.completionPolicy.preset).toBe("persistent");
+    expect(state.config.completionPolicy?.preset).toBe("persistent");
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.plan.some((item) => item.id.endsWith(":review"))).toBe(false);
   });

@@ -91,7 +91,7 @@ describe("desktop browser-mock runtime lifecycle", () => {
     expect(steps.at(-1)?.contextLabel).toBe("notes/project.md");
   });
 
-  it("renders streamed assistant text before transcript finalization", async () => {
+  it("keeps streamed assistant text in the process view before finalization", async () => {
     const client = createRuntimeClient();
     const session = await client.createSession();
     const snapshot = await client.startRun(
@@ -140,7 +140,7 @@ describe("desktop browser-mock runtime lifecycle", () => {
     );
 
     const assistant = messages.find((message) => message.role === "assistant");
-    expect(assistant?.content).toBe("Partial answer");
+    expect(assistant?.content).toBe("I'm waiting for approval before continuing this turn.");
     expect(assistant?.isPlaceholder).toBe(true);
   });
 

@@ -45,6 +45,7 @@ export interface WorkbenchState {
   selectedCustomAgentId: string | undefined;
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
+  pendingRun: { sessionId: string; prompt: string; createdAt: number } | undefined;
   isLoading: boolean;
   busyCommand: string | undefined;
   commandFeedback: string;
@@ -106,6 +107,7 @@ export type WorkbenchAction =
   | { type: "SELECT_NODE"; nodeId: string }
   | { type: "SET_PROMPT"; text: string }
   | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
+  | { type: "BEGIN_RUN_REQUEST"; sessionId: string; prompt: string; createdAt: number }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_BUSY_COMMAND"; command: string | undefined }
   | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
@@ -155,6 +157,7 @@ export const initialWorkbenchState: WorkbenchState = {
     detail: "Connecting to the Ora runtime bridge.",
   },
   promptText: "",
+  pendingRun: undefined,
   isLoading: false,
   busyCommand: undefined,
   commandFeedback: "Select a session to inspect its latest turn, checkpoints, and approvals.",
@@ -292,6 +295,19 @@ function syncSessionStateForSettledStream(
   };
 }
 
+function streamMatchesPendingRun(
+  pendingRun: WorkbenchState["pendingRun"],
+  stream: OraRunEventStream,
+  activeSnapshot: OraStateSnapshot | undefined,
+): boolean {
+  if (!pendingRun) {
+    return false;
+  }
+
+  const snapshot = stream.snapshot ?? (activeSnapshot?.runId === stream.runId ? activeSnapshot : undefined);
+  return snapshot?.sessionId === pendingRun.sessionId && snapshot.input.prompt === pendingRun.prompt;
+}
+
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   switch (action.type) {
     case "RESET_RUNTIME_VIEW":
@@ -310,6 +326,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSnapshot: undefined,
         modes: [],
         promptText: "",
+        pendingRun: undefined,
         isLoading: true,
         busyCommand: undefined,
         commandFeedback: "Reconnecting to the Ora runtime bridge.",
@@ -366,6 +383,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
         selectedBeatId: snapshot?.events.at(-1)?.id,
         commandFeedback: action.feedback ?? state.commandFeedback,
+        pendingRun: undefined,
         isLoading: false,
         busyCommand: undefined,
       };
@@ -531,6 +549,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
+        pendingRun: undefined,
       };
 
     case "SELECT_TURN":
@@ -543,6 +562,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedModeSelection: action.snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedNodeId: action.snapshot?.topology.nodes[1]?.id ?? action.snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
         selectedBeatId: action.snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
+        pendingRun: action.snapshot ? undefined : state.pendingRun,
       };
 
     case "APPLY_RUN_STREAM": {
@@ -555,6 +575,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSnapshot,
         selectedTurnRunId: state.selectedTurnRunId ?? action.stream.runId,
         selectedBeatId: action.stream.events.at(-1)?.id ?? state.selectedBeatId,
+        pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, activeSnapshot) ? undefined : state.pendingRun,
         selectedModeSelection: activeSnapshot?.config.modeSelection ?? state.selectedModeSelection,
         isLoading: action.stream.status === "running" || action.stream.status === "queued",
         commandFeedback: action.stream.status === "succeeded"
@@ -580,8 +601,19 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "CLEAR_PROMPT_IF_MATCH":
       return state.promptText === action.text ? { ...state, promptText: "" } : state;
 
+    case "BEGIN_RUN_REQUEST":
+      return {
+        ...state,
+        pendingRun: {
+          sessionId: action.sessionId,
+          prompt: action.prompt,
+          createdAt: action.createdAt,
+        },
+        isLoading: true,
+      };
+
     case "SET_LOADING":
-      return { ...state, isLoading: action.loading };
+      return { ...state, isLoading: action.loading, pendingRun: action.loading ? state.pendingRun : undefined };
 
     case "SET_BUSY_COMMAND":
       return { ...state, busyCommand: action.command };

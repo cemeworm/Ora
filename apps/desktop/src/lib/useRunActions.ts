@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { withDefaultWebToolIds } from "@ora/shared";
+import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
 import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { useWorkbench } from "./state";
@@ -8,11 +8,19 @@ import { buildWorkbenchViewModel } from "./viewModel";
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
 function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
-  const toolIds = withDefaultWebToolIds(modeToolIds ?? []);
+  const toolIds = [...new Set(modeToolIds ?? [])];
   if (!projectId) {
     return toolIds;
   }
   return [...new Set([...toolIds, ...PROJECT_CHAT_SAFE_TOOL_IDS])];
+}
+
+function modeDisablesDefaultWebTools(modeToolIds: readonly string[] | undefined): boolean {
+  if (!modeToolIds) {
+    return false;
+  }
+  const ids = new Set(modeToolIds ?? []);
+  return DEFAULT_WEB_TOOL_IDS.some((toolId) => !ids.has(toolId));
 }
 
 async function pickProjectDirectory(): Promise<string | null> {
@@ -171,7 +179,12 @@ export function useRunActions() {
   async function startRun() {
     if (!state.selectedSessionId || !state.promptText.trim()) return;
     const submittedPrompt = state.promptText;
-    dispatch({ type: "SET_LOADING", loading: true });
+    dispatch({
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: state.selectedSessionId,
+      prompt: submittedPrompt,
+      createdAt: Date.now(),
+    });
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
     const searchConfig = buildRunSearchConfig();
@@ -194,6 +207,7 @@ export function useRunActions() {
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
+            disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             ...searchConfig.metadata,
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
           },

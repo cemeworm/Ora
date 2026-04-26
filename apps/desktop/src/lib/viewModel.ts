@@ -60,6 +60,12 @@ export interface WorkbenchViewModel {
   activeSnapshot: OraStateSnapshot;
 }
 
+export interface PendingRunPreview {
+  sessionId: string;
+  prompt: string;
+  createdAt: number;
+}
+
 export function buildWorkbenchViewModel(
   patterns: OraPatternDefinition[],
   modes: OraModeSpec[],
@@ -365,7 +371,7 @@ function adaptNodeStatus(status: OraTopologyNode["status"]): TopologyNode["statu
 function adaptStreamLines(events: OraEventEnvelope[]): StreamLine[] {
   const lines = events
     .filter((event) =>
-      ["run.started", "topology.updated", "plan.updated", "message.delta", "checkpoint.created", "run.done", "run.failed"].includes(
+      ["run.started", "topology.updated", "plan.updated", "message.delta", "completion.updated", "checkpoint.created", "run.done", "run.failed"].includes(
         event.type,
       ),
     )
@@ -409,6 +415,8 @@ function eventText(event: OraEventEnvelope): string {
       return "Runtime paused until the missing user clarification is provided.";
     case "clarification.resolved":
       return "Clarification answer recorded and the run can continue.";
+    case "completion.updated":
+      return "Completion control updated the run stopping state.";
     case "run.done":
       return "Run completed and checkpoint metadata is available.";
     case "run.failed":
@@ -726,6 +734,8 @@ function beatLabel(event: OraEventEnvelope): string {
     case "artifact.exported":
     case "artifact.degraded":
       return "Artifact";
+    case "completion.updated":
+      return "Completion";
     case "recovery.detected":
       return "Recovery";
     case "recovery.retry_scheduled":
@@ -956,10 +966,35 @@ export function adaptChatMessages(
   });
 }
 
+export function adaptPendingRunMessages(pendingRun: PendingRunPreview | undefined): ChatMessage[] {
+  if (!pendingRun || !pendingRun.prompt.trim()) {
+    return [];
+  }
+
+  return [
+    {
+      id: `${pendingRun.sessionId}:pending:user`,
+      role: "user",
+      content: pendingRun.prompt,
+      timestamp: formatClock(pendingRun.createdAt),
+    },
+    {
+      id: `${pendingRun.sessionId}:pending:assistant`,
+      role: "assistant",
+      content: placeholderAssistantCopy(),
+      timestamp: formatClock(pendingRun.createdAt),
+      isPlaceholder: true,
+    },
+  ];
+}
+
 function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
   const outputText = outputTextFromSnapshot(snapshot);
   if (outputText) {
     return outputText;
+  }
+  if (snapshot.status === "queued" || snapshot.status === "running" || snapshot.status === "interrupted") {
+    return undefined;
   }
 
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
@@ -1050,6 +1085,7 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "checkpoint.created":
     case "artifact.exported":
     case "artifact.degraded":
+    case "completion.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -1118,6 +1154,7 @@ function isWorkProcessEvent(event: OraEventEnvelope): boolean {
     case "tool.called":
     case "artifact.exported":
     case "artifact.degraded":
+    case "completion.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -1284,6 +1321,7 @@ function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
     case "artifact.exported":
     case "artifact.degraded":
     case "recovery.applied":
+    case "completion.updated":
     case "node.skipped":
     case "checkpoint.created":
       return "accent";
