@@ -35,6 +35,160 @@ describe("Ora runtime smoke path", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
   });
 
+  it("asks for clarification before researching materially ambiguous high-consequence requests", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.INTENT_CLARIFICATION_KEY;
+    process.env.INTENT_CLARIFICATION_KEY = "test";
+    let providerCalls = 0;
+    const providerBodies: string[] = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      providerBodies.push(String(init?.body ?? ""));
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                needsClarification: true,
+                question: "在继续查资料前，我需要确认：你们在这个问题里的角色是清算通道方、收单机构还是跨境商户？另外“这种规模”大概指月交易额、日单量、商户数、牌照/地区范围中的哪些指标？这些会直接影响结算 T+N 判断。",
+              }),
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "已根据你补充的角色和规模继续判断。" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "查一下关于‘跨境扫码付’的最新汇率清算协议，我们这种规模的机构，现在的结算 T+N 周期有没有缩短？",
+          },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "intent-clarification",
+            modelRef: "intent-clarification-model",
+            providerConfig: {
+              id: "intent-clarification",
+              label: "Intent Clarification",
+              type: "openai_compatible",
+              modelId: "intent-clarification-model",
+              baseUrl: "https://intent-clarification.test/v1",
+              apiKeyEnv: "INTENT_CLARIFICATION_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.search"],
+            metadata: { clarificationPreflight: true, progressNarration: true },
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.status).toBe("interrupted");
+      expect(providerCalls).toBe(1);
+      expect(blocked.toolCalls).toHaveLength(0);
+      expect(blocked.pendingClarifications).toHaveLength(1);
+      expect(blocked.pendingClarifications[0]).toMatchObject({
+        key: "intent_guard",
+        nodeId: "intent_guard",
+      });
+      expect(blocked.pendingClarifications[0]?.question).toContain("角色是清算通道方、收单机构还是跨境商户");
+      expect(blocked.pendingClarifications[0]?.question).toContain("月交易额、日单量、商户数、牌照/地区范围");
+      expect(blocked.pendingClarifications[0]?.question).not.toContain("交易量不大");
+      expect(blocked.events.some((event) => event.type === "clarification.required")).toBe(true);
+      expect(blocked.events.some((event) =>
+        event.type === "tool.called" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        (event.payload as Record<string, unknown>).toolId === "web.search"
+      )).toBe(false);
+
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: {
+            clarifications: {
+              intent_guard: "我们是跨境收单机构，月交易额约 3000 万人民币，主要覆盖东南亚二维码商户。",
+            },
+          },
+        },
+      }));
+
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.pendingClarifications).toEqual([]);
+      expect(resumed.events.map((event) => event.type)).toContain("clarification.resolved");
+      expect(providerCalls).toBeGreaterThan(1);
+      expect(providerBodies.some((body) => body.includes("User-supplied clarification context"))).toBe(true);
+      expect(providerBodies.some((body) => body.includes("跨境收单机构"))).toBe(true);
+      expect(resumed.output?.text).toContain("已根据你补充的角色和规模继续判断");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.INTENT_CLARIFICATION_KEY;
+      } else {
+        process.env.INTENT_CLARIFICATION_KEY = previousKey;
+      }
+    }
+  });
+
+  it("does not interrupt ordinary style ambiguity", async () => {
+    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+
+    const { snapshot } = await executeRuntimeKernel(
+      "run-style-ambiguity",
+      { prompt: "把这段回答写得更正式一点。", createdAt: 1, context: {} },
+      {
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        providerId: "local-smoke",
+        modelRef: "smoke-model",
+        providerConfig: {
+          id: "local-smoke",
+          type: "local_smoke",
+          label: "Smoke",
+          modelId: "smoke-model",
+          capabilities: ["chat"],
+          headers: {},
+        },
+        metadata: {},
+        deterministicSeed: "style-ambiguity-test",
+        profileIds: ["solo_agent"],
+        skillIds: [],
+        toolIds: [],
+        approvalMode: "auto",
+        budget: {
+          maxTokens: 1024,
+          maxToolCalls: 4,
+          maxRuntimeMs: 60_000,
+        },
+      },
+      { modeSpec, definition },
+    );
+
+    expect(snapshot.status).toBe("succeeded");
+    expect(snapshot.pendingClarifications).toEqual([]);
+    expect(snapshot.events.map((event) => event.type)).not.toContain("clarification.required");
+  });
+
   it("emits opt-in agent-authored chat progress narration", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
@@ -1442,6 +1596,112 @@ describe("Ora runtime smoke path", () => {
         delete process.env.SKILL_REPLAY_APPROVAL_KEY;
       } else {
         process.env.SKILL_REPLAY_APPROVAL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("continues an approved high-risk skill install batch without another gate", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SKILL_BATCH_APPROVAL_KEY;
+    process.env.SKILL_BATCH_APPROVAL_KEY = "test";
+    const skillContent = (name: string) => `---\nname: ${name}\ndescription: ${name} from Waza\n---\nUse ${name} from Waza.\n`;
+    let providerCalls = 0;
+
+    globalThis.fetch = (async () => {
+      providerCalls += 1;
+      if (providerCalls <= 3) {
+        const skillName = providerCalls <= 2 ? "waza-think" : "waza-design";
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: `call-batch-approval-${providerCalls}`,
+                type: "function",
+                function: {
+                  name: "skills__create",
+                  arguments: JSON.stringify({
+                    name: skillName,
+                    description: `${skillName} from Waza`,
+                    content: skillContent(skillName),
+                    enabled: true,
+                    approvalRequest: {
+                      title: "Install Waza skills",
+                      summary: `Install ${skillName} from Waza.`,
+                    },
+                  }),
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Installed the Waza skill batch." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Install the Waza think and design skills." },
+          config: {
+            modeId: "single_agent",
+            providerId: "skill-batch-approval",
+            modelRef: "skill-batch-approval-model",
+            providerConfig: {
+              id: "skill-batch-approval",
+              label: "Skill Batch Approval",
+              type: "openai_compatible",
+              modelId: "skill-batch-approval-model",
+              baseUrl: "https://skill-batch-approval.test/v1",
+              apiKeyEnv: "SKILL_BATCH_APPROVAL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["skills.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: { approvedActionIds: [blocked.pendingApprovals[0]!] },
+        },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.actions.find((action) => action.id === blocked.pendingApprovals[0])).toMatchObject({
+        type: "skills.create",
+        status: "approval_required",
+      });
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.pendingApprovals).toEqual([]);
+      expect(resumed.actions.some((action) => action.status === "approval_required")).toBe(false);
+      expect(resumed.toolCalls.filter((call) => call.toolId === "skills.create" && call.status === "succeeded")).toHaveLength(2);
+      expect(resumed.output?.text).toContain("Installed the Waza skill batch");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SKILL_BATCH_APPROVAL_KEY;
+      } else {
+        process.env.SKILL_BATCH_APPROVAL_KEY = previousKey;
       }
     }
   });

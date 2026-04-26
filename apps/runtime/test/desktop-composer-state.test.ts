@@ -4,7 +4,7 @@ import { getComposerInteractivity } from "../../desktop/src/components/ChatInput
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
 import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
-import { waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
+import { buildPendingClarificationResumePatch, waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
 import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
@@ -392,6 +392,113 @@ describe("desktop composer pending-run behavior", () => {
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
     expect(messages[1]).toMatchObject({ role: "assistant", content: "Working on it...", isPlaceholder: true });
+  });
+
+  it("keeps the submitted user message visible when a run snapshot arrives before transcript hydration", () => {
+    const snapshot = {
+      runId: "run-live",
+      sessionId: "session-live",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "hello", createdAt: 10, context: {} },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: 11,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages([], { "run-live": snapshot });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "Working on it...", isPlaceholder: true });
+  });
+
+  it("renders pending clarification as the assistant reply and builds a resume patch from the next input", () => {
+    const snapshot = {
+      runId: "run-clarify",
+      sessionId: "session-clarify",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      input: {
+        prompt: "查一下关于‘跨境扫码付’的最新汇率清算协议，我们这种规模的机构，现在的结算 T+N 周期有没有缩短？",
+        createdAt: 10,
+        context: {},
+      },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-clarify:evt-0",
+        runId: "run-clarify",
+        seq: 0,
+        type: "clarification.required",
+        createdAt: 11,
+        pattern: "orchestrator_subagent",
+        payload: {
+          clarification: {
+            id: "clarification:intent_guard",
+            nodeId: "intent_guard",
+            nodeLabel: "Clarify request",
+            key: "intent_guard",
+            question: "在继续查资料前，我需要确认：你们在这个问题里的角色是清算通道方、收单机构还是跨境商户？另外“这种规模”大概指月交易额、日单量、商户数、牌照/地区范围中的哪些指标？这些会直接影响结算 T+N 判断。",
+            requestedAt: 11,
+          },
+          pending: 1,
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [{
+        id: "clarification:intent_guard",
+        nodeId: "intent_guard",
+        nodeLabel: "Clarify request",
+        key: "intent_guard",
+        question: "在继续查资料前，我需要确认：你们在这个问题里的角色是清算通道方、收单机构还是跨境商户？另外“这种规模”大概指月交易额、日单量、商户数、牌照/地区范围中的哪些指标？这些会直接影响结算 T+N 判断。",
+        requestedAt: 11,
+      }],
+      pendingApprovals: [],
+      updatedAt: 12,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages([], { "run-clarify": snapshot });
+
+    expect(messages[0]).toMatchObject({ role: "user", content: snapshot.input.prompt });
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      content: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
+      isPlaceholder: false,
+    });
+    expect(buildPendingClarificationResumePatch(snapshot, "我们是收单机构，月交易额约 3000 万。")).toEqual({
+      clarifications: {
+        intent_guard: "我们是收单机构，月交易额约 3000 万。",
+      },
+    });
   });
 
   it("only clears the submitted prompt when the user has not typed a new draft", () => {

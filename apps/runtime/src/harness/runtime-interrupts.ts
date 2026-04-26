@@ -22,8 +22,14 @@ export function createResumeApprovalMatcher(resumeContext: {
   consume: (action: ActionRecord) => boolean;
 } {
   const approvedActionIds = new Set(resumeContext?.approvedActionIds ?? []);
+  const approvedActions = resumeContext?.approvedActions ?? [];
   const approvedActionKeys = new Set(
-    (resumeContext?.approvedActions ?? []).map((action) => stableApprovalActionKey(action)),
+    approvedActions.map((action) => stableApprovalActionKey(action)),
+  );
+  const approvedBatchActionScopes = new Set(
+    approvedActions
+      .map((action) => stableBatchApprovalScopeKey(action))
+      .filter((key): key is string => key !== undefined),
   );
 
   return {
@@ -32,11 +38,15 @@ export function createResumeApprovalMatcher(resumeContext: {
         return true;
       }
       const key = stableApprovalActionKey(action);
-      if (!approvedActionKeys.has(key)) {
-        return false;
+      if (approvedActionKeys.has(key)) {
+        approvedActionKeys.delete(key);
+        return true;
       }
-      approvedActionKeys.delete(key);
-      return true;
+      const batchScopeKey = stableBatchApprovalScopeKey(action);
+      if (batchScopeKey && approvedBatchActionScopes.has(batchScopeKey)) {
+        return true;
+      }
+      return false;
     },
   };
 }
@@ -56,4 +66,15 @@ function approvalComparableInput(input: unknown): unknown {
   }
   const { approvalRequest: _approvalRequest, ...rest } = input as Record<string, unknown>;
   return rest;
+}
+
+function stableBatchApprovalScopeKey(action: ApprovedResumeAction): string | undefined {
+  if (action.type !== "skills.create") {
+    return undefined;
+  }
+  return stableJson({
+    type: action.type,
+    riskLevel: action.riskLevel,
+    agentId: action.agentId ?? null,
+  });
 }

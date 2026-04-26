@@ -42,6 +42,7 @@ export interface PatternExecutionContext {
     nodeId: string;
     nodeLabel: string;
     question: string;
+    narrate?: boolean;
   }): Promise<unknown>;
   claimWorker(agentId: string): void;
   releaseWorker(agentId: string): void;

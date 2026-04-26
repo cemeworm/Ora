@@ -105,10 +105,8 @@ export function ChatView({
     <div className="relative flex h-full min-h-0 w-full bg-transparent">
       <ChatHeader
         busyCommand={busyCommand}
-        isRunning={isRunning}
         selectedSession={selectedSession}
         onExportReport={onExportReport}
-        onInterruptRun={onInterruptRun}
         onToggleDetailDrawer={onToggleDetailDrawer}
         detailDrawer={detailDrawer}
       />

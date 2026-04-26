@@ -7,11 +7,11 @@ import { DocumentsDrawer } from "./components/DocumentsDrawer";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
-import { useWorkbench, WorkbenchProvider } from "./lib/state";
+import { mergeRunStreamSnapshot, useWorkbench, WorkbenchProvider } from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
 import { adaptChatMessages, adaptPendingRunMessages, isSessionProcessing } from "./lib/viewModel";
-import type { OraProjectFileReadResult, OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
+import type { OraProjectFileReadResult, OraStateSnapshot } from "./lib/runtimeClient";
 import { translateCopy, useDocumentTranslations, type AppLanguage } from "./lib/i18n";
 
 const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
@@ -65,21 +65,6 @@ function LoadingPane() {
       <LoaderCircle size={24} className="animate-spin text-muted-foreground" />
     </div>
   );
-}
-
-function mergeStreamIntoSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
-  if (stream.snapshot) return stream.snapshot;
-  if (!snapshot || snapshot.runId !== stream.runId) return snapshot;
-  const eventBySeq = new Map(snapshot.events.map((event) => [event.seq, event]));
-  for (const event of stream.events) {
-    eventBySeq.set(event.seq, event);
-  }
-  return {
-    ...snapshot,
-    status: stream.status ?? snapshot.status,
-    events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
-    updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
-  };
 }
 
 class WorkbenchErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
@@ -290,7 +275,7 @@ function WorkbenchInner() {
     void runtimeClient.subscribeRunEvents((stream) => {
       dispatch({ type: "APPLY_RUN_STREAM", stream });
       setTurnSnapshots((current) => {
-        const merged = mergeStreamIntoSnapshot(current[stream.runId], stream);
+        const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
         return merged ? { ...current, [stream.runId]: merged } : current;
       });
     }).then((nextUnsubscribe) => {

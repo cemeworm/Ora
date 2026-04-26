@@ -48,6 +48,8 @@ import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
 import type { OraModeCreateParams, OraModeSpec, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
+import { Checkbox } from "./ui/checkbox";
+import { Select } from "./ui/select";
 
 type EditorMode = "gallery" | "create" | "edit";
 
@@ -340,15 +342,16 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
             <RefreshCcw size={14} />
             Auto layout
           </button>
-          <select
+          <Select
+            aria-label="Node template"
             value={pendingTemplate}
             onChange={(event) => setPendingTemplate(event.target.value)}
-            className="h-10 rounded-md border border-bench-200 bg-white px-3 text-sm outline-none"
+            className="bg-white"
           >
             {allowedTemplates.map((template) => (
               <option key={template} value={template}>{template}</option>
             ))}
-          </select>
+          </Select>
           <button
             onClick={handleAddNode}
             disabled={!allowedTemplates.length}
@@ -800,32 +803,32 @@ function ModeInspector({
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Family</span>
-            <select
+            <Select
+              aria-label="Mode family"
               value={draft.family}
               onChange={(event) => onPatchDraft((current) => resetModeDraftFamily(current, event.target.value as CoordinationPattern))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none"
             >
               {CoordinationPatternSchema.options.map((family) => (
                 <option key={family} value={family}>{family}</option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Stop policy</span>
-            <select
+            <Select
+              aria-label="Stop policy"
               value={draft.stopPolicy.type}
               onChange={(event) => onPatchDraft((current) => ({
                 ...current,
                 stopPolicy: { ...current.stopPolicy, type: event.target.value as OraModeSpec["stopPolicy"]["type"] },
               }))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none"
             >
               {draft.editorConstraints.allowedNodeTemplates.length > 0 && getPatternDefinition(draft.family) && (
                 getModeStopPolicies(draft.family).map((type) => (
                   <option key={type} value={type}>{type}</option>
                 ))
               )}
-            </select>
+            </Select>
           </label>
         </div>
       </div>
@@ -1097,18 +1100,19 @@ function CompletionPolicyPanel({
       <div className="mt-4 grid gap-3">
         <label className="grid gap-1 text-xs text-bench-700">
           <span>Preset</span>
-          <select
+          <Select
+            aria-label="Completion preset"
             value={draft.completionPolicy.preset}
             onChange={(event) => onPatchDraft((current) => ({
               ...current,
               completionPolicy: completionPolicyForPreset(event.target.value as OraModeSpec["completionPolicy"]["preset"]),
             }))}
-            className="h-9 rounded-md border border-bench-200 bg-white px-2 text-sm outline-none"
+            className="h-9 bg-white text-sm"
           >
             <option value="decisive">Decisive</option>
             <option value="balanced">Balanced</option>
             <option value="persistent">Persistent</option>
-          </select>
+          </Select>
         </label>
 
         <label className="grid gap-1 text-xs text-bench-700">
@@ -1148,8 +1152,7 @@ function CompletionPolicyPanel({
               />
             </label>
             <label className="flex items-center gap-2 text-xs font-medium text-bench-700">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={draft.completionPolicy.forceFinalOnRepeatedTool}
                 onChange={(event) => onPatchDraft((current) => ({
                   ...current,
@@ -1162,8 +1165,7 @@ function CompletionPolicyPanel({
               Force final after repeated tools
             </label>
             <label className="flex items-center gap-2 text-xs font-medium text-bench-700">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={draft.completionPolicy.forceFinalOnBudgetExhausted}
                 onChange={(event) => onPatchDraft((current) => ({
                   ...current,
@@ -1176,8 +1178,7 @@ function CompletionPolicyPanel({
               Force final when budget is exhausted
             </label>
             <label className="flex items-center gap-2 text-xs font-medium text-bench-700">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={draft.completionPolicy.allowToolCallsAfterUsefulResult}
                 onChange={(event) => onPatchDraft((current) => ({
                   ...current,
@@ -1243,7 +1244,8 @@ function MemoryPolicyPanel({
       <div className="mt-4 grid gap-3">
         <label className="grid gap-1 text-xs text-bench-700">
           <span>Updater</span>
-          <select
+          <Select
+            aria-label="Memory updater"
             value={draft.memoryPolicy.updater}
             onChange={(event) => onPatchDraft((current) => ({
               ...current,
@@ -1252,11 +1254,11 @@ function MemoryPolicyPanel({
                 updater: event.target.value as OraModeSpec["memoryPolicy"]["updater"],
               },
             }))}
-            className="h-9 rounded-md border border-bench-200 px-2 text-sm outline-none"
+            className="h-9 text-sm"
           >
             <option value="provider">provider JSON patch</option>
             <option value="heuristic">heuristic fallback</option>
-          </select>
+          </Select>
         </label>
 
         <label className="grid gap-1 text-xs text-bench-700">
@@ -1431,8 +1433,7 @@ function RecoveryPolicyPanel({
       </div>
 
       <label className="mt-3 flex items-center gap-2 text-xs font-medium text-bench-700">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={draft.recoveryPolicy.defaults.fallbackArtifact}
           onChange={(event) => onPatchDraft((current) => ({
             ...current,
@@ -1512,48 +1513,51 @@ function RecoveryPolicyPanel({
               </button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <select
+              <Select
+                aria-label="Recovery error type"
                 value={rule.errorTypes[0] ?? "tool_error"}
                 onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { errorTypes: [event.target.value as OraModeSpec["recoveryPolicy"]["rules"][number]["errorTypes"][number]] })}
-                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+                className="h-8 bg-white text-xs"
               >
                 {RecoveryErrorTypeSchema.options.map((errorType) => (
                   <option key={errorType} value={errorType}>{errorType}</option>
                 ))}
-              </select>
-              <select
+              </Select>
+              <Select
+                aria-label="Recovery action"
                 value={rule.action}
                 onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { action: event.target.value as OraModeSpec["recoveryPolicy"]["rules"][number]["action"] })}
-                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+                className="h-8 bg-white text-xs"
               >
                 {RecoveryActionSchema.options.map((action) => (
                   <option key={action} value={action}>{action}</option>
                 ))}
-              </select>
-              <select
+              </Select>
+              <Select
+                aria-label="Recovery node template"
                 value={rule.nodeTemplates[0] ?? ""}
                 onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { nodeTemplates: event.target.value ? [event.target.value] : [] })}
-                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+                className="h-8 bg-white text-xs"
               >
                 <option value="">any node</option>
                 {nodeTemplates.map((template) => (
                   <option key={template} value={template}>{template}</option>
                 ))}
-              </select>
-              <select
+              </Select>
+              <Select
+                aria-label="Recovery alternate tool"
                 value={rule.alternateToolIds[0] ?? ""}
                 onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { alternateToolIds: event.target.value ? [event.target.value] : [] })}
-                className="h-8 rounded-md border border-bench-200 bg-white px-2 text-xs outline-none"
+                className="h-8 bg-white text-xs"
               >
                 <option value="">no alternate</option>
                 {enabledTools.map((toolId) => (
                   <option key={toolId} value={toolId}>{toolId}</option>
                 ))}
-              </select>
+              </Select>
             </div>
             <label className="flex items-center gap-2 text-xs text-bench-700">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={rule.skipAllowed}
                 onChange={(event) => onPatchRecoveryRule(onPatchDraft, index, { skipAllowed: event.target.checked })}
               />
@@ -1779,18 +1783,18 @@ function NodeInspector({
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Template</span>
-            <select
+            <Select
+              aria-label="Node template"
               value={node.template}
               onChange={(event) => onPatchNode((current) => ({
                 ...current,
                 template: event.target.value as OraModeSpec["nodes"][number]["template"],
               }))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none"
             >
               {allowedTemplates.map((template) => (
                 <option key={template} value={template}>{template}</option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Owner agent</span>
@@ -1802,24 +1806,23 @@ function NodeInspector({
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Risk level</span>
-            <select
+            <Select
+              aria-label="Node risk level"
               value={node.riskLevel ?? ""}
               onChange={(event) => onPatchNode((current) => ({
                 ...current,
                 riskLevel: event.target.value ? event.target.value as OraModeSpec["nodes"][number]["riskLevel"] : undefined,
               }))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none"
             >
               <option value="">runtime default</option>
               {ActionRiskLevelSchema.options.map((risk) => (
                 <option key={risk} value={risk}>{formatEnumLabel(language, risk)}</option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="inline-flex items-center justify-between rounded-xl border border-bench-200 bg-bench-50 px-3 py-3 text-sm">
             <span className="font-medium text-bench-800">Enabled</span>
-            <input
-              type="checkbox"
+            <Checkbox
               checked={node.enabled}
               disabled={!canDisable}
               onChange={(event) => onPatchNode((current) => ({ ...current, enabled: event.target.checked }))}

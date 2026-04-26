@@ -10,6 +10,7 @@ import type {
 } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import type { RuntimeBridgeStatus } from "../types";
+import { Select } from "./ui/select";
 
 interface ProjectSignalsViewProps {
   runtimeClient: RuntimeClient;
@@ -135,16 +136,17 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
           <p className="mt-1 text-sm text-muted-foreground">{selectedProjectLabel} · {bridgeStatus.mode}</p>
         </div>
         <div className="flex items-center gap-2">
-          <select
+          <Select
+            aria-label="Project filter"
             value={selectedProjectId}
             onChange={(event) => setSelectedProjectId(event.target.value)}
-            className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground shadow-sm"
+            className="h-9 text-sm"
           >
             <option value="all">All projects</option>
             {state.projects.map((project) => (
               <option key={project.projectId} value={project.projectId}>{project.label}</option>
             ))}
-          </select>
+          </Select>
           <button
             type="button"
             onClick={() => void refresh()}

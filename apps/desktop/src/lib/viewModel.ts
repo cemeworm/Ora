@@ -1119,6 +1119,18 @@ export function adaptChatMessages(
             pattern: turn.user.pattern,
           },
         });
+      } else if (turn.snapshot?.input.prompt.trim()) {
+        messages.push({
+          id: `${turn.runId}:user-pending`,
+          role: "user",
+          content: turn.snapshot.input.prompt,
+          timestamp: formatClock(turn.snapshot.input.createdAt ?? turn.snapshot.updatedAt),
+          metadata: {
+            runId: turn.runId,
+            turnIndex: turn.turnIndex,
+            pattern: turn.pattern,
+          },
+        });
       }
 
       const assistantTurn = turn.snapshot
@@ -1201,6 +1213,10 @@ function assistantTextFromSnapshot(
   if (outputText) {
     return outputText;
   }
+  const clarificationText = clarificationTextFromSnapshot(snapshot);
+  if (clarificationText) {
+    return clarificationText;
+  }
   if (hasRejectedFinalToolCall(snapshot)) {
     return undefined;
   }
@@ -1232,6 +1248,24 @@ function assistantTextFromSnapshot(
     const content = event.payload.content;
     if (typeof content === "string" && content.trim()) {
       return content;
+    }
+  }
+  return undefined;
+}
+
+function clarificationTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  const clarification = snapshotPendingClarifications(snapshot)[0];
+  if (clarification?.question.trim()) {
+    return clarification.question.trim();
+  }
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type !== "clarification.required" || !isRecord(event.payload) || !isRecord(event.payload.clarification)) {
+      continue;
+    }
+    const question = event.payload.clarification.question;
+    if (typeof question === "string" && question.trim()) {
+      return question.trim();
     }
   }
   return undefined;

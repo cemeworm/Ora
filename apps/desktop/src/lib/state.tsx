@@ -4,6 +4,7 @@ import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from 
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
 import type {
   OraModeSpec,
+  OraActionRecord,
   OraPatternDefinition,
   OraProviderConfig,
   OraProviderRegistry,
@@ -216,7 +217,7 @@ function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraM
   return modes.find((mode) => mode.id === SINGLE_AGENT_MODE_ID) ?? modes[0];
 }
 
-function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
+export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
   if (stream.snapshot) {
     return stream.snapshot;
   }
@@ -227,12 +228,92 @@ function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: 
   for (const event of stream.events) {
     eventBySeq.set(event.seq, event);
   }
+  const merged = mergeStreamActionUpdates(snapshot, stream);
   return {
     ...snapshot,
     status: stream.status ?? snapshot.status,
+    actions: merged.actions,
+    pendingApprovals: merged.pendingApprovals,
     events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
   };
+}
+
+function mergeStreamActionUpdates(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): Pick<OraStateSnapshot, "actions" | "pendingApprovals"> {
+  const actionById = new Map(snapshot.actions.map((action) => [action.id, action]));
+  const pendingApprovals = new Set(snapshot.pendingApprovals);
+
+  for (const event of stream.events) {
+    if (event.type !== "action.updated" || !isRecord(event.payload)) {
+      continue;
+    }
+
+    const actionId = typeof event.payload.actionId === "string" ? event.payload.actionId : undefined;
+    const status = readActionStatus(event.payload.status);
+    const record = readActionRecord(event.payload.record);
+    const id = record?.id ?? actionId;
+    if (!id) {
+      continue;
+    }
+
+    const existing = actionById.get(id);
+    if (record) {
+      actionById.set(id, record);
+    } else if (existing && status) {
+      actionById.set(id, { ...existing, status });
+    }
+
+    const nextStatus = record?.status ?? status;
+    if (nextStatus === "approval_required") {
+      pendingApprovals.add(id);
+    } else if (nextStatus) {
+      pendingApprovals.delete(id);
+    }
+  }
+
+  return {
+    actions: [...actionById.values()],
+    pendingApprovals: [...pendingApprovals],
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readActionRecord(value: unknown): OraActionRecord | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (typeof value.id !== "string" || typeof value.runId !== "string" || typeof value.type !== "string") {
+    return undefined;
+  }
+  const status = readActionStatus(value.status);
+  const riskLevel = value.riskLevel === "low" || value.riskLevel === "medium" || value.riskLevel === "high"
+    ? value.riskLevel
+    : undefined;
+  if (!status || !riskLevel || !Array.isArray(value.artifactIds)) {
+    return undefined;
+  }
+  return value as OraActionRecord;
+}
+
+function readActionStatus(value: unknown): OraActionRecord["status"] | undefined {
+  switch (value) {
+    case "proposed":
+    case "approval_required":
+    case "approved":
+    case "running":
+    case "succeeded":
+    case "failed":
+    case "denied":
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 function streamRunStatus(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): OraStateSnapshot["status"] | undefined {

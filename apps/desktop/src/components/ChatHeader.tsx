@@ -1,23 +1,19 @@
-import { BookOpenText, Download, Files, Pause, PanelRightOpen } from "lucide-react";
+import { BookOpenText, Download, Files, PanelRightOpen } from "lucide-react";
 import { Button } from "./ui/button";
 import type { SessionRun } from "../types";
 
 interface ChatHeaderProps {
   busyCommand?: string;
-  isRunning: boolean;
   selectedSession: SessionRun;
   onExportReport: () => void;
-  onInterruptRun: () => void;
   onToggleDetailDrawer: (drawer: "trails" | "documents") => void;
   detailDrawer: "trails" | "documents" | undefined;
 }
 
 export function ChatHeader({
   busyCommand,
-  isRunning,
   selectedSession,
   onExportReport,
-  onInterruptRun,
   onToggleDetailDrawer,
   detailDrawer,
 }: ChatHeaderProps) {
@@ -29,12 +25,6 @@ export function ChatHeader({
         <h2 className="truncate text-sm font-medium">{selectedSession.title}</h2>
       </div>
       <div className="flex items-center gap-1.5">
-        {isRunning && (
-          <Button variant="ghost" size="sm" onClick={onInterruptRun} disabled={busyCommand !== undefined}>
-            <Pause size={14} />
-            <span className="hidden sm:inline">Pause</span>
-          </Button>
-        )}
         <Button variant="ghost" size="sm" onClick={onExportReport} disabled={busyCommand !== undefined} title="Export report">
           <Download size={14} />
           <span className="hidden sm:inline">Export</span>

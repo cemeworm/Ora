@@ -2483,6 +2483,26 @@ class LocalJsonRpcRuntime {
   private resumeRun(params: unknown): OraStateSnapshot {
     const { runId, reason, patch } = asResumeRunParams(params);
     const snapshot = this.getRunState({ runId });
+    const clarificationPatch = patch && isRecord(patch.clarifications)
+      ? patch.clarifications as Record<string, unknown>
+      : {};
+    const resolvedClarificationEvents = snapshot.pendingClarifications
+      .filter((clarification) => clarificationPatch[clarification.key] !== undefined || clarificationPatch[clarification.id] !== undefined)
+      .map((clarification, index) => createEvent(
+        snapshot.runId,
+        snapshot.events.length + 1 + index,
+        "clarification.resolved",
+        {
+          clarificationId: clarification.id,
+          nodeId: clarification.nodeId,
+          answer: clarificationPatch[clarification.key] ?? clarificationPatch[clarification.id],
+          mode: "resume",
+        },
+        snapshot.pattern,
+        undefined,
+        undefined,
+        clarification.nodeId,
+      ));
     const resumedEvent = createEvent(
       snapshot.runId,
       snapshot.events.length,
@@ -2492,14 +2512,27 @@ class LocalJsonRpcRuntime {
     );
     const doneEvent = createEvent(
       snapshot.runId,
-      snapshot.events.length + 1,
+      snapshot.events.length + 1 + resolvedClarificationEvents.length,
       "run.done",
       { status: "succeeded", summary: "Confirmed. Continuing the run." },
       snapshot.pattern,
     );
+    const nextClarifications = Object.keys(clarificationPatch).length > 0
+      ? {
+          ...(isRecord(snapshot.input.context?.clarifications) ? snapshot.input.context.clarifications : {}),
+          ...clarificationPatch,
+        }
+      : snapshot.input.context?.clarifications;
     const updated = {
       ...snapshot,
       status: "succeeded" as const,
+      input: {
+        ...snapshot.input,
+        context: {
+          ...snapshot.input.context,
+          ...(nextClarifications ? { clarifications: nextClarifications } : {}),
+        },
+      },
       topology: {
         ...snapshot.topology,
         nodes: snapshot.topology.nodes.map((node) => ({ ...node, status: "done" as const })),
@@ -2508,7 +2541,10 @@ class LocalJsonRpcRuntime {
       actions: snapshot.actions.map((action) =>
         action.status === "approval_required" ? { ...action, status: "approved" as const } : action,
       ),
-      events: [...snapshot.events, resumedEvent, doneEvent],
+      events: [...snapshot.events, resumedEvent, ...resolvedClarificationEvents, doneEvent],
+      pendingClarifications: snapshot.pendingClarifications.filter(
+        (clarification) => clarificationPatch[clarification.key] === undefined && clarificationPatch[clarification.id] === undefined,
+      ),
       updatedAt: doneEvent.createdAt,
     };
     this.runs.set(runId, updated);

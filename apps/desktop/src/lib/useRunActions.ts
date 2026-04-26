@@ -24,6 +24,22 @@ function modeDisablesDefaultWebTools(modeToolIds: readonly string[] | undefined)
   return DEFAULT_WEB_TOOL_IDS.some((toolId) => !ids.has(toolId));
 }
 
+export function buildPendingClarificationResumePatch(
+  snapshot: Pick<OraStateSnapshot, "pendingClarifications"> | undefined,
+  answer: string,
+): Record<string, unknown> | undefined {
+  const trimmed = answer.trim();
+  const clarification = snapshot?.pendingClarifications?.[0];
+  if (!clarification || !trimmed) {
+    return undefined;
+  }
+  return {
+    clarifications: {
+      [clarification.key]: trimmed,
+    },
+  };
+}
+
 export function waitForPendingRunPaint(): Promise<void> {
   if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
     return Promise.resolve();
@@ -241,6 +257,9 @@ export function useRunActions() {
     if (!state.selectedSessionId || !state.promptText.trim()) return;
     const sessionId = state.selectedSessionId;
     const submittedPrompt = state.promptText;
+    const clarificationPatch = state.activeSnapshot?.runId === state.selectedTurnRunId
+      ? buildPendingClarificationResumePatch(state.activeSnapshot, submittedPrompt)
+      : undefined;
     flushSync(() => {
       dispatch({
         type: "BEGIN_RUN_REQUEST",
@@ -251,6 +270,24 @@ export function useRunActions() {
       dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
     });
     await waitForPendingRunPaint();
+    if (clarificationPatch && state.selectedTurnRunId) {
+      try {
+        const snapshot = await runtimeClient.resumeRun(
+          state.selectedTurnRunId,
+          USER_RESUMED_MESSAGE,
+          clarificationPatch,
+        );
+        await refreshCurrentSession(snapshot, `Clarification submitted for ${snapshot.runId}.`);
+        return;
+      } catch (error) {
+        dispatch({
+          type: "SET_BRIDGE_STATUS",
+          status: { mode: "error", ok: false, label: "Resume failed", detail: error instanceof Error ? error.message : "Unable to resume run." },
+        });
+        dispatch({ type: "SET_LOADING", loading: false });
+        return;
+      }
+    }
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
     const searchConfig = buildRunSearchConfig();
@@ -273,6 +310,7 @@ export function useRunActions() {
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
+            clarificationPreflight: true,
             progressNarration: true,
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             ...searchConfig.metadata,

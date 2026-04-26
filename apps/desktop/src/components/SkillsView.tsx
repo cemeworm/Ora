@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useWorkbench } from "../lib/state";
 import type { OraSkillDetail, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
+import { Select } from "./ui/select";
 
 type SkillMode = "gallery" | "create" | "edit";
 type CategoryFilter = "all" | "public" | "private";
@@ -235,24 +236,26 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
               />
             </label>
             <div className="grid grid-cols-2 gap-2">
-              <select
+              <Select
+                aria-label="Skill source filter"
                 value={category}
                 onChange={(event) => void applyFilter(query, event.target.value as CategoryFilter)}
-                className="h-9 rounded-md border border-bench-200 bg-white px-2 text-xs font-semibold outline-none"
+                className="h-9 text-xs font-semibold"
               >
                 <option value="all">All sources</option>
                 <option value="public">Public</option>
                 <option value="private">Private</option>
-              </select>
-              <select
+              </Select>
+              <Select
+                aria-label="Skill state filter"
                 value={enabledFilter}
                 onChange={(event) => setEnabledFilter(event.target.value as EnabledFilter)}
-                className="h-9 rounded-md border border-bench-200 bg-white px-2 text-xs font-semibold outline-none"
+                className="h-9 text-xs font-semibold"
               >
                 <option value="all">All states</option>
                 <option value="enabled">Enabled</option>
                 <option value="disabled">Disabled</option>
-              </select>
+              </Select>
             </div>
           </div>
 

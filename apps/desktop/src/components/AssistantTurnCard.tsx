@@ -224,7 +224,6 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
           <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{step.detail}</p>
           <TaskItemMeta>
             <span>{step.timestamp}</span>
-            {step.contextLabel ? <span className="rounded-full bg-background px-2 py-0.5 ring-1 ring-inset ring-border">{step.contextLabel}</span> : null}
           </TaskItemMeta>
         </div>
         <StepStatusIcon step={step} />

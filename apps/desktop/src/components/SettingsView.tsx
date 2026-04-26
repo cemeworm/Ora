@@ -27,6 +27,7 @@ import { LANGUAGE_OPTIONS } from "../lib/i18n";
 import { ProjectSignalsView } from "./ProjectSignalsView";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
+import { Select } from "./ui/select";
 
 type SettingsSection = "general" | "providers" | "runtime" | "memory" | "signals" | "tools" | "skills";
 
@@ -407,25 +408,27 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                     <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_auto]">
                       <label className="space-y-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">API Provider</span>
-                        <select
+                        <Select
+                          aria-label="API Provider"
                           value={selectedProvider?.id ?? ""}
                           onChange={(event) => dispatch({ type: "SET_PROVIDER", providerId: event.target.value })}
-                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                          className="h-11 bg-bench-50"
                         >
                           {providers.map((provider) => (
                             <option key={provider.id} value={provider.id}>
                               {provider.label} · {provider.type}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       </label>
 
                       <label className="space-y-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Template</span>
-                        <select
+                        <Select
+                          aria-label="Template"
                           value={selectedTemplateId}
                           onChange={(event) => setSelectedTemplateId(event.target.value)}
-                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                          className="h-11 bg-bench-50"
                         >
                           <optgroup label="Official">
                             {PROVIDER_PRESETS.filter((preset) => preset.group === "official").map((preset) => (
@@ -437,7 +440,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                               <option key={preset.id} value={preset.id}>{preset.label}</option>
                             ))}
                           </optgroup>
-                        </select>
+                        </Select>
                       </label>
 
                       <div className="flex items-end">
@@ -577,14 +580,15 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             {providerDraft.type === "openai_compatible" && (
                               <label className="space-y-2">
                                 <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Protocol</span>
-                                <select
+                                <Select
+                                  aria-label="Protocol"
                                   value={providerDraft.protocol}
                                   onChange={(event) => updateDraft({ protocol: event.target.value as ProviderDraft["protocol"] })}
-                                  className="h-11 w-full rounded-xl border border-bench-200 bg-white px-3 text-sm outline-none transition focus:border-bench-900"
+                                  className="h-11 bg-white"
                                 >
                                   <option value="chat_completions">Chat Completions</option>
                                   <option value="responses">Responses</option>
-                                </select>
+                                </Select>
                               </label>
                             )}
 
@@ -736,16 +740,17 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                     <div className="mt-5 grid gap-4 lg:grid-cols-2">
                       <label className="space-y-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">Search Provider</span>
-                        <select
+                        <Select
+                          aria-label="Search Provider"
                           value={searchSettings.providerId}
                           disabled={!searchSettings.enabled}
                           onChange={(event) => updateSearchSettings({ providerId: event.target.value as DesktopSearchProviderId })}
-                          className="h-11 w-full rounded-xl border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="h-11 bg-bench-50"
                         >
                           {searchProviderOptions.map((provider) => (
                             <option key={provider.id} value={provider.id}>{provider.label}</option>
                           ))}
-                        </select>
+                        </Select>
                       </label>
 
                       <label className="space-y-2">
