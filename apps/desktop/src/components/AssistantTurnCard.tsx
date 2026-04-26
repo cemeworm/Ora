@@ -1,18 +1,23 @@
 import { useState, type ReactNode } from "react";
 import {
   AlertCircle,
+  AtSign,
   CheckCircle2,
   ChevronDown,
   Circle,
   Clock3,
   FileImage,
   FileText,
+  GitBranch,
   ListTodo,
   LoaderCircle,
+  Maximize2,
   MessageSquareWarning,
+  Reply,
   Send,
+  X,
 } from "lucide-react";
-import type { AssistantTurnAttachment, TurnArtifactAttachment, TurnProcessStep, TurnTodoItem } from "../types";
+import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnProcessStep, TurnTodoItem } from "../types";
 import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
 import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
@@ -36,6 +41,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const processSteps = turn?.processSteps ?? [];
+  const agentMessages = turn?.agentMessages ?? [];
   const hasProcessSteps = processSteps.length > 0;
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
 
@@ -80,6 +86,10 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
                 <ProcessStepItem key={step.id} step={step} />
               ))}
             </CollapsibleCard>
+          ) : null}
+
+          {agentMessages.length > 0 ? (
+            <AgentConversationTimeline messages={agentMessages} />
           ) : null}
 
           <MessageContent className="w-full">
@@ -157,6 +167,161 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
       </Dialog>
     </Message>
   );
+}
+
+function AgentConversationTimeline({ messages }: { messages: TurnAgentConversationMessage[] }) {
+  const [fullOpen, setFullOpen] = useState(false);
+  const byId = new Map(messages.map((message) => [message.id, message]));
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-background shadow-xs">
+      <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-foreground">
+          <GitBranch size={14} />
+          <span>Agent conversation</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-xs text-muted-foreground">{messages.length} messages</span>
+          <button
+            type="button"
+            onClick={() => setFullOpen(true)}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent/35 hover:text-foreground active:scale-[0.98]"
+          >
+            <Maximize2 size={12} />
+            Open full
+          </button>
+        </div>
+      </div>
+      <div className="max-h-[min(52vh,34rem)] divide-y divide-border overflow-y-auto overscroll-contain">
+        {messages.map((message) => (
+          <AgentConversationItem
+            key={message.id}
+            message={message}
+            replyTo={message.replyToId ? byId.get(message.replyToId) : undefined}
+          />
+        ))}
+      </div>
+      <Dialog open={fullOpen} onOpenChange={setFullOpen}>
+        <DialogContent className="flex h-[min(86vh,820px)] w-[min(1120px,calc(100vw-2rem))] max-w-none flex-col overflow-hidden rounded-2xl border border-border bg-background p-0 shadow-lift">
+          <DialogHeader className="mb-0 border-b border-border bg-muted/25 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle className="flex min-w-0 items-center gap-2 text-sm">
+                <GitBranch size={15} />
+                <span className="truncate">Agent conversation</span>
+                <span className="shrink-0 text-xs font-normal text-muted-foreground">{messages.length} messages</span>
+              </DialogTitle>
+              <button
+                type="button"
+                onClick={() => setFullOpen(false)}
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-foreground active:scale-[0.98]"
+                aria-label="Close full agent conversation"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain">
+            {messages.map((message) => (
+              <AgentConversationItem
+                key={`full:${message.id}`}
+                message={message}
+                replyTo={message.replyToId ? byId.get(message.replyToId) : undefined}
+                spacious
+              />
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function AgentConversationItem({
+  message,
+  replyTo,
+  spacious = false,
+}: {
+  message: TurnAgentConversationMessage;
+  replyTo?: TurnAgentConversationMessage;
+  spacious?: boolean;
+}) {
+  return (
+    <div className={cn(spacious ? "px-4 py-4" : "px-3 py-3", message.replyToId && (spacious ? "pl-10" : "pl-8"))}>
+      {replyTo ? (
+        <div className="mb-2 border-l-2 border-border pl-2 text-xs leading-5 text-muted-foreground">
+          <span className="font-medium text-foreground">{replyTo.fromAgentLabel}</span>
+          <span className="break-words">: {spacious ? replyTo.content : truncate(replyTo.content, 120)}</span>
+        </div>
+      ) : null}
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted/35 text-xs font-semibold text-foreground">
+          {initials(message.fromAgentLabel)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-foreground">{message.fromAgentLabel}</span>
+            <KindPill message={message} />
+            {message.toAgentLabels.map((label, index) => (
+              <span key={`${message.id}:to:${message.toAgentIds[index] ?? label}`} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                <AtSign size={11} />
+                {label}
+              </span>
+            ))}
+            <span className="text-xs text-muted-foreground">{message.timestamp}</span>
+          </div>
+          <p className={cn("mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]", spacious && "leading-7")}>{message.content}</p>
+          {(message.topic || message.correlationId) ? (
+            <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              {message.topic ? <span>topic: {message.topic}</span> : null}
+              {message.correlationId ? <span>correlation: {message.correlationId}</span> : null}
+            </div>
+          ) : null}
+        </div>
+        <AgentMessageStatusIcon status={message.status} />
+      </div>
+    </div>
+  );
+}
+
+function KindPill({ message }: { message: TurnAgentConversationMessage }) {
+  const icon = message.kind === "reply"
+    ? <Reply size={11} />
+    : message.kind === "route"
+      ? <GitBranch size={11} />
+      : <AtSign size={11} />;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
+      {icon}
+      {message.kind}
+    </span>
+  );
+}
+
+function AgentMessageStatusIcon({ status }: { status: TurnAgentConversationMessage["status"] }) {
+  if (status === "failed") {
+    return <AlertCircle size={14} className="mt-1 shrink-0 text-amber-600" />;
+  }
+  if (status === "running") {
+    return <LoaderCircle size={14} className="mt-1 shrink-0 animate-spin text-muted-foreground" />;
+  }
+  if (status === "done") {
+    return <CheckCircle2 size={14} className="mt-1 shrink-0 text-emerald-600" />;
+  }
+  return <Circle size={14} className="mt-1 shrink-0 text-muted-foreground" />;
+}
+
+function initials(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "A";
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1).trimEnd()}...`;
 }
 
 function TurnStatusIcon({ status, isPlaceholder }: { status?: AssistantTurnAttachment["status"]; isPlaceholder: boolean }) {

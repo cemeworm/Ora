@@ -95,4 +95,83 @@ describe("desktop workbench state", () => {
       input: { name: "waza-design" },
     });
   });
+
+  it("merges streamed agent messages into the active snapshot", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-team",
+      sessionId: "session-team",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      modeId: "agent_teams",
+      input: { prompt: "Coordinate work.", createdAt, context: {} },
+      config: {
+        modeId: "agent_teams",
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["team_lead", "builder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "state-agent-message-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+    const stream = {
+      runId: "run-team",
+      status: "running",
+      fromSeq: 1,
+      nextSeq: 2,
+      events: [{
+        id: "run-team:event:1",
+        runId: "run-team",
+        seq: 1,
+        type: "agent.message",
+        createdAt: createdAt + 1,
+        payload: {
+          message: {
+            id: "run-team:agent-message:0",
+            runId: "run-team",
+            createdAt: createdAt + 1,
+            fromAgentId: "team_lead",
+            toAgentIds: ["builder"],
+            threadId: "agent-teams:build",
+            kind: "mention",
+            status: "done",
+            content: "@builder build this.",
+            artifactIds: [],
+          },
+        },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.agentMessages).toHaveLength(1);
+    expect(merged?.agentMessages[0]?.fromAgentId).toBe("team_lead");
+    expect(merged?.agentMessages[0]?.toAgentIds).toEqual(["builder"]);
+  });
 });

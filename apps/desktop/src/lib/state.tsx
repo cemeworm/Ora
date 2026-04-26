@@ -229,13 +229,64 @@ export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, s
     eventBySeq.set(event.seq, event);
   }
   const merged = mergeStreamActionUpdates(snapshot, stream);
+  const agentMessages = mergeStreamAgentMessages(snapshot, stream);
   return {
     ...snapshot,
     status: stream.status ?? snapshot.status,
     actions: merged.actions,
     pendingApprovals: merged.pendingApprovals,
+    agentMessages,
     events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
+  };
+}
+
+function mergeStreamAgentMessages(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot["agentMessages"] {
+  const messageById = new Map((snapshot.agentMessages ?? []).map((message) => [message.id, message]));
+  for (const event of stream.events) {
+    if (event.type !== "agent.message" || !isRecord(event.payload) || !isRecord(event.payload.message)) {
+      continue;
+    }
+    const message = readAgentConversationMessage(event.payload.message);
+    if (message) {
+      messageById.set(message.id, message);
+    }
+  }
+  return [...messageById.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+function readAgentConversationMessage(value: Record<string, unknown>): OraStateSnapshot["agentMessages"][number] | undefined {
+  if (
+    typeof value.id !== "string" ||
+    typeof value.runId !== "string" ||
+    typeof value.createdAt !== "number" ||
+    typeof value.fromAgentId !== "string" ||
+    typeof value.threadId !== "string" ||
+    typeof value.kind !== "string" ||
+    typeof value.status !== "string" ||
+    typeof value.content !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    id: value.id,
+    runId: value.runId,
+    createdAt: value.createdAt,
+    fromAgentId: value.fromAgentId,
+    toAgentIds: Array.isArray(value.toAgentIds) ? value.toAgentIds.filter((item): item is string => typeof item === "string") : [],
+    replyToId: typeof value.replyToId === "string" ? value.replyToId : undefined,
+    threadId: value.threadId,
+    nodeId: typeof value.nodeId === "string" ? value.nodeId : undefined,
+    planItemId: typeof value.planItemId === "string" ? value.planItemId : undefined,
+    kind: value.kind as OraStateSnapshot["agentMessages"][number]["kind"],
+    status: value.status as OraStateSnapshot["agentMessages"][number]["status"],
+    content: value.content,
+    topic: typeof value.topic === "string" ? value.topic : undefined,
+    correlationId: typeof value.correlationId === "string" ? value.correlationId : undefined,
+    artifactIds: Array.isArray(value.artifactIds) ? value.artifactIds.filter((item): item is string => typeof item === "string") : [],
   };
 }
 

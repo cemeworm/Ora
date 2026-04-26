@@ -2,18 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Bot,
+  Boxes,
   CheckCircle2,
+  CircleAlert,
   Clock3,
   ExternalLink,
-  Gauge,
   GitBranch,
+  ListFilter,
   Network,
   Radar,
-  Workflow,
+  Route,
+  Wrench,
 } from "lucide-react";
 import { DockCard } from "./DockCard";
 import { JsonTree } from "./JsonTree";
-import { MetricRow } from "./MetricRow";
 import { Button } from "./ui/button";
 import type {
   ActionRecord,
@@ -26,10 +28,25 @@ import type {
   TopologyNode,
 } from "../types";
 import { getSharedRuntimeClient, type OraRunTrail, type OraStateSnapshot } from "../lib/runtimeClient";
+import {
+  buildAgentLanes,
+  buildPendingApprovalItems,
+  buildSemanticTimeline,
+  buildToolLedger,
+  buildTrailDebugSummary,
+  canOpenLangfuseTrace,
+  collectTrailFindings,
+  formatUsd,
+  snapshotPendingClarifications,
+  tabLabel,
+  type SemanticTimelineItem,
+  type TrailDebuggerTab,
+  type TrailFinding,
+  type TrailFindingSeverity,
+} from "../lib/trailViewModel";
 
-type TrailsTab = "Live" | "Timeline" | "Topology" | "Trace";
-
-const trailsTabs: TrailsTab[] = ["Live", "Timeline", "Topology", "Trace"];
+const trailsTabs: TrailDebuggerTab[] = ["overview", "flow", "agents", "tools", "evidence"];
+const severityOptions: Array<TrailFindingSeverity | "all"> = ["all", "error", "warning", "info"];
 
 interface TrailsTabsProps {
   actions: ActionRecord[];
@@ -49,16 +66,6 @@ interface TrailsTabsProps {
   onForkRun: () => void;
   onResumeRun: () => void;
   onCancelRun: () => void;
-}
-
-interface PendingApprovalItem {
-  actionId: string;
-  nodeId?: string;
-  nodeLabel: string;
-  actionLabel: string;
-  riskLevel: "low" | "medium" | "high";
-  reason: string;
-  eventId?: string;
 }
 
 export function TrailsTabs({
@@ -81,11 +88,14 @@ export function TrailsTabs({
   onCancelRun,
 }: TrailsTabsProps) {
   const runtimeClient = getSharedRuntimeClient();
-  const [selectedTab, setSelectedTab] = useState<TrailsTab>("Live");
+  const [selectedTab, setSelectedTab] = useState<TrailDebuggerTab>("overview");
   const [trail, setTrail] = useState<OraRunTrail | undefined>(undefined);
   const [trailLoading, setTrailLoading] = useState(false);
   const [trailError, setTrailError] = useState<string | undefined>(undefined);
   const [openingTrace, setOpeningTrace] = useState(false);
+  const [severityFilter, setSeverityFilter] = useState<TrailFindingSeverity | "all">("all");
+  const [eventKindFilter, setEventKindFilter] = useState<string>("all");
+  const [expandedTimelineId, setExpandedTimelineId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,52 +126,23 @@ export function TrailsTabs({
     };
   }, [activeSnapshot.runId, runtimeClient]);
 
-  const liveMetrics = useMemo(() => {
-    if (trail) {
-      return trail.liveMetrics;
-    }
-    const runtimeMs = Math.max(0, activeSnapshot.updatedAt - (activeSnapshot.input.createdAt ?? activeSnapshot.updatedAt));
-    return {
-      runtimeMs,
-      eventCount: activeSnapshot.events.length,
-      checkpointCount: activeSnapshot.checkpoints.length,
-      topologyChangeCount: activeSnapshot.events.filter((event) => event.type === "topology.updated").length,
-      messageCount: activeSnapshot.events.filter((event) => event.type === "message.delta").length,
-      activeAgentCount: activeSnapshot.activeAgents.length,
-      warningCount: 0,
-      errorCount: activeSnapshot.status === "failed" ? 1 : 0,
-      estimatedCostUsd: activeSnapshot.trace?.generationRefs.reduce((sum, generation) => sum + (generation.totalCostUsd ?? 0), 0) ?? 0,
-    };
-  }, [activeSnapshot, trail]);
-
-  const activeAgentLabels = activeSnapshot.activeAgents
-    .map((agentId) => agents.find((agent) => agent.id === agentId)?.label ?? agentId)
-    .filter(Boolean);
   const trace = trail?.trace ?? activeSnapshot.trace;
-  const pendingApprovalItems = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
-  const pendingClarificationItems = snapshotPendingClarifications(activeSnapshot);
-  const blockingNodeMap = useMemo(
-    () => buildBlockingNodeMap(pendingApprovalItems, pendingClarificationItems),
-    [pendingApprovalItems, pendingClarificationItems],
+  const findings = useMemo(
+    () => collectTrailFindings(activeSnapshot, trailError, trace, actions),
+    [activeSnapshot, trailError, trace, actions],
   );
-  const blockingEventIds = useMemo(
-    () => buildBlockingEventIds(activeSnapshot, pendingApprovalItems),
-    [activeSnapshot, pendingApprovalItems],
+  const summary = useMemo(
+    () => buildTrailDebugSummary(activeSnapshot, trail, actions, findings),
+    [activeSnapshot, trail, actions, findings],
   );
-  const blockingGateLabel = pendingClarificationItems[0]
-    ? `Clarification · ${pendingClarificationItems[0].nodeLabel}`
-    : pendingApprovalItems[0]
-      ? `Approval · ${pendingApprovalItems[0].nodeLabel}`
-      : "None";
-  const selectedNodeObservations = (trail?.observations ?? []).filter((observation) => {
-    if (!selectedNode) {
-      return false;
-    }
-    const metadata = isRecord(observation.metadata) ? observation.metadata : {};
-    return metadata.nodeId === selectedNode.id || (selectedNode.agentId !== undefined && metadata.agentId === selectedNode.agentId);
-  });
-  const anomalies = collectAnomalies(activeSnapshot, trailError, trace, actions);
-  const timelineItems = buildTimelineItems(activeSnapshot);
+  const timelineItems = useMemo(() => buildSemanticTimeline(activeSnapshot), [activeSnapshot]);
+  const eventKinds = useMemo(() => ["all", ...Array.from(new Set(timelineItems.map((item) => item.kind)))], [timelineItems]);
+  const agentLanes = useMemo(() => buildAgentLanes(activeSnapshot, agents, trail, findings), [activeSnapshot, agents, trail, findings]);
+  const toolLedger = useMemo(() => buildToolLedger(activeSnapshot), [activeSnapshot]);
+  const pendingApprovals = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
+  const pendingClarifications = snapshotPendingClarifications(activeSnapshot);
+  const visibleFindings = severityFilter === "all" ? findings : findings.filter((finding) => finding.severity === severityFilter);
+  const visibleTimeline = timelineItems.filter((item) => eventKindFilter === "all" || item.kind === eventKindFilter);
   const traceOpenUnavailable = !canOpenLangfuseTrace(trace);
   const traceOpenDisabled = traceOpenUnavailable || openingTrace;
 
@@ -178,410 +159,125 @@ export function TrailsTabs({
     }
   }
 
+  function jumpToFinding(finding: TrailFinding) {
+    setSelectedTab(finding.suggestedTab);
+    if (finding.targetType === "event" && finding.targetId) {
+      setExpandedTimelineId(finding.targetId);
+    }
+  }
+
   return (
     <div className="w-full min-w-0">
-      <div className="border-b border-bench-200 px-3 py-2">
-        <div className="flex gap-1">
+      <div className="sticky top-0 z-10 border-b border-bench-200 bg-card/95 px-3 py-3 backdrop-blur">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusChip tone={summary.statusTone}>{summary.statusLabel}</StatusChip>
+              <span className="min-w-0 truncate text-sm font-semibold text-bench-900">{summary.currentStage}</span>
+            </div>
+            <p className="mt-1 truncate text-xs text-bench-700">{summary.recommendation}</p>
+          </div>
+          <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
+            <p>{summary.metrics.runtime}</p>
+            <p>{summary.metrics.cost} · {summary.metrics.messages} msg</p>
+          </div>
+        </div>
+
+        <div className="mt-3 flex gap-1 overflow-x-auto">
           {trailsTabs.map((tab) => (
             <button
               key={tab}
               onClick={() => setSelectedTab(tab)}
-              className={`rounded px-2.5 py-1.5 text-[11px] font-semibold transition active:scale-95 ${
+              className={`shrink-0 rounded px-2.5 py-1.5 text-[11px] font-semibold transition active:scale-95 ${
                 selectedTab === tab ? "bg-bench-900 text-white" : "text-bench-700 hover:bg-white"
               }`}
             >
-              {tab}
+              {tabLabel(tab)}
             </button>
           ))}
         </div>
       </div>
 
       <div className="space-y-3 p-4">
-        {selectedTab === "Live" && (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <MetricRow label="Status" value={selectedSession.status.replace(/_/g, " ")} />
-              <MetricRow label="Mode" value={(activeSnapshot.modeId ?? activeSnapshot.pattern).replace(/_/g, " ")} />
-              <MetricRow label="Blocking gate" value={blockingGateLabel} />
-              <MetricRow label="Selected node" value={selectedNode?.label ?? "Run overview"} />
-              <MetricRow label="Active agents" value={activeAgentLabels.join(", ") || "Idle"} />
-              <MetricRow label="Events / sec" value={formatRate(liveMetrics.eventCount, liveMetrics.runtimeMs)} />
-              <MetricRow label="Est. cost" value={formatUsd(liveMetrics.estimatedCostUsd)} />
-            </div>
-
-            <DockCard title="Live Signals" icon={<Gauge size={16} />}>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <SignalLine label="Events" value={String(liveMetrics.eventCount)} />
-                <SignalLine label="Checkpoints" value={String(liveMetrics.checkpointCount)} />
-                <SignalLine label="Topology changes" value={String(liveMetrics.topologyChangeCount)} />
-                <SignalLine label="Messages" value={String(liveMetrics.messageCount)} />
-                <SignalLine label="Warnings" value={String(liveMetrics.warningCount)} />
-                <SignalLine label="Errors" value={String(liveMetrics.errorCount)} />
-              </div>
-            </DockCard>
-
-            <DockCard title="Operator Actions" icon={<Activity size={16} />}>
-              <p className="mb-3">{commandFeedback}</p>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" size="sm" onClick={onExportReport} disabled={busyCommand !== undefined}>
-                  Export
-                </Button>
-                <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
-                  Fork
-                </Button>
-                <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined}>
-                  Resume
-                </Button>
-                <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined}>
-                  Cancel
-                </Button>
-              </div>
-            </DockCard>
-
-            <DockCard title="Runtime Focus" icon={<Bot size={16} />}>
-              <div className="space-y-2">
-                <SignalLine label="Selected beat" value={selectedBeat?.label ?? "Latest runtime event"} />
-                <SignalLine label="Selected checkpoint" value={selectedCheckpoint?.label ?? "No checkpoint selected"} />
-                <SignalLine label="Focused agent" value={selectedAgent?.label ?? "Run-level overview"} />
-                <SignalLine label="Generation refs" value={String(trace?.generationRefs.length ?? 0)} />
-              </div>
-            </DockCard>
-
-            <DockCard title="Tool Calls" icon={<Workflow size={16} />}>
-              {activeSnapshot.toolCalls.length === 0 ? (
-                <p className="text-xs leading-5 text-bench-700">No structured tool calls were recorded for this run.</p>
-              ) : (
-                <div className="space-y-2">
-                  {activeSnapshot.toolCalls.map((call) => (
-                    <div key={call.id} className="rounded-md bg-white px-3 py-3 ring-1 ring-inset ring-bench-200">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-bench-900">{call.toolId}</p>
-                          <p className="mt-1 text-[11px] text-bench-700">
-                            {call.source.replace(/_/g, " ")}{call.providerCallId ? ` · ${call.providerCallId}` : ""}
-                          </p>
-                        </div>
-                        <span className={toolCallStatusClassName(call.status)}>
-                          {call.status.replace(/_/g, " ")}
-                        </span>
-                      </div>
-                      {call.repairReason ? (
-                        <p className="mt-2 text-xs leading-5 text-amber-800">{call.repairReason.replace(/_/g, " ")}</p>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </DockCard>
-
-            <DockCard title="Blocking Gates" icon={<Workflow size={16} />}>
-              {pendingApprovalItems.length === 0 && pendingClarificationItems.length === 0 ? (
-                <p className="text-xs leading-5 text-bench-700">This run is not currently paused behind a manual gate.</p>
-              ) : (
-                <div className="space-y-2">
-                  {pendingApprovalItems.map((item) => (
-                    <div key={item.actionId} className="rounded-md bg-white px-3 py-3 ring-1 ring-inset ring-bench-200">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-bench-900">{item.nodeLabel}</p>
-                          <p className="mt-1 text-[11px] text-bench-700">
-                            {item.actionLabel}{item.nodeId ? ` · ${item.nodeId}` : ""}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <span className="rounded-full bg-bench-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-bench-700">
-                            approval
-                          </span>
-                          <span className={riskPillClassName(item.riskLevel)}>
-                            {item.riskLevel}
-                          </span>
-                        </div>
-                      </div>
-                      <p className="mt-2 text-xs leading-5 text-bench-700">{item.reason}</p>
-                    </div>
-                  ))}
-                  {pendingClarificationItems.map((item) => (
-                    <div key={item.id} className="rounded-md bg-white px-3 py-3 ring-1 ring-inset ring-bench-200">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-bench-900">{item.nodeLabel}</p>
-                          <p className="mt-1 text-[11px] text-bench-700">{item.nodeId}</p>
-                        </div>
-                        <span className="rounded-full bg-sky-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-900">
-                          clarification
-                        </span>
-                      </div>
-                      <p className="mt-2 text-xs leading-5 text-bench-700">{item.question}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </DockCard>
-
-            <DockCard title="Anomalies" icon={<Radar size={16} />}>
-              <div className="space-y-2">
-                {anomalies.map((anomaly) => (
-                  <div key={anomaly} className="rounded-md bg-bench-50 px-3 py-2 text-bench-800 ring-1 ring-inset ring-bench-200">
-                    {anomaly}
-                  </div>
-                ))}
-              </div>
-            </DockCard>
-          </>
+        {selectedTab === "overview" && (
+          <TrailOverview
+            activeSnapshot={activeSnapshot}
+            artifacts={artifacts}
+            busyCommand={busyCommand}
+            checkpoints={checkpoints}
+            commandFeedback={commandFeedback}
+            findings={visibleFindings}
+            onCancelRun={onCancelRun}
+            onExportReport={onExportReport}
+            onFindingClick={jumpToFinding}
+            onForkRun={onForkRun}
+            onResumeRun={onResumeRun}
+            pendingApprovals={pendingApprovals}
+            pendingClarifications={pendingClarifications}
+            selectedCheckpoint={selectedCheckpoint}
+            selectedNode={selectedNode}
+            selectedSession={selectedSession}
+            summary={summary}
+            timelineItems={timelineItems}
+          />
         )}
 
-        {selectedTab === "Timeline" && (
-          <div className="space-y-2">
-            {timelineItems.map((item) => (
-              <div
-                key={item.id}
-                className={`rounded-lg p-3 ring-1 ring-inset ${
-                  selectedBeat?.id === item.id
-                    ? "bg-bench-50 ring-bench-900"
-                    : blockingEventIds.has(item.id)
-                      ? item.eventType === "clarification.required"
-                        ? "bg-sky-50 ring-sky-300"
-                        : "bg-amber-50 ring-amber-300"
-                      : "bg-white ring-bench-200"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-semibold text-bench-900">{item.label}</p>
-                      {blockingEventIds.has(item.id) ? (
-                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${
-                          item.eventType === "clarification.required"
-                            ? "bg-sky-100 text-sky-900"
-                            : "bg-amber-100 text-amber-900"
-                        }`}>
-                          current gate
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-bench-700">{item.detail}</p>
-                    {item.nodeLabel ? (
-                      <p className="mt-1 text-[11px] font-medium text-bench-700">{item.nodeLabel}</p>
-                    ) : null}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <p className="font-mono text-[11px] text-bench-700">#{item.seq}</p>
-                    <p className="mt-1 text-[11px] text-bench-600">{formatTimestamp(item.createdAt)}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+        {selectedTab === "flow" && (
+          <TrailFlow
+            eventKindFilter={eventKindFilter}
+            eventKinds={eventKinds}
+            expandedTimelineId={expandedTimelineId}
+            items={visibleTimeline}
+            onEventKindFilterChange={setEventKindFilter}
+            onToggleItem={(id) => setExpandedTimelineId((current) => current === id ? undefined : id)}
+            selectedBeat={selectedBeat}
+          />
         )}
 
-        {selectedTab === "Topology" && (
-          <>
-            <DockCard title="Topology State" icon={<Network size={16} />}>
-              <div className="space-y-2">
-                {activeSnapshot.topology.nodes.map((node) => (
-                  (() => {
-                    const blockingNode = blockingNodeMap.get(node.id);
-                    return (
-                  <div
-                    key={node.id}
-                    className={`rounded-lg px-3 py-2 ring-1 ring-inset ${
-                      node.id === selectedNode?.id
-                        ? blockingNode
-                          ? blockingNode.kind === "clarification"
-                            ? "bg-sky-50 ring-sky-500"
-                            : "bg-amber-50 ring-amber-500"
-                          : "bg-bench-50 ring-bench-900"
-                        : blockingNode
-                          ? blockingNode.kind === "clarification"
-                            ? "bg-sky-50 ring-sky-300"
-                            : "bg-amber-50 ring-amber-300"
-                          : "bg-white ring-bench-200"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-bench-900">{node.label}</p>
-                        <p className="text-[11px] text-bench-700">{node.kind}{node.agentId ? ` · ${node.agentId}` : ""}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {blockingNode ? (
-                          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize ${
-                            blockingNode.kind === "clarification"
-                              ? "bg-sky-100 text-sky-900"
-                              : "bg-amber-100 text-amber-900"
-                          }`}>
-                            {blockingNode.kind}
-                          </span>
-                        ) : null}
-                        {blockingNode?.kind === "approval" ? (
-                          <span className={riskPillClassName(blockingNode.riskLevel)}>
-                            {blockingNode.riskLevel}
-                          </span>
-                        ) : null}
-                        <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold capitalize text-bench-800">
-                          {node.status}
-                        </span>
-                      </div>
-                    </div>
-                    {blockingNode ? (
-                      <p className="mt-2 text-xs leading-5 text-bench-700">{blockingNode.reason}</p>
-                    ) : null}
-                  </div>
-                    );
-                  })()
-                ))}
-              </div>
-            </DockCard>
-
-            <DockCard title="Node Linkage" icon={<Workflow size={16} />}>
-              {selectedNode ? (
-                <div className="space-y-3">
-                  <SignalLine label="Selected node" value={selectedNode.label} />
-                  {blockingNodeMap.get(selectedNode.id) ? (
-                    <SignalLine
-                      label="Blocking gate"
-                      value={
-                        blockingNodeMap.get(selectedNode.id)?.kind === "approval"
-                          ? `Approval · ${blockingNodeMap.get(selectedNode.id)?.riskLevel}`
-                          : "Clarification"
-                      }
-                    />
-                  ) : null}
-                  <SignalLine label="Linked trace rows" value={String(selectedNodeObservations.length)} />
-                  <SignalLine label="Edges" value={String(activeSnapshot.topology.edges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id).length)} />
-                  {blockingNodeMap.get(selectedNode.id)?.reason ? (
-                    <p className="rounded-md bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
-                      {blockingNodeMap.get(selectedNode.id)?.reason}
-                    </p>
-                  ) : null}
-                  {selectedNodeObservations.length > 0 ? (
-                    <div className="space-y-2">
-                      {selectedNodeObservations.slice(0, 6).map((observation) => (
-                        <div key={observation.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-bench-900">{observation.name}</span>
-                            <span className="text-[11px] uppercase tracking-[0.08em] text-bench-700">{observation.type}</span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-bench-700">{observation.statusMessage ?? "Mapped from runtime topology state."}</p>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs leading-5 text-bench-700">
-                      This node has no direct remote trace rows yet. Trails is still using Ora topology as the source of truth.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xs leading-5 text-bench-700">Select a topology node in the chat workbench to inspect its linked trace fragments.</p>
-              )}
-            </DockCard>
-          </>
+        {selectedTab === "agents" && (
+          <TrailAgents
+            lanes={agentLanes}
+            selectedAgentId={selectedAgent?.id}
+          />
         )}
 
-        {selectedTab === "Trace" && (
-          <>
-            <DockCard title="Trace Status" icon={<GitBranch size={16} />}>
-              <div className="space-y-2">
-                <SignalLine label="Provider" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
-                <SignalLine label="Source" value={trace?.source ?? "trace unavailable"} />
-                <SignalLine label="Trace ID" value={trace?.traceId ?? "Not captured"} />
-                <SignalLine label="Root observation" value={trace?.rootObservationId ?? "Not captured"} />
-                <SignalLine label="Availability" value={trace?.available ? "Available" : trace?.enabled ? "Pending / degraded" : "Disabled"} />
-              </div>
-              {trace?.reason && <p className="mt-3 text-xs leading-5 text-bench-700">{trace.reason}</p>}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleOpenTrace}
-                  disabled={traceOpenDisabled}
-                  title={traceOpenUnavailable ? "No Langfuse trace is attached to this local Trail." : undefined}
+        {selectedTab === "tools" && (
+          <TrailTools
+            commandFeedback={commandFeedback}
+            items={toolLedger}
+          />
+        )}
+
+        {selectedTab === "evidence" && (
+          <TrailEvidence
+            activeSnapshot={activeSnapshot}
+            artifacts={artifacts}
+            checkpoints={checkpoints}
+            handleOpenTrace={handleOpenTrace}
+            openingTrace={openingTrace}
+            planItems={planItems}
+            trace={trace}
+            traceOpenDisabled={traceOpenDisabled}
+            traceOpenUnavailable={traceOpenUnavailable}
+            trail={trail}
+            trailError={trailError}
+            trailLoading={trailLoading}
+          />
+        )}
+
+        {(selectedTab === "overview" || selectedTab === "flow") && findings.length > 0 && (
+          <DockCard title="Findings Filter" icon={<ListFilter size={16} />}>
+            <div className="flex flex-wrap gap-2">
+              {severityOptions.map((severity) => (
+                <button
+                  key={severity}
+                  onClick={() => setSeverityFilter(severity)}
+                  className={`rounded px-2.5 py-1 text-[11px] font-semibold capitalize transition active:scale-95 ${
+                    severityFilter === severity ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+                  }`}
                 >
-                  <ExternalLink size={14} />
-                  {traceOpenUnavailable ? "Local Trail only" : "Open in Langfuse"}
-                </Button>
-              </div>
-            </DockCard>
-
-            <DockCard title="Generation Summaries" icon={<Clock3 size={16} />}>
-              {trace?.generationRefs.length ? (
-                <div className="space-y-2">
-                  {trace.generationRefs.map((generation) => (
-                    <div key={generation.observationId} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium text-bench-900">{generation.name}</span>
-                        <span className="text-[11px] text-bench-700">{generation.model ?? "unknown model"}</span>
-                      </div>
-                      <p className="mt-1 text-[11px] text-bench-700">
-                        {(generation.providerId ?? "provider n/a")} · latency {formatLatency(generation.latencySeconds)} · cost {formatUsd(generation.totalCostUsd ?? 0)}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs leading-5 text-bench-700">No generation refs were captured for this run.</p>
-              )}
-            </DockCard>
-
-            <DockCard title="Observation Tree" icon={<CheckCircle2 size={16} />}>
-              {trailLoading ? (
-                <p className="text-xs leading-5 text-bench-700">Loading trace observations...</p>
-              ) : trailError ? (
-                <p className="text-xs leading-5 text-amber-700">{trailError}</p>
-              ) : trail?.observations.length ? (
-                <div className="space-y-2">
-                  {trail.observations.map((observation) => (
-                    <div key={observation.id} className="rounded-md bg-white px-3 py-2 ring-1 ring-inset ring-bench-200">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium text-bench-900">{observation.name}</span>
-                        <span className="text-[11px] uppercase tracking-[0.08em] text-bench-700">{observation.type}</span>
-                      </div>
-                      <p className="mt-1 text-[11px] text-bench-700">
-                        {observation.model ? `${observation.model} · ` : ""}{observation.statusMessage ?? "No status message"}
-                      </p>
-                      {(observation.input !== undefined || observation.output !== undefined) && (
-                        <div className="mt-2 max-h-44 overflow-y-auto rounded-md bg-bench-50 p-2">
-                          <JsonTree data={{ input: observation.input, output: observation.output }} defaultExpanded={1} />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs leading-5 text-bench-700">Trace data is not available for this run yet. Local Trails views are still backed by Ora runtime state.</p>
-              )}
-            </DockCard>
-          </>
-        )}
-
-        {artifacts.length > 0 && selectedTab !== "Trace" && (
-          <DockCard title="Artifacts" icon={<CheckCircle2 size={16} />}>
-            <div className="space-y-2">
-              {artifacts.map((artifact) => (
-                <div key={artifact.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-bench-900">{artifact.label}</span>
-                    <span className="text-[11px] text-bench-700">{artifact.kind}</span>
-                  </div>
-                  <p className="mt-1 text-[11px] text-bench-700">{artifact.mimeType}</p>
-                </div>
-              ))}
-            </div>
-          </DockCard>
-        )}
-
-        {selectedTab === "Timeline" && planItems.length > 0 && (
-          <DockCard title="Plan Trace" icon={<Workflow size={16} />}>
-            <div className="space-y-2">
-              {planItems.map((item) => (
-                <div key={item.id} className="rounded-md bg-white px-3 py-2 ring-1 ring-inset ring-bench-200">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-bench-900">{item.title}</span>
-                    <span className="text-[11px] capitalize text-bench-700">{item.status}</span>
-                  </div>
-                  <p className="mt-1 text-[11px] text-bench-700">{item.owner} · {item.checkpoint}</p>
-                </div>
+                  {severity}
+                </button>
               ))}
             </div>
           </DockCard>
@@ -591,183 +287,505 @@ export function TrailsTabs({
   );
 }
 
-function SignalLine({ label, value }: { label: string; value: string }) {
+function TrailOverview({
+  activeSnapshot,
+  artifacts,
+  busyCommand,
+  checkpoints,
+  commandFeedback,
+  findings,
+  pendingApprovals,
+  pendingClarifications,
+  selectedCheckpoint,
+  selectedNode,
+  selectedSession,
+  summary,
+  timelineItems,
+  onCancelRun,
+  onExportReport,
+  onFindingClick,
+  onForkRun,
+  onResumeRun,
+}: {
+  activeSnapshot: OraStateSnapshot;
+  artifacts: ArtifactRecord[];
+  busyCommand?: string;
+  checkpoints: CheckpointRecord[];
+  commandFeedback: string;
+  findings: TrailFinding[];
+  pendingApprovals: ReturnType<typeof buildPendingApprovalItems>;
+  pendingClarifications: OraStateSnapshot["pendingClarifications"];
+  selectedCheckpoint?: CheckpointRecord;
+  selectedNode?: TopologyNode;
+  selectedSession: SessionRun;
+  summary: ReturnType<typeof buildTrailDebugSummary>;
+  timelineItems: SemanticTimelineItem[];
+  onCancelRun: () => void;
+  onExportReport: () => void;
+  onFindingClick: (finding: TrailFinding) => void;
+  onForkRun: () => void;
+  onResumeRun: () => void;
+}) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">{label}</span>
-      <span className="text-right text-sm font-semibold text-bench-900">{value}</span>
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <OverviewMetric label="Run" value={selectedSession.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
+        <OverviewMetric label="Stage" value={summary.currentStage} detail={summary.blockingGate === "None" ? "No active gate" : summary.blockingGate} />
+        <OverviewMetric label="Focus" value={selectedNode?.label ?? "Run overview"} detail={selectedCheckpoint?.label ?? "No checkpoint selected"} />
+        <OverviewMetric label="Evidence" value={`${timelineItems.length} events`} detail={`${checkpoints.length} checkpoints · ${artifacts.length} artifacts`} />
+      </div>
+
+      <DockCard title="Findings" icon={<Radar size={16} />}>
+        {findings.length === 0 ? (
+          <p className="text-xs leading-5 text-bench-700">No findings for this run. Use Evidence for raw observations.</p>
+        ) : (
+          <div className="space-y-2">
+            {findings.map((finding) => (
+              <button
+                key={finding.id}
+                onClick={() => onFindingClick(finding)}
+                className="block w-full rounded-md bg-bench-50 px-3 py-2 text-left ring-1 ring-inset ring-bench-200 transition hover:bg-white active:scale-[0.99]"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-bench-900">{finding.title}</span>
+                  <SeverityPill severity={finding.severity} />
+                </div>
+                <p className="mt-1 text-xs leading-5 text-bench-700">{finding.message}</p>
+              </button>
+            ))}
+          </div>
+        )}
+      </DockCard>
+
+      <DockCard title="Blocking Gates" icon={<CircleAlert size={16} />}>
+        {pendingApprovals.length === 0 && pendingClarifications.length === 0 ? (
+          <p className="text-xs leading-5 text-bench-700">This run is not currently paused behind a manual gate.</p>
+        ) : (
+          <div className="space-y-2">
+            {pendingApprovals.map((item) => (
+              <div key={item.actionId} className="rounded-md bg-amber-50 px-3 py-2 ring-1 ring-inset ring-amber-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-amber-950">{item.nodeLabel}</span>
+                  <span className="text-[11px] font-semibold uppercase text-amber-900">{item.riskLevel}</span>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-amber-900">{item.reason}</p>
+              </div>
+            ))}
+            {pendingClarifications.map((item) => (
+              <div key={item.id} className="rounded-md bg-sky-50 px-3 py-2 ring-1 ring-inset ring-sky-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-sky-950">{item.nodeLabel}</span>
+                  <span className="text-[11px] font-semibold uppercase text-sky-900">clarification</span>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-sky-900">{item.question}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </DockCard>
+
+      <DockCard title="Execution Map" icon={<Network size={16} />}>
+        {activeSnapshot.topology.nodes.length === 0 ? (
+          <p className="text-xs leading-5 text-bench-700">No topology nodes were recorded for this run.</p>
+        ) : (
+          <div className="space-y-2">
+            {activeSnapshot.topology.nodes.slice(0, 8).map((node) => (
+              <div key={node.id} className={`rounded-md px-3 py-2 ring-1 ring-inset ${node.id === selectedNode?.id ? "bg-bench-100 ring-bench-900" : "bg-bench-50 ring-bench-200"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-semibold text-bench-900">{node.label}</span>
+                  <span className="shrink-0 text-[11px] capitalize text-bench-700">{node.status}</span>
+                </div>
+                <p className="truncate text-[11px] text-bench-700">{node.kind}{node.agentId ? ` · ${node.agentId}` : ""}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </DockCard>
+
+      <DockCard title="Operator Actions" icon={<Activity size={16} />}>
+        <p className="mb-3 text-xs leading-5 text-bench-700">{commandFeedback}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={onExportReport} disabled={busyCommand !== undefined}>
+            Export
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
+            Fork
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined}>
+            Resume
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined}>
+            Cancel
+          </Button>
+        </div>
+      </DockCard>
+    </>
+  );
+}
+
+function TrailFlow({
+  eventKindFilter,
+  eventKinds,
+  expandedTimelineId,
+  items,
+  selectedBeat,
+  onEventKindFilterChange,
+  onToggleItem,
+}: {
+  eventKindFilter: string;
+  eventKinds: string[];
+  expandedTimelineId?: string;
+  items: SemanticTimelineItem[];
+  selectedBeat?: RunBeat;
+  onEventKindFilterChange: (value: string) => void;
+  onToggleItem: (id: string) => void;
+}) {
+  return (
+    <>
+      <DockCard title="Flow Filter" icon={<ListFilter size={16} />}>
+        <div className="flex flex-wrap gap-2">
+          {eventKinds.map((kind) => (
+            <button
+              key={kind}
+              onClick={() => onEventKindFilterChange(kind)}
+              className={`rounded px-2.5 py-1 text-[11px] font-semibold capitalize transition active:scale-95 ${
+                eventKindFilter === kind ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+              }`}
+            >
+              {kind}
+            </button>
+          ))}
+        </div>
+      </DockCard>
+
+      <div className="space-y-2">
+        {items.length === 0 ? (
+          <p className="rounded-lg bg-white p-3 text-xs leading-5 text-bench-700 shadow-sm ring-1 ring-inset ring-bench-200">No semantic events match this filter.</p>
+        ) : items.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onToggleItem(item.id)}
+            className={`block w-full rounded-lg p-3 text-left ring-1 ring-inset transition active:scale-[0.99] ${
+              selectedBeat?.id === item.id
+                ? "bg-bench-100 ring-bench-900"
+                : timelineClassName(item.severity)
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-bench-900">{item.label}</p>
+                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-bench-700">
+                    {item.kind}
+                  </span>
+                  {item.severity !== "neutral" ? <SeverityPill severity={item.severity} /> : null}
+                </div>
+                <p className="mt-1 text-xs leading-5 text-bench-700">{item.detail}</p>
+                {item.agentLabel || item.nodeLabel ? (
+                  <p className="mt-1 text-[11px] text-bench-700">{[item.agentLabel, item.nodeLabel].filter(Boolean).join(" · ")}</p>
+                ) : null}
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="font-mono text-[11px] text-bench-700">#{item.seq}</p>
+                <p className="mt-1 text-[11px] text-bench-600">{item.timestamp}</p>
+              </div>
+            </div>
+            {expandedTimelineId === item.id ? (
+              <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                <EvidenceSnippet label="Input" value={item.inputPreview ?? "No input summary"} />
+                <EvidenceSnippet label="Output" value={item.outputPreview ?? "No output summary"} />
+                <div className="sm:col-span-2 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
+                  <JsonTree data={item.rawPayload} defaultExpanded={1} />
+                </div>
+              </div>
+            ) : null}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function TrailAgents({ lanes, selectedAgentId }: { lanes: ReturnType<typeof buildAgentLanes>; selectedAgentId?: string }) {
+  if (lanes.length === 0) {
+    return (
+      <DockCard title="Agent Lanes" icon={<Bot size={16} />}>
+        <p className="text-xs leading-5 text-bench-700">No agent-level activity was recorded for this run.</p>
+      </DockCard>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {lanes.map((lane) => (
+        <div
+          key={lane.id}
+          className={`rounded-lg bg-white p-3 shadow-sm ring-1 ring-inset ${lane.id === selectedAgentId ? "ring-bench-900" : "ring-bench-200"}`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-bench-900">{lane.label}</p>
+                <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold capitalize text-bench-800">{lane.status}</span>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-bench-700">{lane.role}</p>
+            </div>
+            <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
+              <p>{lane.messageCount} msgs · {lane.toolCount} tools</p>
+              <p>{formatUsd(lane.costUsd)}</p>
+            </div>
+          </div>
+          <p className="mt-2 rounded-md bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">{lane.latestActivity}</p>
+          {lane.findings.length > 0 ? (
+            <div className="mt-2 space-y-1">
+              {lane.findings.map((finding) => (
+                <p key={finding.id} className="text-xs leading-5 text-amber-800">{finding.message}</p>
+              ))}
+            </div>
+          ) : null}
+          {lane.messages.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {lane.messages.map((message) => (
+                <div key={message.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-bench-700">{message.kind} · {message.status}</span>
+                    <span className="text-[11px] text-bench-600">{message.timestamp}</span>
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-bench-800">{message.content}</p>
+                  {message.toLabels.length > 0 ? <p className="mt-1 text-[11px] text-bench-700">to {message.toLabels.join(", ")}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }
 
-function buildTimelineItems(snapshot: OraStateSnapshot) {
-  const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
-  return snapshot.events.map((event) => ({
-    id: event.id,
-    seq: event.seq,
-    createdAt: event.createdAt,
-    eventType: event.type,
-    nodeId: event.nodeId,
-    nodeLabel: event.nodeId ? topologyNodeLabels.get(event.nodeId) ?? event.nodeId : undefined,
-    label: timelineLabel(event.type),
-    detail: timelineDetail(event),
-  }));
+function TrailTools({ commandFeedback, items }: { commandFeedback: string; items: ReturnType<typeof buildToolLedger> }) {
+  return (
+    <DockCard title="Tool Ledger" icon={<Wrench size={16} />}>
+      {items.length === 0 ? (
+        <p className="text-xs leading-5 text-bench-700">本次 run 未调用结构化工具。{commandFeedback ? ` ${commandFeedback}` : ""}</p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <div key={item.id} className="rounded-md bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-bench-900">{item.toolId}</p>
+                  <p className="mt-1 text-[11px] text-bench-700">
+                    {[item.source, item.agentLabel, item.nodeLabel, item.latency].filter(Boolean).join(" · ")}
+                  </p>
+                </div>
+                <StatusChip tone={item.statusTone}>{item.status.replace(/_/g, " ")}</StatusChip>
+              </div>
+              {item.repairReason || item.error ? (
+                <p className="mt-2 text-xs leading-5 text-amber-800">{(item.repairReason ?? item.error)?.replace(/_/g, " ")}</p>
+              ) : null}
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <EvidenceSnippet label="Args" value={item.argsPreview} />
+                <EvidenceSnippet label="Result" value={item.resultPreview || "No result captured"} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </DockCard>
+  );
 }
 
-function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {
-  const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
-  const pendingApprovals = snapshotPendingApprovals(snapshot);
-  const pendingActionIds = pendingApprovals.length > 0
-    ? pendingApprovals
-    : snapshot.actions.filter((action) => action.status === "approval_required").map((action) => action.id);
+function TrailEvidence({
+  activeSnapshot,
+  artifacts,
+  checkpoints,
+  handleOpenTrace,
+  openingTrace,
+  planItems,
+  trace,
+  traceOpenDisabled,
+  traceOpenUnavailable,
+  trail,
+  trailError,
+  trailLoading,
+}: {
+  activeSnapshot: OraStateSnapshot;
+  artifacts: ArtifactRecord[];
+  checkpoints: CheckpointRecord[];
+  handleOpenTrace: () => void;
+  openingTrace: boolean;
+  planItems: PlanItem[];
+  trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined;
+  traceOpenDisabled: boolean;
+  traceOpenUnavailable: boolean;
+  trail: OraRunTrail | undefined;
+  trailError: string | undefined;
+  trailLoading: boolean;
+}) {
+  return (
+    <>
+      <DockCard title="Trace Status" icon={<GitBranch size={16} />}>
+        <div className="space-y-2">
+          <EvidenceRow label="Provider" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
+          <EvidenceRow label="Source" value={trace?.source ?? "trace unavailable"} />
+          <EvidenceRow label="Trace ID" value={trace?.traceId ?? "Not captured"} />
+          <EvidenceRow label="Availability" value={trace?.available ? "Available" : trace?.enabled ? "Pending / degraded" : "Disabled"} />
+        </div>
+        {trace?.reason && <p className="mt-3 text-xs leading-5 text-bench-700">{trace.reason}</p>}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleOpenTrace}
+            disabled={traceOpenDisabled}
+            title={traceOpenUnavailable ? "No Langfuse trace is attached to this local Trail." : undefined}
+          >
+            <ExternalLink size={14} />
+            {traceOpenUnavailable ? "Local Trail only" : openingTrace ? "Opening" : "Open in Langfuse"}
+          </Button>
+        </div>
+      </DockCard>
 
-  return pendingActionIds.map((actionId) => {
-    const action = snapshot.actions.find((candidate) => candidate.id === actionId);
-    const event = [...snapshot.events].reverse().find((candidate) =>
-      candidate.type === "approval.required" && readApprovalEventActionId(candidate.payload) === actionId,
-    );
-    const nodeId = event?.nodeId ?? readActionNodeId(action?.input);
-    return {
-      actionId,
-      nodeId,
-      nodeLabel: nodeId ? topologyNodeLabels.get(nodeId) ?? nodeId : humanizeActionType(action?.type),
-      actionLabel: humanizeActionType(action?.type),
-      riskLevel: action?.riskLevel ?? "low",
-      reason: readApprovalReason(event?.payload) ?? fallbackApprovalReason(action?.riskLevel),
-      eventId: event?.id,
-    };
-  });
+      <DockCard title="Generation Refs" icon={<Clock3 size={16} />}>
+        {trace?.generationRefs.length ? (
+          <div className="space-y-2">
+            {trace.generationRefs.map((generation) => (
+              <div key={generation.observationId} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-medium text-bench-900">{generation.name}</span>
+                  <span className="shrink-0 text-[11px] text-bench-700">{generation.model ?? "unknown model"}</span>
+                </div>
+                <p className="mt-1 text-[11px] text-bench-700">
+                  {(generation.providerId ?? "provider n/a")} · latency {generation.latencySeconds === undefined ? "n/a" : `${generation.latencySeconds.toFixed(2)}s`} · cost {formatUsd(generation.totalCostUsd ?? 0)}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs leading-5 text-bench-700">No generation refs were captured for this run.</p>
+        )}
+      </DockCard>
+
+      <DockCard title="Observations" icon={<CheckCircle2 size={16} />}>
+        {trailLoading ? (
+          <p className="text-xs leading-5 text-bench-700">Loading trace observations...</p>
+        ) : trailError ? (
+          <p className="text-xs leading-5 text-amber-700">{trailError}</p>
+        ) : trail?.observations.length ? (
+          <div className="space-y-2">
+            {trail.observations.map((observation) => (
+              <details key={observation.id} className="rounded-md bg-white px-3 py-2 ring-1 ring-inset ring-bench-200">
+                <summary className="cursor-pointer list-none">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium text-bench-900">{observation.name}</span>
+                    <span className="shrink-0 text-[11px] uppercase tracking-[0.08em] text-bench-700">{observation.type}</span>
+                  </div>
+                  <p className="mt-1 truncate text-[11px] text-bench-700">
+                    {observation.model ? `${observation.model} · ` : ""}{observation.statusMessage ?? "No status message"}
+                  </p>
+                </summary>
+                {(observation.input !== undefined || observation.output !== undefined) && (
+                  <div className="mt-2 max-h-48 overflow-y-auto rounded-md bg-bench-50 p-2">
+                    <JsonTree data={{ input: observation.input, output: observation.output, metadata: observation.metadata }} defaultExpanded={1} />
+                  </div>
+                )}
+              </details>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs leading-5 text-bench-700">Trace data is not available for this run yet. Local Trails views are still backed by Ora runtime state.</p>
+        )}
+      </DockCard>
+
+      {(artifacts.length > 0 || checkpoints.length > 0 || planItems.length > 0) && (
+        <DockCard title="Run Attachments" icon={<Boxes size={16} />}>
+          <div className="space-y-2">
+            {artifacts.map((artifact) => (
+              <EvidenceRow key={artifact.id} label={artifact.label} value={`${artifact.kind} · ${artifact.mimeType}`} />
+            ))}
+            {checkpoints.map((checkpoint) => (
+              <EvidenceRow key={checkpoint.id} label={checkpoint.label} value={`checkpoint · #${checkpoint.eventSeq}`} />
+            ))}
+            {planItems.map((item) => (
+              <EvidenceRow key={item.id} label={item.title} value={`${item.owner} · ${item.status}`} />
+            ))}
+          </div>
+        </DockCard>
+      )}
+
+      <DockCard title="Snapshot" icon={<Route size={16} />}>
+        <details>
+          <summary className="cursor-pointer text-sm font-semibold text-bench-900">Raw run snapshot</summary>
+          <div className="mt-2 max-h-72 overflow-y-auto rounded-md bg-bench-50 p-2">
+            <JsonTree data={activeSnapshot} defaultExpanded={1} />
+          </div>
+        </details>
+      </DockCard>
+    </>
+  );
 }
 
-function buildBlockingNodeMap(
-  pendingApprovalItems: PendingApprovalItem[],
-  pendingClarifications: OraStateSnapshot["pendingClarifications"],
-) {
-  const result = new Map<string, {
-    kind: "approval" | "clarification";
-    riskLevel: "low" | "medium" | "high";
-    reason: string;
-  }>();
-  for (const item of pendingApprovalItems) {
-    if (!item.nodeId) {
-      continue;
-    }
-    result.set(item.nodeId, {
-      kind: "approval",
-      riskLevel: item.riskLevel,
-      reason: item.reason,
-    });
-  }
-  for (const item of pendingClarifications) {
-    result.set(item.nodeId, {
-      kind: "clarification",
-      riskLevel: "low",
-      reason: item.question,
-    });
-  }
-  return result;
+function OverviewMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-inset ring-bench-200">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold capitalize leading-5 text-bench-900">{value}</p>
+      <p className="mt-1 truncate text-[11px] leading-4 text-bench-700">{detail}</p>
+    </div>
+  );
 }
 
-function buildBlockingEventIds(
-  snapshot: OraStateSnapshot,
-  pendingApprovalItems: PendingApprovalItem[],
-) {
-  const result = new Set<string>();
-  for (const item of pendingApprovalItems) {
-    if (item.eventId) {
-      result.add(item.eventId);
-    }
-  }
-  const events = [...snapshot.events].reverse();
-  for (const clarification of snapshotPendingClarifications(snapshot)) {
-    const event = events.find((candidate) =>
-      candidate.type === "clarification.required" && matchesClarificationEvent(candidate.payload, clarification.id, clarification.key),
-    );
-    if (event) {
-      result.add(event.id);
-    }
-  }
-  return result;
+function EvidenceRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+      <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-bench-700">{label}</span>
+      <span className="min-w-0 truncate text-right text-sm font-semibold text-bench-900">{value}</span>
+    </div>
+  );
 }
 
-function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
-  return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
+function EvidenceSnippet({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-bench-600">{label}</p>
+      <p className="mt-1 break-words text-xs leading-5 text-bench-800">{value}</p>
+    </div>
+  );
 }
 
-function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
-  return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
+function SeverityPill({ severity }: { severity: TrailFindingSeverity }) {
+  const className = severity === "error"
+    ? "bg-rose-100 text-rose-900"
+    : severity === "warning"
+      ? "bg-amber-100 text-amber-900"
+      : "bg-sky-100 text-sky-900";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${className}`}>
+      {severity}
+    </span>
+  );
 }
 
-function timelineLabel(eventType: string) {
-  switch (eventType) {
-    case "topology.updated":
-      return "Topology change";
-    case "action.updated":
-      return "Action change";
-    case "task.started":
-      return "Task started";
-    case "task.progress":
-      return "Task progress";
-    case "task.completed":
-      return "Task completed";
-    case "task.failed":
-      return "Task failed";
-    case "tool.called":
-      return "Tool call";
-    case "tool.repaired":
-      return "Tool repaired";
-    case "checkpoint.created":
-      return "Checkpoint captured";
-    case "artifact.degraded":
-      return "Degraded artifact";
-    case "completion.updated":
-      return "Completion control";
-    case "node.updated":
-      return "Node runtime";
-    case "recovery.detected":
-      return "Recovery detected";
-    case "recovery.retry_scheduled":
-      return "Retry scheduled";
-    case "recovery.applied":
-      return "Recovery applied";
-    case "recovery.exhausted":
-      return "Recovery exhausted";
-    case "node.skipped":
-      return "Node skipped";
-    case "message.delta":
-      return "Assistant message";
-    case "run.started":
-      return "Run started";
-    case "run.done":
-      return "Run completed";
-    case "run.failed":
-      return "Run failed";
-    default:
-      return eventType;
-  }
+function StatusChip({ tone, children }: { tone: "success" | "warning" | "error" | "neutral"; children: React.ReactNode }) {
+  const className = tone === "success"
+    ? "bg-emerald-100 text-emerald-900"
+    : tone === "warning"
+      ? "bg-amber-100 text-amber-900"
+      : tone === "error"
+        ? "bg-rose-100 text-rose-900"
+        : "bg-bench-100 text-bench-800";
+  return (
+    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${className}`}>
+      {children}
+    </span>
+  );
 }
 
-function timelineDetail(event: OraStateSnapshot["events"][number]) {
-  if (isRecord(event.payload)) {
-    if (event.type === "tool.called" || event.type === "tool.repaired") {
-      const toolId = typeof event.payload.toolId === "string" ? event.payload.toolId : "tool";
-      const status = typeof event.payload.status === "string" ? event.payload.status : "updated";
-      return `${toolId} ${status.replace(/_/g, " ")}.`;
-    }
-    if (isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
-      return event.payload.decision.summary;
-    }
-    if (typeof event.payload.summary === "string") {
-      return event.payload.summary;
-    }
-    if (typeof event.payload.message === "string") {
-      return event.payload.message;
-    }
-    if (typeof event.payload.content === "string") {
-      return event.payload.content;
-    }
-  }
-  return "Runtime state updated.";
+function timelineClassName(severity: SemanticTimelineItem["severity"]) {
+  if (severity === "error") return "bg-rose-50 ring-rose-200";
+  if (severity === "warning") return "bg-amber-50 ring-amber-200";
+  if (severity === "info") return "bg-sky-50 ring-sky-200";
+  return "bg-white ring-bench-200 hover:bg-bench-50";
 }
 
 export function collectAnomalies(
@@ -776,192 +794,7 @@ export function collectAnomalies(
   trace: OraRunTrail["trace"] | OraStateSnapshot["trace"],
   actions: ActionRecord[],
 ) {
-  const items = new Set<string>();
-  if (snapshot.status === "failed") {
-    const failureDetail = latestFailureDetail(snapshot);
-    items.add(
-      failureDetail
-        ? `Run failed: ${failureDetail}`
-        : "The run ended in a failed state. Inspect the latest events and trace rows for the failing branch.",
-    );
-  }
-  if (actions.some((action) => action.state === "approval_required")) {
-    items.add("A pending approval is blocking forward progress.");
-  }
-  const toolCalls = snapshot.toolCalls ?? [];
-  const stopReason = stopReasonFromSnapshot(snapshot);
-  if (stopReason) {
-    items.add(`Run stop reason: ${stopReason}.`);
-  }
-  if (toolCalls.some((call) => call.status === "repaired")) {
-    items.add("A dangling provider tool call was repaired as interrupted before the next model call.");
-  }
-  if (toolCalls.some((call) => call.status === "interrupted")) {
-    items.add("A tool call was interrupted before completion.");
-  }
-  if (trace?.provider === "ora" || trace?.source === "local") {
-    items.add("Ora-native Trails is active; Langfuse is optional for deeper observability.");
-  } else if (!trace?.enabled) {
-    items.add("Langfuse tracing is disabled, so Trails is operating in local-only mode.");
-  } else if (!trace.available) {
-    items.add(trace.reason ?? "Remote trace data is unavailable; the drawer is using local synthesized observations.");
-  }
-  if (trailError) {
-    items.add(`Trace fetch degraded: ${trailError}`);
-  }
-  if (snapshot.events.length === 0) {
-    items.add("No runtime events were recorded for this run.");
-  }
-  return [...items];
+  return collectTrailFindings(snapshot, trailError, trace, actions).map((finding) => finding.message);
 }
 
-export function canOpenLangfuseTrace(
-  trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined,
-) {
-  if (!trace?.traceUrl) {
-    return false;
-  }
-  if (trace.provider !== "langfuse" || trace.source === "local") {
-    return false;
-  }
-  if (trace.source === "degraded") {
-    return false;
-  }
-  return !trace.reason?.toLowerCase().includes("fetch failed");
-}
-
-function latestFailureDetail(snapshot: OraStateSnapshot): string | undefined {
-  if (snapshot.error?.trim()) {
-    return snapshot.error.trim();
-  }
-  const failedEvent = [...snapshot.events].reverse().find((event) => event.type === "run.failed");
-  if (!failedEvent || !isRecord(failedEvent.payload)) {
-    return undefined;
-  }
-  const error = failedEvent.payload.error;
-  if (typeof error === "string" && error.trim()) {
-    return error.trim();
-  }
-  const reason = failedEvent.payload.reason;
-  if (typeof reason === "string" && reason.trim()) {
-    return reason.trim();
-  }
-  return undefined;
-}
-
-function formatRate(eventCount: number, runtimeMs: number) {
-  if (runtimeMs <= 0) {
-    return `${eventCount.toFixed(0)}/s`;
-  }
-  return `${(eventCount / Math.max(runtimeMs / 1000, 1)).toFixed(1)}/s`;
-}
-
-function formatUsd(value: number) {
-  return `$${value.toFixed(value > 0 ? 4 : 2)}`;
-}
-
-function formatLatency(value?: number) {
-  return value === undefined ? "n/a" : `${value.toFixed(2)}s`;
-}
-
-function formatTimestamp(value?: number | string) {
-  if (value === undefined) {
-    return "n/a";
-  }
-  const date = typeof value === "number"
-    ? new Date(value)
-    : /^\d+$/.test(value)
-      ? new Date(Number(value))
-      : new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function readApprovalEventActionId(payload: unknown): string | undefined {
-  if (!isRecord(payload) || typeof payload.actionId !== "string") {
-    return undefined;
-  }
-  return payload.actionId;
-}
-
-function readApprovalReason(payload: unknown): string | undefined {
-  if (!isRecord(payload) || !isRecord(payload.decision) || typeof payload.decision.reason !== "string") {
-    return undefined;
-  }
-  return payload.decision.reason;
-}
-
-function readActionNodeId(input: unknown): string | undefined {
-  if (!isRecord(input) || typeof input.nodeId !== "string") {
-    return undefined;
-  }
-  return input.nodeId;
-}
-
-function humanizeActionType(type?: string) {
-  if (!type) {
-    return "approval gate";
-  }
-  return type.replace(/^graph\./, "").replace(/\./g, " ");
-}
-
-function matchesClarificationEvent(payload: unknown, clarificationId: string, clarificationKey: string) {
-  if (!isRecord(payload) || !isRecord(payload.clarification)) {
-    return false;
-  }
-  const clarification = payload.clarification;
-  return clarification.id === clarificationId || clarification.key === clarificationKey;
-}
-
-function fallbackApprovalReason(riskLevel?: "low" | "medium" | "high") {
-  return riskLevel === "high"
-    ? "Please confirm this operation before I continue."
-    : "Please confirm before this step continues.";
-}
-
-function stopReasonFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
-  const output = snapshot.output;
-  if (isRecord(output) && isRecord(output.metadata)) {
-    const metadata = output.metadata;
-    if (typeof metadata.stopReason === "string") {
-      return metadata.stopReason;
-    }
-    if (isRecord(metadata.completion) && typeof metadata.completion.stopReason === "string") {
-      return metadata.completion.stopReason;
-    }
-  }
-  const doneEvent = [...snapshot.events].reverse().find((event) => event.type === "run.done");
-  if (doneEvent && isRecord(doneEvent.payload) && typeof doneEvent.payload.stopReason === "string") {
-    return doneEvent.payload.stopReason;
-  }
-  return undefined;
-}
-
-function riskPillClassName(riskLevel: "low" | "medium" | "high") {
-  const base = "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]";
-  switch (riskLevel) {
-    case "high":
-      return `${base} bg-rose-100 text-rose-900`;
-    case "medium":
-      return `${base} bg-amber-100 text-amber-900`;
-    default:
-      return `${base} bg-slate-100 text-slate-700`;
-  }
-}
-
-function toolCallStatusClassName(status: OraStateSnapshot["toolCalls"][number]["status"]) {
-  const base = "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]";
-  if (status === "succeeded") {
-    return `${base} bg-emerald-100 text-emerald-900`;
-  }
-  if (status === "failed" || status === "interrupted" || status === "repaired") {
-    return `${base} bg-amber-100 text-amber-900`;
-  }
-  if (status === "approval_required") {
-    return `${base} bg-sky-100 text-sky-900`;
-  }
-  return `${base} bg-bench-100 text-bench-700`;
-}
+export { canOpenLangfuseTrace };

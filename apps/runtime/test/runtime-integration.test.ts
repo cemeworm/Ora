@@ -17,6 +17,7 @@ import {
   ProjectInsightSchema,
   ProjectSignalSchema,
   RunTrailSchema,
+  createModeSpecFromPattern,
   getPatternDefinition,
   MemoryRecordSchema,
   PlanItemSchema,
@@ -455,6 +456,139 @@ describe("LocalRunStore", () => {
     expect(state.events.length).toBeGreaterThan(0);
     expect(state.profiles.length).toBeGreaterThan(0);
     expect(state.actions.length).toBeGreaterThan(0);
+  });
+
+  it("emits structured agent conversation messages for non-subagent multi-agent patterns", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    for (const pattern of ["generator_verifier", "agent_teams", "message_bus", "shared_state"] as const) {
+      const result = await handle({
+        jsonrpc: "2.0",
+        id: `start-${pattern}`,
+        method: "runs.start",
+        params: {
+          input: { prompt: `Coordinate ${pattern}.` },
+          config: { pattern }
+        }
+      }) as { runId: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: `state-${pattern}`,
+        method: "runs.state",
+        params: { runId: result.runId }
+      }));
+
+      expect(state.agentMessages.length).toBeGreaterThan(0);
+      expect(state.events.some((event) => event.type === "agent.message")).toBe(true);
+      expect(state.agentMessages.every((message) => message.fromAgentId && message.threadId && message.content)).toBe(true);
+    }
+  });
+
+  it("keeps full raw content in agent conversation messages", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const suffix = "FULL_AGENT_MESSAGE_SUFFIX_SHOULD_REMAIN_VISIBLE";
+    const longPrompt = `${"Coordinate the full transcript content. ".repeat(20)}${suffix}`;
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: "start-full-agent-message",
+      method: "runs.start",
+      params: {
+        input: { prompt: longPrompt },
+        config: { pattern: "message_bus" }
+      }
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-full-agent-message",
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const publishedInput = state.agentMessages.find((message) => message.topic === "task.input");
+
+    expect(publishedInput?.content).toContain(suffix);
+    expect(publishedInput?.content.endsWith("...")).toBe(false);
+  });
+
+  it("does not emit content-area agent messages for orchestrator subagent runs", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Subagent exclusion test." },
+        config: { pattern: "orchestrator_subagent" }
+      }
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+
+    expect(state.agentMessages).toEqual([]);
+  });
+
+  it("injects custom agent persona overlays from mode node bindings", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    await handle({
+      jsonrpc: "2.0",
+      id: "agent-create",
+      method: "agents.create",
+      params: {
+        name: "lead",
+        description: "Lead persona for tests.",
+        soul: "Always mention the bound custom lead persona.",
+      }
+    });
+
+    const base = createModeSpecFromPattern("agent_teams");
+    const customMode = {
+      ...base,
+      id: "custom_agent_team",
+      label: "Custom Agent Team",
+      summary: "Custom team test mode.",
+      systemPreset: false,
+      nodes: base.nodes.map((node) => ({
+        ...node,
+        config: {
+          ...node.config,
+          ...(node.ownerAgentId === "team_lead" ? { customAgentId: "lead" } : {}),
+        },
+      })),
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const { systemPreset: _systemPreset, createdAt: _createdAt, updatedAt: _updatedAt, ...modePayload } = customMode;
+    await handle({
+      jsonrpc: "2.0",
+      id: "mode-create",
+      method: "modes.create",
+      params: modePayload,
+    });
+
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: "run-custom-mode",
+      method: "runs.start",
+      params: {
+        input: { prompt: "Run the custom team." },
+        config: { pattern: "agent_teams", modeId: "custom_agent_team" }
+      }
+    }) as { runId: string };
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-custom-mode",
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const leadAction = state.actions.find((action) => action.agentId === "team_lead");
+
+    expect(JSON.stringify(leadAction?.output)).toContain("Custom Agent Persona: lead");
+    expect(JSON.stringify(leadAction?.output)).toContain("Always mention the bound custom lead persona.");
   });
 
   it("updates long-term memory after durable user signals and injects it into later runs", async () => {

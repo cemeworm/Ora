@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentProfileSchema,
+  AgentConversationMessageSchema,
   ActionRecordSchema,
   ApprovalDecisionSchema,
   ApprovalRequestSchema,
@@ -447,13 +448,29 @@ describe("Ora shared contracts", () => {
       id: "evt-1",
       runId: "run-1",
       seq: 0,
-      type: "action.updated",
+      type: "agent.message",
       createdAt: 1,
-      pattern: "orchestrator_subagent",
+      pattern: "agent_teams",
       payload: { memoryId: memory.id }
     });
 
     expect(event.payload).toEqual({ memoryId: "mem-1" });
+    expect(event.type).toBe("agent.message");
+
+    const agentMessage = AgentConversationMessageSchema.parse({
+      id: "run-1:agent-message:0",
+      runId: "run-1",
+      createdAt: 1,
+      fromAgentId: "team_lead",
+      toAgentIds: ["builder"],
+      threadId: "run-1:thread:build",
+      nodeId: "build",
+      planItemId: "run-1:build",
+      kind: "mention",
+      content: "@builder please complete the assigned work.",
+    });
+    expect(agentMessage.status).toBe("sent");
+    expect(agentMessage.artifactIds).toEqual([]);
 
     const decision = PolicyDecisionSchema.parse({
       id: "policy-1",
@@ -530,7 +547,7 @@ describe("Ora shared contracts", () => {
         checkpoints: [],
         events: [],
         updatedAt: 1
-      }).todos
+      }).agentMessages
     ).toEqual([]);
   });
 

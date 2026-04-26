@@ -208,12 +208,32 @@ export interface TurnArtifactAttachment {
   previewable: boolean;
 }
 
+export interface TurnAgentConversationMessage {
+  id: string;
+  fromAgentId: string;
+  fromAgentLabel: string;
+  toAgentIds: string[];
+  toAgentLabels: string[];
+  replyToId?: string;
+  threadId: string;
+  nodeId?: string;
+  planItemId?: string;
+  kind: "mention" | "reply" | "handoff" | "route" | "publish" | "status";
+  status: "sent" | "running" | "done" | "failed";
+  content: string;
+  topic?: string;
+  correlationId?: string;
+  artifactIds: string[];
+  timestamp: string;
+}
+
 export interface AssistantTurnAttachment {
   runId: string;
   turnIndex: number;
   status: RunStatus;
   pattern?: CoordinationPattern;
   processSteps: TurnProcessStep[];
+  agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];
   todos: TurnTodoItem[];
   approvalCount: number;

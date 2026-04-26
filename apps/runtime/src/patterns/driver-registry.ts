@@ -52,6 +52,7 @@ export interface PatternExecutionContext {
     title: string;
     prompt: string;
     system: string;
+    customAgentId?: string;
     riskLevel?: "low" | "medium" | "high";
   }): Promise<string>;
   remember(params: {
@@ -89,6 +90,20 @@ export interface PatternExecutionContext {
     correlationId: string;
     summary: string;
   }): void;
+  emitAgentMessage(params: {
+    fromAgentId: string;
+    toAgentIds?: string[];
+    replyToId?: string;
+    threadId: string;
+    nodeId?: string;
+    planItemId?: string;
+    kind: "mention" | "reply" | "handoff" | "route" | "publish" | "status";
+    status?: "sent" | "running" | "done" | "failed";
+    content: string;
+    topic?: string;
+    correlationId?: string;
+    artifactIds?: string[];
+  }): { id: string };
   writeSharedState(params: {
     agentId: string;
     key: string;
@@ -145,6 +160,29 @@ function promptTemplate(
 
 function titleForNode(node: ModeNodeSpec, fallback: string): string {
   return node.title ?? node.label ?? fallback;
+}
+
+function nodeCustomAgentId(node: ModeNodeSpec): string | undefined {
+  return typeof node.config?.customAgentId === "string" && node.config.customAgentId.trim()
+    ? node.config.customAgentId.trim()
+    : undefined;
+}
+
+function mention(agentId: string): string {
+  return `@${agentId}`;
+}
+
+function agentMessageContent(prefix: string, value: unknown): string {
+  const text = asText(value).trim();
+  return text ? `${prefix}${text}` : prefix.trimEnd();
+}
+
+function ownerForTemplate(
+  nodes: ModeNodeSpec[],
+  template: ModeNodeSpec["template"],
+  fallback: string,
+): string {
+  return nodes.find((node) => node.template === template)?.ownerAgentId ?? fallback;
 }
 
 function runtimeFallbackPrompt(family: CoordinationPattern, template: ModeNodeSpec["template"]): string {
@@ -313,6 +351,8 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
   };
   const metadataProviderId = typeof config.metadata.providerId === "string" ? config.metadata.providerId : undefined;
   const selectedProviderId = config.providerConfig?.id ?? config.providerId ?? metadataProviderId ?? "local-smoke";
+  const generatorId = ownerForTemplate(nodes, "draft", "generator");
+  const verifierId = ownerForTemplate(nodes, "verify", "verifier");
 
   for (let attempt = 1; attempt <= maxIterations; attempt += 1) {
     bag.retryCount = attempt;
@@ -320,8 +360,9 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
     for (const node of nodes) {
       completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "draft") {
+          const currentGeneratorId = node.ownerAgentId ?? generatorId;
           const candidate = await context.callAgent({
-            agentId: node.ownerAgentId ?? "generator",
+            agentId: currentGeneratorId,
             planItemId: node.id,
             title: titleForNode(node, `Draft attempt ${attempt}`),
             prompt: promptTemplate(
@@ -330,15 +371,27 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
               { ...bag, attempt },
             ),
             system: context.systemPrompt("You are the generator. Produce a concrete candidate answer."),
+            customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
           bag.candidate = candidate;
+          bag.candidateMessageId = context.emitAgentMessage({
+            fromAgentId: currentGeneratorId,
+            toAgentIds: [verifierId],
+            threadId: `generator-verifier:${attempt}`,
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "mention",
+            status: "done",
+            content: agentMessageContent(`${mention(verifierId)} please verify draft attempt ${attempt}:\n\n`, candidate),
+          }).id;
           return candidate;
         }
 
         if (node.template === "verify") {
+          const currentVerifierId = node.ownerAgentId ?? verifierId;
           const verifierNotes = await context.callAgent({
-            agentId: node.ownerAgentId ?? "verifier",
+            agentId: currentVerifierId,
             planItemId: node.id,
             title: titleForNode(node, `Verify attempt ${attempt}`),
             prompt: promptTemplate(
@@ -356,6 +409,7 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
               + "If the candidate fails or you cannot verify it, return {\"verdict\":\"fail\",\"rationale\":\"...\",\"missingRequirements\":[\"...\"]}. "
               + "Do not include markdown, prose, greetings, or role explanations outside the JSON object."
             ),
+            customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
           bag.verifierNotes = verifierNotes;
@@ -366,6 +420,17 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
           });
           bag.verifierAssessment = assessment;
           bag.verdict = assessment.verdict;
+          context.emitAgentMessage({
+            fromAgentId: currentVerifierId,
+            toAgentIds: [generatorId],
+            replyToId: typeof bag.candidateMessageId === "string" ? bag.candidateMessageId : undefined,
+            threadId: `generator-verifier:${attempt}`,
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "reply",
+            status: assessment.verdict === "pass" ? "done" : "failed",
+            content: agentMessageContent(`${mention(generatorId)} verification ${assessment.verdict}:\n\n`, assessment.rationale || verifierNotes),
+          });
           context.remember({
             id: `generator-verifier-${attempt}`,
             namespace: ["session", context.projectId, "generator_verifier"],
@@ -439,6 +504,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
               ? "You are the solo agent. Frame the task briefly, keep the plan compact, and do not delegate."
               : "You are the orchestrator. Keep delegation explicit and inspectable."
           ),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
           return bag.plan;
@@ -455,6 +521,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             bag,
           ),
           system: context.systemPrompt("You are the research subagent. Return concise findings."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
           return bag.research;
@@ -471,6 +538,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             bag,
           ),
           system: context.systemPrompt("You are the review subagent. Surface risks and gaps."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
           return bag.review;
@@ -499,6 +567,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
                 ? "You are the solo agent. Use your framing notes and produce the final answer directly."
               : "You are the orchestrator. Synthesize delegated results into one answer."
           ),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
           return bag.synthesis;
@@ -551,13 +620,17 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: ExecutionBag = { prompt };
+  const leadId = ownerForTemplate(nodes, "triage", "team_lead");
+  const builderId = ownerForTemplate(nodes, "build", "builder");
+  const checkerId = ownerForTemplate(nodes, "check", "checker");
   let completedNodes = 0;
 
   for (const node of nodes) {
       completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "triage") {
+          const agentId = node.ownerAgentId ?? leadId;
           bag.triage = await context.callAgent({
-          agentId: node.ownerAgentId ?? "team_lead",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Triage backlog"),
           prompt: promptTemplate(
@@ -566,8 +639,19 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
             bag,
           ),
           system: context.systemPrompt("You are the team lead. Create a compact backlog."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
+          bag.triageMessageId = context.emitAgentMessage({
+            fromAgentId: agentId,
+            toAgentIds: [builderId],
+            threadId: "agent-teams:build",
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "mention",
+            status: "done",
+            content: agentMessageContent(`${mention(builderId)} backlog is ready. Please build from this assignment:\n\n`, bag.triage),
+          }).id;
           return bag.triage;
         }
 
@@ -585,8 +669,20 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
               bag,
             ),
             system: context.systemPrompt("You are the persistent builder teammate. Complete the assigned work."),
+            customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
+          bag.buildMessageId = context.emitAgentMessage({
+            fromAgentId: agentId,
+            toAgentIds: [checkerId],
+            replyToId: typeof bag.triageMessageId === "string" ? bag.triageMessageId : undefined,
+            threadId: "agent-teams:build",
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "reply",
+            status: "done",
+            content: agentMessageContent(`${mention(checkerId)} build is ready for validation:\n\n`, bag.build),
+          }).id;
           context.remember({
             id: `${agentId}-memory`,
             namespace: ["worker", context.projectId, agentId],
@@ -613,8 +709,20 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
               bag,
             ),
             system: context.systemPrompt("You are the persistent checker teammate. Validate the assigned work."),
+            customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
+          bag.checkMessageId = context.emitAgentMessage({
+            fromAgentId: agentId,
+            toAgentIds: [leadId],
+            replyToId: typeof bag.buildMessageId === "string" ? bag.buildMessageId : undefined,
+            threadId: "agent-teams:build",
+            nodeId: node.id,
+            planItemId: node.id,
+            kind: "reply",
+            status: "done",
+            content: agentMessageContent(`${mention(leadId)} validation complete:\n\n`, bag.check),
+          }).id;
           context.remember({
             id: `${agentId}-memory`,
             namespace: ["worker", context.projectId, agentId],
@@ -628,8 +736,9 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
       }
 
       if (node.template === "handoff") {
+        const agentId = node.ownerAgentId ?? leadId;
         bag.handoff = await context.callAgent({
-          agentId: node.ownerAgentId ?? "team_lead",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Record handoff"),
           prompt: promptTemplate(
@@ -638,8 +747,20 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
             bag,
           ),
           system: context.systemPrompt("You are the team lead. Summarize the handoff and next steps."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
+        context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [builderId, checkerId],
+          replyToId: typeof bag.checkMessageId === "string" ? bag.checkMessageId : undefined,
+          threadId: "agent-teams:build",
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "handoff",
+          status: "done",
+          content: agentMessageContent(`Team handoff recorded for ${mention(builderId)} and ${mention(checkerId)}:\n\n`, bag.handoff),
+        });
         return bag.handoff;
       }
     });
@@ -669,25 +790,42 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
     prompt,
     correlationId: correlationId("bus"),
   };
+  const routerId = ownerForTemplate(nodes, "route", ownerForTemplate(nodes, "publish", "router"));
+  const investigatorId = ownerForTemplate(nodes, "handle", "investigator");
+  const responderId = ownerForTemplate(nodes, "respond", "responder");
   let completedNodes = 0;
 
   for (const node of nodes) {
       completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "publish") {
+        const agentId = node.ownerAgentId ?? routerId;
         context.publishMessage({
-          agentId: node.ownerAgentId ?? "router",
+          agentId,
           topic: "task.input",
           correlationId: asText(bag.correlationId),
           summary: `Published input event for: ${prompt}`,
           payload: { prompt },
         });
         bag.publish = `Published input event for: ${prompt}`;
+        bag.publishMessageId = context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [routerId],
+          threadId: asText(bag.correlationId),
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "publish",
+          status: "done",
+          topic: "task.input",
+          correlationId: asText(bag.correlationId),
+          content: agentMessageContent(`${mention(routerId)} input event published on task.input:\n\n`, prompt),
+        }).id;
         return bag.publish;
       }
 
       if (node.template === "route") {
+        const agentId = node.ownerAgentId ?? routerId;
         bag.routingPlan = await context.callAgent({
-          agentId: node.ownerAgentId ?? "router",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Route event"),
           prompt: promptTemplate(
@@ -696,21 +834,36 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
             bag,
           ),
           system: context.systemPrompt("You are the router. Route work explicitly to the correct subscriber."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
         context.routeMessage({
-          agentId: node.ownerAgentId ?? "router",
+          agentId,
           fromTopic: "task.input",
           toTopic: "task.findings",
           correlationId: asText(bag.correlationId),
           summary: asText(bag.routingPlan),
         });
+        bag.routeMessageId = context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [investigatorId],
+          replyToId: typeof bag.publishMessageId === "string" ? bag.publishMessageId : undefined,
+          threadId: asText(bag.correlationId),
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "route",
+          status: "done",
+          topic: "task.findings",
+          correlationId: asText(bag.correlationId),
+          content: agentMessageContent(`${mention(investigatorId)} routed task.findings to you:\n\n`, bag.routingPlan),
+        }).id;
         return bag.routingPlan;
       }
 
       if (node.template === "handle") {
+        const agentId = node.ownerAgentId ?? investigatorId;
         bag.findings = await context.callAgent({
-          agentId: node.ownerAgentId ?? "investigator",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Handle routed work"),
           prompt: promptTemplate(
@@ -719,21 +872,36 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
             bag,
           ),
           system: context.systemPrompt("You are the investigator. Produce findings for the routed event."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
         context.publishMessage({
-          agentId: node.ownerAgentId ?? "investigator",
+          agentId,
           topic: "task.findings",
           correlationId: asText(bag.correlationId),
           summary: asText(bag.findings),
           payload: { findings: bag.findings },
         });
+        bag.findingsMessageId = context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [responderId],
+          replyToId: typeof bag.routeMessageId === "string" ? bag.routeMessageId : undefined,
+          threadId: asText(bag.correlationId),
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "reply",
+          status: "done",
+          topic: "task.findings",
+          correlationId: asText(bag.correlationId),
+          content: agentMessageContent(`${mention(responderId)} findings are ready on task.findings:\n\n`, bag.findings),
+        }).id;
         return bag.findings;
       }
 
       if (node.template === "respond") {
+        const agentId = node.ownerAgentId ?? responderId;
         bag.response = await context.callAgent({
-          agentId: node.ownerAgentId ?? "responder",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Publish response"),
           prompt: promptTemplate(
@@ -742,14 +910,28 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
             bag,
           ),
           system: context.systemPrompt("You are the responder. Publish the final bus response."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
         context.publishMessage({
-          agentId: node.ownerAgentId ?? "responder",
+          agentId,
           topic: "task.response",
           correlationId: asText(bag.correlationId),
           summary: asText(bag.response),
           payload: { response: bag.response },
+        });
+        context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [routerId, investigatorId],
+          replyToId: typeof bag.findingsMessageId === "string" ? bag.findingsMessageId : undefined,
+          threadId: asText(bag.correlationId),
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "publish",
+          status: "done",
+          topic: "task.response",
+          correlationId: asText(bag.correlationId),
+          content: agentMessageContent(`Final response published on task.response for ${mention(routerId)} and ${mention(investigatorId)}:\n\n`, bag.response),
         });
         return bag.response;
       }
@@ -775,13 +957,17 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: ExecutionBag = { prompt };
+  const seedAgentId = ownerForTemplate(nodes, "seed", "seed_agent");
+  const researchAgentId = ownerForTemplate(nodes, "research", "research_agent");
+  const criticAgentId = ownerForTemplate(nodes, "converge", "critic_agent");
   let completedNodes = 0;
 
   for (const node of nodes) {
       completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "seed") {
+        const agentId = node.ownerAgentId ?? seedAgentId;
         bag.seed = await context.callAgent({
-          agentId: node.ownerAgentId ?? "seed_agent",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Seed shared board"),
           prompt: promptTemplate(
@@ -790,20 +976,32 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
             bag,
           ),
           system: context.systemPrompt("You are the seed agent. Seed the shared board with the initial hypothesis."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
         context.writeSharedState({
-          agentId: node.ownerAgentId ?? "seed_agent",
+          agentId,
           key: "seed",
           summary: asText(bag.seed),
           value: { prompt, seed: bag.seed },
         });
+        bag.seedMessageId = context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [researchAgentId],
+          threadId: "shared-state:board",
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "mention",
+          status: "done",
+          content: agentMessageContent(`${mention(researchAgentId)} shared board seeded; add findings from this starting point:\n\n`, bag.seed),
+        }).id;
         return bag.seed;
       }
 
       if (node.template === "research") {
+        const agentId = node.ownerAgentId ?? researchAgentId;
         bag.research = await context.callAgent({
-          agentId: node.ownerAgentId ?? "research_agent",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Contribute findings"),
           prompt: promptTemplate(
@@ -815,20 +1013,33 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
             },
           ),
           system: context.systemPrompt("You are the research agent. Add a meaningful finding to the shared board."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
         context.writeSharedState({
-          agentId: node.ownerAgentId ?? "research_agent",
+          agentId,
           key: "finding-1",
           summary: asText(bag.research),
           value: { research: bag.research },
         });
+        bag.researchMessageId = context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [criticAgentId],
+          replyToId: typeof bag.seedMessageId === "string" ? bag.seedMessageId : undefined,
+          threadId: "shared-state:board",
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "reply",
+          status: "done",
+          content: agentMessageContent(`${mention(criticAgentId)} findings added to the board:\n\n`, bag.research),
+        }).id;
         return bag.research;
       }
 
       if (node.template === "converge") {
+        const agentId = node.ownerAgentId ?? criticAgentId;
         bag.convergence = await context.callAgent({
-          agentId: node.ownerAgentId ?? "critic_agent",
+          agentId,
           planItemId: node.id,
           title: titleForNode(node, "Review convergence"),
           prompt: promptTemplate(
@@ -840,13 +1051,25 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
             },
           ),
           system: context.systemPrompt("You are the critic agent. Decide whether the shared board has converged."),
+          customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
         context.writeSharedState({
-          agentId: node.ownerAgentId ?? "critic_agent",
+          agentId,
           key: "convergence",
           summary: asText(bag.convergence),
           value: { convergence: bag.convergence, stopReason: "converged" },
+        });
+        context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: [seedAgentId, researchAgentId],
+          replyToId: typeof bag.researchMessageId === "string" ? bag.researchMessageId : undefined,
+          threadId: "shared-state:board",
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "reply",
+          status: "done",
+          content: agentMessageContent(`Board convergence reviewed for ${mention(seedAgentId)} and ${mention(researchAgentId)}:\n\n`, bag.convergence),
         });
         return bag.convergence;
       }

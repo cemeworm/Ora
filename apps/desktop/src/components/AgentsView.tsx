@@ -1,10 +1,11 @@
 import { ArrowLeft, Bot, MessageSquarePlus, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@ora/shared";
 import { useWorkbench } from "../lib/state";
-import type { OraCustomAgentSummary, RuntimeClient } from "../lib/runtimeClient";
+import type { OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 
-type AgentEditorMode = "gallery" | "create" | "edit";
+type AgentEditorMode = "gallery" | "create" | "edit" | "team";
 
 interface AgentDraft {
   name: string;
@@ -22,6 +23,13 @@ const EMPTY_DRAFT: AgentDraft = {
   soul: "",
 };
 
+const TEAM_FAMILIES: CoordinationPattern[] = [
+  "generator_verifier",
+  "agent_teams",
+  "message_bus",
+  "shared_state",
+];
+
 export function AgentsView({
   runtimeClient,
   selectedCustomAgentId,
@@ -37,6 +45,9 @@ export function AgentsView({
   const [agents, setAgents] = useState<OraCustomAgentSummary[]>([]);
   const [mode, setMode] = useState<AgentEditorMode>("gallery");
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
+  const [teamLabel, setTeamLabel] = useState("Agent Team");
+  const [teamFamily, setTeamFamily] = useState<CoordinationPattern>("agent_teams");
+  const [teamAssignments, setTeamAssignments] = useState<Record<string, string>>({});
   const [editingName, setEditingName] = useState<string | undefined>();
   const [busy, setBusy] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -67,6 +78,11 @@ export function AgentsView({
     setDraft(EMPTY_DRAFT);
     setEditingName(undefined);
     setError("");
+    if (nextMode === "team") {
+      setTeamAssignments({});
+      setTeamLabel("Agent Team");
+      setTeamFamily("agent_teams");
+    }
   }
 
   async function startEdit(name: string) {
@@ -172,6 +188,72 @@ export function AgentsView({
     }
   }
 
+  async function saveTeamMode() {
+    const base = createModeSpecFromPattern(teamFamily);
+    const modeId = slugifyModeId(teamLabel);
+    if (!modeId) {
+      setError("Team mode name is required.");
+      return;
+    }
+
+    setBusy("team-save");
+    setError("");
+    try {
+      const assignedProfiles = base.profiles.map((profile) => {
+        const customAgentId = teamAssignments[profile.id];
+        const agent = agents.find((item) => item.name === customAgentId);
+        return agent
+          ? {
+              ...profile,
+              label: agent.name,
+              role: agent.description || profile.role,
+            }
+          : profile;
+      });
+      const nextMode = autoLayoutModeSpec({
+        ...base,
+        id: modeId,
+        label: teamLabel.trim(),
+        summary: `${teamLabel.trim()} composed from Ora custom agents.`,
+        description: "Custom multi-agent team composed from saved Ora agents.",
+        recommendedUse: base.recommendedUse,
+        failureMode: base.failureMode,
+        systemPreset: false,
+        nodes: base.nodes.map((node) => ({
+          ...node,
+          config: {
+            ...node.config,
+            ...(node.ownerAgentId && teamAssignments[node.ownerAgentId]
+              ? { customAgentId: teamAssignments[node.ownerAgentId] }
+              : {}),
+          },
+        })),
+        profiles: assignedProfiles,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+      const { systemPreset: _systemPreset, createdAt: _createdAt, updatedAt: _updatedAt, ...payload } = nextMode;
+      await runtimeClient.createMode(payload satisfies OraModeCreateParams);
+      const nextModes = await runtimeClient.listModes();
+      dispatch({ type: "SET_MODES", modes: nextModes });
+      dispatch({ type: "SET_MODE", modeId });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Created team mode ${teamLabel.trim()}.` });
+      resetEditor();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save team mode.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const teamBase = useMemo(() => createModeSpecFromPattern(teamFamily), [teamFamily]);
+  const teamRoles = useMemo(
+    () => teamBase.profiles.filter((profile) =>
+      teamBase.nodes.some((node) => node.ownerAgentId === profile.id),
+    ),
+    [teamBase],
+  );
+
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-transparent">
       <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
@@ -205,6 +287,14 @@ export function AgentsView({
             >
               <Plus size={16} />
               New agent
+            </button>
+            <button
+              onClick={() => resetEditor("team")}
+              disabled={busy.length > 0}
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Bot size={16} />
+              New team
             </button>
           </div>
         </div>
@@ -336,6 +426,70 @@ export function AgentsView({
                 </div>
               )}
             </section>
+          ) : mode === "team" ? (
+            <section className="rounded-[24px] bg-white p-6 shadow-pane ring-1 ring-inset ring-bench-200">
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold">Create agent team</h3>
+                  <p className="mt-1 text-xs text-bench-700">Compose a multi-agent mode from saved custom agents.</p>
+                </div>
+                <button
+                  onClick={() => void saveTeamMode()}
+                  disabled={busy.length > 0 || !teamLabel.trim() || agents.length === 0}
+                  className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save team
+                </button>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Team Name</span>
+                  <input
+                    value={teamLabel}
+                    onChange={(event) => setTeamLabel(event.target.value)}
+                    placeholder="Product Review Team"
+                    className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                  />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Pattern</span>
+                  <select
+                    value={teamFamily}
+                    onChange={(event) => {
+                      setTeamFamily(event.target.value as CoordinationPattern);
+                      setTeamAssignments({});
+                    }}
+                    className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                  >
+                    {TEAM_FAMILIES.map((family) => (
+                      <option key={family} value={family}>{family.replace(/_/g, " ")}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {teamRoles.map((role) => (
+                  <label key={role.id} className="rounded-lg border border-bench-200 bg-bench-50 p-4">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">{role.label}</span>
+                    <p className="mt-1 min-h-10 text-sm leading-5 text-bench-700">{role.role}</p>
+                    <select
+                      value={teamAssignments[role.id] ?? ""}
+                      onChange={(event) => setTeamAssignments((current) => ({
+                        ...current,
+                        [role.id]: event.target.value,
+                      }))}
+                      className="mt-3 h-10 w-full rounded-md border border-bench-200 bg-white px-3 text-sm outline-none transition focus:border-bench-900"
+                    >
+                      <option value="">Use default role persona</option>
+                      {agents.map((agent) => (
+                        <option key={agent.name} value={agent.name}>{agent.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </section>
           ) : (
             <section className="rounded-[24px] bg-white p-6 shadow-pane ring-1 ring-inset ring-bench-200">
               <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -415,6 +569,15 @@ function parseToolGroups(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter((item, index, items) => item.length > 0 && items.indexOf(item) === index);
+}
+
+function slugifyModeId(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug ? `team-${slug}` : "";
 }
 
 function formatDate(value: number): string {

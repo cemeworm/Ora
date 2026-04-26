@@ -2746,6 +2746,7 @@ class LocalJsonRpcRuntime {
       policyDecisions: [],
       checkpoints: [checkpoint],
       events,
+      agentMessages: buildMockAgentMessages(runId, pattern, definition, eventBase, prompt),
       artifacts: [],
       todos: definition.planTemplate.map((item, index) => ({
         id: `${runId}:todo-${index}`,
@@ -3415,6 +3416,142 @@ function collectMockTagCounts(cases: OraEvaluationDatasetDetail["cases"]): Recor
     }
     return acc;
   }, {});
+}
+
+function buildMockAgentMessages(
+  runId: string,
+  pattern: CoordinationPattern,
+  definition: OraPatternDefinition,
+  baseTime: number,
+  prompt: string,
+): OraStateSnapshot["agentMessages"] {
+  if (pattern === "orchestrator_subagent") {
+    return [];
+  }
+  const owner = (templateId: string, fallback: string) =>
+    definition.planTemplate.find((item) => item.id === templateId)?.ownerAgentId ?? fallback;
+  const message = (
+    index: number,
+    params: Omit<OraStateSnapshot["agentMessages"][number], "id" | "runId" | "createdAt" | "artifactIds" | "status"> & {
+      status?: OraStateSnapshot["agentMessages"][number]["status"];
+    },
+  ): OraStateSnapshot["agentMessages"][number] => ({
+    id: `${runId}:agent-message:${index}`,
+    runId,
+    createdAt: baseTime + 1200 + index * 700,
+    status: params.status ?? "done",
+    artifactIds: [],
+    ...params,
+  });
+
+  if (pattern === "generator_verifier") {
+    const generator = owner("draft", "generator");
+    const verifier = owner("verify", "verifier");
+    return [
+      message(0, {
+        fromAgentId: generator,
+        toAgentIds: [verifier],
+        threadId: "generator-verifier:1",
+        nodeId: "draft",
+        planItemId: "draft",
+        kind: "mention",
+        content: `@${verifier} please verify the candidate for: ${prompt}`,
+      }),
+      message(1, {
+        fromAgentId: verifier,
+        toAgentIds: [generator],
+        replyToId: `${runId}:agent-message:0`,
+        threadId: "generator-verifier:1",
+        nodeId: "verify",
+        planItemId: "verify",
+        kind: "reply",
+        content: `@${generator} verification complete for the candidate.`,
+      }),
+    ];
+  }
+
+  if (pattern === "message_bus") {
+    const router = owner("route", "router");
+    const investigator = owner("handle", "investigator");
+    const responder = owner("respond", "responder");
+    return [
+      message(0, {
+        fromAgentId: router,
+        toAgentIds: [investigator],
+        threadId: `${runId}:bus`,
+        nodeId: "route",
+        planItemId: "route",
+        kind: "route",
+        topic: "task.findings",
+        correlationId: `${runId}:bus`,
+        content: `@${investigator} routed task.findings for: ${prompt}`,
+      }),
+      message(1, {
+        fromAgentId: investigator,
+        toAgentIds: [responder],
+        replyToId: `${runId}:agent-message:0`,
+        threadId: `${runId}:bus`,
+        nodeId: "handle",
+        planItemId: "handle",
+        kind: "reply",
+        topic: "task.findings",
+        correlationId: `${runId}:bus`,
+        content: `@${responder} findings are ready.`,
+      }),
+    ];
+  }
+
+  if (pattern === "shared_state") {
+    const seed = owner("seed", "seed_agent");
+    const research = owner("research", "research_agent");
+    const critic = owner("converge", "critic_agent");
+    return [
+      message(0, {
+        fromAgentId: seed,
+        toAgentIds: [research],
+        threadId: "shared-state:board",
+        nodeId: "seed",
+        planItemId: "seed",
+        kind: "mention",
+        content: `@${research} shared board is seeded.`,
+      }),
+      message(1, {
+        fromAgentId: research,
+        toAgentIds: [critic],
+        replyToId: `${runId}:agent-message:0`,
+        threadId: "shared-state:board",
+        nodeId: "research",
+        planItemId: "research",
+        kind: "reply",
+        content: `@${critic} findings were added to the board.`,
+      }),
+    ];
+  }
+
+  const lead = owner("triage", "team_lead");
+  const builder = owner("build", "builder");
+  const checker = owner("check", "checker");
+  return [
+    message(0, {
+      fromAgentId: lead,
+      toAgentIds: [builder],
+      threadId: "agent-teams:build",
+      nodeId: "triage",
+      planItemId: "triage",
+      kind: "mention",
+      content: `@${builder} backlog is ready for: ${prompt}`,
+    }),
+    message(1, {
+      fromAgentId: builder,
+      toAgentIds: [checker],
+      replyToId: `${runId}:agent-message:0`,
+      threadId: "agent-teams:build",
+      nodeId: "build",
+      planItemId: "build",
+      kind: "reply",
+      content: `@${checker} build is ready for validation.`,
+    }),
+  ];
 }
 
 function scoreMockEvaluationCase(profileId: "outcome" | "orchestration" | "task_completion", evaluationCase: OraEvaluationDatasetDetail["cases"][number], snapshot: OraStateSnapshot) {

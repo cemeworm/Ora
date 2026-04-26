@@ -1,5 +1,7 @@
 import {
   type ActionRiskLevel,
+  type AgentConversationMessage,
+  AgentConversationMessageSchema,
   type ArtifactRef,
   ArtifactRefSchema,
   type CheckpointMeta,
@@ -93,6 +95,7 @@ export interface RuntimeKernelOptions {
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
   customAgentOverlay?: string;
+  customAgentOverlays?: Record<string, string>;
   modeSpec?: ModeSpec;
   definition?: PatternDefinition;
   resumeContext?: {
@@ -260,6 +263,7 @@ export async function executeRuntimeKernel(
   const resumeApprovals = createResumeApprovalMatcher(options.resumeContext);
   const events: OraEventEnvelope[] = [];
   const artifacts: ArtifactRef[] = [];
+  const agentMessages: AgentConversationMessage[] = [];
   const toolCallLedger = new RuntimeToolCallLedger(runId, now);
   const runtimeToolResultCache = new Map<string, unknown>();
   const pendingClarifications: PendingClarification[] = [];
@@ -316,6 +320,41 @@ export async function executeRuntimeKernel(
     events.push(envelope);
     options.onEvent?.(envelope);
     return envelope;
+  };
+
+  const emitAgentMessage = (params: {
+    fromAgentId: string;
+    toAgentIds?: string[];
+    replyToId?: string;
+    threadId: string;
+    nodeId?: string;
+    planItemId?: string;
+    kind: AgentConversationMessage["kind"];
+    status?: AgentConversationMessage["status"];
+    content: string;
+    topic?: string;
+    correlationId?: string;
+    artifactIds?: string[];
+  }) => {
+    const message = AgentConversationMessageSchema.parse({
+      id: `${runId}:agent-message:${agentMessages.length}`,
+      runId,
+      createdAt: now(),
+      toAgentIds: [],
+      status: "sent",
+      artifactIds: [],
+      ...params,
+    });
+    agentMessages.push(message);
+    emit(
+      "agent.message",
+      { message },
+      {
+        agentId: message.fromAgentId,
+        nodeId: message.nodeId ?? message.fromAgentId,
+      },
+    );
+    return message;
   };
 
   const completion = new RuntimeCompletionController(config, modeSpec, emit);
@@ -806,6 +845,17 @@ export async function executeRuntimeKernel(
     ]
       .filter(Boolean)
       .join("\n\n");
+  };
+
+  const withNodeCustomAgentOverlay = (
+    system: string,
+    customAgentId: string | undefined,
+  ) => {
+    if (!customAgentId) {
+      return system;
+    }
+    const overlay = options.customAgentOverlays?.[customAgentId];
+    return overlay ? [overlay, system].join("\n\n") : system;
   };
 
   const runNodeRuntimeLoop = async (params: {
@@ -1649,6 +1699,7 @@ export async function executeRuntimeKernel(
     title: string;
     prompt: string;
     system: string;
+    customAgentId?: string;
     riskLevel?: ActionRiskLevel;
   }) => {
     activeAgents.add(params.agentId);
@@ -1756,7 +1807,7 @@ export async function executeRuntimeKernel(
           agentId: params.agentId,
           title: params.title,
           prompt: params.prompt,
-          system: params.system,
+          system: withNodeCustomAgentOverlay(params.system, params.customAgentId),
         });
 
         emit(
@@ -2379,6 +2430,7 @@ export async function executeRuntimeKernel(
         publishArtifact,
         publishMessage,
         routeMessage,
+        emitAgentMessage,
         writeSharedState,
         currentSharedState: () => sharedStateSummary,
       },
@@ -2503,6 +2555,7 @@ export async function executeRuntimeKernel(
     policyDecisions: [],
     checkpoints: [checkpoint],
     events,
+    agentMessages,
     artifacts,
     activeAgents: [...activeAgents],
     queueSummary,

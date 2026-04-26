@@ -438,6 +438,27 @@ export class LocalRunStore {
     return this.modeStore.create(params);
   }
 
+  private customAgentOverlaysForMode(modeSpec: ModeSpec): Record<string, string> {
+    const overlays: Record<string, string> = {};
+    for (const node of modeSpec.nodes) {
+      const customAgentId = typeof node.config?.customAgentId === "string"
+        ? node.config.customAgentId.trim()
+        : "";
+      if (!customAgentId || overlays[customAgentId]) {
+        continue;
+      }
+      try {
+        const overlay = this.customAgentStore.personaOverlay(customAgentId);
+        if (overlay) {
+          overlays[customAgentId] = overlay;
+        }
+      } catch {
+        // A deleted custom agent should not make an otherwise valid mode unusable.
+      }
+    }
+    return overlays;
+  }
+
   updateMode(params: ModeUpdateParams | unknown): ModeSpec {
     return this.modeStore.update(params);
   }
@@ -729,6 +750,7 @@ export class LocalRunStore {
           definition,
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+          customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
         return StateSnapshotSchema.parse({
@@ -813,6 +835,7 @@ export class LocalRunStore {
           definition,
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+          customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
           conversationMessages,
           streamProvider: true,
           onEvent: applyLiveEvent,
@@ -875,6 +898,7 @@ export class LocalRunStore {
           definition,
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+          customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
           forkedFrom,
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
@@ -1032,6 +1056,7 @@ export class LocalRunStore {
             definition,
             skillRegistry: this.skillRegistry,
             customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
+            customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
             conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
             resumeContext: {
               clarifications: clarificationPatch,

@@ -103,6 +103,7 @@ export const OraEventTypeSchema = z.enum([
   "tool.called",
   "tool.repaired",
   "message.delta",
+  "agent.message",
   "message.published",
   "message.routed",
   "token.delta",
@@ -140,6 +141,43 @@ export const OraEventEnvelopeSchema = z.object({
   payload: z.unknown()
 });
 export type OraEventEnvelope = z.infer<typeof OraEventEnvelopeSchema>;
+
+export const AgentConversationMessageKindSchema = z.enum([
+  "mention",
+  "reply",
+  "handoff",
+  "route",
+  "publish",
+  "status",
+]);
+export type AgentConversationMessageKind = z.infer<typeof AgentConversationMessageKindSchema>;
+
+export const AgentConversationMessageStatusSchema = z.enum([
+  "sent",
+  "running",
+  "done",
+  "failed",
+]);
+export type AgentConversationMessageStatus = z.infer<typeof AgentConversationMessageStatusSchema>;
+
+export const AgentConversationMessageSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  fromAgentId: z.string().min(1),
+  toAgentIds: z.array(z.string().min(1)).default([]),
+  replyToId: z.string().min(1).optional(),
+  threadId: z.string().min(1),
+  nodeId: z.string().min(1).optional(),
+  planItemId: z.string().min(1).optional(),
+  kind: AgentConversationMessageKindSchema,
+  status: AgentConversationMessageStatusSchema.default("sent"),
+  content: z.string().min(1),
+  topic: z.string().min(1).optional(),
+  correlationId: z.string().min(1).optional(),
+  artifactIds: z.array(z.string().min(1)).default([]),
+});
+export type AgentConversationMessage = z.infer<typeof AgentConversationMessageSchema>;
 
 export const ArtifactRefSchema = z.object({
   id: z.string().min(1),
@@ -481,6 +519,7 @@ export const StateSnapshotSchema = z.object({
   policyDecisions: z.array(PolicyDecisionSchema).default([]),
   checkpoints: z.array(CheckpointMetaSchema),
   events: z.array(OraEventEnvelopeSchema),
+  agentMessages: z.array(AgentConversationMessageSchema).default([]),
   artifacts: z.array(ArtifactRefSchema).default([]),
   activeAgents: z.array(z.string().min(1)).default([]),
   queueSummary: QueueSummarySchema.default({}),

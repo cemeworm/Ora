@@ -17,6 +17,7 @@ import type {
   SessionTurnItem,
   StreamLine,
   TurnArtifactAttachment,
+  TurnAgentConversationMessage,
   TurnProcessStep,
   TurnTodoItem,
   TopologyEdge,
@@ -188,6 +189,7 @@ function createEmptySessionPreview(
     policyDecisions: [],
     checkpoints: [],
     events: [],
+    agentMessages: [],
     artifacts: [],
     todos: [],
     activeAgents: [],
@@ -870,6 +872,8 @@ function beatLabel(event: OraEventEnvelope): string {
       return "Tool repaired";
     case "message.delta":
       return "Stream";
+    case "agent.message":
+      return "Agent message";
     case "message.published":
       return "Publish";
     case "message.routed":
@@ -1339,11 +1343,82 @@ function buildAssistantTurnAttachment(
     status: adaptRunStatus(snapshot.status),
     pattern: snapshot.pattern,
     processSteps: deriveProcessSteps(snapshot),
+    agentMessages: deriveAgentMessages(snapshot),
     artifacts: snapshot.artifacts.map(adaptTurnArtifact),
     todos: deriveTurnTodos(snapshot),
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
   };
+}
+
+function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {
+  if (snapshot.pattern === "orchestrator_subagent") {
+    return [];
+  }
+  const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
+  const deltaCursorByAgent = new Map<string, number>();
+  const deltasByAgent = agentMessageDeltasByAgent(snapshot);
+  return (snapshot.agentMessages ?? []).map((message) => {
+    let deltaContent: string | undefined;
+    if (message.content.endsWith("...")) {
+      const deltaCursor = deltaCursorByAgent.get(message.fromAgentId) ?? 0;
+      deltaContent = deltasByAgent.get(message.fromAgentId)?.[deltaCursor];
+      if (deltaContent !== undefined) {
+        deltaCursorByAgent.set(message.fromAgentId, deltaCursor + 1);
+      }
+    }
+    return {
+      id: message.id,
+      fromAgentId: message.fromAgentId,
+      fromAgentLabel: profiles.get(message.fromAgentId) ?? message.fromAgentId,
+      toAgentIds: message.toAgentIds,
+      toAgentLabels: message.toAgentIds.map((agentId) => profiles.get(agentId) ?? agentId),
+      replyToId: message.replyToId,
+      threadId: message.threadId,
+      nodeId: message.nodeId,
+      planItemId: message.planItemId,
+      kind: message.kind,
+      status: message.status,
+      content: restoreTruncatedAgentMessageContent(message.content, deltaContent),
+      topic: message.topic,
+      correlationId: message.correlationId,
+      artifactIds: message.artifactIds,
+      timestamp: formatClock(message.createdAt),
+    };
+  });
+}
+
+function agentMessageDeltasByAgent(snapshot: OraStateSnapshot): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const event of snapshot.events) {
+    if (event.type !== "message.delta" || typeof event.agentId !== "string" || !isRecord(event.payload)) {
+      continue;
+    }
+    const content = event.payload.content;
+    if (typeof content !== "string" || !content.trim()) {
+      continue;
+    }
+    const existing = result.get(event.agentId) ?? [];
+    existing.push(content);
+    result.set(event.agentId, existing);
+  }
+  return result;
+}
+
+function restoreTruncatedAgentMessageContent(content: string, fullContent?: string): string {
+  if (!content.endsWith("...") || !fullContent?.trim()) {
+    return content;
+  }
+  const normalizedFullContent = fullContent.trim();
+  const blockSeparatorIndex = content.lastIndexOf(":\n\n");
+  if (blockSeparatorIndex >= 0) {
+    return `${content.slice(0, blockSeparatorIndex + 1)}\n\n${normalizedFullContent}`;
+  }
+  const inlineSeparatorIndex = content.lastIndexOf(": ");
+  if (inlineSeparatorIndex >= 0) {
+    return `${content.slice(0, inlineSeparatorIndex + 1)}\n\n${normalizedFullContent}`;
+  }
+  return normalizedFullContent;
 }
 
 function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
