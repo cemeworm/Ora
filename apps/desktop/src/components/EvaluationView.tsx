@@ -13,6 +13,7 @@ import type {
   RuntimeClient,
 } from "../lib/runtimeClient";
 import type { RuntimeBridgeStatus } from "../types";
+import { runnableProviderOptions } from "../lib/providerOptions";
 import { cn } from "../lib/utils";
 import { ChoiceCard } from "./ui/choice-card";
 import { Field } from "./ui/field";
@@ -57,7 +58,7 @@ export function EvaluationView({
   const [busy, setBusy] = useState<string>("");
   const [error, setError] = useState<string>("");
 
-  const providerOptions = state.providerRegistry?.providers ?? [];
+  const providerOptions = runnableProviderOptions(state.providerRegistry?.providers ?? [], state.providerSecretStatuses);
   const activeProvider = providerOptions.find((provider) => provider.id === state.selectedProviderId) ?? providerOptions[0];
 
   async function refreshIndex() {

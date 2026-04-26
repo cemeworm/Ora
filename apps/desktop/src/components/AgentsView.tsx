@@ -1,8 +1,8 @@
-import { ArrowLeft, Bot, MessageSquarePlus, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { ArrowLeft, Bot, MessageSquarePlus, Pencil, Plus, RefreshCcw, Send, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@ora/shared";
 import { useWorkbench } from "../lib/state";
-import type { OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
+import type { OraCustomAgentGenerateDraftResult, OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 
 type AgentEditorMode = "gallery" | "create" | "edit" | "team";
@@ -13,6 +13,11 @@ interface AgentDraft {
   model: string;
   toolGroupsText: string;
   soul: string;
+}
+
+interface AgentDraftChatMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
 const EMPTY_DRAFT: AgentDraft = {
@@ -41,10 +46,16 @@ export function AgentsView({
   onStartChat: (agentId: string) => Promise<void> | void;
   onClearSelectedCustomAgent: () => void;
 }) {
-  const { dispatch } = useWorkbench();
+  const { state, dispatch } = useWorkbench();
   const [agents, setAgents] = useState<OraCustomAgentSummary[]>([]);
   const [mode, setMode] = useState<AgentEditorMode>("gallery");
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
+  const [draftChat, setDraftChat] = useState<AgentDraftChatMessage[]>([{
+    role: "assistant",
+    content: "告诉我你想创建什么样的智能体：它负责什么任务、输出要长什么样、需要哪些工具。我会生成一版可确认的草稿。",
+  }]);
+  const [draftInput, setDraftInput] = useState("");
+  const [draftIssues, setDraftIssues] = useState<OraCustomAgentGenerateDraftResult["issues"]>([]);
   const [teamLabel, setTeamLabel] = useState("Agent Team");
   const [teamFamily, setTeamFamily] = useState<CoordinationPattern>("agent_teams");
   const [teamAssignments, setTeamAssignments] = useState<Record<string, string>>({});
@@ -76,6 +87,12 @@ export function AgentsView({
   function resetEditor(nextMode: AgentEditorMode = "gallery") {
     setMode(nextMode);
     setDraft(EMPTY_DRAFT);
+    setDraftChat([{
+      role: "assistant",
+      content: "告诉我你想创建什么样的智能体：它负责什么任务、输出要长什么样、需要哪些工具。我会生成一版可确认的草稿。",
+    }]);
+    setDraftInput("");
+    setDraftIssues([]);
     setEditingName(undefined);
     setError("");
     if (nextMode === "team") {
@@ -102,6 +119,46 @@ export function AgentsView({
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Editing custom agent ${agent.name}.` });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load custom agent.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function generateDraftFromChat() {
+    const message = draftInput.trim();
+    if (!message) {
+      return;
+    }
+
+    const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
+    const nextChat: AgentDraftChatMessage[] = [...draftChat, { role: "user", content: message }];
+    setDraftChat(nextChat);
+    setDraftInput("");
+    setBusy("draft-generate");
+    setError("");
+    setDraftIssues([]);
+
+    try {
+      const result = await runtimeClient.generateAgentDraft({
+        messages: nextChat,
+        partialDraft: draftFromEditor(draft),
+        providerId: state.selectedProviderId,
+        providerConfig: provider,
+        modelRef: provider?.modelId ?? "local/smoke-model",
+      });
+      setDraftChat((current) => [...current, { role: "assistant", content: result.assistantMessage }]);
+      setDraftIssues(result.issues ?? []);
+      if (result.draft) {
+        setDraft(editorDraftFromGenerated(result.draft));
+      }
+      dispatch({
+        type: "SET_COMMAND_FEEDBACK",
+        feedback: result.status === "draft_ready"
+          ? "Generated a custom agent draft. Review it before creating."
+          : "Ora needs a little more detail before creating the agent draft.",
+      });
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to generate custom agent draft.");
     } finally {
       setBusy("");
     }
@@ -490,11 +547,11 @@ export function AgentsView({
                 ))}
               </div>
             </section>
-          ) : (
+          ) : mode === "edit" ? (
             <section className="rounded-[24px] bg-white p-6 shadow-pane ring-1 ring-inset ring-bench-200">
               <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold">{mode === "create" ? "Create custom agent" : `Edit ${editingName}`}</h3>
+                  <h3 className="text-sm font-semibold">{`Edit ${editingName}`}</h3>
                   <p className="mt-1 text-xs text-bench-700">This v1 editor writes `config.yaml` and `SOUL.md` directly into `.ora/agents/&lt;name&gt;`.</p>
                 </div>
                 <button
@@ -502,7 +559,7 @@ export function AgentsView({
                   disabled={busy.length > 0 || !draft.name.trim()}
                   className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {mode === "create" ? "Create agent" : "Save changes"}
+                  Save changes
                 </button>
               </div>
 
@@ -557,6 +614,130 @@ export function AgentsView({
                 </label>
               </div>
             </section>
+          ) : (
+            <section className="rounded-[24px] bg-white p-6 shadow-pane ring-1 ring-inset ring-bench-200">
+              <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">
+                    <Sparkles size={13} />
+                    Guided creation
+                  </p>
+                  <h3 className="mt-2 text-sm font-semibold">Create custom agent</h3>
+                  <p className="mt-1 text-xs text-bench-700">
+                    Describe the agent in natural language. Ora will generate a draft, then you confirm before anything is written.
+                  </p>
+                </div>
+                <button
+                  onClick={saveAgent}
+                  disabled={busy.length > 0 || !canConfirmDraft(draft)}
+                  className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Create agent
+                </button>
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(520px,1.1fr)]">
+                <div className="flex min-h-[520px] flex-col rounded-lg border border-bench-200 bg-bench-50">
+                  <div className="flex-1 space-y-3 overflow-y-auto p-4">
+                    {draftChat.map((message, index) => (
+                      <div
+                        key={`${message.role}-${index}`}
+                        className={cn(
+                          "max-w-[92%] rounded-lg px-3 py-2 text-sm leading-6",
+                          message.role === "user"
+                            ? "ml-auto bg-bench-900 text-white"
+                            : "mr-auto bg-white text-bench-900 ring-1 ring-inset ring-bench-200",
+                        )}
+                      >
+                        {message.content}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-bench-200 bg-white p-3">
+                    <div className="flex items-end gap-2">
+                      <textarea
+                        value={draftInput}
+                        onChange={(event) => setDraftInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && !event.shiftKey) {
+                            event.preventDefault();
+                            void generateDraftFromChat();
+                          }
+                        }}
+                        rows={3}
+                        placeholder="例如：帮我创建一个香港市场研究智能体，输出要带来源、风险和下一步建议。"
+                        className="min-h-20 flex-1 resize-none rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-900"
+                      />
+                      <button
+                        onClick={() => void generateDraftFromChat()}
+                        disabled={busy.length > 0 || !draftInput.trim()}
+                        className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Generate draft"
+                      >
+                        <Send size={15} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {draftIssues.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950">
+                      {draftIssues.map((issue) => issue.message).join(" ")}
+                    </div>
+                  )}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="space-y-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Name</span>
+                      <input
+                        value={draft.name}
+                        onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+                        placeholder="researcher-hk"
+                        className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                      />
+                    </label>
+                    <label className="space-y-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Model Hint</span>
+                      <input
+                        value={draft.model}
+                        onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
+                        placeholder={state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId)?.modelId ?? "inherit current chat model"}
+                        className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
+                      />
+                    </label>
+                    <label className="space-y-1.5 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Description</span>
+                      <textarea
+                        value={draft.description}
+                        onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+                        rows={3}
+                        placeholder="What this agent is for, how it should behave, and what good output looks like."
+                        className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-900"
+                      />
+                    </label>
+                    <label className="space-y-1.5 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Tool Groups</span>
+                      <input
+                        value={draft.toolGroupsText}
+                        onChange={(event) => setDraft((current) => ({ ...current, toolGroupsText: event.target.value }))}
+                        placeholder="web, shell, github"
+                        className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                      />
+                    </label>
+                    <label className="space-y-1.5 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">SOUL</span>
+                      <textarea
+                        value={draft.soul}
+                        onChange={(event) => setDraft((current) => ({ ...current, soul: event.target.value }))}
+                        rows={14}
+                        placeholder="Generated long-form persona instructions will appear here."
+                        className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 font-mono text-sm outline-none transition focus:border-bench-900"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </section>
           )}
         </div>
       </div>
@@ -569,6 +750,35 @@ function parseToolGroups(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter((item, index, items) => item.length > 0 && items.indexOf(item) === index);
+}
+
+function draftFromEditor(draft: AgentDraft) {
+  return {
+    name: draft.name.trim(),
+    description: draft.description.trim(),
+    model: draft.model.trim() || undefined,
+    toolGroups: parseToolGroups(draft.toolGroupsText),
+    soul: draft.soul.trim(),
+  };
+}
+
+function editorDraftFromGenerated(draft: Partial<ReturnType<typeof draftFromEditor>>): AgentDraft {
+  return {
+    name: draft.name ?? "",
+    description: draft.description ?? "",
+    model: draft.model ?? "",
+    toolGroupsText: (draft.toolGroups ?? []).join(", "),
+    soul: draft.soul ?? "",
+  };
+}
+
+function canConfirmDraft(draft: AgentDraft): boolean {
+  return Boolean(
+    draft.name.trim() &&
+    draft.description.trim() &&
+    draft.soul.trim() &&
+    /^[a-z0-9-]+$/.test(draft.name.trim()),
+  );
 }
 
 function slugifyModeId(value: string): string {

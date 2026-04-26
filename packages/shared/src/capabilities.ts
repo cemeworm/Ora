@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CoordinationPatternSchema } from "./primitives.js";
+import { ProviderConfigSchema } from "./providers.js";
 
 export const DEFAULT_WEB_TOOL_IDS = ["web.fetch", "web.search"] as const;
 export type DefaultWebToolId = typeof DEFAULT_WEB_TOOL_IDS[number];
@@ -216,6 +217,52 @@ export const CustomAgentCheckNameResultSchema = z.object({
   name: CustomAgentNameSchema,
 });
 export type CustomAgentCheckNameResult = z.infer<typeof CustomAgentCheckNameResultSchema>;
+
+export const CustomAgentDraftMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().min(1),
+});
+export type CustomAgentDraftMessage = z.infer<typeof CustomAgentDraftMessageSchema>;
+
+export const CustomAgentGeneratedDraftSchema = z.object({
+  name: z.string().default(""),
+  description: z.string().default(""),
+  model: z.string().min(1).optional(),
+  toolGroups: z.array(z.string().min(1)).default([]),
+  soul: z.string().default(""),
+});
+export type CustomAgentGeneratedDraft = z.infer<typeof CustomAgentGeneratedDraftSchema>;
+
+export const CustomAgentGenerateDraftParamsSchema = z.object({
+  messages: z.array(CustomAgentDraftMessageSchema).min(1),
+  partialDraft: CustomAgentGeneratedDraftSchema.partial().optional(),
+  providerId: z.string().min(1).optional(),
+  providerConfig: ProviderConfigSchema.optional(),
+  modelRef: z.string().min(1).optional(),
+});
+export type CustomAgentGenerateDraftParams = z.infer<typeof CustomAgentGenerateDraftParamsSchema>;
+
+const CustomAgentDraftIssueSchema = z.object({
+  field: z.enum(["name", "description", "model", "toolGroups", "soul", "general"]).default("general"),
+  message: z.string().min(1),
+});
+export type CustomAgentDraftIssue = z.infer<typeof CustomAgentDraftIssueSchema>;
+
+export const CustomAgentGenerateDraftResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("needs_input"),
+    assistantMessage: z.string().min(1),
+    draft: CustomAgentGeneratedDraftSchema.partial().optional(),
+    issues: z.array(CustomAgentDraftIssueSchema).default([]),
+  }),
+  z.object({
+    status: z.literal("draft_ready"),
+    assistantMessage: z.string().min(1),
+    draft: CustomAgentGeneratedDraftSchema,
+    issues: z.array(CustomAgentDraftIssueSchema).default([]),
+  }),
+]);
+export type CustomAgentGenerateDraftResult = z.infer<typeof CustomAgentGenerateDraftResultSchema>;
 
 // ---------------------------------------------------------------------------
 // Default Definitions

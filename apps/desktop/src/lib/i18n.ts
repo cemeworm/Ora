@@ -89,14 +89,13 @@ const ZH_COPY: Record<string, string> = {
   Ultra: "极致",
   "Stop run": "停止运行",
   "Send message": "发送消息",
-  "Ora can make mistakes. Review plans, actions, and checkpoints before using results.":
-    "Ora 可能会出错。使用结果前请检查计划、操作。",
+  "Ora may be wrong, check the results before adoption.":
+    "Ora 可能会出错，采纳结果前建议先进行检查。",
   "Stopped processing as instructed.": "已按照你的指示停止处理",
   "Paused as instructed.": "已按照你的指示暂停处理",
   "Confirmed. Continuing.": "已确认，继续处理",
   "Confirmed. Continuing the run.": "已确认，继续处理本轮任务。",
-  "Please confirm this operation before I continue.":
-    "继续前请确认这个操作。",
+  "Please confirm this operation before I continue.": "继续前请确认这个操作。",
   "Please confirm before this step continues.": "继续这个步骤前请确认。",
   "This operation was completed and recorded.": "这个操作已完成并记录。",
   "This operation is ready to review.": "这个操作已准备好确认。",
@@ -107,7 +106,8 @@ const ZH_COPY: Record<string, string> = {
   "I need your confirmation for the actions below before I continue.":
     "继续前，我需要你确认下面这些操作。",
   "Confirm before continuing": "需要你确认后继续",
-  "This action may change the local environment.": "这项操作可能会改变本地环境。",
+  "This action may change the local environment.":
+    "这项操作可能会改变本地环境。",
   "It is needed to continue the current task.": "这是继续当前任务所需的步骤。",
   "Confirm this matches your expectations before continuing.":
     "请确认这符合你的预期后再继续。",
@@ -691,10 +691,7 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
     /^Paused after processing was interrupted (.+)\.$/,
     (match) => `处理被中断后已暂停：${match[1]}。`,
   ],
-  [
-    /^Processing step failed (.+)\.$/,
-    (match) => `处理步骤失败：${match[1]}。`,
-  ],
+  [/^Processing step failed (.+)\.$/, (match) => `处理步骤失败：${match[1]}。`],
   [
     /^Processing state changed (.+)\.$/,
     (match) => `处理状态已变化：${match[1]}。`,

@@ -520,7 +520,9 @@ export function readProviderApiKey(
     }
   }
 
-  return readProviderApiKeyFromKeychain(config.id);
+  const baseProviderId = modelProviderBaseId(config.id);
+  return readProviderApiKeyFromKeychain(config.id)
+    ?? (baseProviderId === config.id ? undefined : readProviderApiKeyFromKeychain(baseProviderId));
 }
 
 function readProviderApiKeyFromKeychain(providerId: string): string | undefined {
@@ -544,6 +546,11 @@ function readProviderApiKeyFromKeychain(providerId: string): string | undefined 
   } catch {
     return undefined;
   }
+}
+
+function modelProviderBaseId(providerId: string): string {
+  const separatorIndex = providerId.indexOf("--model-");
+  return separatorIndex === -1 ? providerId : providerId.slice(0, separatorIndex);
 }
 
 export function resolveProviderEndpoint(params: {

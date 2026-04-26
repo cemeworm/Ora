@@ -30,6 +30,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "agents.update",
   "agents.delete",
   "agents.checkName",
+  "agents.generateDraft",
   "projects.create",
   "projects.list",
   "projects.get",

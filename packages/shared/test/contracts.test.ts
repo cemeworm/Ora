@@ -8,6 +8,8 @@ import {
   CustomAgentCheckNameResultSchema,
   CustomAgentCreateParamsSchema,
   CustomAgentDetailSchema,
+  CustomAgentGenerateDraftParamsSchema,
+  CustomAgentGenerateDraftResultSchema,
   CustomAgentSummarySchema,
   CustomAgentUpdateParamsSchema,
   DEFAULT_PROVIDERS,
@@ -616,6 +618,19 @@ describe("Ora shared contracts", () => {
       JsonRpcRequestSchema.parse({
         jsonrpc: "2.0",
         id: 3,
+        method: "agents.generateDraft",
+        params: {
+          messages: [{ role: "user", content: "I need a research agent for product strategy." }],
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model"
+        }
+      }).method
+    ).toBe("agents.generateDraft");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 4,
         method: "skills.setEnabled",
         params: { name: "custom-review", enabled: true }
       }).method
@@ -624,7 +639,7 @@ describe("Ora shared contracts", () => {
     expect(
       JsonRpcRequestSchema.parse({
         jsonrpc: "2.0",
-        id: 4,
+        id: 5,
         method: "projects.files",
         params: { projectId: "project-0001" }
       }).method
@@ -637,6 +652,41 @@ describe("Ora shared contracts", () => {
         result: { ok: true }
       }).jsonrpc
     ).toBe("2.0");
+  });
+
+  it("validates custom agent draft generation contracts", () => {
+    expect(
+      CustomAgentGenerateDraftParamsSchema.parse({
+        messages: [
+          { role: "user", content: "帮我创建一个会做香港市场研究的智能体。" },
+          { role: "assistant", content: "需要偏事实核查还是策略建议？" },
+          { role: "user", content: "偏事实核查，输出要带来源和风险。" }
+        ],
+        partialDraft: { toolGroups: ["web", "github"] },
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model"
+      }).messages
+    ).toHaveLength(3);
+
+    const ready = CustomAgentGenerateDraftResultSchema.parse({
+      status: "draft_ready",
+      assistantMessage: "我生成了一版研究智能体，请确认。",
+      draft: {
+        name: "researcher-hk",
+        description: "Research Hong Kong market questions with sourced findings.",
+        model: "claude-sonnet-4-20250514",
+        toolGroups: ["web", "github"],
+        soul: "Act as a careful market researcher."
+      }
+    });
+    expect(ready.status).toBe("draft_ready");
+
+    const followUp = CustomAgentGenerateDraftResultSchema.parse({
+      status: "needs_input",
+      assistantMessage: "这个智能体主要要帮你完成哪类任务？",
+      issues: [{ field: "description", message: "Need a clearer purpose." }]
+    });
+    expect(followUp.status).toBe("needs_input");
   });
 
   it("validates second milestone run API contracts", () => {

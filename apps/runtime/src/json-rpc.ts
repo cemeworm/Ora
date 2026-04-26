@@ -98,6 +98,8 @@ export function createRuntimeMethodHandler(
         return store.deleteAgent(request.params);
       case "agents.checkName":
         return store.checkAgentName(request.params);
+      case "agents.generateDraft":
+        return store.generateAgentDraft(request.params);
       case "projects.create":
         return store.createProject(request.params);
       case "projects.list":

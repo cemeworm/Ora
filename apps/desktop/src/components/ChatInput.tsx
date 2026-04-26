@@ -353,8 +353,7 @@ export function ChatInput({
           </div>
         </div>
         <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
-          Ora can make mistakes. Review plans, actions, and checkpoints before
-          using results.
+          Ora may be wrong, check the results before adoption.
         </p>
       </div>
     </div>

@@ -15,6 +15,7 @@ import type {
   TopologyNode,
 } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
+import { runnableProviderOptions } from "../lib/providerOptions";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
@@ -87,14 +88,7 @@ export function ChatView({
   const { state, dispatch } = useWorkbench();
   const showWelcome = chatMessages.length === 0 && !isRunning;
   const allProviders = state.providerRegistry?.providers ?? [];
-  const configuredProviders = allProviders.filter((provider) => {
-    if (provider.type === "local_smoke") return true;
-    return state.providerSecretStatuses.some(
-      (status) => status.providerId === provider.id && status.hasSecret,
-    );
-  });
-  const providerOptions =
-    configuredProviders.length > 0 ? configuredProviders : allProviders;
+  const providerOptions = runnableProviderOptions(allProviders, state.providerSecretStatuses);
   const activeProvider =
     providerOptions.find(
       (provider) => provider.id === state.selectedProviderId,

@@ -7,6 +7,8 @@ import type {
   CustomAgentCheckNameResult as OraCustomAgentCheckNameResult,
   CustomAgentCreateParams as OraCustomAgentCreateParams,
   CustomAgentDetail as OraCustomAgentDetail,
+  CustomAgentGenerateDraftParams as OraCustomAgentGenerateDraftParams,
+  CustomAgentGenerateDraftResult as OraCustomAgentGenerateDraftResult,
   CustomAgentSummary as OraCustomAgentSummary,
   CustomAgentUpdateParams as OraCustomAgentUpdateParams,
   EvaluationBaseline as OraEvaluationBaseline,
@@ -87,6 +89,8 @@ export type {
   OraCustomAgentCheckNameResult,
   OraCustomAgentCreateParams,
   OraCustomAgentDetail,
+  OraCustomAgentGenerateDraftParams,
+  OraCustomAgentGenerateDraftResult,
   OraCustomAgentSummary,
   OraCustomAgentUpdateParams,
   OraEvaluationBaseline,
@@ -467,6 +471,9 @@ export function createRuntimeClient() {
     },
     async checkAgentName(name: string): Promise<OraCustomAgentCheckNameResult> {
       return call<OraCustomAgentCheckNameResult>("agents.checkName", { name });
+    },
+    async generateAgentDraft(params: OraCustomAgentGenerateDraftParams): Promise<OraCustomAgentGenerateDraftResult> {
+      return call<OraCustomAgentGenerateDraftResult>("agents.generateDraft", params);
     },
     async startRun(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraStateSnapshot> {
       const handle = await call<OraRunHandle>("runs.start", { input, config, sessionId });
@@ -982,6 +989,8 @@ class LocalJsonRpcRuntime {
         return this.deleteAgent(params);
       case "agents.checkName":
         return this.checkAgentName(params);
+      case "agents.generateDraft":
+        return this.generateAgentDraft(params);
       case "projects.create":
         return this.createProject(params);
       case "projects.list":
@@ -1983,6 +1992,56 @@ class LocalJsonRpcRuntime {
     return {
       available: !this.customAgents.has(name),
       name,
+    };
+  }
+
+  private generateAgentDraft(params: unknown): OraCustomAgentGenerateDraftResult {
+    if (!isRecord(params) || !Array.isArray(params.messages)) {
+      throw new Error("Agent draft messages are required.");
+    }
+    const messages = params.messages
+      .filter((message): message is { role: "user" | "assistant"; content: string } =>
+        isRecord(message) &&
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string" &&
+        message.content.trim().length > 0
+      );
+    const userText = messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content.trim())
+      .join(" ")
+      .trim();
+    if (userText.length < 12) {
+      return {
+        status: "needs_input",
+        assistantMessage: "我可以帮你生成智能体。先告诉我它主要负责什么任务、输出风格，以及是否需要 web / shell / github 这类工具。",
+        draft: isRecord(params.partialDraft) ? params.partialDraft as OraCustomAgentGenerateDraftResult["draft"] : undefined,
+        issues: [{ field: "description", message: "Need the agent's purpose and output style." }],
+      };
+    }
+
+    const name = uniqueMockAgentName(slugifyMockAgentName(userText), (candidate) => this.customAgents.has(candidate));
+    const wantsWeb = /\b(web|search|research|source|sources|资料|搜索|来源|研究)\b/i.test(userText);
+    const wantsGithub = /\b(github|repo|code|代码|仓库|pr)\b/i.test(userText);
+    const toolGroups = [
+      ...(wantsWeb ? ["web"] : []),
+      ...(wantsGithub ? ["github"] : []),
+    ];
+    return {
+      status: "draft_ready",
+      assistantMessage: "我生成了一版智能体草稿，请检查后确认创建。",
+      draft: {
+        name,
+        description: `Custom agent for ${userText.slice(0, 120)}${userText.length > 120 ? "..." : ""}`,
+        model: typeof params.modelRef === "string" ? params.modelRef : undefined,
+        toolGroups,
+        soul: [
+          `You are ${name}, a custom Ora agent created from this user request: ${userText}`,
+          "Clarify ambiguity before acting, keep outputs concise and directly useful, and make assumptions explicit.",
+          "When researching or reviewing, separate facts from judgment and call out risks before recommendations.",
+        ].join("\n\n"),
+      },
+      issues: [],
     };
   }
 
@@ -3165,6 +3224,42 @@ function normalizeMockAgentName(value: unknown): string {
     throw new Error("Custom agent names must contain only letters, digits, and hyphens.");
   }
   return normalized;
+}
+
+function slugifyMockAgentName(value: string): string {
+  if (/香港|hk|hong kong/i.test(value) && /研究|research|市场|market/i.test(value)) {
+    return "researcher-hk";
+  }
+  if (/研究|research|资料|来源/i.test(value)) {
+    return "research-agent";
+  }
+  if (/代码|code|审查|review|pr/i.test(value)) {
+    return "code-review-agent";
+  }
+  const tokens = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\u4e00-\u9fff]+/g, " agent ")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .split("-")
+    .filter(Boolean)
+    .slice(0, 4);
+  return tokens.length > 0 ? tokens.join("-") : "custom-agent";
+}
+
+function uniqueMockAgentName(baseName: string, exists: (name: string) => boolean): string {
+  if (!exists(baseName)) {
+    return baseName;
+  }
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${baseName}-${index}`;
+    if (!exists(candidate)) {
+      return candidate;
+    }
+  }
+  return `${baseName}-${Date.now()}`;
 }
 
 function normalizeMockSkillName(value: unknown): string {

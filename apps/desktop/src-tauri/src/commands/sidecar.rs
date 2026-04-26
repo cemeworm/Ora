@@ -1452,7 +1452,10 @@ impl RuntimeFacade {
 fn provider_secret_status_for(provider_id: &str) -> ProviderSecretStatus {
     match provider_keychain_service(provider_id) {
         Ok(service) => {
-            let has_secret = keychain_has_secret(&service);
+            let has_secret = keychain_has_secret(&service)
+                || model_provider_base_service(provider_id)
+                    .as_deref()
+                    .is_some_and(keychain_has_secret);
             ProviderSecretStatus {
                 provider_id: provider_id.to_string(),
                 has_secret,
@@ -1476,6 +1479,11 @@ fn provider_secret_status_for(provider_id: &str) -> ProviderSecretStatus {
             detail: error,
         },
     }
+}
+
+fn model_provider_base_service(provider_id: &str) -> Option<String> {
+    let (base_id, _) = provider_id.split_once("--model-")?;
+    provider_keychain_service(base_id).ok()
 }
 
 fn provider_keychain_service(provider_id: &str) -> Result<String, String> {

@@ -7,6 +7,11 @@ export interface ProviderPreset {
   description: string;
   type: ProviderType;
   group: "official" | "template";
+  category: "official" | "coding" | "aggregator" | "generic" | "local";
+  iconLabel: string;
+  homepageUrl?: string;
+  apiKeyUrl?: string;
+  isRecommended?: boolean;
   fixedProviderId?: string;
   suggestedIdBase: string;
   suggestedApiKeyEnv?: string;
@@ -39,7 +44,20 @@ export interface ProviderDraft {
   enabled: boolean;
 }
 
+export interface ProviderCatalogEntry {
+  key: string;
+  preset: ProviderPreset;
+  provider?: OraProviderConfig;
+  providers: OraProviderConfig[];
+  draft: ProviderDraft;
+  label: string;
+  description: string;
+  saved: boolean;
+}
+
 export const BUILT_IN_PROVIDER_IDS = new Set(["openai-gpt", "anthropic-claude", "local-smoke"]);
+
+const MODEL_PROVIDER_SEPARATOR = "--model-";
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
@@ -48,6 +66,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Official OpenAI Responses API provider.",
     type: "openai",
     group: "official",
+    category: "official",
+    iconLabel: "AI",
+    homepageUrl: "https://platform.openai.com/docs",
+    apiKeyUrl: "https://platform.openai.com/api-keys",
+    isRecommended: true,
     fixedProviderId: "openai-gpt",
     suggestedIdBase: "openai-gpt",
     suggestedApiKeyEnv: "OPENAI_API_KEY",
@@ -62,6 +85,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Official Claude Messages API provider.",
     type: "anthropic",
     group: "official",
+    category: "official",
+    iconLabel: "A",
+    homepageUrl: "https://docs.anthropic.com/",
+    apiKeyUrl: "https://console.anthropic.com/settings/keys",
+    isRecommended: true,
     fixedProviderId: "anthropic-claude",
     suggestedIdBase: "anthropic-claude",
     suggestedApiKeyEnv: "ANTHROPIC_API_KEY",
@@ -82,6 +110,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Deterministic local smoke provider for offline testing.",
     type: "local_smoke",
     group: "official",
+    category: "local",
+    iconLabel: "L",
     fixedProviderId: "local-smoke",
     suggestedIdBase: "local-smoke",
     defaultModelId: "smoke-model",
@@ -95,6 +125,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Any provider that speaks the OpenAI chat or responses protocol.",
     type: "openai_compatible",
     group: "template",
+    category: "generic",
+    iconLabel: ">_",
     suggestedIdBase: "openai-compatible",
     suggestedApiKeyEnv: "OPENAI_COMPATIBLE_API_KEY",
     defaultModelId: "model-id",
@@ -109,6 +141,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Any provider that speaks the Anthropic Messages API.",
     type: "anthropic_compatible",
     group: "template",
+    category: "generic",
+    iconLabel: "A",
     suggestedIdBase: "anthropic-compatible",
     suggestedApiKeyEnv: "ANTHROPIC_COMPATIBLE_API_KEY",
     defaultModelId: "claude-model",
@@ -123,6 +157,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "OpenAI-compatible Qwen via Bailian/DashScope.",
     type: "openai_compatible",
     group: "template",
+    category: "coding",
+    iconLabel: "Q",
+    homepageUrl: "https://www.alibabacloud.com/help/en/model-studio/",
+    apiKeyUrl: "https://bailian.console.aliyun.com/",
     suggestedIdBase: "qwen",
     suggestedApiKeyEnv: "DASHSCOPE_API_KEY",
     defaultModelId: "qwen3-coder-plus",
@@ -138,10 +176,15 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "DeepSeek OpenAI-compatible API.",
     type: "openai_compatible",
     group: "template",
+    category: "coding",
+    iconLabel: "DS",
+    homepageUrl: "https://api-docs.deepseek.com/",
+    apiKeyUrl: "https://platform.deepseek.com/api_keys",
+    isRecommended: true,
     suggestedIdBase: "deepseek",
     suggestedApiKeyEnv: "DEEPSEEK_API_KEY",
-    defaultModelId: "deepseek-chat",
-    modelSuggestions: ["deepseek-chat", "deepseek-reasoner"],
+    defaultModelId: "deepseek-v4-flash",
+    modelSuggestions: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
     baseUrl: "https://api.deepseek.com",
     protocol: "chat_completions",
     capabilities: ["chat", "tool_use", "reasoning", "json_mode"],
@@ -153,6 +196,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Zhipu OpenAI-compatible API.",
     type: "openai_compatible",
     group: "template",
+    category: "coding",
+    iconLabel: "Z",
+    homepageUrl: "https://docs.z.ai/",
+    apiKeyUrl: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     suggestedIdBase: "zhipu",
     suggestedApiKeyEnv: "ZHIPU_API_KEY",
     defaultModelId: "glm-4.5",
@@ -168,6 +215,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     description: "Moonshot OpenAI-compatible API.",
     type: "openai_compatible",
     group: "template",
+    category: "coding",
+    iconLabel: "K",
+    homepageUrl: "https://platform.moonshot.ai/docs",
+    apiKeyUrl: "https://platform.moonshot.ai/console/api-keys",
+    isRecommended: true,
     suggestedIdBase: "moonshot",
     suggestedApiKeyEnv: "MOONSHOT_API_KEY",
     defaultModelId: "kimi-k2-0711-preview",
@@ -177,10 +229,120 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     capabilities: ["chat", "tool_use", "reasoning"],
     maxTokens: 8192,
   },
+  {
+    id: "google-gemini",
+    label: "Google Gemini",
+    description: "Gemini API through Google's OpenAI-compatible endpoint.",
+    type: "openai_compatible",
+    group: "template",
+    category: "official",
+    iconLabel: "G",
+    homepageUrl: "https://ai.google.dev/gemini-api/docs/openai",
+    apiKeyUrl: "https://aistudio.google.com/app/apikey",
+    isRecommended: true,
+    suggestedIdBase: "google-gemini",
+    suggestedApiKeyEnv: "GEMINI_API_KEY",
+    defaultModelId: "gemini-2.5-flash",
+    modelSuggestions: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    protocol: "chat_completions",
+    capabilities: ["chat", "tool_use", "image_input", "json_mode"],
+    maxTokens: 8192,
+  },
+  {
+    id: "kimi-coding-plan",
+    label: "Kimi Coding Plan",
+    description: "Kimi coding models through Moonshot's OpenAI-compatible API.",
+    type: "openai_compatible",
+    group: "template",
+    category: "coding",
+    iconLabel: "KC",
+    homepageUrl: "https://platform.moonshot.ai/docs",
+    apiKeyUrl: "https://platform.moonshot.ai/console/api-keys",
+    suggestedIdBase: "kimi-coding-plan",
+    suggestedApiKeyEnv: "MOONSHOT_API_KEY",
+    defaultModelId: "kimi-k2-0711-preview",
+    modelSuggestions: ["kimi-k2-0711-preview", "kimi-latest"],
+    baseUrl: "https://api.moonshot.ai/v1",
+    protocol: "chat_completions",
+    capabilities: ["chat", "tool_use", "reasoning"],
+    maxTokens: 8192,
+  },
+  {
+    id: "zai-coding-plan",
+    label: "Z.AI Coding Plan",
+    description: "Z.AI GLM Coding Plan OpenAI-compatible endpoint.",
+    type: "openai_compatible",
+    group: "template",
+    category: "coding",
+    iconLabel: "Z",
+    homepageUrl: "https://docs.z.ai/devpack/overview",
+    apiKeyUrl: "https://z.ai/",
+    isRecommended: true,
+    suggestedIdBase: "zai-coding-plan",
+    suggestedApiKeyEnv: "ZAI_API_KEY",
+    defaultModelId: "glm-5",
+    modelSuggestions: ["glm-5", "glm-5.1", "glm-5-turbo", "glm-4.7", "glm-4.5-air"],
+    baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    protocol: "chat_completions",
+    capabilities: ["chat", "tool_use", "reasoning"],
+    maxTokens: 8192,
+  },
+  {
+    id: "aihubmix",
+    label: "AiHubMix",
+    description: "AiHubMix unified OpenAI-compatible model gateway.",
+    type: "openai_compatible",
+    group: "template",
+    category: "aggregator",
+    iconLabel: "AH",
+    homepageUrl: "https://docs.aihubmix.com/en/index",
+    apiKeyUrl: "https://aihubmix.com/",
+    isRecommended: true,
+    suggestedIdBase: "aihubmix",
+    suggestedApiKeyEnv: "AIHUBMIX_API_KEY",
+    defaultModelId: "gpt-5.2",
+    modelSuggestions: ["gpt-5.2", "gpt-4o", "claude-sonnet-4-5", "gemini-2.5-pro", "deepseek-v4-flash"],
+    baseUrl: "https://aihubmix.com/v1",
+    protocol: "chat_completions",
+    capabilities: ["chat", "tool_use", "image_input", "json_mode", "reasoning"],
+    maxTokens: 8192,
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    description: "OpenRouter unified OpenAI-compatible API for many models.",
+    type: "openai_compatible",
+    group: "template",
+    category: "aggregator",
+    iconLabel: "OR",
+    homepageUrl: "https://openrouter.ai/docs",
+    apiKeyUrl: "https://openrouter.ai/settings/keys",
+    isRecommended: true,
+    suggestedIdBase: "openrouter",
+    suggestedApiKeyEnv: "OPENROUTER_API_KEY",
+    defaultModelId: "openai/gpt-4o",
+    modelSuggestions: ["openai/gpt-4o", "openai/gpt-5.2", "anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "deepseek/deepseek-chat"],
+    baseUrl: "https://openrouter.ai/api/v1",
+    protocol: "chat_completions",
+    capabilities: ["chat", "tool_use", "image_input", "json_mode", "reasoning"],
+    maxTokens: 8192,
+  },
 ];
 
 function slugify(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export function createModelProviderId(baseProviderId: string, modelId: string) {
+  const baseId = getModelProviderBaseId(baseProviderId);
+  const modelSlug = slugify(modelId) || "model";
+  return `${baseId}${MODEL_PROVIDER_SEPARATOR}${modelSlug}`;
+}
+
+export function getModelProviderBaseId(providerId: string) {
+  const separatorIndex = providerId.indexOf(MODEL_PROVIDER_SEPARATOR);
+  return separatorIndex === -1 ? providerId : providerId.slice(0, separatorIndex);
 }
 
 export function createProviderId(base: string, existingProviders: readonly OraProviderConfig[], preferredId?: string) {
@@ -202,8 +364,9 @@ export function findPresetById(presetId: string) {
 }
 
 export function findPresetForProvider(provider: OraProviderConfig) {
+  const providerBaseId = getModelProviderBaseId(provider.id);
   return PROVIDER_PRESETS.find((preset) => {
-    if (preset.fixedProviderId && preset.fixedProviderId === provider.id) {
+    if (preset.fixedProviderId && preset.fixedProviderId === providerBaseId) {
       return true;
     }
     if (preset.group === "template" && preset.type === provider.type && preset.baseUrl && provider.baseUrl) {
@@ -212,6 +375,78 @@ export function findPresetForProvider(provider: OraProviderConfig) {
     return false;
   }) ?? PROVIDER_PRESETS.find((preset) => preset.type === provider.type)
     ?? PROVIDER_PRESETS[0];
+}
+
+function providerMatchesPreset(provider: OraProviderConfig, preset: ProviderPreset) {
+  const providerBaseId = getModelProviderBaseId(provider.id);
+  if (preset.fixedProviderId && preset.fixedProviderId === providerBaseId) {
+    return true;
+  }
+  if (preset.group === "template" && preset.type === provider.type && preset.baseUrl && provider.baseUrl) {
+    return preset.baseUrl === provider.baseUrl;
+  }
+  return false;
+}
+
+export function buildProviderCatalog(providers: readonly OraProviderConfig[]): ProviderCatalogEntry[] {
+  const usedProviderIds = new Set<string>();
+  const entries: ProviderCatalogEntry[] = PROVIDER_PRESETS.map((preset) => {
+    const matchingProviders = providers.filter((candidate) => !usedProviderIds.has(candidate.id) && providerMatchesPreset(candidate, preset));
+    if (matchingProviders.length > 0) {
+      for (const provider of matchingProviders) {
+        usedProviderIds.add(provider.id);
+      }
+      const provider = matchingProviders.find((candidate) => getModelProviderBaseId(candidate.id) === (preset.fixedProviderId ?? preset.suggestedIdBase))
+        ?? matchingProviders.find((candidate) => candidate.enabled !== false)
+        ?? matchingProviders[0];
+      return {
+        key: `provider:${getModelProviderBaseId(provider.id)}`,
+        preset,
+        provider,
+        providers: matchingProviders,
+        draft: createDraftFromProvider(provider),
+        label: preset.label,
+        description: preset.description,
+        saved: true,
+      };
+    }
+
+    return {
+      key: `preset:${preset.id}`,
+      preset,
+      providers: [],
+      draft: createDraftFromPreset(preset, providers),
+      label: preset.label,
+      description: preset.description,
+      saved: false,
+    };
+  });
+
+  const customProviderGroups = new Map<string, OraProviderConfig[]>();
+  for (const provider of providers.filter((candidate) => !usedProviderIds.has(candidate.id))) {
+    const baseId = getModelProviderBaseId(provider.id);
+    customProviderGroups.set(baseId, [...(customProviderGroups.get(baseId) ?? []), provider]);
+  }
+
+  const customEntries = [...customProviderGroups.entries()]
+    .map(([baseId, groupedProviders]) => {
+      const provider = groupedProviders.find((candidate) => candidate.id === baseId)
+        ?? groupedProviders.find((candidate) => candidate.enabled !== false)
+        ?? groupedProviders[0];
+      const preset = findPresetForProvider(provider);
+      return {
+        key: `provider:${baseId}`,
+        preset,
+        provider,
+        providers: groupedProviders,
+        draft: createDraftFromProvider(provider),
+        label: provider.label,
+        description: preset.description,
+        saved: true,
+      } satisfies ProviderCatalogEntry;
+    });
+
+  return [...entries, ...customEntries];
 }
 
 export function createDraftFromPreset(
@@ -236,7 +471,7 @@ export function createDraftFromPreset(
     dropParams: "",
     capabilities: [...preset.capabilities],
     headersText: formatHeaders(preset.headers),
-    enabled: true,
+    enabled: false,
   };
 }
 
