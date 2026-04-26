@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MVP_MODES, MVP_PATTERNS, SINGLE_AGENT_MODE_ID } from "@ora/shared";
-import { buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
+import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop session view model", () => {
@@ -32,6 +32,71 @@ describe("desktop session view model", () => {
 
     expect(selectedSession?.status).toBe("done");
     expect(isSessionProcessing(selectedSession, undefined)).toBe(false);
+  });
+
+  it("renders cancelled assistant turns with user-facing copy", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-cancelled",
+      sessionId: "session-cancelled",
+      turnIndex: 1,
+      status: "cancelled",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "stop this", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-cancel-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      error: "Cancelled by caller.",
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-cancelled:user",
+        sessionId: "session-cancelled",
+        runId: "run-cancelled",
+        turnIndex: 1,
+        role: "user",
+        content: "stop this",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-cancelled": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("Stopped processing as instructed.");
+    expect(assistant?.content).not.toContain("Cancelled by caller.");
   });
 
   it("carries natural approval copy into action records", () => {
@@ -121,5 +186,7 @@ describe("desktop session view model", () => {
     expect(viewModel.actions[0]?.approvalRequest?.title).toBe("需要你确认安装技能");
     expect(viewModel.actions[0]?.approvalRequest?.summary).not.toContain("skills.create");
     expect(viewModel.actions[0]?.approvalRequest?.summary).not.toContain("High-risk");
+    expect(viewModel.actions[0]?.consequence).toBe("Please confirm this operation before I continue.");
+    expect(viewModel.actions[0]?.consequence).not.toContain("operator");
   });
 });

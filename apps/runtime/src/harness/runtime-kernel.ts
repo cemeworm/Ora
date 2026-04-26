@@ -1,15 +1,10 @@
 import {
   type ActionRiskLevel,
-  type ActionRecord,
   type ArtifactRef,
   ArtifactRefSchema,
   type CheckpointMeta,
   type ModeSpec,
   type OraEventEnvelope,
-  type OraToolCallEnvelope,
-  OraToolCallEnvelopeSchema,
-  type OraToolCallSource,
-  type OraToolCallStatus,
   type PatternDefinition,
   type QueueSummary,
   type RunConfig,
@@ -29,10 +24,34 @@ import {
 import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
 import { configuredProviderId, invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
-import { extractRuntimeToolCallFromText, isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
+import { extractRuntimeToolCallFromText, RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import { classifyRecoveryError, RecoveryCoordinator, type RecoveryDecision, type RecoveryIncident } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
+import {
+  FORCED_FINAL_FALLBACK_TEXT,
+  RUNTIME_TOOL_LOOP_SAFETY_LIMIT,
+  RuntimeCompletionController,
+} from "./runtime-completion.js";
+import {
+  ApprovalInterruptError,
+  ClarificationInterruptError,
+  createResumeApprovalMatcher,
+  type ApprovedResumeAction,
+} from "./runtime-interrupts.js";
+import {
+  checkpointLabelForStatus,
+  normalizeProgressNarration,
+  summarizeProgressPayload,
+  workspaceSystemPrompt,
+} from "./runtime-prompts.js";
+import { RuntimeToolCallLedger } from "./runtime-tool-ledger.js";
+import {
+  cacheKeyForRuntimeTool,
+  providerSupportsNativeTools,
+  providerToolCallToAttempt,
+  type RuntimeToolAttempt,
+} from "./runtime-tool-loop.js";
 
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
@@ -57,23 +76,7 @@ export interface RuntimeKernelOptions {
   onEvent?: (event: OraEventEnvelope) => void;
 }
 
-class ClarificationInterruptError extends Error {
-  constructor(public readonly clarification: PendingClarification) {
-    super(clarification.question);
-  }
-}
-
-class ApprovalInterruptError extends Error {
-  constructor(public readonly actionId: string) {
-    super(`Manual approval required for action ${actionId}.`);
-  }
-}
-
-type ApprovedResumeAction = Pick<ActionRecord, "type" | "riskLevel" | "input" | "agentId">;
-
-const RUNTIME_TOOL_LOOP_SAFETY_LIMIT = 64;
 const TOOL_REPAIR_CONTENT = "Tool call was interrupted before a result was produced. Continue from available context or choose another action.";
-const FORCED_FINAL_FALLBACK_TEXT = "I need to stop using tools here. Based on the available context, I cannot complete more tool-backed work in this run.";
 const PROGRESS_NARRATION_MAX_TOKENS = 96;
 
 type NodeRuntimeLoopState =
@@ -89,172 +92,11 @@ type NodeRuntimeLoopState =
   | "interrupted"
   | "failed";
 
-function summarizeProgressPayload(payload: unknown): unknown {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return payload;
-  }
-  const record = payload as Record<string, unknown>;
-  const summary: Record<string, unknown> = {};
-  for (const key of ["summary", "title", "detail", "status", "phase", "toolId", "actionId", "error", "reason"]) {
-    const value = record[key];
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      summary[key] = value;
-    }
-  }
-  if (record.record && typeof record.record === "object" && !Array.isArray(record.record)) {
-    const action = record.record as Record<string, unknown>;
-    summary.record = {
-      type: typeof action.type === "string" ? action.type : undefined,
-      status: typeof action.status === "string" ? action.status : undefined,
-      error: typeof action.error === "string" ? action.error : undefined,
-    };
-  }
-  return Object.keys(summary).length > 0 ? summary : undefined;
-}
-
-function normalizeProgressNarration(text: string): string | undefined {
-  const summary = text
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^["'`]+|["'`]+$/g, "");
-  if (!summary || summary.startsWith("{") || summary.includes("\"tool\"")) {
-    return undefined;
-  }
-  return summary.length > 240 ? `${summary.slice(0, 237).trimEnd()}...` : summary;
-}
-
-type RuntimeToolAttempt = RuntimeToolCall & {
-  providerCallId?: string;
-  source: OraToolCallSource;
-};
-
-type RuntimeToolAttemptDecision =
-  | { allowed: true; key: string; repeatCount: number; toolTypeCount: number }
-  | { allowed: false; reason: CompletionStopReason; key?: string; repeatCount?: number; toolTypeCount?: number };
-
-function providerSupportsNativeTools(config: RunConfig): boolean {
-  const capabilities = config.providerConfig?.capabilities ?? [];
-  if (capabilities.includes("tool_use")) {
-    return true;
-  }
-  return config.providerConfig === undefined
-    && (config.providerId === "openai-gpt" || config.providerId === "anthropic-claude");
-}
-
-function providerToolCallToAttempt(call: ModelToolCall): RuntimeToolAttempt | undefined {
-  if (!isRuntimeToolImplemented(call.toolId)) {
-    return undefined;
-  }
-  return {
-    tool: call.toolId,
-    args: call.args,
-    providerCallId: call.id,
-    source: "provider_native",
-  };
-}
-
-function checkpointLabelForStatus(status: StateSnapshot["status"]): string {
-  switch (status) {
-    case "succeeded":
-      return "Pattern checkpoint";
-    case "interrupted":
-      return "Interrupted checkpoint";
-    case "failed":
-      return "Failed checkpoint";
-    case "cancelled":
-      return "Cancelled checkpoint";
-    case "queued":
-    case "running":
-      return "Runtime checkpoint";
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve();
   }
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function cacheKeyForRuntimeTool(call: RuntimeToolCall): string | undefined {
-  if (call.tool === "web.fetch") {
-    const url = typeof call.args.url === "string" ? call.args.url.trim() : "";
-    return url ? `${call.tool}:${url}` : undefined;
-  }
-  if (call.tool === "web.search") {
-    const query = typeof call.args.query === "string" ? call.args.query.trim().replace(/\s+/g, " ").toLowerCase() : "";
-    const limit = typeof call.args.limit === "number" ? call.args.limit : "";
-    return query ? `${call.tool}:${query}:${limit}` : undefined;
-  }
-  return undefined;
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "undefined";
-}
-
-function stableKeyForRuntimeTool(call: RuntimeToolCall): string {
-  const cacheKey = cacheKeyForRuntimeTool(call);
-  if (cacheKey) {
-    return cacheKey;
-  }
-  const salientArgs = Object.fromEntries(
-    ["path", "url", "query", "command", "pattern", "glob", "cmd", "name"]
-      .filter((key) => call.args[key] !== undefined)
-      .map((key) => [key, call.args[key]]),
-  );
-  return `${call.tool}:${stableJson(Object.keys(salientArgs).length > 0 ? salientArgs : call.args)}`;
-}
-
-function workspaceSystemPrompt(workspace: unknown): string | undefined {
-  if (!workspace || typeof workspace !== "object" || workspace === null) {
-    return undefined;
-  }
-
-  const record = workspace as Record<string, unknown>;
-  const rootPath = typeof record.rootPath === "string" ? record.rootPath : undefined;
-  if (!rootPath) {
-    return undefined;
-  }
-
-  const label = typeof record.label === "string" ? record.label : "Project";
-  const totalFiles = typeof record.totalFiles === "number" ? record.totalFiles : undefined;
-  const markdownFiles = typeof record.markdownFiles === "number" ? record.markdownFiles : undefined;
-  const truncated = record.truncated === true;
-  const extensionCounts = record.extensionCounts && typeof record.extensionCounts === "object" && record.extensionCounts !== null
-    ? Object.entries(record.extensionCounts as Record<string, unknown>)
-      .filter((entry): entry is [string, number] => typeof entry[1] === "number")
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 12)
-      .map(([extension, count]) => `${extension}: ${count}`)
-      .join(", ")
-    : "";
-  const samplePaths = Array.isArray(record.samplePaths)
-    ? record.samplePaths
-      .filter((item): item is string => typeof item === "string" && item.length > 0)
-      .slice(0, 40)
-    : [];
-
-  return [
-    "Ora project workspace context:",
-    `- Project: ${label}`,
-    `- Root path: ${rootPath}`,
-    totalFiles === undefined ? undefined : `- Indexed files: ${totalFiles}${truncated ? " (truncated)" : ""}`,
-    markdownFiles === undefined ? undefined : `- Markdown files: ${markdownFiles}${truncated ? " (count may be partial)" : ""}`,
-    extensionCounts ? `- Extension counts: ${extensionCounts}` : undefined,
-    samplePaths.length > 0 ? `- Sample paths:\n${samplePaths.map((item) => `  - ${item}`).join("\n")}` : undefined,
-    "Use this workspace context when answering questions about the local project folder. If the question asks for information not present in the context, say the project index is available but file contents or commands still need a runtime tool.",
-  ].filter(Boolean).join("\n");
 }
 
 export async function executeRuntimeKernel(
@@ -294,7 +136,7 @@ export async function executeRuntimeKernel(
   const resumeApprovals = createResumeApprovalMatcher(options.resumeContext);
   const events: OraEventEnvelope[] = [];
   const artifacts: ArtifactRef[] = [];
-  const toolCallLedger: OraToolCallEnvelope[] = [];
+  const toolCallLedger = new RuntimeToolCallLedger(runId, now);
   const runtimeToolResultCache = new Map<string, unknown>();
   const pendingClarifications: PendingClarification[] = [];
   const activeAgents = new Set<string>();
@@ -351,6 +193,7 @@ export async function executeRuntimeKernel(
     return envelope;
   };
 
+  const completion = new RuntimeCompletionController(config, modeSpec, emit);
   const recoveryCoordinator = new RecoveryCoordinator(modeSpec, runtimeToolExecutor.enabledToolIds(config.toolIds));
 
   const publishRecoveryArtifact = (incident: RecoveryIncident, decision: RecoveryDecision) => {
@@ -424,6 +267,7 @@ export async function executeRuntimeKernel(
       const response = await invokeRunProvider(config, {
         system: [
           "You write concise live progress updates for an assistant run.",
+          "Match the user's language. If the user wrote in Chinese, write the progress update in Chinese.",
           "Describe only what has happened, what is being worked on, and the likely next step.",
           "Do not claim the final answer is known. Do not output tool JSON. Do not mention internal event names or sequence numbers.",
           "Return one natural sentence under 32 words.",
@@ -432,6 +276,7 @@ export async function executeRuntimeKernel(
           role: "user",
           content: JSON.stringify({
             userPrompt: input.prompt,
+            languageInstruction: "Use the same language as userPrompt for the progress update.",
             modeId: modeSpec.id,
             pattern: config.pattern,
             trigger: params.trigger,
@@ -465,66 +310,7 @@ export async function executeRuntimeKernel(
     }
   };
 
-  const appendToolCall = (params: {
-    id?: string;
-    providerCallId?: string;
-    toolId: string;
-    args: Record<string, unknown>;
-    source: OraToolCallSource;
-    status: OraToolCallStatus;
-    actionId?: string;
-    agentId?: string;
-    nodeId?: string;
-    result?: OraToolCallEnvelope["result"];
-    error?: string;
-    repairReason?: string;
-  }) => {
-    const updatedAt = now();
-    const existingIndex = params.id
-      ? toolCallLedger.findIndex((call) => call.id === params.id)
-      : params.providerCallId
-        ? toolCallLedger.findIndex((call) => call.providerCallId === params.providerCallId && call.source === params.source)
-        : -1;
-    const existing = existingIndex >= 0 ? toolCallLedger[existingIndex] : undefined;
-    const envelope = OraToolCallEnvelopeSchema.parse({
-      id: params.id ?? existing?.id ?? `${runId}:tool-call-${toolCallLedger.length}`,
-      providerCallId: params.providerCallId ?? existing?.providerCallId,
-      runId,
-      nodeId: params.nodeId ?? existing?.nodeId,
-      agentId: params.agentId ?? existing?.agentId,
-      actionId: params.actionId ?? existing?.actionId,
-      toolId: params.toolId,
-      args: params.args,
-      source: params.source,
-      status: params.status,
-      requestedAt: existing?.requestedAt ?? updatedAt,
-      updatedAt,
-      result: params.result ?? existing?.result,
-      error: params.error ?? existing?.error,
-      repairReason: params.repairReason ?? existing?.repairReason,
-    });
-    if (existingIndex >= 0) {
-      toolCallLedger[existingIndex] = envelope;
-    } else {
-      toolCallLedger.push(envelope);
-    }
-    return envelope;
-  };
-
-  const completionPolicy = config.completionPolicy ?? modeSpec.completionPolicy;
-  let completionStopReason: CompletionStopReason | undefined;
-  let forcedFinalActive = false;
-  let forcedFinalConsumed = false;
-  let runToolAttempts = 0;
-  const repeatedToolCounts = new Map<string, number>();
-  const warnedRepeatedToolKeys = new Set<string>();
-  const toolTypeCounts = new Map<string, number>();
-  const warnedToolTypes = new Set<string>();
-  const runToolBudget = config.budget?.maxToolCalls ?? Number.MAX_SAFE_INTEGER;
-  const repeatedToolLimit = Math.max(1, completionPolicy.maxRepeatedToolCalls);
-  const finiteRunToolBudget = Number.isFinite(runToolBudget) ? runToolBudget : 16;
-  const toolTypeHardLimit = Math.max(4, Math.ceil(finiteRunToolBudget * 0.75));
-  const toolTypeWarnLimit = Math.max(3, Math.floor(toolTypeHardLimit / 2));
+  const appendToolCall = toolCallLedger.append.bind(toolCallLedger);
 
   const emitNodeRuntimeState = (
     state: NodeRuntimeLoopState,
@@ -538,109 +324,9 @@ export async function executeRuntimeKernel(
       detail: params.detail,
       toolId: params.toolId,
       iteration: params.iteration,
-      toolAttempts: runToolAttempts,
-      maxToolCalls: runToolBudget,
+      toolAttempts: completion.toolAttempts,
+      maxToolCalls: completion.maxToolCalls,
     }, { agentId: params.agentId, nodeId: params.agentId });
-  };
-
-  const setCompletionStopReason = (reason: CompletionStopReason) => {
-    completionStopReason ??= reason;
-  };
-
-  const forceFinalAnswer = (reason: CompletionStopReason, extra: Record<string, unknown> = {}) => {
-    setCompletionStopReason(reason);
-    if (!forcedFinalActive) {
-      emit("completion.updated", {
-        state: "force_final",
-        reason,
-        toolAttempts: runToolAttempts,
-        maxToolCalls: runToolBudget,
-        policy: completionPolicy,
-        ...extra,
-      });
-    }
-    forcedFinalActive = true;
-  };
-
-  const toolsAllowedByCompletion = () => !forcedFinalActive && runToolAttempts < runToolBudget;
-
-  const registerToolAttempt = (call: RuntimeToolCall): RuntimeToolAttemptDecision => {
-    if (runToolAttempts >= runToolBudget) {
-      if (completionPolicy.forceFinalOnBudgetExhausted) {
-        forceFinalAnswer("tool_budget_exhausted");
-      }
-      return { allowed: false, reason: "tool_budget_exhausted" };
-    }
-
-    const key = stableKeyForRuntimeTool(call);
-    const repeatCount = (repeatedToolCounts.get(key) ?? 0) + 1;
-    if (repeatCount === repeatedToolLimit && repeatCount > 1 && !warnedRepeatedToolKeys.has(key)) {
-      warnedRepeatedToolKeys.add(key);
-      emit("completion.updated", {
-        state: "loop_warning",
-        reason: "repeated_tool_blocked",
-        toolId: call.tool,
-        repeatCount,
-        repeatedToolLimit,
-        key,
-      });
-    }
-    if (repeatCount > repeatedToolLimit && completionPolicy.forceFinalOnRepeatedTool) {
-      if (!warnedRepeatedToolKeys.has(key)) {
-        warnedRepeatedToolKeys.add(key);
-        emit("completion.updated", {
-          state: "loop_warning",
-          reason: "repeated_tool_blocked",
-          toolId: call.tool,
-          repeatCount,
-          repeatedToolLimit,
-          key,
-        });
-      }
-      forceFinalAnswer("repeated_tool_blocked", {
-        toolId: call.tool,
-        repeatCount,
-        repeatedToolLimit,
-        key,
-      });
-      return { allowed: false, reason: "repeated_tool_blocked", key, repeatCount };
-    }
-
-    repeatedToolCounts.set(key, repeatCount);
-    const toolTypeCount = (toolTypeCounts.get(call.tool) ?? 0) + 1;
-    toolTypeCounts.set(call.tool, toolTypeCount);
-    runToolAttempts += 1;
-    if (toolTypeCount >= toolTypeHardLimit) {
-      forceFinalAnswer("tool_frequency_exhausted", {
-        toolId: call.tool,
-        toolTypeCount,
-        toolTypeHardLimit,
-      });
-      return { allowed: false, reason: "tool_frequency_exhausted", key, repeatCount, toolTypeCount };
-    }
-    if (toolTypeCount >= toolTypeWarnLimit && !warnedToolTypes.has(call.tool)) {
-      warnedToolTypes.add(call.tool);
-      emit("completion.updated", {
-        state: "loop_warning",
-        reason: "tool_frequency_exhausted",
-        toolId: call.tool,
-        toolTypeCount,
-        toolTypeWarnLimit,
-        toolTypeHardLimit,
-      });
-    }
-    return { allowed: true, key, repeatCount, toolTypeCount };
-  };
-
-  const markToolResultObserved = (call: RuntimeToolCall, cacheHit: boolean) => {
-    if (runToolAttempts >= runToolBudget && completionPolicy.forceFinalOnBudgetExhausted) {
-      forceFinalAnswer("tool_budget_exhausted", { toolId: call.tool });
-      return;
-    }
-    if (cacheHit && completionPolicy.forceFinalOnRepeatedTool) {
-      forceFinalAnswer("repeated_tool_blocked", { toolId: call.tool, cacheHit });
-      return;
-    }
   };
 
   const forcedFinalSystemPrompt = (system: string, reason: CompletionStopReason) => [
@@ -675,7 +361,7 @@ export async function executeRuntimeKernel(
       : response.text.trim()
         || FORCED_FINAL_FALLBACK_TEXT;
     if ((response.toolCalls?.length ?? 0) > 0) {
-      setCompletionStopReason("forced_final_answer");
+      completion.setCompletionStopReason("forced_final_answer");
       emit("completion.updated", {
         state: "tool_calls_ignored",
         reason,
@@ -701,7 +387,7 @@ export async function executeRuntimeKernel(
     agentId?: string;
     title?: string;
   }): Promise<ModelResponse> => {
-    forcedFinalConsumed = true;
+    completion.markForcedFinalConsumed();
     const response = await params.invokeProvider(params.config, {
       messages: params.messages,
       system: forcedFinalSystemPrompt(params.system, params.reason),
@@ -742,13 +428,7 @@ export async function executeRuntimeKernel(
     return finalResponse;
   };
 
-  const completionMetadata = () => ({
-    stopReason: completionStopReason ?? "completed",
-    forcedFinal: forcedFinalActive || forcedFinalConsumed,
-    toolAttempts: runToolAttempts,
-    maxToolCalls: runToolBudget,
-    completionPolicy,
-  });
+  const completionMetadata = () => completion.metadata();
 
   const outputWithCompletionMetadata = (value: unknown): unknown => {
     const metadata = completionMetadata();
@@ -795,7 +475,7 @@ export async function executeRuntimeKernel(
   };
 
   const inferCompletionStopReason = (value: unknown) => {
-    if (completionStopReason) {
+    if (completion.completionStopReason) {
       return;
     }
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -804,16 +484,16 @@ export async function executeRuntimeKernel(
       if (verifier && typeof verifier === "object" && !Array.isArray(verifier)) {
         const verifierRecord = verifier as Record<string, unknown>;
         if (verifierRecord.verdict === "pass") {
-          setCompletionStopReason("verification_passed");
+          completion.setCompletionStopReason("verification_passed");
           return;
         }
         if (verifierRecord.exhausted === true) {
-          setCompletionStopReason("verification_exhausted");
+          completion.setCompletionStopReason("verification_exhausted");
           return;
         }
       }
     }
-    setCompletionStopReason("completed");
+    completion.setCompletionStopReason("completed");
   };
 
   const clarificationAnswer = (key: string, id: string): unknown => {
@@ -969,9 +649,9 @@ export async function executeRuntimeKernel(
     };
     emitNodeRuntimeState("pending", { agentId: params.agentId, title: params.title });
     messages = repairDanglingToolCalls(messages);
-    const initialToolsAllowed = toolsAllowedByCompletion();
+    const initialToolsAllowed = completion.toolsAllowed();
     if (!initialToolsAllowed) {
-      forceFinalAnswer("tool_budget_exhausted");
+      completion.forceFinalAnswer("tool_budget_exhausted");
     }
     emitNodeRuntimeState(initialToolsAllowed ? "running_model" : "finalizing", { agentId: params.agentId, title: params.title });
     let response = await invokeProvider(config, {
@@ -979,13 +659,13 @@ export async function executeRuntimeKernel(
       messages,
       system: initialToolsAllowed
         ? params.system
-        : forcedFinalSystemPrompt(params.system, completionStopReason ?? "tool_budget_exhausted"),
+        : forcedFinalSystemPrompt(params.system, completion.completionStopReason ?? "tool_budget_exhausted"),
       maxTokens: config.budget?.maxTokens,
       tools: nativeTools,
       toolChoice: nativeTools.length > 0 ? (initialToolsAllowed ? "auto" : "none") : undefined,
     }, streamCallbacks);
     if (!initialToolsAllowed) {
-      const finalResponse = coerceNoToolResponse(response, completionStopReason ?? "tool_budget_exhausted");
+      const finalResponse = coerceNoToolResponse(response, completion.completionStopReason ?? "tool_budget_exhausted");
       emitNodeRuntimeState("completed", { agentId: params.agentId, title: params.title });
       return finalResponse;
     }
@@ -995,12 +675,12 @@ export async function executeRuntimeKernel(
       return response;
     }
 
-    const remainingToolBudget = Number.isFinite(runToolBudget)
-      ? Math.max(0, runToolBudget - runToolAttempts)
+    const remainingToolBudget = Number.isFinite(completion.maxToolCalls)
+      ? Math.max(0, completion.maxToolCalls - completion.toolAttempts)
       : RUNTIME_TOOL_LOOP_SAFETY_LIMIT;
     const toolLoopLimit = Math.max(1, Math.min(RUNTIME_TOOL_LOOP_SAFETY_LIMIT, remainingToolBudget));
     for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
-      if (!toolsAllowedByCompletion()) {
+      if (!completion.toolsAllowed()) {
         return runForcedFinalProviderCall({
           invokeProvider,
           config,
@@ -1008,7 +688,7 @@ export async function executeRuntimeKernel(
           system: params.system,
           nativeTools,
           streamCallbacks,
-          reason: completionStopReason ?? "tool_budget_exhausted",
+          reason: completion.completionStopReason ?? "tool_budget_exhausted",
           agentId: params.agentId,
           title: params.title,
         });
@@ -1026,7 +706,7 @@ export async function executeRuntimeKernel(
       }
       emitNodeRuntimeState("tool_requested", { agentId: params.agentId, title: params.title, toolId: toolCall.tool, iteration });
 
-      const attemptDecision = registerToolAttempt(toolCall);
+      const attemptDecision = completion.registerToolAttempt(toolCall);
       if (!attemptDecision.allowed) {
         emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, toolId: toolCall.tool, reason: attemptDecision.reason, iteration });
         return runForcedFinalProviderCall({
@@ -1107,7 +787,7 @@ export async function executeRuntimeKernel(
         if (cacheKey && !cacheHit) {
           runtimeToolResultCache.set(cacheKey, output);
         }
-        markToolResultObserved(toolCall, cacheHit);
+        completion.markToolResultObserved(toolCall, cacheHit);
         const succeeded = actionLedger.transition(action.id, "succeeded", { output });
         const resultText = JSON.stringify(output, null, 2);
         appendToolCall({
@@ -1159,8 +839,8 @@ export async function executeRuntimeKernel(
               { role: "user", content: `Workspace tool result for ${toolCall.tool}:\n${resultText}` },
             ];
         messages = repairDanglingToolCalls(messages);
-        if (forcedFinalActive) {
-          emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, toolId: toolCall.tool, reason: completionStopReason ?? "forced_final_answer", iteration });
+        if (completion.forcedFinalIsActive) {
+          emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, toolId: toolCall.tool, reason: completion.completionStopReason ?? "forced_final_answer", iteration });
           response = await runForcedFinalProviderCall({
             invokeProvider,
             config,
@@ -1168,7 +848,7 @@ export async function executeRuntimeKernel(
             system: params.system,
             nativeTools,
             streamCallbacks,
-            reason: completionStopReason ?? "forced_final_answer",
+            reason: completion.completionStopReason ?? "forced_final_answer",
             agentId: params.agentId,
             title: params.title,
           });
@@ -1244,7 +924,7 @@ export async function executeRuntimeKernel(
             tool: recoveryDecision.alternateToolId as RuntimeToolCall["tool"],
             args: toolCall.args,
           };
-          const alternateAttemptDecision = registerToolAttempt(alternateCall);
+          const alternateAttemptDecision = completion.registerToolAttempt(alternateCall);
           if (!alternateAttemptDecision.allowed) {
             emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, toolId: alternateCall.tool, reason: alternateAttemptDecision.reason, iteration });
             return runForcedFinalProviderCall({
@@ -1301,7 +981,7 @@ export async function executeRuntimeKernel(
           const alternateOutput = await runtimeToolExecutor.execute(alternateCall, {
             allowRisky: !alternateDecision.requiredApproval || config.approvalMode === "auto" || alternateApproved,
           });
-          markToolResultObserved(alternateCall, false);
+          completion.markToolResultObserved(alternateCall, false);
           const alternateSucceeded = actionLedger.transition(alternateAction.id, "succeeded", { output: alternateOutput });
           emit("tool.called", {
             actionId: alternateAction.id,
@@ -1318,8 +998,8 @@ export async function executeRuntimeKernel(
             { role: "assistant", content: response.text },
             { role: "user", content: `Workspace tool result for ${alternateCall.tool}:\n${JSON.stringify(alternateOutput, null, 2)}` },
           ];
-          if (forcedFinalActive) {
-            emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, toolId: alternateCall.tool, reason: completionStopReason ?? "forced_final_answer", iteration });
+          if (completion.forcedFinalIsActive) {
+            emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, toolId: alternateCall.tool, reason: completion.completionStopReason ?? "forced_final_answer", iteration });
             response = await runForcedFinalProviderCall({
               invokeProvider,
               config,
@@ -1327,7 +1007,7 @@ export async function executeRuntimeKernel(
               system: params.system,
               nativeTools,
               streamCallbacks,
-              reason: completionStopReason ?? "forced_final_answer",
+              reason: completion.completionStopReason ?? "forced_final_answer",
               agentId: params.agentId,
               title: params.title,
             });
@@ -1378,7 +1058,7 @@ export async function executeRuntimeKernel(
       }
     }
 
-    forceFinalAnswer("runtime_tool_loop_limit");
+    completion.forceFinalAnswer("runtime_tool_loop_limit");
     emitNodeRuntimeState("finalizing", { agentId: params.agentId, title: params.title, reason: "runtime_tool_loop_limit" });
     return runForcedFinalProviderCall({
       invokeProvider,
@@ -2005,7 +1685,7 @@ export async function executeRuntimeKernel(
     plan: planService.list(),
     todos: todoService.list(),
     actions: actionLedger.list(),
-    toolCalls: toolCallLedger,
+    toolCalls: toolCallLedger.list(),
     policyDecisions: [],
     checkpoints: [checkpoint],
     events,
@@ -2026,36 +1706,4 @@ export async function executeRuntimeKernel(
     snapshot,
     tools,
   };
-}
-
-function createResumeApprovalMatcher(resumeContext: RuntimeKernelOptions["resumeContext"]): {
-  consume: (action: ActionRecord) => boolean;
-} {
-  const approvedActionIds = new Set(resumeContext?.approvedActionIds ?? []);
-  const approvedActionKeys = new Set(
-    (resumeContext?.approvedActions ?? []).map((action) => stableApprovalActionKey(action)),
-  );
-
-  return {
-    consume(action) {
-      if (approvedActionIds.delete(action.id)) {
-        return true;
-      }
-      const key = stableApprovalActionKey(action);
-      if (!approvedActionKeys.has(key)) {
-        return false;
-      }
-      approvedActionKeys.delete(key);
-      return true;
-    },
-  };
-}
-
-function stableApprovalActionKey(action: ApprovedResumeAction): string {
-  return stableJson({
-    type: action.type,
-    riskLevel: action.riskLevel,
-    agentId: action.agentId ?? null,
-    input: action.input,
-  });
 }

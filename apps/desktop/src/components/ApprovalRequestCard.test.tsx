@@ -9,7 +9,7 @@ describe("ApprovalRequestCard", () => {
       id: "run-1:action:solo_agent-tool-1",
       label: "skills create",
       state: "approval_required",
-      consequence: "High-risk action requires explicit operator approval before execution.",
+      consequence: "Please confirm this operation before I continue.",
       risk: "high",
       agentId: "solo_agent",
       artifactIds: [],
@@ -29,7 +29,9 @@ describe("ApprovalRequestCard", () => {
 
     expect(html).toContain("需要你确认安装技能");
     expect(html).toContain("我准备把 Waza 的 think 技能安装到 Ora 的本地技能库。");
-    expect(html).toContain("会新增一个本地技能条目");
+    expect(html).not.toContain("你正在批准的内容");
+    expect(html).not.toContain("What you are approving");
+    expect(html).not.toContain("会新增一个本地技能条目");
     expect(html).not.toContain("pending gate");
     expect(html).not.toContain("High-risk action requires");
     expect(html).not.toContain("agent:");

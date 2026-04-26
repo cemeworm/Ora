@@ -125,6 +125,14 @@ const InterruptParamsSchema = RunIdParamsSchema.extend({
   reason: z.string().optional()
 });
 
+const CancelParamsSchema = RunIdParamsSchema.extend({
+  reason: z.string().optional()
+});
+
+const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
+const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
+const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
+
 const StoreManifestSchema = z.object({
   schemaVersion: z.literal(3).default(3),
   nextRunNumber: z.number().int().positive(),
@@ -951,7 +959,7 @@ export class LocalRunStore {
     const parsed = InterruptParamsSchema.parse(params);
     const snapshot = this.getRunOrThrow(parsed.runId);
     return this.transitionRun(snapshot, "interrupted", "run.interrupted", {
-      reason: parsed.reason ?? "Interrupted by caller."
+      reason: parsed.reason ?? USER_INTERRUPTED_MESSAGE
     });
   }
 
@@ -1044,7 +1052,7 @@ export class LocalRunStore {
     }
 
     let working = this.appendEvent(snapshot, "run.resumed", {
-      reason: parsed.reason ?? "Resumed by caller.",
+      reason: parsed.reason ?? USER_RESUMED_MESSAGE,
       patch: parsed.patch ?? {}
     });
     working = this.syncSnapshotTodos(working, "resume.sync");
@@ -1200,10 +1208,10 @@ export class LocalRunStore {
   }
 
   cancelRun(params: unknown): StateSnapshot {
-    const runId = this.requireRunId(params);
-    const snapshot = this.getRunOrThrow(runId);
+    const parsed = CancelParamsSchema.parse(params);
+    const snapshot = this.getRunOrThrow(parsed.runId);
     return this.transitionRun(snapshot, "cancelled", "run.cancelled", {
-      reason: "Cancelled by caller."
+      reason: parsed.reason ?? USER_CANCELLED_MESSAGE
     });
   }
 
@@ -2120,12 +2128,73 @@ export class LocalRunStore {
     type: "run.interrupted" | "run.cancelled",
     payload: unknown
   ): StateSnapshot {
-    const updated = StateSnapshotSchema.parse({
-      ...this.appendEvent(snapshot, type, payload),
-      status
-    });
+    const withEvent = this.appendEvent(snapshot, type, payload);
+    const updated = StateSnapshotSchema.parse(status === "cancelled"
+      ? this.cancelledSnapshot(withEvent, payload)
+      : {
+          ...withEvent,
+          status
+        });
     this.persistRun(updated);
     return updated;
+  }
+
+  private cancelledSnapshot(snapshot: StateSnapshot, payload: unknown): StateSnapshot {
+    const updatedAt = this.now();
+    const reason = payload && typeof payload === "object" && "reason" in payload && typeof (payload as { reason?: unknown }).reason === "string"
+      ? (payload as { reason: string }).reason
+      : USER_CANCELLED_MESSAGE;
+    const plan = snapshot.plan.map((item) => ({
+      ...item,
+      status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
+    }));
+    const todos = snapshot.todos.map((item) => ({
+      ...item,
+      status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
+      updatedAt,
+    }));
+    return {
+      ...snapshot,
+      status: "cancelled",
+      topology: {
+        nodes: snapshot.topology.nodes.map((node) => ({ ...node, status: "failed" as const })),
+        edges: snapshot.topology.edges,
+      },
+      plan,
+      todos,
+      actions: snapshot.actions.map((action) =>
+        action.status === "approval_required" || action.status === "running" || action.status === "proposed" || action.status === "approved"
+          ? { ...action, status: "denied" as const, error: reason }
+          : action,
+      ),
+      toolCalls: snapshot.toolCalls.map((call) =>
+        call.status === "running" || call.status === "proposed" || call.status === "approval_required" || call.status === "approved"
+          ? {
+              ...call,
+              status: "denied" as const,
+              updatedAt,
+              error: reason,
+              result: {
+                status: "denied" as const,
+                error: reason,
+                content: reason,
+                createdAt: updatedAt,
+                updatedAt,
+              },
+            }
+          : call,
+      ),
+      pendingApprovals: [],
+      activeAgents: [],
+      queueSummary: {
+        ...snapshot.queueSummary,
+        inProgress: 0,
+        pending: plan.filter((item) => item.status !== "done" && item.status !== "skipped").length,
+        completed: plan.filter((item) => item.status === "done" || item.status === "skipped").length,
+      },
+      error: reason,
+      updatedAt,
+    };
   }
 
   private appendEvent(

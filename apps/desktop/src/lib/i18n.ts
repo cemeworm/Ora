@@ -91,16 +91,21 @@ const ZH_COPY: Record<string, string> = {
   "Send message": "发送消息",
   "Ora can make mistakes. Review plans, actions, and checkpoints before using results.":
     "Ora 可能会出错。使用结果前请检查计划、操作。",
+  "Stopped processing as instructed.": "已按照你的指示停止处理",
+  "Paused as instructed.": "已按照你的指示暂停处理",
+  "Confirmed. Continuing.": "已确认，继续处理",
+  "Confirmed. Continuing the run.": "已确认，继续处理本轮任务。",
+  "Please confirm this operation before I continue.":
+    "继续前请确认这个操作。",
+  "Please confirm before this step continues.": "继续这个步骤前请确认。",
+  "This operation was completed and recorded.": "这个操作已完成并记录。",
+  "This operation is ready to review.": "这个操作已准备好确认。",
   "Approval required": "需要审批",
   "Your confirmation is needed": "需要你确认后继续",
   "Review before continuing": "继续前请确认",
   "Review all items": "确认所有内容",
   "I need your confirmation for the actions below before I continue.":
     "继续前，我需要你确认下面这些操作。",
-  "What you are approving": "你正在批准的内容",
-  "What will change": "会发生什么变化",
-  "Why this is needed": "为什么需要这样做",
-  "What to check": "你需要确认什么",
   "Confirm before continuing": "需要你确认后继续",
   "This action may change the local environment.": "这项操作可能会改变本地环境。",
   "It is needed to continue the current task.": "这是继续当前任务所需的步骤。",
@@ -272,6 +277,27 @@ const ZH_COPY: Record<string, string> = {
   "Select a session to inspect its latest turn, checkpoints, and approvals.":
     "选择一个会话以检查最新轮次、检查点和审批。",
   "Reconnecting to the Ora runtime bridge.": "正在重新连接 Ora 运行时桥接。",
+  "Working on it...": "正在处理...",
+  "I need a bit more information before I can continue this turn.":
+    "继续前，我还需要一点信息。",
+  "I'm waiting for approval before continuing this turn.":
+    "继续前，我正在等待你的确认。",
+  "This turn did not produce a final assistant reply.":
+    "这一轮没有生成最终回复。",
+  "This turn completed and produced attachments below.":
+    "这一轮已完成，附件如下。",
+  "This turn completed without a final assistant reply.":
+    "这一轮已完成，但没有生成最终回复。",
+  "Processing state updated.": "处理状态已更新。",
+  "The run did not finish. Open Trails for the latest details.":
+    "本轮没有完成。可打开轨迹查看最新详情。",
+  "Processing update received.": "已收到处理状态更新。",
+  "Continued with limited context.": "已使用有限上下文继续。",
+  "Paused after processing was interrupted.": "处理被中断后已暂停。",
+  "Processing step failed.": "处理步骤失败。",
+  "Processing state changed.": "处理状态已变化。",
+  Recovered: "已恢复",
+  "Tool call": "工具调用",
   "Run completed.": "运行完成。",
   "Run failed.": "运行失败。",
   "Run completed": "运行完成",
@@ -648,6 +674,30 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   [
     /^(.+) in progress\.$/,
     (match) => `${translateCopy("zh", match[1])} 进行中。`,
+  ],
+  [
+    /^Processing state updated: (.+)\.$/,
+    (match) => `处理状态已更新：${match[1]}。`,
+  ],
+  [
+    /^Could not complete this operation: (.+)$/,
+    (match) => `无法完成这个操作：${match[1]}`,
+  ],
+  [
+    /^Continued with limited context (.+)\.$/,
+    (match) => `已使用有限上下文继续：${match[1]}。`,
+  ],
+  [
+    /^Paused after processing was interrupted (.+)\.$/,
+    (match) => `处理被中断后已暂停：${match[1]}。`,
+  ],
+  [
+    /^Processing step failed (.+)\.$/,
+    (match) => `处理步骤失败：${match[1]}。`,
+  ],
+  [
+    /^Processing state changed (.+)\.$/,
+    (match) => `处理状态已变化：${match[1]}。`,
   ],
   [/^Provider id:$/, () => "提供方 ID："],
   [/^Model: (.+)$/, (match) => `模型：${translateCopy("zh", match[1])}`],

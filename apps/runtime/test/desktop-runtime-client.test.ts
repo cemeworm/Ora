@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRuntimeClient } from "../../desktop/src/lib/runtimeClient";
+import { USER_CANCELLED_MESSAGE, createRuntimeClient } from "../../desktop/src/lib/runtimeClient";
 import { adaptChatMessages } from "../../desktop/src/lib/viewModel";
 
 describe("desktop browser-mock runtime lifecycle", () => {
@@ -85,8 +85,8 @@ describe("desktop browser-mock runtime lifecycle", () => {
     );
 
     const steps = messages.find((message) => message.role === "assistant")?.turn?.processSteps ?? [];
-    expect(steps.map((step) => step.eventType)).toEqual(["checkpoint.created", "tool.called"]);
-    expect(steps.at(-1)?.label).toBe("file.read");
+    expect(steps.map((step) => step.eventType)).toEqual(["tool.called"]);
+    expect(steps.at(-1)?.label).toBe("Read file");
     expect(steps.at(-1)?.detail).toBe("Read notes/project.md (2.0 KB).");
     expect(steps.at(-1)?.contextLabel).toBe("notes/project.md");
   });
@@ -157,13 +157,37 @@ describe("desktop browser-mock runtime lifecycle", () => {
     expect(run.todos.some((todo) => todo.status === "running")).toBe(true);
 
     const cancelled = await client.cancelRun(run.runId);
+    const cancelledText = JSON.stringify(cancelled);
+    const messages = adaptChatMessages(
+      [
+        {
+          id: `${run.runId}:user`,
+          sessionId: session.sessionId,
+          runId: run.runId,
+          turnIndex: run.turnIndex ?? 1,
+          role: "user",
+          content: run.input.prompt,
+          pattern: run.pattern,
+          modeId: run.modeId,
+          createdAt: run.input.createdAt ?? run.updatedAt,
+        },
+      ],
+      { [run.runId]: cancelled },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
 
     expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.error).toBe(USER_CANCELLED_MESSAGE);
     expect(cancelled.todos.some((todo) => todo.status === "running")).toBe(false);
     expect(cancelled.todos.every((todo) => todo.status === "done" || todo.status === "blocked")).toBe(true);
     expect(cancelled.pendingApprovals).toEqual([]);
     expect(cancelled.activeAgents).toEqual([]);
     expect(cancelled.actions.find((action) => action.status === "approval_required")).toBeUndefined();
+    expect(cancelled.actions.find((action) => action.status === "running")).toBeUndefined();
+    expect(cancelled.toolCalls.find((call) => call.status === "approval_required")).toBeUndefined();
+    expect(cancelledText).toContain(USER_CANCELLED_MESSAGE);
+    expect(cancelledText).not.toContain("Cancelled by caller.");
+    expect(assistant?.content).toBe(USER_CANCELLED_MESSAGE);
     expect(cancelled.events.at(-1)?.type).toBe("run.cancelled");
   });
 

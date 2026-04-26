@@ -1176,7 +1176,7 @@ impl RuntimeFacade {
         let reason = params
             .and_then(|value| value.get("reason"))
             .and_then(Value::as_str)
-            .unwrap_or("Interrupted by caller.");
+            .unwrap_or("Paused as instructed.");
         self.transition_run(
             params,
             "interrupted",
@@ -1190,7 +1190,7 @@ impl RuntimeFacade {
         let reason = params
             .and_then(|value| value.get("reason"))
             .and_then(Value::as_str)
-            .unwrap_or("Resumed by caller.");
+            .unwrap_or("Confirmed. Continuing.");
         let patch = params
             .and_then(|value| value.get("patch"))
             .cloned()
@@ -1226,11 +1226,15 @@ impl RuntimeFacade {
     }
 
     fn runs_cancel(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let reason = params
+            .and_then(|value| value.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("Stopped processing as instructed.");
         self.transition_run(
             params,
             "cancelled",
             "run.cancelled",
-            json!({ "reason": "Cancelled by caller." }),
+            json!({ "reason": reason }),
         )
     }
 
@@ -1987,6 +1991,7 @@ fn run_process_json_rpc_for_app(
     )
 }
 
+#[cfg(test)]
 fn run_process_json_rpc_with_notifications(
     command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,

@@ -27,6 +27,10 @@ import { createOraSqliteCheckpointer } from "../persistence/sqlite-checkpointer.
 import { createPatternGraphWithCheckpointer } from "../patterns/registry.js";
 import { withLangfuseRunTrace } from "../telemetry/langfuse.js";
 
+const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
+const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
+const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
+
 /**
  * Manages active LangGraph runs.
  *
@@ -156,7 +160,7 @@ export class SessionManager {
       "interrupted",
       "run.interrupted",
       {
-        reason: reason ?? "Interrupted by caller.",
+        reason: reason ?? USER_INTERRUPTED_MESSAGE,
       },
       "blocked",
     );
@@ -206,7 +210,7 @@ export class SessionManager {
 
     const resumed = resumeLifecycleSnapshot(
       managed.snapshot,
-      reason ?? "Resumed by caller.",
+      reason ?? USER_RESUMED_MESSAGE,
       managed.lastGraphStatus === "cancelled" ? "succeeded" : managed.lastGraphStatus,
     );
     managed.snapshot = resumed;
@@ -229,7 +233,7 @@ export class SessionManager {
       "cancelled",
       "run.cancelled",
       {
-        reason: reason ?? "Cancelled by caller.",
+        reason: reason ?? USER_CANCELLED_MESSAGE,
       },
       "blocked",
     );
@@ -447,7 +451,7 @@ function buildSnapshotFromGraph(params: {
   }
   if (isResume) {
     emit("run.resumed", {
-      reason: "Resumed by caller.",
+      reason: USER_RESUMED_MESSAGE,
       patch: params.resumePatch ?? {},
     });
   }
@@ -888,19 +892,26 @@ function appendLifecycleEvent(
       call.status === "running" || call.status === "proposed" || call.status === "approval_required" || call.status === "approved"
         ? OraToolCallEnvelopeSchema.parse({
             ...call,
-            status: "interrupted",
+            status: status === "cancelled" ? "denied" : "interrupted",
             updatedAt,
             result: {
-              status: "interrupted",
-              error: "Run was interrupted before this tool call completed.",
-              content: "Run was interrupted before this tool call completed.",
+              status: status === "cancelled" ? "denied" : "interrupted",
+              error: status === "cancelled" ? USER_CANCELLED_MESSAGE : "Run was interrupted before this tool call completed.",
+              content: status === "cancelled" ? USER_CANCELLED_MESSAGE : "Run was interrupted before this tool call completed.",
               createdAt: updatedAt,
               updatedAt,
             },
-            error: "Run was interrupted before this tool call completed.",
+            error: status === "cancelled" ? USER_CANCELLED_MESSAGE : "Run was interrupted before this tool call completed.",
           })
         : call
     ),
+    actions: snapshot.actions.map((action) =>
+      status === "cancelled" && (action.status === "approval_required" || action.status === "running" || action.status === "proposed" || action.status === "approved")
+        ? { ...action, status: "denied", error: USER_CANCELLED_MESSAGE }
+        : action,
+    ),
+    pendingApprovals: status === "cancelled" ? [] : snapshot.pendingApprovals,
+    activeAgents: status === "cancelled" ? [] : snapshot.activeAgents,
     events: [...snapshot.events, event],
     updatedAt,
   });

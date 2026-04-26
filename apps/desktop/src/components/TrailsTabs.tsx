@@ -918,8 +918,8 @@ function matchesClarificationEvent(payload: unknown, clarificationId: string, cl
 
 function fallbackApprovalReason(riskLevel?: "low" | "medium" | "high") {
   return riskLevel === "high"
-    ? "High-risk action requires explicit operator approval before execution."
-    : "Manual approval is required before this node can continue.";
+    ? "Please confirm this operation before I continue."
+    : "Please confirm before this step continues.";
 }
 
 function stopReasonFromSnapshot(snapshot: OraStateSnapshot): string | undefined {

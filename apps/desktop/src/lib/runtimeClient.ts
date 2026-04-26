@@ -75,6 +75,10 @@ import type {
 } from "@ora/shared";
 import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
+export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
+export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
+export const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
+
 export type {
   OraActionRecord,
   OraAgentProfile,
@@ -490,8 +494,8 @@ export function createRuntimeClient() {
     async resumeRun(runId: string, reason: string, patch: Record<string, unknown> = {}): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.resume", { runId, reason, patch });
     },
-    async cancelRun(runId: string): Promise<OraStateSnapshot> {
-      return call<OraStateSnapshot>("runs.cancel", { runId });
+    async cancelRun(runId: string, reason = USER_CANCELLED_MESSAGE): Promise<OraStateSnapshot> {
+      return call<OraStateSnapshot>("runs.cancel", { runId, reason });
     },
     async listCheckpoints(runId: string): Promise<OraCheckpointMeta[]> {
       return call<OraCheckpointMeta[]>("runs.checkpoints", { runId });
@@ -2468,9 +2472,9 @@ class LocalJsonRpcRuntime {
     status: "interrupted" | "cancelled",
     type: "run.interrupted" | "run.cancelled",
   ): OraStateSnapshot {
-    const runId = asRunId(params);
+    const { runId, reason } = asLifecycleRunParams(params);
     const snapshot = this.getRunState({ runId });
-    const updated = transitionMockLifecycleSnapshot(snapshot, status, type);
+    const updated = transitionMockLifecycleSnapshot(snapshot, status, type, reason);
     this.runs.set(runId, updated);
     this.updateSessionFromSnapshot(updated);
     return updated;
@@ -2483,14 +2487,14 @@ class LocalJsonRpcRuntime {
       snapshot.runId,
       snapshot.events.length,
       "run.resumed",
-      { reason: reason ?? "Approved from the Operator Workbench.", patch: patch ?? {} },
+      { reason: reason ?? USER_RESUMED_MESSAGE, patch: patch ?? {} },
       snapshot.pattern,
     );
     const doneEvent = createEvent(
       snapshot.runId,
       snapshot.events.length + 1,
       "run.done",
-      { status: "succeeded", summary: "Run resumed from approval gate and completed." },
+      { status: "succeeded", summary: "Confirmed. Continuing the run." },
       snapshot.pattern,
     );
     const updated = {
@@ -2865,8 +2869,10 @@ export function transitionMockLifecycleSnapshot(
   snapshot: OraStateSnapshot,
   status: "interrupted" | "cancelled",
   type: "run.interrupted" | "run.cancelled",
+  reason?: string,
 ): OraStateSnapshot {
-  const event = createEvent(snapshot.runId, snapshot.events.length, type, { status }, snapshot.pattern);
+  const lifecycleReason = reason ?? (status === "cancelled" ? USER_CANCELLED_MESSAGE : USER_INTERRUPTED_MESSAGE);
+  const event = createEvent(snapshot.runId, snapshot.events.length, type, { status, reason: lifecycleReason }, snapshot.pattern);
   const updatedAt = event.createdAt;
   const topologyStatus = status === "cancelled" ? "failed" as const : "blocked" as const;
   const plan = snapshot.plan.map((item) => ({
@@ -2890,7 +2896,26 @@ export function transitionMockLifecycleSnapshot(
     todos,
     events: [...snapshot.events, event],
     actions: snapshot.actions.map((action) =>
-      status === "cancelled" && action.status === "approval_required" ? { ...action, status: "denied" as const } : action,
+      status === "cancelled" && (action.status === "approval_required" || action.status === "running" || action.status === "proposed" || action.status === "approved")
+        ? { ...action, status: "denied" as const, error: lifecycleReason }
+        : action,
+    ),
+    toolCalls: snapshot.toolCalls.map((call) =>
+      status === "cancelled" && (call.status === "running" || call.status === "proposed" || call.status === "approval_required" || call.status === "approved")
+        ? {
+            ...call,
+            status: "denied" as const,
+            updatedAt,
+            error: lifecycleReason,
+            result: {
+              status: "denied" as const,
+              error: lifecycleReason,
+              content: lifecycleReason,
+              createdAt: updatedAt,
+              updatedAt,
+            },
+          }
+        : call,
     ),
     pendingApprovals: status === "cancelled" ? [] : snapshot.pendingApprovals,
     activeAgents: status === "cancelled" ? [] : snapshot.activeAgents,
@@ -2902,6 +2927,7 @@ export function transitionMockLifecycleSnapshot(
           completed: plan.filter((item) => item.status === "done" || item.status === "skipped").length,
         }
       : snapshot.queueSummary,
+    error: status === "cancelled" ? lifecycleReason : snapshot.error,
     updatedAt,
   };
 }
@@ -3047,6 +3073,15 @@ function asResumeRunParams(params: unknown): { runId: string; reason?: string; p
   const reason = "reason" in params && typeof params.reason === "string" ? params.reason : undefined;
   const patch = "patch" in params && isRecord(params.patch) ? params.patch : undefined;
   return { runId, reason, patch };
+}
+
+function asLifecycleRunParams(params: unknown): { runId: string; reason?: string } {
+  const runId = asRunId(params);
+  if (typeof params !== "object" || params === null) {
+    return { runId };
+  }
+  const reason = "reason" in params && typeof params.reason === "string" ? params.reason : undefined;
+  return { runId, reason };
 }
 
 function asForkRunParams(params: unknown): {

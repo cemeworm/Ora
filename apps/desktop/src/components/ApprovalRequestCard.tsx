@@ -1,7 +1,6 @@
 import { AlertTriangle, ShieldCheck, XCircle } from "lucide-react";
 import type { ActionRecord } from "../types";
 import { Message, MessageContent } from "./ai-elements/message";
-import { TaskItem, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
 
 interface ApprovalRequestCardProps {
   actions: ActionRecord[];
@@ -39,33 +38,6 @@ export function ApprovalRequestCard({ actions, onResume, onCancel, disabled }: A
             </p>
           </MessageContent>
 
-          <TaskList className="border-amber-200/80 bg-amber-50/40">
-            <TaskListHeader className="text-amber-800">
-              <span className="font-medium">What you are approving</span>
-              <span>Review before continuing</span>
-            </TaskListHeader>
-            <TaskListBody className="border-amber-200/80">
-              {actions.map((action) => {
-                const request = approvalCopy(action);
-                return (
-                  <TaskItem key={action.id} className="py-3">
-                    <div className="min-w-0 space-y-3">
-                      {!isSingleAction ? (
-                        <div>
-                          <p className="font-medium text-foreground">{request.title}</p>
-                          <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{request.summary}</p>
-                        </div>
-                      ) : null}
-                      <ApprovalDetail label="What will change" text={request.whatWillChange} />
-                      <ApprovalDetail label="Why this is needed" text={request.whyNeeded} />
-                      <ApprovalDetail label="What to check" text={request.riskNote} tone="warning" />
-                    </div>
-                  </TaskItem>
-                );
-              })}
-            </TaskListBody>
-          </TaskList>
-
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -89,19 +61,6 @@ export function ApprovalRequestCard({ actions, onResume, onCancel, disabled }: A
         </div>
       </div>
     </Message>
-  );
-}
-
-function ApprovalDetail({ label, text, tone }: { label: string; text?: string; tone?: "warning" }) {
-  if (!text) {
-    return null;
-  }
-
-  return (
-    <div className={tone === "warning" ? "rounded-md bg-amber-100/60 px-3 py-2" : undefined}>
-      <p className="text-[11px] font-semibold uppercase tracking-normal text-amber-800">{label}</p>
-      <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{text}</p>
-    </div>
   );
 }
 

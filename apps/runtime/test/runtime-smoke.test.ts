@@ -86,6 +86,80 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("asks progress narration to follow the user's language", async () => {
+    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.PROGRESS_LANGUAGE_KEY;
+    process.env.PROGRESS_LANGUAGE_KEY = "test";
+    const providerBodies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = String(init?.body ?? "");
+      providerBodies.push(body);
+      const content = body.includes("Match the user's language")
+        ? "已经读取到用户要安装技能的请求，正在确认下一步需要执行的安装动作。"
+        : "最终答复。";
+      return new Response(JSON.stringify({
+        choices: [{ message: { content } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const { snapshot } = await executeRuntimeKernel(
+        "run-progress-language",
+        { prompt: "请帮我安装 Waza 的几个 skills。", createdAt: 1, context: {} },
+        {
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          providerId: "progress-language",
+          modelRef: "progress-language-model",
+          providerConfig: {
+            id: "progress-language",
+            type: "openai_compatible",
+            label: "Progress Language",
+            modelId: "progress-language-model",
+            baseUrl: "https://progress-language.test/v1",
+            apiKeyEnv: "PROGRESS_LANGUAGE_KEY",
+            capabilities: ["chat"],
+            headers: {},
+          },
+          metadata: { progressNarration: true },
+          deterministicSeed: "progress-language-test",
+          profileIds: ["solo_agent"],
+          skillIds: [],
+          toolIds: [],
+          approvalMode: "auto",
+          budget: {
+            maxTokens: 1024,
+            maxToolCalls: 4,
+            maxRuntimeMs: 60_000,
+          },
+        },
+        { modeSpec, definition },
+      );
+
+      const progressSummaries = snapshot.events
+        .filter((event) =>
+          event.type === "task.progress" &&
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          (event.payload as Record<string, unknown>).kind === "chat_progress"
+        )
+        .map((event) => (event.payload as Record<string, unknown>).summary);
+
+      expect(providerBodies.some((body) => body.includes("Match the user's language"))).toBe(true);
+      expect(providerBodies.some((body) => body.includes("languageInstruction"))).toBe(true);
+      expect(progressSummaries).toContain("已经读取到用户要安装技能的请求，正在确认下一步需要执行的安装动作。");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.PROGRESS_LANGUAGE_KEY;
+      } else {
+        process.env.PROGRESS_LANGUAGE_KEY = previousKey;
+      }
+    }
+  });
+
   it("starts a deterministic smoke run with ordered Ora events", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const run = (await handle({
@@ -1294,6 +1368,10 @@ describe("Ora runtime smoke path", () => {
                     description: "Approval replay regression skill",
                     content: skillContent,
                     enabled: true,
+                    approvalRequest: {
+                      title: "Confirm replay skill installation",
+                      summary: `Install the replay skill after approval pass ${toolCalls}.`,
+                    },
                   }),
                 },
               }],
@@ -1364,6 +1442,98 @@ describe("Ora runtime smoke path", () => {
         delete process.env.SKILL_REPLAY_APPROVAL_KEY;
       } else {
         process.env.SKILL_REPLAY_APPROVAL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("cancels a pending high-risk tool approval without leaving a live gate", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SKILL_CANCEL_APPROVAL_KEY;
+    process.env.SKILL_CANCEL_APPROVAL_KEY = "test";
+    let providerCalls = 0;
+    globalThis.fetch = (async () => {
+      providerCalls += 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-cancel-${providerCalls}`,
+              type: "function",
+              function: {
+                name: "skills__create",
+                arguments: JSON.stringify({
+                  name: "approval-cancel-skill",
+                  description: "Approval cancel regression skill",
+                  content: "---\nname: approval-cancel-skill\ndescription: Approval cancel regression skill\n---\nUse this skill for cancel regression tests.\n",
+                  enabled: true,
+                }),
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Install approval cancel skill." },
+          config: {
+            modeId: "single_agent",
+            providerId: "skill-cancel-approval",
+            modelRef: "skill-cancel-approval-model",
+            providerConfig: {
+              id: "skill-cancel-approval",
+              label: "Skill Cancel Approval",
+              type: "openai_compatible",
+              modelId: "skill-cancel-approval-model",
+              baseUrl: "https://skill-cancel-approval.test/v1",
+              apiKeyEnv: "SKILL_CANCEL_APPROVAL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["skills.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const cancelled = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.cancel",
+        params: { runId: run.runId, reason: "Stopped processing as instructed." },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.pendingApprovals).toHaveLength(1);
+      expect(cancelled.status).toBe("cancelled");
+      expect(cancelled.error).toBe("Stopped processing as instructed.");
+      expect(cancelled.pendingApprovals).toEqual([]);
+      expect(cancelled.actions.some((action) => action.status === "approval_required")).toBe(false);
+      expect(cancelled.actions.some((action) => action.status === "running")).toBe(false);
+      expect(cancelled.actions.find((action) => action.type === "skills.create")).toMatchObject({ status: "denied" });
+      expect(cancelled.toolCalls.find((call) => call.toolId === "skills.create")).toMatchObject({ status: "denied" });
+      expect(JSON.stringify(cancelled)).not.toContain("Cancelled by caller.");
+      expect(cancelled.activeAgents).toEqual([]);
+      expect(cancelled.events.at(-1)?.type).toBe("run.cancelled");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SKILL_CANCEL_APPROVAL_KEY;
+      } else {
+        process.env.SKILL_CANCEL_APPROVAL_KEY = previousKey;
       }
     }
   });

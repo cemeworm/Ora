@@ -163,6 +163,26 @@ describe("desktop composer pending-run behavior", () => {
     });
   });
 
+  it("keeps the pending message while clearing the submitted composer text immediately", () => {
+    const pending = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: "session-1",
+      promptText: "hello",
+    }, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-1",
+      prompt: "hello",
+      createdAt: 10,
+    });
+    const cleared = workbenchReducer(pending, {
+      type: "CLEAR_PROMPT_IF_MATCH",
+      text: "hello",
+    });
+
+    expect(cleared.pendingRun?.prompt).toBe("hello");
+    expect(cleared.promptText).toBe("");
+  });
+
   it("treats a pending submit as visible processing for the active session", () => {
     expect(isSessionProcessing(
       { id: "session-1", status: "done" },
@@ -821,9 +841,77 @@ describe("desktop composer pending-run behavior", () => {
     const assistant = adaptChatMessages([], { "run-fetch-cache": snapshot }).find((message) => message.role === "assistant");
 
     expect(assistant?.turn?.processSteps.filter((step) => step.eventType === "tool.called")).toHaveLength(1);
+    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "tool.called")).toMatchObject({
+      label: "Browse webpage",
+      detail: "Viewed https://example.com.",
+      contextLabel: "https://example.com",
+    });
   });
 
-  it("shows rejected final tool-call text as a completion-control step", () => {
+  it("keeps each browsed webpage as a separate auditable step", () => {
+    const urls = [
+      "https://github.com/tw93/Waza",
+      "https://raw.githubusercontent.com/tw93/Waza/main/README.md",
+      "https://raw.githubusercontent.com/tw93/Waza/main/skills/think/SKILL.md",
+    ];
+    const snapshot = {
+      runId: "run-fetch-pages",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Install Waza skills.", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-fetch-pages:checkpoint",
+          runId: "run-fetch-pages",
+          seq: 0,
+          type: "checkpoint.created",
+          createdAt: 1,
+          pattern: "orchestrator_subagent",
+          payload: { checkpoint: { id: "checkpoint-1", label: "Initial checkpoint" } },
+        },
+        ...urls.map((url, index) => ({
+          id: `run-fetch-pages:fetch-${index}`,
+          runId: "run-fetch-pages",
+          seq: index + 1,
+          type: "tool.called",
+          createdAt: index + 2,
+          pattern: "orchestrator_subagent",
+          payload: { toolId: "web.fetch", status: "succeeded", input: { url }, output: { url, status: 200 } },
+        })),
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Done." },
+      updatedAt: 5,
+    } as unknown as OraStateSnapshot;
+
+    const steps = adaptChatMessages([], { "run-fetch-pages": snapshot })
+      .find((message) => message.role === "assistant")?.turn?.processSteps ?? [];
+
+    expect(steps).toHaveLength(3);
+    expect(steps.map((step) => step.label)).toEqual(["Browse webpage", "Browse webpage", "Browse webpage"]);
+    expect(steps.map((step) => step.detail)).toEqual(urls.map((url) => `Viewed ${url}.`));
+    expect(steps.some((step) => step.eventType === "checkpoint.created")).toBe(false);
+    expect(steps.some((step) => step.detail.includes("200"))).toBe(false);
+  });
+
+  it("shows rejected final tool-call text as a user-readable stop step", () => {
     const snapshot = {
       runId: "run-final-tool-intent",
       turnIndex: 1,
@@ -907,12 +995,14 @@ describe("desktop composer pending-run behavior", () => {
     expect(assistant?.content).toBe(
       "Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
     );
-    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "completion.updated")?.detail).toBe(
-      "Completion control rejected a tool call returned as the final answer.",
-    );
-    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "action.updated")?.detail).toBe(
-      "Action failed: Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
-    );
+    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "completion.updated")).toMatchObject({
+      label: "Stopped tool use",
+      detail: "The model tried to call another tool after it needed to answer, so Ora stopped tool use and kept the final response readable.",
+    });
+    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "action.updated")).toMatchObject({
+      label: "Action failed",
+      detail: "The model tried to call another tool after Ora had stopped tool use, so the turn ended with the available answer.",
+    });
     expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
       "Run failed: Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
     );
@@ -979,7 +1069,7 @@ describe("desktop composer pending-run behavior", () => {
     const nodeSteps = assistant?.turn?.processSteps.filter((step) => step.eventType === "node.updated") ?? [];
 
     expect(nodeSteps).toHaveLength(1);
-    expect(nodeSteps[0]?.detail).toBe("Respond repairing tool context: synthetic tool result.");
+    expect(nodeSteps[0]?.detail).toBe("Recovered missing tool context synthetic tool result.");
     expect(assistant?.turn?.processSteps.some((step) => step.detail === "Respond pending.")).toBe(false);
     expect(assistant?.turn?.processSteps.some((step) => step.detail === "Respond running_model.")).toBe(false);
   });

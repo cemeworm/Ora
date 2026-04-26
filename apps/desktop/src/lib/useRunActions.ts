@@ -1,7 +1,7 @@
 import { useMemo, useRef } from "react";
 import { flushSync } from "react-dom";
 import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
-import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
+import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { useWorkbench } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
@@ -248,6 +248,7 @@ export function useRunActions() {
         prompt: submittedPrompt,
         createdAt: Date.now(),
       });
+      dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
     });
     await waitForPendingRunPaint();
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
@@ -283,7 +284,6 @@ export function useRunActions() {
       const snapshot = await runtimeClient.getRunState(handle.runId);
       dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
       await refreshCurrentSession(snapshot, `Started turn ${snapshot.turnIndex ?? "?"}.`);
-      dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
       const health = runtimeClient.getHealth();
       if (health) {
         dispatch({ type: "SET_BRIDGE_STATUS", status: { mode: health.mode, ok: health.ok, label: health.service, detail: health.detail } });
@@ -301,7 +301,7 @@ export function useRunActions() {
     if (!state.selectedTurnRunId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Interrupt" });
     try {
-      const snapshot = await runtimeClient.interruptRun(state.selectedTurnRunId, "Interrupted from Operator Workbench.");
+      const snapshot = await runtimeClient.interruptRun(state.selectedTurnRunId, USER_INTERRUPTED_MESSAGE);
       await refreshCurrentSession(snapshot, `Interrupt completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Interrupt failed." });
@@ -320,7 +320,7 @@ export function useRunActions() {
     try {
       const snapshot = await runtimeClient.resumeRun(
         state.selectedTurnRunId,
-        "Approved sidecar action from Context Dock.",
+        USER_RESUMED_MESSAGE,
         { approvedActionIds },
       );
       await refreshCurrentSession(snapshot, `Approve completed against ${snapshot.runId}.`);
@@ -334,7 +334,7 @@ export function useRunActions() {
     if (!state.selectedTurnRunId) return;
     dispatch({ type: "SET_BUSY_COMMAND", command: "Cancel" });
     try {
-      const snapshot = await runtimeClient.cancelRun(state.selectedTurnRunId);
+      const snapshot = await runtimeClient.cancelRun(state.selectedTurnRunId, USER_CANCELLED_MESSAGE);
       await refreshCurrentSession(snapshot, `Cancel completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Cancel failed." });

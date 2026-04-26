@@ -39,6 +39,7 @@ import type {
   OraTopologyEdge,
   OraTopologyNode,
 } from "./runtimeClient";
+import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
 
 export interface WorkbenchViewModel {
   patternCards: PatternCard[];
@@ -499,41 +500,48 @@ function eventText(event: OraEventEnvelope): string {
     case "plan.updated":
       return "Plan records refreshed from runtime state.";
     case "task.started":
-      return "Delegated task accepted and entered the runtime timeline.";
+      return "Started delegated task.";
     case "task.progress":
-      return "Delegated task is still in flight.";
+      return "Delegated task is still running.";
     case "task.completed":
-      return "Delegated task finished and its output can be consumed downstream.";
+      return "Delegated task finished.";
     case "task.failed":
-      return "Delegated task failed before the downstream stage could continue.";
+      return "Delegated task failed before Ora could continue.";
+    case "approval.required":
+      return "Waiting for your approval before continuing.";
+    case "approval.resolved":
+      return "Approval recorded; continuing the run.";
     case "clarification.required":
-      return "Runtime paused until the missing user clarification is provided.";
+      return "Waiting for your clarification before continuing.";
     case "clarification.resolved":
-      return "Clarification answer recorded and the run can continue.";
+      return "Clarification recorded; continuing the run.";
     case "completion.updated":
       if (
         isRecord(event.payload) &&
         event.payload.state === "tool_call_text_rejected"
       ) {
-        return "Completion control rejected a tool call returned as the final answer.";
+        return "The model tried to call another tool after it needed to answer, so Ora stopped tool use and kept the final response readable.";
       }
       if (isRecord(event.payload) && event.payload.state === "force_final") {
-        return "Completion control is finalizing from the available tool results.";
+        return "Ora stopped using tools and answered from the information already collected.";
       }
-      if (isRecord(event.payload) && event.payload.state === "loop_warning") {
-        return "Completion control warned about a possible tool loop.";
+      if (
+        isRecord(event.payload) &&
+        event.payload.state === "tool_calls_ignored"
+      ) {
+        return "The model requested more tools after tool use had stopped, so Ora ignored those requests and finished from the available context.";
       }
-      return "Completion control updated the run stopping state.";
+      return "Ora updated how this turn should finish.";
     case "node.updated":
       return isRecord(event.payload) && typeof event.payload.state === "string"
-        ? `Node runtime state: ${event.payload.state}.`
-        : "Node runtime state updated.";
+        ? `Processing state updated: ${event.payload.state}.`
+        : "Processing state updated.";
     case "run.done":
       return "Run completed and checkpoint metadata is available.";
     case "run.failed":
-      return "Run failed. Context dock contains the latest state.";
+      return "The run did not finish. Open Trails for the latest details.";
     default:
-      return "Runtime event received.";
+      return "Processing update received.";
   }
 }
 
@@ -681,15 +689,15 @@ function adaptActionStatus(
 
 function actionConsequence(action: OraActionRecord): string {
   if (action.riskLevel === "high") {
-    return "High-risk action requires explicit operator approval before execution.";
+    return "Please confirm this operation before I continue.";
   }
   if (action.status === "approval_required") {
-    return "Runtime paused this external effect behind an approval gate.";
+    return "Please confirm this operation before I continue.";
   }
   if (action.status === "succeeded") {
-    return "Runtime recorded this effect in the action ledger.";
+    return "This operation was completed and recorded.";
   }
-  return "Runtime proposed this action with linked plan and checkpoint context.";
+  return "This operation is ready to review.";
 }
 
 function fallbackApprovalRequest(action: OraActionRecord, userPrompt?: string): ActionRecord["approvalRequest"] {
@@ -1186,6 +1194,9 @@ export function isSessionProcessing(
 function assistantTextFromSnapshot(
   snapshot: OraStateSnapshot,
 ): string | undefined {
+  if (snapshot.status === "cancelled") {
+    return undefined;
+  }
   const outputText = outputTextFromSnapshot(snapshot);
   if (outputText) {
     return outputText;
@@ -1310,7 +1321,7 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
     .map((event) => ({
       id: event.id,
       eventType: event.type,
-      label: beatLabel(event),
+      label: processStepLabel(event),
       detail: processStepDetail(event),
       timestamp: formatElapsed(
         snapshot.events[0]?.createdAt ?? event.createdAt,
@@ -1340,10 +1351,8 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
       return hasToolId(event);
     case "tool.repaired":
       return hasToolId(event);
-    case "checkpoint.created":
     case "artifact.exported":
     case "artifact.degraded":
-    case "completion.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -1352,6 +1361,10 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "run.done":
     case "run.failed":
       return true;
+    case "completion.updated":
+      return isUserVisibleCompletionEvent(event);
+    case "checkpoint.created":
+      return false;
     case "node.updated":
       return isSignificantNodeUpdate(event);
     case "action.updated":
@@ -1369,18 +1382,60 @@ function isCachedWebFetchEvent(event: OraEventEnvelope): boolean {
   );
 }
 
+function isUserVisibleCompletionEvent(event: OraEventEnvelope): boolean {
+  if (!isRecord(event.payload) || typeof event.payload.state !== "string") {
+    return false;
+  }
+  return ["force_final", "tool_call_text_rejected", "tool_calls_ignored"].includes(
+    event.payload.state,
+  );
+}
+
+function processStepLabel(event: OraEventEnvelope): string {
+  if (
+    (event.type === "tool.called" || event.type === "tool.repaired") &&
+    isRecord(event.payload)
+  ) {
+    if (event.type === "tool.repaired") {
+      return "Recovered";
+    }
+    return toolCallLabel(event.payload);
+  }
+  if (event.type === "completion.updated") {
+    return "Stopped tool use";
+  }
+  if (event.type === "approval.required") {
+    return "Waiting for approval";
+  }
+  if (event.type === "clarification.required") {
+    return "Waiting for clarification";
+  }
+  if (event.type === "action.updated") {
+    return "Action failed";
+  }
+  if (event.type === "node.updated") {
+    return "Recovered";
+  }
+  return beatLabel(event);
+}
+
 function processStepDetail(event: OraEventEnvelope): string {
   const detail = eventText(event);
   if (
     (event.type === "tool.called" || event.type === "tool.repaired") &&
     isRecord(event.payload)
   ) {
-    const title = toolCallLabel(event.payload);
+    const title = rawToolId(event.payload) ?? toolCallLabel(event.payload);
     const status =
       typeof event.payload.status === "string"
         ? event.payload.status
         : undefined;
     const actionDetail = toolCallDetail(event.payload);
+    if (event.type === "tool.repaired") {
+      return actionDetail
+        ? `Recovered missing tool result for ${actionDetail}.`
+        : "Recovered a missing tool result so the run could continue.";
+    }
     if (status === "failed" && typeof event.payload.error === "string") {
       return `${actionDetail ?? title} failed: ${event.payload.error}`;
     }
@@ -1422,7 +1477,7 @@ function processStepDetail(event: OraEventEnvelope): string {
   ) {
     const record = event.payload.record;
     if (typeof record.error === "string" && record.error.trim()) {
-      return `Action failed: ${record.error.trim()}`;
+      return humanizeActionError(record.error.trim());
     }
   }
   if (
@@ -1437,32 +1492,22 @@ function processStepDetail(event: OraEventEnvelope): string {
     isRecord(event.payload) &&
     typeof event.payload.state === "string"
   ) {
-    const title =
-      typeof event.payload.title === "string" ? event.payload.title : "Node";
     const detail =
       typeof event.payload.detail === "string" && event.payload.detail.trim()
-        ? `: ${event.payload.detail.trim()}`
+        ? ` ${event.payload.detail.trim()}`
         : "";
     switch (event.payload.state) {
       case "repairing":
-        return `${title} repairing tool context${detail}.`;
+        return `Recovered missing tool context${detail}.`;
       case "degraded":
-        return `${title} degraded${detail}.`;
+        return `Continued with limited context${detail}.`;
       case "interrupted":
-        return `${title} interrupted${detail}.`;
+        return `Paused after processing was interrupted${detail}.`;
       case "failed":
-        return `${title} failed${detail}.`;
+        return `Processing step failed${detail}.`;
       default:
-        return `${title} state updated${detail}.`;
+        return `Processing state changed${detail}.`;
     }
-  }
-  if (
-    event.type === "checkpoint.created" &&
-    isRecord(event.payload) &&
-    isRecord(event.payload.checkpoint) &&
-    typeof event.payload.checkpoint.label === "string"
-  ) {
-    return `Checkpoint created: ${event.payload.checkpoint.label}.`;
   }
   return detail;
 }
@@ -1520,11 +1565,49 @@ function hasToolId(event: OraEventEnvelope): boolean {
 }
 
 function toolCallLabel(payload: Record<string, unknown>): string {
+  const toolId = rawToolId(payload);
+  switch (toolId) {
+    case "web.fetch":
+      return "Browse webpage";
+    case "web.search":
+      return "Search web";
+    case "file.read":
+      return "Read file";
+    case "file.list":
+      return "List files";
+    case "file.glob":
+      return "Match files";
+    case "file.grep":
+      return "Search files";
+    case "file.write":
+      return "Write file";
+    case "file.patch":
+      return "Patch file";
+    case "shell.execute":
+      return "Run command";
+    case "skills.create":
+      return "Install skill";
+    case "skills.checkName":
+      return "Check skill name";
+    case "skills.list":
+      return "List skills";
+    case "mcp.listTools":
+      return "List MCP tools";
+    case "mcp.readResource":
+      return "Read MCP resource";
+    case "mcp.call":
+      return "Call MCP tool";
+    default:
+      return typeof payload.title === "string" && payload.title.length > 0
+        ? payload.title
+        : toolId ?? "Tool call";
+  }
+}
+
+function rawToolId(payload: Record<string, unknown>): string | undefined {
   return typeof payload.toolId === "string" && payload.toolId.length > 0
     ? payload.toolId
-    : typeof payload.title === "string" && payload.title.length > 0
-      ? payload.title
-      : "Runtime call";
+    : undefined;
 }
 
 function toolCallDetail(payload: Record<string, unknown>): string | undefined {
@@ -1574,14 +1657,21 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
     case "shell.execute": {
       const command = stringValue(output.command) ?? stringValue(input.command);
       const exitCode =
-        typeof output.exitCode === "number" ? ` (exit ${output.exitCode})` : "";
-      return command ? `Ran ${command}${exitCode}` : undefined;
+        typeof output.exitCode === "number" && output.exitCode !== 0
+          ? ` (exit ${output.exitCode})`
+          : "";
+      return command ? `Ran command: ${command}${exitCode}` : undefined;
     }
     case "web.fetch": {
       const url = stringValue(output.url) ?? stringValue(input.url);
+      if (!url) {
+        return undefined;
+      }
       const status =
-        typeof output.status === "number" ? ` (${output.status})` : "";
-      return url ? `Fetched ${url}${status}` : undefined;
+        typeof output.status === "number" && output.status >= 400
+          ? ` (HTTP ${output.status})`
+          : "";
+      return `Viewed ${url}${status}`;
     }
     case "web.search": {
       const query = stringValue(output.query) ?? stringValue(input.query);
@@ -1607,9 +1697,45 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         ? `Called MCP tool ${name}${server ? ` on ${server}` : ""}`
         : undefined;
     }
+    case "skills.list":
+      return "Checked installed skills";
+    case "skills.checkName": {
+      const name = stringValue(output.name) ?? stringValue(input.name);
+      return name
+        ? `Checked whether ${name} can be installed`
+        : "Checked whether the skill name can be installed";
+    }
+    case "skills.create": {
+      const name = stringValue(output.name) ?? stringValue(input.name);
+      const target = stringValue(output.path) ?? stringValue(input.path);
+      if (name && target) {
+        return `Installed ${name} at ${target}`;
+      }
+      return name
+        ? `Installed ${name}`
+        : target
+          ? `Installed skill at ${target}`
+          : "Installed skill";
+    }
     default:
       return undefined;
   }
+}
+
+function humanizeActionError(error: string): string {
+  if (/tool call instead of a final answer after completion control disabled tools/i.test(error)) {
+    return "The model tried to call another tool after Ora had stopped tool use, so the turn ended with the available answer.";
+  }
+  if (/interrupted by caller|paused as instructed/i.test(error)) {
+    return USER_INTERRUPTED_MESSAGE;
+  }
+  if (/resumed by caller|confirmed\. continuing/i.test(error)) {
+    return USER_RESUMED_MESSAGE;
+  }
+  if (/cancelled by caller|canceled by caller|run was cancelled|stopped processing as instructed/i.test(error)) {
+    return USER_CANCELLED_MESSAGE;
+  }
+  return `Could not complete this operation: ${error}`;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -1884,8 +2010,9 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
     case "running":
     case "queued":
       return "Working on it...";
-    case "failed":
     case "cancelled":
+      return safeCancelledCopy(snapshot.error);
+    case "failed":
     case "interrupted":
       return (
         snapshot.error ?? "This turn did not produce a final assistant reply."
@@ -1895,4 +2022,14 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
         ? "This turn completed and produced attachments below."
         : "This turn completed without a final assistant reply.";
   }
+}
+
+function safeCancelledCopy(error: string | undefined): string {
+  if (!error?.trim()) {
+    return USER_CANCELLED_MESSAGE;
+  }
+  if (/cancelled by caller|canceled by caller|run was cancelled/i.test(error)) {
+    return USER_CANCELLED_MESSAGE;
+  }
+  return error;
 }
