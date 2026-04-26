@@ -3,10 +3,21 @@ import type { ModeSelection } from "@ora/shared";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
-import type { ActionRecord, AgentProfile, ChatMessage, CheckpointRecord, ModeCard, SessionRun, StreamLine, TopologyEdge, TopologyNode } from "../types";
+import type {
+  ActionRecord,
+  AgentProfile,
+  ChatMessage,
+  CheckpointRecord,
+  ModeCard,
+  SessionRun,
+  StreamLine,
+  TopologyEdge,
+  TopologyNode,
+} from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
+import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 
 interface ChatViewProps {
   activeMode: ModeCard;
@@ -35,7 +46,10 @@ interface ChatViewProps {
   onReplaySelection: () => void;
   onResumeRun: () => void;
   onOpenArtifact: (artifactId: string) => void;
-  onSubmitFeedback: (message: ChatMessage, feedbackText: string) => Promise<void>;
+  onSubmitFeedback: (
+    message: ChatMessage,
+    feedbackText: string,
+  ) => Promise<void>;
   onSelectMode: (modeId: string) => void;
   onSelectModeSelection: (selection: ModeSelection) => void;
   onSelectNode: (id: string) => void;
@@ -75,11 +89,16 @@ export function ChatView({
   const allProviders = state.providerRegistry?.providers ?? [];
   const configuredProviders = allProviders.filter((provider) => {
     if (provider.type === "local_smoke") return true;
-    return state.providerSecretStatuses.some((status) => status.providerId === provider.id && status.hasSecret);
+    return state.providerSecretStatuses.some(
+      (status) => status.providerId === provider.id && status.hasSecret,
+    );
   });
-  const providerOptions = configuredProviders.length > 0 ? configuredProviders : allProviders;
+  const providerOptions =
+    configuredProviders.length > 0 ? configuredProviders : allProviders;
   const activeProvider =
-    providerOptions.find((provider) => provider.id === state.selectedProviderId) ??
+    providerOptions.find(
+      (provider) => provider.id === state.selectedProviderId,
+    ) ??
     allProviders.find((provider) => provider.id === state.selectedProviderId) ??
     providerOptions[0];
   return (
@@ -87,7 +106,6 @@ export function ChatView({
       <ChatHeader
         busyCommand={busyCommand}
         isRunning={isRunning}
-        isApprovalRequired={isApprovalRequired}
         selectedSession={selectedSession}
         onExportReport={onExportReport}
         onInterruptRun={onInterruptRun}
@@ -98,9 +116,13 @@ export function ChatView({
         {showWelcome && (
           <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center px-6">
             <div className="flex w-full max-w-container-md flex-col items-center gap-2 text-center">
-              <div className={cn("flex items-center gap-2 text-2xl font-bold", state.inputMode === "ultra" && "golden-text")}>
-                <Sparkles size={22} />
-                <span>Welcome back to Ora</span>
+              <div
+                className={cn(
+                  "flex items-center gap-2 text-2xl font-bold",
+                  state.inputMode === "ultra" && "golden-text",
+                )}
+              >
+                <span>{getWelcomeGreeting(new Date(), state.language)}</span>
               </div>
             </div>
           </div>
@@ -128,10 +150,14 @@ export function ChatView({
           providerOptions={providerOptions}
           selectedCustomAgentId={selectedCustomAgentId}
           inputMode={state.inputMode}
-          onInputModeChange={(mode) => dispatch({ type: "SET_INPUT_MODE", mode })}
+          onInputModeChange={(mode) =>
+            dispatch({ type: "SET_INPUT_MODE", mode })
+          }
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}
-          onProviderChange={(providerId) => dispatch({ type: "SET_PROVIDER", providerId })}
+          onProviderChange={(providerId) =>
+            dispatch({ type: "SET_PROVIDER", providerId })
+          }
           onPromptChange={onComposerPromptChange}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}

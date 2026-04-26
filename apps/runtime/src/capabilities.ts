@@ -1,6 +1,7 @@
 import {
   ActionRecord,
   ActionRecordSchema,
+  ActionApprovalRequestCopy,
   ActionRiskLevel,
   AgentProfile,
   MemoryKind,
@@ -280,6 +281,7 @@ export class ActionLedger {
     type: string;
     riskLevel: ActionRiskLevel;
     input: unknown;
+    approvalRequest?: ActionApprovalRequestCopy;
     planItemId?: string;
     agentId?: string;
   }): ActionRecord {
@@ -292,6 +294,7 @@ export class ActionLedger {
       riskLevel: params.riskLevel,
       status: "proposed",
       input: params.input,
+      approvalRequest: params.approvalRequest,
       artifactIds: []
     });
     this.records.push(record);

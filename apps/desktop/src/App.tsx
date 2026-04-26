@@ -10,7 +10,7 @@ import { useRunActions } from "./lib/useRunActions";
 import { useWorkbench, WorkbenchProvider } from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
-import { adaptChatMessages, adaptPendingRunMessages } from "./lib/viewModel";
+import { adaptChatMessages, adaptPendingRunMessages, isSessionProcessing } from "./lib/viewModel";
 import type { OraProjectFileReadResult, OraRunEventStream, OraStateSnapshot } from "./lib/runtimeClient";
 import { translateCopy, useDocumentTranslations, type AppLanguage } from "./lib/i18n";
 
@@ -510,7 +510,7 @@ function WorkbenchInner() {
 
   // Chat view (default)
   const { actions: actionRecords, agents, artifacts, checkpoints, modeCards, planItems, streamLines, topologyEdges, topologyNodes, activeMode } = viewModel;
-  const isRunning = selectedSession.status === "running";
+  const isRunning = isSessionProcessing(selectedSession, state.pendingRun);
   const isApprovalRequired = selectedSession.status === "approval_required";
   const selectedProject = selectedSession.projectId
     ? state.projects.find((project) => project.projectId === selectedSession.projectId)

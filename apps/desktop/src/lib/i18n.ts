@@ -4,42 +4,47 @@ export type AppLanguage = "zh" | "en";
 
 export const LANGUAGE_STORAGE_KEY = "ora.desktop.language";
 
-export const LANGUAGE_OPTIONS: Array<{ id: AppLanguage; label: string; nativeLabel: string }> = [
+export const LANGUAGE_OPTIONS: Array<{
+  id: AppLanguage;
+  label: string;
+  nativeLabel: string;
+}> = [
   { id: "zh", label: "Chinese", nativeLabel: "中文" },
   { id: "en", label: "English", nativeLabel: "English" },
 ];
 
 const ZH_COPY: Record<string, string> = {
-  "Settings": "设置",
+  Settings: "设置",
   "Ora Operator Workbench": "Ora 操作员工作台",
-  "General": "通用",
-  "Language": "语言",
-  "Chinese": "中文",
-  "English": "英文",
+  General: "通用",
+  Language: "语言",
+  Chinese: "中文",
+  English: "英文",
   "Display Language": "显示语言",
-  "Choose the language used by the desktop workbench. Chinese is the default for new installs.": "选择桌面工作台使用的语言。新安装默认使用中文。",
+  "Choose the language used by the desktop workbench. Chinese is the default for new installs.":
+    "选择桌面工作台使用的语言。新安装默认使用中文。",
   "New Chat": "新建对话",
   "New chat": "新建对话",
-  "Search": "搜索",
-  "Agents": "智能体",
-  "Skills": "技能",
-  "Modes": "模式",
-  "Evaluation": "评测",
-  "Projects": "项目",
+  Search: "搜索",
+  Agents: "智能体",
+  Skills: "技能",
+  Modes: "模式",
+  Evaluation: "评测",
+  Projects: "项目",
   "Recent Chats": "最近对话",
-  "Chats": "对话",
+  Chats: "对话",
   "Select folder": "选择文件夹",
   "New project session": "新建项目会话",
   "No chats yet": "暂无对话",
   "Show less": "收起",
   "Awaiting reply": "等待回复",
   "Needs approval": "需要审批",
-  "Failed": "失败",
-  "Running": "运行中",
-  "Done": "已完成",
-  "Approval": "审批",
-  "Checkpoint": "检查点",
-  "Loading": "加载中",
+  Failed: "失败",
+  Running: "运行中",
+  Done: "已完成",
+  Approval: "审批",
+  Checkpoint: "检查点",
+  Loading: "加载中",
   "Connecting...": "连接中...",
   "Loading view...": "正在加载视图...",
   "Loading evaluation tools...": "正在加载评测工具...",
@@ -53,13 +58,13 @@ const ZH_COPY: Record<string, string> = {
   "Runtime bridge failed to initialize.": "运行时桥接初始化失败。",
   "Resize trails panel": "调整轨迹面板宽度",
   "Resize artifact panel": "调整制品面板宽度",
-  "Welcome back to Ora": "欢迎回到 Ora",
-  "Pause": "暂停",
-  "Export": "导出",
+  "What would you like to do?": "想要做点什么？",
+  Pause: "暂停",
+  Export: "导出",
   "Export report": "导出报告",
-  "Trails": "轨迹",
+  Trails: "轨迹",
   "Toggle trails": "切换轨迹",
-  "Documents": "文件树",
+  Documents: "文件树",
   "Toggle documents": "切换文件树",
   "Refresh documents": "刷新文件树",
   "Close documents": "关闭文件树",
@@ -68,98 +73,119 @@ const ZH_COPY: Record<string, string> = {
   "Documents unavailable": "文件树不可用",
   "Project files failed to load.": "项目文件加载失败。",
   "No files found": "未找到文件",
-  "This project folder does not contain readable files.": "这个项目文件夹中没有可读取的文件。",
-  "Truncated": "已截断",
-  "Run in progress...": "运行进行中...",
-  "Message Ora...": "给 Ora 发消息...",
-  "Attachments": "附件",
-  "Agent": "智能体",
+  "This project folder does not contain readable files.":
+    "这个项目文件夹中没有可读取的文件。",
+  Truncated: "已截断",
+  "Message Ora": "给 Ora 发消息",
+  Attachments: "附件",
+  Agent: "智能体",
   "No model": "未选择模型",
-  "No configured model providers. Add a provider key in Settings.": "尚未配置模型提供方。请在设置中添加提供方密钥。",
-  "Default": "默认",
-  "Flash": "快速",
-  "Thinking": "思考",
-  "Pro": "专业",
-  "Ultra": "极致",
+  "No configured model providers. Add a provider key in Settings.":
+    "尚未配置模型提供方。请在设置中添加提供方密钥。",
+  Default: "默认",
+  Flash: "快速",
+  Thinking: "思考",
+  Pro: "专业",
+  Ultra: "极致",
   "Stop run": "停止运行",
   "Send message": "发送消息",
-  "Ora can make mistakes. Review plans, actions, and checkpoints before using results.": "Ora 可能会出错。使用结果前请检查计划、操作和检查点。",
+  "Ora can make mistakes. Review plans, actions, and checkpoints before using results.":
+    "Ora 可能会出错。使用结果前请检查计划、操作。",
   "Approval required": "需要审批",
+  "Your confirmation is needed": "需要你确认后继续",
+  "Review before continuing": "继续前请确认",
+  "Review all items": "确认所有内容",
+  "I need your confirmation for the actions below before I continue.":
+    "继续前，我需要你确认下面这些操作。",
+  "What you are approving": "你正在批准的内容",
+  "What will change": "会发生什么变化",
+  "Why this is needed": "为什么需要这样做",
+  "What to check": "你需要确认什么",
+  "Confirm before continuing": "需要你确认后继续",
+  "This action may change the local environment.": "这项操作可能会改变本地环境。",
+  "It is needed to continue the current task.": "这是继续当前任务所需的步骤。",
+  "Confirm this matches your expectations before continuing.":
+    "请确认这符合你的预期后再继续。",
   "Pending approval": "待审批",
   "Review the blocked stage": "检查被阻塞的阶段",
   "Review the blocked stages": "检查被阻塞的阶段",
-  "The runtime paused in the conversation flow and is waiting for your decision before continuing.": "运行时已暂停对话流程，等待你的决定后再继续。",
+  "The runtime paused in the conversation flow and is waiting for your decision before continuing.":
+    "运行时已暂停对话流程，等待你的决定后再继续。",
   "Approve and continue": "批准并继续",
   "Cancel run": "取消运行",
-  "risk": "风险",
+  risk: "风险",
   "agent:": "智能体：",
-  "Steps": "步骤",
+  Steps: "步骤",
   "To-dos": "待办",
-  "Preview": "预览",
-  "active": "进行中",
-  "blocked": "已阻塞",
-  "recorded": "已记录",
-  "Artifact": "制品",
+  Preview: "预览",
+  active: "进行中",
+  blocked: "已阻塞",
+  recorded: "已记录",
+  Artifact: "制品",
   "No artifact selected": "未选择制品",
   "Close artifact": "关闭制品",
-  "Select an artifact from the chat stream to preview it here.": "从聊天流中选择一个制品，在这里预览。",
-  "No inline preview is available for this artifact yet.": "此制品暂不支持内联预览。",
-  "URI": "URI",
+  "Select an artifact from the chat stream to preview it here.":
+    "从聊天流中选择一个制品，在这里预览。",
+  "No inline preview is available for this artifact yet.":
+    "此制品暂不支持内联预览。",
+  URI: "URI",
   "Trails will appear here.": "轨迹会显示在这里。",
   "Close trails": "关闭轨迹",
-  "Live": "实时",
-  "Timeline": "时间线",
-  "Topology": "拓扑",
-  "Trace": "追踪",
-  "Status": "状态",
-  "Mode": "模式",
+  Live: "实时",
+  Timeline: "时间线",
+  Topology: "拓扑",
+  Trace: "追踪",
+  Status: "状态",
+  Mode: "模式",
   "Blocking gate": "阻塞关卡",
   "Selected node": "选中节点",
   "Active agents": "活跃智能体",
   "Events / sec": "事件/秒",
   "Est. cost": "预估成本",
   "Live Signals": "实时信号",
-  "Events": "事件",
-  "Checkpoints": "检查点",
+  Events: "事件",
+  Checkpoints: "检查点",
   "Topology changes": "拓扑变更",
-  "Messages": "消息",
-  "Warnings": "警告",
-  "Errors": "错误",
+  Messages: "消息",
+  Warnings: "警告",
+  Errors: "错误",
   "Operator Actions": "操作员动作",
-  "Fork": "分叉",
-  "Resume": "继续",
-  "Cancel": "取消",
+  Fork: "分叉",
+  Resume: "继续",
+  Cancel: "取消",
   "Runtime Focus": "运行时焦点",
   "Selected beat": "选中节拍",
   "Selected checkpoint": "选中检查点",
   "Focused agent": "聚焦智能体",
   "Generation refs": "生成引用",
   "Blocking Gates": "阻塞关卡",
-  "This run is not currently paused behind a manual gate.": "当前运行没有暂停在人工关卡后。",
+  "This run is not currently paused behind a manual gate.":
+    "当前运行没有暂停在人工关卡后。",
   "Latest runtime event": "最新运行时事件",
   "No checkpoint selected": "未选择检查点",
   "Run-level overview": "运行级概览",
   "Run overview": "运行概览",
-  "Idle": "空闲",
-  "None": "无",
-  "Clarification": "澄清",
-  "Action": "操作",
-  "Plan": "计划",
-  "Actions": "操作",
+  Idle: "空闲",
+  None: "无",
+  Clarification: "澄清",
+  Action: "操作",
+  Plan: "计划",
+  Actions: "操作",
   "Plan Items": "计划项",
   "Preview mode": "预览模式",
   "Provider Settings": "提供方设置",
-  "Providers": "提供方",
-  "Use one provider flow: choose an API provider, load a template when needed, then save and verify from the same form.": "使用一套提供方流程：选择 API 提供方，需要时加载模板，然后在同一表单中保存并验证。",
-  "Verified": "已验证",
+  Providers: "提供方",
+  "Use one provider flow: choose an API provider, load a template when needed, then save and verify from the same form.":
+    "使用一套提供方流程：选择 API 提供方，需要时加载模板，然后在同一表单中保存并验证。",
+  Verified: "已验证",
   "Verification failed": "验证失败",
   "Key stored": "密钥已保存",
   "Needs key": "需要密钥",
   "Not configured": "未配置",
   "API Provider": "API 提供方",
-  "Template": "模板",
-  "Official": "官方",
-  "Templates": "模板",
+  Template: "模板",
+  Official: "官方",
+  Templates: "模板",
   "Load Template": "加载模板",
   "Responses API": "Responses API",
   "Chat Completions": "Chat Completions",
@@ -168,34 +194,37 @@ const ZH_COPY: Record<string, string> = {
   "API Key Env": "API 密钥环境变量",
   "Base URL": "Base URL",
   "Base URL (optional)": "Base URL（可选）",
-  "Model": "模型",
+  Model: "模型",
   "Model ID": "模型 ID",
   "Provider Secret": "提供方密钥",
-  "Secrets stay in the runtime layer and Keychain. This form never stores the raw key in React state.": "密钥保存在运行时层和钥匙串中。这个表单不会把原始密钥存入 React 状态。",
+  "Secrets stay in the runtime layer and Keychain. This form never stores the raw key in React state.":
+    "密钥保存在运行时层和钥匙串中。这个表单不会把原始密钥存入 React 状态。",
   "Key ready": "密钥就绪",
   "Key needed": "需要密钥",
-  "Local": "本地",
+  Local: "本地",
   "No key required for local smoke": "本地 smoke 不需要密钥",
   "Save Key": "保存密钥",
   "Remove Key": "移除密钥",
   "Model Configuration": "模型配置",
-  "Protocol, limits, capability flags, drop params, and optional headers.": "协议、限制、能力标记、丢弃参数和可选请求头。",
-  "Protocol": "协议",
-  "Responses": "Responses",
+  "Protocol, limits, capability flags, drop params, and optional headers.":
+    "协议、限制、能力标记、丢弃参数和可选请求头。",
+  Protocol: "协议",
+  Responses: "Responses",
   "Anthropic Version": "Anthropic 版本",
   "Max Output Tokens": "最大输出 Token",
-  "Temperature": "温度",
+  Temperature: "温度",
   "Drop Params": "丢弃参数",
-  "Headers": "请求头",
-  "Capabilities": "能力",
+  Headers: "请求头",
+  Capabilities: "能力",
   "Provider id:": "提供方 ID：",
-  "Verify": "验证",
-  "Save": "保存",
+  Verify: "验证",
+  Save: "保存",
   "Delete Custom Provider": "删除自定义提供方",
   "Runtime Status": "运行时状态",
-  "Memory": "记忆",
-  "Long-term memory is persisted across runs, summarized into profile sections, and injected into future prompts when relevant.": "长期记忆会跨运行持久化，沉淀为画像区块，并在相关的后续提示词中注入。",
-  "facts": "条事实",
+  Memory: "记忆",
+  "Long-term memory is persisted across runs, summarized into profile sections, and injected into future prompts when relevant.":
+    "长期记忆会跨运行持久化，沉淀为画像区块，并在相关的后续提示词中注入。",
+  facts: "条事实",
   "Clear Memory": "清空记忆",
   "Long-term memory cleared.": "长期记忆已清空。",
   "Failed to load memory.": "记忆加载失败。",
@@ -213,29 +242,35 @@ const ZH_COPY: Record<string, string> = {
   "Earlier Context": "更早上下文",
   "Long-term Background": "长期背景",
   "No long-term memory profile yet.": "还没有长期记忆画像。",
-  "Ora records durable memory from explicit preferences, corrections, goals, and reinforced working patterns.": "Ora 会从明确偏好、纠正、目标和被强化的工作方式中记录可持久化记忆。",
+  "Ora records durable memory from explicit preferences, corrections, goals, and reinforced working patterns.":
+    "Ora 会从明确偏好、纠正、目标和被强化的工作方式中记录可持久化记忆。",
   "Memory Facts": "记忆事实",
   "No long-term facts captured yet.": "还没有捕获长期事实。",
-  "Facts appear here after runs include durable preference, correction, goal, or behavior signals.": "运行中出现可持久化的偏好、纠正、目标或行为信号后，事实会显示在这里。",
+  "Facts appear here after runs include durable preference, correction, goal, or behavior signals.":
+    "运行中出现可持久化的偏好、纠正、目标或行为信号后，事实会显示在这里。",
   "Avoid:": "避免：",
   "Run Memory Records": "运行内记忆记录",
-  "Run-scoped records are kept here for debugging; long-term memory lives in the profile and facts above.": "运行内记录保留在这里用于调试；长期记忆保存在上方的画像和事实中。",
+  "Run-scoped records are kept here for debugging; long-term memory lives in the profile and facts above.":
+    "运行内记录保留在这里用于调试；长期记忆保存在上方的画像和事实中。",
   "Recorded Memory": "已记录记忆",
-  "No memory recorded for the selected run yet.": "当前选中的运行还没有记录记忆。",
-  "Memory appears here after the runtime emits memory.updated events for the active turn.": "运行时为当前轮次发出 memory.updated 事件后，记忆会显示在这里。",
+  "No memory recorded for the selected run yet.":
+    "当前选中的运行还没有记录记忆。",
+  "Memory appears here after the runtime emits memory.updated events for the active turn.":
+    "运行时为当前轮次发出 memory.updated 事件后，记忆会显示在这里。",
   "Memory Namespaces": "记忆命名空间",
   "No memory namespace available.": "暂无记忆命名空间。",
-  "unknown": "未知",
+  unknown: "未知",
   "Tool Registry": "工具注册表",
   "Skill Registry": "技能注册表",
-  "Chat": "聊天",
+  Chat: "聊天",
   "Tool Use": "工具调用",
-  "Images": "图片",
-  "Reasoning": "推理",
-  "Tools": "工具",
+  Images: "图片",
+  Reasoning: "推理",
+  Tools: "工具",
   "Close settings": "关闭设置",
   "Connecting to the Ora runtime bridge.": "正在连接 Ora 运行时桥接。",
-  "Select a session to inspect its latest turn, checkpoints, and approvals.": "选择一个会话以检查最新轮次、检查点和审批。",
+  "Select a session to inspect its latest turn, checkpoints, and approvals.":
+    "选择一个会话以检查最新轮次、检查点和审批。",
   "Reconnecting to the Ora runtime bridge.": "正在重新连接 Ora 运行时桥接。",
   "Run completed.": "运行完成。",
   "Run failed.": "运行失败。",
@@ -243,10 +278,10 @@ const ZH_COPY: Record<string, string> = {
   "Run failed": "运行失败",
   "Add project": "添加项目",
   "Load turn": "加载轮次",
-  "Interrupt": "中断",
-  "Approve": "批准",
-  "Replay": "回放",
-  "Report": "报告",
+  Interrupt: "中断",
+  Approve: "批准",
+  Replay: "回放",
+  Report: "报告",
   "Save provider key": "保存提供方密钥",
   "Remove provider key": "移除提供方密钥",
   "Verify provider": "验证提供方",
@@ -270,15 +305,21 @@ const ZH_COPY: Record<string, string> = {
   "Provider verification failed.": "提供方验证失败。",
   "Provider save failed.": "提供方保存失败。",
   "Provider removal failed.": "提供方移除失败。",
-  "API key stored. Run verify to confirm connectivity.": "API 密钥已保存。运行验证以确认连通性。",
+  "API key stored. Run verify to confirm connectivity.":
+    "API 密钥已保存。运行验证以确认连通性。",
   "API key required before verification.": "验证前需要 API 密钥。",
   "Local smoke provider is ready.": "本地 smoke 提供方已就绪。",
-  "Official OpenAI Responses API provider.": "官方 OpenAI Responses API 提供方。",
+  "Official OpenAI Responses API provider.":
+    "官方 OpenAI Responses API 提供方。",
   "Official Claude Messages API provider.": "官方 Claude Messages API 提供方。",
-  "Deterministic local smoke provider for offline testing.": "用于离线测试的确定性本地 smoke 提供方。",
-  "Any provider that speaks the OpenAI chat or responses protocol.": "任何兼容 OpenAI Chat 或 Responses 协议的提供方。",
-  "Any provider that speaks the Anthropic Messages API.": "任何兼容 Anthropic Messages API 的提供方。",
-  "OpenAI-compatible Qwen via Bailian/DashScope.": "通过百炼/DashScope 使用兼容 OpenAI 的 Qwen。",
+  "Deterministic local smoke provider for offline testing.":
+    "用于离线测试的确定性本地 smoke 提供方。",
+  "Any provider that speaks the OpenAI chat or responses protocol.":
+    "任何兼容 OpenAI Chat 或 Responses 协议的提供方。",
+  "Any provider that speaks the Anthropic Messages API.":
+    "任何兼容 Anthropic Messages API 的提供方。",
+  "OpenAI-compatible Qwen via Bailian/DashScope.":
+    "通过百炼/DashScope 使用兼容 OpenAI 的 Qwen。",
   "DeepSeek OpenAI-compatible API.": "DeepSeek 兼容 OpenAI 的 API。",
   "Zhipu OpenAI-compatible API.": "智谱兼容 OpenAI 的 API。",
   "Moonshot OpenAI-compatible API.": "Moonshot 兼容 OpenAI 的 API。",
@@ -286,52 +327,61 @@ const ZH_COPY: Record<string, string> = {
   "Generic Anthropic-compatible": "通用 Anthropic 兼容",
   "Local Smoke": "本地 Smoke",
   "Agent Gallery": "智能体库",
-  "Refresh": "刷新",
+  Refresh: "刷新",
   "New agent": "新建智能体",
   "Selected Persona": "选中人格",
-  "The selected agent becomes the default persona overlay for the next run you start from chat.": "选中的智能体会成为你下次从聊天启动运行时的默认人格叠层。",
-  "Create, revise, delete, or start a new chat with a reusable persona.": "创建、修改、删除可复用人格，或用它开始新聊天。",
+  "The selected agent becomes the default persona overlay for the next run you start from chat.":
+    "选中的智能体会成为你下次从聊天启动运行时的默认人格叠层。",
+  "Create, revise, delete, or start a new chat with a reusable persona.":
+    "创建、修改、删除可复用人格，或用它开始新聊天。",
   "Create first agent": "创建第一个智能体",
   "Use in chat": "用于聊天",
-  "Edit": "编辑",
-  "Delete": "删除",
+  Edit: "编辑",
+  Delete: "删除",
   "No description yet.": "暂无描述。",
   "inherit current chat model": "继承当前聊天模型",
   "inherit runtime defaults": "继承运行时默认值",
   "Create custom agent": "创建自定义智能体",
   "Create agent": "创建智能体",
   "Save changes": "保存更改",
-  "Name": "名称",
+  Name: "名称",
   "Model Hint": "模型提示",
-  "Description": "描述",
+  Description: "描述",
   "Tool Groups": "工具组",
-  "Long-form persona instructions written into SOUL.md.": "写入 SOUL.md 的长篇人格指令。",
-  "Start with a small persona card: name, description, model hint, tool groups, and SOUL instructions.": "从一张小人格卡开始：名称、描述、模型提示、工具组和 SOUL 指令。",
-  "This v1 editor writes `config.yaml` and `SOUL.md` directly into `.ora/agents/&lt;name&gt;`.": "这个 v1 编辑器会直接写入 `.ora/agents/&lt;name&gt;` 下的 `config.yaml` 和 `SOUL.md`。",
+  "Long-form persona instructions written into SOUL.md.":
+    "写入 SOUL.md 的长篇人格指令。",
+  "Start with a small persona card: name, description, model hint, tool groups, and SOUL instructions.":
+    "从一张小人格卡开始：名称、描述、模型提示、工具组和 SOUL 指令。",
+  "This v1 editor writes `config.yaml` and `SOUL.md` directly into `.ora/agents/&lt;name&gt;`.":
+    "这个 v1 编辑器会直接写入 `.ora/agents/&lt;name&gt;` 下的 `config.yaml` 和 `SOUL.md`。",
   "Updated:": "更新时间：",
   "Failed to load custom agents.": "自定义智能体加载失败。",
   "Failed to load custom agent.": "自定义智能体加载失败。",
   "Failed to save custom agent.": "自定义智能体保存失败。",
   "Failed to delete custom agent.": "自定义智能体删除失败。",
-  "Failed to open chat with the selected agent.": "无法用选中的智能体打开聊天。",
+  "Failed to open chat with the selected agent.":
+    "无法用选中的智能体打开聊天。",
   "Custom agent name is required.": "自定义智能体名称为必填项。",
   "New skill": "新建技能",
   "Back to skills": "返回技能",
   "Search skills": "搜索技能",
   "All sources": "全部来源",
   "All states": "全部状态",
-  "Custom": "自定义",
-  "Private": "私有",
-  "State": "状态",
-  "Enabled": "已启用",
-  "Disabled": "已禁用",
-  "Enable": "启用",
-  "Disable": "停用",
+  Custom: "自定义",
+  Private: "私有",
+  State: "状态",
+  Enabled: "已启用",
+  Disabled: "已禁用",
+  Enable: "启用",
+  Disable: "停用",
   "Create private skill": "创建私有技能",
   "Create skill": "创建技能",
-  "Select a skill to inspect its full `SKILL.md`.": "选择一个技能以查看完整的 `SKILL.md`。",
-  "Public skills are initialized from the package; private skills are added later by you.": "Public 技能来自初始化内置包；Private 技能是你后续新增的。",
-  "Private skills are stored as `.ora/skills/private/&lt;name&gt;/SKILL.md`.": "私有技能保存在 `.ora/skills/private/&lt;name&gt;/SKILL.md`。",
+  "Select a skill to inspect its full `SKILL.md`.":
+    "选择一个技能以查看完整的 `SKILL.md`。",
+  "Public skills are initialized from the package; private skills are added later by you.":
+    "Public 技能来自初始化内置包；Private 技能是你后续新增的。",
+  "Private skills are stored as `.ora/skills/private/&lt;name&gt;/SKILL.md`.":
+    "私有技能保存在 `.ora/skills/private/&lt;name&gt;/SKILL.md`。",
   "What this skill helps the agent do.": "这个技能帮助智能体完成什么。",
   "Skill name is required.": "技能名称为必填项。",
   "Failed to load skills.": "技能加载失败。",
@@ -341,38 +391,40 @@ const ZH_COPY: Record<string, string> = {
   "Failed to delete skill.": "技能删除失败。",
   "Import dataset": "导入数据集",
   "Run evaluation": "运行评测",
-  "Regression": "回归",
-  "Lab": "实验室",
-  "Dataset": "数据集",
-  "Baseline": "基线",
-  "Repetitions": "重复次数",
-  "Outcome": "结果",
-  "Orchestration": "编排",
+  Regression: "回归",
+  Lab: "实验室",
+  Dataset: "数据集",
+  Baseline: "基线",
+  Repetitions: "重复次数",
+  Outcome: "结果",
+  Orchestration: "编排",
   "Task Completion": "任务完成",
   "Final-result focused scoring.": "聚焦最终结果的评分。",
   "Tool/handoff/process focused scoring.": "聚焦工具、交接和流程的评分。",
   "Environment task completion focused scoring.": "聚焦环境任务完成度的评分。",
-  "Uses the provider selected in Settings for v1.": "v1 使用设置中选中的提供方。",
+  "Uses the provider selected in Settings for v1.":
+    "v1 使用设置中选中的提供方。",
   "Select dataset": "选择数据集",
   "Select evaluation run": "选择评测运行",
   "Case Browser": "用例浏览器",
   "Case Detail": "用例详情",
   "Config Comparison": "配置对比",
   "Slice Analysis": "切片分析",
-  "Regressions": "回归",
+  Regressions: "回归",
   "Avg runtime": "平均运行时长",
   "Avg cost": "平均成本",
-  "Safety": "安全性",
-  "Efficiency": "效率",
-  "Case": "用例",
-  "Cases": "用例",
-  "Config": "配置",
-  "Cost": "成本",
-  "Value": "值",
-  "Dimension": "维度",
-  "Anomalies": "异常",
+  Safety: "安全性",
+  Efficiency: "效率",
+  Case: "用例",
+  Cases: "用例",
+  Config: "配置",
+  Cost: "成本",
+  Value: "值",
+  Dimension: "维度",
+  Anomalies: "异常",
   "attempts flagged": "次尝试被标记",
-  "Select a case row to inspect input, expectation, per-config outputs, and the trace links generated by the underlying Ora runs.": "选择用例行以检查输入、期望、各配置输出，以及底层 Ora 运行生成的追踪链接。",
+  "Select a case row to inspect input, expectation, per-config outputs, and the trace links generated by the underlying Ora runs.":
+    "选择用例行以检查输入、期望、各配置输出，以及底层 Ora 运行生成的追踪链接。",
   "Evaluation index returned an invalid response.": "评测索引返回了无效响应。",
   "Failed to load evaluation index.": "评测索引加载失败。",
   "Failed to load evaluation dataset.": "评测数据集加载失败。",
@@ -383,10 +435,10 @@ const ZH_COPY: Record<string, string> = {
   "Failed to export evaluation run.": "评测运行导出失败。",
   "Mode settings": "模式设置",
   "Mode Studio": "模式工作室",
-  "Canvas": "画布",
+  Canvas: "画布",
   "Canvas preview": "画布预览",
-  "Customize": "自定义",
-  "Validate": "验证",
+  Customize: "自定义",
+  Validate: "验证",
   "Validation passed.": "验证通过。",
   "Validation failed.": "验证失败。",
   "Save mode": "保存模式",
@@ -396,21 +448,21 @@ const ZH_COPY: Record<string, string> = {
   "Add stage": "添加阶段",
   "Delete node": "删除节点",
   "Delete rule": "删除规则",
-  "Summary": "摘要",
-  "Details": "详情",
-  "Rules": "规则",
-  "Atoms": "原子",
+  Summary: "摘要",
+  Details: "详情",
+  Rules: "规则",
+  Atoms: "原子",
   "Mode atoms": "模式原子",
   "Stage atoms": "阶段原子",
   "Mode capabilities": "模式能力",
   "Attached to Runtime": "挂载到运行时",
   "Runtime Harness": "运行时框架",
-  "Runtime": "运行时",
+  Runtime: "运行时",
   "runtime anchor": "运行时锚点",
-  "root": "根",
-  "live": "运行",
-  "on": "开",
-  "off": "关",
+  root: "根",
+  live: "运行",
+  on: "开",
+  off: "关",
   "Enabled stages": "已启用阶段",
   "No enabled stages.": "没有启用阶段。",
   "Disabled stages:": "已停用阶段：",
@@ -420,15 +472,17 @@ const ZH_COPY: Record<string, string> = {
   "Completion:": "完成策略：",
   "Required nodes locked": "必需节点已锁定",
   "Cycles blocked before save": "保存前会阻止循环",
-  "System presets stay read-only on canvas. Choose": "系统预设在画布中保持只读。选择",
+  "System presets stay read-only on canvas. Choose":
+    "系统预设在画布中保持只读。选择",
   "to clone this layout into an editable mode.": "可将此布局克隆为可编辑模式。",
-  "Capability": "能力",
+  Capability: "能力",
   "Mode capability": "模式能力",
   "Stage capability": "阶段能力",
   "Capability action": "能力操作",
   "Enable capability": "启用能力",
   "Disable capability": "停用能力",
-  "This capability is blocked until its required flags/tools are enabled.": "必须启用所需标记/工具后，此能力才可用。",
+  "This capability is blocked until its required flags/tools are enabled.":
+    "必须启用所需标记/工具后，此能力才可用。",
   "Default runtime prompt": "默认运行时提示词",
   "Runtime policy": "运行时策略",
   "Stop policy": "停止策略",
@@ -444,105 +498,133 @@ const ZH_COPY: Record<string, string> = {
   "Tools:": "工具：",
   "Workspace tools": "工作区工具",
   "Runtime defaults": "运行时默认值",
-  "tools": "个工具",
+  tools: "个工具",
   "duplicate tolerance": "重复容忍度",
   "Long-term memory policy": "长期记忆策略",
   "Long-term Memory": "长期记忆",
-  "Update a durable user memory profile from completed runs and inject relevant facts into future prompts.": "从已完成运行中更新持久用户记忆画像，并把相关事实注入后续提示词。",
-  "Updater": "更新器",
+  "Update a durable user memory profile from completed runs and inject relevant facts into future prompts.":
+    "从已完成运行中更新持久用户记忆画像，并把相关事实注入后续提示词。",
+  Updater: "更新器",
   "provider JSON patch": "提供方 JSON patch",
   "heuristic fallback": "启发式兜底",
   "Updater provider id": "更新器提供方 ID",
   "inherit selected provider": "继承当前选择的提供方",
   "Debounce ms": "防抖毫秒",
-  "Confidence": "置信度",
+  Confidence: "置信度",
   "Max facts": "最大事实数",
   "Inject facts": "注入事实数",
   "runtime default": "运行时默认值",
-  "default": "默认",
-  "none": "无",
-  "safe": "安全",
-  "Safe": "安全",
-  "low": "低",
-  "medium": "中",
-  "high": "高",
+  default: "默认",
+  none: "无",
+  safe: "安全",
+  Safe: "安全",
+  low: "低",
+  medium: "中",
+  high: "高",
   "low risk": "低风险",
   "requires approval": "需要审批",
   "high risk only": "仅高风险",
-  "auto": "自动",
-  "manual": "手动",
+  auto: "自动",
+  manual: "手动",
   "queue drained": "队列清空",
   "max iterations": "最大轮数",
-  "converged": "已收敛",
-  "balanced": "平衡",
-  "persistent": "持久",
-  "decisive": "果断",
+  converged: "已收敛",
+  balanced: "平衡",
+  persistent: "持久",
+  decisive: "果断",
   "mode capability": "模式能力",
   "stage attachment": "阶段挂载",
   "family capability": "家族能力",
-  "control": "控制",
-  "memory": "记忆",
-  "delegation": "委派",
-  "artifact": "制品",
-  "verification": "验证",
+  control: "控制",
+  memory: "记忆",
+  delegation: "委派",
+  artifact: "制品",
+  verification: "验证",
   "idle cycles": "个空闲周期",
-  "Required": "必需",
-  "Optional": "可选",
+  Required: "必需",
+  Optional: "可选",
   "Skip allowed": "允许跳过",
-  "Attempts": "尝试次数",
+  Attempts: "尝试次数",
   "Backoff ms": "退避毫秒",
   "Risk level": "风险等级",
-  "Attachment": "附件",
+  Attachment: "附件",
   "Attached stage:": "附加阶段：",
-  "This stage does not currently consume a prompt override in the runtime interpreter.": "此阶段目前不会在运行时解释器中使用提示词覆盖。",
-  "This stage currently relies on runtime behavior rather than a prompt template.": "此阶段当前依赖运行时行为，而不是提示词模板。",
-  "Override the runtime prompt template for this stage.": "覆盖此阶段的运行时提示词模板。",
+  "This stage does not currently consume a prompt override in the runtime interpreter.":
+    "此阶段目前不会在运行时解释器中使用提示词覆盖。",
+  "This stage currently relies on runtime behavior rather than a prompt template.":
+    "此阶段当前依赖运行时行为，而不是提示词模板。",
+  "Override the runtime prompt template for this stage.":
+    "覆盖此阶段的运行时提示词模板。",
   "Available runtime variables:": "可用运行时变量：",
-  "No stage atoms are compatible with this family.": "没有与这个模式家族兼容的阶段原子。",
-  "A single enabled stage does not create an active edge.": "单个启用阶段不会创建活跃边。",
-  "Stop after all enabled stages complete and no queued work remains.": "所有启用阶段完成且没有排队工作后停止。",
-  "Stop only when a user or operator explicitly ends the run.": "仅在用户或操作员明确结束运行时停止。",
-  "Stop when the lead agent has synthesized the delegated research and review outputs.": "当主智能体完成委派研究与评审结果的综合后停止。",
-  "Stop when the shared board stops changing for 2 idle cycles.": "共享看板连续 2 个空闲周期不再变化后停止。",
+  "No stage atoms are compatible with this family.":
+    "没有与这个模式家族兼容的阶段原子。",
+  "A single enabled stage does not create an active edge.":
+    "单个启用阶段不会创建活跃边。",
+  "Stop after all enabled stages complete and no queued work remains.":
+    "所有启用阶段完成且没有排队工作后停止。",
+  "Stop only when a user or operator explicitly ends the run.":
+    "仅在用户或操作员明确结束运行时停止。",
+  "Stop when the lead agent has synthesized the delegated research and review outputs.":
+    "当主智能体完成委派研究与评审结果的综合后停止。",
+  "Stop when the shared board stops changing for 2 idle cycles.":
+    "共享看板连续 2 个空闲周期不再变化后停止。",
   "DeerFlow-like Harness": "DeerFlow 式框架",
-  "A lead agent frames the work, delegates research and review, then synthesizes the final answer.": "主智能体界定任务，委派研究与评审，然后综合最终答案。",
-  "Use a DeerFlow-inspired lead-agent harness with workspace, memory capture, loop guards, tool boundaries, and explicit delegated subagent stages.": "使用受 DeerFlow 启发的主智能体框架，包含工作区、记忆捕获、循环保护、工具边界和显式委派子智能体阶段。",
-  "Use for decomposable work where a lead agent should coordinate focused research and review before answering.": "适用于可拆解任务：先由主智能体协调聚焦研究与评审，再给出回答。",
-  "Delegation can add coordination overhead when the task is simple or the delegated stages are underspecified.": "当任务很简单或委派阶段定义不足时，委派会增加协调开销。",
+  "A lead agent frames the work, delegates research and review, then synthesizes the final answer.":
+    "主智能体界定任务，委派研究与评审，然后综合最终答案。",
+  "Use a DeerFlow-inspired lead-agent harness with workspace, memory capture, loop guards, tool boundaries, and explicit delegated subagent stages.":
+    "使用受 DeerFlow 启发的主智能体框架，包含工作区、记忆捕获、循环保护、工具边界和显式委派子智能体阶段。",
+  "Use for decomposable work where a lead agent should coordinate focused research and review before answering.":
+    "适用于可拆解任务：先由主智能体协调聚焦研究与评审，再给出回答。",
+  "Delegation can add coordination overhead when the task is simple or the delegated stages are underspecified.":
+    "当任务很简单或委派阶段定义不足时，委派会增加协调开销。",
   "Lead plan": "主控规划",
   "Research subagent": "研究子智能体",
   "Review subagent": "评审子智能体",
   "Lead synthesis": "主控综合",
   "Thread Workspace": "线程工作区",
-  "Provision a per-run workspace and thread-scoped paths before execution starts.": "执行开始前，为每次运行准备工作区和线程作用域路径。",
+  "Provision a per-run workspace and thread-scoped paths before execution starts.":
+    "执行开始前，为每次运行准备工作区和线程作用域路径。",
   "Recovery Policy": "恢复策略",
-  "Apply configured retry, alternate-tool, skip, and degraded-artifact recovery rules across runtime boundaries.": "跨运行时边界应用重试、替代工具、跳过和降级制品恢复规则。",
+  "Apply configured retry, alternate-tool, skip, and degraded-artifact recovery rules across runtime boundaries.":
+    "跨运行时边界应用重试、替代工具、跳过和降级制品恢复规则。",
   "Tool Error Boundary": "工具错误边界",
-  "Convert tool and provider failures into structured runtime events instead of aborting immediately.": "将工具和提供方失败转为结构化运行时事件，而不是立即中止。",
+  "Convert tool and provider failures into structured runtime events instead of aborting immediately.":
+    "将工具和提供方失败转为结构化运行时事件，而不是立即中止。",
   "Loop Guard": "循环保护",
-  "Detect repetitive tool or action loops and force the run to wrap up safely.": "检测重复工具或动作循环，并强制运行安全收束。",
+  "Detect repetitive tool or action loops and force the run to wrap up safely.":
+    "检测重复工具或动作循环，并强制运行安全收束。",
   "Clarification Interrupt": "澄清中断",
-  "Pause execution when the mode needs missing user input before continuing.": "当模式继续前需要缺失的用户输入时暂停执行。",
+  "Pause execution when the mode needs missing user input before continuing.":
+    "当模式继续前需要缺失的用户输入时暂停执行。",
   "Memory Capture": "记忆捕获",
-  "Queue run summaries into session or project memory after meaningful progress.": "在取得有意义进展后，将运行摘要排入会话或项目记忆。",
-  "Update a durable user memory profile from conversation context and inject relevant facts into future runs.": "从对话上下文更新持久用户记忆画像，并将相关事实注入后续运行。",
+  "Queue run summaries into session or project memory after meaningful progress.":
+    "在取得有意义进展后，将运行摘要排入会话或项目记忆。",
+  "Update a durable user memory profile from conversation context and inject relevant facts into future runs.":
+    "从对话上下文更新持久用户记忆画像，并将相关事实注入后续运行。",
   "Deferred Tool Discovery": "延迟工具发现",
-  "Expose lightweight tool metadata first and promote full schemas on demand.": "先暴露轻量工具元数据，再按需提升完整 schema。",
+  "Expose lightweight tool metadata first and promote full schemas on demand.":
+    "先暴露轻量工具元数据，再按需提升完整 schema。",
   "Subagent Delegate": "子智能体委派",
-  "Run a stage as a delegated task with explicit lifecycle events and handoff records.": "将阶段作为委派任务运行，并产生明确生命周期事件和交接记录。",
+  "Run a stage as a delegated task with explicit lifecycle events and handoff records.":
+    "将阶段作为委派任务运行，并产生明确生命周期事件和交接记录。",
   "Persistent Worker Memory": "持久工作者记忆",
-  "Persist worker-specific memory across runs so long-lived team roles can accumulate context.": "跨运行持久化工作者专属记忆，让长期团队角色积累上下文。",
+  "Persist worker-specific memory across runs so long-lived team roles can accumulate context.":
+    "跨运行持久化工作者专属记忆，让长期团队角色积累上下文。",
   "Event Routing": "事件路由",
-  "Track routed topics, subscribers, and correlation records as first-class runtime state.": "将路由主题、订阅者和关联记录作为一等运行时状态追踪。",
+  "Track routed topics, subscribers, and correlation records as first-class runtime state.":
+    "将路由主题、订阅者和关联记录作为一等运行时状态追踪。",
   "Shared Blackboard": "共享黑板",
-  "Maintain a versioned shared board with explicit convergence state across collaborators.": "维护带版本的共享看板，并记录协作者之间的显式收敛状态。",
+  "Maintain a versioned shared board with explicit convergence state across collaborators.":
+    "维护带版本的共享看板，并记录协作者之间的显式收敛状态。",
   "Artifact Publish": "制品发布",
-  "Promote stage outputs into explicit runtime artifacts and handoff surfaces.": "将阶段输出提升为显式运行时制品和交接界面。",
+  "Promote stage outputs into explicit runtime artifacts and handoff surfaces.":
+    "将阶段输出提升为显式运行时制品和交接界面。",
   "Token Usage Trace": "Token 用量追踪",
-  "Attach token usage and budget accounting to runtime events and reports.": "将 Token 用量和预算核算附加到运行时事件与报告。",
+  "Attach token usage and budget accounting to runtime events and reports.":
+    "将 Token 用量和预算核算附加到运行时事件与报告。",
   "Task composer": "任务编排器",
   "Start run": "开始运行",
-  "Starting": "启动中",
+  Starting: "启动中",
   "Show topology": "显示拓扑",
 };
 
@@ -555,25 +637,64 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   [/^(\d+) facts$/, (match) => `${match[1]} 条事实`],
   [/^(\d+) mounted capabilities$/, (match) => `${match[1]} 个已挂载能力`],
   [/^(\d+)\/(\d+) done$/, (match) => `${match[1]}/${match[2]} 已完成`],
-  [/^Stop after (\d+) passes if verification does not accept the result earlier\.$/, (match) => `如果验证没有更早接受结果，则在 ${match[1]} 轮后停止。`],
-  [/^Stop when the shared board stops changing for (\d+) idle cycles\.$/, (match) => `共享看板连续 ${match[1]} 个空闲周期不再变化后停止。`],
-  [/^(.+) in progress\.$/, (match) => `${translateCopy("zh", match[1])} 进行中。`],
+  [
+    /^Stop after (\d+) passes if verification does not accept the result earlier\.$/,
+    (match) => `如果验证没有更早接受结果，则在 ${match[1]} 轮后停止。`,
+  ],
+  [
+    /^Stop when the shared board stops changing for (\d+) idle cycles\.$/,
+    (match) => `共享看板连续 ${match[1]} 个空闲周期不再变化后停止。`,
+  ],
+  [
+    /^(.+) in progress\.$/,
+    (match) => `${translateCopy("zh", match[1])} 进行中。`,
+  ],
   [/^Provider id:$/, () => "提供方 ID："],
   [/^Model: (.+)$/, (match) => `模型：${translateCopy("zh", match[1])}`],
-  [/^Tool groups: (.+)$/, (match) => `工具组：${translateCopy("zh", match[1])}`],
+  [
+    /^Tool groups: (.+)$/,
+    (match) => `工具组：${translateCopy("zh", match[1])}`,
+  ],
   [/^(.+) risk$/, (match) => `${translateCopy("zh", match[1])} 风险`],
-  [/^(.+) selected for the next turn\.$/, (match) => `${match[1]} 已选择用于下一轮。`],
-  [/^Mode (.+) selected for the next turn\.$/, (match) => `模式 ${match[1]} 已选择用于下一轮。`],
-  [/^Provider (.+) selected for the next turn\.$/, (match) => `提供方 ${match[1]} 已选择用于下一轮。`],
-  [/^Custom agent (.+) selected for the next run\.$/, (match) => `自定义智能体 ${match[1]} 已选择用于下一次运行。`],
+  [
+    /^(.+) selected for the next turn\.$/,
+    (match) => `${match[1]} 已选择用于下一轮。`,
+  ],
+  [
+    /^Mode (.+) selected for the next turn\.$/,
+    (match) => `模式 ${match[1]} 已选择用于下一轮。`,
+  ],
+  [
+    /^Provider (.+) selected for the next turn\.$/,
+    (match) => `提供方 ${match[1]} 已选择用于下一轮。`,
+  ],
+  [
+    /^Custom agent (.+) selected for the next run\.$/,
+    (match) => `自定义智能体 ${match[1]} 已选择用于下一次运行。`,
+  ],
   [/^Removed provider (.+)\.$/, (match) => `已移除提供方 ${match[1]}。`],
-  [/^(.+) saved for future turns\.$/, (match) => `${match[1]} 已保存用于后续轮次。`],
+  [
+    /^(.+) saved for future turns\.$/,
+    (match) => `${match[1]} 已保存用于后续轮次。`,
+  ],
   [/^(.+) is ready to configure\.$/, (match) => `${match[1]} 已可配置。`],
   [/^Started turn (.+)\.$/, (match) => `已启动第 ${match[1]} 轮。`],
-  [/^Created custom agent (.+)\.$/, (match) => `已创建自定义智能体 ${match[1]}。`],
-  [/^Updated custom agent (.+)\.$/, (match) => `已更新自定义智能体 ${match[1]}。`],
-  [/^Deleted custom agent (.+)\.$/, (match) => `已删除自定义智能体 ${match[1]}。`],
-  [/^Editing custom agent (.+)\.$/, (match) => `正在编辑自定义智能体 ${match[1]}。`],
+  [
+    /^Created custom agent (.+)\.$/,
+    (match) => `已创建自定义智能体 ${match[1]}。`,
+  ],
+  [
+    /^Updated custom agent (.+)\.$/,
+    (match) => `已更新自定义智能体 ${match[1]}。`,
+  ],
+  [
+    /^Deleted custom agent (.+)\.$/,
+    (match) => `已删除自定义智能体 ${match[1]}。`,
+  ],
+  [
+    /^Editing custom agent (.+)\.$/,
+    (match) => `正在编辑自定义智能体 ${match[1]}。`,
+  ],
   [/^(.+) skill saved\.$/, (match) => `${match[1]} 技能已保存。`],
   [/^Deleted skill (.+)\.$/, (match) => `已删除技能 ${match[1]}。`],
 ];
@@ -586,7 +707,9 @@ export function readStoredLanguage(): AppLanguage {
   if (typeof window === "undefined") {
     return "zh";
   }
-  return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === "en" ? "en" : "zh";
+  return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === "en"
+    ? "en"
+    : "zh";
 }
 
 export function translateCopy(language: AppLanguage, value: string): string {
@@ -621,7 +744,11 @@ export function useDocumentTranslations(language: AppLanguage) {
       const current = node.nodeValue ?? "";
       let original = textOriginals.get(node) ?? current;
       const translatedOriginal = translateCopy("zh", original);
-      if (textOriginals.has(node) && current !== original && current !== translatedOriginal) {
+      if (
+        textOriginals.has(node) &&
+        current !== original &&
+        current !== translatedOriginal
+      ) {
         original = current;
         textOriginals.set(node, original);
       }
@@ -643,7 +770,10 @@ export function useDocumentTranslations(language: AppLanguage) {
         return;
       }
       const translated = translateCopy(language, trimmed);
-      const nextValue = translated === trimmed ? original : `${leading}${translated}${trailing}`;
+      const nextValue =
+        translated === trimmed
+          ? original
+          : `${leading}${translated}${trailing}`;
       if (current !== nextValue) {
         node.nodeValue = nextValue;
       }
@@ -662,11 +792,16 @@ export function useDocumentTranslations(language: AppLanguage) {
         }
         let original = originals.get(attr) ?? current;
         const translatedOriginal = translateCopy("zh", original);
-        if (originals.has(attr) && current !== original && current !== translatedOriginal) {
+        if (
+          originals.has(attr) &&
+          current !== original &&
+          current !== translatedOriginal
+        ) {
           original = current;
         }
         originals.set(attr, original);
-        const nextValue = language === "en" ? original : translateCopy(language, original);
+        const nextValue =
+          language === "en" ? original : translateCopy(language, original);
         if (current !== nextValue) {
           element.setAttribute(attr, nextValue);
         }
@@ -678,12 +813,19 @@ export function useDocumentTranslations(language: AppLanguage) {
         translateTextNode(root as Text);
         return;
       }
-      if (root.nodeType !== Node.ELEMENT_NODE && root.nodeType !== Node.DOCUMENT_NODE) {
+      if (
+        root.nodeType !== Node.ELEMENT_NODE &&
+        root.nodeType !== Node.DOCUMENT_NODE
+      ) {
         return;
       }
 
       const element = root as Element;
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.closest?.("[data-i18n-skip]")) {
+      if (
+        element instanceof HTMLInputElement ||
+        element instanceof HTMLTextAreaElement ||
+        element.closest?.("[data-i18n-skip]")
+      ) {
         translateElementAttributes(element);
         return;
       }
@@ -692,7 +834,10 @@ export function useDocumentTranslations(language: AppLanguage) {
         translateElementAttributes(element);
       }
 
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      const walker = document.createTreeWalker(
+        root,
+        NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+      );
       let node = walker.nextNode();
       while (node) {
         if (node.nodeType === Node.TEXT_NODE) {

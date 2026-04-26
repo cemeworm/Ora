@@ -8,7 +8,10 @@ const capturedRequests: Array<{
   prompt: string;
   system: string;
   messages: { role: string; content: string }[];
+  providerId?: string;
+  modelRef?: string;
 }> = [];
+const titleResponses: Array<string | Error> = [];
 
 vi.mock("../src/providers/index.js", async () => {
   const actual = await vi.importActual<typeof import("../src/providers/index.js")>(
@@ -30,7 +33,10 @@ vi.mock("../src/providers/index.js", async () => {
       const shouldCallShell = request.system?.includes("Workspace tool protocol:")
         && requestText.includes("Count markdown with shell")
         && !hasToolResult;
-      const text = shouldEscapeShell
+      const isTitleRequest = request.system?.includes("Ora's conversation title generator");
+      const text = isTitleRequest
+        ? titleResponses.shift() ?? "Generated Session Title"
+        : shouldEscapeShell
         ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
         : shouldCallShell
         ? JSON.stringify({ tool: "shell.execute", args: { command: "rg --files -g *.md" } })
@@ -42,7 +48,13 @@ vi.mock("../src/providers/index.js", async () => {
         prompt: request.prompt,
         system: request.system ?? "",
         messages,
+        providerId: config.providerId,
+        modelRef: config.modelRef,
       });
+
+      if (text instanceof Error) {
+        throw text;
+      }
 
       return {
         providerId: config.providerId ?? "mock-provider",
@@ -66,9 +78,21 @@ function freshStoreDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-session-test-"));
 }
 
+async function waitFor<T>(read: () => T, predicate: (value: T) => boolean): Promise<T> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const value = read();
+    if (predicate(value)) {
+      return value;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return read();
+}
+
 describe("session thread runtime behavior", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
+    titleResponses.length = 0;
   });
 
   it("creates and reloads empty sessions", () => {
@@ -112,6 +136,113 @@ describe("session thread runtime behavior", () => {
     const reloaded = new LocalRunStore({ dataDir: dir, clock });
     expect(reloaded.listProjects()[0]?.projectId).toBe(created.projectId);
     expect(reloaded.getProject({ projectId: created.projectId }).project.sessionCount).toBe(1);
+  });
+
+  it("generates a first-turn session title from the completed conversation", async () => {
+    titleResponses.push("\"项目 Markdown 统计\"");
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "这个项目里有多少 Markdown 文件？" },
+      config: {
+        pattern: "generator_verifier",
+        providerId: "openai-gpt",
+        modelRef: "gpt-title-test",
+      },
+    });
+
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const titleRequest = capturedRequests.find((request) =>
+      request.system.includes("Ora's conversation title generator")
+    );
+
+    expect(detail.session.title).toBe("项目 Markdown 统计");
+    expect(titleRequest?.providerId).toBe("openai-gpt");
+    expect(titleRequest?.modelRef).toBe("gpt-title-test");
+    expect(titleRequest?.messages[0]?.content).toContain("这个项目里有多少 Markdown 文件？");
+    expect(titleRequest?.messages[0]?.content).toContain("Assistant response:");
+    expect(titleRequest?.messages[0]?.content).toContain("Markdown 文件");
+  });
+
+  it("keeps the generated title stable across later turns", async () => {
+    titleResponses.push("Initial Session Title", "Second Session Title");
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "First title prompt" },
+      config: { pattern: "generator_verifier" },
+    });
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Second title prompt" },
+      config: { pattern: "shared_state" },
+    });
+
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const titleRequests = capturedRequests.filter((request) =>
+      request.system.includes("Ora's conversation title generator")
+    );
+
+    expect(detail.session.title).toBe("Initial Session Title");
+    expect(titleRequests).toHaveLength(1);
+    expect(titleResponses).toEqual(["Second Session Title"]);
+  });
+
+  it("falls back to a local first-prompt title when title generation fails", async () => {
+    titleResponses.push(new Error("title provider unavailable"));
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "This prompt is deliberately longer than fifty characters so fallback truncation is visible." },
+      config: { pattern: "generator_verifier" },
+    });
+
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    expect(detail.session.title).toBe("This prompt is deliberately longer than fifty char...");
+  });
+
+  it("falls back to a local first-prompt title when the title model returns blank text", async () => {
+    titleResponses.push(" \n ");
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Blank model title fallback" },
+      config: { pattern: "generator_verifier" },
+    });
+
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    expect(detail.session.title).toBe("Blank model title fallback");
+  });
+
+  it("keeps streaming sessions untitled until the final snapshot persists", async () => {
+    titleResponses.push("Streaming Session Title");
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+
+    const handle = await store.startStreamingRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Streaming title prompt" },
+      config: { pattern: "generator_verifier" },
+    });
+
+    expect(handle.status).toBe("running");
+    expect(store.getSession({ sessionId: session.sessionId }).session.title).toBe("New Chat");
+
+    const detail = await waitFor(
+      () => SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId })),
+      (current) => current.session.title === "Streaming Session Title"
+    );
+
+    expect(detail.session.title).toBe("Streaming Session Title");
+    expect(detail.latestSnapshot?.status).toBe("succeeded");
   });
 
   it("injects project workspace context for project-scoped session runs", async () => {

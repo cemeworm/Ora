@@ -1,12 +1,10 @@
 import { BookOpenText, Download, Files, Pause, PanelRightOpen } from "lucide-react";
 import { Button } from "./ui/button";
 import type { SessionRun } from "../types";
-import { cn } from "../lib/utils";
 
 interface ChatHeaderProps {
   busyCommand?: string;
   isRunning: boolean;
-  isApprovalRequired: boolean;
   selectedSession: SessionRun;
   onExportReport: () => void;
   onInterruptRun: () => void;
@@ -17,7 +15,6 @@ interface ChatHeaderProps {
 export function ChatHeader({
   busyCommand,
   isRunning,
-  isApprovalRequired,
   selectedSession,
   onExportReport,
   onInterruptRun,
@@ -27,12 +24,7 @@ export function ChatHeader({
   const trailsOpen = detailDrawer === "trails";
   const documentsOpen = detailDrawer === "documents";
   return (
-    <header
-      className={cn(
-        "absolute left-0 right-0 top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/74 px-4 backdrop-blur-sm",
-        isApprovalRequired && "bg-amber-50/90",
-      )}
-    >
+    <header className="absolute left-0 right-0 top-0 z-30 flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
       <div className="min-w-0">
         <h2 className="truncate text-sm font-medium">{selectedSession.title}</h2>
       </div>

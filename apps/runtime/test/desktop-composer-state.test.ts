@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { getModePreset, modeSpecToPatternDefinition, SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { getComposerInteractivity } from "../../desktop/src/components/ChatInput";
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
 import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
-import { adaptChatMessages, adaptPendingRunMessages } from "../../desktop/src/lib/viewModel";
+import { waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
+import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
 describe("desktop composer pending-run behavior", () => {
@@ -160,6 +161,103 @@ describe("desktop composer pending-run behavior", () => {
       prompt: "hello",
       createdAt: 10,
     });
+  });
+
+  it("treats a pending submit as visible processing for the active session", () => {
+    expect(isSessionProcessing(
+      { id: "session-1", status: "done" },
+      { sessionId: "session-1", prompt: "hello", createdAt: 10 },
+    )).toBe(true);
+
+    expect(isSessionProcessing(
+      { id: "session-2", status: "done" },
+      { sessionId: "session-1", prompt: "hello", createdAt: 10 },
+    )).toBe(false);
+  });
+
+  it("yields for a browser paint before starting the runtime request", async () => {
+    const originalWindow = globalThis.window;
+    const calls: string[] = [];
+    const mockWindow = {
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        calls.push("raf");
+        callback(16);
+        return 1;
+      },
+      setTimeout: (callback: TimerHandler) => {
+        calls.push("timeout");
+        if (typeof callback === "function") {
+          callback();
+        }
+        return 1;
+      },
+    } as unknown as Window & typeof globalThis;
+
+    Object.defineProperty(globalThis, "window", {
+      value: mockWindow,
+      configurable: true,
+    });
+
+    try {
+      await waitForPendingRunPaint();
+    } finally {
+      Object.defineProperty(globalThis, "window", {
+        value: originalWindow,
+        configurable: true,
+      });
+    }
+
+    expect(calls).toEqual(["raf", "timeout"]);
+  });
+
+  it("optimistically clears approval gates when resume is submitted", () => {
+    const snapshot = {
+      runId: "run-approval",
+      sessionId: "session-1",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "install skills", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [{
+        id: "action-1",
+        runId: "run-approval",
+        type: "skills.create",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: ["action-1"],
+      updatedAt: 1,
+    } as unknown as OraStateSnapshot;
+
+    const next = workbenchReducer({ ...initialWorkbenchState, activeSnapshot: snapshot }, {
+      type: "BEGIN_RUN_RESUME",
+      runId: "run-approval",
+      approvedActionIds: ["action-1"],
+      updatedAt: 20,
+    });
+
+    expect(next.activeSnapshot?.status).toBe("running");
+    expect(next.activeSnapshot?.pendingApprovals).toEqual([]);
+    expect(next.activeSnapshot?.actions[0]?.status).toBe("approved");
+    expect(next.isLoading).toBe(true);
   });
 
   it("navigates back to chat when selecting a historical session from another view", () => {
@@ -490,6 +588,19 @@ describe("desktop composer pending-run behavior", () => {
           role: "assistant",
           content: "{\"verdict\":\"pass\",\"rationale\":\"ok\",\"missingRequirements\":[]}",
         },
+      }, {
+        id: "run-gv:evt-progress",
+        runId: "run-gv",
+        seq: 1,
+        type: "task.progress",
+        createdAt: 2,
+        pattern: "generator_verifier",
+        payload: {
+          kind: "chat_progress",
+          source: "progress_narrator",
+          summary: "Ora is checking the generated answer before presenting the final response.",
+          basedOnSeq: 0,
+        },
       }],
       artifacts: [],
       activeAgents: [],
@@ -581,6 +692,64 @@ describe("desktop composer pending-run behavior", () => {
     const messages = adaptChatMessages([], { "run-gv": snapshot });
 
     expect(messages.find((message) => message.role === "assistant")?.content).toBe("Working on it...");
+  });
+
+  it("uses agent-authored progress narration as the running assistant body", () => {
+    const snapshot = {
+      runId: "run-progress",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Research the project", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: { progressNarration: true } },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-progress:evt-0",
+          runId: "run-progress",
+          seq: 0,
+          type: "message.delta",
+          createdAt: 2,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "Draft answer that should stay hidden." },
+        },
+        {
+          id: "run-progress:evt-1",
+          runId: "run-progress",
+          seq: 1,
+          type: "task.progress",
+          createdAt: 3,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            summary: "Ora has finished reading the project context and is now shaping the response.",
+            basedOnSeq: 0,
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: 3,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages([], { "run-progress": snapshot });
+
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe(
+      "Ora has finished reading the project context and is now shaping the response.",
+    );
   });
 
   it("hides cached duplicate web.fetch events from chat turn steps", () => {
@@ -747,6 +916,141 @@ describe("desktop composer pending-run behavior", () => {
     expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
       "Run failed: Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
     );
+  });
+
+  it("does not show routine node runtime states as assistant steps", () => {
+    const snapshot = {
+      runId: "run-node-states",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Fetch once.", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        ...["pending", "running_model", "tool_requested", "tool_running", "tool_result_observed", "finalizing", "completed"].map((state, index) => ({
+          id: `run-node-states:evt-node-${index}`,
+          runId: "run-node-states",
+          seq: index,
+          type: "node.updated",
+          createdAt: 2 + index,
+          pattern: "orchestrator_subagent",
+          payload: { state, title: "Respond", toolId: state.includes("tool") ? "web.fetch" : undefined },
+        })),
+        {
+          id: "run-node-states:evt-tool",
+          runId: "run-node-states",
+          seq: 10,
+          type: "tool.called",
+          createdAt: 10,
+          pattern: "orchestrator_subagent",
+          payload: { toolId: "web.fetch", status: "succeeded", input: { url: "https://example.com" }, output: { status: 200 } },
+        },
+        {
+          id: "run-node-states:evt-repairing",
+          runId: "run-node-states",
+          seq: 11,
+          type: "node.updated",
+          createdAt: 11,
+          pattern: "orchestrator_subagent",
+          payload: { state: "repairing", title: "Respond", detail: "synthetic tool result" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Done." },
+      updatedAt: 12,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages([], { "run-node-states": snapshot }).find((message) => message.role === "assistant");
+    const nodeSteps = assistant?.turn?.processSteps.filter((step) => step.eventType === "node.updated") ?? [];
+
+    expect(nodeSteps).toHaveLength(1);
+    expect(nodeSteps[0]?.detail).toBe("Respond repairing tool context: synthetic tool result.");
+    expect(assistant?.turn?.processSteps.some((step) => step.detail === "Respond pending.")).toBe(false);
+    expect(assistant?.turn?.processSteps.some((step) => step.detail === "Respond running_model.")).toBe(false);
+  });
+
+  it("uses the active snapshot status instead of a stale running session summary", () => {
+    const mode = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const pattern = modeSpecToPatternDefinition(mode);
+    const snapshot = {
+      runId: "run-settled",
+      sessionId: "session-settled",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Install skills.", createdAt: 1 },
+      config: { modeId: SINGLE_AGENT_MODE_ID, pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Done." },
+      updatedAt: 20,
+    } as unknown as OraStateSnapshot;
+
+    const view = buildWorkbenchViewModel(
+      [pattern],
+      [mode],
+      [{
+        sessionId: "session-settled",
+        title: "Install skills",
+        status: "running",
+        latestRunId: "run-settled",
+        latestPattern: "orchestrator_subagent",
+        latestModeId: SINGLE_AGENT_MODE_ID,
+        turnCount: 1,
+        updatedAt: 5,
+      }],
+      {
+        session: {
+          sessionId: "session-settled",
+          title: "Install skills",
+          status: "running",
+          latestRunId: "run-settled",
+          latestPattern: "orchestrator_subagent",
+          latestModeId: SINGLE_AGENT_MODE_ID,
+          turnCount: 1,
+          updatedAt: 5,
+        },
+        turns: [],
+        latestSnapshot: snapshot,
+        messages: [],
+      } as any,
+      snapshot,
+      "orchestrator_subagent",
+      SINGLE_AGENT_MODE_ID,
+    );
+
+    expect(view.sessions[0]?.status).toBe("done");
   });
 
   it("shows concrete failure details in Trails anomalies", () => {

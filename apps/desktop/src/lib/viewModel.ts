@@ -75,33 +75,65 @@ export function buildWorkbenchViewModel(
   selectedPattern: CoordinationPattern,
   selectedModeId: string,
 ): WorkbenchViewModel {
-  const selectedMode = modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
-  const activeDefinition = selectedMode ? modeSpecToPatternDefinition(selectedMode) : findPattern(patterns, selectedPattern);
+  const selectedMode =
+    modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
+  const activeDefinition = selectedMode
+    ? modeSpecToPatternDefinition(selectedMode)
+    : findPattern(patterns, selectedPattern);
   const effectivePattern = activeDefinition.id;
   const detailSnapshot =
-    activeSnapshot ?? sessionDetail.latestSnapshot ?? createEmptySessionPreview(activeDefinition, sessionDetail.session, selectedMode);
+    activeSnapshot ??
+    sessionDetail.latestSnapshot ??
+    createEmptySessionPreview(
+      activeDefinition,
+      sessionDetail.session,
+      selectedMode,
+    );
   const selectedPatternSnapshot =
-    detailSnapshot.pattern === effectivePattern && detailSnapshot.modeId === selectedMode?.id
+    detailSnapshot.pattern === effectivePattern &&
+    detailSnapshot.modeId === selectedMode?.id
       ? detailSnapshot
-      : createPreviewFromPattern(detailSnapshot, activeDefinition, selectedMode);
+      : createPreviewFromPattern(
+          detailSnapshot,
+          activeDefinition,
+          selectedMode,
+        );
 
   const patternCards = patterns.map(adaptPatternCard);
   const modeCards = modes.map(adaptModeCard);
-  const activePattern = patternCards.find((pattern) => pattern.id === effectivePattern) ?? patternCards[0];
+  const activePattern =
+    patternCards.find((pattern) => pattern.id === effectivePattern) ??
+    patternCards[0];
   const activeMode = selectedMode ? adaptModeCard(selectedMode) : modeCards[0];
 
   return {
     patternCards,
     modeCards,
-    sessions: sessions.map((session) => adaptSession(session, effectivePattern)),
+    sessions: sessions.map((session) =>
+      adaptSession(
+        session,
+        effectivePattern,
+        detailSnapshot.sessionId === session.sessionId
+          ? detailSnapshot
+          : undefined,
+      ),
+    ),
     turns: sessionDetail.turns.map(adaptTurn),
-    topologyNodes: adaptTopologyNodes(selectedPatternSnapshot.topology.nodes, effectivePattern),
+    topologyNodes: adaptTopologyNodes(
+      selectedPatternSnapshot.topology.nodes,
+      effectivePattern,
+    ),
     topologyEdges: adaptTopologyEdges(selectedPatternSnapshot.topology.edges),
     streamLines: adaptStreamLines(detailSnapshot.events),
     agents: selectedPatternSnapshot.profiles.map(adaptAgentProfile),
-    memoryRecords: adaptMemoryRecords(selectedPatternSnapshot.memory, selectedPatternSnapshot.profiles),
+    memoryRecords: adaptMemoryRecords(
+      selectedPatternSnapshot.memory,
+      selectedPatternSnapshot.profiles,
+    ),
     planItems: selectedPatternSnapshot.plan.map(adaptPlanItem),
-    actions: selectedPatternSnapshot.actions.map(adaptActionRecord),
+    actions: selectedPatternSnapshot.actions.map((action) =>
+      adaptActionRecord(action, selectedPatternSnapshot.input.prompt),
+    ),
     checkpoints: detailSnapshot.checkpoints.map(adaptCheckpoint),
     artifacts: detailSnapshot.artifacts.map(adaptArtifact),
     beats: adaptFilmstripBeats(detailSnapshot),
@@ -122,7 +154,7 @@ function createEmptySessionPreview(
     runId: session.latestRunId ?? `${session.sessionId}:preview`,
     sessionId: session.sessionId,
     turnIndex: Math.max(1, session.turnCount || 1),
-    status: "queued",
+    status: "succeeded",
     pattern: definition.id,
     coordinationKind: definition.id,
     modeId,
@@ -158,9 +190,25 @@ function createEmptySessionPreview(
     artifacts: [],
     todos: [],
     activeAgents: [],
-    queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
-    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
-    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    queueSummary: {
+      mode: "dag",
+      pending: 0,
+      inProgress: 0,
+      completed: 0,
+      topics: [],
+    },
+    sharedStateSummary: {
+      enabled: false,
+      storeKind: "none",
+      version: 0,
+      entries: [],
+    },
+    busStats: {
+      enabled: false,
+      publishedCount: 0,
+      routedCount: 0,
+      topicCounts: {},
+    },
     pendingClarifications: [],
     pendingApprovals: [],
     updatedAt: now,
@@ -171,7 +219,9 @@ export function findPattern(
   patterns: OraPatternDefinition[],
   pattern: CoordinationPattern,
 ): OraPatternDefinition {
-  return patterns.find((definition) => definition.id === pattern) ?? patterns[0];
+  return (
+    patterns.find((definition) => definition.id === pattern) ?? patterns[0]
+  );
 }
 
 function createPreviewFromPattern(
@@ -179,16 +229,18 @@ function createPreviewFromPattern(
   definition: OraPatternDefinition,
   selectedMode?: OraModeSpec,
 ): OraStateSnapshot {
-  const previewPlan: OraPlanItem[] = definition.planTemplate.map((item, index) => ({
-    id: `${snapshot.runId}:preview:${item.id}`,
-    runId: snapshot.runId,
-    ownerAgentId: item.ownerAgentId,
-    status: (index === 0 ? "ready" : "planned") as OraPlanItem["status"],
-    title: item.title,
-    dependencies: item.dependencies,
-    linkedActionIds: [],
-    checkpointIds: snapshot.checkpoints.map((checkpoint) => checkpoint.id),
-  }));
+  const previewPlan: OraPlanItem[] = definition.planTemplate.map(
+    (item, index) => ({
+      id: `${snapshot.runId}:preview:${item.id}`,
+      runId: snapshot.runId,
+      ownerAgentId: item.ownerAgentId,
+      status: (index === 0 ? "ready" : "planned") as OraPlanItem["status"],
+      title: item.title,
+      dependencies: item.dependencies,
+      linkedActionIds: [],
+      checkpointIds: snapshot.checkpoints.map((checkpoint) => checkpoint.id),
+    }),
+  );
   const previewTodos: OraStateSnapshot["todos"] = previewPlan.map((item) => ({
     id: `${item.id}:todo`,
     runId: snapshot.runId,
@@ -246,24 +298,33 @@ function adaptModeCard(mode: OraModeSpec): ModeCard {
     family: mode.family,
     label: mode.label,
     summary: mode.summary,
-    recommendedUse: mode.recommendedUse ?? `Use when ${mode.family.replace(/_/g, " ")} fits the task.`,
-    failureMode: mode.failureMode ?? "Misconfigured stages can reduce observability or waste budget.",
+    recommendedUse:
+      mode.recommendedUse ??
+      `Use when ${mode.family.replace(/_/g, " ")} fits the task.`,
+    failureMode:
+      mode.failureMode ??
+      "Misconfigured stages can reduce observability or waste budget.",
     isPreset: mode.systemPreset,
   };
 }
 
-function adaptSession(session: OraSessionSummary, fallbackPattern: CoordinationPattern): SessionRun {
+function adaptSession(
+  session: OraSessionSummary,
+  fallbackPattern: CoordinationPattern,
+  snapshot?: OraStateSnapshot,
+): SessionRun {
+  const status = snapshot?.status ?? session.status ?? "succeeded";
   return {
     id: session.sessionId,
     title: session.title,
     project: session.projectId ?? "Recent chat",
     projectId: session.projectId,
-    status: adaptRunStatus(session.status ?? "succeeded"),
-    pattern: session.latestPattern ?? fallbackPattern,
-    modeId: session.latestModeId,
-    updatedAt: formatClock(session.updatedAt),
-    health: session.status === "failed" ? 42 : session.status === "interrupted" ? 68 : 94,
-    latestRunId: session.latestRunId,
+    status: adaptRunStatus(status),
+    pattern: snapshot?.pattern ?? session.latestPattern ?? fallbackPattern,
+    modeId: snapshot?.modeId ?? session.latestModeId,
+    updatedAt: formatClock(snapshot?.updatedAt ?? session.updatedAt),
+    health: status === "failed" ? 42 : status === "interrupted" ? 68 : 94,
+    latestRunId: snapshot?.runId ?? session.latestRunId,
     turnCount: session.turnCount,
   };
 }
@@ -299,7 +360,10 @@ function adaptRunStatus(status: OraStateSnapshot["status"]): RunStatus {
   }
 }
 
-function adaptTopologyNodes(nodes: OraTopologyNode[], pattern: CoordinationPattern): TopologyNode[] {
+function adaptTopologyNodes(
+  nodes: OraTopologyNode[],
+  pattern: CoordinationPattern,
+): TopologyNode[] {
   const layout = nodeLayout(pattern, nodes);
 
   return nodes.map((node, index) => ({
@@ -309,16 +373,28 @@ function adaptTopologyNodes(nodes: OraTopologyNode[], pattern: CoordinationPatte
     role: roleForNode(node),
     agentId: node.agentId,
     status: adaptNodeStatus(node.status),
-    atomId: typeof node.metadata.atomId === "string" ? node.metadata.atomId : undefined,
-    atomScope: node.metadata.atomScope === "mode" || node.metadata.atomScope === "node" ? node.metadata.atomScope : undefined,
+    atomId:
+      typeof node.metadata.atomId === "string"
+        ? node.metadata.atomId
+        : undefined,
+    atomScope:
+      node.metadata.atomScope === "mode" || node.metadata.atomScope === "node"
+        ? node.metadata.atomScope
+        : undefined,
     atomPresentation:
-      node.metadata.atomPresentation === "mode_capability"
-      || node.metadata.atomPresentation === "stage_attachment"
-      || node.metadata.atomPresentation === "family_capability"
+      node.metadata.atomPresentation === "mode_capability" ||
+      node.metadata.atomPresentation === "stage_attachment" ||
+      node.metadata.atomPresentation === "family_capability"
         ? node.metadata.atomPresentation
         : undefined,
-    sourceNodeId: typeof node.metadata.sourceNodeId === "string" ? node.metadata.sourceNodeId : undefined,
-    active: typeof node.metadata.atomActive === "boolean" ? node.metadata.atomActive : undefined,
+    sourceNodeId:
+      typeof node.metadata.sourceNodeId === "string"
+        ? node.metadata.sourceNodeId
+        : undefined,
+    active:
+      typeof node.metadata.atomActive === "boolean"
+        ? node.metadata.atomActive
+        : undefined,
     x: layout[index]?.x ?? 80 + index * 150,
     y: layout[index]?.y ?? 84,
   }));
@@ -335,10 +411,14 @@ function adaptTopologyEdges(edges: OraTopologyEdge[]): TopologyEdge[] {
 
 function roleForNode(node: OraTopologyNode): string {
   if (node.kind === "capability" && typeof node.metadata.atomId === "string") {
-    const scope = node.metadata.atomScope === "mode" || node.metadata.atomScope === "node"
-      ? node.metadata.atomScope
-      : "runtime";
-    const source = typeof node.metadata.sourceNodeLabel === "string" ? ` · ${node.metadata.sourceNodeLabel}` : "";
+    const scope =
+      node.metadata.atomScope === "mode" || node.metadata.atomScope === "node"
+        ? node.metadata.atomScope
+        : "runtime";
+    const source =
+      typeof node.metadata.sourceNodeLabel === "string"
+        ? ` · ${node.metadata.sourceNodeLabel}`
+        : "";
     return `${scope}:${node.metadata.atomId}${source}`;
   }
 
@@ -353,7 +433,9 @@ function roleForNode(node: OraTopologyNode): string {
   return node.kind;
 }
 
-function adaptNodeStatus(status: OraTopologyNode["status"]): TopologyNode["status"] {
+function adaptNodeStatus(
+  status: OraTopologyNode["status"],
+): TopologyNode["status"] {
   switch (status) {
     case "running":
       return "active";
@@ -371,9 +453,17 @@ function adaptNodeStatus(status: OraTopologyNode["status"]): TopologyNode["statu
 function adaptStreamLines(events: OraEventEnvelope[]): StreamLine[] {
   const lines = events
     .filter((event) =>
-      ["run.started", "topology.updated", "plan.updated", "message.delta", "node.updated", "completion.updated", "checkpoint.created", "run.done", "run.failed"].includes(
-        event.type,
-      ),
+      [
+        "run.started",
+        "topology.updated",
+        "plan.updated",
+        "message.delta",
+        "node.updated",
+        "completion.updated",
+        "checkpoint.created",
+        "run.done",
+        "run.failed",
+      ].includes(event.type),
     )
     .map((event) => ({
       source: event.nodeId ?? event.agentId ?? event.type,
@@ -382,7 +472,12 @@ function adaptStreamLines(events: OraEventEnvelope[]): StreamLine[] {
 
   return lines.length > 0
     ? lines
-    : [{ source: "runtime", text: "Waiting for Ora event envelopes from the runtime bridge." }];
+    : [
+        {
+          source: "runtime",
+          text: "Waiting for Ora event envelopes from the runtime bridge.",
+        },
+      ];
 }
 
 function eventText(event: OraEventEnvelope): string {
@@ -416,8 +511,17 @@ function eventText(event: OraEventEnvelope): string {
     case "clarification.resolved":
       return "Clarification answer recorded and the run can continue.";
     case "completion.updated":
-      if (isRecord(event.payload) && event.payload.state === "tool_call_text_rejected") {
+      if (
+        isRecord(event.payload) &&
+        event.payload.state === "tool_call_text_rejected"
+      ) {
         return "Completion control rejected a tool call returned as the final answer.";
+      }
+      if (isRecord(event.payload) && event.payload.state === "force_final") {
+        return "Completion control is finalizing from the available tool results.";
+      }
+      if (isRecord(event.payload) && event.payload.state === "loop_warning") {
+        return "Completion control warned about a possible tool loop.";
       }
       return "Completion control updated the run stopping state.";
     case "node.updated":
@@ -445,7 +549,10 @@ function adaptAgentProfile(profile: OraAgentProfile): AgentProfile {
   };
 }
 
-function adaptMemoryRecords(records: OraMemoryRecord[], profiles: OraAgentProfile[]): MemoryRecord[] {
+function adaptMemoryRecords(
+  records: OraMemoryRecord[],
+  profiles: OraAgentProfile[],
+): MemoryRecord[] {
   if (records.length > 0) {
     return records.map((record) => ({
       id: record.id,
@@ -478,7 +585,9 @@ function memoryValue(value: unknown): string {
 }
 
 function namespaceKind(namespace: string): MemoryRecord["kind"] {
-  if (["profile", "project", "session", "worker", "artifact"].includes(namespace)) {
+  if (
+    ["profile", "project", "session", "worker", "artifact"].includes(namespace)
+  ) {
     return namespace as MemoryRecord["kind"];
   }
   return "session";
@@ -512,13 +621,14 @@ function adaptPlanStatus(status: OraPlanItem["status"]): PlanItem["status"] {
   }
 }
 
-function adaptActionRecord(action: OraActionRecord): ActionRecord {
+function adaptActionRecord(action: OraActionRecord, userPrompt?: string): ActionRecord {
   return {
     id: action.id,
     label: action.type.replace(/\./g, " "),
     state: adaptActionStatus(action.status),
     consequence: actionConsequence(action),
     risk: action.riskLevel,
+    approvalRequest: action.approvalRequest ?? fallbackApprovalRequest(action, userPrompt),
     agentId: action.agentId,
     planItemId: action.planItemId,
     artifactIds: action.artifactIds,
@@ -548,7 +658,9 @@ function adaptArtifact(artifact: OraArtifactRef): ArtifactRecord {
   };
 }
 
-function adaptActionStatus(status: OraActionRecord["status"]): ActionRecord["state"] {
+function adaptActionStatus(
+  status: OraActionRecord["status"],
+): ActionRecord["state"] {
   switch (status) {
     case "approval_required":
       return "approval_required";
@@ -580,12 +692,40 @@ function actionConsequence(action: OraActionRecord): string {
   return "Runtime proposed this action with linked plan and checkpoint context.";
 }
 
+function fallbackApprovalRequest(action: OraActionRecord, userPrompt?: string): ActionRecord["approvalRequest"] {
+  if (action.status !== "approval_required") {
+    return undefined;
+  }
+  const zh = typeof userPrompt === "string" && /[\u3400-\u9fff]/.test(userPrompt);
+  if (zh) {
+    return {
+      title: "需要你确认后继续",
+      summary: "我准备执行一项会影响本地环境的操作。",
+      whatWillChange: "操作完成后，本地状态可能发生变化。",
+      whyNeeded: "这是继续当前任务所需的步骤。",
+      riskNote: "请确认这符合你的预期后再继续。",
+      confirmLabel: "批准并继续",
+    };
+  }
+  return {
+    title: "Confirm before continuing",
+    summary: "I am ready to perform an action that can affect the local environment.",
+    whatWillChange: "Local state may change after the action completes.",
+    whyNeeded: "This step is needed to continue the current task.",
+    riskNote: "Confirm this matches your expectations before continuing.",
+    confirmLabel: "Approve and continue",
+  };
+}
+
 function adaptFilmstripBeats(snapshot: OraStateSnapshot): RunBeat[] {
   const beats = snapshot.events.map((event) => ({
     id: event.id,
     group: beatGroup(event),
     label: beatLabel(event),
-    time: formatElapsed(snapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
+    time: formatElapsed(
+      snapshot.events[0]?.createdAt ?? event.createdAt,
+      event.createdAt,
+    ),
     detail: eventText(event),
     eventType: event.type,
     eventSeq: event.seq,
@@ -766,7 +906,10 @@ function beatLabel(event: OraEventEnvelope): string {
   }
 }
 
-function nodeLayout(pattern: CoordinationPattern, nodes: OraTopologyNode[]): Array<{ x: number; y: number }> {
+function nodeLayout(
+  pattern: CoordinationPattern,
+  nodes: OraTopologyNode[],
+): Array<{ x: number; y: number }> {
   const count = nodes.length;
   const capabilities = nodes.filter((node) => node.kind === "capability");
   if (capabilities.length > 0) {
@@ -778,7 +921,9 @@ function nodeLayout(pattern: CoordinationPattern, nodes: OraTopologyNode[]): Arr
       positions.set(node.id, base[index] ?? { x: 80 + index * 150, y: 92 });
     });
 
-    const floatingCapabilities = capabilities.filter((node) => node.metadata.atomPresentation !== "stage_attachment");
+    const floatingCapabilities = capabilities.filter(
+      (node) => node.metadata.atomPresentation !== "stage_attachment",
+    );
     floatingCapabilities.forEach((node, index) => {
       positions.set(node.id, {
         x: 56 + index * 164,
@@ -790,9 +935,13 @@ function nodeLayout(pattern: CoordinationPattern, nodes: OraTopologyNode[]): Arr
     capabilities
       .filter((node) => node.metadata.atomPresentation === "stage_attachment")
       .forEach((node) => {
-        const sourceNodeId = typeof node.metadata.sourceNodeId === "string" ? node.metadata.sourceNodeId : undefined;
+        const sourceNodeId =
+          typeof node.metadata.sourceNodeId === "string"
+            ? node.metadata.sourceNodeId
+            : undefined;
         const anchor = sourceNodeId ? positions.get(sourceNodeId) : undefined;
-        const countForSource = attachmentCounts.get(sourceNodeId ?? node.id) ?? 0;
+        const countForSource =
+          attachmentCounts.get(sourceNodeId ?? node.id) ?? 0;
         attachmentCounts.set(sourceNodeId ?? node.id, countForSource + 1);
         positions.set(node.id, {
           x: (anchor?.x ?? 80) + 18,
@@ -800,13 +949,18 @@ function nodeLayout(pattern: CoordinationPattern, nodes: OraTopologyNode[]): Arr
         });
       });
 
-    return nodes.map((node, index) => positions.get(node.id) ?? { x: 80 + index * 150, y: 92 });
+    return nodes.map(
+      (node, index) => positions.get(node.id) ?? { x: 80 + index * 150, y: 92 },
+    );
   }
 
   return baseNodeLayout(pattern, count);
 }
 
-function baseNodeLayout(pattern: CoordinationPattern, count: number): Array<{ x: number; y: number }> {
+function baseNodeLayout(
+  pattern: CoordinationPattern,
+  count: number,
+): Array<{ x: number; y: number }> {
   if (pattern === "generator_verifier") {
     return [
       { x: 70, y: 94 },
@@ -881,11 +1035,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
-  return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
+  return Array.isArray(snapshot.pendingApprovals)
+    ? snapshot.pendingApprovals
+    : [];
 }
 
-function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
-  return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
+function snapshotPendingClarifications(
+  snapshot: OraStateSnapshot,
+): OraStateSnapshot["pendingClarifications"] {
+  return Array.isArray(snapshot.pendingClarifications)
+    ? snapshot.pendingClarifications
+    : [];
 }
 
 export function adaptChatMessages(
@@ -953,30 +1113,45 @@ export function adaptChatMessages(
         });
       }
 
-      const assistantTurn = turn.snapshot ? buildAssistantTurnAttachment(turn.snapshot) : undefined;
-      const snapshotAssistant = turn.snapshot ? assistantTextFromSnapshot(turn.snapshot) : undefined;
-      const suppressStoredAssistant = turn.snapshot ? hasRejectedFinalToolCall(turn.snapshot) : false;
+      const assistantTurn = turn.snapshot
+        ? buildAssistantTurnAttachment(turn.snapshot)
+        : undefined;
+      const snapshotAssistant = turn.snapshot
+        ? assistantTextFromSnapshot(turn.snapshot)
+        : undefined;
+      const suppressStoredAssistant = turn.snapshot
+        ? hasRejectedFinalToolCall(turn.snapshot)
+        : false;
       if (turn.assistant || assistantTurn) {
         messages.push({
           id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
           role: "assistant",
-          content: snapshotAssistant ?? (suppressStoredAssistant ? undefined : turn.assistant?.content) ?? placeholderAssistantCopy(turn.snapshot),
-          timestamp: formatClock(turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now()),
+          content:
+            snapshotAssistant ??
+            (suppressStoredAssistant ? undefined : turn.assistant?.content) ??
+            placeholderAssistantCopy(turn.snapshot),
+          timestamp: formatClock(
+            turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now(),
+          ),
           metadata: {
             runId: turn.runId,
             turnIndex: turn.turnIndex,
             pattern: turn.pattern,
           },
           turn: assistantTurn,
-          isPlaceholder: !turn.assistant && (!assistantTurn || assistantTurn.status === "running"),
+          isPlaceholder:
+            !turn.assistant &&
+            (!assistantTurn || assistantTurn.status === "running"),
         });
       }
 
       return messages;
-  });
+    });
 }
 
-export function adaptPendingRunMessages(pendingRun: PendingRunPreview | undefined): ChatMessage[] {
+export function adaptPendingRunMessages(
+  pendingRun: PendingRunPreview | undefined,
+): ChatMessage[] {
   if (!pendingRun || !pendingRun.prompt.trim()) {
     return [];
   }
@@ -998,7 +1173,19 @@ export function adaptPendingRunMessages(pendingRun: PendingRunPreview | undefine
   ];
 }
 
-function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+export function isSessionProcessing(
+  session: Pick<SessionRun, "id" | "status"> | undefined,
+  pendingRun: PendingRunPreview | undefined,
+): boolean {
+  return Boolean(
+    session &&
+    (session.status === "running" || pendingRun?.sessionId === session.id),
+  );
+}
+
+function assistantTextFromSnapshot(
+  snapshot: OraStateSnapshot,
+): string | undefined {
   const outputText = outputTextFromSnapshot(snapshot);
   if (outputText) {
     return outputText;
@@ -1006,7 +1193,20 @@ function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefin
   if (hasRejectedFinalToolCall(snapshot)) {
     return undefined;
   }
-  if (snapshot.status === "queued" || snapshot.status === "running" || snapshot.status === "interrupted") {
+  if (
+    snapshot.status === "queued" ||
+    snapshot.status === "running"
+  ) {
+    if (
+      snapshotPendingClarifications(snapshot).length > 0 ||
+      snapshotPendingApprovals(snapshot).length > 0 ||
+      snapshot.actions.some((action) => action.status === "approval_required")
+    ) {
+      return undefined;
+    }
+    return progressTextFromSnapshot(snapshot);
+  }
+  if (snapshot.status === "interrupted") {
     return undefined;
   }
 
@@ -1026,17 +1226,48 @@ function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefin
   return undefined;
 }
 
-function outputTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+function progressTextFromSnapshot(
+  snapshot: OraStateSnapshot,
+): string | undefined {
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type !== "task.progress" || !isRecord(event.payload)) {
+      continue;
+    }
+    if (
+      event.payload.kind !== "chat_progress" ||
+      event.payload.source !== "progress_narrator"
+    ) {
+      continue;
+    }
+    const summary = event.payload.summary;
+    if (typeof summary === "string" && summary.trim()) {
+      return summary.trim();
+    }
+  }
+  return undefined;
+}
+
+function outputTextFromSnapshot(
+  snapshot: OraStateSnapshot,
+): string | undefined {
   if (typeof snapshot.output === "string" && snapshot.output.trim()) {
     return snapshot.output.trim();
   }
-  if (isRecord(snapshot.output) && typeof snapshot.output.text === "string" && snapshot.output.text.trim()) {
+  if (
+    isRecord(snapshot.output) &&
+    typeof snapshot.output.text === "string" &&
+    snapshot.output.text.trim()
+  ) {
     return snapshot.output.text.trim();
   }
   return undefined;
 }
 
-function isInternalVerifierDelta(snapshot: OraStateSnapshot, event: OraEventEnvelope): boolean {
+function isInternalVerifierDelta(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope,
+): boolean {
   if (snapshot.pattern !== "generator_verifier") {
     return false;
   }
@@ -1046,14 +1277,17 @@ function isInternalVerifierDelta(snapshot: OraStateSnapshot, event: OraEventEnve
 }
 
 function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {
-  return snapshot.events.some((event) =>
-    event.type === "completion.updated"
-    && isRecord(event.payload)
-    && event.payload.state === "tool_call_text_rejected"
+  return snapshot.events.some(
+    (event) =>
+      event.type === "completion.updated" &&
+      isRecord(event.payload) &&
+      event.payload.state === "tool_call_text_rejected",
   );
 }
 
-function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurnAttachment {
+function buildAssistantTurnAttachment(
+  snapshot: OraStateSnapshot,
+): AssistantTurnAttachment {
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
@@ -1078,7 +1312,10 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
       eventType: event.type,
       label: beatLabel(event),
       detail: processStepDetail(event),
-      timestamp: formatElapsed(snapshot.events[0]?.createdAt ?? event.createdAt, event.createdAt),
+      timestamp: formatElapsed(
+        snapshot.events[0]?.createdAt ?? event.createdAt,
+        event.createdAt,
+      ),
       status: processStepStatus(event),
       tone: processStepTone(event),
       agentId: event.agentId,
@@ -1107,7 +1344,6 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "artifact.exported":
     case "artifact.degraded":
     case "completion.updated":
-    case "node.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -1116,6 +1352,8 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "run.done":
     case "run.failed":
       return true;
+    case "node.updated":
+      return isSignificantNodeUpdate(event);
     case "action.updated":
       return actionStatusFromEvent(event) === "failed";
     default:
@@ -1124,51 +1362,106 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
 }
 
 function isCachedWebFetchEvent(event: OraEventEnvelope): boolean {
-  return isRecord(event.payload)
-    && event.payload.toolId === "web.fetch"
-    && event.payload.cacheHit === true;
+  return (
+    isRecord(event.payload) &&
+    event.payload.toolId === "web.fetch" &&
+    event.payload.cacheHit === true
+  );
 }
 
 function processStepDetail(event: OraEventEnvelope): string {
   const detail = eventText(event);
-  if ((event.type === "tool.called" || event.type === "tool.repaired") && isRecord(event.payload)) {
+  if (
+    (event.type === "tool.called" || event.type === "tool.repaired") &&
+    isRecord(event.payload)
+  ) {
     const title = toolCallLabel(event.payload);
-    const status = typeof event.payload.status === "string" ? event.payload.status : undefined;
+    const status =
+      typeof event.payload.status === "string"
+        ? event.payload.status
+        : undefined;
     const actionDetail = toolCallDetail(event.payload);
     if (status === "failed" && typeof event.payload.error === "string") {
       return `${actionDetail ?? title} failed: ${event.payload.error}`;
     }
     if (actionDetail) {
-      return status === "failed" ? `${actionDetail} failed.` : `${actionDetail}.`;
+      return status === "failed"
+        ? `${actionDetail} failed.`
+        : `${actionDetail}.`;
     }
     return status ? `${title} ${status}.` : `${title} completed.`;
   }
-  if ((event.type === "artifact.exported" || event.type === "artifact.degraded") && isRecord(event.payload)) {
-    const label = isRecord(event.payload.artifact) && typeof event.payload.artifact.label === "string"
-      ? event.payload.artifact.label
-      : typeof event.payload.label === "string"
-        ? event.payload.label
-        : "artifact";
-    return event.type === "artifact.degraded" ? `Degraded ${label}.` : `Published ${label}.`;
+  if (
+    (event.type === "artifact.exported" ||
+      event.type === "artifact.degraded") &&
+    isRecord(event.payload)
+  ) {
+    const label =
+      isRecord(event.payload.artifact) &&
+      typeof event.payload.artifact.label === "string"
+        ? event.payload.artifact.label
+        : typeof event.payload.label === "string"
+          ? event.payload.label
+          : "artifact";
+    return event.type === "artifact.degraded"
+      ? `Degraded ${label}.`
+      : `Published ${label}.`;
   }
-  if (event.type.startsWith("recovery.") && isRecord(event.payload) && isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
+  if (
+    event.type.startsWith("recovery.") &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.decision) &&
+    typeof event.payload.decision.summary === "string"
+  ) {
     return event.payload.decision.summary;
   }
-  if (event.type === "action.updated" && isRecord(event.payload) && isRecord(event.payload.record)) {
+  if (
+    event.type === "action.updated" &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.record)
+  ) {
     const record = event.payload.record;
     if (typeof record.error === "string" && record.error.trim()) {
       return `Action failed: ${record.error.trim()}`;
     }
   }
-  if (event.type === "node.skipped" && isRecord(event.payload) && typeof event.payload.nodeLabel === "string") {
+  if (
+    event.type === "node.skipped" &&
+    isRecord(event.payload) &&
+    typeof event.payload.nodeLabel === "string"
+  ) {
     return `Skipped ${event.payload.nodeLabel}.`;
   }
-  if (event.type === "node.updated" && isRecord(event.payload) && typeof event.payload.state === "string") {
-    const title = typeof event.payload.title === "string" ? event.payload.title : "Node";
-    const detail = typeof event.payload.detail === "string" ? `: ${event.payload.detail}` : "";
-    return `${title} ${event.payload.state}${detail}.`;
+  if (
+    event.type === "node.updated" &&
+    isRecord(event.payload) &&
+    typeof event.payload.state === "string"
+  ) {
+    const title =
+      typeof event.payload.title === "string" ? event.payload.title : "Node";
+    const detail =
+      typeof event.payload.detail === "string" && event.payload.detail.trim()
+        ? `: ${event.payload.detail.trim()}`
+        : "";
+    switch (event.payload.state) {
+      case "repairing":
+        return `${title} repairing tool context${detail}.`;
+      case "degraded":
+        return `${title} degraded${detail}.`;
+      case "interrupted":
+        return `${title} interrupted${detail}.`;
+      case "failed":
+        return `${title} failed${detail}.`;
+      default:
+        return `${title} state updated${detail}.`;
+    }
   }
-  if (event.type === "checkpoint.created" && isRecord(event.payload) && isRecord(event.payload.checkpoint) && typeof event.payload.checkpoint.label === "string") {
+  if (
+    event.type === "checkpoint.created" &&
+    isRecord(event.payload) &&
+    isRecord(event.payload.checkpoint) &&
+    typeof event.payload.checkpoint.label === "string"
+  ) {
     return `Checkpoint created: ${event.payload.checkpoint.label}.`;
   }
   return detail;
@@ -1188,24 +1481,42 @@ function isWorkProcessEvent(event: OraEventEnvelope): boolean {
     case "artifact.exported":
     case "artifact.degraded":
     case "completion.updated":
-    case "node.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
     case "recovery.exhausted":
     case "node.skipped":
       return true;
+    case "node.updated":
+      return isSignificantNodeUpdate(event);
     default:
       return false;
   }
 }
 
 function isLifecycleProcessEvent(event: OraEventEnvelope): boolean {
-  return event.type === "checkpoint.created" || event.type === "run.done" || event.type === "run.failed";
+  return (
+    event.type === "checkpoint.created" ||
+    event.type === "run.done" ||
+    event.type === "run.failed"
+  );
+}
+
+function isSignificantNodeUpdate(event: OraEventEnvelope): boolean {
+  if (!isRecord(event.payload) || typeof event.payload.state !== "string") {
+    return false;
+  }
+  return ["repairing", "degraded", "interrupted", "failed"].includes(
+    event.payload.state,
+  );
 }
 
 function hasToolId(event: OraEventEnvelope): boolean {
-  return isRecord(event.payload) && typeof event.payload.toolId === "string" && event.payload.toolId.length > 0;
+  return (
+    isRecord(event.payload) &&
+    typeof event.payload.toolId === "string" &&
+    event.payload.toolId.length > 0
+  );
 }
 
 function toolCallLabel(payload: Record<string, unknown>): string {
@@ -1217,16 +1528,21 @@ function toolCallLabel(payload: Record<string, unknown>): string {
 }
 
 function toolCallDetail(payload: Record<string, unknown>): string | undefined {
-  const toolId = typeof payload.toolId === "string" ? payload.toolId : undefined;
+  const toolId =
+    typeof payload.toolId === "string" ? payload.toolId : undefined;
   const input = isRecord(payload.input) ? payload.input : {};
   const output = isRecord(payload.output) ? payload.output : {};
   const targetPath = stringValue(output.path) ?? stringValue(input.path);
 
   switch (toolId) {
     case "file.read":
-      return targetPath ? `Read ${targetPath}${sizeSuffix(output.sizeBytes)}` : undefined;
+      return targetPath
+        ? `Read ${targetPath}${sizeSuffix(output.sizeBytes)}`
+        : undefined;
     case "file.list":
-      return targetPath ? `Listed ${targetPath}${countSuffix(output.entries, "entry", "entries")}` : undefined;
+      return targetPath
+        ? `Listed ${targetPath}${countSuffix(output.entries, "entry", "entries")}`
+        : undefined;
     case "file.glob": {
       const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
       const basePath = stringValue(input.path);
@@ -1245,24 +1561,33 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
       return `Searched for "${pattern}"${scope ? ` in ${scope}` : ""}${countSuffix(output.matches, "match", "matches")}${truncated}`;
     }
     case "file.write":
-      return targetPath ? `Wrote ${targetPath}${sizeSuffix(output.sizeBytes)}` : undefined;
+      return targetPath
+        ? `Wrote ${targetPath}${sizeSuffix(output.sizeBytes)}`
+        : undefined;
     case "file.patch": {
-      const replacements = typeof output.replacements === "number" ? ` (${output.replacements} replacement${output.replacements === 1 ? "" : "s"})` : "";
+      const replacements =
+        typeof output.replacements === "number"
+          ? ` (${output.replacements} replacement${output.replacements === 1 ? "" : "s"})`
+          : "";
       return targetPath ? `Patched ${targetPath}${replacements}` : undefined;
     }
     case "shell.execute": {
       const command = stringValue(output.command) ?? stringValue(input.command);
-      const exitCode = typeof output.exitCode === "number" ? ` (exit ${output.exitCode})` : "";
+      const exitCode =
+        typeof output.exitCode === "number" ? ` (exit ${output.exitCode})` : "";
       return command ? `Ran ${command}${exitCode}` : undefined;
     }
     case "web.fetch": {
       const url = stringValue(output.url) ?? stringValue(input.url);
-      const status = typeof output.status === "number" ? ` (${output.status})` : "";
+      const status =
+        typeof output.status === "number" ? ` (${output.status})` : "";
       return url ? `Fetched ${url}${status}` : undefined;
     }
     case "web.search": {
       const query = stringValue(output.query) ?? stringValue(input.query);
-      return query ? `Searched the web for "${query}"${countSuffix(output.results, "result", "results")}` : undefined;
+      return query
+        ? `Searched the web for "${query}"${countSuffix(output.results, "result", "results")}`
+        : undefined;
     }
     case "mcp.listTools": {
       const server = stringValue(input.server);
@@ -1271,12 +1596,16 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
     case "mcp.readResource": {
       const uri = stringValue(input.uri);
       const server = stringValue(input.server);
-      return uri ? `Read MCP resource ${uri}${server ? ` from ${server}` : ""}` : undefined;
+      return uri
+        ? `Read MCP resource ${uri}${server ? ` from ${server}` : ""}`
+        : undefined;
     }
     case "mcp.call": {
       const name = stringValue(input.name);
       const server = stringValue(input.server);
-      return name ? `Called MCP tool ${name}${server ? ` on ${server}` : ""}` : undefined;
+      return name
+        ? `Called MCP tool ${name}${server ? ` on ${server}` : ""}`
+        : undefined;
     }
     default:
       return undefined;
@@ -1343,7 +1672,9 @@ function actionStatusFromEvent(event: OraEventEnvelope): string | undefined {
     return undefined;
   }
 
-  return typeof event.payload.status === "string" ? event.payload.status : undefined;
+  return typeof event.payload.status === "string"
+    ? event.payload.status
+    : undefined;
 }
 
 function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
@@ -1390,30 +1721,37 @@ function processContextLabel(event: OraEventEnvelope): string | undefined {
     return event.payload.label;
   }
 
-  if (isRecord(event.payload.checkpoint) && typeof event.payload.checkpoint.id === "string") {
+  if (
+    isRecord(event.payload.checkpoint) &&
+    typeof event.payload.checkpoint.id === "string"
+  ) {
     return event.payload.checkpoint.id;
   }
 
   return undefined;
 }
 
-function processToolTargetLabel(payload: Record<string, unknown>): string | undefined {
+function processToolTargetLabel(
+  payload: Record<string, unknown>,
+): string | undefined {
   if (typeof payload.toolId !== "string") {
     return undefined;
   }
 
   const input = isRecord(payload.input) ? payload.input : {};
   const output = isRecord(payload.output) ? payload.output : {};
-  return stringValue(output.path)
-    ?? stringValue(input.path)
-    ?? stringValue(output.url)
-    ?? stringValue(input.url)
-    ?? stringValue(output.query)
-    ?? stringValue(input.query)
-    ?? stringValue(input.uri)
-    ?? stringValue(input.name)
-    ?? stringValue(input.command)
-    ?? payload.toolId;
+  return (
+    stringValue(output.path) ??
+    stringValue(input.path) ??
+    stringValue(output.url) ??
+    stringValue(input.url) ??
+    stringValue(output.query) ??
+    stringValue(input.query) ??
+    stringValue(input.uri) ??
+    stringValue(input.name) ??
+    stringValue(input.command) ??
+    payload.toolId
+  );
 }
 
 function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
@@ -1445,22 +1783,33 @@ function deriveTurnTodos(snapshot: OraStateSnapshot): TurnTodoItem[] {
     label: item.title,
     status: todoStatusFromPlan(item.status),
     owner: item.ownerAgentId ?? "runtime",
-    detail: item.linkedActionIds.length > 0 ? `${item.linkedActionIds.length} linked action${item.linkedActionIds.length === 1 ? "" : "s"}` : undefined,
+    detail:
+      item.linkedActionIds.length > 0
+        ? `${item.linkedActionIds.length} linked action${item.linkedActionIds.length === 1 ? "" : "s"}`
+        : undefined,
   }));
 }
 
 function todosMirrorPlan(snapshot: OraStateSnapshot): boolean {
-  if (!snapshot.todos || snapshot.todos.length === 0 || snapshot.todos.length !== snapshot.plan.length) {
+  if (
+    !snapshot.todos ||
+    snapshot.todos.length === 0 ||
+    snapshot.todos.length !== snapshot.plan.length
+  ) {
     return false;
   }
 
   const planById = new Map(snapshot.plan.map((item) => [item.id, item]));
   return snapshot.todos.every((todo) => {
-    const planItem = todo.sourcePlanItemId ? planById.get(todo.sourcePlanItemId) : undefined;
-    return planItem
-      && todo.label === planItem.title
-      && todo.status === planItem.status
-      && !todo.detail;
+    const planItem = todo.sourcePlanItemId
+      ? planById.get(todo.sourcePlanItemId)
+      : undefined;
+    return (
+      planItem &&
+      todo.label === planItem.title &&
+      todo.status === planItem.status &&
+      !todo.detail
+    );
   });
 }
 
@@ -1476,14 +1825,18 @@ function planLooksLikeTemplate(snapshot: OraStateSnapshot): boolean {
 
   return snapshot.plan.every((item, index) => {
     const templateItem = template[index];
-    return templateItem
-      && item.id === `${snapshot.runId}:${templateItem.id}`
-      && item.title === templateItem.title
-      && item.ownerAgentId === templateItem.ownerAgentId;
+    return (
+      templateItem &&
+      item.id === `${snapshot.runId}:${templateItem.id}` &&
+      item.title === templateItem.title &&
+      item.ownerAgentId === templateItem.ownerAgentId
+    );
   });
 }
 
-function readRuntimeTodos(todos: OraStateSnapshot["todos"] | undefined): TurnTodoItem[] {
+function readRuntimeTodos(
+  todos: OraStateSnapshot["todos"] | undefined,
+): TurnTodoItem[] {
   return (todos ?? []).map((item, index) => ({
     id: item.id || `todo-${index}`,
     label: item.label,
@@ -1492,7 +1845,9 @@ function readRuntimeTodos(todos: OraStateSnapshot["todos"] | undefined): TurnTod
   }));
 }
 
-function todoStatusFromPlan(status: OraPlanItem["status"]): TurnTodoItem["status"] {
+function todoStatusFromPlan(
+  status: OraPlanItem["status"],
+): TurnTodoItem["status"] {
   switch (status) {
     case "running":
       return "running";
@@ -1518,7 +1873,10 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
     return "I need a bit more information before I can continue this turn.";
   }
 
-  if (snapshotPendingApprovals(snapshot).length > 0 || snapshot.actions.some((action) => action.status === "approval_required")) {
+  if (
+    snapshotPendingApprovals(snapshot).length > 0 ||
+    snapshot.actions.some((action) => action.status === "approval_required")
+  ) {
     return "I'm waiting for approval before continuing this turn.";
   }
 
@@ -1529,8 +1887,12 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
     case "failed":
     case "cancelled":
     case "interrupted":
-      return snapshot.error ?? "This turn did not produce a final assistant reply.";
+      return (
+        snapshot.error ?? "This turn did not produce a final assistant reply."
+      );
     case "succeeded":
-      return snapshot.artifacts.length > 0 ? "This turn completed and produced attachments below." : "This turn completed without a final assistant reply.";
+      return snapshot.artifacts.length > 0
+        ? "This turn completed and produced attachments below."
+        : "This turn completed without a final assistant reply.";
   }
 }

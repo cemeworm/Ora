@@ -104,6 +104,7 @@ export type WorkbenchAction =
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
   | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream }
+  | { type: "BEGIN_RUN_RESUME"; runId: string; approvedActionIds: string[]; updatedAt: number }
   | { type: "SELECT_TAB"; tab: DockTab }
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
@@ -325,6 +326,34 @@ function streamMatchesPendingRun(
 
   const snapshot = stream.snapshot ?? (activeSnapshot?.runId === stream.runId ? activeSnapshot : undefined);
   return snapshot?.sessionId === pendingRun.sessionId && snapshot.input.prompt === pendingRun.prompt;
+}
+
+function markSnapshotResuming(
+  snapshot: OraStateSnapshot | undefined,
+  runId: string,
+  approvedActionIds: string[],
+  updatedAt: number,
+): OraStateSnapshot | undefined {
+  if (!snapshot || snapshot.runId !== runId) {
+    return snapshot;
+  }
+
+  const approved = new Set(approvedActionIds);
+  return {
+    ...snapshot,
+    status: "running",
+    actions: snapshot.actions.map((action) => {
+      if (action.status !== "approval_required") {
+        return action;
+      }
+      if (approved.size > 0 && !approved.has(action.id)) {
+        return action;
+      }
+      return { ...action, status: "approved" };
+    }),
+    pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approved.has(actionId)),
+    updatedAt,
+  };
 }
 
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
@@ -626,6 +655,17 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           : action.stream.status === "failed"
             ? "Run failed."
             : state.commandFeedback,
+      };
+    }
+
+    case "BEGIN_RUN_RESUME": {
+      const activeSnapshot = markSnapshotResuming(state.activeSnapshot, action.runId, action.approvedActionIds, action.updatedAt);
+      return {
+        ...state,
+        activeSnapshot,
+        selectedTurnRunId: action.runId,
+        isLoading: true,
+        commandFeedback: "Approval submitted. Continuing run.",
       };
     }
 

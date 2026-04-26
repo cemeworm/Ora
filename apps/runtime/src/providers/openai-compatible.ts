@@ -75,7 +75,7 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
         return {
           role: "assistant",
           content: message.content.trim() ? message.content : null,
-          ...(message.reasoningContent?.trim() ? { reasoning_content: message.reasoningContent } : {}),
+          ...(message.reasoningContent !== undefined ? { reasoning_content: message.reasoningContent } : {}),
           tool_calls: message.toolCalls.map((call) => ({
             id: call.id,
             type: "function",

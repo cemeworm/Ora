@@ -47,7 +47,7 @@ function SessionStatusBadge({ status }: { status: RunStatus }) {
   if (status === "running") {
     return (
       <span className="inline-flex items-center rounded-full bg-emerald-100/85 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
-        Awaiting reply
+        Running
       </span>
     );
   }

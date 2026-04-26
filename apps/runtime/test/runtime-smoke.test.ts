@@ -35,6 +35,57 @@ describe("Ora runtime smoke path", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
   });
 
+  it("emits opt-in agent-authored chat progress narration", async () => {
+    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const { snapshot } = await executeRuntimeKernel(
+      "run-progress-narration",
+      { prompt: "Summarize the current project state.", createdAt: 1, context: {} },
+      {
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        providerId: "local-smoke",
+        modelRef: "smoke-model",
+        providerConfig: {
+          id: "local-smoke",
+          type: "local_smoke",
+          label: "Smoke",
+          modelId: "smoke-model",
+          capabilities: ["chat"],
+          headers: {},
+        },
+        metadata: { progressNarration: true },
+        deterministicSeed: "progress-narration-test",
+        profileIds: ["solo_agent"],
+        skillIds: [],
+        toolIds: [],
+        approvalMode: "auto",
+        budget: {
+          maxTokens: 1024,
+          maxToolCalls: 4,
+          maxRuntimeMs: 60_000,
+        },
+      },
+      { modeSpec, definition },
+    );
+
+    const progressEvents = snapshot.events.filter((event) =>
+      event.type === "task.progress" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      (event.payload as Record<string, unknown>).kind === "chat_progress"
+    );
+
+    expect(progressEvents.length).toBeGreaterThan(0);
+    for (const event of progressEvents) {
+      const payload = event.payload as Record<string, unknown>;
+      expect(payload.source).toBe("progress_narrator");
+      expect(typeof payload.summary).toBe("string");
+      expect((payload.summary as string).trim().length).toBeGreaterThan(0);
+      expect(payload.basedOnSeq).toBeLessThan(event.seq);
+    }
+  });
+
   it("starts a deterministic smoke run with ordered Ora events", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const run = (await handle({
@@ -389,7 +440,7 @@ describe("Ora runtime smoke path", () => {
       }));
 
       expect(run.status).toBe("succeeded");
-      expect(providerCalls).toBe(1);
+      expect(providerCalls).toBe(2);
       expect(state.plan.map((item) => item.id.split(":").at(-1))).toEqual(["respond"]);
       expect(state.events.filter((event) => event.type === "agent.started")).toHaveLength(1);
       expect(state.events.some((event) =>
@@ -529,7 +580,7 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
-  it("forces a final no-tool answer after a useful web.fetch result in decisive mode", async () => {
+  it("lets the model answer normally after a useful web.fetch result in decisive mode", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
     const previousKey = process.env.REPEAT_FETCH_KEY;
@@ -618,7 +669,7 @@ describe("Ora runtime smoke path", () => {
       expect(fetchEvents).toHaveLength(1);
       expect(fetchEvents[0]?.payload).toMatchObject({ cacheHit: false });
       expect(state.output).toMatchObject({ text: expect.stringContaining("Used repeated fetch result once.") });
-      expect(state.output).toMatchObject({ metadata: { completion: expect.objectContaining({ forcedFinal: true }) } });
+      expect(state.output).toMatchObject({ metadata: { completion: expect.objectContaining({ forcedFinal: false, stopReason: "completed" }) } });
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
@@ -629,7 +680,7 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
-  it("forces a final no-tool answer after a useful web.search result in decisive mode", async () => {
+  it("lets the model answer normally after a useful web.search result in decisive mode", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
     const previousProviderKey = process.env.REPEAT_SEARCH_KEY;
@@ -730,7 +781,7 @@ describe("Ora runtime smoke path", () => {
       expect(searchEvents).toHaveLength(1);
       expect(searchEvents[0]?.payload).toMatchObject({ cacheHit: false });
       expect(state.output).toMatchObject({ text: expect.stringContaining("Used repeated search result once.") });
-      expect(state.output).toMatchObject({ metadata: { completion: expect.objectContaining({ forcedFinal: true }) } });
+      expect(state.output).toMatchObject({ metadata: { completion: expect.objectContaining({ forcedFinal: false, stopReason: "completed" }) } });
     } finally {
       globalThis.fetch = previousFetch;
       if (previousProviderKey === undefined) {
@@ -813,6 +864,11 @@ describe("Ora runtime smoke path", () => {
               headers: {},
             },
             toolIds: ["web.fetch"],
+            budget: {
+              maxTokens: 1024,
+              maxToolCalls: 1,
+              maxRuntimeMs: 60_000,
+            },
             completionPolicy: {
               preset: "decisive",
               maxRepeatedToolCalls: 1,
@@ -839,7 +895,7 @@ describe("Ora runtime smoke path", () => {
       expect(state.output).not.toMatchObject({ text: expect.stringContaining("\"tool\":\"web.fetch\"") });
       expect(state.output).toMatchObject({
         text: expect.stringContaining("Use the fetched first result"),
-        metadata: { completion: expect.objectContaining({ forcedFinal: true, stopReason: "forced_final_answer" }) },
+        metadata: { completion: expect.objectContaining({ forcedFinal: true, stopReason: "tool_budget_exhausted" }) },
       });
       expect(state.events.some((event) => event.type === "recovery.exhausted")).toBe(false);
       expect(state.events.some((event) =>
@@ -848,12 +904,705 @@ describe("Ora runtime smoke path", () => {
         && event.payload !== null
         && (event.payload as Record<string, unknown>).state === "tool_call_text_rejected"
       )).toBe(true);
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).reason === "repeated_tool_blocked"
+      )).toBe(false);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
         delete process.env.FINAL_TOOL_INTENT_KEY;
       } else {
         process.env.FINAL_TOOL_INTENT_KEY = previousKey;
+      }
+    }
+  });
+
+  it("repairs forced final DSML tool-call text instead of rendering it as the answer", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.FINAL_DSML_TOOL_INTENT_KEY;
+    process.env.FINAL_DSML_TOOL_INTENT_KEY = "test";
+    let finalNoToolCalls = 0;
+    let firstFetchCalls = 0;
+    let rejectedFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://github.com/tw93/Waza") {
+        firstFetchCalls += 1;
+        return new Response("Waza repository landing page", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+      if (url === "https://raw.githubusercontent.com/tw93/Waza/main/README.md") {
+        rejectedFetchCalls += 1;
+        return new Response("README that should not be fetched after finalization", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        finalNoToolCalls += 1;
+        if (finalNoToolCalls > 1) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: "Waza fetched successfully; use the repository result to install the skills." } }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: "<|DSML| parameter name=\"url\" string=\"true\">https://raw.githubusercontent.com/tw93/Waza/main/README.md</|DSML| parameter>",
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-waza",
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://github.com/tw93/Waza\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "https://github.com/tw93/Waza install the skills." },
+          config: {
+            modeId: "single_agent",
+            providerId: "final-dsml-tool-intent",
+            modelRef: "final-dsml-tool-intent-model",
+            providerConfig: {
+              id: "final-dsml-tool-intent",
+              label: "Final DSML Tool Intent",
+              type: "openai_compatible",
+              modelId: "final-dsml-tool-intent-model",
+              baseUrl: "https://final-dsml-tool-intent.test/v1",
+              apiKeyEnv: "FINAL_DSML_TOOL_INTENT_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            budget: {
+              maxTokens: 1024,
+              maxToolCalls: 1,
+              maxRuntimeMs: 60_000,
+            },
+            completionPolicy: {
+              preset: "decisive",
+              maxRepeatedToolCalls: 1,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: false,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(firstFetchCalls).toBe(1);
+      expect(rejectedFetchCalls).toBe(0);
+      expect(finalNoToolCalls).toBeGreaterThanOrEqual(2);
+      expect(state.output?.text).toContain("Waza fetched successfully");
+      expect(state.output?.text).not.toContain("DSML");
+      expect(state.output?.text).not.toContain("raw.githubusercontent.com");
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "tool_call_text_rejected"
+        && (event.payload as Record<string, unknown>).toolId === "web.fetch"
+      )).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.FINAL_DSML_TOOL_INTENT_KEY;
+      } else {
+        process.env.FINAL_DSML_TOOL_INTENT_KEY = previousKey;
+      }
+    }
+  });
+
+  it("continues after useful tool results and installs a fetched skill", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SKILL_INSTALL_FLOW_KEY;
+    process.env.SKILL_INSTALL_FLOW_KEY = "test";
+    const skillContent = "---\nname: waza-think\ndescription: Think workflow from Waza\n---\nUse this skill to think through a task before acting.\n";
+    const fetchedUrls: string[] = [];
+    let providerCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://github.com/tw93/Waza" || url === "https://raw.githubusercontent.com/tw93/Waza/main/skills/think/SKILL.md") {
+        fetchedUrls.push(url);
+        return new Response(
+          url.includes("raw.githubusercontent.com") ? skillContent : "Waza repository with skills/think/SKILL.md",
+          { status: 200, headers: { "content-type": "text/plain" } },
+        );
+      }
+
+      providerCalls += 1;
+      const toolCall = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-install-${providerCalls}`,
+              type: "function",
+              function: {
+                name,
+                arguments: JSON.stringify(args),
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+
+      if (providerCalls === 1) {
+        return toolCall("web__fetch", { url: "https://github.com/tw93/Waza" });
+      }
+      if (providerCalls === 2) {
+        return toolCall("web__fetch", { url: "https://raw.githubusercontent.com/tw93/Waza/main/skills/think/SKILL.md" });
+      }
+      if (providerCalls === 3) {
+        return toolCall("skills__create", {
+          name: "waza-think",
+          description: "Think workflow from Waza",
+          content: skillContent,
+          enabled: true,
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Installed waza-think from Waza and enabled it." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Install the Waza think skill." },
+          config: {
+            modeId: "single_agent",
+            providerId: "skill-install-flow",
+            modelRef: "skill-install-flow-model",
+            providerConfig: {
+              id: "skill-install-flow",
+              label: "Skill Install Flow",
+              type: "openai_compatible",
+              modelId: "skill-install-flow-model",
+              baseUrl: "https://skill-install-flow.test/v1",
+              apiKeyEnv: "SKILL_INSTALL_FLOW_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "auto",
+            toolIds: ["web.fetch", "skills.create"],
+            completionPolicy: {
+              preset: "decisive",
+              maxRepeatedToolCalls: 1,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: false,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(fetchedUrls).toEqual([
+        "https://github.com/tw93/Waza",
+        "https://raw.githubusercontent.com/tw93/Waza/main/skills/think/SKILL.md",
+      ]);
+      expect(state.toolCalls.map((call) => call.toolId)).toContain("skills.create");
+      expect(state.toolCalls.find((call) => call.toolId === "skills.create")).toMatchObject({ status: "succeeded" });
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "force_final"
+      )).toBe(false);
+      expect(state.output?.text).toContain("Installed waza-think");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SKILL_INSTALL_FLOW_KEY;
+      } else {
+        process.env.SKILL_INSTALL_FLOW_KEY = previousKey;
+      }
+    }
+  });
+
+  it("pauses high-risk skill creation with user-facing approval copy", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SKILL_APPROVAL_COPY_KEY;
+    process.env.SKILL_APPROVAL_COPY_KEY = "test";
+    let providerCalls = 0;
+    globalThis.fetch = (async () => {
+      providerCalls += 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-approval-${providerCalls}`,
+              type: "function",
+              function: {
+                name: "skills__create",
+                arguments: JSON.stringify({
+                  name: "waza-think",
+                  description: "Think workflow from Waza",
+                  content: "---\nname: waza-think\ndescription: Think workflow from Waza\n---\nUse this skill.\n",
+                  enabled: true,
+                  approvalRequest: {
+                    title: "需要你确认安装技能",
+                    summary: "我准备把 Waza 的 think 技能安装到 Ora 的本地技能库。",
+                    whatWillChange: "会新增一个本地技能条目，并允许后续 agent 使用它。",
+                    whyNeeded: "这是完成你要求安装技能的必要步骤。",
+                    riskNote: "确认 GitHub 来源可信后再继续。",
+                    confirmLabel: "批准并继续",
+                  },
+                }),
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请帮我安装 Waza 的 think skill。" },
+          config: {
+            modeId: "single_agent",
+            providerId: "skill-approval-copy",
+            modelRef: "skill-approval-copy-model",
+            providerConfig: {
+              id: "skill-approval-copy",
+              label: "Skill Approval Copy",
+              type: "openai_compatible",
+              modelId: "skill-approval-copy-model",
+              baseUrl: "https://skill-approval-copy.test/v1",
+              apiKeyEnv: "SKILL_APPROVAL_COPY_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["skills.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      const pendingAction = state.actions.find((action) => action.id === state.pendingApprovals[0]);
+
+      expect(run.status).toBe("interrupted");
+      expect(pendingAction).toMatchObject({
+        type: "skills.create",
+        status: "approval_required",
+        approvalRequest: {
+          title: "需要你确认安装技能",
+          summary: "我准备把 Waza 的 think 技能安装到 Ora 的本地技能库。",
+        },
+      });
+      expect(JSON.stringify(pendingAction?.approvalRequest)).not.toContain("skills.create");
+      expect(state.toolCalls.find((call) => call.toolId === "skills.create")).toMatchObject({ status: "approval_required" });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SKILL_APPROVAL_COPY_KEY;
+      } else {
+        process.env.SKILL_APPROVAL_COPY_KEY = previousKey;
+      }
+    }
+  });
+
+  it("does not ask again when a resumed high-risk tool action gets a replayed action id", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SKILL_REPLAY_APPROVAL_KEY;
+    process.env.SKILL_REPLAY_APPROVAL_KEY = "test";
+    const skillContent = "---\nname: approval-replay-skill\ndescription: Approval replay regression skill\n---\nUse this skill for approval replay regression tests.\n";
+    let progressCalls = 0;
+    let toolCalls = 0;
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      if (body.max_tokens === 96 || body.max_output_tokens === 96) {
+        progressCalls += 1;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: progressCalls === 1 ? "Preparing to install the skill." : "" } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      toolCalls += 1;
+      if (toolCalls <= 2) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: `call-replay-${toolCalls}`,
+                type: "function",
+                function: {
+                  name: "skills__create",
+                  arguments: JSON.stringify({
+                    name: "approval-replay-skill",
+                    description: "Approval replay regression skill",
+                    content: skillContent,
+                    enabled: true,
+                  }),
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Installed approval-replay-skill." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Install approval replay skill." },
+          config: {
+            modeId: "single_agent",
+            providerId: "skill-replay-approval",
+            modelRef: "skill-replay-approval-model",
+            providerConfig: {
+              id: "skill-replay-approval",
+              label: "Skill Replay Approval",
+              type: "openai_compatible",
+              modelId: "skill-replay-approval-model",
+              baseUrl: "https://skill-replay-approval.test/v1",
+              apiKeyEnv: "SKILL_REPLAY_APPROVAL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            metadata: { progressNarration: true },
+            toolIds: ["skills.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: { approvedActionIds: [blocked.pendingApprovals[0]!] },
+        },
+      }));
+      const pendingAction = blocked.actions.find((action) => action.id === blocked.pendingApprovals[0]);
+
+      expect(run.status).toBe("interrupted");
+      expect(pendingAction?.status).toBe("approval_required");
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.pendingApprovals).toEqual([]);
+      expect(resumed.actions.some((action) => action.status === "approval_required")).toBe(false);
+      expect(resumed.toolCalls.find((call) => call.toolId === "skills.create")).toMatchObject({ status: "succeeded" });
+      expect(resumed.events.map((event) => event.type)).toContain("approval.resolved");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SKILL_REPLAY_APPROVAL_KEY;
+      } else {
+        process.env.SKILL_REPLAY_APPROVAL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("has enough single_agent budget to fetch, check, and create a multi-skill install batch", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.MULTI_SKILL_INSTALL_KEY;
+    process.env.MULTI_SKILL_INSTALL_KEY = "test";
+    const skillNames = ["waza-think", "waza-design", "waza-check", "waza-hunt", "waza-write", "waza-learn", "waza-read", "waza-health"];
+    const fetchedUrls: string[] = [];
+    let providerCalls = 0;
+    const skillContent = (name: string) => `---\nname: ${name}\ndescription: ${name} from Waza\n---\nUse ${name} from Waza.\n`;
+    const rawSkillUrl = (name: string) => `https://raw.githubusercontent.com/tw93/Waza/main/skills/${name.replace("waza-", "")}/SKILL.md`;
+    const toolCall = (name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null,
+          tool_calls: [{
+            id: `call-multi-install-${providerCalls}`,
+            type: "function",
+            function: {
+              name,
+              arguments: JSON.stringify(args),
+            },
+          }],
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      if (url === "https://github.com/tw93/Waza" || url === "https://raw.githubusercontent.com/tw93/Waza/main/README.md") {
+        fetchedUrls.push(url);
+        return new Response("Waza repository with eight skills.", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+      const skillName = skillNames.find((candidate) => url === rawSkillUrl(candidate));
+      if (skillName) {
+        fetchedUrls.push(url);
+        return new Response(skillContent(skillName), { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        return toolCall("web__fetch", { url: "https://github.com/tw93/Waza" });
+      }
+      if (providerCalls === 2) {
+        return toolCall("web__fetch", { url: "https://raw.githubusercontent.com/tw93/Waza/main/README.md" });
+      }
+      if (providerCalls >= 3 && providerCalls <= 10) {
+        const skillNameForFetch = skillNames[providerCalls - 3]!;
+        return toolCall("web__fetch", { url: rawSkillUrl(skillNameForFetch) });
+      }
+      if (providerCalls === 11) {
+        return toolCall("skills__list", {});
+      }
+      if (providerCalls >= 12 && providerCalls <= 19) {
+        return toolCall("skills__checkName", { name: skillNames[providerCalls - 12] });
+      }
+      if (providerCalls >= 20 && providerCalls <= 27) {
+        const skillNameForCreate = skillNames[providerCalls - 20]!;
+        return toolCall("skills__create", {
+          name: skillNameForCreate,
+          description: `${skillNameForCreate} from Waza`,
+          content: skillContent(skillNameForCreate),
+          enabled: true,
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Installed all 8 Waza skills into Ora." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Install all Waza skills." },
+          config: {
+            modeId: "single_agent",
+            providerId: "multi-skill-install",
+            modelRef: "multi-skill-install-model",
+            providerConfig: {
+              id: "multi-skill-install",
+              label: "Multi Skill Install",
+              type: "openai_compatible",
+              modelId: "multi-skill-install-model",
+              baseUrl: "https://multi-skill-install.test/v1",
+              apiKeyEnv: "MULTI_SKILL_INSTALL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "auto",
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(state.config.budget?.maxToolCalls).toBeGreaterThanOrEqual(32);
+      expect(fetchedUrls).toHaveLength(10);
+      expect(state.toolCalls.filter((call) => call.toolId === "skills.create" && call.status === "succeeded")).toHaveLength(8);
+      expect(state.output?.text).toContain("Installed all 8 Waza skills");
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "force_final"
+      )).toBe(false);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.MULTI_SKILL_INSTALL_KEY;
+      } else {
+        process.env.MULTI_SKILL_INSTALL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("continues a single node beyond four distinct tool calls when budget remains", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.MULTI_FETCH_LOOP_KEY;
+    process.env.MULTI_FETCH_LOOP_KEY = "test";
+    const fetchedUrls: string[] = [];
+    let providerCalls = 0;
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://example.com/skill-")) {
+        fetchedUrls.push(url);
+        return new Response(`Skill content for ${url}`, { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      providerCalls += 1;
+      if (providerCalls <= 8) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: `call-skill-${providerCalls}`,
+                type: "function",
+                function: {
+                  name: "web__fetch",
+                  arguments: JSON.stringify({ url: `https://example.com/skill-${providerCalls}.md` }),
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Fetched all 8 skill files and can finish from those results." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch all eight skill files before answering." },
+          config: {
+            modeId: "single_agent",
+            providerId: "multi-fetch-loop",
+            modelRef: "multi-fetch-loop-model",
+            providerConfig: {
+              id: "multi-fetch-loop",
+              label: "Multi Fetch Loop",
+              type: "openai_compatible",
+              modelId: "multi-fetch-loop-model",
+              baseUrl: "https://multi-fetch-loop.test/v1",
+              apiKeyEnv: "MULTI_FETCH_LOOP_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            budget: {
+              maxTokens: 1024,
+              maxToolCalls: 12,
+              maxRuntimeMs: 60_000,
+            },
+            completionPolicy: {
+              preset: "decisive",
+              maxRepeatedToolCalls: 1,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: false,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(fetchedUrls).toEqual([
+        "https://example.com/skill-1.md",
+        "https://example.com/skill-2.md",
+        "https://example.com/skill-3.md",
+        "https://example.com/skill-4.md",
+        "https://example.com/skill-5.md",
+        "https://example.com/skill-6.md",
+        "https://example.com/skill-7.md",
+        "https://example.com/skill-8.md",
+      ]);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Fetched all 8 skill files"),
+        metadata: { completion: expect.objectContaining({ forcedFinal: false, stopReason: "completed" }) },
+      });
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).reason === "runtime_tool_loop_limit"
+      )).toBe(false);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.MULTI_FETCH_LOOP_KEY;
+      } else {
+        process.env.MULTI_FETCH_LOOP_KEY = previousKey;
       }
     }
   });
@@ -1269,8 +2018,9 @@ describe("Ora runtime smoke path", () => {
         params: { runId: run.runId },
       }));
 
-      expect(run.status).toBe("succeeded");
+      expect(run.status).toBe("failed");
       expect(webFetchCalls).toBe(1);
+      expect(state.status).toBe("failed");
       expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(1);
       expect(state.events.some((event) =>
         event.type === "completion.updated"
@@ -1282,6 +2032,9 @@ describe("Ora runtime smoke path", () => {
         text: expect.stringContaining("I need to stop using tools here."),
         metadata: { completion: expect.objectContaining({ stopReason: "tool_budget_exhausted", toolAttempts: 1 }) },
       });
+      expect(state.error).toContain("forced-final fallback");
+      expect(state.events.some((event) => event.type === "run.failed")).toBe(true);
+      expect(state.events.some((event) => event.type === "run.done")).toBe(false);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

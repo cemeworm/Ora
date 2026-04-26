@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentProfileSchema,
+  ActionRecordSchema,
   ApprovalDecisionSchema,
   ApprovalRequestSchema,
   CustomAgentCheckNameResultSchema,
@@ -475,6 +476,33 @@ describe("Ora shared contracts", () => {
     });
 
     expect(decision.requiredApproval).toBe(true);
+    const action = ActionRecordSchema.parse({
+      id: "action-1",
+      runId: "run-1",
+      type: "skills.create",
+      riskLevel: "high",
+      status: "approval_required",
+      input: { name: "waza-think" },
+      approvalRequest: {
+        title: "需要你确认安装技能",
+        summary: "我准备把技能安装到 Ora 的本地技能库。",
+        whatWillChange: "会新增一个本地技能条目。",
+        whyNeeded: "这是完成安装请求所需的步骤。",
+        riskNote: "确认来源可信后再继续。",
+        confirmLabel: "批准并继续",
+      },
+      artifactIds: []
+    });
+    expect(action.approvalRequest?.title).toBe("需要你确认安装技能");
+    expect(ActionRecordSchema.parse({
+      id: "action-legacy",
+      runId: "run-1",
+      type: "file.write",
+      riskLevel: "high",
+      status: "approval_required",
+      input: {},
+      artifactIds: []
+    }).approvalRequest).toBeUndefined();
     expect(todo.sourcePlanItemId).toBe(planItem.id);
     expect(
       OraEventEnvelopeSchema.parse({

@@ -41,7 +41,11 @@ interface ChatInputProps {
   onStopRun: () => void;
 }
 
-const inputModeOptions: Array<{ mode: InputMode; label: string; icon: typeof Zap }> = [
+const inputModeOptions: Array<{
+  mode: InputMode;
+  label: string;
+  icon: typeof Zap;
+}> = [
   { mode: "flash", label: "Flash", icon: Zap },
   { mode: "thinking", label: "Thinking", icon: Lightbulb },
   { mode: "pro", label: "Pro", icon: GraduationCap },
@@ -82,7 +86,9 @@ export function ChatInput({
   onStopRun,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [openPicker, setOpenPicker] = useState<"pattern" | "provider" | "mode" | undefined>();
+  const [openPicker, setOpenPicker] = useState<
+    "pattern" | "provider" | "mode" | undefined
+  >();
   const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -98,11 +104,14 @@ export function ChatInput({
     }
   }
 
-  const selectedMode = inputModeOptions.find((option) => option.mode === inputMode) ?? inputModeOptions[2];
+  const selectedMode =
+    inputModeOptions.find((option) => option.mode === inputMode) ??
+    inputModeOptions[2];
   const SelectedIcon = selectedMode.icon;
-  const modeTriggerLabel = selectedModeSelection === "auto"
-    ? "Auto"
-    : activeMode?.label ?? "Default";
+  const modeTriggerLabel =
+    selectedModeSelection === "auto"
+      ? "Auto"
+      : (activeMode?.label ?? "Default");
 
   return (
     <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
@@ -114,7 +123,7 @@ export function ChatInput({
               value={composerPrompt}
               onChange={(e) => onPromptChange(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={isRunning ? "Run in progress..." : "Message Ora..."}
+              placeholder={isRunning ? "" : "Message Ora"}
               disabled={!interactivity.canEditText}
               rows={2}
               className="min-h-[96px] max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 pt-4 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
@@ -127,7 +136,12 @@ export function ChatInput({
             />
             <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-1">
-                <Button type="button" variant="ghost" size="icon-sm" title="Attachments">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Attachments"
+                >
                   <Paperclip size={14} />
                 </Button>
                 {selectedCustomAgentId && (
@@ -139,13 +153,17 @@ export function ChatInput({
                   >
                     <Bot size={13} />
                     <span className="hidden xl:inline">Agent</span>
-                    <span className="max-w-[140px] truncate text-foreground">{selectedCustomAgentId}</span>
+                    <span className="max-w-[140px] truncate text-foreground">
+                      {selectedCustomAgentId}
+                    </span>
                     <X size={12} />
                   </button>
                 )}
                 <Picker
                   open={openPicker === "provider"}
-                  onOpenChange={(open) => setOpenPicker(open ? "provider" : undefined)}
+                  onOpenChange={(open) =>
+                    setOpenPicker(open ? "provider" : undefined)
+                  }
                   widthClassName="w-80"
                   trigger={
                     <>
@@ -168,32 +186,48 @@ export function ChatInput({
                         }}
                         className={cn(
                           "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                          activeProvider?.id === provider.id && "bg-accent text-accent-foreground",
+                          activeProvider?.id === provider.id &&
+                            "bg-accent text-accent-foreground",
                         )}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-xs font-medium">{provider.label}</span>
+                          <span className="truncate text-xs font-medium">
+                            {provider.label}
+                          </span>
                           <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {provider.type === "local_smoke" ? "local" : provider.type}
+                            {provider.type === "local_smoke"
+                              ? "local"
+                              : provider.type}
                           </span>
                         </div>
-                        <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{provider.modelId}</div>
+                        <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                          {provider.modelId}
+                        </div>
                       </button>
                     ))
                   ) : (
                     <div className="px-3 py-2 text-xs leading-5 text-muted-foreground">
-                      No configured model providers. Add a provider key in Settings.
+                      No configured model providers. Add a provider key in
+                      Settings.
                     </div>
                   )}
                 </Picker>
                 <Picker
                   open={openPicker === "pattern"}
-                  onOpenChange={(open) => setOpenPicker(open ? "pattern" : undefined)}
+                  onOpenChange={(open) =>
+                    setOpenPicker(open ? "pattern" : undefined)
+                  }
                   trigger={
                     <>
-                      {selectedModeSelection === "auto" ? <BrainCircuit size={13} /> : <Rocket size={13} />}
+                      {selectedModeSelection === "auto" ? (
+                        <BrainCircuit size={13} />
+                      ) : (
+                        <Rocket size={13} />
+                      )}
                       <span className="hidden xl:inline">工作模式</span>
-                      <span className="max-w-[150px] truncate text-foreground">{modeTriggerLabel}</span>
+                      <span className="max-w-[150px] truncate text-foreground">
+                        {modeTriggerLabel}
+                      </span>
                     </>
                   }
                 >
@@ -205,7 +239,8 @@ export function ChatInput({
                     }}
                     className={cn(
                       "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                      selectedModeSelection === "auto" && "bg-accent text-accent-foreground",
+                      selectedModeSelection === "auto" &&
+                        "bg-accent text-accent-foreground",
                     )}
                   >
                     <div className="flex items-center justify-between gap-2 text-xs font-medium">
@@ -215,7 +250,8 @@ export function ChatInput({
                       </span>
                     </div>
                     <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                      Let Ora choose the best mode from the current mode list for this turn.
+                      Let Ora choose the best mode from the current mode list
+                      for this turn.
                     </div>
                   </button>
                   {modeOptions.map((mode) => (
@@ -229,7 +265,9 @@ export function ChatInput({
                       }}
                       className={cn(
                         "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
-                        selectedModeSelection === "manual" && activeMode?.id === mode.id && "bg-accent text-accent-foreground",
+                        selectedModeSelection === "manual" &&
+                          activeMode?.id === mode.id &&
+                          "bg-accent text-accent-foreground",
                       )}
                     >
                       <div className="flex items-center justify-between gap-2 text-xs font-medium">
@@ -238,18 +276,34 @@ export function ChatInput({
                           {mode.isPreset ? "preset" : mode.family}
                         </span>
                       </div>
-                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">{mode.summary}</div>
+                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                        {mode.summary}
+                      </div>
                     </button>
                   ))}
                 </Picker>
                 <Picker
                   open={openPicker === "mode"}
-                  onOpenChange={(open) => setOpenPicker(open ? "mode" : undefined)}
+                  onOpenChange={(open) =>
+                    setOpenPicker(open ? "mode" : undefined)
+                  }
                   trigger={
                     <>
-                      <SelectedIcon size={13} className={cn(inputMode === "ultra" && "text-[#dabb5e]")} />
+                      <SelectedIcon
+                        size={13}
+                        className={cn(
+                          inputMode === "ultra" && "text-[#dabb5e]",
+                        )}
+                      />
                       <span className="hidden xl:inline">思考程度</span>
-                      <span className={cn("text-foreground", inputMode === "ultra" && "golden-text")}>{selectedMode.label}</span>
+                      <span
+                        className={cn(
+                          "text-foreground",
+                          inputMode === "ultra" && "golden-text",
+                        )}
+                      >
+                        {selectedMode.label}
+                      </span>
                     </>
                   }
                 >
@@ -263,11 +317,17 @@ export function ChatInput({
                       }}
                       className={cn(
                         "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs transition hover:bg-accent",
-                        inputMode === mode && "bg-accent text-accent-foreground",
+                        inputMode === mode &&
+                          "bg-accent text-accent-foreground",
                       )}
                     >
-                      <Icon size={13} className={cn(mode === "ultra" && "text-[#dabb5e]")} />
-                      <span className={cn(mode === "ultra" && "golden-text")}>{label}</span>
+                      <Icon
+                        size={13}
+                        className={cn(mode === "ultra" && "text-[#dabb5e]")}
+                      />
+                      <span className={cn(mode === "ultra" && "golden-text")}>
+                        {label}
+                      </span>
                     </button>
                   ))}
                 </Picker>
@@ -293,7 +353,8 @@ export function ChatInput({
           </div>
         </div>
         <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
-          Ora can make mistakes. Review plans, actions, and checkpoints before using results.
+          Ora can make mistakes. Review plans, actions, and checkpoints before
+          using results.
         </p>
       </div>
     </div>
@@ -326,7 +387,12 @@ function Picker({
         {trigger}
       </button>
       {open && (
-        <div className={cn("absolute bottom-9 left-0 z-50 w-72 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift", widthClassName)}>
+        <div
+          className={cn(
+            "absolute bottom-9 left-0 z-50 w-72 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift",
+            widthClassName,
+          )}
+        >
           {children}
         </div>
       )}

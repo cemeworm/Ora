@@ -136,12 +136,22 @@ export interface PlanItem {
   linkedActions: string[];
 }
 
+export interface ApprovalRequestCopy {
+  title: string;
+  summary: string;
+  whatWillChange?: string;
+  whyNeeded?: string;
+  riskNote?: string;
+  confirmLabel?: string;
+}
+
 export interface ActionRecord {
   id: string;
   label: string;
   state: "proposed" | "approval_required" | "running" | "succeeded" | "failed";
   consequence: string;
   risk: "low" | "medium" | "high";
+  approvalRequest?: ApprovalRequestCopy;
   agentId?: string;
   planItemId?: string;
   artifactIds: string[];

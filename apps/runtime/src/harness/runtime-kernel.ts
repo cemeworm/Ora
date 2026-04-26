@@ -1,5 +1,6 @@
 import {
   type ActionRiskLevel,
+  type ActionRecord,
   type ArtifactRef,
   ArtifactRefSchema,
   type CheckpointMeta,
@@ -28,7 +29,7 @@ import {
 import { ActionLedger, AgentProfileRegistry, MemoryCaptureQueue, MemoryService, PlanService, PolicyService, TodoService } from "../capabilities.js";
 import { configuredProviderId, invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./capability-registries.js";
-import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
+import { extractRuntimeToolCallFromText, isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import { classifyRecoveryError, RecoveryCoordinator, type RecoveryDecision, type RecoveryIncident } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
@@ -50,6 +51,7 @@ export interface RuntimeKernelOptions {
   resumeContext?: {
     clarifications?: Record<string, unknown>;
     approvedActionIds?: string[];
+    approvedActions?: ApprovedResumeAction[];
   };
   streamProvider?: boolean;
   onEvent?: (event: OraEventEnvelope) => void;
@@ -67,9 +69,12 @@ class ApprovalInterruptError extends Error {
   }
 }
 
-const RUNTIME_TOOL_LOOP_LIMIT = 4;
+type ApprovedResumeAction = Pick<ActionRecord, "type" | "riskLevel" | "input" | "agentId">;
+
+const RUNTIME_TOOL_LOOP_SAFETY_LIMIT = 64;
 const TOOL_REPAIR_CONTENT = "Tool call was interrupted before a result was produced. Continue from available context or choose another action.";
 const FORCED_FINAL_FALLBACK_TEXT = "I need to stop using tools here. Based on the available context, I cannot complete more tool-backed work in this run.";
+const PROGRESS_NARRATION_MAX_TOKENS = 96;
 
 type NodeRuntimeLoopState =
   | "pending"
@@ -83,6 +88,41 @@ type NodeRuntimeLoopState =
   | "degraded"
   | "interrupted"
   | "failed";
+
+function summarizeProgressPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+  const record = payload as Record<string, unknown>;
+  const summary: Record<string, unknown> = {};
+  for (const key of ["summary", "title", "detail", "status", "phase", "toolId", "actionId", "error", "reason"]) {
+    const value = record[key];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      summary[key] = value;
+    }
+  }
+  if (record.record && typeof record.record === "object" && !Array.isArray(record.record)) {
+    const action = record.record as Record<string, unknown>;
+    summary.record = {
+      type: typeof action.type === "string" ? action.type : undefined,
+      status: typeof action.status === "string" ? action.status : undefined,
+      error: typeof action.error === "string" ? action.error : undefined,
+    };
+  }
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function normalizeProgressNarration(text: string): string | undefined {
+  const summary = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "");
+  if (!summary || summary.startsWith("{") || summary.includes("\"tool\"")) {
+    return undefined;
+  }
+  return summary.length > 240 ? `${summary.slice(0, 237).trimEnd()}...` : summary;
+}
 
 type RuntimeToolAttempt = RuntimeToolCall & {
   providerCallId?: string;
@@ -160,7 +200,7 @@ function stableJson(value: unknown): string {
       .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
       .join(",")}}`;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "undefined";
 }
 
 function stableKeyForRuntimeTool(call: RuntimeToolCall): string {
@@ -174,34 +214,6 @@ function stableKeyForRuntimeTool(call: RuntimeToolCall): string {
       .map((key) => [key, call.args[key]]),
   );
   return `${call.tool}:${stableJson(Object.keys(salientArgs).length > 0 ? salientArgs : call.args)}`;
-}
-
-function standaloneToolIntentFromText(text: string, toolIds: readonly string[]): RuntimeToolCall | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return undefined;
-    }
-    const record = parsed as Record<string, unknown>;
-    if (typeof record.tool !== "string" || !toolIds.includes(record.tool)) {
-      return undefined;
-    }
-    if (!isRuntimeToolImplemented(record.tool)) {
-      return undefined;
-    }
-    return {
-      tool: record.tool,
-      args: record.args && typeof record.args === "object" && !Array.isArray(record.args)
-        ? record.args as Record<string, unknown>
-        : {},
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 function workspaceSystemPrompt(workspace: unknown): string | undefined {
@@ -279,6 +291,7 @@ export async function executeRuntimeKernel(
   const todoService = new TodoService(runId, now, planService.list());
   const actionLedger = new ActionLedger(runId);
   const policyService = new PolicyService(runId, now);
+  const resumeApprovals = createResumeApprovalMatcher(options.resumeContext);
   const events: OraEventEnvelope[] = [];
   const artifacts: ArtifactRef[] = [];
   const toolCallLedger: OraToolCallEnvelope[] = [];
@@ -387,6 +400,69 @@ export async function executeRuntimeKernel(
 
   const emitTodoUpdated = () => {
     emit("todo.updated", { items: todoService.list() });
+  };
+
+  const emitProgressNarration = async (params: {
+    trigger: string;
+    agentId?: string;
+    nodeId?: string;
+    title?: string;
+    detail?: string;
+  }) => {
+    if (config.metadata.progressNarration !== true) {
+      return;
+    }
+    const basedOnSeq = events.at(-1)?.seq ?? -1;
+    try {
+      const recentEvents = events.slice(-8).map((event) => ({
+        seq: event.seq,
+        type: event.type,
+        agentId: event.agentId,
+        nodeId: event.nodeId,
+        payload: summarizeProgressPayload(event.payload),
+      }));
+      const response = await invokeRunProvider(config, {
+        system: [
+          "You write concise live progress updates for an assistant run.",
+          "Describe only what has happened, what is being worked on, and the likely next step.",
+          "Do not claim the final answer is known. Do not output tool JSON. Do not mention internal event names or sequence numbers.",
+          "Return one natural sentence under 32 words.",
+        ].join("\n"),
+        messages: [{
+          role: "user",
+          content: JSON.stringify({
+            userPrompt: input.prompt,
+            modeId: modeSpec.id,
+            pattern: config.pattern,
+            trigger: params.trigger,
+            title: params.title,
+            detail: params.detail,
+            activeAgents: [...activeAgents],
+            plan: planService.list().map((item) => ({ title: item.title, status: item.status, ownerAgentId: item.ownerAgentId })),
+            todos: todoService.list().map((item) => ({ label: item.label, status: item.status })),
+            recentEvents,
+          }),
+        }],
+        temperature: 0.2,
+        maxTokens: PROGRESS_NARRATION_MAX_TOKENS,
+        toolChoice: "none",
+      });
+      const summary = normalizeProgressNarration(response.text);
+      if (!summary) {
+        return;
+      }
+      emit("task.progress", {
+        kind: "chat_progress",
+        source: "progress_narrator",
+        trigger: params.trigger,
+        title: params.title,
+        detail: params.detail,
+        summary,
+        basedOnSeq,
+      }, { agentId: params.agentId, nodeId: params.nodeId });
+    } catch {
+      // Progress narration is cosmetic; provider failures must never affect the run.
+    }
   };
 
   const appendToolCall = (params: {
@@ -498,7 +574,7 @@ export async function executeRuntimeKernel(
 
     const key = stableKeyForRuntimeTool(call);
     const repeatCount = (repeatedToolCounts.get(key) ?? 0) + 1;
-    if (repeatCount >= repeatedToolLimit && !warnedRepeatedToolKeys.has(key)) {
+    if (repeatCount === repeatedToolLimit && repeatCount > 1 && !warnedRepeatedToolKeys.has(key)) {
       warnedRepeatedToolKeys.add(key);
       emit("completion.updated", {
         state: "loop_warning",
@@ -510,6 +586,17 @@ export async function executeRuntimeKernel(
       });
     }
     if (repeatCount > repeatedToolLimit && completionPolicy.forceFinalOnRepeatedTool) {
+      if (!warnedRepeatedToolKeys.has(key)) {
+        warnedRepeatedToolKeys.add(key);
+        emit("completion.updated", {
+          state: "loop_warning",
+          reason: "repeated_tool_blocked",
+          toolId: call.tool,
+          repeatCount,
+          repeatedToolLimit,
+          key,
+        });
+      }
       forceFinalAnswer("repeated_tool_blocked", {
         toolId: call.tool,
         repeatCount,
@@ -554,9 +641,6 @@ export async function executeRuntimeKernel(
       forceFinalAnswer("repeated_tool_blocked", { toolId: call.tool, cacheHit });
       return;
     }
-    if (!completionPolicy.allowToolCallsAfterUsefulResult) {
-      forceFinalAnswer("forced_final_answer", { toolId: call.tool });
-    }
   };
 
   const forcedFinalSystemPrompt = (system: string, reason: CompletionStopReason) => [
@@ -582,7 +666,7 @@ export async function executeRuntimeKernel(
     reason: CompletionStopReason,
     options: { emitRejectedToolIntent?: boolean } = {}
   ): ModelResponse => {
-    const fallbackToolIntent = standaloneToolIntentFromText(response.text, config.toolIds);
+    const fallbackToolIntent = extractRuntimeToolCallFromText(response.text, config.toolIds);
     if (fallbackToolIntent && options.emitRejectedToolIntent !== false) {
       emitRejectedFinalToolIntent(fallbackToolIntent, reason);
     }
@@ -625,7 +709,7 @@ export async function executeRuntimeKernel(
       tools: params.nativeTools,
       toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
     }, params.streamCallbacks);
-    const fallbackToolIntent = standaloneToolIntentFromText(response.text, config.toolIds);
+    const fallbackToolIntent = extractRuntimeToolCallFromText(response.text, config.toolIds);
     if (fallbackToolIntent) {
       emitRejectedFinalToolIntent(fallbackToolIntent, params.reason);
       const retryResponse = await params.invokeProvider(params.config, {
@@ -689,6 +773,25 @@ export async function executeRuntimeKernel(
         stopReason: metadata.stopReason,
       },
     };
+  };
+
+  const isForcedFinalFallbackOutput = (value: unknown): boolean => {
+    if (typeof value === "string") {
+      return value.trim() === FORCED_FINAL_FALLBACK_TEXT;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const record = value as Record<string, unknown>;
+    return typeof record.text === "string" && record.text.trim() === FORCED_FINAL_FALLBACK_TEXT;
+  };
+
+  const incompleteForcedFinalError = (value: unknown): string | undefined => {
+    const metadata = completionMetadata();
+    if (metadata.forcedFinal && isForcedFinalFallbackOutput(value)) {
+      return `Run stopped before completing the task: ${metadata.stopReason}. The model returned only Ora's forced-final fallback.`;
+    }
+    return undefined;
   };
 
   const inferCompletionStopReason = (value: unknown) => {
@@ -892,7 +995,11 @@ export async function executeRuntimeKernel(
       return response;
     }
 
-    for (let iteration = 0; iteration < RUNTIME_TOOL_LOOP_LIMIT; iteration += 1) {
+    const remainingToolBudget = Number.isFinite(runToolBudget)
+      ? Math.max(0, runToolBudget - runToolAttempts)
+      : RUNTIME_TOOL_LOOP_SAFETY_LIMIT;
+    const toolLoopLimit = Math.max(1, Math.min(RUNTIME_TOOL_LOOP_SAFETY_LIMIT, remainingToolBudget));
+    for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
       if (!toolsAllowedByCompletion()) {
         return runForcedFinalProviderCall({
           invokeProvider,
@@ -935,11 +1042,13 @@ export async function executeRuntimeKernel(
         });
       }
 
+      const riskLevel = runtimeToolExecutor.riskLevel(toolCall);
       const action = actionLedger.propose({
         id: `${params.agentId}-tool-${events.length}`,
         type: toolCall.tool,
-        riskLevel: runtimeToolExecutor.riskLevel(toolCall),
+        riskLevel,
         input: toolCall.args,
+        approvalRequest: riskLevel === "high" ? runtimeToolExecutor.approvalRequest(toolCall, input.prompt) : undefined,
         agentId: params.agentId,
       });
       const toolCallRecord = appendToolCall({
@@ -955,15 +1064,23 @@ export async function executeRuntimeKernel(
       emit("action.updated", { actionId: action.id, status: "proposed", record: action }, { agentId: params.agentId, nodeId: params.agentId });
 
       const decision = policyService.evaluate(action);
-      const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
+      let approvedForRiskyExecution = !decision.requiredApproval || config.approvalMode === "auto";
       if (decision.requiredApproval && config.approvalMode !== "auto") {
-        if (!approvedActionIds.has(action.id)) {
+        if (!resumeApprovals.consume(action)) {
           const blocked = actionLedger.transition(action.id, "approval_required");
           appendToolCall({ ...toolCallRecord, status: "approval_required" });
           emit("approval.required", { actionId: action.id, decision }, { agentId: params.agentId, nodeId: params.agentId });
           emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
+          await emitProgressNarration({
+            trigger: "approval.required",
+            agentId: params.agentId,
+            nodeId: params.agentId,
+            title: params.title,
+            detail: decision.reason,
+          });
           throw new ApprovalInterruptError(action.id);
         }
+        approvedForRiskyExecution = true;
         emit("approval.resolved", {
           actionId: action.id,
           decision: "approved",
@@ -985,7 +1102,7 @@ export async function executeRuntimeKernel(
         const output = cacheHit
           ? runtimeToolResultCache.get(cacheKey)
           : await runtimeToolExecutor.execute(toolCall, {
-              allowRisky: !decision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(action.id),
+              allowRisky: approvedForRiskyExecution,
             });
         if (cacheKey && !cacheHit) {
           runtimeToolResultCache.set(cacheKey, output);
@@ -1017,6 +1134,13 @@ export async function executeRuntimeKernel(
         }, { agentId: params.agentId, nodeId: params.agentId });
         emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
         emitNodeRuntimeState("tool_result_observed", { agentId: params.agentId, title: params.title, actionId: action.id, toolId: toolCall.tool, iteration });
+        await emitProgressNarration({
+          trigger: "tool.succeeded",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+          detail: `${toolCall.tool} returned a result.`,
+        });
 
         messages = toolCall.source === "provider_native" && toolCall.providerCallId
           ? [
@@ -1085,6 +1209,13 @@ export async function executeRuntimeKernel(
         }, { agentId: params.agentId, nodeId: params.agentId });
         emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
         emitNodeRuntimeState("degraded", { agentId: params.agentId, title: params.title, actionId: action.id, toolId: toolCall.tool, detail });
+        await emitProgressNarration({
+          trigger: "tool.failed",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+          detail,
+        });
 
         const incident = classifyRecoveryError(error, {
           surface: "tool",
@@ -1095,6 +1226,13 @@ export async function executeRuntimeKernel(
         });
         const recoveryDecision = recoveryCoordinator.resolve(incident);
         emitRecoveryDecision(incident, recoveryDecision);
+        await emitProgressNarration({
+          trigger: "recovery.updated",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+          detail: recoveryDecision.summary,
+        });
 
         if (recoveryDecision.action === "retry") {
           await sleep(recoveryDecision.retryDelayMs ?? 0);
@@ -1121,27 +1259,47 @@ export async function executeRuntimeKernel(
               title: params.title,
             });
           }
+          const alternateRiskLevel = runtimeToolExecutor.riskLevel(alternateCall);
           const alternateAction = actionLedger.propose({
             id: `${params.agentId}-tool-recovery-${events.length}`,
             type: alternateCall.tool,
-            riskLevel: runtimeToolExecutor.riskLevel(alternateCall),
+            riskLevel: alternateRiskLevel,
             input: alternateCall.args,
+            approvalRequest: alternateRiskLevel === "high" ? runtimeToolExecutor.approvalRequest(alternateCall, input.prompt) : undefined,
             agentId: params.agentId,
           });
           emit("action.updated", { actionId: alternateAction.id, status: "proposed", record: alternateAction }, { agentId: params.agentId, nodeId: params.agentId });
           const alternateDecision = policyService.evaluate(alternateAction);
-          const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
-          if (alternateDecision.requiredApproval && config.approvalMode !== "auto" && !approvedActionIds.has(alternateAction.id)) {
-            const blocked = actionLedger.transition(alternateAction.id, "approval_required");
-            emit("approval.required", { actionId: alternateAction.id, decision: alternateDecision }, { agentId: params.agentId, nodeId: params.agentId });
-            emit("action.updated", { actionId: alternateAction.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
-            throw new ApprovalInterruptError(alternateAction.id);
+          const alternateApproved = !alternateDecision.requiredApproval || config.approvalMode === "auto"
+            ? false
+            : resumeApprovals.consume(alternateAction);
+          if (alternateDecision.requiredApproval && config.approvalMode !== "auto") {
+            if (!alternateApproved) {
+              const blocked = actionLedger.transition(alternateAction.id, "approval_required");
+              emit("approval.required", { actionId: alternateAction.id, decision: alternateDecision }, { agentId: params.agentId, nodeId: params.agentId });
+              emit("action.updated", { actionId: alternateAction.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
+              await emitProgressNarration({
+                trigger: "approval.required",
+                agentId: params.agentId,
+                nodeId: params.agentId,
+                title: params.title,
+                detail: alternateDecision.reason,
+              });
+              throw new ApprovalInterruptError(alternateAction.id);
+            }
+            emit("approval.resolved", {
+              actionId: alternateAction.id,
+              decision: "approved",
+              mode: "resume",
+            }, { agentId: params.agentId, nodeId: params.agentId });
+            const approved = actionLedger.transition(alternateAction.id, "approved");
+            emit("action.updated", { actionId: alternateAction.id, status: "approved", record: approved }, { agentId: params.agentId, nodeId: params.agentId });
           }
           const alternateRunning = actionLedger.transition(alternateAction.id, "running");
           emit("action.updated", { actionId: alternateAction.id, status: "running", record: alternateRunning }, { agentId: params.agentId, nodeId: params.agentId });
           emitNodeRuntimeState("tool_running", { agentId: params.agentId, title: params.title, actionId: alternateAction.id, toolId: alternateCall.tool, iteration });
           const alternateOutput = await runtimeToolExecutor.execute(alternateCall, {
-            allowRisky: !alternateDecision.requiredApproval || config.approvalMode === "auto" || approvedActionIds.has(alternateAction.id),
+            allowRisky: !alternateDecision.requiredApproval || config.approvalMode === "auto" || alternateApproved,
           });
           markToolResultObserved(alternateCall, false);
           const alternateSucceeded = actionLedger.transition(alternateAction.id, "succeeded", { output: alternateOutput });
@@ -1246,6 +1404,12 @@ export async function executeRuntimeKernel(
     activeAgents.add(params.agentId);
     setTopologyStatus(params.agentId, "running");
     emit("agent.started", { title: params.title, planItemId: params.planItemId }, { agentId: params.agentId, nodeId: params.agentId });
+    await emitProgressNarration({
+      trigger: "agent.started",
+      agentId: params.agentId,
+      nodeId: params.agentId,
+      title: params.title,
+    });
 
     const action = actionLedger.propose({
       id: `${params.agentId}-${events.length}`,
@@ -1271,8 +1435,7 @@ export async function executeRuntimeKernel(
         }
       : decision;
     if (effectiveDecision.requiredApproval && config.approvalMode === "manual") {
-      const approvedActionIds = new Set(options.resumeContext?.approvedActionIds ?? []);
-      if (approvedActionIds.has(action.id)) {
+      if (resumeApprovals.consume(action)) {
         emit("approval.resolved", {
           actionId: action.id,
           decision: "approved",
@@ -1281,11 +1444,18 @@ export async function executeRuntimeKernel(
         const approved = actionLedger.transition(action.id, "approved");
         emit("action.updated", { actionId: action.id, status: "approved", record: approved }, { agentId: params.agentId, nodeId: params.agentId });
       } else {
-        const blocked = actionLedger.transition(action.id, "approval_required");
-        emit("approval.required", { actionId: action.id, decision: effectiveDecision }, { agentId: params.agentId, nodeId: params.agentId });
-        emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
-        throw new ApprovalInterruptError(action.id);
-      }
+	        const blocked = actionLedger.transition(action.id, "approval_required");
+	        emit("approval.required", { actionId: action.id, decision: effectiveDecision }, { agentId: params.agentId, nodeId: params.agentId });
+	        emit("action.updated", { actionId: action.id, status: "approval_required", record: blocked }, { agentId: params.agentId, nodeId: params.agentId });
+	        await emitProgressNarration({
+	          trigger: "approval.required",
+	          agentId: params.agentId,
+	          nodeId: params.agentId,
+	          title: params.title,
+	          detail: effectiveDecision.reason,
+	        });
+	        throw new ApprovalInterruptError(action.id);
+	      }
     }
 
     const running = actionLedger.transition(action.id, "running");
@@ -1316,11 +1486,17 @@ export async function executeRuntimeKernel(
         const succeeded = actionLedger.transition(action.id, "succeeded", {
           output: response.raw,
         });
-        emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
-        emit("agent.completed", { title: params.title }, { agentId: params.agentId, nodeId: params.agentId });
-        activeAgents.delete(params.agentId);
-        setTopologyStatus(params.agentId, "done");
-        return response.text;
+	        emit("action.updated", { actionId: action.id, status: "succeeded", record: succeeded }, { agentId: params.agentId, nodeId: params.agentId });
+	        emit("agent.completed", { title: params.title }, { agentId: params.agentId, nodeId: params.agentId });
+	        await emitProgressNarration({
+	          trigger: "agent.completed",
+	          agentId: params.agentId,
+	          nodeId: params.agentId,
+	          title: params.title,
+	        });
+	        activeAgents.delete(params.agentId);
+	        setTopologyStatus(params.agentId, "done");
+	        return response.text;
       } catch (error) {
         if (error instanceof ApprovalInterruptError || error instanceof ClarificationInterruptError) {
           emitNodeRuntimeState("interrupted", { agentId: params.agentId, title: params.title, detail: error instanceof Error ? error.message : String(error) });
@@ -1331,24 +1507,38 @@ export async function executeRuntimeKernel(
 
         const detail = error instanceof Error ? error.message : String(error);
         const failed = actionLedger.transition(action.id, "failed", { error: detail });
-        emit("tool.called", {
-          actionId: action.id,
-          providerId: configuredProviderId(config) ?? "unknown",
+	        emit("tool.called", {
+	          actionId: action.id,
+	          providerId: configuredProviderId(config) ?? "unknown",
           title: params.title,
           status: "failed",
           error: detail,
         }, { agentId: params.agentId, nodeId: params.agentId });
-        emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
-        emitNodeRuntimeState("failed", { agentId: params.agentId, title: params.title, detail });
+	        emit("action.updated", { actionId: action.id, status: "failed", record: failed }, { agentId: params.agentId, nodeId: params.agentId });
+	        emitNodeRuntimeState("failed", { agentId: params.agentId, title: params.title, detail });
+	        await emitProgressNarration({
+	          trigger: "tool.failed",
+	          agentId: params.agentId,
+	          nodeId: params.agentId,
+	          title: params.title,
+	          detail,
+	        });
 
-        const incident = classifyRecoveryError(error, {
+	        const incident = classifyRecoveryError(error, {
           surface: "provider",
           nodeId: params.agentId,
           agentId: params.agentId,
           actionId: action.id,
-        });
-        const recoveryDecision = recoveryCoordinator.resolve(incident);
-        emitRecoveryDecision(incident, recoveryDecision);
+	        });
+	        const recoveryDecision = recoveryCoordinator.resolve(incident);
+	        emitRecoveryDecision(incident, recoveryDecision);
+	        await emitProgressNarration({
+	          trigger: "recovery.updated",
+	          agentId: params.agentId,
+	          nodeId: params.agentId,
+	          title: params.title,
+	          detail: recoveryDecision.summary,
+	        });
 
         if (recoveryDecision.action === "retry") {
           await sleep(recoveryDecision.retryDelayMs ?? 0);
@@ -1378,6 +1568,13 @@ export async function executeRuntimeKernel(
         }, { agentId: params.agentId, nodeId: params.agentId });
         emit("agent.completed", { title: params.title, degraded: true }, { agentId: params.agentId, nodeId: params.agentId });
         emitNodeRuntimeState("degraded", { agentId: params.agentId, title: params.title, detail });
+        await emitProgressNarration({
+          trigger: "agent.degraded",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+          detail,
+        });
         activeAgents.delete(params.agentId);
         setTopologyStatus(params.agentId, "done");
         return fallback;
@@ -1434,7 +1631,7 @@ export async function executeRuntimeKernel(
     emit("artifact.exported", { artifact });
   };
 
-  const ensureClarification = (params: {
+  const ensureClarification = async (params: {
     id: string;
     key: string;
     nodeId: string;
@@ -1467,6 +1664,12 @@ export async function executeRuntimeKernel(
       clarification,
       pending: pendingClarifications.length,
     }, { nodeId: params.nodeId });
+    await emitProgressNarration({
+      trigger: "clarification.required",
+      nodeId: params.nodeId,
+      title: params.nodeLabel,
+      detail: params.question,
+    });
     throw new ClarificationInterruptError(clarification);
   };
 
@@ -1549,6 +1752,12 @@ export async function executeRuntimeKernel(
       phase: "running",
       summary: `Delegated task ${params.title} is running.`,
     }, { agentId: params.agentId, nodeId: params.nodeId });
+    await emitProgressNarration({
+      trigger: "task.progress",
+      agentId: params.agentId,
+      nodeId: params.nodeId,
+      title: params.title,
+    });
     try {
       const result = await execute();
       emit("task.completed", {
@@ -1558,16 +1767,30 @@ export async function executeRuntimeKernel(
         title: params.title,
         summary: `Delegated task ${params.title} completed.`,
       }, { agentId: params.agentId, nodeId: params.nodeId });
+      await emitProgressNarration({
+        trigger: "task.completed",
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        title: params.title,
+      });
       return result;
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       emit("task.failed", {
         taskId: params.taskId,
         nodeId: params.nodeId,
         nodeLabel: params.nodeLabel,
         title: params.title,
-        error: error instanceof Error ? error.message : String(error),
+        error: detail,
         summary: `Delegated task ${params.title} failed.`,
       }, { agentId: params.agentId, nodeId: params.nodeId });
+      await emitProgressNarration({
+        trigger: "task.failed",
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        title: params.title,
+        detail,
+      });
       throw error;
     }
   };
@@ -1697,7 +1920,14 @@ export async function executeRuntimeKernel(
     });
     inferCompletionStopReason(result.output);
     output = outputWithCompletionMetadata(result.output);
-    emit("run.done", { status: "succeeded", output, stopReason: completionMetadata().stopReason, completion: completionMetadata() });
+    const incompleteError = incompleteForcedFinalError(output);
+    if (incompleteError) {
+      status = "failed";
+      error = incompleteError;
+      emit("run.failed", { status, error, output, stopReason: completionMetadata().stopReason, completion: completionMetadata() });
+    } else {
+      emit("run.done", { status: "succeeded", output, stopReason: completionMetadata().stopReason, completion: completionMetadata() });
+    }
   } catch (caught) {
     error = caught instanceof Error ? caught.message : String(caught);
     status = caught instanceof ClarificationInterruptError || caught instanceof ApprovalInterruptError
@@ -1796,4 +2026,36 @@ export async function executeRuntimeKernel(
     snapshot,
     tools,
   };
+}
+
+function createResumeApprovalMatcher(resumeContext: RuntimeKernelOptions["resumeContext"]): {
+  consume: (action: ActionRecord) => boolean;
+} {
+  const approvedActionIds = new Set(resumeContext?.approvedActionIds ?? []);
+  const approvedActionKeys = new Set(
+    (resumeContext?.approvedActions ?? []).map((action) => stableApprovalActionKey(action)),
+  );
+
+  return {
+    consume(action) {
+      if (approvedActionIds.delete(action.id)) {
+        return true;
+      }
+      const key = stableApprovalActionKey(action);
+      if (!approvedActionKeys.has(key)) {
+        return false;
+      }
+      approvedActionKeys.delete(key);
+      return true;
+    },
+  };
+}
+
+function stableApprovalActionKey(action: ApprovedResumeAction): string {
+  return stableJson({
+    type: action.type,
+    riskLevel: action.riskLevel,
+    agentId: action.agentId ?? null,
+    input: action.input,
+  });
 }

@@ -42,7 +42,7 @@ export interface PatternExecutionContext {
     nodeId: string;
     nodeLabel: string;
     question: string;
-  }): unknown;
+  }): Promise<unknown>;
   claimWorker(agentId: string): void;
   releaseWorker(agentId: string): void;
   callAgent(params: {
@@ -210,7 +210,7 @@ async function runNode(
     : undefined;
   if (modeSpec.runtimeAtoms.includes("clarification_interrupt") && clarificationQuestion) {
     try {
-      context.ensureClarification({
+      await context.ensureClarification({
         id: `clarification:${node.id}`,
         key: typeof node.config?.clarificationKey === "string" ? node.config.clarificationKey : node.id,
         nodeId: node.id,

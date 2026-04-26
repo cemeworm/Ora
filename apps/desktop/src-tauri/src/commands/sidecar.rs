@@ -495,17 +495,17 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn runtime_json_rpc(
+pub async fn runtime_json_rpc(
     request: RuntimeJsonRpcRequest,
     manager: State<'_, RuntimeSidecarManager>,
     facade: State<'_, RuntimeFacade>,
     app: AppHandle,
-) -> RuntimeJsonRpcResponse {
-    if let Some(response) = manager.try_process_json_rpc(&request, Some(&app)) {
+) -> Result<RuntimeJsonRpcResponse, String> {
+    Ok(if let Some(response) = manager.try_process_json_rpc(&request, Some(&app)) {
         response
     } else {
         facade.handle_runtime_json_rpc(request)
-    }
+    })
 }
 
 #[tauri::command]

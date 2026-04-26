@@ -123,6 +123,45 @@ describe("RuntimeToolExecutor", () => {
     expect(fs.readFileSync(path.join(rootPath, "notes", "result.md"), "utf8")).toBe("after\n");
   });
 
+  it("builds natural approval copy for high-risk local tools", () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+    const prompt = executor.systemPrompt(["skills.create"]) ?? "";
+    const definition = executor.toolDefinitions(["skills.create"])[0];
+
+    const writeRequest = executor.approvalRequest({
+      tool: "file.write",
+      args: { path: "notes/result.md", content: "before\n" },
+    }, "请帮我写入这个文件");
+    const shellRequest = executor.approvalRequest({
+      tool: "shell.execute",
+      args: { command: "node --version" },
+    }, "请检查 node 版本");
+    const skillRequest = executor.approvalRequest({
+      tool: "skills.create",
+      args: {
+        name: "waza-think",
+        approvalRequest: {
+          title: "需要你确认安装技能",
+          summary: "我准备安装 Waza 的 think 技能。",
+          riskNote: "确认 GitHub 来源可信后再继续。",
+        },
+      },
+    }, "帮我安装这个 skill");
+
+    expect(prompt).toContain("include args.approvalRequest");
+    expect(definition?.parameters?.properties).toMatchObject({
+      approvalRequest: expect.objectContaining({
+        required: ["title", "summary"],
+      }),
+    });
+    expect(writeRequest.title).toBe("需要你确认写入文件");
+    expect(writeRequest.summary).toContain("notes/result.md");
+    expect(shellRequest.title).toBe("需要你确认运行命令");
+    expect(shellRequest.summary).toContain("node --version");
+    expect(skillRequest.summary).toBe("我准备安装 Waza 的 think 技能。");
+  });
+
   it("keeps read-only shell commands low risk and gates broader commands", async () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });

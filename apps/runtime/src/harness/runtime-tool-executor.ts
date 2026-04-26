@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ActionRiskLevel, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
+import { ActionApprovalRequestCopySchema } from "@ora/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
 import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
 
@@ -19,6 +20,10 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "web.search",
   "skills.list",
   "skills.get",
+  "skills.checkName",
+  "skills.create",
+  "skills.update",
+  "skills.setEnabled",
   "mcp.listTools",
   "mcp.readResource",
   "mcp.call",
@@ -45,6 +50,10 @@ export interface RuntimeToolExecutorOptions {
 interface SkillRegistryTools {
   list(params?: SkillListParams): SkillDescriptor[];
   get(params: { name: string }): SkillDetail;
+  checkName(params: unknown): unknown;
+  create(params: unknown): SkillDetail;
+  update(params: unknown): SkillDetail;
+  setEnabled(params: unknown): SkillDetail;
 }
 
 interface McpServerConfig {
@@ -88,6 +97,78 @@ export function isRuntimeToolImplemented(toolId: string): toolId is RuntimeToolI
   return IMPLEMENTED_TOOL_SET.has(toolId);
 }
 
+export function extractRuntimeToolCallFromText(text: string, toolIds: readonly string[] = []): RuntimeToolCall | undefined {
+  const enabled = new Set(toolIds.filter(isRuntimeToolImplemented));
+  if (enabled.size === 0) {
+    return undefined;
+  }
+
+  const trimmed = text.trim();
+  const candidates = [
+    trimmed,
+    ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi), (match) => match[1]?.trim() ?? ""),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const jsonCall = extractJsonToolCall(candidate, enabled);
+    if (jsonCall) {
+      return jsonCall;
+    }
+  }
+
+  return extractTaggedToolCall(trimmed, enabled);
+}
+
+function extractJsonToolCall(candidate: string, enabled: Set<RuntimeToolId>): RuntimeToolCall | undefined {
+  try {
+    const parsed = JSON.parse(candidate) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.tool !== "string" || !enabled.has(record.tool as RuntimeToolId)) {
+      return undefined;
+    }
+    return {
+      tool: record.tool as RuntimeToolId,
+      args: record.args && typeof record.args === "object" && !Array.isArray(record.args)
+        ? record.args as Record<string, unknown>
+        : {},
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function extractTaggedToolCall(text: string, enabled: Set<RuntimeToolId>): RuntimeToolCall | undefined {
+  if (!/DSML|parameter\s+name\s*=/i.test(text)) {
+    return undefined;
+  }
+
+  const args: Record<string, unknown> = {};
+  for (const match of text.matchAll(/parameter\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)(?:<\/[^>]*parameter>|$)/gi)) {
+    const name = match[1]?.trim();
+    const value = match[2]?.replace(/<\|?\/?DSML\|?>/gi, "").trim();
+    if (name && value) {
+      args[name] = value;
+    }
+  }
+
+  const explicitTool = Array.from(enabled).find((toolId) =>
+    text.includes(toolId) || text.includes(toolId.replace(".", "__"))
+  );
+  if (explicitTool) {
+    return { tool: explicitTool, args };
+  }
+  if (typeof args.url === "string" && enabled.has("web.fetch")) {
+    return { tool: "web.fetch", args };
+  }
+  if (typeof args.query === "string" && enabled.has("web.search")) {
+    return { tool: "web.search", args };
+  }
+  return undefined;
+}
+
 export class RuntimeToolExecutor {
   private readonly fetchImpl: typeof fetch;
   private readonly toolDescriptors: readonly ToolDescriptor[];
@@ -124,13 +205,7 @@ export class RuntimeToolExecutor {
       return {
         id: toolId,
         description: descriptor?.description ?? toolId,
-        parameters: descriptor?.parameters && Object.keys(descriptor.parameters).length > 0
-          ? descriptor.parameters
-          : {
-              type: "object",
-              properties: {},
-              additionalProperties: true,
-            },
+        parameters: toolParametersForApproval(toolId, descriptor?.parameters),
       };
     });
   }
@@ -160,6 +235,12 @@ export class RuntimeToolExecutor {
       enabled.some((toolId) => toolId.startsWith("skills."))
         ? "Use skills.list to discover enabled skills when a specialized workflow may help; use skills.get to read a relevant skill before applying it."
         : undefined,
+      enabled.includes("skills.create")
+        ? "When installing multiple fetched SKILL.md files, prefer creating or updating the skill from validated content instead of spending a separate skills.checkName call for every file unless a name conflict is likely."
+        : undefined,
+      enabled.some(toolNeedsUserApprovalCopy)
+        ? "For tools that can change local files, run commands, install skills, toggle skills, or call external MCP tools, include args.approvalRequest with user-facing copy in the current conversation language. Explain what you will do, what will change, why it is needed, and the risk in plain language. Do not expose internal tool ids, policy ids, action ids, or agent ids in that copy."
+        : undefined,
       "Available tools:",
       descriptions,
       enabled.some((toolId) => toolId.startsWith("web.") || toolId.startsWith("mcp."))
@@ -172,42 +253,18 @@ export class RuntimeToolExecutor {
   }
 
   extractToolCall(text: string, toolIds: readonly string[] = []): RuntimeToolCall | undefined {
-    const enabled = new Set(this.enabledToolIds(toolIds));
-    if (enabled.size === 0) {
-      return undefined;
-    }
-
-    const trimmed = text.trim();
-    const candidates = [
-      trimmed,
-      ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi), (match) => match[1]?.trim() ?? ""),
-    ].filter(Boolean);
-
-    for (const candidate of candidates) {
-      try {
-        const parsed = JSON.parse(candidate) as unknown;
-        if (!parsed || typeof parsed !== "object") {
-          continue;
-        }
-        const record = parsed as Record<string, unknown>;
-        if (typeof record.tool === "string" && enabled.has(record.tool as RuntimeToolId)) {
-          return {
-            tool: record.tool as RuntimeToolId,
-            args: record.args && typeof record.args === "object" && !Array.isArray(record.args)
-              ? record.args as Record<string, unknown>
-              : {},
-          };
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    return undefined;
+    return extractRuntimeToolCallFromText(text, this.enabledToolIds(toolIds));
   }
 
   riskLevel(call: RuntimeToolCall): ActionRiskLevel {
-    if (call.tool === "file.write" || call.tool === "file.patch" || call.tool === "mcp.call") {
+    if (
+      call.tool === "file.write"
+      || call.tool === "file.patch"
+      || call.tool === "mcp.call"
+      || call.tool === "skills.create"
+      || call.tool === "skills.update"
+      || call.tool === "skills.setEnabled"
+    ) {
       return "high";
     }
     if (call.tool === "web.search" && this.searchProvider.id === "mcp") {
@@ -219,6 +276,10 @@ export class RuntimeToolExecutor {
       return executable && SHELL_READ_ONLY_COMMANDS.has(executable) ? "low" : "high";
     }
     return "low";
+  }
+
+  approvalRequest(call: RuntimeToolCall, userPrompt?: string): ActionApprovalRequestCopy {
+    return approvalRequestForToolCall(call, userPrompt);
   }
 
   async execute(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<unknown> {
@@ -245,6 +306,14 @@ export class RuntimeToolExecutor {
         return listRuntimeSkills(this.skillRegistry, call.args);
       case "skills.get":
         return getRuntimeSkill(this.skillRegistry, call.args);
+      case "skills.checkName":
+        return checkRuntimeSkillName(this.skillRegistry, call.args);
+      case "skills.create":
+        return createRuntimeSkill(this.skillRegistry, call.args);
+      case "skills.update":
+        return updateRuntimeSkill(this.skillRegistry, call.args);
+      case "skills.setEnabled":
+        return setRuntimeSkillEnabled(this.skillRegistry, call.args);
       case "mcp.listTools":
         return listMcpTools(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
       case "mcp.readResource":
@@ -257,6 +326,256 @@ export class RuntimeToolExecutor {
       }
     }
   }
+}
+
+export function approvalRequestForToolCall(call: RuntimeToolCall, userPrompt?: string): ActionApprovalRequestCopy {
+  const provided = parseProvidedApprovalRequest(call.args.approvalRequest);
+  if (provided) {
+    return provided;
+  }
+  return fallbackApprovalRequestForToolCall(call, userPrompt);
+}
+
+function toolParametersForApproval(toolId: RuntimeToolId, parameters: Record<string, unknown> | undefined): Record<string, unknown> {
+  const base = parameters && Object.keys(parameters).length > 0
+    ? parameters
+    : {
+        type: "object",
+        properties: {},
+        additionalProperties: true,
+      };
+  if (!toolNeedsUserApprovalCopy(toolId)) {
+    return base;
+  }
+
+  const properties = isRecord(base.properties) ? base.properties : {};
+  return {
+    ...base,
+    type: "object",
+    properties: {
+      ...properties,
+      approvalRequest: {
+        type: "object",
+        description: "Plain-language approval copy shown to the user before this action runs.",
+        properties: {
+          title: { type: "string" },
+          summary: { type: "string" },
+          whatWillChange: { type: "string" },
+          whyNeeded: { type: "string" },
+          riskNote: { type: "string" },
+          confirmLabel: { type: "string" },
+        },
+        required: ["title", "summary"],
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: true,
+  };
+}
+
+function toolNeedsUserApprovalCopy(toolId: RuntimeToolId): boolean {
+  return toolId === "file.write"
+    || toolId === "file.patch"
+    || toolId === "shell.execute"
+    || toolId === "skills.create"
+    || toolId === "skills.update"
+    || toolId === "skills.setEnabled"
+    || toolId === "mcp.call";
+}
+
+function parseProvidedApprovalRequest(value: unknown): ActionApprovalRequestCopy | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const parsed = ActionApprovalRequestCopySchema.safeParse(trimApprovalRequest(value));
+  return parsed.success ? parsed.data : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function trimApprovalRequest(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of ["title", "summary", "whatWillChange", "whyNeeded", "riskNote", "confirmLabel"]) {
+    const entry = value[key];
+    if (typeof entry === "string" && entry.trim()) {
+      result[key] = entry.trim();
+    }
+  }
+  return result;
+}
+
+function fallbackApprovalRequestForToolCall(call: RuntimeToolCall, userPrompt?: string): ActionApprovalRequestCopy {
+  const zh = prefersChinese(userPrompt);
+  switch (call.tool) {
+    case "skills.create": {
+      const name = stringArg(call.args, "name", zh ? "这个技能" : "this skill");
+      return zh
+        ? {
+            title: "需要你确认安装技能",
+            summary: `我准备把“${name}”安装到 Ora 的本地技能库，并在安装后启用它。`,
+            whatWillChange: "会新增一个本地技能条目，后续对话中的 agent 可以读取并使用它。",
+            whyNeeded: "这是完成你刚才要求安装技能的必要步骤。",
+            riskNote: "安装内容会写入本地 Ora 配置，确认前请确保来源和内容可信。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm skill installation",
+            summary: `I am ready to install "${name}" into Ora's local skill library and enable it afterward.`,
+            whatWillChange: "A local skill entry will be added so agents can read and use it in later conversations.",
+            whyNeeded: "This is needed to finish the skill installation you requested.",
+            riskNote: "This writes local Ora configuration, so confirm only if the source and content are trusted.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "skills.update": {
+      const name = stringArg(call.args, "name", zh ? "这个技能" : "this skill");
+      return zh
+        ? {
+            title: "需要你确认更新技能",
+            summary: `我准备更新本地技能“${name}”的说明内容。`,
+            whatWillChange: "这个技能之后会按新的说明运行。",
+            whyNeeded: "这是应用你要求的技能变更所必需的步骤。",
+            riskNote: "更新技能会改变 agent 后续使用该技能时遵循的规则。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm skill update",
+            summary: `I am ready to update the local instructions for "${name}".`,
+            whatWillChange: "The skill will follow the new instructions afterward.",
+            whyNeeded: "This is required to apply the skill change you requested.",
+            riskNote: "Updating a skill changes the rules agents follow when they use it later.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "skills.setEnabled": {
+      const name = stringArg(call.args, "name", zh ? "这个技能" : "this skill");
+      const enabled = call.args.enabled === false ? (zh ? "停用" : "disable") : (zh ? "启用" : "enable");
+      return zh
+        ? {
+            title: "需要你确认调整技能状态",
+            summary: `我准备${enabled}本地技能“${name}”。`,
+            whatWillChange: "这个技能在后续对话中是否可被 agent 使用会发生变化。",
+            whyNeeded: "这是应用你要求的技能开关状态所必需的步骤。",
+            riskNote: "技能可用性会影响后续 agent 的行为范围。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm skill setting change",
+            summary: `I am ready to ${enabled} the local skill "${name}".`,
+            whatWillChange: "Whether agents can use this skill in later conversations will change.",
+            whyNeeded: "This is required to apply the skill setting you requested.",
+            riskNote: "Skill availability affects what agents can do later.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "file.write": {
+      const target = stringArg(call.args, "path", zh ? "目标文件" : "the target file");
+      return zh
+        ? {
+            title: "需要你确认写入文件",
+            summary: `我准备在项目中写入“${target}”。`,
+            whatWillChange: "该文件内容会被创建或覆盖。",
+            whyNeeded: "这是完成你要求的本地文件变更所必需的步骤。",
+            riskNote: "写入文件会改变你的项目内容，请确认路径和变更意图正确。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm file write",
+            summary: `I am ready to write "${target}" in the project.`,
+            whatWillChange: "The file will be created or overwritten.",
+            whyNeeded: "This is required to complete the local file change you requested.",
+            riskNote: "Writing a file changes project contents, so confirm the path and intent first.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "file.patch": {
+      const target = stringArg(call.args, "path", zh ? "目标文件" : "the target file");
+      return zh
+        ? {
+            title: "需要你确认修改文件",
+            summary: `我准备修改项目中的“${target}”。`,
+            whatWillChange: "文件中的一段内容会被替换。",
+            whyNeeded: "这是完成你要求的本地文件修改所必需的步骤。",
+            riskNote: "修改文件会改变你的项目内容，请确认目标文件正确。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm file change",
+            summary: `I am ready to modify "${target}" in the project.`,
+            whatWillChange: "One matching section in the file will be replaced.",
+            whyNeeded: "This is required to complete the local file edit you requested.",
+            riskNote: "Editing a file changes project contents, so confirm the target file first.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "shell.execute": {
+      const command = stringArg(call.args, "command", zh ? "这条命令" : "this command");
+      return zh
+        ? {
+            title: "需要你确认运行命令",
+            summary: `我准备在项目文件夹中运行：${command}`,
+            whatWillChange: "命令可能读取或修改本地项目，具体取决于命令内容。",
+            whyNeeded: "这是完成当前任务所需的本地执行步骤。",
+            riskNote: "请确认这条命令符合你的预期，再允许 Ora 继续。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm command execution",
+            summary: `I am ready to run this command in the project folder: ${command}`,
+            whatWillChange: "The command may read or modify local project files depending on what it does.",
+            whyNeeded: "This local execution step is needed to continue the task.",
+            riskNote: "Confirm the command matches your expectations before allowing Ora to continue.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "mcp.call":
+      return zh
+        ? {
+            title: "需要你确认调用外部工具",
+            summary: "我准备调用一个已配置的外部工具来继续当前任务。",
+            whatWillChange: "该工具可能读取或写入它有权限访问的资源。",
+            whyNeeded: "这是完成当前任务所需的工具步骤。",
+            riskNote: "外部工具的行为取决于它的配置和权限，请确认后再继续。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm external tool call",
+            summary: "I am ready to call a configured external tool to continue this task.",
+            whatWillChange: "The tool may read or write resources it has permission to access.",
+            whyNeeded: "This tool step is needed to continue the task.",
+            riskNote: "External tool behavior depends on its configuration and permissions, so confirm before continuing.",
+            confirmLabel: "Approve and continue",
+          };
+    default:
+      return zh
+        ? {
+            title: "需要你确认后继续",
+            summary: "我准备执行一项会影响本地环境的操作。",
+            whatWillChange: "操作完成后，本地状态可能发生变化。",
+            whyNeeded: "这是继续当前任务所需的步骤。",
+            riskNote: "请确认这符合你的预期后再继续。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: "Confirm before continuing",
+            summary: "I am ready to perform an action that can affect the local environment.",
+            whatWillChange: "Local state may change after the action completes.",
+            whyNeeded: "This step is needed to continue the current task.",
+            riskNote: "Confirm this matches your expectations before continuing.",
+            confirmLabel: "Approve and continue",
+          };
+  }
+}
+
+function prefersChinese(text: string | undefined): boolean {
+  return typeof text === "string" && /[\u3400-\u9fff]/.test(text);
+}
+
+function stringArg(args: Record<string, unknown>, key: string, fallback: string): string {
+  const value = args[key];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 function exampleForTool(toolId: RuntimeToolId): string {
@@ -283,6 +602,14 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"skills.list\",\"args\":{\"query\":\"frontend design\"}}";
     case "skills.get":
       return "{\"tool\":\"skills.get\",\"args\":{\"name\":\"frontend-design\"}}";
+    case "skills.checkName":
+      return "{\"tool\":\"skills.checkName\",\"args\":{\"name\":\"waza-think\"}}";
+    case "skills.create":
+      return "{\"tool\":\"skills.create\",\"args\":{\"name\":\"waza-think\",\"description\":\"Think workflow\",\"content\":\"---\\nname: waza-think\\ndescription: Think workflow\\n---\\n...\",\"enabled\":true}}";
+    case "skills.update":
+      return "{\"tool\":\"skills.update\",\"args\":{\"name\":\"waza-think\",\"content\":\"---\\nname: waza-think\\ndescription: Think workflow\\n---\\n...\"}}";
+    case "skills.setEnabled":
+      return "{\"tool\":\"skills.setEnabled\",\"args\":{\"name\":\"waza-think\",\"enabled\":true}}";
     case "mcp.listTools":
       return "{\"tool\":\"mcp.listTools\",\"args\":{\"server\":\"local-docs\"}}";
     case "mcp.readResource":
@@ -674,6 +1001,34 @@ function getRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Re
       "If upstream instructions mention /mnt/user-data, use the selected Ora workspace or explicit user-provided file paths instead.",
     ].filter(Boolean).join(" "),
   };
+}
+
+function checkRuntimeSkillName(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.checkName.");
+  }
+  return skillRegistry.checkName(args);
+}
+
+function createRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.create.");
+  }
+  return skillRegistry.create(args);
+}
+
+function updateRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.update.");
+  }
+  return skillRegistry.update(args);
+}
+
+function setRuntimeSkillEnabled(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.setEnabled.");
+  }
+  return skillRegistry.setEnabled(args);
 }
 
 function parseHttpUrl(value: unknown, toolName: string): string {

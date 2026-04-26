@@ -1,4 +1,5 @@
 import { useMemo, useRef } from "react";
+import { flushSync } from "react-dom";
 import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
 import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
@@ -21,6 +22,18 @@ function modeDisablesDefaultWebTools(modeToolIds: readonly string[] | undefined)
   }
   const ids = new Set(modeToolIds ?? []);
   return DEFAULT_WEB_TOOL_IDS.some((toolId) => !ids.has(toolId));
+}
+
+export function waitForPendingRunPaint(): Promise<void> {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(resolve, 0);
+    });
+  });
 }
 
 async function pickProjectDirectory(): Promise<string | null> {
@@ -226,13 +239,17 @@ export function useRunActions() {
 
   async function startRun() {
     if (!state.selectedSessionId || !state.promptText.trim()) return;
+    const sessionId = state.selectedSessionId;
     const submittedPrompt = state.promptText;
-    dispatch({
-      type: "BEGIN_RUN_REQUEST",
-      sessionId: state.selectedSessionId,
-      prompt: submittedPrompt,
-      createdAt: Date.now(),
+    flushSync(() => {
+      dispatch({
+        type: "BEGIN_RUN_REQUEST",
+        sessionId,
+        prompt: submittedPrompt,
+        createdAt: Date.now(),
+      });
     });
+    await waitForPendingRunPaint();
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
     const searchConfig = buildRunSearchConfig();
@@ -255,12 +272,13 @@ export function useRunActions() {
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
+            progressNarration: true,
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             ...searchConfig.metadata,
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
           },
         },
-        state.selectedSessionId,
+        sessionId,
       );
       const snapshot = await runtimeClient.getRunState(handle.runId);
       dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
@@ -293,12 +311,17 @@ export function useRunActions() {
 
   async function resumeRun() {
     if (!state.selectedTurnRunId) return;
-    dispatch({ type: "SET_BUSY_COMMAND", command: "Approve" });
+    const approvedActionIds = viewModel?.actions.filter((a) => a.state === "approval_required").map((a) => a.id) ?? [];
+    flushSync(() => {
+      dispatch({ type: "BEGIN_RUN_RESUME", runId: state.selectedTurnRunId!, approvedActionIds, updatedAt: Date.now() });
+      dispatch({ type: "SET_BUSY_COMMAND", command: "Approve" });
+    });
+    await waitForPendingRunPaint();
     try {
       const snapshot = await runtimeClient.resumeRun(
         state.selectedTurnRunId,
         "Approved sidecar action from Context Dock.",
-        { approvedActionIds: viewModel?.actions.filter((a) => a.state === "approval_required").map((a) => a.id) ?? [] },
+        { approvedActionIds },
       );
       await refreshCurrentSession(snapshot, `Approve completed against ${snapshot.runId}.`);
     } catch (error) {

@@ -68,7 +68,7 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
 
   return (
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/74 px-4 backdrop-blur-sm">
+      <header className="flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-2">
           <BookOpenText size={16} className="text-muted-foreground" />
           <div className="min-w-0">

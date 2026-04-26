@@ -74,7 +74,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               onToggle={() => setProcessOpen((current) => !current)}
               title={`Steps ${processSteps.length}`}
               icon={<Clock3 size={14} />}
-              summary={processSummary(processSteps)}
+              summary={processSummary(processSteps, turn?.status, isPlaceholder)}
             >
               {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
@@ -302,7 +302,22 @@ function TodoStatusIcon({ status }: { status: TurnTodoItem["status"] }) {
   }
 }
 
-function processSummary(steps: TurnProcessStep[]) {
+function processSummary(steps: TurnProcessStep[], status?: AssistantTurnAttachment["status"], isPlaceholder = false) {
+  if ((status === "running" || isPlaceholder) && steps.length > 0) {
+    let latestActiveStep: TurnProcessStep | undefined;
+    for (let index = steps.length - 1; index >= 0; index -= 1) {
+      if (steps[index]?.status === "active") {
+        latestActiveStep = steps[index];
+        break;
+      }
+    }
+    const currentStep = latestActiveStep ?? steps[steps.length - 1];
+    const currentAction = currentStep?.detail.trim() || currentStep?.label.trim();
+    if (currentAction) {
+      return `Now: ${currentAction}`;
+    }
+  }
+
   const active = steps.filter((step) => step.status === "active").length;
   const blocked = steps.filter((step) => step.status === "blocked").length;
   if (active > 0) {

@@ -292,6 +292,52 @@ describe("provider adapters", () => {
     });
   });
 
+  it("preserves empty reasoning_content in OpenAI-compatible chat tool call history", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; reasoning_content?: string; tool_calls?: unknown[] }>;
+      };
+      expect(body.messages.some((message) =>
+        message.role === "assistant"
+        && Object.prototype.hasOwnProperty.call(message, "reasoning_content")
+        && message.reasoning_content === ""
+        && Array.isArray(message.tool_calls)
+      )).toBe(true);
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Done." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-v4-flash",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        headers: {},
+      },
+      { env: { DEEPSEEK_API_KEY: "test-deepseek-key" }, fetchImpl },
+    );
+
+    await provider({
+      messages: [
+        { role: "user", content: "Install this repo." },
+        {
+          role: "assistant",
+          content: "",
+          reasoningContent: "",
+          toolCalls: [{ id: "call-check", toolId: "skills.checkName", args: { name: "read" } }],
+        },
+        { role: "tool", toolCallId: "call-check", toolName: "skills.checkName", content: "{\"available\":true}" },
+      ],
+      tools: [{ id: "skills.checkName", description: "Check skill name" }],
+      toolChoice: "auto",
+    });
+  });
+
   it("maps OpenAI-compatible streaming chat tool call deltas", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {

@@ -141,6 +141,10 @@ const PROJECT_WORKSPACE_MAX_FILES = 20_000;
 const PROJECT_WORKSPACE_SAMPLE_LIMIT = 120;
 const PROJECT_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
 const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
+const DEFAULT_SESSION_TITLE = "New Chat";
+const SESSION_TITLE_MAX_INPUT_CHARS = 500;
+const SESSION_TITLE_MAX_CHARS = 60;
+const SESSION_TITLE_FALLBACK_CHARS = 50;
 const PROJECT_WORKSPACE_SKIPPED_DIRS = new Set([
   ".git",
   ".next",
@@ -588,7 +592,7 @@ export class LocalRunStore {
     const now = this.now();
     const session = SessionSummarySchema.parse({
       sessionId: this.nextSessionId(),
-      title: parsed.label?.trim() || "New Chat",
+      title: parsed.label?.trim() || DEFAULT_SESSION_TITLE,
       projectId: parsed.projectId,
       turnCount: 0,
       createdAt: now,
@@ -727,7 +731,7 @@ export class LocalRunStore {
       },
     );
     const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
-    this.persistRun(tracedSnapshot);
+    await this.persistRunWithGeneratedTitle(tracedSnapshot);
     return this.toRunHandle(tracedSnapshot);
   }
 
@@ -786,7 +790,9 @@ export class LocalRunStore {
         events: [...liveSnapshot.events, event],
         updatedAt: event.createdAt,
       });
-      this.cacheRun(liveSnapshot, event.seq % 8 === 0 || event.type.startsWith("run."));
+      this.cacheRun(liveSnapshot, event.seq % 8 === 0 || event.type.startsWith("run."), {
+        deferInitialTitle: true,
+      });
       publishStream([event]);
     };
 
@@ -808,10 +814,10 @@ export class LocalRunStore {
           sessionId: session.sessionId,
           turnIndex,
         }));
-        this.persistRun(finalSnapshot);
+        await this.persistRunWithGeneratedTitle(finalSnapshot);
         publishStream([], finalSnapshot);
       },
-    ).catch((error) => {
+    ).catch(async (error) => {
       const detail = error instanceof Error ? error.message : String(error);
       const failedAt = this.now();
       const failedEvent = OraEventEnvelopeSchema.parse({
@@ -830,7 +836,7 @@ export class LocalRunStore {
         events: [...liveSnapshot.events, failedEvent],
         updatedAt: failedAt,
       }));
-      this.persistRun(liveSnapshot);
+      await this.persistRunWithGeneratedTitle(liveSnapshot);
       publishStream([failedEvent], liveSnapshot);
     });
 
@@ -872,7 +878,7 @@ export class LocalRunStore {
       },
     );
     const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
-    this.persistRun(tracedSnapshot);
+    await this.persistRunWithGeneratedTitle(tracedSnapshot);
     return this.toRunHandle(tracedSnapshot);
   }
 
@@ -925,7 +931,7 @@ export class LocalRunStore {
       modeId: snapshot.modeId ?? modeSpec.id,
       modeSpec: snapshot.modeSpec ?? modeSpec,
     }));
-    this.persistRun(sessionBoundSnapshot);
+    await this.persistRunWithGeneratedTitle(sessionBoundSnapshot);
     return this.toRunHandle(sessionBoundSnapshot);
   }
 
@@ -963,6 +969,15 @@ export class LocalRunStore {
     const approvedActionIds = Array.isArray(patchRecord.approvedActionIds)
       ? patchRecord.approvedActionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
       : [];
+    const approvedActions = approvedActionIds
+      .map((actionId) => snapshot.actions.find((action) => action.id === actionId))
+      .filter((action): action is NonNullable<typeof action> => action !== undefined)
+      .map((action) => ({
+        type: action.type,
+        riskLevel: action.riskLevel,
+        input: action.input,
+        agentId: action.agentId,
+      }));
     const hasKernelResumeWork = snapshot.modeSpec !== undefined
       && (snapshot.pendingClarifications.length > 0 || snapshot.actions.some((action) => action.status === "approval_required"));
 
@@ -1013,6 +1028,7 @@ export class LocalRunStore {
             resumeContext: {
               clarifications: clarificationPatch,
               approvedActionIds,
+              approvedActions,
             },
           });
           return StateSnapshotSchema.parse({
@@ -1023,7 +1039,7 @@ export class LocalRunStore {
         },
       );
       const tracedSnapshot = this.attachTraceMetadata(resumedSnapshot);
-      this.persistRun(tracedSnapshot);
+      await this.persistRunWithGeneratedTitle(tracedSnapshot);
       return tracedSnapshot;
     }
 
@@ -1179,7 +1195,7 @@ export class LocalRunStore {
       updatedAt: completed.updatedAt
     });
     const syncedTodos = this.syncSnapshotTodos(updated, "resume.completed");
-    this.persistRun(syncedTodos);
+    await this.persistRunWithGeneratedTitle(syncedTodos);
     return syncedTodos;
   }
 
@@ -2280,10 +2296,20 @@ export class LocalRunStore {
     this.scheduleLongTermMemoryUpdate(snapshot);
   }
 
-  private cacheRun(snapshot: StateSnapshot, flush: boolean): void {
+  private async persistRunWithGeneratedTitle(snapshot: StateSnapshot): Promise<void> {
+    const titleOverride = await this.generateSessionTitle(snapshot);
+    this.cacheRun(snapshot, true, { titleOverride });
+    this.scheduleLongTermMemoryUpdate(snapshot);
+  }
+
+  private cacheRun(
+    snapshot: StateSnapshot,
+    flush: boolean,
+    options: { titleOverride?: string; deferInitialTitle?: boolean } = {}
+  ): void {
     this.runs.set(snapshot.runId, snapshot);
     if (snapshot.sessionId) {
-      const session = this.upsertSessionFromRun(snapshot);
+      const session = this.upsertSessionFromRun(snapshot, options);
       this.sessions.set(session.sessionId, session);
       if (flush) {
         this.backend.saveSession(session);
@@ -2296,6 +2322,88 @@ export class LocalRunStore {
       this.backend.saveRun(snapshot);
       this.backend.saveManifest(this.manifest);
     }
+  }
+
+  private async generateSessionTitle(snapshot: StateSnapshot): Promise<string | undefined> {
+    if (!this.shouldGenerateSessionTitle(snapshot)) {
+      return undefined;
+    }
+
+    const userMsg = snapshot.input.prompt.trim();
+    const assistantMsg = this.assistantTextForRun(snapshot);
+    try {
+      const response = await invokeRunProvider(snapshot.config, {
+        system: [
+          "You are Ora's conversation title generator.",
+          "Generate a concise title in the same language as the user message.",
+          "Use at most 6 English words or roughly 16 Chinese characters, and never exceed 60 characters.",
+          "Return only the title, with no quotes, markdown, label, or explanation.",
+        ].join(" "),
+        messages: [{
+          role: "user",
+          content: [
+            "User message:",
+            truncateForTitlePrompt(userMsg),
+            "",
+            "Assistant response:",
+            truncateForTitlePrompt(assistantMsg),
+          ].join("\n"),
+        }],
+        temperature: 0,
+        maxTokens: 80,
+        toolChoice: "none",
+      });
+      return this.parseGeneratedSessionTitle(response.text) ?? this.fallbackSessionTitle(userMsg);
+    } catch {
+      return this.fallbackSessionTitle(userMsg);
+    }
+  }
+
+  private shouldGenerateSessionTitle(snapshot: StateSnapshot): boolean {
+    if (!snapshot.sessionId || snapshot.status === "queued" || snapshot.status === "running") {
+      return false;
+    }
+    if ((snapshot.turnIndex ?? 1) !== 1) {
+      return false;
+    }
+    const existing = this.sessions.get(snapshot.sessionId);
+    if (existing?.title && existing.title !== DEFAULT_SESSION_TITLE) {
+      return false;
+    }
+    return snapshot.input.prompt.trim().length > 0 && this.assistantTextForRun(snapshot).length > 0;
+  }
+
+  private parseGeneratedSessionTitle(content: string): string | undefined {
+    const line = content
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .find((item) => item.length > 0);
+    if (!line) {
+      return undefined;
+    }
+    const title = line
+      .replace(/^#+\s*/, "")
+      .replace(/^[*-]\s*/, "")
+      .replace(/^title\s*:\s*/i, "")
+      .trim()
+      .replace(/^["']+|["']+$/g, "")
+      .trim();
+    if (!title) {
+      return undefined;
+    }
+    return title.length > SESSION_TITLE_MAX_CHARS
+      ? title.slice(0, SESSION_TITLE_MAX_CHARS).trim()
+      : title;
+  }
+
+  private fallbackSessionTitle(prompt: string): string {
+    const trimmed = prompt.trim().replace(/\s+/g, " ");
+    if (!trimmed) {
+      return DEFAULT_SESSION_TITLE;
+    }
+    return trimmed.length > SESSION_TITLE_FALLBACK_CHARS
+      ? `${trimmed.slice(0, SESSION_TITLE_FALLBACK_CHARS).trim()}...`
+      : trimmed;
   }
 
   private scheduleLongTermMemoryUpdate(snapshot: StateSnapshot): void {
@@ -2537,16 +2645,22 @@ export class LocalRunStore {
     return path.relative(rootPath, absolutePath) || ".";
   }
 
-  private upsertSessionFromRun(snapshot: StateSnapshot): SessionSummary {
+  private upsertSessionFromRun(
+    snapshot: StateSnapshot,
+    options: { titleOverride?: string; deferInitialTitle?: boolean } = {}
+  ): SessionSummary {
     const sessionId = snapshot.sessionId;
     if (!sessionId) {
       throw new OraRuntimeError("Cannot persist run without sessionId.", -32004, { runId: snapshot.runId });
     }
     const existing = this.sessions.get(sessionId);
     const turnCount = this.runsForSession(sessionId).filter((run) => run.runId !== snapshot.runId).length + 1;
-    const title = existing && existing.turnCount > 0
-      ? existing.title
-      : this.defaultSessionTitle(snapshot.input.prompt);
+    const title = options.titleOverride
+      ?? (existing && existing.turnCount > 0
+        ? existing.title
+        : snapshot.status === "queued" || snapshot.status === "running" || options.deferInitialTitle
+          ? existing?.title ?? DEFAULT_SESSION_TITLE
+          : this.defaultSessionTitle(snapshot.input.prompt));
     return SessionSummarySchema.parse({
       sessionId,
       title,
@@ -2565,7 +2679,7 @@ export class LocalRunStore {
 
   private defaultSessionTitle(prompt: string): string {
     const trimmed = prompt.trim();
-    return trimmed.length > 0 ? trimmed.slice(0, 120) : "New Chat";
+    return trimmed.length > 0 ? trimmed.slice(0, 120) : DEFAULT_SESSION_TITLE;
   }
 
   private normalizeProjectRootPath(rootPath: string): string {
@@ -2974,6 +3088,12 @@ function summarizeEventPayload(payload: unknown): unknown {
     }
   }
   return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function truncateForTitlePrompt(value: string): string {
+  return value.length > SESSION_TITLE_MAX_INPUT_CHARS
+    ? value.slice(0, SESSION_TITLE_MAX_INPUT_CHARS)
+    : value;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {
