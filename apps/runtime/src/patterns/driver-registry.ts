@@ -476,18 +476,26 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
         }
 
       if (node.template === "synthesize") {
+        const directSoloResponse = singleOwnerMode
+          && bag.plan === undefined
+          && bag.research === undefined
+          && bag.review === undefined;
         bag.synthesis = await context.callAgent({
           agentId: node.ownerAgentId ?? "orchestrator",
           planItemId: node.id,
           title: titleForNode(node, "Synthesize result"),
           prompt: promptTemplate(
             node,
-            runtimeFallbackPrompt(modeSpec.family, node.template),
+            directSoloResponse
+              ? "Task: {{prompt}}\nProduce the final answer directly. Do not create a separate planning draft unless the task genuinely requires it."
+              : runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
           system: context.systemPrompt(
-            singleOwnerMode
-              ? "You are the solo agent. Use your framing notes and produce the final answer directly."
+            directSoloResponse
+              ? "You are the solo agent. Complete the user request directly and make the final answer the only assistant body."
+              : singleOwnerMode
+                ? "You are the solo agent. Use your framing notes and produce the final answer directly."
               : "You are the orchestrator. Synthesize delegated results into one answer."
           ),
           riskLevel: node.riskLevel,

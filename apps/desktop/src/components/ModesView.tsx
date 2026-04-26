@@ -39,10 +39,12 @@ import {
   NODE_ATTACHMENT_NODE_PREFIX,
   patchModeNodePosition,
   removeModeEdges,
+  RUNTIME_ANCHOR_NODE_ID,
   resetModeDraftFamily,
   validateCanvasConnection,
   type ModeCanvasNodeData,
 } from "../lib/modeCanvas";
+import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
 import type { OraModeCreateParams, OraModeSpec, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -417,12 +419,12 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <div className="font-semibold">{mode.label}</div>
+                  <div className="font-semibold">{displayText(state.language, mode.label)}</div>
                   <span className="rounded-full border border-bench-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-bench-700">
                     {mode.systemPreset ? "preset" : mode.family}
                   </span>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-bench-700">{mode.summary}</p>
+                <p className="mt-1 text-xs leading-5 text-bench-700">{displayText(state.language, mode.summary)}</p>
               </button>
             ))}
           </div>
@@ -453,11 +455,11 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">{selectedMode.family}</p>
-                    <h3 className="mt-1 text-2xl font-semibold">{selectedMode.label}</h3>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-bench-700">{selectedMode.summary}</p>
+                    <h3 className="mt-1 text-2xl font-semibold">{displayText(state.language, selectedMode.label)}</h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-bench-700">{displayText(state.language, selectedMode.summary)}</p>
                     {selectedMode.recommendedUse && (
                       <p className="mt-3 max-w-2xl text-sm leading-6 text-bench-800">
-                        Use: {selectedMode.recommendedUse}
+                        {translateCopy(state.language, "Use:")} {displayText(state.language, selectedMode.recommendedUse)}
                       </p>
                     )}
                   </div>
@@ -484,6 +486,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                 <CanvasPanel
                   mode={previewMode}
                   atoms={atoms}
+                  language={state.language}
                   readOnly
                   selectedNodeId={undefined}
                   onSelectNode={() => undefined}
@@ -494,6 +497,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                   atoms={atoms}
                   definition={selectedDefinition}
                   executionPreview={getExecutionPreview(previewMode)}
+                  language={state.language}
                 />
               </section>
             </section>
@@ -502,6 +506,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
               <CanvasPanel
                 mode={draft}
                 atoms={atoms}
+                language={state.language}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
                 onClearSelection={() => setSelectedNodeId(undefined)}
@@ -523,6 +528,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                     node={selectedNode}
                     atoms={atoms}
                     allowedTemplates={allowedTemplates}
+                    language={state.language}
                     onPatchNode={(updater) => patchDraft((current) => ({
                       ...current,
                       nodes: current.nodes.map((item) => item.id === selectedNode.id ? updater(item) : item),
@@ -541,6 +547,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                   <CapabilityInspector
                     mode={draft}
                     atom={selectedModeAtom}
+                    language={state.language}
                     onToggle={() => patchDraft((current) => ({
                       ...current,
                       runtimeAtoms: current.runtimeAtoms.includes(selectedModeAtom.id)
@@ -553,6 +560,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                     mode={draft}
                     atom={selectedNodeAttachment.atom}
                     sourceNode={selectedNodeAttachment.sourceNode}
+                    language={state.language}
                     onToggle={() => patchDraft((current) => ({
                       ...current,
                       nodes: current.nodes.map((node) =>
@@ -576,6 +584,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                     editingModeId={editingModeId}
                     definition={draftDefinition}
                     executionPreview={executionPreview}
+                    language={state.language}
                     onPatchDraft={patchDraft}
                     onDeleteMode={editingModeId ? () => void deleteMode(editingModeId) : undefined}
                   />
@@ -592,6 +601,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
 function CanvasPanel({
   mode,
   atoms,
+  language,
   readOnly = false,
   selectedNodeId,
   onSelectNode,
@@ -602,6 +612,7 @@ function CanvasPanel({
 }: {
   mode: OraModeSpec;
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  language: AppLanguage;
   readOnly?: boolean;
   selectedNodeId?: string;
   onSelectNode: (nodeId?: string) => void;
@@ -613,8 +624,12 @@ function CanvasPanel({
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
   const nodes = useMemo(
-    () => buildModeFlowNodes(mode, atoms).map((node) => ({ ...node, selected: node.id === selectedNodeId })),
-    [atoms, mode, selectedNodeId],
+    () => buildModeFlowNodes(mode, atoms).map((node) => ({
+      ...node,
+      data: localizeCanvasNodeData(language, node.data),
+      selected: node.id === selectedNodeId,
+    })),
+    [atoms, language, mode, selectedNodeId],
   );
   const edges = useMemo(() => buildModeFlowEdges(mode, atoms), [atoms, mode]);
   const fitCanvasView = useCallback(() => {
@@ -652,7 +667,7 @@ function CanvasPanel({
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">
               {readOnly ? "Canvas preview" : "Canvas"}
             </p>
-            <h4 className="mt-1 text-base font-semibold">{mode.label}</h4>
+            <h4 className="mt-1 text-base font-semibold">{displayText(language, mode.label)}</h4>
           </div>
           <div className="rounded-full bg-bench-100 px-3 py-1 text-xs font-semibold text-bench-800">
             {mode.nodes.filter((node) => node.enabled).length} enabled nodes
@@ -708,15 +723,17 @@ function ModeOverviewInspector({
   atoms,
   definition,
   executionPreview,
+  language,
 }: {
   mode: OraModeSpec;
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
   definition: ReturnType<typeof getPatternDefinition> | undefined;
   executionPreview: ReturnType<typeof getExecutionPreview>;
+  language: AppLanguage;
 }) {
   return (
     <div className="space-y-5">
-      <ModeSummaryCards mode={mode} atoms={atoms} definition={definition} executionPreview={executionPreview} />
+      <ModeSummaryCards mode={mode} atoms={atoms} definition={definition} executionPreview={executionPreview} language={language} />
       {mode.systemPreset && (
         <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
           <h4 className="text-sm font-semibold">Preset status</h4>
@@ -736,6 +753,7 @@ function ModeInspector({
   editingModeId,
   definition,
   executionPreview,
+  language,
   onPatchDraft,
   onDeleteMode,
 }: {
@@ -745,6 +763,7 @@ function ModeInspector({
   editingModeId?: string;
   definition: ReturnType<typeof getPatternDefinition> | undefined;
   executionPreview: ReturnType<typeof getExecutionPreview> | undefined;
+  language: AppLanguage;
   onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
   onDeleteMode?: () => void;
 }) {
@@ -811,6 +830,13 @@ function ModeInspector({
         </div>
       </div>
 
+      <ModeCapabilityPanel
+        draft={draft}
+        atoms={atoms}
+        language={language}
+        onPatchDraft={onPatchDraft}
+      />
+
       {toolRegistry && (
         <WorkspaceToolsPanel
           draft={draft}
@@ -834,7 +860,7 @@ function ModeInspector({
         onPatchDraft={onPatchDraft}
       />
 
-      <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} />
+      <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} language={language} />
 
       {onDeleteMode && (
         <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-rose-200">
@@ -848,6 +874,80 @@ function ModeInspector({
         </div>
       )}
     </>
+  );
+}
+
+function ModeCapabilityPanel({
+  draft,
+  atoms,
+  language,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  language: AppLanguage;
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  const compatibleAtoms = atoms.filter((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(draft.family));
+  if (compatibleAtoms.length === 0) {
+    return null;
+  }
+
+  const activeCount = compatibleAtoms.filter((atom) => draft.runtimeAtoms.includes(atom.id)).length;
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Attached to Runtime</p>
+          <h4 className="mt-1 text-sm font-semibold">Mode capabilities</h4>
+        </div>
+        <span className="rounded-full bg-bench-100 px-2.5 py-1 text-[11px] font-semibold text-bench-700">
+          {activeCount}/{compatibleAtoms.length}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-2">
+        {compatibleAtoms.map((atom) => {
+          const active = draft.runtimeAtoms.includes(atom.id);
+          const available = atomRequirementsSatisfied(draft, atom);
+          return (
+            <button
+              key={atom.id}
+              type="button"
+              disabled={!available}
+              onClick={() => onPatchDraft((current) => ({
+                ...current,
+                runtimeAtoms: active
+                  ? current.runtimeAtoms.filter((atomId) => atomId !== atom.id)
+                  : [...new Set([...current.runtimeAtoms, atom.id])],
+              }))}
+              className={cn(
+                "flex min-h-[4rem] w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition active:scale-[0.99]",
+                active
+                  ? "border-sky-200 bg-sky-50 text-slate-950"
+                  : "border-bench-200 bg-white text-bench-800 hover:bg-bench-50",
+                !available && "cursor-not-allowed opacity-50 hover:bg-white",
+              )}
+            >
+              <span className={cn(
+                "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-xs font-semibold",
+                active ? "bg-sky-600 text-white" : "bg-bench-100 text-bench-700",
+              )}>
+                {active ? "ON" : "OFF"}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="text-sm font-semibold">{displayText(language, atom.label)}</span>
+                <span className="mt-1 block text-xs leading-5 text-bench-700">{displayText(language, atom.description)}</span>
+                <span className="mt-2 block text-[11px] font-medium text-bench-600">
+                  {translateCopy(language, "Attached to Runtime")}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1487,11 +1587,13 @@ function ModeSummaryCards({
   atoms,
   definition,
   executionPreview,
+  language,
 }: {
   mode: OraModeSpec;
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
   definition: ReturnType<typeof getPatternDefinition> | undefined;
   executionPreview: ReturnType<typeof getExecutionPreview> | undefined;
+  language: AppLanguage;
 }) {
   const activeModeAtoms = resolveModeAtoms(mode, atoms, "mode");
   const activeNodeAtoms = resolveModeAtoms(mode, atoms, "node");
@@ -1502,16 +1604,18 @@ function ModeSummaryCards({
       <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
         <h4 className="text-sm font-semibold">Runtime defaults</h4>
         <div className="mt-3 grid gap-3 text-sm text-bench-700">
-          <p>Approval: {mode.capabilityFlags.approvalMode}</p>
+          <p>{translateCopy(language, "Approval:")} {formatEnumLabel(language, mode.capabilityFlags.approvalMode)}</p>
           <p>
-            Risky stages: {riskyNodes.length > 0
-              ? riskyNodes.map((node) => `${node.label} (${formatRiskLabel(node.riskLevel!)})`).join(", ")
-              : "none"}
+            {translateCopy(language, "Risky stages:")} {riskyNodes.length > 0
+              ? riskyNodes.map((node) => `${displayText(language, node.label)} (${formatRiskLabel(language, node.riskLevel!)})`).join(", ")
+              : translateCopy(language, "none")}
           </p>
-          <p>Skills: {mode.capabilityFlags.skillIds.join(", ") || "none"}</p>
-          <p>Tools: {mode.capabilityFlags.toolIds.join(", ") || "none"}</p>
-          <p>Stop policy: {formatStopPolicy(mode.stopPolicy)}</p>
-          <p>Completion: {mode.completionPolicy.preset} · {mode.defaultBudget.maxToolCalls} tools · duplicate tolerance {mode.completionPolicy.maxRepeatedToolCalls}</p>
+          <p>{translateCopy(language, "Skills:")} {mode.capabilityFlags.skillIds.join(", ") || translateCopy(language, "none")}</p>
+          <p>{translateCopy(language, "Tools:")} {mode.capabilityFlags.toolIds.join(", ") || translateCopy(language, "none")}</p>
+          <p>{translateCopy(language, "Stop policy:")} {formatStopPolicy(language, mode.stopPolicy)}</p>
+          <p>
+            {translateCopy(language, "Completion:")} {formatEnumLabel(language, mode.completionPolicy.preset)} · {mode.defaultBudget.maxToolCalls} {translateCopy(language, "tools")} · {translateCopy(language, "duplicate tolerance")} {mode.completionPolicy.maxRepeatedToolCalls}
+          </p>
         </div>
       </div>
 
@@ -1523,10 +1627,10 @@ function ModeSummaryCards({
             <div className="mt-2 flex flex-wrap gap-2">
               {activeModeAtoms.length > 0 ? activeModeAtoms.map((atom) => (
                 <span key={atom.id} className="rounded-full bg-bench-100 px-3 py-1 text-xs font-medium text-bench-800">
-                  {atom.label}
+                  {displayText(language, atom.label)}
                 </span>
               )) : (
-                <span className="text-sm text-bench-700">none</span>
+                <span className="text-sm text-bench-700">{translateCopy(language, "none")}</span>
               )}
             </div>
           </div>
@@ -1535,10 +1639,10 @@ function ModeSummaryCards({
             <div className="mt-2 flex flex-wrap gap-2">
               {activeNodeAtoms.length > 0 ? activeNodeAtoms.map((atom) => (
                 <span key={atom.id} className="rounded-full bg-bench-100 px-3 py-1 text-xs font-medium text-bench-800">
-                  {atom.label}
+                  {displayText(language, atom.label)}
                 </span>
               )) : (
-                <span className="text-sm text-bench-700">none</span>
+                <span className="text-sm text-bench-700">{translateCopy(language, "none")}</span>
               )}
             </div>
           </div>
@@ -1549,9 +1653,9 @@ function ModeSummaryCards({
         <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
           <h4 className="text-sm font-semibold">Details</h4>
           <div className="mt-3 grid gap-3 text-sm text-bench-700">
-            <p>Use: {mode.recommendedUse ?? definition.recommendedUse}</p>
-            <p>Failure: {mode.failureMode ?? definition.failureMode}</p>
-            <p>Stop: {describeStopPolicy(mode.stopPolicy)}</p>
+            <p>{translateCopy(language, "Use:")} {displayText(language, mode.recommendedUse ?? definition.recommendedUse)}</p>
+            <p>{translateCopy(language, "Failure:")} {displayText(language, mode.failureMode ?? definition.failureMode)}</p>
+            <p>{translateCopy(language, "Stop:")} {describeStopPolicy(language, mode.stopPolicy)}</p>
           </div>
         </div>
       )}
@@ -1582,20 +1686,20 @@ function ModeSummaryCards({
                     )}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span>{index + 1}. {node.label} · {node.template}</span>
+                      <span>{index + 1}. {displayText(language, node.label)} · {formatEnumLabel(language, node.template)}</span>
                       {node.riskLevel ? (
                         <span className={cn(
                           "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]",
                           riskBadgeClassName(node.riskLevel),
                         )}>
-                          {formatRiskLabel(node.riskLevel)}
+                          {formatRiskLabel(language, node.riskLevel)}
                         </span>
                       ) : null}
                     </div>
                   </div>
                 ))}
                 {executionPreview.nodes.length === 0 && (
-                  <p className="text-sm text-bench-700">No enabled stages.</p>
+                  <p className="text-sm text-bench-700">{translateCopy(language, "No enabled stages.")}</p>
                 )}
               </div>
             </div>
@@ -1604,18 +1708,18 @@ function ModeSummaryCards({
               <div className="mt-3 space-y-2">
                 {executionPreview.edges.map((edge) => (
                   <div key={edge.id} className="rounded-lg border border-bench-200 bg-white px-3 py-2 text-sm text-bench-900">
-                    {edge.source} → {edge.target}
+                    {displayText(language, edge.source)} → {displayText(language, edge.target)}
                   </div>
                 ))}
                 {executionPreview.edges.length === 0 && (
-                  <p className="text-sm text-bench-700">A single enabled stage does not create an active edge.</p>
+                  <p className="text-sm text-bench-700">{translateCopy(language, "A single enabled stage does not create an active edge.")}</p>
                 )}
               </div>
             </div>
             <div className="rounded-xl border border-bench-200 bg-bench-50 p-4 text-sm leading-6 text-bench-700">
-              <p>Behavior: {describeStopPolicy(mode.stopPolicy)}</p>
+              <p>{translateCopy(language, "Behavior:")} {describeStopPolicy(language, mode.stopPolicy)}</p>
               {executionPreview.disabledNodes.length > 0 && (
-                <p className="mt-2">Disabled stages: {executionPreview.disabledNodes.map((node) => node.label).join(", ")}</p>
+                <p className="mt-2">{translateCopy(language, "Disabled stages:")} {executionPreview.disabledNodes.map((node) => displayText(language, node.label)).join(", ")}</p>
               )}
             </div>
           </div>
@@ -1630,6 +1734,7 @@ function NodeInspector({
   node,
   atoms,
   allowedTemplates,
+  language,
   onPatchNode,
   onDeleteNode,
 }: {
@@ -1637,6 +1742,7 @@ function NodeInspector({
   node: OraModeSpec["nodes"][number];
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
   allowedTemplates: OraModeSpec["editorConstraints"]["allowedNodeTemplates"];
+  language: AppLanguage;
   onPatchNode: (updater: (current: OraModeSpec["nodes"][number]) => OraModeSpec["nodes"][number]) => void;
   onDeleteNode: () => void;
 }) {
@@ -1652,13 +1758,13 @@ function NodeInspector({
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Inspector</p>
-            <h4 className="mt-1 text-base font-semibold">{node.label}</h4>
+            <h4 className="mt-1 text-base font-semibold">{displayText(language, node.label)}</h4>
           </div>
           <div className={cn(
             "rounded-full px-3 py-1 text-xs font-semibold",
             node.enabled ? "bg-emerald-100 text-emerald-900" : "bg-bench-100 text-bench-700",
           )}>
-            {node.enabled ? "Enabled" : "Disabled"}
+            {translateCopy(language, node.enabled ? "Enabled" : "Disabled")}
           </div>
         </div>
 
@@ -1706,7 +1812,7 @@ function NodeInspector({
             >
               <option value="">runtime default</option>
               {ActionRiskLevelSchema.options.map((risk) => (
-                <option key={risk} value={risk}>{risk}</option>
+                <option key={risk} value={risk}>{formatEnumLabel(language, risk)}</option>
               ))}
             </select>
           </label>
@@ -1727,14 +1833,14 @@ function NodeInspector({
               rows={5}
               disabled={!definition.supportsPromptOverride}
               className="rounded-md border border-bench-200 px-3 py-2 outline-none disabled:bg-bench-50"
-              placeholder={promptOverridePlaceholder(draft.family, node.template)}
+              placeholder={promptOverridePlaceholder(language, draft.family, node.template)}
             />
           </label>
           <div className="grid gap-1 text-sm">
             <span className="text-bench-700">Default runtime prompt</span>
             <div className="rounded-md border border-dashed border-bench-200 bg-bench-50 px-3 py-3">
               <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">
-                {defaultRuntimePromptPreview(draft.family, node.template)}
+                {defaultRuntimePromptPreview(language, draft.family, node.template)}
               </pre>
             </div>
           </div>
@@ -1765,17 +1871,17 @@ function NodeInspector({
                         !available && "cursor-not-allowed opacity-50 hover:bg-white",
                       )}
                     >
-                      {atom.label}
+                      {displayText(language, atom.label)}
                     </button>
                   );
                 })}
               </div>
               {compatibleNodeAtoms.length === 0 && (
-                <p className="text-sm text-bench-700">No stage atoms are compatible with this family.</p>
+                <p className="text-sm text-bench-700">{translateCopy(language, "No stage atoms are compatible with this family.")}</p>
               )}
             </div>
           </div>
-          <p className="text-xs leading-5 text-bench-700">{promptOverrideHint(draft.family, node.template)}</p>
+          <p className="text-xs leading-5 text-bench-700">{promptOverrideHint(language, draft.family, node.template)}</p>
         </div>
       </div>
 
@@ -1800,11 +1906,13 @@ function CapabilityInspector({
   mode,
   atom,
   sourceNode,
+  language,
   onToggle,
 }: {
   mode: OraModeSpec;
   atom: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"][number];
   sourceNode?: OraModeSpec["nodes"][number];
+  language: AppLanguage;
   onToggle: () => void;
 }) {
   const active = sourceNode
@@ -1818,30 +1926,30 @@ function CapabilityInspector({
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">
-              {sourceNode ? "Stage capability" : "Mode capability"}
+              {translateCopy(language, sourceNode ? "Stage capability" : "Mode capability")}
             </p>
-            <h4 className="mt-1 text-base font-semibold">{atom.label}</h4>
+            <h4 className="mt-1 text-base font-semibold">{displayText(language, atom.label)}</h4>
           </div>
           <div className={cn(
             "rounded-full px-3 py-1 text-xs font-semibold",
             active ? "bg-emerald-100 text-emerald-900" : "bg-bench-100 text-bench-700",
           )}>
-            {active ? "Enabled" : "Disabled"}
+            {translateCopy(language, active ? "Enabled" : "Disabled")}
           </div>
         </div>
 
-        <p className="mt-3 text-sm leading-6 text-bench-700">{atom.description}</p>
+        <p className="mt-3 text-sm leading-6 text-bench-700">{displayText(language, atom.description)}</p>
         {sourceNode && (
           <p className="mt-3 text-xs leading-5 text-bench-700">
-            Attached stage: <span className="font-semibold text-bench-900">{sourceNode.label}</span>
+            {translateCopy(language, "Attached stage:")} <span className="font-semibold text-bench-900">{displayText(language, sourceNode.label)}</span>
           </p>
         )}
 
         <div className="mt-4 grid gap-3 text-sm text-bench-700">
-          <p>Presentation: {atom.topology.presentation}</p>
-          <p>Edge: {atom.topology.edgeKind}{atom.topology.edgeLabel ? ` · ${atom.topology.edgeLabel}` : ""}</p>
-          <p>Requires tools: {atom.requiresTools.join(", ") || "none"}</p>
-          <p>Requires flags: {atom.requiresFlags.join(", ") || "none"}</p>
+          <p>{translateCopy(language, "Presentation:")} {formatEnumLabel(language, atom.topology.presentation)}</p>
+          <p>{translateCopy(language, "Edge:")} {formatEnumLabel(language, atom.topology.edgeKind)}{atom.topology.edgeLabel ? ` · ${displayText(language, atom.topology.edgeLabel)}` : ""}</p>
+          <p>{translateCopy(language, "Requires tools:")} {atom.requiresTools.join(", ") || translateCopy(language, "none")}</p>
+          <p>{translateCopy(language, "Requires flags:")} {atom.requiresFlags.join(", ") || translateCopy(language, "none")}</p>
         </div>
       </div>
 
@@ -1860,11 +1968,11 @@ function CapabilityInspector({
               !available && "cursor-not-allowed opacity-50 hover:bg-white",
             )}
           >
-            {active ? "Disable capability" : "Enable capability"}
+            {translateCopy(language, active ? "Disable capability" : "Enable capability")}
           </button>
           {!available && (
             <p className="text-xs leading-5 text-amber-700">
-              This capability is blocked until its required flags/tools are enabled.
+              {translateCopy(language, "This capability is blocked until its required flags/tools are enabled.")}
             </p>
           )}
         </div>
@@ -1875,14 +1983,17 @@ function CapabilityInspector({
 
 function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
   const stageNode = data.kind === "stage";
+  const runtimeAnchor = data.kind === "runtime-anchor";
   return (
     <div className={cn(
       "relative rounded-[1.25rem] border bg-white px-4 py-3 shadow-[0_18px_40px_-28px_rgba(17,24,39,0.45)] transition",
-      stageNode ? "w-[248px]" : "w-[196px]",
+      stageNode ? "w-[248px]" : runtimeAnchor ? "w-[248px]" : data.kind === "node-attachment" ? "w-[184px]" : "w-[204px]",
       stageNode
         ? data.enabled
           ? cn("text-bench-950", data.riskLevel ? riskSurfaceClassName(data.riskLevel) : "border-bench-200")
           : "border-bench-200/80 bg-bench-100/90 text-bench-600 opacity-80"
+        : runtimeAnchor
+          ? "border-slate-300 bg-white text-slate-950"
         : data.active
           ? "border-sky-200 bg-sky-50 text-slate-950"
           : "border-dashed border-bench-300 bg-bench-100/90 text-bench-600",
@@ -1916,12 +2027,14 @@ function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-bench-600">
-            {stageNode ? data.template : data.atomPresentation?.replace(/_/g, " ") ?? "capability"}
+            {stageNode ? data.template : runtimeAnchor ? "runtime anchor" : data.atomPresentation?.replace(/_/g, " ") ?? "capability"}
           </div>
           <div className="mt-1 text-sm font-semibold leading-5">{data.label}</div>
           <div className="mt-2 text-xs text-bench-600">
             {stageNode
               ? data.ownerAgentId ?? "runtime-owned"
+              : runtimeAnchor
+                ? `${data.capabilityCount ?? 0} mounted capabilities`
               : data.sourceNodeId
                 ? `attached to ${data.sourceNodeId}`
                 : data.atomScope ?? "runtime"}
@@ -1937,20 +2050,20 @@ function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
               ? "bg-sky-100 text-sky-900"
               : "bg-bench-200 text-bench-700",
         )}>
-          {stageNode ? (data.enabled ? "live" : "off") : (data.active ? "on" : "off")}
+          {stageNode ? (data.enabled ? "live" : "off") : runtimeAnchor ? "root" : (data.active ? "on" : "off")}
         </div>
       </div>
 
       <div className="mt-3 flex items-center gap-2 text-[11px] text-bench-600">
         <span className="rounded-full bg-bench-100 px-2.5 py-1">
-          {stageNode ? (data.required ? "Required" : "Optional") : (data.kind === "node-attachment" ? "Attachment" : "Capability")}
+          {stageNode ? (data.required ? "Required" : "Optional") : runtimeAnchor ? "Runtime" : (data.kind === "node-attachment" ? "Attachment" : "Capability")}
         </span>
         {stageNode && data.riskLevel && (
           <span className={cn(
             "rounded-full px-2.5 py-1 font-semibold uppercase tracking-[0.08em]",
             riskBadgeClassName(data.riskLevel),
           )}>
-            {formatRiskLabel(data.riskLevel)}
+            {formatRiskLabel("en", data.riskLevel)}
           </span>
         )}
       </div>
@@ -1991,7 +2104,8 @@ function atomRequirementsSatisfied(
   mode: OraModeSpec,
   atom: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"][number],
 ) {
-  return atom.requiresFlags.every((flag) => Boolean(mode.capabilityFlags[flag as keyof OraModeSpec["capabilityFlags"]]));
+  return atom.requiresFlags.every((flag) => Boolean(mode.capabilityFlags[flag as keyof OraModeSpec["capabilityFlags"]]))
+    && atom.requiresTools.every((toolId) => mode.capabilityFlags.toolIds.includes(toolId));
 }
 
 function toggleNodeAtom(
@@ -2011,6 +2125,9 @@ function canvasSelectionExists(
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"],
   selectedId: string,
 ) {
+  if (selectedId === RUNTIME_ANCHOR_NODE_ID) {
+    return atoms.some((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family));
+  }
   if (mode.nodes.some((node) => node.id === selectedId)) {
     return true;
   }
@@ -2072,43 +2189,61 @@ function getModeStopPolicies(family: CoordinationPattern): OraModeSpec["stopPoli
   }
 }
 
-function promptOverridePlaceholder(family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
-  const definition = getModeNodeRuntimeTemplateDefinition(family, template);
-  if (!definition.supportsPromptOverride) {
-    return "This stage does not currently consume a prompt override in the runtime interpreter.";
-  }
-  return definition.fallbackPrompt ?? "Override the runtime prompt template for this stage.";
+function displayText(language: AppLanguage, value: string | undefined): string {
+  return value ? translateCopy(language, value) : "";
 }
 
-function promptOverrideHint(family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
+function localizeCanvasNodeData(language: AppLanguage, data: ModeCanvasNodeData): ModeCanvasNodeData {
+  return {
+    ...data,
+    label: displayText(language, data.label),
+    ownerAgentId: data.ownerAgentId ? displayText(language, data.ownerAgentId) : data.ownerAgentId,
+    sourceNodeId: data.sourceNodeId ? displayText(language, data.sourceNodeId) : data.sourceNodeId,
+  };
+}
+
+function formatEnumLabel(language: AppLanguage, value: string): string {
+  return translateCopy(language, value.replace(/_/g, " "));
+}
+
+function promptOverridePlaceholder(language: AppLanguage, family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
   const definition = getModeNodeRuntimeTemplateDefinition(family, template);
   if (!definition.supportsPromptOverride) {
-    return definition.description;
+    return translateCopy(language, "This stage does not currently consume a prompt override in the runtime interpreter.");
+  }
+  return definition.fallbackPrompt ?? translateCopy(language, "Override the runtime prompt template for this stage.");
+}
+
+function promptOverrideHint(language: AppLanguage, family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
+  const definition = getModeNodeRuntimeTemplateDefinition(family, template);
+  const description = translateCopy(language, definition.description);
+  if (!definition.supportsPromptOverride) {
+    return description;
   }
   const variables = definition.promptVariables.map((variable) => `{{${variable}}}`);
   return variables.length > 0
-    ? `${definition.description} Available runtime variables: ${variables.join(", ")}.`
-    : definition.description;
+    ? `${description} ${translateCopy(language, "Available runtime variables:")} ${variables.join(", ")}.`
+    : description;
 }
 
-function defaultRuntimePromptPreview(family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
+function defaultRuntimePromptPreview(language: AppLanguage, family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
   const definition = getModeNodeRuntimeTemplateDefinition(family, template);
-  return definition.fallbackPrompt ?? "This stage currently relies on runtime behavior rather than a prompt template.";
+  return definition.fallbackPrompt ?? translateCopy(language, "This stage currently relies on runtime behavior rather than a prompt template.");
 }
 
-function formatStopPolicy(policy: OraModeSpec["stopPolicy"]): string {
+function formatStopPolicy(language: AppLanguage, policy: OraModeSpec["stopPolicy"]): string {
   switch (policy.type) {
     case "max_iterations":
-      return `max_iterations (${policy.maxIterations ?? "default"})`;
+      return `${formatEnumLabel(language, "max_iterations")} (${policy.maxIterations ?? translateCopy(language, "default")})`;
     case "converged":
-      return `converged (${policy.idleCycles ?? "default"} idle cycles)`;
+      return `${formatEnumLabel(language, "converged")} (${policy.idleCycles ?? translateCopy(language, "default")} ${translateCopy(language, "idle cycles")})`;
     default:
-      return policy.type;
+      return formatEnumLabel(language, policy.type);
   }
 }
 
-function formatRiskLabel(riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
-  return riskLevel.replace(/_/g, " ");
+function formatRiskLabel(language: AppLanguage, riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
+  return formatEnumLabel(language, riskLevel);
 }
 
 function riskBadgeClassName(riskLevel: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>): string {
@@ -2144,18 +2279,18 @@ function riskAccentClassName(riskLevel: NonNullable<OraModeSpec["nodes"][number]
   }
 }
 
-function describeStopPolicy(policy: OraModeSpec["stopPolicy"]): string {
+function describeStopPolicy(language: AppLanguage, policy: OraModeSpec["stopPolicy"]): string {
   if (policy.detail) {
-    return policy.detail;
+    return translateCopy(language, policy.detail);
   }
   switch (policy.type) {
     case "max_iterations":
-      return `Stop after ${policy.maxIterations ?? 3} passes if verification does not accept the result earlier.`;
+      return translateCopy(language, `Stop after ${policy.maxIterations ?? 3} passes if verification does not accept the result earlier.`);
     case "queue_drained":
-      return "Stop after all enabled stages complete and no queued work remains.";
+      return translateCopy(language, "Stop after all enabled stages complete and no queued work remains.");
     case "converged":
-      return `Stop when the shared board stops changing for ${policy.idleCycles ?? 2} idle cycles.`;
+      return translateCopy(language, `Stop when the shared board stops changing for ${policy.idleCycles ?? 2} idle cycles.`);
     case "manual":
-      return "Stop only when a user or operator explicitly ends the run.";
+      return translateCopy(language, "Stop only when a user or operator explicitly ends the run.");
   }
 }

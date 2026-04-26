@@ -339,6 +339,79 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("runs single_agent as one direct runtime loop for simple answers", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SINGLE_DIRECT_KEY;
+    process.env.SINGLE_DIRECT_KEY = "test";
+    let providerCalls = 0;
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      if (url.includes("single-direct.test")) {
+        providerCalls += 1;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Direct final answer." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Answer this directly." },
+          config: {
+            modeId: "single_agent",
+            providerId: "single-direct",
+            modelRef: "single-direct-model",
+            providerConfig: {
+              id: "single-direct",
+              label: "Single Direct",
+              type: "openai_compatible",
+              modelId: "single-direct-model",
+              baseUrl: "https://single-direct.test/v1",
+              apiKeyEnv: "SINGLE_DIRECT_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(providerCalls).toBe(1);
+      expect(state.plan.map((item) => item.id.split(":").at(-1))).toEqual(["respond"]);
+      expect(state.events.filter((event) => event.type === "agent.started")).toHaveLength(1);
+      expect(state.events.some((event) =>
+        event.type === "node.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "completed"
+      )).toBe(true);
+      expect(state.output).toMatchObject({
+        text: "Direct final answer.",
+        modeId: "single_agent",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SINGLE_DIRECT_KEY;
+      } else {
+        process.env.SINGLE_DIRECT_KEY = previousKey;
+      }
+    }
+  });
+
   it("executes OpenAI-compatible native tool calls and returns matching tool results", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-native-tool-"));
@@ -673,6 +746,118 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("recovers when forced final output is still a JSON fallback tool call", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.FINAL_TOOL_INTENT_KEY;
+    process.env.FINAL_TOOL_INTENT_KEY = "test";
+    let finalNoToolCalls = 0;
+    let webFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/first") {
+        webFetchCalls += 1;
+        return new Response("First result", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        finalNoToolCalls += 1;
+        if (finalNoToolCalls > 1) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: "Use the fetched first result and stop without another fetch." } }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "{\"tool\":\"web.fetch\",\"args\":{\"url\":\"https://example.com/second\"}}" } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-first",
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/first\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch both URLs before answering." },
+          config: {
+            modeId: "single_agent",
+            providerId: "final-tool-intent",
+            modelRef: "final-tool-intent-model",
+            providerConfig: {
+              id: "final-tool-intent",
+              label: "Final Tool Intent",
+              type: "openai_compatible",
+              modelId: "final-tool-intent-model",
+              baseUrl: "https://final-tool-intent.test/v1",
+              apiKeyEnv: "FINAL_TOOL_INTENT_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            completionPolicy: {
+              preset: "decisive",
+              maxRepeatedToolCalls: 1,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: false,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(webFetchCalls).toBe(1);
+      expect(finalNoToolCalls).toBeGreaterThanOrEqual(2);
+      expect(state.error).toBeUndefined();
+      expect(state.output).not.toMatchObject({ text: expect.stringContaining("\"tool\":\"web.fetch\"") });
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Use the fetched first result"),
+        metadata: { completion: expect.objectContaining({ forcedFinal: true, stopReason: "forced_final_answer" }) },
+      });
+      expect(state.events.some((event) => event.type === "recovery.exhausted")).toBe(false);
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "tool_call_text_rejected"
+      )).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.FINAL_TOOL_INTENT_KEY;
+      } else {
+        process.env.FINAL_TOOL_INTENT_KEY = previousKey;
+      }
+    }
+  });
+
   it("blocks repeated tool intent and finalizes from available context", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
@@ -778,6 +963,212 @@ describe("Ora runtime smoke path", () => {
         delete process.env.DUPLICATE_TOOL_KEY;
       } else {
         process.env.DUPLICATE_TOOL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("forces final answer after too many calls to the same tool type with different args", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.TOOL_FREQUENCY_KEY;
+    process.env.TOOL_FREQUENCY_KEY = "test";
+    let providerCalls = 0;
+    let webFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("https://example.com/frequency-")) {
+        webFetchCalls += 1;
+        return new Response(`Frequency content ${webFetchCalls}`, { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Stopped after tool frequency guard with collected results." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      providerCalls += 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-frequency-${providerCalls}`,
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: JSON.stringify({ url: `https://example.com/frequency-${providerCalls}` }),
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch many different URLs." },
+          config: {
+            modeId: "single_agent",
+            providerId: "tool-frequency",
+            modelRef: "tool-frequency-model",
+            providerConfig: {
+              id: "tool-frequency",
+              label: "Tool Frequency",
+              type: "openai_compatible",
+              modelId: "tool-frequency-model",
+              baseUrl: "https://tool-frequency.test/v1",
+              apiKeyEnv: "TOOL_FREQUENCY_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            budget: {
+              maxTokens: 1024,
+              maxToolCalls: 4,
+              maxRuntimeMs: 60_000,
+            },
+            completionPolicy: {
+              preset: "persistent",
+              maxRepeatedToolCalls: 4,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: true,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(webFetchCalls).toBe(3);
+      expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(3);
+      expect(state.events.some((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).reason === "tool_frequency_exhausted"
+      )).toBe(true);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Stopped after tool frequency guard"),
+        metadata: { completion: expect.objectContaining({ stopReason: "tool_frequency_exhausted" }) },
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.TOOL_FREQUENCY_KEY;
+      } else {
+        process.env.TOOL_FREQUENCY_KEY = previousKey;
+      }
+    }
+  });
+
+  it("turns tool execution errors into observed results before continuing", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.TOOL_ERROR_RESULT_KEY;
+    process.env.TOOL_ERROR_RESULT_KEY = "test";
+    let providerCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/tool-throws") {
+        throw new Error("network exploded");
+      }
+
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role?: string; content?: string }> };
+      const sawDegradedResult = body.messages?.some((message) =>
+        message.role === "user" && typeof message.content === "string" && message.content.includes("Workspace tool degraded for web.fetch")
+      );
+      if (sawDegradedResult) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "The fetch tool failed, so I am answering from the degraded tool result." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-tool-error",
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/tool-throws\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch the URL and explain the result." },
+          config: {
+            modeId: "single_agent",
+            providerId: "tool-error-result",
+            modelRef: "tool-error-result-model",
+            providerConfig: {
+              id: "tool-error-result",
+              label: "Tool Error Result",
+              type: "openai_compatible",
+              modelId: "tool-error-result-model",
+              baseUrl: "https://tool-error-result.test/v1",
+              apiKeyEnv: "TOOL_ERROR_RESULT_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(state.toolCalls.some((call) => call.toolId === "web.fetch" && call.status === "failed")).toBe(true);
+      expect(state.events.some((event) =>
+        event.type === "node.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "repairing"
+      )).toBe(true);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("answering from the degraded tool result"),
+      });
+      expect(state.output?.text).not.toContain("network exploded");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.TOOL_ERROR_RESULT_KEY;
+      } else {
+        process.env.TOOL_ERROR_RESULT_KEY = previousKey;
       }
     }
   });

@@ -371,7 +371,7 @@ function adaptNodeStatus(status: OraTopologyNode["status"]): TopologyNode["statu
 function adaptStreamLines(events: OraEventEnvelope[]): StreamLine[] {
   const lines = events
     .filter((event) =>
-      ["run.started", "topology.updated", "plan.updated", "message.delta", "completion.updated", "checkpoint.created", "run.done", "run.failed"].includes(
+      ["run.started", "topology.updated", "plan.updated", "message.delta", "node.updated", "completion.updated", "checkpoint.created", "run.done", "run.failed"].includes(
         event.type,
       ),
     )
@@ -416,7 +416,14 @@ function eventText(event: OraEventEnvelope): string {
     case "clarification.resolved":
       return "Clarification answer recorded and the run can continue.";
     case "completion.updated":
+      if (isRecord(event.payload) && event.payload.state === "tool_call_text_rejected") {
+        return "Completion control rejected a tool call returned as the final answer.";
+      }
       return "Completion control updated the run stopping state.";
+    case "node.updated":
+      return isRecord(event.payload) && typeof event.payload.state === "string"
+        ? `Node runtime state: ${event.payload.state}.`
+        : "Node runtime state updated.";
     case "run.done":
       return "Run completed and checkpoint metadata is available.";
     case "run.failed":
@@ -736,6 +743,8 @@ function beatLabel(event: OraEventEnvelope): string {
       return "Artifact";
     case "completion.updated":
       return "Completion";
+    case "node.updated":
+      return "Node";
     case "recovery.detected":
       return "Recovery";
     case "recovery.retry_scheduled":
@@ -946,11 +955,12 @@ export function adaptChatMessages(
 
       const assistantTurn = turn.snapshot ? buildAssistantTurnAttachment(turn.snapshot) : undefined;
       const snapshotAssistant = turn.snapshot ? assistantTextFromSnapshot(turn.snapshot) : undefined;
+      const suppressStoredAssistant = turn.snapshot ? hasRejectedFinalToolCall(turn.snapshot) : false;
       if (turn.assistant || assistantTurn) {
         messages.push({
           id: turn.assistant?.id ?? `${turn.runId}:assistant-pending`,
           role: "assistant",
-          content: snapshotAssistant ?? turn.assistant?.content ?? placeholderAssistantCopy(turn.snapshot),
+          content: snapshotAssistant ?? (suppressStoredAssistant ? undefined : turn.assistant?.content) ?? placeholderAssistantCopy(turn.snapshot),
           timestamp: formatClock(turn.assistant?.createdAt ?? turn.snapshot?.updatedAt ?? Date.now()),
           metadata: {
             runId: turn.runId,
@@ -993,6 +1003,9 @@ function assistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefin
   if (outputText) {
     return outputText;
   }
+  if (hasRejectedFinalToolCall(snapshot)) {
+    return undefined;
+  }
   if (snapshot.status === "queued" || snapshot.status === "running" || snapshot.status === "interrupted") {
     return undefined;
   }
@@ -1030,6 +1043,14 @@ function isInternalVerifierDelta(snapshot: OraStateSnapshot, event: OraEventEnve
   const agentId = typeof event.agentId === "string" ? event.agentId : undefined;
   const nodeId = typeof event.nodeId === "string" ? event.nodeId : undefined;
   return agentId === "verifier" || nodeId === "verifier";
+}
+
+function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {
+  return snapshot.events.some((event) =>
+    event.type === "completion.updated"
+    && isRecord(event.payload)
+    && event.payload.state === "tool_call_text_rejected"
+  );
 }
 
 function buildAssistantTurnAttachment(snapshot: OraStateSnapshot): AssistantTurnAttachment {
@@ -1086,6 +1107,7 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "artifact.exported":
     case "artifact.degraded":
     case "completion.updated":
+    case "node.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -1132,8 +1154,19 @@ function processStepDetail(event: OraEventEnvelope): string {
   if (event.type.startsWith("recovery.") && isRecord(event.payload) && isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
     return event.payload.decision.summary;
   }
+  if (event.type === "action.updated" && isRecord(event.payload) && isRecord(event.payload.record)) {
+    const record = event.payload.record;
+    if (typeof record.error === "string" && record.error.trim()) {
+      return `Action failed: ${record.error.trim()}`;
+    }
+  }
   if (event.type === "node.skipped" && isRecord(event.payload) && typeof event.payload.nodeLabel === "string") {
     return `Skipped ${event.payload.nodeLabel}.`;
+  }
+  if (event.type === "node.updated" && isRecord(event.payload) && typeof event.payload.state === "string") {
+    const title = typeof event.payload.title === "string" ? event.payload.title : "Node";
+    const detail = typeof event.payload.detail === "string" ? `: ${event.payload.detail}` : "";
+    return `${title} ${event.payload.state}${detail}.`;
   }
   if (event.type === "checkpoint.created" && isRecord(event.payload) && isRecord(event.payload.checkpoint) && typeof event.payload.checkpoint.label === "string") {
     return `Checkpoint created: ${event.payload.checkpoint.label}.`;
@@ -1155,6 +1188,7 @@ function isWorkProcessEvent(event: OraEventEnvelope): boolean {
     case "artifact.exported":
     case "artifact.degraded":
     case "completion.updated":
+    case "node.updated":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -1323,6 +1357,7 @@ function processStepTone(event: OraEventEnvelope): TurnProcessStep["tone"] {
     case "recovery.applied":
     case "completion.updated":
     case "node.skipped":
+    case "node.updated":
     case "checkpoint.created":
       return "accent";
     case "recovery.retry_scheduled":

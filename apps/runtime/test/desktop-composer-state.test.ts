@@ -162,6 +162,108 @@ describe("desktop composer pending-run behavior", () => {
     });
   });
 
+  it("navigates back to chat when selecting a historical session from another view", () => {
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      activeView: "modes",
+      sessions: [{
+        sessionId: "session-1",
+        title: "Historical chat",
+        status: "succeeded",
+        updatedAt: 10,
+        latestPattern: "orchestrator_subagent",
+        latestModeId: SINGLE_AGENT_MODE_ID,
+        turnCount: 1,
+      }] as any,
+    }, {
+      type: "SELECT_SESSION",
+      sessionId: "session-1",
+    });
+
+    expect(next.activeView).toBe("chat");
+    expect(next.selectedSessionId).toBe("session-1");
+    expect(next.activeSessionDetail?.session.sessionId).toBe("session-1");
+    expect(next.activeSessionDetail?.transcript).toEqual([]);
+    expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
+  });
+
+  it("uses cached session detail immediately while a historical session refreshes", () => {
+    const cachedDetail = {
+      session: {
+        sessionId: "session-1",
+        title: "Cached chat",
+        status: "succeeded",
+        updatedAt: 10,
+        latestPattern: "orchestrator_subagent",
+        latestModeId: SINGLE_AGENT_MODE_ID,
+        turnCount: 1,
+      },
+      turns: [],
+      transcript: [{
+        id: "run-1:user",
+        sessionId: "session-1",
+        runId: "run-1",
+        turnIndex: 1,
+        role: "user",
+        content: "cached prompt",
+        pattern: "orchestrator_subagent",
+        createdAt: 10,
+      }],
+    } as any;
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      sessionDetailsById: { "session-1": cachedDetail },
+    }, {
+      type: "SELECT_SESSION",
+      sessionId: "session-1",
+    });
+
+    expect(next.activeSessionDetail).toBe(cachedDetail);
+    expect(next.activeSessionDetail?.transcript[0]?.content).toBe("cached prompt");
+  });
+
+  it("prefetches session detail without changing the active conversation", () => {
+    const detail = {
+      session: {
+        sessionId: "session-prefetch",
+        title: "Prefetched chat",
+        status: "succeeded",
+        updatedAt: 10,
+        latestPattern: "orchestrator_subagent",
+        latestModeId: SINGLE_AGENT_MODE_ID,
+        turnCount: 1,
+      },
+      turns: [],
+      transcript: [],
+    } as any;
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: "session-active",
+      activeSessionDetail: {
+        session: {
+          sessionId: "session-active",
+          title: "Active chat",
+          status: "succeeded",
+          updatedAt: 5,
+          latestPattern: "orchestrator_subagent",
+          latestModeId: SINGLE_AGENT_MODE_ID,
+          turnCount: 0,
+        },
+        turns: [],
+        transcript: [],
+      } as any,
+    }, {
+      type: "CACHE_SESSION_DETAIL",
+      detail,
+    });
+
+    expect(next.selectedSessionId).toBe("session-active");
+    expect(next.activeSessionDetail?.session.sessionId).toBe("session-active");
+    expect(next.sessionDetailsById["session-prefetch"]).toBe(detail);
+  });
+
   it("renders pending run messages before the runtime snapshot arrives", () => {
     const messages = adaptPendingRunMessages({
       sessionId: "session-1",
@@ -550,6 +652,101 @@ describe("desktop composer pending-run behavior", () => {
     const assistant = adaptChatMessages([], { "run-fetch-cache": snapshot }).find((message) => message.role === "assistant");
 
     expect(assistant?.turn?.processSteps.filter((step) => step.eventType === "tool.called")).toHaveLength(1);
+  });
+
+  it("shows rejected final tool-call text as a completion-control step", () => {
+    const snapshot = {
+      runId: "run-final-tool-intent",
+      turnIndex: 1,
+      status: "failed",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Fetch before answering.", createdAt: 1 },
+      config: { pattern: "orchestrator_subagent", metadata: {} },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-final-tool-intent:evt-stream",
+          runId: "run-final-tool-intent",
+          seq: 0,
+          type: "message.delta",
+          createdAt: 2,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "{\"tool\":\"web.fetch\",\"args\":{\"url\":\"https://example.com/second\"}}" },
+        },
+        {
+          id: "run-final-tool-intent:evt-0",
+          runId: "run-final-tool-intent",
+          seq: 1,
+          type: "completion.updated",
+          createdAt: 3,
+          pattern: "orchestrator_subagent",
+          payload: { state: "tool_call_text_rejected", reason: "forced_final_answer", toolId: "web.fetch" },
+        },
+        {
+          id: "run-final-tool-intent:evt-action",
+          runId: "run-final-tool-intent",
+          seq: 2,
+          type: "action.updated",
+          createdAt: 4,
+          pattern: "orchestrator_subagent",
+          payload: {
+            actionId: "action-1",
+            status: "failed",
+            record: { error: "Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch." },
+          },
+        },
+        {
+          id: "run-final-tool-intent:evt-1",
+          runId: "run-final-tool-intent",
+          seq: 3,
+          type: "run.failed",
+          createdAt: 5,
+          pattern: "orchestrator_subagent",
+          payload: { status: "failed", error: "Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch." },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      error: "Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
+      updatedAt: 3,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages([{
+      id: "run-final-tool-intent:assistant",
+      sessionId: "session-1",
+      runId: "run-final-tool-intent",
+      turnIndex: 1,
+      role: "assistant",
+      content: "{\"tool\":\"web.fetch\",\"args\":{\"url\":\"https://example.com/second\"}}",
+      pattern: "orchestrator_subagent",
+      createdAt: 2,
+    }], { "run-final-tool-intent": snapshot }).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe(
+      "Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
+    );
+    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "completion.updated")?.detail).toBe(
+      "Completion control rejected a tool call returned as the final answer.",
+    );
+    expect(assistant?.turn?.processSteps.find((step) => step.eventType === "action.updated")?.detail).toBe(
+      "Action failed: Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
+    );
+    expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
+      "Run failed: Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
+    );
   });
 
   it("shows concrete failure details in Trails anomalies", () => {

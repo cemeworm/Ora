@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
 import { getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
@@ -42,6 +42,8 @@ async function pickProjectDirectory(): Promise<string | null> {
 export function useRunActions() {
   const { state, dispatch } = useWorkbench();
   const runtimeClient = getSharedRuntimeClient();
+  const sessionRequestRef = useRef(0);
+  const sessionPrefetchesRef = useRef(new Set<string>());
 
   const viewModel = useMemo(() => {
     if (state.patterns.length === 0 || !state.activeSessionDetail) return undefined;
@@ -76,24 +78,62 @@ export function useRunActions() {
     return projects;
   }
 
-  async function hydrateSession(sessionId: string, snapshot?: OraStateSnapshot, feedback?: string) {
+  async function hydrateSession(
+    sessionId: string,
+    snapshot?: OraStateSnapshot,
+    feedback?: string,
+    options: {
+      refreshCollections?: boolean;
+      shouldApply?: () => boolean;
+    } = {},
+  ) {
+    const refreshCollections = options.refreshCollections ?? true;
     const [projects, sessions, detail] = await Promise.all([
-      runtimeClient.listProjects(),
-      runtimeClient.listSessions(),
+      refreshCollections ? runtimeClient.listProjects() : Promise.resolve(state.projects),
+      refreshCollections ? runtimeClient.listSessions() : Promise.resolve(state.sessions),
       runtimeClient.getSession(sessionId),
     ]);
+    if (options.shouldApply && !options.shouldApply()) {
+      return { projects, sessions, detail };
+    }
     dispatch({ type: "HYDRATE_SESSION", projects, sessions, detail, snapshot, feedback });
     return { projects, sessions, detail };
   }
 
   async function selectSession(sessionId: string) {
+    const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     dispatch({ type: "SELECT_SESSION", sessionId });
     try {
-      await hydrateSession(sessionId);
+      await hydrateSession(sessionId, undefined, undefined, {
+        refreshCollections: false,
+        shouldApply: () => sessionRequestRef.current === requestId,
+      });
     } catch (error) {
+      if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session load failed." });
       dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
+  async function prefetchSession(sessionId: string) {
+    if (state.sessionDetailsById[sessionId] || sessionPrefetchesRef.current.has(sessionId)) {
+      return;
+    }
+    sessionPrefetchesRef.current.add(sessionId);
+    try {
+      const detail = await runtimeClient.getSession(sessionId);
+      dispatch({ type: "CACHE_SESSION_DETAIL", detail });
+    } catch {
+      // Prefetch is opportunistic; clicking the session still performs the authoritative load.
+    } finally {
+      sessionPrefetchesRef.current.delete(sessionId);
+    }
+  }
+
+  async function prefetchSessions(sessionIds: string[]) {
+    for (const sessionId of sessionIds) {
+      await prefetchSession(sessionId);
     }
   }
 
@@ -110,26 +150,34 @@ export function useRunActions() {
   }
 
   async function createSession() {
+    const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     try {
       dispatch({ type: "SELECT_PROJECT", projectId: undefined });
       const created = await runtimeClient.createSession();
       dispatch({ type: "SELECT_SESSION", sessionId: created.sessionId });
-      await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.");
+      await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.", {
+        shouldApply: () => sessionRequestRef.current === requestId,
+      });
     } catch (error) {
+      if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session creation failed." });
       dispatch({ type: "SET_LOADING", loading: false });
     }
   }
 
   async function createProjectSession(projectId: string) {
+    const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     try {
       const created = await runtimeClient.createSession({ projectId });
       dispatch({ type: "SELECT_PROJECT", projectId });
       dispatch({ type: "SELECT_SESSION", sessionId: created.sessionId });
-      await hydrateSession(created.sessionId, undefined, "Created a new project session.");
+      await hydrateSession(created.sessionId, undefined, "Created a new project session.", {
+        shouldApply: () => sessionRequestRef.current === requestId,
+      });
     } catch (error) {
+      if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Project session creation failed." });
       dispatch({ type: "SET_LOADING", loading: false });
     }
@@ -452,6 +500,8 @@ export function useRunActions() {
       addProjectFromDialog,
       createSession,
       createProjectSession,
+      prefetchSession,
+      prefetchSessions,
       ensureInitialSession,
       selectSession,
       selectTurn,

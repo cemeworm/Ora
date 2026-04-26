@@ -722,6 +722,8 @@ function timelineLabel(eventType: string) {
       return "Degraded artifact";
     case "completion.updated":
       return "Completion control";
+    case "node.updated":
+      return "Node runtime";
     case "recovery.detected":
       return "Recovery detected";
     case "recovery.retry_scheduled":

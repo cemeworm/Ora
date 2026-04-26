@@ -30,6 +30,7 @@ export interface WorkbenchState {
   selectedNodeId: string;
   projects: OraProjectSummary[];
   sessions: OraSessionSummary[];
+  sessionDetailsById: Record<string, OraSessionDetail>;
   selectedProjectId: string | undefined;
   expandedProjectIds: Record<string, boolean>;
   activeSessionDetail: OraSessionDetail | undefined;
@@ -85,6 +86,7 @@ export type WorkbenchAction =
       snapshot?: OraStateSnapshot;
       feedback?: string;
     }
+  | { type: "CACHE_SESSION_DETAIL"; detail: OraSessionDetail }
   | { type: "SET_PROJECTS"; projects: OraProjectSummary[] }
   | { type: "SET_MODES"; modes: OraModeSpec[] }
   | { type: "SELECT_PROJECT"; projectId: string | undefined }
@@ -137,6 +139,7 @@ export const initialWorkbenchState: WorkbenchState = {
   selectedNodeId: "run",
   projects: [],
   sessions: [],
+  sessionDetailsById: {},
   selectedProjectId: undefined,
   expandedProjectIds: {},
   activeSessionDetail: undefined,
@@ -184,6 +187,22 @@ function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStat
     return detail.latestSnapshot;
   }
   return detail.latestSnapshot;
+}
+
+function emptySessionDetail(session: OraSessionSummary): OraSessionDetail {
+  return {
+    session,
+    turns: [],
+    transcript: [],
+    latestSnapshot: undefined,
+  };
+}
+
+function cacheSessionDetail(cache: Record<string, OraSessionDetail>, detail: OraSessionDetail): Record<string, OraSessionDetail> {
+  return {
+    ...cache,
+    [detail.session.sessionId]: detail,
+  };
 }
 
 function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraModeSpec | undefined {
@@ -324,6 +343,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedProjectId: undefined,
         activeSessionDetail: undefined,
         activeSnapshot: undefined,
+        sessionDetailsById: {},
         modes: [],
         promptText: "",
         pendingRun: undefined,
@@ -374,6 +394,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           : state.expandedProjectIds,
         activeSessionDetail: action.detail,
         activeSnapshot: snapshot,
+        sessionDetailsById: cacheSessionDetail(state.sessionDetailsById, action.detail),
         selectedSessionId: action.detail.session.sessionId,
         selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
         selectedPattern: snapshot?.pattern ?? state.selectedPattern,
@@ -388,6 +409,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         busyCommand: undefined,
       };
     }
+
+    case "CACHE_SESSION_DETAIL":
+      return {
+        ...state,
+        sessionDetailsById: cacheSessionDetail(state.sessionDetailsById, action.detail),
+      };
 
     case "SET_PROJECTS":
       return { ...state, projects: action.projects };
@@ -538,19 +565,32 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return { ...state, providerStatuses: action.statuses };
 
     case "SELECT_SESSION":
+    {
+      const cachedDetail = state.sessionDetailsById[action.sessionId];
+      const session = cachedDetail?.session ?? state.sessions.find((item) => item.sessionId === action.sessionId);
+      const detail = cachedDetail ?? (session ? emptySessionDetail(session) : undefined);
+      const snapshot = detail ? selectedSnapshotFromDetail(detail, undefined, undefined) : undefined;
+      const latestTurn = detail?.turns.at(-1);
       return {
         ...state,
+        activeView: "chat",
         selectedSessionId: action.sessionId,
-        selectedTurnRunId: undefined,
+        selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
         selectedBeatId: undefined,
-        selectedNodeId: "run",
-        activeSessionDetail: undefined,
-        activeSnapshot: undefined,
+        selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
+        selectedProjectId: detail?.session.projectId,
+        activeSessionDetail: detail,
+        activeSnapshot: snapshot,
+        selectedPattern: snapshot?.pattern ?? session?.latestPattern ?? state.selectedPattern,
+        selectedModeId: snapshot?.modeId ?? session?.latestModeId ?? state.selectedModeId,
+        selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
+        selectedProviderId: snapshot?.config.providerId ?? session?.latestProviderId ?? state.selectedProviderId,
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
         pendingRun: undefined,
       };
+    }
 
     case "SELECT_TURN":
       return {
@@ -572,6 +612,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         ...state,
         sessions,
         activeSessionDetail,
+        sessionDetailsById: activeSessionDetail
+          ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
+          : state.sessionDetailsById,
         activeSnapshot,
         selectedTurnRunId: state.selectedTurnRunId ?? action.stream.runId,
         selectedBeatId: action.stream.events.at(-1)?.id ?? state.selectedBeatId,

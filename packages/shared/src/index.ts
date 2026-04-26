@@ -44,6 +44,7 @@ export const CompletionStopReasonSchema = z.enum([
   "completed",
   "tool_budget_exhausted",
   "repeated_tool_blocked",
+  "tool_frequency_exhausted",
   "verification_passed",
   "verification_exhausted",
   "forced_final_answer",
@@ -587,6 +588,7 @@ export const OraEventTypeSchema = z.enum([
   "artifact.exported",
   "artifact.degraded",
   "completion.updated",
+  "node.updated",
   "recovery.detected",
   "recovery.retry_scheduled",
   "recovery.applied",
@@ -3234,16 +3236,7 @@ function createSingleAgentModeSpec(): ModeSpec {
     systemPreset: true,
     nodes: [
       {
-        id: "decompose",
-        template: "decompose",
-        label: "Frame task",
-        title: "Frame task",
-        ownerAgentId: "solo_agent",
-        enabled: true,
-        config: {},
-      },
-      {
-        id: "synthesize",
+        id: "respond",
         template: "synthesize",
         label: "Respond",
         title: "Respond",
@@ -3252,17 +3245,10 @@ function createSingleAgentModeSpec(): ModeSpec {
         config: {},
       },
     ],
-    edges: [
-      {
-        id: "single-agent-flow",
-        source: "decompose",
-        target: "synthesize",
-        enabled: true,
-      },
-    ],
+    edges: [],
     stopPolicy: {
       type: "queue_drained",
-      detail: "Stop after the solo agent frames the task and produces the final response.",
+      detail: "Stop after the solo agent produces the final response.",
     },
     capabilityFlags: {
       supportsPersistentWorkers: false,
@@ -3275,7 +3261,7 @@ function createSingleAgentModeSpec(): ModeSpec {
     runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
     editorConstraints: {
       allowedNodeTemplates: MODE_FAMILY_RULES.orchestrator_subagent.allowedTemplates,
-      requiredNodeTemplates: ["decompose", "synthesize"],
+      requiredNodeTemplates: ["synthesize"],
       readOnly: true,
       allowReorder: true,
       allowCreate: false,
@@ -3408,7 +3394,11 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
   }
 
   const nodeById = new Map(spec.nodes.map((node) => [node.id, node]));
-  const requiredTemplates = new Set(rule.requiredTemplates);
+  const requiredTemplates = new Set(
+    spec.editorConstraints.requiredNodeTemplates.length > 0
+      ? spec.editorConstraints.requiredNodeTemplates
+      : rule.requiredTemplates,
+  );
   for (const recoveryRule of spec.recoveryPolicy.rules.filter((item) => item.enabled)) {
     for (const nodeId of recoveryRule.nodeIds) {
       if (!nodeIds.has(nodeId)) {
@@ -3462,7 +3452,7 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
   }
 
   const enabledTemplates = new Set(spec.nodes.filter((node) => node.enabled).map((node) => node.template));
-  for (const required of rule.requiredTemplates) {
+  for (const required of requiredTemplates) {
     if (!enabledTemplates.has(required)) {
       errors.push(`Family '${spec.family}' requires an enabled '${required}' node.`);
     }

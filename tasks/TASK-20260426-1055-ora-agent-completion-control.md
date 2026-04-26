@@ -1,7 +1,7 @@
 # TASK-20260426-1055-ora-agent-completion-control
 
 **Created:** 2026-04-26 10:55 CST
-**Status:** Planned
+**Status:** Verified
 
 ---
 
@@ -193,13 +193,29 @@
   - stop reasons appear in turn steps/anomalies.
 
 ## Open Issues
-- Whether to introduce a new event type such as `completion.updated` / `tool.blocked`, or encode stop details in existing `run.done` / `tool.called` payloads.
-- Whether Single Agent should get a new direct-response preset, or whether existing `single_agent` should skip `decompose` dynamically.
+- Resolved in this pass: use `node.updated` for node runtime loop state and keep `completion.updated` for stop-control details.
+- Resolved in this pass: existing `single_agent` now defaults to a single `respond` node instead of adding another preset.
 - Whether default web tools should remain enabled for all modes or be opt-in for non-research tasks.
+- Forced-final no-tool native calls and standalone JSON fallback tool-call text are both coerced through final-answer repair. The runtime must not execute the rejected tool intent or render raw tool JSON as the assistant answer.
 
 ## Progress Log
+- 2026-04-26 18:05 CST - Started the DeerFlow-style runtime loop implementation pass from the accepted plan. Current target is not a full Python/LangGraph port; it is a TypeScript NodeRuntimeLoop contract inside Ora: explicit node states, middleware-style completion control, direct `single_agent` execution, and final-body semantics that only accept the last no-tool assistant text.
+  Next: patch runtime loop state/guards, reduce `single_agent` to one direct loop invocation, add regressions, run the required shared/runtime/desktop checks.
+- 2026-04-26 17:54 CST - Implemented the accepted DeerFlow-style runtime loop pass. `callAgent()` now routes provider/tool/finalization through a named NodeRuntimeLoop path with explicit `node.updated` states (`pending`, `running_model`, `tool_requested`, `tool_running`, `tool_result_observed`, `repairing`, `finalizing`, `completed`, `degraded`, `interrupted`, `failed`). Completion control now runs inside the loop: repeated tool calls warn before hard stop, per-tool-type frequency exhaustion forces finalization, forced-final standalone JSON tool intents get one repair pass, dangling native tool calls are repaired before the next model call, and tool exceptions are recorded as failed tool results before recovery/model continuation. `single_agent` now uses one `respond` node by default, while multi-node modes continue to use the same NodeRuntimeLoop per node. Desktop view-model/Trails consume `node.updated` as process state and keep final assistant body semantics tied to the final no-tool assistant text.
+  Verification: `pnpm --filter @ora/shared build` passed; `pnpm --filter @ora/shared test -- contracts.test.ts` passed 76 tests; focused new runtime regressions passed 3 tests; `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts` passed 41 tests; `pnpm --filter @ora/runtime exec vitest run test/session-thread.test.ts` passed 10 tests; `pnpm --filter @ora/runtime exec vitest run test/desktop-composer-state.test.ts` passed 19 tests; `pnpm --filter @ora/runtime typecheck` passed; `pnpm --filter @ora/desktop typecheck` passed.
+  Notes: existing runtime-smoke coverage still covers interrupt/resume/checkpoint/fork/replay paths; this pass did not add a new visual Trails redesign, only the runtime state event needed for the existing desktop surfaces.
 - 2026-04-26 10:55 CST - Created the authoritative task journal from runtime stop-control investigation.
   Next: inspect current uncommitted diffs, design the controller data shape, and add failing tests for budget/repeated-tool/forced-final behavior before implementing.
+- 2026-04-26 16:42 CST - Investigated a Trails regression where a run showed `Completion` / `Run completed` even though the visible assistant output was still a JSON fallback tool call (`{"tool":"web.fetch",...}`). Root cause: forced-final completion control only ignored provider-native tool calls; a standalone JSON fallback tool-call text was accepted as final answer text, so `executeModeSpec` returned normally and runtime emitted `run.done/succeeded`. Added regression coverage and patched runtime to reject standalone tool-call text after tools are disabled, emit `completion.updated(state="tool_call_text_rejected")`, and fail the run with a concrete error instead of showing a false completion.
+  Next: run focused runtime and desktop typechecks before closing this follow-up.
+- 2026-04-26 16:43 CST - Verification passed for this follow-up: regression test failed before the runtime patch and passes after it; `pnpm --filter @ora/runtime test` passed 12 files / 152 tests; `pnpm --filter @ora/runtime typecheck` passed; `pnpm --filter @ora/desktop typecheck` passed.
+  Next: keep the broader completion-control task open for the remaining policy/design open issues.
+- 2026-04-26 16:53 CST - Followed up on the next visible failure state: the run now correctly failed, but streaming `message.delta` / persisted assistant transcript could still show the rejected JSON fallback tool call as the chat body, and the deterministic final-answer rejection was being wrapped by recovery-policy as a generic `node_exception`. Patched desktop chat adaptation to suppress stored assistant/delta text when `completion.updated(state="tool_call_text_rejected")` exists, show the concrete snapshot error instead, and make failed action steps show the actual error. Patched runtime node recovery to rethrow `FinalAnswerIncompleteError` directly so Trails no longer shows misleading `Recovery exhausted: node_exception` for this case.
+  Verification: focused runtime and desktop regressions passed, then `pnpm --filter @ora/runtime test` passed 12 files / 152 tests; `pnpm --filter @ora/runtime typecheck` passed; `pnpm --filter @ora/desktop typecheck` passed.
+- 2026-04-26 17:13 CST - Reopened the failure policy after a real run showed completion-control turning a recoverable no-tools violation into a failed task. Root cause: `coerceNoToolResponse()` ignored provider-native tool calls, but standalone JSON fallback tool-call text emitted after `toolChoice: "none"` was treated as `FinalAnswerIncompleteError`; `callAgent` and `runRecoverableNode` explicitly rethrew that error, so checkpoint/recovery could not produce a usable final state. Patched runtime to treat this as a rejected tool intent, emit `completion.updated(state="tool_call_text_rejected")`, return a caveated final fallback, preserve completion metadata, and never execute the second tool.
+  Verification: `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts -t "recovers when forced final output is still a JSON fallback tool call"` passed; `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts` passed 38 tests; `pnpm --filter @ora/runtime exec vitest run test/desktop-composer-state.test.ts` passed 17 tests; `pnpm --filter @ora/runtime typecheck` passed.
+- 2026-04-26 17:33 CST - Followed up on the next bad outcome: the run no longer failed, but final output became the fixed fallback sentence `I need to stop using tools here...`, which is a false-success answer for the user's actual task. Root cause: `runForcedFinalProviderCall()` only made one no-tools provider call; if that response was a rejected JSON fallback tool call, `coerceNoToolResponse()` immediately replaced it with generic fallback text instead of giving the model one repair turn using the existing tool results. Patched forced-final handling to emit the rejection, append a model-visible "tool call rejected; answer from existing context" user message, retry once with `toolChoice: "none"`, and only then fall back if the retry still violates the no-tools contract.
+  Verification: focused regression passed; `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts` passed 38 tests; `pnpm --filter @ora/runtime exec vitest run test/desktop-composer-state.test.ts` passed 17 tests; `pnpm --filter @ora/runtime typecheck` passed.
 
 ## Compressed State
 - Ora agent runs can produce too many steps because completion control is fragmented.

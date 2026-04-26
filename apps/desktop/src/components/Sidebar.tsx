@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Bot,
   ChartNoAxesColumn,
@@ -18,6 +18,7 @@ import type { RunStatus } from "../types";
 import { SidebarTrigger, useSidebar } from "./ui/sidebar";
 
 const MAX_VISIBLE_PROJECT_SESSIONS = 4;
+const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
 function statusFromSession(status: string | undefined): RunStatus {
@@ -91,15 +92,19 @@ function SessionRow({
   status,
   selected,
   onClick,
+  onPrefetch,
 }: {
   title: string;
   status: RunStatus;
   selected: boolean;
   onClick: () => void;
+  onPrefetch: () => void;
 }) {
   return (
     <button
       onClick={onClick}
+      onMouseEnter={onPrefetch}
+      onFocus={onPrefetch}
       className={cn(
         "group flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         selected
@@ -121,7 +126,7 @@ export function Sidebar() {
   const { actions } = useRunActions();
   const { open } = useSidebar();
   const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
-  const projects = state.projects.map((project) => ({
+  const projects = useMemo(() => state.projects.map((project) => ({
     ...project,
     expanded: state.expandedProjectIds[project.projectId] ?? true,
     sessions: state.sessions
@@ -132,17 +137,40 @@ export function Sidebar() {
         title: session.title,
         status: statusFromSession(session.status),
       })),
-  }));
-  const recentChats = state.sessions
+  })), [state.expandedProjectIds, state.projects, state.sessions]);
+  const recentChats = useMemo(() => state.sessions
     .filter((session) => !session.projectId)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
     .map((session) => ({
       id: session.sessionId,
       title: session.title,
       status: statusFromSession(session.status),
-    }));
+    })), [state.sessions]);
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = state.activeView === "chat";
+  const visiblePrefetchSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const project of projects) {
+      if (!project.expanded) continue;
+      const showAllSessions = expandedSessionLists[project.projectId] ?? false;
+      const visibleSessions = showAllSessions ? project.sessions : project.sessions.slice(0, MAX_VISIBLE_PROJECT_SESSIONS);
+      for (const session of visibleSessions) {
+        ids.add(session.id);
+        if (ids.size >= MAX_VISIBLE_PREFETCH_SESSIONS) return [...ids];
+      }
+    }
+    for (const session of recentChats) {
+      ids.add(session.id);
+      if (ids.size >= MAX_VISIBLE_PREFETCH_SESSIONS) return [...ids];
+    }
+    return [...ids];
+  }, [expandedSessionLists, projects, recentChats]);
+  const visiblePrefetchSessionKey = visiblePrefetchSessionIds.join("\u0000");
+
+  useEffect(() => {
+    if (!open || visiblePrefetchSessionIds.length === 0) return;
+    void actions.prefetchSessions(visiblePrefetchSessionIds);
+  }, [open, visiblePrefetchSessionKey]);
 
   return (
     <aside
@@ -309,6 +337,7 @@ export function Sidebar() {
                                       status={session.status}
                                       selected={selected}
                                       onClick={() => void actions.selectSession(session.id)}
+                                      onPrefetch={() => void actions.prefetchSession(session.id)}
                                     />
                                   );
                                 })}
@@ -381,6 +410,7 @@ export function Sidebar() {
                             status={session.status}
                             selected={selected}
                             onClick={() => void actions.selectSession(session.id)}
+                            onPrefetch={() => void actions.prefetchSession(session.id)}
                           />
                         );
                       })

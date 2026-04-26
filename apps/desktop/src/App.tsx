@@ -330,32 +330,28 @@ function WorkbenchInner() {
     }
 
     let cancelled = false;
-    void Promise.all(
-      missingRunIds.map(async (runId) => {
+    void (async () => {
+      for (const runId of missingRunIds) {
+        if (cancelled) return;
         try {
-          return await runtimeClient.getRunState(runId);
+          const snapshot = await runtimeClient.getRunState(runId);
+          if (cancelled) return;
+          setTurnSnapshots((current) => {
+            if (current[snapshot.runId]?.updatedAt === snapshot.updatedAt) {
+              return current;
+            }
+            return { ...current, [snapshot.runId]: snapshot };
+          });
         } catch {
-          return undefined;
+          // Missing historical snapshots should not block switching sessions.
         }
-      }),
-    ).then((snapshots) => {
-      if (cancelled) return;
-      const resolved = snapshots.filter((snapshot): snapshot is OraStateSnapshot => snapshot !== undefined);
-      if (resolved.length === 0) return;
-
-      setTurnSnapshots((current) => {
-        const next = { ...current };
-        for (const snapshot of resolved) {
-          next[snapshot.runId] = snapshot;
-        }
-        return next;
-      });
-    });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [runtimeClient, state.activeSessionDetail, turnSnapshots]);
+  }, [runtimeClient, state.activeSessionDetail]);
 
   const activeSessionTurnSnapshots = useMemo(() => {
     const detail = state.activeSessionDetail;
