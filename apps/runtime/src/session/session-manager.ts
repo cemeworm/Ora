@@ -111,7 +111,7 @@ export class SessionManager {
         checkpoint_ns: "",
       },
     };
-    const baseState = createInitialGraphState(runId, input, managedConfig, nextResolved.definition);
+    const baseState = createInitialGraphState(runId, input, managedConfig, nextResolved.definition, conversationMessages);
     const graphEvents = await collectGraphEvents(graph, baseState, graphConfig);
     const graphState = await graph.getState(graphConfig);
     const snapshot = buildSnapshotFromGraph({
@@ -315,12 +315,14 @@ function createInitialGraphState(
   input: UserTaskInput,
   config: RunConfig,
   definition: PatternDefinition,
+  conversationMessages: ModelMessage[] = [],
 ) {
   const plan = new PlanService(runId, definition).list();
   return {
     runId,
     pattern: config.pattern,
     input,
+    conversationMessages,
     config,
     topology: {
       nodes: definition.topology.nodes.map((node) => ({ ...node })),

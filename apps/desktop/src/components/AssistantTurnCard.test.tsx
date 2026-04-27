@@ -7,7 +7,7 @@ import {
   processSummary,
   visibleAgentMessages,
 } from "./AssistantTurnCard";
-import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnProcessStep } from "../types";
+import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnProcessStep } from "../types";
 
 function agentMessage(
   id: string,
@@ -48,6 +48,24 @@ function processStep(
     timestamp: "00:05",
     status,
     tone: "neutral",
+  };
+}
+
+function artifact(
+  id: string,
+  label: string,
+  extra: Partial<TurnArtifactAttachment> = {},
+): TurnArtifactAttachment {
+  return {
+    id,
+    label,
+    kind: extra.kind ?? "log",
+    mimeType: extra.mimeType ?? "application/json",
+    createdAt: extra.createdAt ?? "13:40",
+    uri: extra.uri,
+    sizeBytes: extra.sizeBytes,
+    payload: extra.payload,
+    previewable: extra.previewable ?? false,
   };
 }
 
@@ -118,6 +136,31 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("正在综合专家观点。");
     expect(html).not.toContain("正在：正在综合专家观点。");
     expect(html).not.toContain("已完成资料收集。");
+  });
+
+  it("hides recovery artifacts from the assistant content stream", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [
+        artifact("run-1:recovery:0", "Recovery artifact"),
+        artifact("run-1:report-0", "Smoke run report", { kind: "report" }),
+      ],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文" turn={turn} />,
+    );
+
+    expect(html).not.toContain("Recovery artifact");
+    expect(html).toContain("Smoke run report");
   });
 
   it("summarizes completed and blocked process steps without log wording", () => {

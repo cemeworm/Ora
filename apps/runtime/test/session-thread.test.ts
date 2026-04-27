@@ -69,7 +69,7 @@ vi.mock("../src/providers/index.js", async () => {
   };
 });
 
-import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
+import { LocalRunStore, SessionManager, createOraSqliteCheckpointer, createRuntimeMethodHandler } from "../src/index.js";
 
 const FIXED_TIME = 1_700_000_000_000;
 const clock = () => FIXED_TIME;
@@ -637,5 +637,57 @@ describe("session thread runtime behavior", () => {
       role: "user",
       content: "Second managed turn",
     });
+  });
+
+  it("passes rebuilt session transcript into real LangGraph provider calls", async () => {
+    const dbPath = path.join(freshStoreDir(), "checkpoints.db");
+    const checkpointer = createOraSqliteCheckpointer({ dbPath });
+    const managerBackedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const manager = new SessionManager(true, { checkpointer });
+    const handle = createRuntimeMethodHandler(managerBackedStore, manager);
+
+    const first = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "First real managed turn" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+      },
+    }) as { sessionId: string };
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        sessionId: first.sessionId,
+        input: { prompt: "Second real managed turn" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+      },
+    });
+
+    const decomposeRequests = capturedRequests.filter((request) =>
+      request.system.includes("Ora's orchestrator") &&
+      request.prompt.includes("Decompose this task")
+    );
+
+    expect(decomposeRequests).toHaveLength(2);
+    expect(decomposeRequests[0]?.messages).toEqual([
+      { role: "user", content: "First real managed turn" },
+    ]);
+    expect(decomposeRequests[1]?.messages).toHaveLength(3);
+    expect(decomposeRequests[1]?.messages[0]).toEqual({
+      role: "user",
+      content: "First real managed turn",
+    });
+    expect(decomposeRequests[1]?.messages[1]?.role).toBe("assistant");
+    expect(decomposeRequests[1]?.messages[1]?.content).toContain("First real managed turn");
+    expect(decomposeRequests[1]?.messages[2]).toEqual({
+      role: "user",
+      content: "Second real managed turn",
+    });
+
+    checkpointer.close();
   });
 });

@@ -15,11 +15,16 @@ import type {
   TopologyNode,
   UserTaskInput
 } from "@ora/shared";
+import type { ModelMessage } from "../providers/index.js";
 
 export const OraGraphAnnotation = Annotation.Root({
   runId: Annotation<string>,
   pattern: Annotation<CoordinationPattern>,
   input: Annotation<UserTaskInput>,
+  conversationMessages: Annotation<ModelMessage[]>({
+    reducer: (_left, right) => right,
+    default: () => [],
+  }),
   config: Annotation<RunConfig>,
   topology: Annotation<{ nodes: TopologyNode[]; edges: TopologyEdge[] }>,
   profiles: Annotation<AgentProfile[]>,

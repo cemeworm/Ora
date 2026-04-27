@@ -46,6 +46,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
   const contentIsLiveProgress = Boolean(turn?.liveProgressText && content.trim() === turn.liveProgressText.trim());
   const hasVisibleAgentMessages = visibleAgentMessages(agentMessages, turn?.status).length > 0;
+  const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
 
   useEffect(() => {
@@ -106,9 +107,9 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             <MarkdownContent content={content} className={cn(isPlaceholder && "text-muted-foreground")} />
           </MessageContent>
 
-          {turn && turn.artifacts.length > 0 ? (
+          {visibleArtifacts.length > 0 ? (
             <div className="space-y-3">
-              {turn.artifacts.map((artifact) => (
+              {visibleArtifacts.map((artifact) => (
                 <ArtifactCard key={artifact.id} artifact={artifact} onOpenArtifact={onOpenArtifact} />
               ))}
             </div>
@@ -433,6 +434,10 @@ function ArtifactCard({ artifact, onOpenArtifact }: { artifact: TurnArtifactAtta
       </Artifact>
     </button>
   );
+}
+
+function isContentArtifact(artifact: TurnArtifactAttachment): boolean {
+  return artifact.label !== "Recovery artifact";
 }
 
 function TodoItemRow({ todo }: { todo: TurnTodoItem }) {

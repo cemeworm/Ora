@@ -12,6 +12,7 @@ async function seedNode(state: OraGraphState): Promise<Partial<OraGraphState>> {
   const model = await invokeRunProvider(state.config, {
     prompt: `Seed the shared-state board for: ${state.input.prompt}`,
     system: withGraphPersona(state, "You are the seed agent. Create the initial shared-state hypothesis."),
+    messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens,
   });
   return {
@@ -29,6 +30,7 @@ async function contributeNode(state: OraGraphState): Promise<Partial<OraGraphSta
   const model = await invokeRunProvider(state.config, {
     prompt: `Contribute a new shared-state finding for: ${state.input.prompt}\nCurrent board: ${JSON.stringify(output.entries)}`,
     system: withGraphPersona(state, "You are the research agent. Add a new finding."),
+    messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens,
   });
   return {
@@ -47,6 +49,7 @@ async function convergeNode(state: OraGraphState): Promise<Partial<OraGraphState
   const model = await invokeRunProvider(state.config, {
     prompt: `Review whether this shared-state board has converged for: ${state.input.prompt}\nBoard: ${JSON.stringify(output.entries)}`,
     system: withGraphPersona(state, "You are the critic agent. Decide whether the board has converged."),
+    messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens,
   });
   return {

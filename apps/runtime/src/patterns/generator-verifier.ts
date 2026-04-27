@@ -25,6 +25,7 @@ async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
       state,
       "You are the generator in Ora's Generator-Verifier pattern. Return only the candidate response.",
     ),
+    messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });
   const candidate = model.text;
@@ -62,6 +63,7 @@ async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>>
       state,
       "You are the verifier in Ora's Generator-Verifier pattern. Return only JSON with verdict, rationale, and missingRequirements.",
     ),
+    messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });
   const assessment = assessGeneratorVerifierResponse({
