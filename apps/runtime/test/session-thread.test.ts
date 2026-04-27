@@ -571,7 +571,37 @@ describe("session thread runtime behavior", () => {
     expect(reloaded.getRunState({ runId: run.runId }).input.projectId).toBeUndefined();
   });
 
-  it("passes rebuilt session transcript through the LangGraph session manager path", async () => {
+  it("uses the runtime kernel by default even when a LangGraph session manager is enabled", async () => {
+    let langGraphStartCount = 0;
+    const managerBackedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const fakeSessionManager = {
+      isEnabled: () => true,
+      startRun: async () => {
+        langGraphStartCount += 1;
+        throw new Error("LangGraph orchestration should require explicit opt-in.");
+      },
+    };
+    const handle = createRuntimeMethodHandler(
+      managerBackedStore,
+      fakeSessionManager as never
+    );
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Default to the runtime kernel" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+      },
+    }) as { runId: string };
+    const state = StateSnapshotSchema.parse(managerBackedStore.getRunState({ runId: run.runId }));
+
+    expect(langGraphStartCount).toBe(0);
+    expect(state.config.metadata.runtimeRoute).toBe("runtime-kernel");
+  });
+
+  it("passes rebuilt session transcript through the explicit LangGraph session manager path", async () => {
     const capturedConversationMessages: Array<Array<{ role: string; content: string }>> = [];
     const managerBackedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
     const fakeSessionManager = {
@@ -607,7 +637,7 @@ describe("session thread runtime behavior", () => {
       method: "runs.start",
       params: {
         input: { prompt: "First managed turn" },
-        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true, langGraphOrchestration: true } },
       },
     }) as { sessionId: string };
 
@@ -618,7 +648,7 @@ describe("session thread runtime behavior", () => {
       params: {
         sessionId: first.sessionId,
         input: { prompt: "Second managed turn" },
-        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true, langGraphOrchestration: true } },
       },
     });
 
@@ -652,7 +682,7 @@ describe("session thread runtime behavior", () => {
       method: "runs.start",
       params: {
         input: { prompt: "First real managed turn" },
-        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true, langGraphOrchestration: true } },
       },
     }) as { sessionId: string };
 
@@ -663,7 +693,7 @@ describe("session thread runtime behavior", () => {
       params: {
         sessionId: first.sessionId,
         input: { prompt: "Second real managed turn" },
-        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true, langGraphOrchestration: true } },
       },
     });
 

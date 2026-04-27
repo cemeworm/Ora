@@ -62,6 +62,8 @@ export class SessionManager {
       modeSpec: ModeSpec;
       definition: PatternDefinition;
       customAgentOverlay?: string;
+      systemAgentOverlays?: Record<string, string>;
+      customAgentContexts?: Record<string, unknown>;
       sessionId?: string;
       turnIndex?: number;
     }
@@ -84,6 +86,8 @@ export class SessionManager {
       modeSpec: ModeSpec;
       definition: PatternDefinition;
       customAgentOverlay?: string;
+      systemAgentOverlays?: Record<string, string>;
+      customAgentContexts?: Record<string, unknown>;
       sessionId?: string;
       turnIndex?: number;
     }
@@ -102,6 +106,8 @@ export class SessionManager {
           }]),
         ),
         ...(resolved?.customAgentOverlay ? { customAgentOverlay: resolved.customAgentOverlay } : {}),
+        ...(resolved?.systemAgentOverlays ? { systemAgentOverlays: resolved.systemAgentOverlays } : {}),
+        ...(resolved?.customAgentContexts ? { customAgentContexts: resolved.customAgentContexts } : {}),
       },
     };
     const { graph } = createPatternGraphWithCheckpointer(config.pattern, this.checkpointer ?? false);
@@ -138,6 +144,8 @@ export class SessionManager {
       definition: nextResolved.definition,
       conversationMessages,
       customAgentOverlay: resolved?.customAgentOverlay,
+      systemAgentOverlays: resolved?.systemAgentOverlays,
+      customAgentContexts: resolved?.customAgentContexts,
       snapshot,
       lastGraphStatus: snapshot.status,
     });
@@ -299,6 +307,8 @@ interface ManagedRun {
   definition: PatternDefinition;
   conversationMessages: ModelMessage[];
   customAgentOverlay?: string;
+  systemAgentOverlays?: Record<string, string>;
+  customAgentContexts?: Record<string, unknown>;
   snapshot: StateSnapshot;
   lastGraphStatus: StateSnapshot["status"];
 }

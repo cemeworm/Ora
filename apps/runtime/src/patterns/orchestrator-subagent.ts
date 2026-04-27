@@ -14,7 +14,7 @@ async function decomposeNode(state: OraGraphState): Promise<Partial<OraGraphStat
   ensureGraphManualApproval(state, "decompose", "Decompose");
   const model = await invokeRunProvider(state.config, {
     prompt: `Decompose this task into research, review, and synthesize work: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are Ora's orchestrator. Keep the plan short and inspectable."),
+    system: withGraphPersona(state, "", "orchestrator"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });
@@ -35,7 +35,7 @@ async function researchNode(state: OraGraphState): Promise<Partial<OraGraphState
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Gather focused context for: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are Ora's research subagent. Return concise findings."),
+    system: withGraphPersona(state, "", "researcher"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });
@@ -55,7 +55,7 @@ async function reviewNode(state: OraGraphState): Promise<Partial<OraGraphState>>
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Review completeness and risks for: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are Ora's review subagent. Return risks and gaps."),
+    system: withGraphPersona(state, "", "reviewer"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });

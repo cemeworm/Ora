@@ -158,6 +158,29 @@ function promptTemplate(
   return interpolate(node.prompt ?? fallback, values);
 }
 
+function nodeInstructions(
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  values: Record<string, unknown>,
+  fallback?: string,
+): string {
+  const template = node.instructions
+    ?? getModeNodeRuntimeTemplateDefinition(modeSpec.family, node.template).fallbackInstructions
+    ?? fallback
+    ?? "";
+  return interpolate(template, values);
+}
+
+function nodeSystemPrompt(
+  context: PatternExecutionContext,
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  values: Record<string, unknown>,
+  fallback?: string,
+): string {
+  return context.systemPrompt(nodeInstructions(modeSpec, node, values, fallback));
+}
+
 function titleForNode(node: ModeNodeSpec, fallback: string): string {
   return node.title ?? node.label ?? fallback;
 }
@@ -370,7 +393,7 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
               runtimeFallbackPrompt(modeSpec.family, node.template),
               { ...bag, attempt },
             ),
-            system: context.systemPrompt("You are the generator. Produce a concrete candidate answer."),
+            system: nodeSystemPrompt(context, modeSpec, node, { ...bag, attempt }),
             customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
@@ -403,12 +426,11 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
                 attempt,
               },
             ),
-            system: context.systemPrompt(
-              "You are the verifier. Return only one compact JSON object with keys verdict, rationale, and missingRequirements. "
-              + "Use verdict=\"pass\" only when the candidate fully satisfies the rubric. "
-              + "If the candidate fails or you cannot verify it, return {\"verdict\":\"fail\",\"rationale\":\"...\",\"missingRequirements\":[\"...\"]}. "
-              + "Do not include markdown, prose, greetings, or role explanations outside the JSON object."
-            ),
+            system: nodeSystemPrompt(context, modeSpec, node, {
+              ...bag,
+              rubric: (bag.rubric as string[]).join("\n- "),
+              attempt,
+            }),
             customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
@@ -499,11 +521,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt(
-            singleOwnerMode
-              ? "You are the solo agent. Frame the task briefly, keep the plan compact, and do not delegate."
-              : "You are the orchestrator. Keep delegation explicit and inspectable."
-          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -520,7 +538,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the research subagent. Return concise findings."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -537,7 +555,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the review subagent. Surface risks and gaps."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -560,13 +578,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
               : runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt(
-            directSoloResponse
-              ? "You are the solo agent. Complete the user request directly and make the final answer the only assistant body."
-              : singleOwnerMode
-                ? "You are the solo agent. Use your framing notes and produce the final answer directly."
-              : "You are the orchestrator. Synthesize delegated results into one answer."
-          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -638,7 +650,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the team lead. Create a compact backlog."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -668,7 +680,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
               runtimeFallbackPrompt(modeSpec.family, node.template),
               bag,
             ),
-            system: context.systemPrompt("You are the persistent builder teammate. Complete the assigned work."),
+            system: nodeSystemPrompt(context, modeSpec, node, bag),
             customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
@@ -708,7 +720,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
               runtimeFallbackPrompt(modeSpec.family, node.template),
               bag,
             ),
-            system: context.systemPrompt("You are the persistent checker teammate. Validate the assigned work."),
+            system: nodeSystemPrompt(context, modeSpec, node, bag),
             customAgentId: nodeCustomAgentId(node),
             riskLevel: node.riskLevel,
           });
@@ -746,7 +758,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the team lead. Summarize the handoff and next steps."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -833,7 +845,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the router. Route work explicitly to the correct subscriber."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
@@ -871,7 +883,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the investigator. Produce findings for the routed event."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
@@ -909,7 +921,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the responder. Publish the final bus response."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
@@ -975,7 +987,7 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: context.systemPrompt("You are the seed agent. Seed the shared board with the initial hypothesis."),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
@@ -1012,7 +1024,10 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
               sharedBoard: JSON.stringify(context.currentSharedState().entries),
             },
           ),
-          system: context.systemPrompt("You are the research agent. Add a meaningful finding to the shared board."),
+          system: nodeSystemPrompt(context, modeSpec, node, {
+            ...bag,
+            sharedBoard: JSON.stringify(context.currentSharedState().entries),
+          }),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
@@ -1050,7 +1065,10 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
               sharedBoard: JSON.stringify(context.currentSharedState().entries),
             },
           ),
-          system: context.systemPrompt("You are the critic agent. Decide whether the shared board has converged."),
+          system: nodeSystemPrompt(context, modeSpec, node, {
+            ...bag,
+            sharedBoard: JSON.stringify(context.currentSharedState().entries),
+          }),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });

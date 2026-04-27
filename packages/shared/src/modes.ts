@@ -84,6 +84,7 @@ export const ModeNodeSpecSchema = z.object({
   ownerAgentId: z.string().min(1).optional(),
   position: ModeNodePositionSchema.optional(),
   enabled: z.boolean().default(true),
+  instructions: z.string().min(1).optional(),
   prompt: z.string().min(1).optional(),
   riskLevel: ActionRiskLevelSchema.optional(),
   config: z.record(z.unknown()).default({}),
@@ -328,6 +329,7 @@ export interface ModeNodeRuntimeTemplateDefinition {
     story: string;
   };
   supportsPromptOverride: boolean;
+  fallbackInstructions?: string;
   fallbackPrompt?: string;
   promptVariables: string[];
 }
@@ -343,12 +345,14 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       description: "Draft a candidate answer for verifier review.",
       display: { story: "{{owner}} drafts a candidate answer that the verifier can inspect and improve." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Produce a concrete candidate answer for this generator stage.",
       fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\nPrevious verifier notes:\n{{verifierNotes}}\nWrite a better candidate answer. Return only the candidate response.",
     },
     verify: {
       description: "Evaluate the candidate against the current rubric.",
       display: { story: "{{owner}} checks the candidate against the rubric and decides whether it is ready." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Return only one compact JSON object with keys verdict, rationale, and missingRequirements. Use verdict=\"pass\" only when the candidate fully satisfies the rubric. If the candidate fails or you cannot verify it, return {\"verdict\":\"fail\",\"rationale\":\"...\",\"missingRequirements\":[\"...\"]}. Do not include markdown, prose, greetings, or role explanations outside the JSON object.",
       fallbackPrompt: "Original prompt: {{prompt}}\nRubric:\n- {{rubric}}\nCandidate:\n{{candidate}}\nReturn JSON with keys verdict ('pass'|'fail'), rationale, and missingRequirements (array of strings).",
     },
     decide: {
@@ -362,24 +366,28 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       description: "Break the task into inspectable orchestration steps.",
       display: { story: "{{owner}} breaks the request into clear responsibilities before other stages start." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Keep the orchestration plan short, explicit, and inspectable.",
       fallbackPrompt: "Task: {{prompt}}\nDecompose it into research, review, and synthesis responsibilities.",
     },
     research: {
       description: "Collect focused supporting context from the decomposition plan.",
       display: { story: "{{owner}} gathers focused context for the plan instead of answering from first impressions." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Gather focused supporting context and return concise findings.",
       fallbackPrompt: "Task: {{prompt}}\nGather focused supporting context for the orchestration plan:\n{{plan}}",
     },
     review: {
       description: "Review findings and surface risks or missing pieces.",
       display: { story: "{{owner}} reviews the work for gaps, contradictions, risks, and missing evidence." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Surface concrete risks, gaps, contradictions, and missing evidence.",
       fallbackPrompt: "Task: {{prompt}}\nPlan:\n{{plan}}\nResearch:\n{{research}}\nReview completeness, risks, and missing pieces.",
     },
     synthesize: {
       description: "Combine plan, research, and review into the final answer.",
       display: { story: "{{owner}} combines the completed work into a final response with the mode's context intact." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Synthesize completed stage outputs into one final answer.",
       fallbackPrompt: "Task: {{prompt}}\nPlan:\n{{plan}}\nResearch:\n{{research}}\nReview:\n{{review}}\nProduce the final orchestrated answer.",
     },
   },
@@ -388,24 +396,28 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       description: "Turn the task into a compact team backlog.",
       display: { story: "{{owner}} turns the request into a small backlog with explicit ownership." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Create a compact backlog with explicit ownership.",
       fallbackPrompt: "Task: {{prompt}}\nBreak the work into a team backlog with explicit ownership.",
     },
     build: {
       description: "Complete the assigned backlog item.",
       display: { story: "{{owner}} completes the assigned work item using the mode's available capabilities." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Complete the assigned work item.",
       fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nComplete the builder's assigned work.",
     },
     check: {
       description: "Validate builder output and report issues or approval.",
       display: { story: "{{owner}} checks the completed work and reports approval or concrete issues." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Validate the assigned work and report approval or concrete issues.",
       fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder output:\n{{build}}\nValidate the work and report issues or approval.",
     },
     handoff: {
       description: "Summarize handoff state and the next action.",
       display: { story: "{{owner}} packages the current state so the next stage knows what changed and what remains." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Summarize the handoff state and next action.",
       fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder:\n{{build}}\nChecker:\n{{check}}\nRecord the handoff and next action.",
     },
   },
@@ -419,18 +431,21 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       description: "Classify the incoming event and choose the subscriber path.",
       display: { story: "{{owner}} classifies the event and routes it to the subscriber that should handle it." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Route work explicitly to the correct subscriber.",
       fallbackPrompt: "Task: {{prompt}}\nClassify the incoming event and decide which topic/subscriber should receive it.",
     },
     handle: {
       description: "Process the routed work item and emit findings.",
       display: { story: "{{owner}} handles the routed work item and emits findings back into the bus." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Produce findings for the routed event.",
       fallbackPrompt: "Task: {{prompt}}\nRouting plan:\n{{routingPlan}}\nProduce the investigation findings for the subscribed work item.",
     },
     respond: {
       description: "Turn bus findings into the final response event.",
       display: { story: "{{owner}} turns routed findings into the final response event for the user." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Publish the final bus response.",
       fallbackPrompt: "Task: {{prompt}}\nRouting plan:\n{{routingPlan}}\nFindings:\n{{findings}}\nProduce the final routed response.",
     },
   },
@@ -439,18 +454,21 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       description: "Create the initial shared-state board.",
       display: { story: "{{owner}} initializes the shared board so every collaborator starts from the same state." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Seed the shared board with the initial hypothesis.",
       fallbackPrompt: "Task: {{prompt}}\nCreate the initial shared-state board for collaborative work.",
     },
     research: {
       description: "Add the next meaningful finding to the shared board.",
       display: { story: "{{owner}} contributes the next useful finding to the shared board." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Add a meaningful finding to the shared board.",
       fallbackPrompt: "Task: {{prompt}}\nCurrent shared board:\n{{sharedBoard}}\nAdd the next finding that other agents should build on.",
     },
     converge: {
       description: "Review the board and decide whether it has converged.",
       display: { story: "{{owner}} reviews the shared board and decides whether the collaborators have converged." },
       supportsPromptOverride: true,
+      fallbackInstructions: "Decide whether the shared board has converged.",
       fallbackPrompt: "Task: {{prompt}}\nShared board:\n{{sharedBoard}}\nDecide whether the board has converged and summarize the conclusion.",
     },
   },
@@ -474,17 +492,23 @@ const profile = (
   label: string,
   role: string,
   pattern: CoordinationPattern,
-  namespaces: string[]
+  namespaces: string[],
+  systemPrompt: string = role,
 ): AgentProfile => ({
   id,
   label,
   role,
+  systemPrompt,
   toolPolicyId: `${pattern}.default_policy`,
   toolIds: [],
   skillIds: [],
   memoryNamespaces: namespaces,
   budget: DEFAULT_RESOURCE_BUDGETS[pattern]
 });
+
+function defaultNodeInstructions(family: CoordinationPattern, template: ModeNodeTemplate): string | undefined {
+  return MODE_NODE_RUNTIME_TEMPLATE_LIBRARY[family]?.[template]?.fallbackInstructions;
+}
 
 const ALL_COORDINATION_PATTERNS = [...CoordinationPatternSchema.options] as CoordinationPattern[];
 
@@ -1438,6 +1462,7 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
       title: item.title,
       ownerAgentId: item.ownerAgentId,
       enabled: true,
+      instructions: defaultNodeInstructions(definition.id, item.id as ModeNodeTemplate),
       config: {},
     })),
     edges: planEdgesFromTemplate(pattern, definition.planTemplate),
@@ -1487,6 +1512,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         title: "Lead plan",
         ownerAgentId: "lead_agent",
         enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "decompose"),
         config: {},
       },
       {
@@ -1496,6 +1522,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         title: "Research subagent",
         ownerAgentId: "research_subagent",
         enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "research"),
         config: { atoms: ["subagent_delegate"] },
       },
       {
@@ -1505,6 +1532,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         title: "Review subagent",
         ownerAgentId: "review_subagent",
         enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "review"),
         config: { atoms: ["subagent_delegate"] },
       },
       {
@@ -1514,6 +1542,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         title: "Lead synthesis",
         ownerAgentId: "lead_agent",
         enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "synthesize"),
         config: {},
       },
     ],
@@ -1614,6 +1643,7 @@ function createSingleAgentModeSpec(): ModeSpec {
         title: "Respond",
         ownerAgentId: "solo_agent",
         enabled: true,
+        instructions: "Complete the user request directly and make the final answer the only assistant body.",
         config: {},
       },
     ],
@@ -1676,6 +1706,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         title: "Understand builder context",
         ownerAgentId: "builder_lead",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "triage"),
         config: {},
       },
       {
@@ -1685,6 +1716,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         title: "Draft mode bundle",
         ownerAgentId: "draft_architect",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "build"),
         config: {},
       },
       {
@@ -1694,6 +1726,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         title: "Validate draft quality",
         ownerAgentId: "quality_reviewer",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "check"),
         config: {},
       },
       {
@@ -1703,6 +1736,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         title: "Return structured bundle",
         ownerAgentId: "builder_lead",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "handoff"),
         config: {},
       },
     ],
@@ -1782,6 +1816,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         title: "Plan task journal",
         ownerAgentId: "upgrade_lead",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "triage"),
         prompt: "Create or update the task journal, clarify the requested Ora change, and define verification gates before edits.",
         config: {},
       },
@@ -1792,6 +1827,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         title: "Edit and build",
         ownerAgentId: "code_builder",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "build"),
         prompt: "Make the smallest source changes, run focused checks, and build a candidate package slot with package.buildCandidate.",
         riskLevel: "high",
         config: {},
@@ -1803,6 +1839,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         title: "Verify package",
         ownerAgentId: "release_reviewer",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "check"),
         prompt: "Review the diff, package manifest, build logs, compatibility status, and rollback target before promotion.",
         riskLevel: "high",
         config: {},
@@ -1814,6 +1851,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         title: "Promote or report",
         ownerAgentId: "upgrade_lead",
         enabled: true,
+        instructions: defaultNodeInstructions("agent_teams", "handoff"),
         prompt: "Promote the verified slot only after final approval, otherwise report the candidate status and next fix.",
         riskLevel: "high",
         config: {},

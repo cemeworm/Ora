@@ -70,6 +70,7 @@ import {
   createResumeApprovalMatcher,
   type ApprovedResumeAction,
 } from "./runtime-interrupts.js";
+import { buildAgentPromptContext, userClarificationContextPrompt } from "./prompt-context.js";
 import {
   checkpointLabelForStatus,
   normalizeProgressNarration,
@@ -171,25 +172,6 @@ function sleep(ms: number): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function userClarificationContextPrompt(context: UserTaskInput["context"]): string | undefined {
-  const clarifications = context?.clarifications;
-  if (!clarifications || typeof clarifications !== "object" || clarifications === null) {
-    return undefined;
-  }
-  const entries = Object.entries(clarifications as Record<string, unknown>)
-    .filter(([, value]) => value !== undefined && value !== null && String(value).trim().length > 0)
-    .slice(0, 8)
-    .map(([key, value]) => `- ${key}: ${String(value).trim().slice(0, 1000)}`);
-  if (entries.length === 0) {
-    return undefined;
-  }
-  return [
-    "User-supplied clarification context:",
-    ...entries,
-    "Treat these clarifications as explicit constraints for the current run. Do not ignore them or replace them with assumptions.",
-  ].join("\n");
 }
 
 async function requestIntentClarificationQuestion(
@@ -890,20 +872,13 @@ export async function executeRuntimeKernel(
       ?? options.customAgentOverlay;
   };
 
-  const systemPrompt = (extra: string) => {
-    const memoryOverlay =
-      typeof config.metadata.memoryPromptOverlay === "string"
-        ? config.metadata.memoryPromptOverlay
-        : undefined;
-    return [
-      extra,
-      workspaceSystemPrompt(input.context?.projectWorkspace),
-      userClarificationContextPrompt(input.context),
-      memoryOverlay,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-  };
+  const workspaceContext = workspaceSystemPrompt(input.context?.projectWorkspace);
+  const clarificationContext = userClarificationContextPrompt(input.context);
+  const memoryContext =
+    typeof config.metadata.memoryPromptOverlay === "string"
+      ? config.metadata.memoryPromptOverlay
+      : undefined;
+  const systemPrompt = (extra: string) => extra.trim();
 
   const withAgentRuntimeContext = (
     system: string,
@@ -911,9 +886,24 @@ export async function executeRuntimeKernel(
   ) => {
     const customOverlay = customAgentOverlayFor(params.customAgentId);
     const systemOverlay = params.customAgentId ? undefined : options.systemAgentOverlays?.[params.agentId];
-    const toolPrompt = runtimeToolExecutor.systemPrompt(effectiveAgentToolIds(params.agentId, params.customAgentId));
-    const snippets = skillRegistry.promptSnippets(effectiveAgentSkillIds(params.agentId, params.customAgentId));
-    return [customOverlay, systemOverlay, system, toolPrompt, ...snippets].filter(Boolean).join("\n\n");
+    const toolIds = effectiveAgentToolIds(params.agentId, params.customAgentId);
+    const skillIds = effectiveAgentSkillIds(params.agentId, params.customAgentId);
+    const toolPrompt = runtimeToolExecutor.systemPrompt(toolIds);
+    const snippets = skillRegistry.promptSnippets(skillIds);
+    return buildAgentPromptContext({
+      agentId: params.agentId,
+      profile: profilesById.get(params.agentId),
+      customAgentId: params.customAgentId,
+      customPersona: customOverlay,
+      systemAgentOverride: systemOverlay,
+      stageSystem: system,
+      workspaceContext,
+      clarificationContext,
+      memoryContext,
+      toolProtocol: toolPrompt,
+      skillSnippets: snippets,
+      toolIds,
+    }).system;
   };
 
   const runNodeRuntimeLoop = async (params: {

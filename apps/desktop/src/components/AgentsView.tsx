@@ -733,7 +733,9 @@ export function AgentsView({
                   onChange={setDraft}
                 />
                 <label className="space-y-1.5 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">SOUL</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">
+                    {mode === "edit-system" ? "System Prompt" : "SOUL"}
+                  </span>
                   <textarea
                     value={draft.soul}
                     onChange={(event) => setDraft((current) => ({ ...current, soul: event.target.value }))}

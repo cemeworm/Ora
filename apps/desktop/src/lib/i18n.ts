@@ -501,6 +501,7 @@ const ZH_COPY: Record<string, string> = {
   "Selected stage": "选中阶段",
   "Owner:": "负责人：",
   "Template:": "模板：",
+  "Stage instructions:": "阶段任务说明：",
   "Attached capabilities:": "挂载能力：",
   "Failure handling:": "失败处理：",
   "Agent roster": "智能体阵容",
@@ -545,6 +546,8 @@ const ZH_COPY: Record<string, string> = {
   "This capability is blocked until its required flags/tools are enabled.":
     "必须启用所需标记/工具后，此能力才可用。",
   "Default runtime prompt": "默认运行时提示词",
+  "Stage instructions": "阶段任务说明",
+  "System prompt": "系统提示词",
   "Runtime policy": "运行时策略",
   "Stop policy": "停止策略",
   "Stop policy:": "停止策略：",
@@ -614,6 +617,8 @@ const ZH_COPY: Record<string, string> = {
     "此阶段目前不会在运行时解释器中使用提示词覆盖。",
   "This stage currently relies on runtime behavior rather than a prompt template.":
     "此阶段当前依赖运行时行为，而不是提示词模板。",
+  "This stage currently relies on the owning agent's system prompt.":
+    "此阶段当前依赖所属智能体的系统提示词。",
   "Override the runtime prompt template for this stage.":
     "覆盖此阶段的运行时提示词模板。",
   "Available runtime variables:": "可用运行时变量：",

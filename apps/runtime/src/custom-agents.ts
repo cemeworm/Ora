@@ -279,6 +279,7 @@ export class SystemAgentOverrideFileStore {
       ...profile,
       label: override.label ?? profile.label,
       role: override.role ?? profile.role,
+      systemPrompt: override.soul.trim() ? override.soul : profile.systemPrompt,
       modelRef: override.modelRef ?? profile.modelRef,
       toolIds: override.toolIds ?? profile.toolIds,
       skillIds: override.skillIds ?? profile.skillIds,

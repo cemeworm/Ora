@@ -219,7 +219,7 @@ describe("SessionManager", () => {
       method: "runs.start",
       params: {
         input: { prompt: "Persist enabled LangGraph state." },
-        config: { pattern: "generator_verifier" }
+        config: { pattern: "generator_verifier", metadata: { langGraphOrchestration: true } }
       }
     }) as { runId: string; status: string };
     const state = StateSnapshotSchema.parse(
@@ -264,7 +264,7 @@ describe("SessionManager", () => {
       method: "runs.start",
       params: {
         input: { prompt: "Exercise the managed lifecycle." },
-        config: { pattern: "agent_teams" },
+        config: { pattern: "agent_teams", metadata: { langGraphOrchestration: true } },
       },
     }) as { runId: string };
 
@@ -365,7 +365,7 @@ describe("SessionManager", () => {
       method: "runs.start",
       params: {
         input: { prompt: "Clarify the managed graph." },
-        config: { modeId: cloned.id, metadata: { disableDefaultWebTools: true } },
+        config: { modeId: cloned.id, metadata: { disableDefaultWebTools: true, langGraphOrchestration: true } },
       },
     }) as { runId: string; status: string };
 
@@ -432,7 +432,7 @@ describe("SessionManager", () => {
         input: { prompt: "Approve the first graph node." },
         config: {
           pattern: "orchestrator_subagent",
-          metadata: { approvalMode: "manual", disableDefaultWebTools: true },
+          metadata: { approvalMode: "manual", disableDefaultWebTools: true, langGraphOrchestration: true },
         },
       },
     }) as { runId: string; status: string };
@@ -560,7 +560,7 @@ describe("SessionManager", () => {
         config: {
           modeId: cloned.id,
           approvalMode: "high_risk_only",
-          metadata: { disableDefaultWebTools: true },
+          metadata: { disableDefaultWebTools: true, langGraphOrchestration: true },
         },
       },
     }) as { runId: string; status: string };

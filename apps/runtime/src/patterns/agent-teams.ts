@@ -15,7 +15,7 @@ async function triageNode(state: OraGraphState): Promise<Partial<OraGraphState>>
   ensureGraphManualApproval(state, "triage", "Triage");
   const model = await invokeRunProvider(state.config, {
     prompt: `Triage this work into a team backlog: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are Ora's team lead. Keep ownership explicit."),
+    system: withGraphPersona(state, "", "team_lead"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });
@@ -36,7 +36,7 @@ async function buildNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Complete the builder assignment for: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are Ora's persistent builder teammate."),
+    system: withGraphPersona(state, "", "builder"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });
@@ -58,7 +58,7 @@ async function checkNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Validate the builder output for: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are Ora's persistent checker teammate."),
+    system: withGraphPersona(state, "", "checker"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
   });

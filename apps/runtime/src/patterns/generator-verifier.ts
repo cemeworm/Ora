@@ -23,7 +23,8 @@ async function draftNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
     ].join("\n"),
     system: withGraphPersona(
       state,
-      "You are the generator in Ora's Generator-Verifier pattern. Return only the candidate response.",
+      "",
+      "generator",
     ),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens
@@ -61,7 +62,8 @@ async function verifyNode(state: OraGraphState): Promise<Partial<OraGraphState>>
     ].join("\n"),
     system: withGraphPersona(
       state,
-      "You are the verifier in Ora's Generator-Verifier pattern. Return only JSON with verdict, rationale, and missingRequirements.",
+      "",
+      "verifier",
     ),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens

@@ -9,9 +9,9 @@ import { LocalRunStore, OraRuntimeError } from "./run-store.js";
 import { SessionManager } from "./session/session-manager.js";
 import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
-import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
+import { executeRuntimeKernel, type RuntimeKernelOptions } from "./harness/runtime-kernel.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
-import type { RunEventStream } from "@ora/shared";
+import type { RunConfig, RunEventStream, UserTaskInput } from "@ora/shared";
 import { PackageManager } from "./package-manager.js";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
@@ -28,6 +28,29 @@ export function createRuntimeMethodHandler(
   const providerRegistry = createDefaultProviderRegistry().config;
   const toolRegistry = new RuntimeToolRegistry().snapshot();
   const packageManager = new PackageManager();
+  const executeKernelSnapshot = async (
+    runId: string,
+    input: UserTaskInput,
+    config: RunConfig,
+    args: {
+      modeSpec: RuntimeKernelOptions["modeSpec"];
+      definition: RuntimeKernelOptions["definition"];
+      customAgentOverlay?: string;
+      systemAgentOverlays?: Record<string, string>;
+      customAgentContexts?: RuntimeKernelOptions["customAgentContexts"];
+      conversationMessages?: RuntimeKernelOptions["conversationMessages"];
+    },
+  ) => {
+    const { snapshot } = await executeRuntimeKernel(runId, input, withRuntimeRoute(config, "runtime-kernel"), {
+      modeSpec: args.modeSpec,
+      definition: args.definition,
+      customAgentOverlay: args.customAgentOverlay,
+      systemAgentOverlays: args.systemAgentOverlays,
+      customAgentContexts: args.customAgentContexts,
+      conversationMessages: args.conversationMessages,
+    });
+    return snapshot;
+  };
   return (request) => {
     switch (request.method) {
       case "runtime.health":
@@ -158,23 +181,24 @@ export function createRuntimeMethodHandler(
       case "runs.start":
         if (sessionManager.isEnabled()) {
           return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay, systemAgentOverlays, customAgentContexts }) => {
-            if (config.toolIds.some((toolId) => toolId === "web.search" || toolId === "web.fetch")) {
-              const { snapshot } = await executeRuntimeKernel(runId, input, config, {
+            if (shouldUseLangGraphOrchestration(config)) {
+              return sessionManager.startRun(runId, input, withRuntimeRoute(config, "langgraph-orchestration"), conversationMessages, {
                 modeSpec,
                 definition,
                 customAgentOverlay,
                 systemAgentOverlays,
                 customAgentContexts,
-                conversationMessages,
+                sessionId,
+                turnIndex,
               });
-              return snapshot;
             }
-            return sessionManager.startRun(runId, input, config, conversationMessages, {
+            return executeKernelSnapshot(runId, input, config, {
               modeSpec,
               definition,
               customAgentOverlay,
-              sessionId,
-              turnIndex,
+              systemAgentOverlays,
+              customAgentContexts,
+              conversationMessages,
             });
           });
         }
@@ -258,14 +282,27 @@ export function createRuntimeMethodHandler(
                 input,
                 config,
               },
-              ({ runId, input: nextInput, config: nextConfig, modeSpec, definition, sessionId, turnIndex, customAgentOverlay }) =>
-                sessionManager.startRun(runId, nextInput, nextConfig, undefined, {
+              ({ runId, input: nextInput, config: nextConfig, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay, systemAgentOverlays, customAgentContexts }) => {
+                if (shouldUseLangGraphOrchestration(nextConfig)) {
+                  return sessionManager.startRun(runId, nextInput, withRuntimeRoute(nextConfig, "langgraph-orchestration"), conversationMessages, {
+                    modeSpec,
+                    definition,
+                    customAgentOverlay,
+                    systemAgentOverlays,
+                    customAgentContexts,
+                    sessionId,
+                    turnIndex,
+                  });
+                }
+                return executeKernelSnapshot(runId, nextInput, nextConfig, {
                   modeSpec,
                   definition,
                   customAgentOverlay,
-                  sessionId,
-                  turnIndex,
-                })
+                  systemAgentOverlays,
+                  customAgentContexts,
+                  conversationMessages,
+                });
+              }
             );
             if (!handle) {
               throw new OraRuntimeError("LangGraph evaluation run did not produce a snapshot.", -32003);
@@ -336,6 +373,23 @@ async function withManagedSnapshot(
       : store.persistExternalSnapshot(snapshot as Parameters<LocalRunStore["persistExternalSnapshot"]>[0]);
   }
   return fallback();
+}
+
+function shouldUseLangGraphOrchestration(config: RunConfig): boolean {
+  return config.metadata.langGraphOrchestration === true;
+}
+
+function withRuntimeRoute(
+  config: RunConfig,
+  runtimeRoute: "runtime-kernel" | "langgraph-orchestration",
+): RunConfig {
+  return {
+    ...config,
+    metadata: {
+      ...config.metadata,
+      runtimeRoute,
+    },
+  };
 }
 
 function readRunId(params: unknown): string {

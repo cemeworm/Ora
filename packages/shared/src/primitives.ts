@@ -95,6 +95,7 @@ export const AgentProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   role: z.string().min(1),
+  systemPrompt: z.string().min(1).optional(),
   customAgentId: z.string().min(1).optional(),
   modelRef: z.string().min(1).optional(),
   toolPolicyId: z.string().min(1),

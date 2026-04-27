@@ -248,6 +248,7 @@ describe("custom agent runtime behavior", () => {
         config: {
           pattern: "orchestrator_subagent",
           customAgentId: "langgraph-review-bot",
+          metadata: { langGraphOrchestration: true },
         },
       },
     });

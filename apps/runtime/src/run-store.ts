@@ -1318,7 +1318,7 @@ export class LocalRunStore {
           toolIds: effectiveProfile.toolIds,
           skillIds: effectiveProfile.skillIds,
           memoryNamespaces: effectiveProfile.memoryNamespaces,
-          soul: override?.soul ?? "",
+          soul: override?.soul ?? effectiveProfile.systemPrompt ?? "",
           overridden: override !== undefined,
           ...(override ? { override } : {}),
           usages: [],
@@ -4611,7 +4611,7 @@ function modeStudioBuilderSystemPrompt(): string {
     "The JSON shape is: {\"assistantMessage\": string, \"needsInput\": boolean, \"modeDraft\": ModeSpec, \"agentDrafts\": CustomAgentGeneratedDraft[], \"changeSummary\": string[], \"issues\": [{\"field\": string, \"message\": string}]}",
     "ModeDraft must use Ora ModeSpec fields exactly. Keep family and node templates compatible with the selected topology.",
     "Name the mode for the actual user purpose, not by copying the entire prompt. Use a concise human label and a lowercase kebab-case id.",
-    "Every enabled stage must have ownerAgentId, a concrete prompt, and config.story explaining what happens in that stage.",
+    "Every enabled stage must have ownerAgentId, concrete instructions, a concrete prompt, and config.story explaining what happens in that stage.",
     "Every generated agent must include name, description, toolGroups, toolIds, skillIds, and long-form soul instructions.",
     "If the current draft contains manual edits, preserve them unless the user explicitly asks to change them.",
     "Set systemPreset false and visibility user on generated modes.",
@@ -4911,6 +4911,7 @@ function enrichModeStudioGeneratedDraft(
   const profiles = mode.profiles.map((profile, index) => ({
     ...profile,
     customAgentId: profile.customAgentId ?? agentNames[index] ?? params.currentDraft?.profiles[index]?.customAgentId,
+    systemPrompt: profile.systemPrompt ?? params.agentDrafts[index]?.soul ?? profile.role,
     toolIds: profile.toolIds.length > 0 ? profile.toolIds : params.agentDrafts[index]?.toolIds ?? profile.toolIds,
     skillIds: profile.skillIds.length > 0 ? profile.skillIds : params.agentDrafts[index]?.skillIds ?? profile.skillIds,
   }));
@@ -4927,9 +4928,15 @@ function enrichModeStudioGeneratedDraft(
         : currentNode?.prompt?.trim()
           ? currentNode.prompt
           : modeStudioNodePrompt(node.template, params.text, undefined);
+      const instructions = node.instructions?.trim()
+        ? node.instructions
+        : currentNode?.instructions?.trim()
+          ? currentNode.instructions
+          : getModeNodeRuntimeTemplateDefinition(mode.family, node.template).fallbackInstructions;
       return {
         ...node,
         ownerAgentId,
+        instructions,
         prompt,
         config: {
           ...currentNode?.config,

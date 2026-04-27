@@ -11,7 +11,7 @@ async function routeNode(state: OraGraphState): Promise<Partial<OraGraphState>> 
   ensureGraphManualApproval(state, "route", "Route");
   const model = await invokeRunProvider(state.config, {
     prompt: `Route this task onto the correct message-bus topic: ${state.input.prompt}`,
-    system: withGraphPersona(state, "You are the bus router. Return a compact routing decision."),
+    system: withGraphPersona(state, "", "router"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens,
   });
@@ -29,7 +29,7 @@ async function handleNode(state: OraGraphState): Promise<Partial<OraGraphState>>
   const output = state.output as Record<string, unknown>;
   const model = await invokeRunProvider(state.config, {
     prompt: `Handle this routed message for: ${state.input.prompt}\nRoute: ${output.route}`,
-    system: withGraphPersona(state, "You are the bus subscriber. Return the handled result."),
+    system: withGraphPersona(state, "", "investigator"),
     messages: state.conversationMessages,
     maxTokens: state.config.budget?.maxTokens,
   });

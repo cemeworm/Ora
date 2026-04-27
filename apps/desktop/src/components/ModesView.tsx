@@ -1104,6 +1104,7 @@ function ModeInspector({
         <ModeAgentRosterPanel
           draft={draft}
           customAgents={customAgents}
+          language={language}
           onPatchDraft={onPatchDraft}
         />
       )}
@@ -1394,6 +1395,7 @@ function StageExplanationPanel({
       <div className="mt-4 grid gap-2 text-sm text-bench-800">
         <p><span className="font-semibold">{translateCopy(language, "Owner:")}</span> {owner}</p>
         <p><span className="font-semibold">{translateCopy(language, "Template:")}</span> {formatEnumLabel(language, node.template)}</p>
+        <p><span className="font-semibold">{translateCopy(language, "Stage instructions:")}</span> {stageInstructionsPreview(language, mode.family, node)}</p>
         <p><span className="font-semibold">{translateCopy(language, "Attached capabilities:")}</span> {nodeAtoms.map((atom) => displayText(language, atom.label)).join(", ") || translateCopy(language, "none")}</p>
         <p><span className="font-semibold">{translateCopy(language, "Failure handling:")}</span> {stageFailureSummary(language, mode, node)}</p>
       </div>
@@ -1586,10 +1588,12 @@ function ModeSettingsPanel({
 function ModeAgentRosterPanel({
   draft,
   customAgents,
+  language,
   onPatchDraft,
 }: {
   draft: OraModeSpec;
   customAgents: OraCustomAgentSummary[];
+  language: AppLanguage;
   onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
 }) {
   return (
@@ -1612,6 +1616,9 @@ function ModeAgentRosterPanel({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-bench-900">{profile.label}</p>
                   <p className="mt-1 line-clamp-2 text-xs leading-5 text-bench-700">{profile.role}</p>
+                  {profile.systemPrompt && (
+                    <p className="mt-2 line-clamp-2 text-xs leading-5 text-bench-600">{profile.systemPrompt}</p>
+                  )}
                 </div>
                 <span className="shrink-0 rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-bench-700 ring-1 ring-inset ring-bench-200">
                   {profile.id}
@@ -1646,6 +1653,21 @@ function ModeAgentRosterPanel({
                   <option key={agent.name} value={agent.name}>{agent.name}</option>
                 ))}
               </Select>
+              <label className="mt-3 grid gap-1 text-sm">
+                <span className="text-bench-700">{translateCopy(language, "System prompt")}</span>
+                <textarea
+                  value={profile.systemPrompt ?? ""}
+                  onChange={(event) => onPatchDraft((current) => ({
+                    ...current,
+                    profiles: current.profiles.map((item) =>
+                      item.id === profile.id ? { ...item, systemPrompt: event.target.value || undefined } : item,
+                    ),
+                  }))}
+                  rows={4}
+                  className="rounded-md border border-bench-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-bench-500"
+                  placeholder="Configure this agent's system prompt."
+                />
+              </label>
               <div className="mt-2 space-y-1 text-[11px] leading-5 text-bench-600">
                 <p>Tools: {profile.toolIds.length > 0 ? profile.toolIds.join(", ") : "inherit mode tools"}</p>
                 <p>Skills: {profile.skillIds.length > 0 ? profile.skillIds.join(", ") : "inherit mode skills"}</p>
@@ -2628,6 +2650,16 @@ function NodeInspector({
             />
           </label>
           <label className="grid gap-1 text-sm">
+            <span className="text-bench-700">{translateCopy(language, "Stage instructions")}</span>
+            <textarea
+              value={node.instructions ?? ""}
+              onChange={(event) => onPatchNode((current) => ({ ...current, instructions: event.target.value || undefined }))}
+              rows={4}
+              className="rounded-md border border-bench-200 px-3 py-2 outline-none"
+              placeholder={defaultRuntimeInstructionsPreview(language, draft.family, node.template)}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
             <span className="text-bench-700">Prompt override</span>
             <textarea
               value={node.prompt ?? ""}
@@ -3177,6 +3209,20 @@ function promptOverrideHint(language: AppLanguage, family: CoordinationPattern, 
   return variables.length > 0
     ? `${description} ${translateCopy(language, "Available runtime variables:")} ${variables.join(", ")}.`
     : description;
+}
+
+function stageInstructionsPreview(
+  language: AppLanguage,
+  family: CoordinationPattern,
+  node: OraModeSpec["nodes"][number],
+): string {
+  return node.instructions
+    ?? defaultRuntimeInstructionsPreview(language, family, node.template);
+}
+
+function defaultRuntimeInstructionsPreview(language: AppLanguage, family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
+  const definition = getModeNodeRuntimeTemplateDefinition(family, template);
+  return definition.fallbackInstructions ?? translateCopy(language, "This stage currently relies on the owning agent's system prompt.");
 }
 
 function defaultRuntimePromptPreview(language: AppLanguage, family: CoordinationPattern, template: OraModeSpec["nodes"][number]["template"]): string {
