@@ -55,6 +55,10 @@ import {
   ModeValidationResultSchema,
   MVP_TOOLS,
   MemoryRecordSchema,
+  ModeStudioApplyDraftParamsSchema,
+  ModeStudioDraftBundleSchema,
+  ModeStudioGenerateDraftParamsSchema,
+  ModeStudioGuidanceSchema,
   OraEventEnvelopeSchema,
   OraToolCallEnvelopeSchema,
   OpenAICompatibleProtocolSchema,
@@ -693,6 +697,62 @@ describe("Ora shared contracts", () => {
       issues: [{ field: "description", message: "Need a clearer purpose." }]
     });
     expect(followUp.status).toBe("needs_input");
+  });
+
+  it("validates Mode Studio guided builder contracts", () => {
+    const params = ModeStudioGenerateDraftParamsSchema.parse({
+      messages: [
+        { role: "user", content: "做一个代码审查 mode，builder 产出后 reviewer 严格检查风险和测试。" }
+      ],
+      baseModeId: "generator_verifier",
+      providerId: "local-smoke"
+    });
+    expect(params.messages[0]!.role).toBe("user");
+
+    const guidance = ModeStudioGuidanceSchema.parse({
+      step: "preview",
+      assistantMessage: "我生成了一版草稿。",
+      choices: [
+        {
+          id: "style-strict",
+          label: "Make review stricter",
+          description: "Tighten review criteria.",
+          prompt: "让 reviewer 更严格。"
+        }
+      ]
+    });
+    expect(guidance.choices).toHaveLength(1);
+
+    const modeDraft = {
+      ...MVP_MODES[0]!,
+      id: "code-review-mode",
+      label: "Code Review Mode",
+      systemPreset: false,
+      profiles: MVP_MODES[0]!.profiles.map((profile) => ({
+        ...profile,
+        customAgentId: `${profile.id}-agent`,
+        toolIds: ["file.read"],
+      })),
+    };
+    const bundle = ModeStudioDraftBundleSchema.parse({
+      modeDraft,
+      agentDrafts: [
+        {
+          name: "generator-agent",
+          description: "Generator for code review mode.",
+          toolGroups: ["files"],
+          toolIds: ["file.read"],
+          skillIds: [],
+          soul: "Produce the candidate answer."
+        }
+      ],
+      guidance,
+      changeSummary: ["Selected generator-verifier topology."],
+      validation: { valid: true, errors: [], warnings: [] },
+      needsInput: false
+    });
+    expect(bundle.modeDraft.profiles[0]!.customAgentId).toBe("generator-agent");
+    expect(ModeStudioApplyDraftParamsSchema.parse({ draftBundle: bundle }).saveAgentDrafts).toBe(true);
   });
 
   it("validates second milestone run API contracts", () => {
@@ -1740,6 +1800,8 @@ describe("Project thread contracts", () => {
     expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.insights.list")).toBe("feedbackLoop.insights.list");
     expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.actions.apply")).toBe("feedbackLoop.actions.apply");
     expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.rules.update")).toBe("feedbackLoop.rules.update");
+    expect(RuntimeJsonRpcMethodSchema.parse("modeStudio.generateDraft")).toBe("modeStudio.generateDraft");
+    expect(RuntimeJsonRpcMethodSchema.parse("modeStudio.applyDraft")).toBe("modeStudio.applyDraft");
   });
 });
 

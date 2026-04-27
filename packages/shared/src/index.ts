@@ -5,6 +5,7 @@ export * from "./topology.js";
 export * from "./providers.js";
 export * from "./capabilities.js";
 export * from "./modes.js";
+export * from "./mode-studio-builder.js";
 export * from "./runtime.js";
 export * from "./evaluation.js";
 export * from "./feedback-loop.js";

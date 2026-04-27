@@ -60,6 +60,16 @@ export function createRuntimeMethodHandler(
         return store.validateMode(request.params);
       case "modes.cloneFromPreset":
         return store.cloneModeFromPreset(request.params);
+      case "modeStudio.context":
+        return store.modeStudioContext();
+      case "modeStudio.generateDraft":
+        return store.generateModeStudioDraft(request.params);
+      case "modeStudio.refineDraft":
+        return store.refineModeStudioDraft(request.params);
+      case "modeStudio.validateDraft":
+        return store.validateModeStudioDraft(request.params);
+      case "modeStudio.applyDraft":
+        return store.applyModeStudioDraft(request.params);
       case "tools.list":
         return ToolRegistrySchema.parse(toolRegistry);
       case "skills.list":

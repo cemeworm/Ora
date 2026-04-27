@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, Copy, Database, FileText, GitBranchPlus, Globe, ListTree, PencilLine, Plug, Plus, RefreshCcw, Save, Search, Terminal, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, Database, FileText, GitBranchPlus, Globe, ListTree, PencilLine, Plug, Plus, RefreshCcw, Save, Search, Sparkles, Terminal, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
@@ -46,7 +46,7 @@ import {
 } from "../lib/modeCanvas";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
-import type { OraCustomAgentSummary, OraModeCreateParams, OraModeSpec, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
+import type { OraCustomAgentSummary, OraModeCreateParams, OraModeSpec, OraModeStudioDraftBundle, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { Checkbox } from "./ui/checkbox";
 import { Select } from "./ui/select";
@@ -70,6 +70,9 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   const [error, setError] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [pendingTemplate, setPendingTemplate] = useState<string>("");
+  const [builderInput, setBuilderInput] = useState("");
+  const [builderMessages, setBuilderMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [builderBundle, setBuilderBundle] = useState<OraModeStudioDraftBundle | undefined>();
 
   useEffect(() => {
     setModes(state.modes);
@@ -285,6 +288,73 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
     }
   }
 
+  async function submitBuilder(promptOverride?: string) {
+    const content = (promptOverride ?? builderInput).trim();
+    if (!content) return;
+    const nextMessages = [
+      ...builderMessages,
+      { role: "user" as const, content },
+    ];
+    setBuilderInput("");
+    setBuilderMessages(nextMessages);
+    setBusy("builder");
+    try {
+      const result = builderBundle
+        ? await runtimeClient.refineModeStudioDraft({
+            messages: nextMessages,
+            draftBundle: builderBundle,
+            currentDraft: draft,
+          })
+        : await runtimeClient.generateModeStudioDraft({
+            messages: nextMessages,
+            baseModeId: selectedMode?.id,
+            currentDraft: draft,
+          });
+      setBuilderBundle(result);
+      setBuilderMessages([...nextMessages, { role: "assistant", content: result.guidance.assistantMessage }]);
+      setDraft(hydrateModeDraft(result.modeDraft));
+      setValidation(result.validation);
+      setEditorMode(editingModeId ? "edit" : "create");
+      setSelectedNodeId(result.modeDraft.nodes[0]?.id);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Mode builder failed.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function applyBuilderBundle() {
+    if (!builderBundle) return;
+    setBusy("builder:apply");
+    try {
+      const bundle = draft
+        ? { ...builderBundle, modeDraft: draft }
+        : builderBundle;
+      const result = await runtimeClient.applyModeStudioDraft({
+        draftBundle: bundle,
+        updateModeId: editingModeId,
+        saveAgentDrafts: true,
+      });
+      const nextModes = await runtimeClient.listModes();
+      setModes(nextModes);
+      dispatch({ type: "SET_MODES", modes: nextModes });
+      dispatch({ type: "SET_MODE", modeId: result.mode.id });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${result.mode.label} generated and selected for the next turn.` });
+      setBuilderBundle(undefined);
+      setDraft(undefined);
+      setSelectedNodeId(undefined);
+      setEditingModeId(undefined);
+      setEditorMode("gallery");
+      void refreshCustomAgents();
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to apply generated mode.");
+    } finally {
+      setBusy("");
+    }
+  }
+
   function exitEditor() {
     setDraft(undefined);
     setSelectedNodeId(undefined);
@@ -417,6 +487,73 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                 <Copy size={14} />
                 Clone preset
               </button>
+            )}
+          </div>
+        </div>
+
+        <div className="border-b border-border px-4 py-4">
+          <div className="rounded-xl border border-bench-200 bg-white p-3 shadow-pane">
+            <div className="flex items-center gap-2">
+              <Sparkles size={15} className="text-bench-700" />
+              <div>
+                <div className="text-sm font-semibold">Builder agent</div>
+                <div className="text-xs text-bench-700">Guide mode, agents, style, tools</div>
+              </div>
+            </div>
+            <textarea
+              value={builderInput}
+              onChange={(event) => setBuilderInput(event.target.value)}
+              rows={4}
+              placeholder="Describe the mode you want..."
+              className="mt-3 min-h-24 w-full resize-none rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-500 focus:bg-white"
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                onClick={() => void submitBuilder()}
+                disabled={busy === "builder" || !builderInput.trim()}
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white transition hover:bg-bench-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Sparkles size={14} />
+                Generate
+              </button>
+              {builderBundle && (
+                <button
+                  onClick={() => void applyBuilderBundle()}
+                  disabled={busy === "builder:apply" || !builderBundle.validation.valid}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Save size={14} />
+                  Apply
+                </button>
+              )}
+            </div>
+            {builderBundle && (
+              <div className="mt-3 space-y-3">
+                <div className="rounded-md bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-800">
+                  {builderBundle.guidance.assistantMessage}
+                </div>
+                {builderBundle.guidance.choices.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {builderBundle.guidance.choices.map((choice) => (
+                      <button
+                        key={choice.id}
+                        onClick={() => void submitBuilder(choice.prompt)}
+                        className="rounded-md border border-bench-200 bg-white px-2 py-1 text-left text-xs font-semibold text-bench-800 transition hover:bg-bench-50"
+                        title={choice.description}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {builderBundle.changeSummary.length > 0 && (
+                  <ul className="space-y-1 text-xs leading-5 text-bench-700">
+                    {builderBundle.changeSummary.slice(0, 3).map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
         </div>

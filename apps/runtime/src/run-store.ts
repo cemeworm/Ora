@@ -24,9 +24,21 @@ import {
   DEFAULT_RESOURCE_BUDGETS,
   EvaluationFeedbackDraftCaseSchema,
   EvaluationFeedbackRecord,
+  ModeStudioApplyDraftParamsSchema,
+  ModeStudioApplyDraftResult,
+  ModeStudioApplyDraftResultSchema,
+  ModeStudioContextResult,
+  ModeStudioContextResultSchema,
+  ModeStudioDraftBundle,
+  ModeStudioDraftBundleSchema,
+  ModeStudioGenerateDraftParams,
+  ModeStudioGenerateDraftParamsSchema,
+  ModeStudioRefineDraftParamsSchema,
+  ModeStudioValidateDraftParamsSchema,
   createModeSpecFromPattern,
   getPatternDefinition,
   modeSpecToPatternDefinition,
+  MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
   orderedEnabledModeNodes,
   type ModeCreateParams,
@@ -101,7 +113,7 @@ import {
   TodoService,
 } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
-import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
+import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { FileLongTermMemoryStore, LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
 import type { LongTermMemoryUpdateTask } from "./memory.js";
@@ -520,6 +532,177 @@ export class LocalRunStore {
 
   cloneModeFromPreset(params: unknown): ModeSpec {
     return this.modeStore.cloneFromPreset(params);
+  }
+
+  modeStudioContext(): ModeStudioContextResult {
+    return ModeStudioContextResultSchema.parse({
+      modes: this.listModes(),
+      agents: this.listAgents(),
+      tools: new RuntimeToolRegistry().snapshot(),
+      skills: this.listSkills(),
+      atoms: MVP_MODE_RUNTIME_ATOMS,
+    });
+  }
+
+  generateModeStudioDraft(params: ModeStudioGenerateDraftParams | unknown): ModeStudioDraftBundle {
+    const parsed = ModeStudioGenerateDraftParamsSchema.parse(params);
+    return this.buildModeStudioDraft(parsed);
+  }
+
+  refineModeStudioDraft(params: unknown): ModeStudioDraftBundle {
+    const parsed = ModeStudioRefineDraftParamsSchema.parse(params);
+    return this.buildModeStudioDraft({
+      ...parsed,
+      currentDraft: parsed.draftBundle.modeDraft,
+    });
+  }
+
+  validateModeStudioDraft(params: unknown): ModeStudioDraftBundle {
+    const parsed = ModeStudioValidateDraftParamsSchema.parse(params);
+    return this.withModeStudioValidation(parsed.draftBundle);
+  }
+
+  applyModeStudioDraft(params: unknown): ModeStudioApplyDraftResult {
+    const parsed = ModeStudioApplyDraftParamsSchema.parse(params);
+    const bundle = this.withModeStudioValidation(parsed.draftBundle);
+    if (!bundle.validation.valid) {
+      throw new Error(`Mode Studio draft is invalid: ${bundle.validation.errors.join(" ")}`);
+    }
+    const savedAgents: CustomAgentSummary[] = [];
+    if (parsed.saveAgentDrafts) {
+      for (const draft of bundle.agentDrafts) {
+        const creatable = CustomAgentCreateParamsSchema.safeParse(draft);
+        if (!creatable.success) {
+          throw new Error(`Agent draft '${draft.name || "unnamed"}' is invalid: ${creatable.error.issues.map((issue) => issue.message).join(" ")}`);
+        }
+        const existing = this.customAgentStore.checkName({ name: creatable.data.name });
+        const saved = existing.available
+          ? this.customAgentStore.create(creatable.data)
+          : this.customAgentStore.update({
+              name: creatable.data.name,
+              description: creatable.data.description,
+              model: creatable.data.model ?? null,
+              toolGroups: creatable.data.toolGroups,
+              toolIds: creatable.data.toolIds,
+              skillIds: creatable.data.skillIds,
+              soul: creatable.data.soul,
+            });
+        const { soul: _soul, ...summary } = saved;
+        savedAgents.push(summary);
+      }
+    }
+    const modeParams = modeCreateParamsFromSpec(bundle.modeDraft);
+    const mode = parsed.updateModeId
+      ? this.updateMode({ modeId: parsed.updateModeId, spec: modeParams })
+      : this.createMode(modeParams);
+    return ModeStudioApplyDraftResultSchema.parse({ mode, agents: savedAgents });
+  }
+
+  private buildModeStudioDraft(params: ModeStudioGenerateDraftParams): ModeStudioDraftBundle {
+    const userText = modeStudioUserText(params.messages);
+    const source = this.modeStudioSourceMode(params);
+    if (isVagueModeStudioRequest(userText)) {
+      return this.withModeStudioValidation(ModeStudioDraftBundleSchema.parse({
+        modeDraft: prepareModeStudioDraft(source, userText, [], params),
+        agentDrafts: [],
+        guidance: {
+          step: "topology",
+          assistantMessage: "我可以帮你把这个 mode 串起来。先选一个编排方向：单个 agent、生成-验证、主控派发，还是多个 agent 分工并行？",
+          choices: modeStudioTopologyChoices(),
+        },
+        changeSummary: ["Started a draft from the selected mode so choices can be previewed safely."],
+        validation: { valid: false, errors: [], warnings: [] },
+        needsInput: true,
+      }));
+    }
+
+    const family = inferModeStudioFamily(userText, source.family);
+    const pattern = getPatternDefinition(family);
+    const base = params.currentDraft && params.currentDraft.family === family
+      ? params.currentDraft
+      : createModeSpecFromPattern(family);
+    const rolePlans = modeStudioRolePlans(family, userText);
+    const usedNames = new Set(this.listAgents().map((agent) => agent.name));
+    const agentDrafts = rolePlans.map((role) => modeStudioAgentDraft(role, userText, usedNames));
+    const modeDraft = prepareModeStudioDraft(base, userText, agentDrafts, params);
+    const profiles = rolePlans.map((role, index) => {
+      const draft = agentDrafts[index]!;
+      return {
+        id: role.profileId,
+        label: role.label,
+        role: role.role,
+        customAgentId: draft.name,
+        modelRef: params.modelRef ?? params.providerConfig?.modelId ?? base.profiles[index]?.modelRef ?? "local/smoke-model",
+        toolPolicyId: base.profiles[index]?.toolPolicyId ?? `${family}.default`,
+        toolIds: draft.toolIds,
+        skillIds: draft.skillIds,
+        memoryNamespaces: base.profiles[index]?.memoryNamespaces ?? ["session", "project"],
+        budget: base.profiles[index]?.budget ?? DEFAULT_RESOURCE_BUDGETS[family],
+      };
+    });
+    const toolIds = [...new Set(agentDrafts.flatMap((agent) => agent.toolIds))];
+    const skillIds = [...new Set(agentDrafts.flatMap((agent) => agent.skillIds))];
+    const runtimeAtoms = modeStudioRuntimeAtoms(family, userText, base.runtimeAtoms);
+    const nextDraft = {
+      ...modeDraft,
+      family,
+      summary: modeStudioSummary(userText, pattern.summary),
+      description: modeStudioDescription(userText, pattern),
+      recommendedUse: `Use when the user wants: ${modeStudioPurpose(userText)}.`,
+      failureMode: pattern.failureMode,
+      profiles,
+      nodes: modeDraft.nodes.map((node) => ({
+        ...node,
+        ownerAgentId: ownerForModeStudioTemplate(node.template, rolePlans) ?? node.ownerAgentId,
+        prompt: modeStudioNodePrompt(node.template, userText, node.prompt),
+      })),
+      capabilityFlags: {
+        ...modeDraft.capabilityFlags,
+        supportsPersistentWorkers: pattern.supportsPersistentWorkers,
+        supportsSharedState: pattern.supportsSharedState,
+        supportsEventRouting: pattern.supportsEventRouting,
+        toolIds,
+        skillIds,
+      },
+      runtimeAtoms,
+      updatedAt: Date.now(),
+    };
+    const guidance = modeStudioGuidance(family, userText);
+    return this.withModeStudioValidation(ModeStudioDraftBundleSchema.parse({
+      modeDraft: nextDraft,
+      agentDrafts,
+      guidance,
+      changeSummary: [
+        `Selected ${pattern.label} because the request implies ${modeStudioFamilyReason(family)}.`,
+        `Drafted ${agentDrafts.length} agent${agentDrafts.length === 1 ? "" : "s"} with role-specific style and capabilities.`,
+        toolIds.length > 0 ? `Mounted ${toolIds.length} tool${toolIds.length === 1 ? "" : "s"} across the agent roster.` : "Kept tools minimal until the user asks for more capability.",
+      ],
+      validation: { valid: false, errors: [], warnings: [] },
+      needsInput: false,
+    }));
+  }
+
+  private modeStudioSourceMode(params: ModeStudioGenerateDraftParams): ModeSpec {
+    if (params.currentDraft) {
+      return params.currentDraft;
+    }
+    if (params.baseModeId) {
+      try {
+        return this.modeStore.get({ modeId: params.baseModeId });
+      } catch {
+        // Fall back to the default pattern when a stale UI reference is supplied.
+      }
+    }
+    return this.listModes().find((mode) => mode.id === SINGLE_AGENT_MODE_ID)
+      ?? createModeSpecFromPattern("orchestrator_subagent");
+  }
+
+  private withModeStudioValidation(bundle: ModeStudioDraftBundle): ModeStudioDraftBundle {
+    const validation = this.validateMode({ spec: bundle.modeDraft });
+    return ModeStudioDraftBundleSchema.parse({
+      ...bundle,
+      validation,
+    });
   }
 
   createProject(params: unknown = {}): ProjectSummary {
@@ -3453,6 +3636,356 @@ function fieldFromPath(pathValue: Array<string | number>): "name" | "description
     field === "soul"
     ? field
     : "general";
+}
+
+interface ModeStudioRolePlan {
+  profileId: string;
+  label: string;
+  role: string;
+  style: string;
+  toolIntent: "minimal" | "research" | "code" | "review";
+}
+
+function modeStudioUserText(messages: Array<{ role: "user" | "assistant"; content: string }>): string {
+  return messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function isVagueModeStudioRequest(text: string): boolean {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length < 10) return true;
+  const words = compact.split(/\s+/).filter(Boolean);
+  return words.length < 3 && !/[\u4e00-\u9fff]/.test(compact);
+}
+
+function inferModeStudioFamily(text: string, fallback: CoordinationPattern): CoordinationPattern {
+  const lower = text.toLowerCase();
+  if (/(parallel|team|roles|roster|multiple|多人|多个|并行|分工|团队)/i.test(lower)) return "agent_teams";
+  if (/(verify|verifier|review|critic|rubric|审核|审查|验证|互审|严格)/i.test(lower)) return "generator_verifier";
+  if (/(route|event|bus|publish|subscribe|routing|路由|事件|消息)/i.test(lower)) return "message_bus";
+  if (/(shared|blackboard|state|memory|collaborate|共享|黑板|状态|长期记忆)/i.test(lower)) return "shared_state";
+  if (/(decompose|delegate|orchestrate|subagent|拆解|派发|编排|主控)/i.test(lower)) return "orchestrator_subagent";
+  return fallback === "shared_state" || fallback === "message_bus" || fallback === "agent_teams" || fallback === "generator_verifier"
+    ? fallback
+    : "orchestrator_subagent";
+}
+
+function modeStudioRolePlans(family: CoordinationPattern, text: string): ModeStudioRolePlan[] {
+  const strict = /(strict|critical|risk|严谨|严格|风险|批判)/i.test(text);
+  const fast = /(fast|speed|quick|快速|速度|轻量)/i.test(text);
+  const creative = /(creative|brainstorm|idea|创意|发散)/i.test(text);
+  const plannerStyle = strict ? "careful planner" : creative ? "creative planner" : "structured planner";
+  const builderStyle = fast ? "fast builder" : strict ? "careful builder" : "focused builder";
+  const reviewerStyle = strict ? "strict reviewer" : "balanced reviewer";
+  if (family === "generator_verifier") {
+    return [
+      { profileId: "generator", label: "Generator", role: "Produce the candidate result from the user's goal.", style: builderStyle, toolIntent: "code" },
+      { profileId: "verifier", label: "Verifier", role: "Check the result against acceptance criteria and risks.", style: reviewerStyle, toolIntent: "review" },
+    ];
+  }
+  if (family === "agent_teams") {
+    return [
+      { profileId: "team_lead", label: "Team Lead", role: "Prioritize work and coordinate the agent roster.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: "builder", label: "Builder", role: "Complete assigned implementation or production work.", style: builderStyle, toolIntent: "code" },
+      { profileId: "checker", label: "Checker", role: "Validate outputs, edge cases, and missing evidence.", style: reviewerStyle, toolIntent: "review" },
+    ];
+  }
+  if (family === "message_bus") {
+    return [
+      { profileId: "router", label: "Router", role: "Classify requests and route them to the right handler.", style: "decisive router", toolIntent: "minimal" },
+      { profileId: "investigator", label: "Investigator", role: "Handle routed work and publish findings.", style: "evidence-first investigator", toolIntent: "research" },
+      { profileId: "responder", label: "Responder", role: "Synthesize routed findings into a final answer.", style: "clear responder", toolIntent: "review" },
+    ];
+  }
+  if (family === "shared_state") {
+    return [
+      { profileId: "seed_agent", label: "Seed Agent", role: "Seed the shared board with the first hypothesis and plan.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: "research_agent", label: "Research Agent", role: "Add new evidence and alternatives to shared state.", style: "curious researcher", toolIntent: "research" },
+      { profileId: "critic_agent", label: "Critic Agent", role: "Validate convergence and challenge weak assumptions.", style: reviewerStyle, toolIntent: "review" },
+    ];
+  }
+  return [
+    { profileId: "orchestrator", label: "Orchestrator", role: "Plan, delegate, and synthesize the mode run.", style: plannerStyle, toolIntent: "minimal" },
+    { profileId: "researcher", label: "Research Subagent", role: "Gather focused context before execution.", style: "evidence-first researcher", toolIntent: "research" },
+    { profileId: "reviewer", label: "Review Subagent", role: "Check completeness, risks, and acceptance criteria.", style: reviewerStyle, toolIntent: "review" },
+  ];
+}
+
+function modeStudioAgentDraft(role: ModeStudioRolePlan, text: string, usedNames: Set<string>): CustomAgentGeneratedDraft {
+  const name = uniqueModeStudioName(`${role.profileId}-${modeStudioPurpose(text)}`, usedNames);
+  const toolIds = modeStudioToolIds(role.toolIntent, text);
+  return CustomAgentGeneratedDraftSchema.parse({
+    name,
+    description: `${role.label} for ${modeStudioPurpose(text)}.`,
+    model: undefined,
+    toolGroups: modeStudioToolGroups(toolIds),
+    toolIds,
+    skillIds: [],
+    soul: [
+      `You are ${role.label}, a ${role.style} in an Ora Mode Studio generated mode.`,
+      `Primary responsibility: ${role.role}`,
+      `User goal: ${modeStudioPurpose(text)}.`,
+      "Make assumptions explicit, keep work scoped to your role, and hand off concrete evidence or decisions to the next agent.",
+      role.toolIntent === "review"
+        ? "Prioritize risks, missing tests, unclear acceptance criteria, and contradictions before summary."
+        : "Prefer concise, actionable outputs that another agent can inspect or build on.",
+    ].join("\n\n"),
+  });
+}
+
+function modeStudioToolIds(intent: ModeStudioRolePlan["toolIntent"], text: string): string[] {
+  const wantsWeb = /(web|search|research|source|sources|资料|搜索|来源|研究)/i.test(text);
+  const wantsCode = /(code|repo|file|shell|test|build|代码|仓库|文件|测试|构建|实现)/i.test(text);
+  const ids = new Set<string>();
+  if (intent === "research" || wantsWeb) {
+    for (const toolId of DEFAULT_WEB_TOOL_IDS) ids.add(toolId);
+  }
+  if (intent === "code" || wantsCode) {
+    ids.add("file.read");
+    ids.add("file.grep");
+    if (/(shell|test|build|命令|测试|构建)/i.test(text)) ids.add("shell.execute");
+  }
+  if (intent === "review") {
+    ids.add("file.read");
+    ids.add("file.grep");
+  }
+  return [...ids];
+}
+
+function modeStudioToolGroups(toolIds: string[]): string[] {
+  const groups = new Set<string>();
+  if (toolIds.some((toolId) => toolId.startsWith("web."))) groups.add("web");
+  if (toolIds.some((toolId) => toolId.startsWith("file."))) groups.add("files");
+  if (toolIds.includes("shell.execute")) groups.add("shell");
+  return [...groups];
+}
+
+function prepareModeStudioDraft(
+  source: ModeSpec,
+  text: string,
+  agentDrafts: CustomAgentGeneratedDraft[],
+  params: Pick<ModeStudioGenerateDraftParams, "currentDraft">,
+): ModeSpec {
+  const now = Date.now();
+  const idBase = params.currentDraft && !params.currentDraft.systemPreset
+    ? params.currentDraft.id
+    : `${slugifyModeStudio(modeStudioPurpose(text)) || "guided-mode"}-mode`;
+  const agentNames = agentDrafts.map((agent) => agent.name);
+  return {
+    ...source,
+    id: slugifyModeStudio(idBase) || "guided-mode",
+    label: modeStudioLabel(text),
+    systemPreset: false,
+    createdAt: params.currentDraft?.createdAt ?? now,
+    updatedAt: now,
+    profiles: source.profiles.map((profile, index) => ({
+      ...profile,
+      customAgentId: agentNames[index] ?? profile.customAgentId,
+    })),
+  };
+}
+
+function modeStudioLabel(text: string): string {
+  const purpose = modeStudioPurpose(text);
+  const label = purpose.length > 40 ? `${purpose.slice(0, 40).trim()} Mode` : `${purpose} Mode`;
+  return label.replace(/\s+/g, " ").trim() || "Guided Mode";
+}
+
+function modeStudioSummary(text: string, fallback: string): string {
+  const purpose = modeStudioPurpose(text);
+  return purpose ? `Guided mode for ${purpose}.` : fallback;
+}
+
+function modeStudioDescription(text: string, pattern: PatternDefinition): string {
+  return [
+    `This mode was generated from a Mode Studio guided builder conversation for: ${modeStudioPurpose(text)}.`,
+    `It uses the ${pattern.label} topology so agents can follow explicit roles, handoffs, and validation boundaries.`,
+  ].join(" ");
+}
+
+function modeStudioPurpose(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.slice(0, 96) || "a custom workflow";
+}
+
+function modeStudioRuntimeAtoms(family: CoordinationPattern, text: string, existing: ModeSpec["runtimeAtoms"]): ModeSpec["runtimeAtoms"] {
+  const atoms = new Set(existing);
+  const add = (atomId: ModeSpec["runtimeAtoms"][number]) => {
+    const atom = MVP_MODE_RUNTIME_ATOMS.find((candidate) => candidate.id === atomId);
+    if (atom?.compatibleFamilies.includes(family)) {
+      atoms.add(atomId);
+    }
+  };
+  add("thread_workspace");
+  add("tool_error_boundary");
+  if (/(memory|remember|长期|记忆|上下文)/i.test(text) || family === "agent_teams") add("memory_capture");
+  if (family === "agent_teams") add("persistent_worker_memory");
+  if (family === "message_bus") add("event_routing");
+  if (family === "shared_state") add("shared_blackboard");
+  if (/(clarify|ask|澄清|提问)/i.test(text)) add("clarification_interrupt");
+  return [...atoms];
+}
+
+function ownerForModeStudioTemplate(template: ModeSpec["nodes"][number]["template"], roles: ModeStudioRolePlan[]): string | undefined {
+  const byId = new Set(roles.map((role) => role.profileId));
+  if ((template === "verify" || template === "review" || template === "check" || template === "converge") && byId.has("verifier")) return "verifier";
+  if ((template === "verify" || template === "review" || template === "check" || template === "converge") && byId.has("reviewer")) return "reviewer";
+  if ((template === "verify" || template === "review" || template === "check" || template === "converge") && byId.has("checker")) return "checker";
+  if ((template === "research" || template === "handle") && byId.has("researcher")) return "researcher";
+  if ((template === "research" || template === "handle") && byId.has("research_agent")) return "research_agent";
+  if ((template === "draft" || template === "build") && byId.has("generator")) return "generator";
+  if ((template === "draft" || template === "build") && byId.has("builder")) return "builder";
+  if ((template === "decompose" || template === "synthesize") && byId.has("orchestrator")) return "orchestrator";
+  if ((template === "triage" || template === "handoff") && byId.has("team_lead")) return "team_lead";
+  if ((template === "route" || template === "publish") && byId.has("router")) return "router";
+  if ((template === "respond") && byId.has("responder")) return "responder";
+  if ((template === "seed") && byId.has("seed_agent")) return "seed_agent";
+  return roles[0]?.profileId;
+}
+
+function modeStudioNodePrompt(template: ModeSpec["nodes"][number]["template"], text: string, existing?: string): string {
+  const base = existing?.trim();
+  const guidance = `For this stage, stay aligned with the user's Mode Studio goal: ${modeStudioPurpose(text)}.`;
+  if (base && base.includes("Mode Studio goal")) return base;
+  return [base, guidance].filter(Boolean).join("\n\n");
+}
+
+function modeStudioGuidance(family: CoordinationPattern, text: string) {
+  const choices = [
+    {
+      id: "style-strict",
+      label: "Make review stricter",
+      description: "Tighten reviewer/checker behavior around risks, missing tests, and contradictions.",
+      prompt: "让审查 agent 更严格，优先指出风险、缺失验证和不清晰的验收标准。",
+    },
+    {
+      id: "parallel-more",
+      label: "Use more parallel work",
+      description: "Bias the mode toward more independent agent work before synthesis.",
+      prompt: "这个 mode 更偏多个 agent 分工并行，然后再汇总。",
+    },
+    {
+      id: "tools-minimal",
+      label: "Keep tools minimal",
+      description: "Reduce mounted tools unless a role clearly needs them.",
+      prompt: "保持工具能力最小化，只给 agent 分配完成职责必须的工具。",
+    },
+  ];
+  return {
+    step: "preview" as const,
+    assistantMessage: `我先生成了一版 ${getPatternDefinition(family).label} 草稿。你可以继续调整 agent 风格、是否并行、以及每个 agent 的工具/技能范围。`,
+    choices: /(parallel|并行|多个|team|团队)/i.test(text)
+      ? choices.filter((choice) => choice.id !== "parallel-more")
+      : choices,
+  };
+}
+
+function modeStudioTopologyChoices() {
+  return [
+    {
+      id: "topology-generator-verifier",
+      label: "Generator + Verifier",
+      description: "One agent produces, another agent checks against criteria.",
+      prompt: "使用生成-验证结构，一个 agent 负责产出，另一个 agent 负责严格审查。",
+    },
+    {
+      id: "topology-orchestrator",
+      label: "Orchestrator + Subagents",
+      description: "A lead agent decomposes the task and delegates focused work.",
+      prompt: "使用主控 agent 拆解任务，再派发给 researcher/reviewer 等 subagent。",
+    },
+    {
+      id: "topology-team",
+      label: "Team Parallel",
+      description: "Multiple role agents divide work and can run more independently.",
+      prompt: "使用多个 agent 分工协作，尽量让可独立的阶段并行推进。",
+    },
+  ];
+}
+
+function modeStudioFamilyReason(family: CoordinationPattern): string {
+  switch (family) {
+    case "generator_verifier":
+      return "a production stage followed by explicit verification";
+    case "agent_teams":
+      return "multiple role agents or parallel division of labor";
+    case "message_bus":
+      return "event routing across handlers";
+    case "shared_state":
+      return "collaboration through shared state or memory";
+    case "orchestrator_subagent":
+    default:
+      return "decomposition and delegated subagent work";
+  }
+}
+
+function uniqueModeStudioName(seed: string, usedNames: Set<string>): string {
+  const base = slugifyModeStudio(seed) || "guided-agent";
+  let candidate = base.slice(0, 48).replace(/-+$/g, "") || "guided-agent";
+  let index = 2;
+  while (usedNames.has(candidate)) {
+    const suffix = `-${index++}`;
+    candidate = `${base.slice(0, Math.max(1, 48 - suffix.length)).replace(/-+$/g, "")}${suffix}`;
+  }
+  usedNames.add(candidate);
+  return candidate;
+}
+
+function slugifyModeStudio(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\u4e00-\u9fff]+/g, "guided")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
+  const {
+    id,
+    family,
+    label,
+    summary,
+    description,
+    recommendedUse,
+    failureMode,
+    nodes,
+    edges,
+    stopPolicy,
+    capabilityFlags,
+    editorConstraints,
+    defaultBudget,
+    profiles,
+    runtimeAtoms,
+    completionPolicy,
+    recoveryPolicy,
+    memoryPolicy,
+  } = spec;
+  return {
+    id,
+    family,
+    label,
+    summary,
+    description,
+    recommendedUse,
+    failureMode,
+    nodes,
+    edges,
+    stopPolicy,
+    capabilityFlags,
+    editorConstraints,
+    defaultBudget,
+    profiles,
+    runtimeAtoms,
+    completionPolicy,
+    recoveryPolicy,
+    memoryPolicy,
+  };
 }
 
 export function defaultRuntimeStoreDir(): string {

@@ -27,6 +27,12 @@ import type {
   JsonRpcResponse,
   LongTermMemoryProfile as OraLongTermMemoryProfile,
   MemoryRecord as OraMemoryRecord,
+  ModeStudioApplyDraftParams as OraModeStudioApplyDraftParams,
+  ModeStudioApplyDraftResult as OraModeStudioApplyDraftResult,
+  ModeStudioContextResult as OraModeStudioContextResult,
+  ModeStudioDraftBundle as OraModeStudioDraftBundle,
+  ModeStudioGenerateDraftParams as OraModeStudioGenerateDraftParams,
+  ModeStudioRefineDraftParams as OraModeStudioRefineDraftParams,
   ModeRuntimeAtomDefinition as OraModeRuntimeAtomDefinition,
   ModeCreateParams as OraModeCreateParams,
   ModeSpec as OraModeSpec,
@@ -108,6 +114,12 @@ export type {
   OraEventEnvelope,
   OraLongTermMemoryProfile,
   OraMemoryRecord,
+  OraModeStudioApplyDraftParams,
+  OraModeStudioApplyDraftResult,
+  OraModeStudioContextResult,
+  OraModeStudioDraftBundle,
+  OraModeStudioGenerateDraftParams,
+  OraModeStudioRefineDraftParams,
   OraModeRuntimeAtomDefinition,
   OraModeCreateParams,
   OraModeSpec,
@@ -456,6 +468,21 @@ export function createRuntimeClient() {
     },
     async cloneModeFromPreset(sourceModeId: string, modeId?: string, label?: string): Promise<OraModeSpec> {
       return call<OraModeSpec>("modes.cloneFromPreset", { sourceModeId, modeId, label });
+    },
+    async modeStudioContext(): Promise<OraModeStudioContextResult> {
+      return call<OraModeStudioContextResult>("modeStudio.context");
+    },
+    async generateModeStudioDraft(params: OraModeStudioGenerateDraftParams): Promise<OraModeStudioDraftBundle> {
+      return call<OraModeStudioDraftBundle>("modeStudio.generateDraft", params);
+    },
+    async refineModeStudioDraft(params: OraModeStudioRefineDraftParams): Promise<OraModeStudioDraftBundle> {
+      return call<OraModeStudioDraftBundle>("modeStudio.refineDraft", params);
+    },
+    async validateModeStudioDraft(draftBundle: OraModeStudioDraftBundle): Promise<OraModeStudioDraftBundle> {
+      return call<OraModeStudioDraftBundle>("modeStudio.validateDraft", { draftBundle });
+    },
+    async applyModeStudioDraft(params: OraModeStudioApplyDraftParams): Promise<OraModeStudioApplyDraftResult> {
+      return call<OraModeStudioApplyDraftResult>("modeStudio.applyDraft", params);
     },
     async getAgent(name: string): Promise<OraCustomAgentDetail> {
       return call<OraCustomAgentDetail>("agents.get", { name });
@@ -896,6 +923,16 @@ class LocalJsonRpcRuntime {
         return this.validateMode(params);
       case "modes.cloneFromPreset":
         return this.cloneModeFromPreset(params);
+      case "modeStudio.context":
+        return this.modeStudioContext();
+      case "modeStudio.generateDraft":
+        return this.generateModeStudioDraft(params);
+      case "modeStudio.refineDraft":
+        return this.refineModeStudioDraft(params);
+      case "modeStudio.validateDraft":
+        return this.validateModeStudioDraft(params);
+      case "modeStudio.applyDraft":
+        return this.applyModeStudioDraft(params);
       case "tools.list":
         return {
           tools: MVP_TOOLS,
@@ -1944,6 +1981,186 @@ class LocalJsonRpcRuntime {
         readOnly: false,
       },
     });
+  }
+
+  private modeStudioContext(): OraModeStudioContextResult {
+    return {
+      modes: this.listModes(),
+      agents: [...this.customAgents.values()]
+        .map(({ soul, ...summary }) => summary)
+        .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name)),
+      tools: {
+        tools: MVP_TOOLS,
+        defaultPolicyId: "runtime.default_policy",
+      },
+      skills: {
+        skills: this.listSkills().skills,
+      },
+      atoms: MVP_MODE_RUNTIME_ATOMS,
+    };
+  }
+
+  private generateModeStudioDraft(params: unknown): OraModeStudioDraftBundle {
+    return this.mockModeStudioDraftBundle(params);
+  }
+
+  private refineModeStudioDraft(params: unknown): OraModeStudioDraftBundle {
+    const draftBundle = isRecord(params) && isRecord(params.draftBundle)
+      ? params.draftBundle as OraModeStudioDraftBundle
+      : undefined;
+    return this.mockModeStudioDraftBundle({
+      ...(isRecord(params) ? params : {}),
+      currentDraft: draftBundle?.modeDraft,
+    });
+  }
+
+  private validateModeStudioDraft(params: unknown): OraModeStudioDraftBundle {
+    if (!isRecord(params) || !isRecord(params.draftBundle)) {
+      throw new Error("Mode Studio draft bundle is required.");
+    }
+    const bundle = params.draftBundle as OraModeStudioDraftBundle;
+    return {
+      ...bundle,
+      validation: this.validateMode({ spec: bundle.modeDraft }),
+    };
+  }
+
+  private applyModeStudioDraft(params: unknown): OraModeStudioApplyDraftResult {
+    if (!isRecord(params) || !isRecord(params.draftBundle)) {
+      throw new Error("Mode Studio draft bundle is required.");
+    }
+    const bundle = this.validateModeStudioDraft({ draftBundle: params.draftBundle });
+    if (!bundle.validation.valid) {
+      throw new Error(bundle.validation.errors.join(" "));
+    }
+    const saveAgentDrafts = typeof params.saveAgentDrafts === "boolean" ? params.saveAgentDrafts : true;
+    const agents: OraModeStudioApplyDraftResult["agents"] = [];
+    if (saveAgentDrafts) {
+      for (const draft of bundle.agentDrafts) {
+        const existing = this.customAgents.has(draft.name);
+        const saved = existing
+          ? this.updateAgent({
+              name: draft.name,
+              description: draft.description,
+              model: draft.model ?? null,
+              toolGroups: draft.toolGroups,
+              toolIds: draft.toolIds,
+              skillIds: draft.skillIds,
+              soul: draft.soul,
+            })
+          : this.createAgent(draft);
+        const { soul: _soul, ...summary } = saved;
+        agents.push(summary);
+      }
+    }
+    const mode = typeof params.updateModeId === "string"
+      ? this.updateMode({ modeId: params.updateModeId, spec: bundle.modeDraft })
+      : this.createMode(bundle.modeDraft);
+    return { mode, agents };
+  }
+
+  private mockModeStudioDraftBundle(params: unknown): OraModeStudioDraftBundle {
+    const messages = isRecord(params) && Array.isArray(params.messages) ? params.messages : [];
+    const userText = messages
+      .filter((message): message is { role: "user"; content: string } =>
+        isRecord(message) && message.role === "user" && typeof message.content === "string"
+      )
+      .map((message) => message.content.trim())
+      .filter(Boolean)
+      .join("\n");
+    const family = mockModeStudioFamily(userText);
+    const base = isRecord(params) && isRecord(params.currentDraft)
+      ? params.currentDraft as OraModeSpec
+      : this.listModes().find((mode) => mode.family === family) ?? this.getMode(SINGLE_AGENT_MODE_ID);
+    if (userText.length < 10) {
+      const modeDraft = { ...base, systemPreset: false, updatedAt: Date.now() };
+      return {
+        modeDraft,
+        agentDrafts: [],
+        guidance: {
+          step: "topology",
+          assistantMessage: "我可以帮你生成 mode。先选一个方向：互审、主控派发，还是多个 agent 分工并行？",
+          choices: [
+            { id: "gv", label: "Generator + Verifier", description: "一个 agent 产出，另一个 agent 审查。", prompt: "使用生成-验证结构。" },
+            { id: "team", label: "Team Parallel", description: "多个 agent 分工协作。", prompt: "使用多个 agent 分工并行。" },
+          ],
+        },
+        changeSummary: ["Started a safe preview draft."],
+        validation: this.validateMode({ spec: modeDraft }),
+        needsInput: true,
+      };
+    }
+    const roles = mockModeStudioRoles(family);
+    const used = new Set([...this.customAgents.keys()]);
+    const agentDrafts = roles.map((role) => {
+      const name = uniqueMockAgentName(slugifyMockAgentName(`${role.id} ${userText}`), (candidate) => used.has(candidate));
+      used.add(name);
+      const wantsWeb = /\b(web|search|research|source|资料|搜索|研究)\b/i.test(userText) || role.id.includes("research");
+      const wantsCode = /\b(code|repo|file|test|build|代码|仓库|测试|构建)\b/i.test(userText) || role.id.includes("builder") || role.id.includes("checker");
+      const toolIds = [
+        ...(wantsWeb ? ["web.search", "web.fetch"] : []),
+        ...(wantsCode ? ["file.read", "file.grep"] : []),
+      ];
+      return {
+        name,
+        description: `${role.label} for ${userText.slice(0, 96)}.`,
+        model: undefined,
+        toolGroups: [...new Set([
+          ...(wantsWeb ? ["web"] : []),
+          ...(wantsCode ? ["files"] : []),
+        ])],
+        toolIds,
+        skillIds: [],
+        soul: `You are ${role.label}. ${role.role} User goal: ${userText}. Keep assumptions explicit and hand off concrete evidence.`,
+      };
+    });
+    const profiles = roles.map((role, index) => ({
+      ...(base.profiles[index] ?? base.profiles[0]),
+      id: role.id,
+      label: role.label,
+      role: role.role,
+      customAgentId: agentDrafts[index]?.name,
+      toolIds: agentDrafts[index]?.toolIds ?? [],
+      skillIds: [],
+    }));
+    const toolIds = [...new Set(agentDrafts.flatMap((agent) => agent.toolIds))];
+    const modeDraft: OraModeSpec = {
+      ...base,
+      id: `${slugifyMockAgentName(userText)}-mode`,
+      family,
+      label: `${userText.slice(0, 40).trim() || "Guided"} Mode`,
+      summary: `Guided mode for ${userText.slice(0, 96)}.`,
+      description: `Generated by the Mode Studio builder from: ${userText}`,
+      systemPreset: false,
+      profiles,
+      nodes: base.nodes.map((node) => ({
+        ...node,
+        ownerAgentId: mockModeStudioOwner(node.template, roles) ?? node.ownerAgentId,
+        prompt: `Stay aligned with the user's Mode Studio goal: ${userText}`,
+      })),
+      capabilityFlags: {
+        ...base.capabilityFlags,
+        toolIds,
+        skillIds: [],
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    return {
+      modeDraft,
+      agentDrafts,
+      guidance: {
+        step: "preview",
+        assistantMessage: "我生成了一版 mode 草稿。你可以继续调整 agent 风格、是否并行，以及每个 agent 的工具/技能范围。",
+        choices: [
+          { id: "strict", label: "Make review stricter", description: "让 reviewer 更重视风险和验证。", prompt: "让审查 agent 更严格。" },
+          { id: "parallel", label: "Use more parallel work", description: "提高多个 agent 分工并行的倾向。", prompt: "让这个 mode 更偏并行分工。" },
+        ],
+      },
+      changeSummary: [`Selected ${family.replace(/_/g, " ")} topology.`, `Drafted ${agentDrafts.length} agents.`],
+      validation: this.validateMode({ spec: modeDraft }),
+      needsInput: false,
+    };
   }
 
   private updateAgent(params: unknown): OraCustomAgentDetail {
@@ -3279,6 +3496,72 @@ function uniqueMockAgentName(baseName: string, exists: (name: string) => boolean
     }
   }
   return `${baseName}-${Date.now()}`;
+}
+
+interface MockModeStudioRole {
+  id: string;
+  label: string;
+  role: string;
+}
+
+function mockModeStudioFamily(text: string): CoordinationPattern {
+  if (/(parallel|team|roles|multiple|多个|并行|分工|团队)/i.test(text)) return "agent_teams";
+  if (/(verify|review|critic|审核|审查|验证|互审|严格)/i.test(text)) return "generator_verifier";
+  if (/(route|event|bus|路由|事件|消息)/i.test(text)) return "message_bus";
+  if (/(shared|blackboard|state|memory|共享|黑板|状态|记忆)/i.test(text)) return "shared_state";
+  return "orchestrator_subagent";
+}
+
+function mockModeStudioRoles(family: CoordinationPattern): MockModeStudioRole[] {
+  if (family === "generator_verifier") {
+    return [
+      { id: "generator", label: "Generator", role: "Produce the candidate result." },
+      { id: "verifier", label: "Verifier", role: "Review the result against acceptance criteria." },
+    ];
+  }
+  if (family === "agent_teams") {
+    return [
+      { id: "team_lead", label: "Team Lead", role: "Coordinate the agent roster." },
+      { id: "builder", label: "Builder", role: "Complete assigned work." },
+      { id: "checker", label: "Checker", role: "Validate outputs and risks." },
+    ];
+  }
+  if (family === "message_bus") {
+    return [
+      { id: "router", label: "Router", role: "Route events to handlers." },
+      { id: "investigator", label: "Investigator", role: "Handle routed work and publish findings." },
+      { id: "responder", label: "Responder", role: "Synthesize final response." },
+    ];
+  }
+  if (family === "shared_state") {
+    return [
+      { id: "seed_agent", label: "Seed Agent", role: "Seed shared state." },
+      { id: "research_agent", label: "Research Agent", role: "Add findings to shared state." },
+      { id: "critic_agent", label: "Critic Agent", role: "Validate convergence." },
+    ];
+  }
+  return [
+    { id: "orchestrator", label: "Orchestrator", role: "Plan, delegate, and synthesize." },
+    { id: "researcher", label: "Research Subagent", role: "Gather focused context." },
+    { id: "reviewer", label: "Review Subagent", role: "Check completeness and risks." },
+  ];
+}
+
+function mockModeStudioOwner(template: OraModeSpec["nodes"][number]["template"], roles: MockModeStudioRole[]): string | undefined {
+  const ids = new Set(roles.map((role) => role.id));
+  if ((template === "verify" || template === "review" || template === "check") && ids.has("verifier")) return "verifier";
+  if ((template === "verify" || template === "review" || template === "check") && ids.has("reviewer")) return "reviewer";
+  if ((template === "verify" || template === "review" || template === "check") && ids.has("checker")) return "checker";
+  if ((template === "draft" || template === "build") && ids.has("generator")) return "generator";
+  if ((template === "draft" || template === "build") && ids.has("builder")) return "builder";
+  if ((template === "research" || template === "handle") && ids.has("researcher")) return "researcher";
+  if ((template === "research" || template === "handle") && ids.has("research_agent")) return "research_agent";
+  if ((template === "decompose" || template === "synthesize") && ids.has("orchestrator")) return "orchestrator";
+  if ((template === "triage" || template === "handoff") && ids.has("team_lead")) return "team_lead";
+  if ((template === "route" || template === "publish") && ids.has("router")) return "router";
+  if (template === "respond" && ids.has("responder")) return "responder";
+  if (template === "seed" && ids.has("seed_agent")) return "seed_agent";
+  return roles[0]?.id;
 }
 
 function normalizeMockSkillName(value: unknown): string {
