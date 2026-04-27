@@ -5,7 +5,9 @@ import {
   ActionRecordSchema,
   ApprovalDecisionSchema,
   ApprovalRequestSchema,
+  AgentCatalogResultSchema,
   CustomAgentCheckNameResultSchema,
+  CustomAgentCatalogItemSchema,
   CustomAgentCreateParamsSchema,
   CustomAgentDetailSchema,
   CustomAgentGenerateDraftParamsSchema,
@@ -111,6 +113,9 @@ import {
   SkillDetailSchema,
   SkillSetEnabledParamsSchema,
   SkillUpdateParamsSchema,
+  SystemAgentCatalogItemSchema,
+  SystemAgentOverrideResetParamsSchema,
+  SystemAgentOverrideUpdateParamsSchema,
   StateSnapshotSchema,
   SkillRegistrySchema,
   TodoItemSchema,
@@ -335,10 +340,15 @@ describe("Ora shared contracts", () => {
     const messagePublish = getModeNodeRuntimeTemplateDefinition("message_bus", "publish");
 
     expect(orchestratorResearch.supportsPromptOverride).toBe(true);
+    expect(orchestratorResearch.display.story).toContain("{{owner}}");
     expect(orchestratorResearch.promptVariables).toEqual(["prompt", "plan"]);
     expect(sharedStateResearch.promptVariables).toEqual(["prompt", "sharedBoard"]);
     expect(messagePublish.supportsPromptOverride).toBe(false);
+    expect(messagePublish.display.story).toContain("initial event");
     expect(messagePublish.promptVariables).toEqual([]);
+
+    const missing = getModeNodeRuntimeTemplateDefinition("message_bus", "unknown_stage");
+    expect(missing.display.story).toContain("No runtime template metadata");
   });
 
   it("rejects incompatible runtime atoms on modes and nodes", () => {
@@ -641,6 +651,23 @@ describe("Ora shared contracts", () => {
       JsonRpcRequestSchema.parse({
         jsonrpc: "2.0",
         id: 4,
+        method: "agents.catalog"
+      }).method
+    ).toBe("agents.catalog");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "agents.updateSystemOverride",
+        params: { agentId: "researcher", role: "Research deeply." }
+      }).method
+    ).toBe("agents.updateSystemOverride");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 6,
         method: "skills.setEnabled",
         params: { name: "custom-review", enabled: true }
       }).method
@@ -1858,6 +1885,72 @@ describe("Custom agent contracts", () => {
     expect(updateParams.toolIds).toBeNull();
     expect(updateParams.skillIds).toEqual(["check"]);
     expect(checkResult.available).toBe(true);
+  });
+});
+
+describe("Unified agent catalog contracts", () => {
+  it("accepts system/custom catalog items and override payloads", () => {
+    const overrideParams = SystemAgentOverrideUpdateParamsSchema.parse({
+      agentId: "research_subagent",
+      label: "Research Subagent",
+      role: "Gather evidence before synthesis.",
+      modelRef: "gpt-5.4",
+      toolIds: ["web.search"],
+      skillIds: ["read"],
+      soul: "Prefer cited evidence.",
+    });
+    const resetParams = SystemAgentOverrideResetParamsSchema.parse({ agentId: "research_subagent" });
+    const systemAgent = SystemAgentCatalogItemSchema.parse({
+      source: "system",
+      id: "research_subagent",
+      label: "Research Subagent",
+      role: "Gather focused context.",
+      modelRef: "local/smoke-model",
+      toolPolicyId: "orchestrator_subagent.default_policy",
+      toolIds: ["web.search"],
+      skillIds: [],
+      memoryNamespaces: ["session", "project"],
+      overridden: true,
+      override: {
+        agentId: "research_subagent",
+        role: "Gather evidence before synthesis.",
+        soul: "Prefer cited evidence.",
+        createdAt: 1000,
+        updatedAt: 1200,
+      },
+      usages: [{
+        modeId: "deerflow_harness",
+        modeLabel: "DeerFlow-like Harness",
+        systemPreset: true,
+        profileId: "research_subagent",
+        profileLabel: "Research Subagent",
+      }],
+    });
+    const customAgent = CustomAgentCatalogItemSchema.parse({
+      source: "custom",
+      name: "research-bot",
+      description: "Custom research persona.",
+      toolIds: ["web.search"],
+      skillIds: ["read"],
+      createdAt: 1000,
+      updatedAt: 1200,
+      usages: [{
+        modeId: "research-team",
+        modeLabel: "Research Team",
+        systemPreset: false,
+        profileId: "researcher",
+        profileLabel: "Researcher",
+      }],
+    });
+    const catalog = AgentCatalogResultSchema.parse({
+      systemAgents: [systemAgent],
+      customAgents: [customAgent],
+    });
+
+    expect(overrideParams.agentId).toBe("research_subagent");
+    expect(resetParams.agentId).toBe("research_subagent");
+    expect(catalog.systemAgents[0].overridden).toBe(true);
+    expect(catalog.customAgents[0].usages[0].modeId).toBe("research-team");
   });
 });
 

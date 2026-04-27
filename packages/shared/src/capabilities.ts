@@ -273,6 +273,81 @@ export const CustomAgentGenerateDraftResultSchema = z.discriminatedUnion("status
 ]);
 export type CustomAgentGenerateDraftResult = z.infer<typeof CustomAgentGenerateDraftResultSchema>;
 
+export const SystemAgentIdSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z0-9_-]+$/, "System agent ids must contain only letters, digits, hyphens, and underscores.");
+export type SystemAgentId = z.infer<typeof SystemAgentIdSchema>;
+
+export const AgentModeUsageSchema = z.object({
+  modeId: z.string().min(1),
+  modeLabel: z.string().min(1),
+  systemPreset: z.boolean().default(false),
+  profileId: z.string().min(1).optional(),
+  profileLabel: z.string().min(1).optional(),
+  nodeId: z.string().min(1).optional(),
+  nodeLabel: z.string().min(1).optional(),
+});
+export type AgentModeUsage = z.infer<typeof AgentModeUsageSchema>;
+
+export const SystemAgentOverrideSchema = z.object({
+  agentId: SystemAgentIdSchema,
+  label: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  toolIds: z.array(z.string().min(1)).optional(),
+  skillIds: z.array(z.string().min(1)).optional(),
+  soul: z.string().default(""),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type SystemAgentOverride = z.infer<typeof SystemAgentOverrideSchema>;
+
+export const SystemAgentOverrideUpdateParamsSchema = z.object({
+  agentId: SystemAgentIdSchema,
+  label: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  modelRef: z.string().min(1).nullable().optional(),
+  toolIds: z.array(z.string().min(1)).nullable().optional(),
+  skillIds: z.array(z.string().min(1)).nullable().optional(),
+  soul: z.string().optional(),
+});
+export type SystemAgentOverrideUpdateParams = z.infer<typeof SystemAgentOverrideUpdateParamsSchema>;
+
+export const SystemAgentOverrideResetParamsSchema = z.object({
+  agentId: SystemAgentIdSchema,
+});
+export type SystemAgentOverrideResetParams = z.infer<typeof SystemAgentOverrideResetParamsSchema>;
+
+export const SystemAgentCatalogItemSchema = z.object({
+  source: z.literal("system"),
+  id: SystemAgentIdSchema,
+  label: z.string().min(1),
+  role: z.string().min(1),
+  modelRef: z.string().min(1).optional(),
+  toolPolicyId: z.string().min(1),
+  toolIds: z.array(z.string().min(1)).default([]),
+  skillIds: z.array(z.string().min(1)).default([]),
+  memoryNamespaces: z.array(z.string().min(1)).default([]),
+  soul: z.string().default(""),
+  overridden: z.boolean().default(false),
+  override: SystemAgentOverrideSchema.optional(),
+  usages: z.array(AgentModeUsageSchema).default([]),
+});
+export type SystemAgentCatalogItem = z.infer<typeof SystemAgentCatalogItemSchema>;
+
+export const CustomAgentCatalogItemSchema = CustomAgentSummarySchema.extend({
+  source: z.literal("custom"),
+  usages: z.array(AgentModeUsageSchema).default([]),
+});
+export type CustomAgentCatalogItem = z.infer<typeof CustomAgentCatalogItemSchema>;
+
+export const AgentCatalogResultSchema = z.object({
+  systemAgents: z.array(SystemAgentCatalogItemSchema),
+  customAgents: z.array(CustomAgentCatalogItemSchema),
+});
+export type AgentCatalogResult = z.infer<typeof AgentCatalogResultSchema>;
+
 // ---------------------------------------------------------------------------
 // Default Definitions
 // ---------------------------------------------------------------------------

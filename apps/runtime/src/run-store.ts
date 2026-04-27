@@ -7,6 +7,9 @@ import {
   ArtifactRefSchema,
   CheckpointMeta,
   CoordinationPattern,
+  AgentCatalogResult,
+  AgentCatalogResultSchema,
+  CustomAgentCatalogItemSchema,
   CustomAgentCheckNameResult,
   CustomAgentCreateParams,
   CustomAgentDetail,
@@ -36,6 +39,7 @@ import {
   ModeStudioRefineDraftParamsSchema,
   ModeStudioValidateDraftParamsSchema,
   createModeSpecFromPattern,
+  getModeNodeRuntimeTemplateDefinition,
   getPatternDefinition,
   modeSpecToPatternDefinition,
   MVP_MODE_RUNTIME_ATOMS,
@@ -101,6 +105,10 @@ import {
   SkillUpdateParams,
   StateSnapshot,
   StateSnapshotSchema,
+  SystemAgentOverride,
+  SystemAgentOverrideResetParamsSchema,
+  SystemAgentOverrideUpdateParamsSchema,
+  SystemAgentOverrideUpdateParams,
   UserTaskInput,
   UserTaskInputSchema,
   withDefaultWebToolIds
@@ -114,6 +122,7 @@ import {
   TodoService,
 } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
+import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { FileLongTermMemoryStore, LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
@@ -395,6 +404,7 @@ export class LocalRunStore {
   private readonly evaluationStore: LocalEvaluationStore;
   private readonly feedbackLoopStore: LocalFeedbackLoopStore;
   private readonly customAgentStore: CustomAgentFileStore;
+  private readonly systemAgentOverrideStore: SystemAgentOverrideFileStore;
   private readonly modeStore: ModeSpecFileStore;
   private readonly skillRegistry: RuntimeSkillRegistry;
   private readonly longTermMemory: LongTermMemoryManager;
@@ -416,6 +426,7 @@ export class LocalRunStore {
       this.backend = new JsonFileRuntimePersistenceBackend(dataDir);
     }
     this.customAgentStore = new CustomAgentFileStore(defaultCustomAgentsDir(dataDir), this.clock);
+    this.systemAgentOverrideStore = new SystemAgentOverrideFileStore(defaultSystemAgentOverridesDir(dataDir), this.clock);
     this.modeStore = new ModeSpecFileStore(defaultModesDir(dataDir), this.clock);
     this.skillRegistry = new RuntimeSkillRegistry({
       privateRootDir: defaultSkillsDir(dataDir),
@@ -457,15 +468,22 @@ export class LocalRunStore {
   }
 
   listModes(): ModeSpec[] {
-    return this.modeStore.list();
+    return this.modeStore.list().map((mode) => this.applySystemAgentOverridesToMode(mode));
   }
 
   getMode(params: unknown): ModeSpec {
-    return this.modeStore.get(params);
+    return this.applySystemAgentOverridesToMode(this.modeStore.get(params));
   }
 
   createMode(params: ModeCreateParams | unknown): ModeSpec {
-    return this.modeStore.create(params);
+    return this.applySystemAgentOverridesToMode(this.modeStore.create(params));
+  }
+
+  private applySystemAgentOverridesToMode(modeSpec: ModeSpec): ModeSpec {
+    return {
+      ...modeSpec,
+      profiles: modeSpec.profiles.map((profile) => this.systemAgentOverrideStore.apply(profile)),
+    };
   }
 
   private customAgentOverlaysForMode(modeSpec: ModeSpec): Record<string, string> {
@@ -519,8 +537,22 @@ export class LocalRunStore {
     ].filter(Boolean);
   }
 
+  private systemAgentOverlaysForMode(modeSpec: ModeSpec): Record<string, string> {
+    const overlays: Record<string, string> = {};
+    for (const profile of modeSpec.profiles) {
+      if (profile.customAgentId) {
+        continue;
+      }
+      const overlay = this.systemAgentOverrideStore.overlay(profile.id);
+      if (overlay) {
+        overlays[profile.id] = overlay;
+      }
+    }
+    return overlays;
+  }
+
   updateMode(params: ModeUpdateParams | unknown): ModeSpec {
-    return this.modeStore.update(params);
+    return this.applySystemAgentOverridesToMode(this.modeStore.update(params));
   }
 
   deleteMode(params: unknown): { deleted: true; modeId: string } {
@@ -532,7 +564,7 @@ export class LocalRunStore {
   }
 
   cloneModeFromPreset(params: unknown): ModeSpec {
-    return this.modeStore.cloneFromPreset(params);
+    return this.applySystemAgentOverridesToMode(this.modeStore.cloneFromPreset(params));
   }
 
   modeStudioContext(): ModeStudioContextResult {
@@ -633,7 +665,7 @@ export class LocalRunStore {
         label: role.label,
         role: role.role,
         customAgentId: draft.name,
-        modelRef: params.modelRef ?? params.providerConfig?.modelId ?? base.profiles[index]?.modelRef ?? "local/smoke-model",
+        modelRef: base.profiles[index]?.modelRef,
         toolPolicyId: base.profiles[index]?.toolPolicyId ?? `${family}.default`,
         toolIds: draft.toolIds,
         skillIds: draft.skillIds,
@@ -652,11 +684,18 @@ export class LocalRunStore {
       recommendedUse: `Use when the user wants: ${modeStudioPurpose(userText)}.`,
       failureMode: pattern.failureMode,
       profiles,
-      nodes: modeDraft.nodes.map((node) => ({
-        ...node,
-        ownerAgentId: ownerForModeStudioTemplate(node.template, rolePlans) ?? node.ownerAgentId,
-        prompt: modeStudioNodePrompt(node.template, userText, node.prompt),
-      })),
+      nodes: modeDraft.nodes.map((node) => {
+        const ownerAgentId = ownerForModeStudioTemplate(node.template, rolePlans) ?? node.ownerAgentId;
+        return {
+          ...node,
+          ownerAgentId,
+          prompt: modeStudioNodePrompt(node.template, userText, node.prompt),
+          config: {
+            ...node.config,
+            story: modeStudioNodeStoryConfig(family, node, ownerAgentId, profiles, userText),
+          },
+        };
+      }),
       capabilityFlags: {
         ...modeDraft.capabilityFlags,
         supportsPersistentWorkers: pattern.supportsPersistentWorkers,
@@ -689,7 +728,7 @@ export class LocalRunStore {
     }
     if (params.baseModeId) {
       try {
-        return this.modeStore.get({ modeId: params.baseModeId });
+        return this.getMode({ modeId: params.baseModeId });
       } catch {
         // Fall back to the default pattern when a stale UI reference is supplied.
       }
@@ -914,12 +953,141 @@ export class LocalRunStore {
     return this.customAgentStore.list();
   }
 
+  agentCatalog(): AgentCatalogResult {
+    const rawModes = this.modeStore.list();
+    const effectiveModes = rawModes.map((mode) => this.applySystemAgentOverridesToMode(mode));
+    const effectiveModeById = new Map(effectiveModes.map((mode) => [mode.id, mode]));
+    const systemProfiles = new Map<string, {
+      source: "system";
+      id: string;
+      label: string;
+      role: string;
+      modelRef?: string;
+      toolPolicyId: string;
+      toolIds: string[];
+      skillIds: string[];
+      memoryNamespaces: string[];
+      soul: string;
+      overridden: boolean;
+      override?: SystemAgentOverride;
+      usages: unknown[];
+    }>();
+    const customUsages = new Map<string, unknown[]>();
+    const addCustomUsage = (name: string | undefined, usage: unknown) => {
+      if (!name) {
+        return;
+      }
+      const normalized = name.trim().toLowerCase();
+      const current = customUsages.get(normalized) ?? [];
+      const key = JSON.stringify(usage);
+      if (!current.some((item) => JSON.stringify(item) === key)) {
+        current.push(usage);
+      }
+      customUsages.set(normalized, current);
+    };
+
+    for (const mode of rawModes.filter((candidate) => candidate.systemPreset)) {
+      const effectiveMode = effectiveModeById.get(mode.id) ?? mode;
+      for (const profile of mode.profiles) {
+        if (systemProfiles.has(profile.id)) {
+          continue;
+        }
+        const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
+        const override = this.systemAgentOverrideStore.get(profile.id);
+        const modelRef = explicitSystemAgentModelRef(effectiveProfile.modelRef);
+        systemProfiles.set(profile.id, {
+          source: "system",
+          id: profile.id,
+          label: effectiveProfile.label,
+          role: effectiveProfile.role,
+          ...(modelRef ? { modelRef } : {}),
+          toolPolicyId: effectiveProfile.toolPolicyId,
+          toolIds: effectiveProfile.toolIds,
+          skillIds: effectiveProfile.skillIds,
+          memoryNamespaces: effectiveProfile.memoryNamespaces,
+          soul: override?.soul ?? "",
+          overridden: override !== undefined,
+          ...(override ? { override } : {}),
+          usages: [],
+        });
+      }
+    }
+
+    for (const mode of rawModes) {
+      const effectiveMode = effectiveModeById.get(mode.id) ?? mode;
+      for (const profile of mode.profiles) {
+        const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
+        const usage = {
+          modeId: mode.id,
+          modeLabel: effectiveMode.label,
+          systemPreset: mode.systemPreset,
+          profileId: profile.id,
+          profileLabel: effectiveProfile.label,
+        };
+        if (profile.customAgentId) {
+          addCustomUsage(profile.customAgentId, usage);
+          continue;
+        }
+        systemProfiles.get(profile.id)?.usages.push(usage);
+      }
+      for (const node of mode.nodes) {
+        addCustomUsage(
+          typeof node.config?.customAgentId === "string" ? node.config.customAgentId : undefined,
+          {
+            modeId: mode.id,
+            modeLabel: effectiveMode.label,
+            systemPreset: mode.systemPreset,
+            nodeId: node.id,
+            nodeLabel: node.title ?? node.label,
+          },
+        );
+      }
+    }
+
+    return AgentCatalogResultSchema.parse({
+      systemAgents: [...systemProfiles.values()].sort((left, right) => left.label.localeCompare(right.label)),
+      customAgents: this.listAgents().map((agent) => CustomAgentCatalogItemSchema.parse({
+        ...agent,
+        source: "custom",
+        usages: customUsages.get(agent.name) ?? [],
+      })),
+    });
+  }
+
+  updateSystemAgentOverride(params: SystemAgentOverrideUpdateParams | unknown): SystemAgentOverride {
+    const parsed = SystemAgentOverrideUpdateParamsSchema.parse(params);
+    if (!this.systemAgentIds().has(parsed.agentId)) {
+      throw new Error(`System agent '${parsed.agentId}' does not exist.`);
+    }
+    return this.systemAgentOverrideStore.update(parsed);
+  }
+
+  resetSystemAgentOverride(params: unknown): { reset: true; agentId: string } {
+    const parsed = SystemAgentOverrideResetParamsSchema.parse(params);
+    if (!this.systemAgentIds().has(parsed.agentId)) {
+      throw new Error(`System agent '${parsed.agentId}' does not exist.`);
+    }
+    return this.systemAgentOverrideStore.reset(parsed);
+  }
+
+  private systemAgentIds(): Set<string> {
+    return new Set(
+      this.modeStore.list()
+        .filter((mode) => mode.systemPreset)
+        .flatMap((mode) => mode.profiles.map((profile) => profile.id)),
+    );
+  }
+
   getAgent(params: unknown): CustomAgentDetail {
     return this.customAgentStore.get(params);
   }
 
   createAgent(params: CustomAgentCreateParams | unknown): CustomAgentDetail {
-    return this.customAgentStore.create(params);
+    const parsed = CustomAgentCreateParamsSchema.parse(params);
+    if (this.systemAgentIds().has(parsed.name.trim().toLowerCase())) {
+      throw new Error(`Custom agent '${parsed.name}' conflicts with a built-in system agent.`);
+    }
+    return this.customAgentStore.create(parsed);
   }
 
   updateAgent(params: CustomAgentUpdateParams | unknown): CustomAgentDetail {
@@ -931,7 +1099,11 @@ export class LocalRunStore {
   }
 
   checkAgentName(params: unknown): CustomAgentCheckNameResult {
-    return this.customAgentStore.checkName(params);
+    const result = this.customAgentStore.checkName(params);
+    return {
+      ...result,
+      available: result.available && !this.systemAgentIds().has(result.name),
+    };
   }
 
   async generateAgentDraft(params: CustomAgentGenerateDraftParams | unknown): Promise<CustomAgentGenerateDraftResult> {
@@ -1108,6 +1280,7 @@ export class LocalRunStore {
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
           customAgentContexts: this.customAgentContextsForMode(modeSpec),
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
         });
@@ -1194,6 +1367,7 @@ export class LocalRunStore {
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
           customAgentContexts: this.customAgentContextsForMode(modeSpec),
           conversationMessages,
           streamProvider: true,
@@ -1258,6 +1432,7 @@ export class LocalRunStore {
           skillRegistry: this.skillRegistry,
           customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
           customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
           customAgentContexts: this.customAgentContextsForMode(modeSpec),
           forkedFrom,
           conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
@@ -1286,6 +1461,7 @@ export class LocalRunStore {
       turnIndex: number;
       conversationMessages: ModelMessage[];
       customAgentOverlay?: string;
+      systemAgentOverlays?: Record<string, string>;
       customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
     }) => Promise<StateSnapshot | undefined>
   ): Promise<RunHandle | undefined> {
@@ -1311,6 +1487,7 @@ export class LocalRunStore {
       turnIndex,
       conversationMessages,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
+      systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
     });
     if (!snapshot) {
@@ -1419,6 +1596,7 @@ export class LocalRunStore {
             skillRegistry: this.skillRegistry,
             customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
             customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+            systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
             customAgentContexts: this.customAgentContextsForMode(modeSpec),
             conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
             resumeContext: {
@@ -1872,7 +2050,7 @@ export class LocalRunStore {
       : undefined;
     const requestedModeId = autoRoute?.modeId
       ?? (typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern);
-    const modeSpec = this.modeStore.resolve(requestedModeId, parsed.pattern);
+    const modeSpec = this.applySystemAgentOverridesToMode(this.modeStore.resolve(requestedModeId, parsed.pattern));
     const definition = modeSpecToPatternDefinition(modeSpec);
     const metadataApprovalMode = parsed.metadata.approvalMode;
     const resolvedApprovalMode =
@@ -2022,7 +2200,7 @@ export class LocalRunStore {
 
   private resolveMemoryPolicy(config: RunConfig) {
     const requestedModeId = config.modeId ?? config.pattern;
-    const modeSpec = this.modeStore.resolve(requestedModeId, config.pattern);
+    const modeSpec = this.applySystemAgentOverridesToMode(this.modeStore.resolve(requestedModeId, config.pattern));
     return {
       ...modeSpec.memoryPolicy,
       enabled: modeSpec.memoryPolicy.enabled && modeSpec.runtimeAtoms.includes("long_term_memory"),
@@ -3872,6 +4050,37 @@ function modeStudioNodePrompt(template: ModeSpec["nodes"][number]["template"], t
   return [base, guidance].filter(Boolean).join("\n\n");
 }
 
+function modeStudioNodeStoryConfig(
+  family: CoordinationPattern,
+  node: ModeSpec["nodes"][number],
+  ownerAgentId: string | undefined,
+  profiles: ModeSpec["profiles"],
+  text: string,
+) {
+  const owner = profiles.find((profile) => profile.id === ownerAgentId);
+  const ownerLabel = owner?.label ?? ownerAgentId ?? "Runtime";
+  const definition = getModeNodeRuntimeTemplateDefinition(family, node.template);
+  const ownerCapabilities = [
+    ...(owner?.toolIds ?? []),
+    ...(owner?.skillIds ?? []),
+  ];
+  const nodeAtoms = Array.isArray(node.config?.atoms)
+    ? node.config.atoms.filter((value): value is string => typeof value === "string")
+    : [];
+  const capabilityHint = [
+    ownerCapabilities.length > 0 ? `${ownerCapabilities.length} assigned capabilities` : "",
+    nodeAtoms.length > 0 ? `${nodeAtoms.length} stage capabilities` : "",
+  ].filter(Boolean).join(" and ");
+  const purpose = modeStudioPurpose(text);
+  const capabilityClause = capabilityHint ? ` using ${capabilityHint}` : "";
+
+  return {
+    summary: `${ownerLabel} handles "${purpose}" through this ${node.template.replace(/_/g, " ")} stage: ${definition.description}${capabilityClause}.`,
+    generatedBy: "mode_studio_builder" as const,
+    updatedAt: Date.now(),
+  };
+}
+
 function modeStudioGuidance(family: CoordinationPattern, text: string) {
   const choices = [
     {
@@ -4010,6 +4219,10 @@ export function defaultRuntimeStoreDir(): string {
   return fileURLToPath(pathToFileURL(path.join(process.cwd(), ".ora", "runtime.db")));
 }
 
+function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
+  return modelRef === "local/smoke-model" ? undefined : modelRef;
+}
+
 export function defaultEvaluationStoreDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "evaluation-store")
@@ -4026,6 +4239,12 @@ export function defaultCustomAgentsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "agents")
     : path.join(runtimeDataDir, "agents");
+}
+
+export function defaultSystemAgentOverridesDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "agent-overrides")
+    : path.join(runtimeDataDir, "agent-overrides");
 }
 
 export function defaultModesDir(runtimeDataDir: string): string {

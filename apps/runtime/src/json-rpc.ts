@@ -110,6 +110,12 @@ export function createRuntimeMethodHandler(
         return store.checkAgentName(request.params);
       case "agents.generateDraft":
         return store.generateAgentDraft(request.params);
+      case "agents.catalog":
+        return store.agentCatalog();
+      case "agents.updateSystemOverride":
+        return store.updateSystemAgentOverride(request.params);
+      case "agents.resetSystemOverride":
+        return store.resetSystemAgentOverride(request.params);
       case "projects.create":
         return store.createProject(request.params);
       case "projects.list":
@@ -130,12 +136,13 @@ export function createRuntimeMethodHandler(
         return store.archiveSession(request.params);
       case "runs.start":
         if (sessionManager.isEnabled()) {
-          return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay, customAgentContexts }) => {
+          return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay, systemAgentOverlays, customAgentContexts }) => {
             if (config.toolIds.some((toolId) => toolId === "web.search" || toolId === "web.fetch")) {
               const { snapshot } = await executeRuntimeKernel(runId, input, config, {
                 modeSpec,
                 definition,
                 customAgentOverlay,
+                systemAgentOverlays,
                 customAgentContexts,
                 conversationMessages,
               });

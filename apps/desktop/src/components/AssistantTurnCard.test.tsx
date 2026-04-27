@@ -1,11 +1,13 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  AssistantTurnCard,
   agentConversationSummary,
   agentMessageDisplayKind,
   processSummary,
   visibleAgentMessages,
 } from "./AssistantTurnCard";
-import type { TurnAgentConversationMessage, TurnProcessStep } from "../types";
+import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnProcessStep } from "../types";
 
 function agentMessage(
   id: string,
@@ -50,6 +52,41 @@ function processStep(
 }
 
 describe("assistant turn display helpers", () => {
+  it("renders collaboration trajectory directly below running progress", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      processSteps: [processStep("step-1", "active", "正在规划回答。")],
+      agentMessages: [
+        agentMessage("message-1", "route", "@builder 请补充背景。", {
+          fromAgentId: "team_lead",
+          fromAgentLabel: "Team Lead",
+          toAgentIds: ["builder"],
+          toAgentLabels: ["Builder"],
+          status: "running",
+        }),
+      ],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文应该在轨迹之后。" turn={turn} />,
+    );
+
+    const progressIndex = html.indexOf("运行进度");
+    const trajectoryIndex = html.indexOf("协作轨迹");
+    const contentIndex = html.indexOf("正文应该在轨迹之后。");
+
+    expect(progressIndex).toBeGreaterThanOrEqual(0);
+    expect(trajectoryIndex).toBeGreaterThan(progressIndex);
+    expect(contentIndex).toBeGreaterThan(trajectoryIndex);
+  });
+
   it("summarizes the latest running process action in user-facing copy", () => {
     expect(processSummary([
       processStep("step-1", "complete", "已完成资料收集。"),

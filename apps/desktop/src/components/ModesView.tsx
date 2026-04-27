@@ -34,7 +34,9 @@ import {
   canDisableModeNode,
   getExecutionPreview,
   hydrateModeDraft,
+  modeCapabilitySourceHandlePositions,
   modeCanvasStagePositionToStoredPosition,
+  MODE_CAPABILITY_TARGET_HANDLE_ID,
   MODE_CAPABILITY_NODE_PREFIX,
   NODE_ATTACHMENT_NODE_PREFIX,
   patchModeNodePosition,
@@ -766,12 +768,12 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                   onClearSelection={() => setSelectedNodeId(undefined)}
                   onConnect={handleConnect}
                   onDeleteEdges={(edges) => patchDraft((current) => removeModeEdges(current, edges.map((edge) => edge.id)))}
-                  onMoveNode={(node) => {
+                  onMoveNode={(node, canvasWidth) => {
                     if (node.data.kind !== "stage") return;
                     patchDraft((current) => patchModeNodePosition(
                       current,
                       node.id,
-                      modeCanvasStagePositionToStoredPosition(current, atoms, node.position),
+                      modeCanvasStagePositionToStoredPosition(current, atoms, node.position, canvasWidth),
                     ));
                   }}
                 />
@@ -876,19 +878,20 @@ function CanvasPanel({
   selectedNodeId?: string;
   onSelectNode: (nodeId?: string) => void;
   onClearSelection: () => void;
-  onMoveNode?: (node: Node<ModeCanvasNodeData>) => void;
+  onMoveNode?: (node: Node<ModeCanvasNodeData>, canvasWidth: number) => void;
   onConnect?: (connection: Connection) => void;
   onDeleteEdges?: (edges: Edge[]) => void;
 }) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
+  const [canvasWidth, setCanvasWidth] = useState(1120);
   const nodes = useMemo(
-    () => buildModeFlowNodes(mode, atoms).map((node) => ({
+    () => buildModeFlowNodes(mode, atoms, canvasWidth).map((node) => ({
       ...node,
       data: localizeCanvasNodeData(language, node.data),
       selected: node.id === selectedNodeId,
     })),
-    [atoms, language, mode, selectedNodeId],
+    [atoms, canvasWidth, language, mode, selectedNodeId],
   );
   const edges = useMemo(() => buildModeFlowEdges(mode, atoms), [atoms, mode]);
   const fitCanvasView = useCallback(() => {
@@ -908,7 +911,13 @@ function CanvasPanel({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const resizeObserver = new ResizeObserver(() => fitCanvasView());
+    const resizeObserver = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width;
+      if (typeof nextWidth === "number") {
+        setCanvasWidth((current) => Math.abs(current - nextWidth) > 1 ? nextWidth : current);
+      }
+      fitCanvasView();
+    });
     resizeObserver.observe(canvas);
     return () => resizeObserver.disconnect();
   }, [fitCanvasView]);
@@ -946,10 +955,11 @@ function CanvasPanel({
           nodesDraggable={!readOnly}
           nodesConnectable={!readOnly}
           elementsSelectable
+          minZoom={0.2}
           deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
           onPaneClick={onClearSelection}
           onNodeClick={(_event, node) => onSelectNode(node.id)}
-          onNodeDragStop={(_event, node) => onMoveNode?.(node)}
+          onNodeDragStop={(_event, node) => onMoveNode?.(node, canvasWidth)}
           onConnect={readOnly ? undefined : onConnect}
           onEdgesDelete={readOnly ? undefined : onDeleteEdges}
           onInit={(instance) => {
@@ -2754,10 +2764,19 @@ function CapabilityInspector({
 function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
   const stageNode = data.kind === "stage";
   const runtimeAnchor = data.kind === "runtime-anchor";
+  const runtimeCapabilityHandles = runtimeAnchor
+    ? modeCapabilitySourceHandlePositions(data.capabilityCount ?? 1, data.capabilityColumns)
+    : [];
   return (
     <div className={cn(
       "relative rounded-[1.25rem] border bg-white px-4 py-3 shadow-[0_18px_40px_-28px_rgba(17,24,39,0.45)] transition",
-      stageNode ? "w-[248px]" : runtimeAnchor ? "w-[248px]" : data.kind === "node-attachment" ? "w-[184px]" : "w-[204px]",
+      stageNode
+        ? "min-h-[152px] w-[248px]"
+        : runtimeAnchor
+          ? "min-h-[120px] w-[248px]"
+          : data.kind === "node-attachment"
+            ? "min-h-[118px] w-[184px]"
+            : "min-h-[126px] w-[204px]",
       stageNode
         ? data.enabled
           ? cn("text-bench-950", data.riskLevel ? riskSurfaceClassName(data.riskLevel) : "border-bench-200")
@@ -2792,6 +2811,26 @@ function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
             className="!h-3 !w-3 !border-2 !border-white !bg-bench-600"
           />
         </>
+      )}
+      {runtimeCapabilityHandles.map((handle) => (
+        <Handle
+          key={handle.id}
+          id={handle.id}
+          type="source"
+          position={Position.Bottom}
+          isConnectable={false}
+          style={{ left: `${handle.leftPercent}%` }}
+          className="!h-3 !w-3 !border-2 !border-white !bg-slate-500"
+        />
+      ))}
+      {(data.kind === "mode-capability" || data.kind === "node-attachment") && (
+        <Handle
+          id={data.kind === "mode-capability" ? MODE_CAPABILITY_TARGET_HANDLE_ID : undefined}
+          type="target"
+          position={Position.Top}
+          isConnectable={false}
+          className="!h-3 !w-3 !border-2 !border-white !bg-sky-500"
+        />
       )}
 
       <div className="flex items-start justify-between gap-3">
@@ -2917,44 +2956,27 @@ function nodeStoryDescription(
   node: OraModeSpec["nodes"][number],
 ): string {
   const owner = ownerDisplayName(mode, node, language);
-  switch (node.template) {
-    case "draft":
-      return translateCopy(language, `${owner} drafts the first candidate answer or working artifact.`);
-    case "decompose":
-      return translateCopy(language, `${owner} breaks the request into an executable plan and decides what needs attention first.`);
-    case "research":
-      return translateCopy(language, `${owner} gathers focused context before the mode commits to an answer.`);
-    case "review":
-      return translateCopy(language, `${owner} reviews the work for gaps, risks, and missing evidence.`);
-    case "verify":
-      return translateCopy(language, `${owner} checks the result against the mode's quality and risk boundary.`);
-    case "decide":
-      return translateCopy(language, `${owner} chooses the next action from the available state and constraints.`);
-    case "respond":
-      return translateCopy(language, `${owner} turns the completed work into the final response for the user.`);
-    case "publish":
-      return translateCopy(language, `${owner} publishes an event or artifact so later stages can consume it.`);
-    case "route":
-      return translateCopy(language, `${owner} routes events to the subscribers that should handle the next piece of work.`);
-    case "handle":
-      return translateCopy(language, `${owner} handles subscribed work and updates the shared runtime state.`);
-    case "synthesize":
-      return translateCopy(language, `${owner} combines partial outputs into a coherent answer.`);
-    case "triage":
-      return translateCopy(language, `${owner} classifies the request and chooses the right handling lane.`);
-    case "build":
-      return translateCopy(language, `${owner} executes the main construction or implementation step.`);
-    case "check":
-      return translateCopy(language, `${owner} checks the completed work before handoff.`);
-    case "handoff":
-      return translateCopy(language, `${owner} packages the result for the next stage or the final response.`);
-    case "seed":
-      return translateCopy(language, `${owner} initializes the shared state so collaborators start from the same context.`);
-    case "converge":
-      return translateCopy(language, `${owner} watches for shared-state convergence before the run wraps up.`);
-    default:
-      return translateCopy(language, `${owner} runs this stage using the selected runtime template.`);
+  const generated = modeNodeGeneratedStory(node);
+  if (generated) {
+    return generated;
   }
+
+  const definition = getModeNodeRuntimeTemplateDefinition(mode.family, node.template);
+  const story = interpolateModeNodeStory(definition.display.story || definition.description, owner);
+  return translateCopy(language, story);
+}
+
+function modeNodeGeneratedStory(node: OraModeSpec["nodes"][number]): string | undefined {
+  const story = node.config?.story;
+  if (!story || typeof story !== "object" || Array.isArray(story)) {
+    return undefined;
+  }
+  const summary = (story as { summary?: unknown }).summary;
+  return typeof summary === "string" && summary.trim() ? summary.trim() : undefined;
+}
+
+function interpolateModeNodeStory(story: string, owner: string): string {
+  return story.replace(/\{\{\s*owner\s*\}\}/g, owner);
 }
 
 function stageFailureSummary(

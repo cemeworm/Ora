@@ -100,13 +100,13 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             </CollapsibleCard>
           ) : null}
 
-          <MessageContent className="w-full">
-            <MarkdownContent content={content} className={cn(isPlaceholder && "text-muted-foreground")} />
-          </MessageContent>
-
           {hasVisibleAgentMessages ? (
             <AgentConversationTimeline messages={agentMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
           ) : null}
+
+          <MessageContent className="w-full">
+            <MarkdownContent content={content} className={cn(isPlaceholder && "text-muted-foreground")} />
+          </MessageContent>
 
           {turn && turn.artifacts.length > 0 ? (
             <div className="space-y-3">

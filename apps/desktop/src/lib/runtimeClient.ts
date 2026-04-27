@@ -1,5 +1,6 @@
 import type {
   ActionRecord as OraActionRecord,
+  AgentCatalogResult as OraAgentCatalogResult,
   AgentProfile as OraAgentProfile,
   ArtifactRef as OraArtifactRef,
   CheckpointMeta as OraCheckpointMeta,
@@ -73,6 +74,8 @@ import type {
   SkillSetEnabledParams as OraSkillSetEnabledParams,
   SkillUpdateParams as OraSkillUpdateParams,
   StateSnapshot as OraStateSnapshot,
+  SystemAgentOverride as OraSystemAgentOverride,
+  SystemAgentOverrideUpdateParams as OraSystemAgentOverrideUpdateParams,
   TodoItem as OraTodoItem,
   TopologyEdge as OraTopologyEdge,
   TopologyNode as OraTopologyNode,
@@ -81,7 +84,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SystemAgentOverrideUpdateParamsSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
@@ -89,6 +92,7 @@ export const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 
 export type {
   OraActionRecord,
+  OraAgentCatalogResult,
   OraAgentProfile,
   OraArtifactRef,
   OraCheckpointMeta,
@@ -154,6 +158,8 @@ export type {
   OraSkillCreateParams,
   OraSkillDetail,
   OraStateSnapshot,
+  OraSystemAgentOverride,
+  OraSystemAgentOverrideUpdateParams,
   OraTodoItem,
   OraToolRegistry,
   OraSkillRegistry,
@@ -430,6 +436,9 @@ export function createRuntimeClient() {
     async listAgents(): Promise<OraCustomAgentSummary[]> {
       return call<OraCustomAgentSummary[]>("agents.list");
     },
+    async agentCatalog(): Promise<OraAgentCatalogResult> {
+      return call<OraAgentCatalogResult>("agents.catalog");
+    },
     async listSkills(params: { category?: "public" | "private"; enabledOnly?: boolean; query?: string } = {}): Promise<OraSkillRegistry> {
       return call<OraSkillRegistry>("skills.list", params);
     },
@@ -504,6 +513,12 @@ export function createRuntimeClient() {
     },
     async generateAgentDraft(params: OraCustomAgentGenerateDraftParams): Promise<OraCustomAgentGenerateDraftResult> {
       return call<OraCustomAgentGenerateDraftResult>("agents.generateDraft", params);
+    },
+    async updateSystemAgentOverride(params: OraSystemAgentOverrideUpdateParams): Promise<OraSystemAgentOverride> {
+      return call<OraSystemAgentOverride>("agents.updateSystemOverride", params);
+    },
+    async resetSystemAgentOverride(agentId: string): Promise<{ reset: true; agentId: string }> {
+      return call<{ reset: true; agentId: string }>("agents.resetSystemOverride", { agentId });
     },
     async startRun(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraStateSnapshot> {
       const handle = await call<OraRunHandle>("runs.start", { input, config, sessionId });
@@ -833,6 +848,7 @@ class LocalJsonRpcRuntime {
   private sessions = new Map<string, OraSessionSummary>();
   private runs = new Map<string, OraStateSnapshot>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
+  private systemAgentOverrides = new Map<string, OraSystemAgentOverride>();
   private customSkills = new Map<string, OraSkillDetail>();
   private deletedSkills = new Set<string>();
   private skillEnabled = new Map<string, boolean>();
@@ -1013,6 +1029,8 @@ class LocalJsonRpcRuntime {
         return [...this.customAgents.values()]
           .map(({ soul, ...summary }) => summary)
           .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+      case "agents.catalog":
+        return this.agentCatalog();
       case "agents.get": {
         const name = normalizeMockAgentName(params);
         const agent = this.customAgents.get(name);
@@ -1031,6 +1049,10 @@ class LocalJsonRpcRuntime {
         return this.checkAgentName(params);
       case "agents.generateDraft":
         return this.generateAgentDraft(params);
+      case "agents.updateSystemOverride":
+        return this.updateSystemAgentOverride(params);
+      case "agents.resetSystemOverride":
+        return this.resetSystemAgentOverride(params);
       case "projects.create":
         return this.createProject(params);
       case "projects.list":
@@ -1716,6 +1738,9 @@ class LocalJsonRpcRuntime {
       throw new Error("Custom agent name is required.");
     }
     const name = normalizeMockAgentName(params.name);
+    if (this.systemAgentIds().has(name)) {
+      throw new Error(`Custom agent '${name}' conflicts with a built-in system agent.`);
+    }
     if (this.customAgents.has(name)) {
       throw new Error(`Custom agent '${name}' already exists.`);
     }
@@ -1917,6 +1942,7 @@ class LocalJsonRpcRuntime {
 
   private listModes(): OraModeSpec[] {
     return [...MVP_MODES, ...this.modes.values()]
+      .map((mode) => this.applySystemAgentOverridesToMode(mode))
       .sort((left, right) =>
         Number(right.systemPreset) - Number(left.systemPreset) ||
         right.updatedAt - left.updatedAt ||
@@ -1928,6 +1954,33 @@ class LocalJsonRpcRuntime {
     return this.listModes().find((mode) => mode.id === modeId) ?? (() => {
       throw new Error(`Mode not found: ${modeId}`);
     })();
+  }
+
+  private applySystemAgentOverridesToMode(mode: OraModeSpec): OraModeSpec {
+    return {
+      ...mode,
+      profiles: mode.profiles.map((profile) => {
+        if (profile.customAgentId) {
+          return { ...profile };
+        }
+        const override = this.systemAgentOverrides.get(profile.id);
+        if (!override) {
+          return { ...profile };
+        }
+        return {
+          ...profile,
+          label: override.label ?? profile.label,
+          role: override.role ?? profile.role,
+          modelRef: override.modelRef ?? profile.modelRef,
+          toolIds: override.toolIds ?? profile.toolIds,
+          skillIds: override.skillIds ?? profile.skillIds,
+        };
+      }),
+    };
+  }
+
+  private systemAgentIds(): Set<string> {
+    return new Set(MVP_MODES.flatMap((mode) => mode.profiles.map((profile) => profile.id)));
   }
 
   private createMode(params: unknown): OraModeSpec {
@@ -2237,6 +2290,117 @@ class LocalJsonRpcRuntime {
     return next;
   }
 
+  private agentCatalog(): OraAgentCatalogResult {
+    const systemProfiles = new Map<string, OraAgentCatalogResult["systemAgents"][number]>();
+    const customUsages = new Map<string, OraAgentCatalogResult["customAgents"][number]["usages"]>();
+    const addCustomUsage = (name: string | undefined, usage: OraAgentCatalogResult["customAgents"][number]["usages"][number]) => {
+      if (!name) return;
+      const normalized = normalizeMockAgentName(name);
+      const current = customUsages.get(normalized) ?? [];
+      const key = JSON.stringify(usage);
+      if (!current.some((item) => JSON.stringify(item) === key)) {
+        current.push(usage);
+      }
+      customUsages.set(normalized, current);
+    };
+
+    for (const mode of MVP_MODES) {
+      const effectiveMode = this.applySystemAgentOverridesToMode(mode);
+      for (const profile of mode.profiles) {
+        if (systemProfiles.has(profile.id)) continue;
+        const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
+        const override = this.systemAgentOverrides.get(profile.id);
+        const modelRef = explicitSystemAgentModelRef(effectiveProfile.modelRef);
+        systemProfiles.set(profile.id, {
+          source: "system",
+          id: profile.id,
+          label: effectiveProfile.label,
+          role: effectiveProfile.role,
+          ...(modelRef ? { modelRef } : {}),
+          toolPolicyId: effectiveProfile.toolPolicyId,
+          toolIds: effectiveProfile.toolIds,
+          skillIds: effectiveProfile.skillIds,
+          memoryNamespaces: effectiveProfile.memoryNamespaces,
+          soul: override?.soul ?? "",
+          overridden: override !== undefined,
+          ...(override ? { override } : {}),
+          usages: [],
+        });
+      }
+    }
+
+    for (const mode of this.listModes()) {
+      for (const profile of mode.profiles) {
+        const usage = {
+          modeId: mode.id,
+          modeLabel: mode.label,
+          systemPreset: mode.systemPreset,
+          profileId: profile.id,
+          profileLabel: profile.label,
+        };
+        if (profile.customAgentId) {
+          addCustomUsage(profile.customAgentId, usage);
+          continue;
+        }
+        systemProfiles.get(profile.id)?.usages.push(usage);
+      }
+      for (const node of mode.nodes) {
+        addCustomUsage(
+          typeof node.config?.customAgentId === "string" ? node.config.customAgentId : undefined,
+          {
+            modeId: mode.id,
+            modeLabel: mode.label,
+            systemPreset: mode.systemPreset,
+            nodeId: node.id,
+            nodeLabel: node.title ?? node.label,
+          },
+        );
+      }
+    }
+
+    return {
+      systemAgents: [...systemProfiles.values()].sort((left, right) => left.label.localeCompare(right.label)),
+      customAgents: [...this.customAgents.values()]
+        .map(({ soul: _soul, ...agent }) => ({
+          ...agent,
+          source: "custom" as const,
+          usages: customUsages.get(agent.name) ?? [],
+        }))
+        .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name)),
+    };
+  }
+
+  private updateSystemAgentOverride(params: unknown): OraSystemAgentOverride {
+    const parsed = SystemAgentOverrideUpdateParamsSchema.parse(params);
+    if (!this.systemAgentIds().has(parsed.agentId)) {
+      throw new Error(`System agent '${parsed.agentId}' does not exist.`);
+    }
+    const existing = this.systemAgentOverrides.get(parsed.agentId);
+    const now = Date.now();
+    const next: OraSystemAgentOverride = {
+      agentId: parsed.agentId,
+      label: parsed.label ?? existing?.label,
+      role: parsed.role ?? existing?.role,
+      modelRef: parsed.modelRef === null ? undefined : parsed.modelRef ?? existing?.modelRef,
+      toolIds: parsed.toolIds === null ? undefined : parsed.toolIds ?? existing?.toolIds,
+      skillIds: parsed.skillIds === null ? undefined : parsed.skillIds ?? existing?.skillIds,
+      soul: parsed.soul ?? existing?.soul ?? "",
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.systemAgentOverrides.set(parsed.agentId, next);
+    return next;
+  }
+
+  private resetSystemAgentOverride(params: unknown): { reset: true; agentId: string } {
+    const agentId = isRecord(params) && typeof params.agentId === "string" ? params.agentId : "";
+    if (!this.systemAgentIds().has(agentId)) {
+      throw new Error(`System agent '${agentId}' does not exist.`);
+    }
+    this.systemAgentOverrides.delete(agentId);
+    return { reset: true, agentId };
+  }
+
   private deleteAgent(params: unknown): { deleted: true; name: string } {
     const name = normalizeMockAgentName(isRecord(params) ? params.name : undefined);
     if (!this.customAgents.has(name)) {
@@ -2252,7 +2416,7 @@ class LocalJsonRpcRuntime {
     }
     const name = normalizeMockAgentName(params.name);
     return {
-      available: !this.customAgents.has(name),
+      available: !this.customAgents.has(name) && !this.systemAgentIds().has(name),
       name,
     };
   }
@@ -4157,6 +4321,10 @@ function buildMockEvaluationEvents(run: OraEvaluationRun, attempts: OraEvaluatio
       },
     },
   ];
+}
+
+function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
+  return modelRef === "local/smoke-model" ? undefined : modelRef;
 }
 
 function mockRuleAllows(rule: OraFeedbackLoopCalibrationRule, source: OraProjectSignal["source"], severity: OraProjectSignal["severity"]): boolean {

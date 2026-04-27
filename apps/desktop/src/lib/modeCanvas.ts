@@ -25,29 +25,36 @@ export interface ModeCanvasNodeData {
   active?: boolean;
   sourceNodeId?: string;
   capabilityCount?: number;
+  capabilityColumns?: number;
 }
 
 export const RUNTIME_ANCHOR_NODE_ID = "__runtime_anchor__";
 export const MODE_CAPABILITY_NODE_PREFIX = "__mode_atom__:";
 export const NODE_ATTACHMENT_NODE_PREFIX = "__node_atom__:";
+export const MODE_CAPABILITY_TARGET_HANDLE_ID = "mode-capability-target";
 
 const STAGE_NODE_WIDTH = 248;
 const STAGE_NODE_HEIGHT = 152;
 const RUNTIME_ANCHOR_NODE_WIDTH = 248;
-const RUNTIME_ANCHOR_NODE_HEIGHT = 104;
+const RUNTIME_ANCHOR_NODE_HEIGHT = 120;
 const MODE_CAPABILITY_NODE_WIDTH = 204;
-const MODE_CAPABILITY_NODE_HEIGHT = 96;
+const MODE_CAPABILITY_NODE_HEIGHT = 126;
 const NODE_ATTACHMENT_NODE_WIDTH = 184;
-const NODE_ATTACHMENT_NODE_HEIGHT = 104;
-const MODE_CAPABILITY_X_GAP = 20;
-const MODE_CAPABILITY_Y_GAP = 16;
-const MODE_CAPABILITY_ORIGIN_X = 32;
-const MODE_CAPABILITY_ORIGIN_Y = 148;
+const NODE_ATTACHMENT_NODE_HEIGHT = 118;
+const MODE_CAPABILITY_X_GAP = 28;
+const MODE_CAPABILITY_Y_GAP = 28;
 const RUNTIME_ANCHOR_ORIGIN_X = 32;
 const RUNTIME_ANCHOR_ORIGIN_Y = 24;
-const STAGE_TOP_GAP = 76;
+const MODE_CAPABILITY_ORIGIN_X = 32;
+const MODE_CAPABILITY_ORIGIN_Y = RUNTIME_ANCHOR_ORIGIN_Y + RUNTIME_ANCHOR_NODE_HEIGHT + 48;
+const STAGE_TOP_GAP = 112;
 const ATTACHMENT_X_OFFSET = 12;
 const ATTACHMENT_Y_GAP = 14;
+const CANVAS_LAYOUT_DEFAULT_WIDTH = 1120;
+const CANVAS_LAYOUT_SIDE_PADDING = 64;
+const MODE_CAPABILITY_MAX_COLUMNS = 5;
+const MODE_CAPABILITY_HANDLE_SPREAD_MIN = 18;
+const MODE_CAPABILITY_HANDLE_SPREAD_MAX = 82;
 
 export function hydrateModeDraft(mode: OraModeSpec): OraModeSpec {
   return ensureModeNodePositions({
@@ -120,10 +127,12 @@ export function resetModeDraftFamily(mode: OraModeSpec, family: CoordinationPatt
 export function buildModeFlowNodes(
   mode: OraModeSpec,
   atoms: OraModeRuntimeAtomDefinition[],
+  canvasWidth = CANVAS_LAYOUT_DEFAULT_WIDTH,
 ): Node<ModeCanvasNodeData>[] {
   const compatibleModeAtoms = atoms.filter((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family));
   const activeModeAtoms = compatibleModeAtoms.filter((atom) => mode.runtimeAtoms.includes(atom.id));
-  const stageTopPadding = modeTopPadding(activeModeAtoms.length, compatibleModeAtoms.length > 0);
+  const modeCapabilityLayout = getModeCapabilityLayout(activeModeAtoms.length, canvasWidth);
+  const stageTopPadding = modeTopPadding(activeModeAtoms.length, compatibleModeAtoms.length > 0, canvasWidth);
   const requiredTemplates = new Set(mode.editorConstraints.requiredNodeTemplates);
   const runtimeAnchor = compatibleModeAtoms.length > 0
     ? {
@@ -142,6 +151,7 @@ export function buildModeFlowNodes(
         required: false,
         active: true,
         capabilityCount: activeModeAtoms.length,
+        capabilityColumns: modeCapabilityLayout.columns,
       },
     }
     : undefined;
@@ -165,7 +175,7 @@ export function buildModeFlowNodes(
   const modeCapabilityNodes = activeModeAtoms.map((atom, index) => ({
     id: `${MODE_CAPABILITY_NODE_PREFIX}${atom.id}`,
     type: "modeNode",
-    position: modeCapabilityPosition(index),
+    position: modeCapabilityPosition(index, modeCapabilityLayout),
     draggable: false,
     selectable: true,
     data: {
@@ -224,7 +234,7 @@ export function buildModeFlowNodes(
   return [...(runtimeAnchor ? [runtimeAnchor] : []), ...modeCapabilityNodes, ...stageNodes, ...attachmentNodes];
 }
 
-function modeTopPadding(modeCapabilityCount: number, hasRuntimeAnchor: boolean) {
+function modeTopPadding(modeCapabilityCount: number, hasRuntimeAnchor: boolean, canvasWidth = CANVAS_LAYOUT_DEFAULT_WIDTH) {
   if (!hasRuntimeAnchor) {
     return 0;
   }
@@ -232,22 +242,31 @@ function modeTopPadding(modeCapabilityCount: number, hasRuntimeAnchor: boolean) 
     return RUNTIME_ANCHOR_ORIGIN_Y + RUNTIME_ANCHOR_NODE_HEIGHT + STAGE_TOP_GAP;
   }
 
+  const layout = getModeCapabilityLayout(modeCapabilityCount, canvasWidth);
   return MODE_CAPABILITY_ORIGIN_Y
-    + modeCapabilityRows(modeCapabilityCount) * MODE_CAPABILITY_NODE_HEIGHT
-    + Math.max(0, modeCapabilityRows(modeCapabilityCount) - 1) * MODE_CAPABILITY_Y_GAP
+    + layout.rows * MODE_CAPABILITY_NODE_HEIGHT
+    + Math.max(0, layout.rows - 1) * MODE_CAPABILITY_Y_GAP
     + STAGE_TOP_GAP;
 }
 
-function modeCapabilityRows(count: number) {
-  return Math.ceil(count / modeCapabilityColumns(count));
+function getModeCapabilityLayout(count: number, canvasWidth = CANVAS_LAYOUT_DEFAULT_WIDTH) {
+  if (count <= 0) {
+    return { columns: 1, rows: 0 };
+  }
+  const usableWidth = Math.max(MODE_CAPABILITY_NODE_WIDTH, canvasWidth - CANVAS_LAYOUT_SIDE_PADDING);
+  const columnsByWidth = Math.max(
+    1,
+    Math.floor((usableWidth + MODE_CAPABILITY_X_GAP) / (MODE_CAPABILITY_NODE_WIDTH + MODE_CAPABILITY_X_GAP)),
+  );
+  const columns = Math.min(MODE_CAPABILITY_MAX_COLUMNS, count, columnsByWidth);
+  return {
+    columns,
+    rows: Math.ceil(count / columns),
+  };
 }
 
-function modeCapabilityColumns(count: number) {
-  return Math.min(5, Math.max(1, count));
-}
-
-function modeCapabilityPosition(index: number) {
-  const columnCount = modeCapabilityColumns(index + 1);
+function modeCapabilityPosition(index: number, layout: { columns: number }) {
+  const columnCount = layout.columns;
   return {
     x: MODE_CAPABILITY_ORIGIN_X + (index % columnCount) * (MODE_CAPABILITY_NODE_WIDTH + MODE_CAPABILITY_X_GAP),
     y: MODE_CAPABILITY_ORIGIN_Y + Math.floor(index / columnCount) * (MODE_CAPABILITY_NODE_HEIGHT + MODE_CAPABILITY_Y_GAP),
@@ -296,17 +315,12 @@ export function buildModeFlowEdges(
     && mode.runtimeAtoms.includes(atom.id),
   );
   const modeAtomEdges = activeModeAtoms.length > 0
-    ? atoms
-      .filter((atom) =>
-        atom.scope === "mode"
-        && atom.compatibleFamilies.includes(mode.family)
-        && mode.runtimeAtoms.includes(atom.id),
-      )
-      .map((atom) => ({
+    ? activeModeAtoms.map((atom, index) => ({
         id: `synthetic:${RUNTIME_ANCHOR_NODE_ID}:${atom.id}`,
         source: RUNTIME_ANCHOR_NODE_ID,
+        sourceHandle: modeCapabilitySourceHandleId(index, activeModeAtoms.length),
         target: `${MODE_CAPABILITY_NODE_PREFIX}${atom.id}`,
-        label: atom.topology.edgeLabel,
+        targetHandle: MODE_CAPABILITY_TARGET_HANDLE_ID,
         type: "smoothstep",
         animated: false,
         selectable: false,
@@ -368,6 +382,34 @@ export function buildModeFlowEdges(
   return [...modeAtomEdges, ...stageEdges, ...attachmentEdges];
 }
 
+export function modeCapabilitySourceHandleId(index: number, count: number) {
+  return `mode-capability-source-${Math.max(0, index)}-of-${Math.max(1, count)}`;
+}
+
+export function modeCapabilitySourceHandlePositions(count: number, columns = count) {
+  const safeCount = Math.max(1, count);
+  const safeColumns = Math.min(safeCount, Math.max(1, columns));
+  if (safeCount === 1) {
+    return [{ id: modeCapabilitySourceHandleId(0, safeCount), leftPercent: 50 }];
+  }
+
+  const span = MODE_CAPABILITY_HANDLE_SPREAD_MAX - MODE_CAPABILITY_HANDLE_SPREAD_MIN;
+  return Array.from({ length: safeCount }, (_item, index) => ({
+    id: modeCapabilitySourceHandleId(index, safeCount),
+    leftPercent: modeCapabilitySourceHandlePercent(index, safeCount, safeColumns, span),
+  }));
+}
+
+function modeCapabilitySourceHandlePercent(index: number, count: number, columns: number, span: number) {
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const rowsInColumn = Math.ceil((count - column) / columns);
+  const bandWidth = span / columns;
+  return MODE_CAPABILITY_HANDLE_SPREAD_MIN
+    + column * bandWidth
+    + bandWidth * ((row + 1) / (rowsInColumn + 1));
+}
+
 export function getVisibleModeEdges(mode: OraModeSpec): OraModeSpec["edges"] {
   const enabledNodeIds = new Set(mode.nodes.filter((node) => node.enabled).map((node) => node.id));
   return mode.edges.filter((edge) => edge.enabled && enabledNodeIds.has(edge.source) && enabledNodeIds.has(edge.target));
@@ -404,6 +446,7 @@ export function modeCanvasStagePositionToStoredPosition(
   mode: OraModeSpec,
   atoms: OraModeRuntimeAtomDefinition[],
   position: { x: number; y: number },
+  canvasWidth = CANVAS_LAYOUT_DEFAULT_WIDTH,
 ): { x: number; y: number } {
   const activeModeAtomCount = atoms.filter((atom) =>
     atom.scope === "mode"
@@ -413,7 +456,7 @@ export function modeCanvasStagePositionToStoredPosition(
   const hasRuntimeAnchor = atoms.some((atom) => atom.scope === "mode" && atom.compatibleFamilies.includes(mode.family));
   return {
     x: position.x,
-    y: position.y - modeTopPadding(activeModeAtomCount, hasRuntimeAnchor),
+    y: position.y - modeTopPadding(activeModeAtomCount, hasRuntimeAnchor, canvasWidth),
   };
 }
 

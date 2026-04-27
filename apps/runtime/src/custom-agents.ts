@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  type AgentProfile,
   CustomAgentCheckNameParamsSchema,
   CustomAgentCheckNameResultSchema,
   CustomAgentCreateParamsSchema,
@@ -16,6 +17,13 @@ import {
   type CustomAgentGetParams,
   type CustomAgentSummary,
   type CustomAgentUpdateParams,
+  SystemAgentIdSchema,
+  SystemAgentOverrideResetParamsSchema,
+  SystemAgentOverrideSchema,
+  SystemAgentOverrideUpdateParamsSchema,
+  type SystemAgentOverride,
+  type SystemAgentOverrideResetParams,
+  type SystemAgentOverrideUpdateParams,
 } from "@ora/shared";
 
 interface PersistedCustomAgentConfig {
@@ -202,4 +210,105 @@ export class CustomAgentFileStore {
 
 function normalizeAgentName(name: string): string {
   return CustomAgentCheckNameResultSchema.shape.name.parse(name.trim().toLowerCase());
+}
+
+export class SystemAgentOverrideFileStore {
+  constructor(
+    private readonly rootDir: string,
+    private readonly clock: () => number = Date.now,
+  ) {}
+
+  list(): SystemAgentOverride[] {
+    fs.mkdirSync(this.rootDir, { recursive: true });
+    return fs.readdirSync(this.rootDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .flatMap((entry) => {
+        try {
+          const value = JSON.parse(fs.readFileSync(path.join(this.rootDir, entry.name), "utf8"));
+          return [SystemAgentOverrideSchema.parse(value)];
+        } catch {
+          return [];
+        }
+      })
+      .sort((left, right) => left.agentId.localeCompare(right.agentId));
+  }
+
+  get(agentId: string): SystemAgentOverride | undefined {
+    const parsedAgentId = SystemAgentIdSchema.parse(agentId);
+    const overridePath = this.overridePath(parsedAgentId);
+    if (!fs.existsSync(overridePath)) {
+      return undefined;
+    }
+    return SystemAgentOverrideSchema.parse(JSON.parse(fs.readFileSync(overridePath, "utf8")));
+  }
+
+  update(params: SystemAgentOverrideUpdateParams | unknown): SystemAgentOverride {
+    const parsed = SystemAgentOverrideUpdateParamsSchema.parse(params);
+    const existing = this.get(parsed.agentId);
+    const now = this.clock();
+    const next = SystemAgentOverrideSchema.parse({
+      agentId: parsed.agentId,
+      label: parsed.label ?? existing?.label,
+      role: parsed.role ?? existing?.role,
+      modelRef: parsed.modelRef === null ? undefined : parsed.modelRef ?? existing?.modelRef,
+      toolIds: parsed.toolIds === null ? undefined : parsed.toolIds ?? existing?.toolIds,
+      skillIds: parsed.skillIds === null ? undefined : parsed.skillIds ?? existing?.skillIds,
+      soul: parsed.soul ?? existing?.soul ?? "",
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+    this.writeOverride(next);
+    return next;
+  }
+
+  reset(params: SystemAgentOverrideResetParams | unknown): { reset: true; agentId: string } {
+    const parsed = SystemAgentOverrideResetParamsSchema.parse(params);
+    fs.rmSync(this.overridePath(parsed.agentId), { force: true });
+    return { reset: true, agentId: parsed.agentId };
+  }
+
+  apply(profile: AgentProfile): AgentProfile {
+    if (profile.customAgentId) {
+      return { ...profile };
+    }
+    const override = this.get(profile.id);
+    if (!override) {
+      return { ...profile };
+    }
+    return {
+      ...profile,
+      label: override.label ?? profile.label,
+      role: override.role ?? profile.role,
+      modelRef: override.modelRef ?? profile.modelRef,
+      toolIds: override.toolIds ?? profile.toolIds,
+      skillIds: override.skillIds ?? profile.skillIds,
+    };
+  }
+
+  overlay(agentId: string | undefined): string | undefined {
+    if (!agentId) {
+      return undefined;
+    }
+    const override = this.get(agentId);
+    if (!override) {
+      return undefined;
+    }
+    const sections = [
+      `System Agent Override: ${override.agentId}`,
+      override.label ? `Label:\n${override.label}` : "",
+      override.role ? `Role:\n${override.role}` : "",
+      override.modelRef ? `Preferred model hint: ${override.modelRef}` : "",
+      override.soul.trim() ? `SOUL:\n${override.soul.trim()}` : "",
+    ].filter(Boolean);
+    return sections.length > 1 ? sections.join("\n\n") : undefined;
+  }
+
+  private writeOverride(override: SystemAgentOverride): void {
+    fs.mkdirSync(this.rootDir, { recursive: true });
+    fs.writeFileSync(this.overridePath(override.agentId), `${JSON.stringify(override, null, 2)}\n`, "utf8");
+  }
+
+  private overridePath(agentId: string): string {
+    return path.join(this.rootDir, `${SystemAgentIdSchema.parse(agentId)}.json`);
+  }
 }

@@ -113,7 +113,7 @@ function SessionRow({
     <div
       onMouseEnter={onPrefetch}
       className={cn(
-        "group/session relative flex min-h-[36px] w-full items-center rounded-lg text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        "group/session relative my-0.5 flex min-h-[36px] w-full items-center rounded-lg text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         selected
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "text-muted-foreground",

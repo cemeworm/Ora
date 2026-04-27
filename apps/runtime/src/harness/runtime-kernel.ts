@@ -97,6 +97,7 @@ export interface RuntimeKernelOptions {
   conversationMessages?: ModelMessage[];
   customAgentOverlay?: string;
   customAgentOverlays?: Record<string, string>;
+  systemAgentOverlays?: Record<string, string>;
   customAgentContexts?: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }>;
   modeSpec?: ModeSpec;
   definition?: PatternDefinition;
@@ -887,10 +888,11 @@ export async function executeRuntimeKernel(
     system: string,
     params: { agentId: string; customAgentId?: string },
   ) => {
-    const overlay = customAgentOverlayFor(params.customAgentId);
+    const customOverlay = customAgentOverlayFor(params.customAgentId);
+    const systemOverlay = params.customAgentId ? undefined : options.systemAgentOverlays?.[params.agentId];
     const toolPrompt = runtimeToolExecutor.systemPrompt(effectiveAgentToolIds(params.agentId, params.customAgentId));
     const snippets = skillRegistry.promptSnippets(effectiveAgentSkillIds(params.agentId, params.customAgentId));
-    return [overlay, system, toolPrompt, ...snippets].filter(Boolean).join("\n\n");
+    return [customOverlay, systemOverlay, system, toolPrompt, ...snippets].filter(Boolean).join("\n\n");
   };
 
   const runNodeRuntimeLoop = async (params: {

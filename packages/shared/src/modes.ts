@@ -323,6 +323,9 @@ const MODE_FAMILY_RULES: Record<
 
 export interface ModeNodeRuntimeTemplateDefinition {
   description: string;
+  display: {
+    story: string;
+  };
   supportsPromptOverride: boolean;
   fallbackPrompt?: string;
   promptVariables: string[];
@@ -337,37 +340,44 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
   generator_verifier: {
     draft: {
       description: "Draft a candidate answer for verifier review.",
+      display: { story: "{{owner}} drafts a candidate answer that the verifier can inspect and improve." },
       supportsPromptOverride: true,
       fallbackPrompt: "Prompt: {{prompt}}\nAttempt: {{attempt}}\nPrevious verifier notes:\n{{verifierNotes}}\nWrite a better candidate answer. Return only the candidate response.",
     },
     verify: {
       description: "Evaluate the candidate against the current rubric.",
+      display: { story: "{{owner}} checks the candidate against the rubric and decides whether it is ready." },
       supportsPromptOverride: true,
       fallbackPrompt: "Original prompt: {{prompt}}\nRubric:\n- {{rubric}}\nCandidate:\n{{candidate}}\nReturn JSON with keys verdict ('pass'|'fail'), rationale, and missingRequirements (array of strings).",
     },
     decide: {
       description: "Reserved stage for a future explicit accept/retry decision step.",
+      display: { story: "{{owner}} makes the accept, retry, or stop decision for this verification loop." },
       supportsPromptOverride: false,
     },
   },
   orchestrator_subagent: {
     decompose: {
       description: "Break the task into inspectable orchestration steps.",
+      display: { story: "{{owner}} breaks the request into clear responsibilities before other stages start." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nDecompose it into research, review, and synthesis responsibilities.",
     },
     research: {
       description: "Collect focused supporting context from the decomposition plan.",
+      display: { story: "{{owner}} gathers focused context for the plan instead of answering from first impressions." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nGather focused supporting context for the orchestration plan:\n{{plan}}",
     },
     review: {
       description: "Review findings and surface risks or missing pieces.",
+      display: { story: "{{owner}} reviews the work for gaps, contradictions, risks, and missing evidence." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nPlan:\n{{plan}}\nResearch:\n{{research}}\nReview completeness, risks, and missing pieces.",
     },
     synthesize: {
       description: "Combine plan, research, and review into the final answer.",
+      display: { story: "{{owner}} combines the completed work into a final response with the mode's context intact." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nPlan:\n{{plan}}\nResearch:\n{{research}}\nReview:\n{{review}}\nProduce the final orchestrated answer.",
     },
@@ -375,21 +385,25 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
   agent_teams: {
     triage: {
       description: "Turn the task into a compact team backlog.",
+      display: { story: "{{owner}} turns the request into a small backlog with explicit ownership." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nBreak the work into a team backlog with explicit ownership.",
     },
     build: {
       description: "Complete the assigned backlog item.",
+      display: { story: "{{owner}} completes the assigned work item using the mode's available capabilities." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nComplete the builder's assigned work.",
     },
     check: {
       description: "Validate builder output and report issues or approval.",
+      display: { story: "{{owner}} checks the completed work and reports approval or concrete issues." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder output:\n{{build}}\nValidate the work and report issues or approval.",
     },
     handoff: {
       description: "Summarize handoff state and the next action.",
+      display: { story: "{{owner}} packages the current state so the next stage knows what changed and what remains." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder:\n{{build}}\nChecker:\n{{check}}\nRecord the handoff and next action.",
     },
@@ -397,20 +411,24 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
   message_bus: {
     publish: {
       description: "Publish the initial input event to the bus.",
+      display: { story: "{{owner}} publishes the initial event so downstream subscribers can react to it." },
       supportsPromptOverride: false,
     },
     route: {
       description: "Classify the incoming event and choose the subscriber path.",
+      display: { story: "{{owner}} classifies the event and routes it to the subscriber that should handle it." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nClassify the incoming event and decide which topic/subscriber should receive it.",
     },
     handle: {
       description: "Process the routed work item and emit findings.",
+      display: { story: "{{owner}} handles the routed work item and emits findings back into the bus." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nRouting plan:\n{{routingPlan}}\nProduce the investigation findings for the subscribed work item.",
     },
     respond: {
       description: "Turn bus findings into the final response event.",
+      display: { story: "{{owner}} turns routed findings into the final response event for the user." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nRouting plan:\n{{routingPlan}}\nFindings:\n{{findings}}\nProduce the final routed response.",
     },
@@ -418,16 +436,19 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
   shared_state: {
     seed: {
       description: "Create the initial shared-state board.",
+      display: { story: "{{owner}} initializes the shared board so every collaborator starts from the same state." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nCreate the initial shared-state board for collaborative work.",
     },
     research: {
       description: "Add the next meaningful finding to the shared board.",
+      display: { story: "{{owner}} contributes the next useful finding to the shared board." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nCurrent shared board:\n{{sharedBoard}}\nAdd the next finding that other agents should build on.",
     },
     converge: {
       description: "Review the board and decide whether it has converged.",
+      display: { story: "{{owner}} reviews the shared board and decides whether the collaborators have converged." },
       supportsPromptOverride: true,
       fallbackPrompt: "Task: {{prompt}}\nShared board:\n{{sharedBoard}}\nDecide whether the board has converged and summarize the conclusion.",
     },
@@ -457,7 +478,6 @@ const profile = (
   id,
   label,
   role,
-  modelRef: "local/smoke-model",
   toolPolicyId: `${pattern}.default_policy`,
   toolIds: [],
   skillIds: [],
@@ -1266,6 +1286,9 @@ export function getModeNodeRuntimeTemplateDefinition(
   if (!definition) {
     return {
       description: `No runtime template metadata is registered for '${template}' in family '${family}'.`,
+      display: {
+        story: `No runtime template metadata is registered for '${template}' in family '${family}'.`,
+      },
       supportsPromptOverride: false,
       promptVariables: [],
     };

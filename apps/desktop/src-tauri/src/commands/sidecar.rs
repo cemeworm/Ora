@@ -637,6 +637,9 @@ impl RuntimeFacade {
             "agents.update" => self.agents_update(params.as_ref()),
             "agents.delete" => self.agents_delete(params.as_ref()),
             "agents.checkName" => self.agents_check_name(params.as_ref()),
+            "agents.catalog" => self.agents_catalog(),
+            "agents.updateSystemOverride" => self.agents_update_system_override(params.as_ref()),
+            "agents.resetSystemOverride" => self.agents_reset_system_override(params.as_ref()),
             "projects.create" => self.projects_create(params.as_ref()),
             "projects.list" => self.projects_list(params.as_ref()),
             "projects.get" => self.projects_get(params.as_ref()),
@@ -715,6 +718,13 @@ impl RuntimeFacade {
         let params = params.ok_or_else(|| runtime_error(-32602, "Missing custom agent payload", None))?;
         let name = require_custom_agent_name(Some(params))?;
         let path = custom_agent_dir(&name)?;
+        if builtin_agent_ids().contains(&name) {
+            return Err(runtime_error(
+                -32602,
+                "Custom agent conflicts with a built-in system agent",
+                Some(json!({ "name": name })),
+            ));
+        }
         if path.exists() {
             return Err(runtime_error(
                 -32602,
@@ -805,9 +815,134 @@ impl RuntimeFacade {
         let name = normalize_custom_agent_name(raw_name)?;
         let path = custom_agent_dir(&name)?;
         Ok(json!({
-            "available": !path.exists(),
+            "available": !path.exists() && !builtin_agent_ids().contains(&name),
             "name": name,
         }))
+    }
+
+    fn agents_catalog(&self) -> Result<Value, RuntimeJsonRpcError> {
+        let custom_agents = self.agents_list()?;
+        let custom_agents = custom_agents
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|agent| {
+                let mut agent = agent.as_object().cloned().unwrap_or_default();
+                agent.insert("source".to_string(), json!("custom"));
+                agent.insert("usages".to_string(), json!([]));
+                Value::Object(agent)
+            })
+            .collect::<Vec<Value>>();
+        let overrides = read_system_agent_overrides()?;
+        let mut seen = Vec::<String>::new();
+        let mut system_agents = Vec::<Value>::new();
+        for mode in patterns_list().as_array().cloned().unwrap_or_default() {
+            let mode_id = mode.get("id").and_then(Value::as_str).unwrap_or_default();
+            let mode_label = mode.get("label").and_then(Value::as_str).unwrap_or(mode_id);
+            for profile in mode.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default() {
+                let id = profile.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                if id.is_empty() || seen.contains(&id) {
+                    continue;
+                }
+                seen.push(id.clone());
+                let override_value = overrides.get(&id).cloned();
+                let label = override_value
+                    .as_ref()
+                    .and_then(|value| value.get("label"))
+                    .and_then(Value::as_str)
+                    .or_else(|| profile.get("label").and_then(Value::as_str))
+                    .unwrap_or(&id);
+                let role = override_value
+                    .as_ref()
+                    .and_then(|value| value.get("role"))
+                    .and_then(Value::as_str)
+                    .or_else(|| profile.get("role").and_then(Value::as_str))
+                    .unwrap_or("");
+                let model_ref = override_value
+                    .as_ref()
+                    .and_then(|value| value.get("modelRef"))
+                    .and_then(Value::as_str)
+                    .or_else(|| profile.get("modelRef").and_then(Value::as_str))
+                    .filter(|value| *value != "local/smoke-model");
+                let mut agent = json!({
+                    "source": "system",
+                    "id": id,
+                    "label": label,
+                    "role": role,
+                    "toolPolicyId": profile.get("toolPolicyId").cloned().unwrap_or_else(|| json!(format!("{}.default_policy", mode_id))),
+                    "toolIds": override_value.as_ref().and_then(|value| value.get("toolIds")).cloned().unwrap_or_else(|| json!([])),
+                    "skillIds": override_value.as_ref().and_then(|value| value.get("skillIds")).cloned().unwrap_or_else(|| json!([])),
+                    "memoryNamespaces": profile.get("memoryNamespaces").cloned().unwrap_or_else(|| json!([])),
+                    "soul": override_value.as_ref().and_then(|value| value.get("soul")).cloned().unwrap_or_else(|| json!("")),
+                    "overridden": override_value.is_some(),
+                    "override": override_value,
+                    "usages": [{
+                        "modeId": mode_id,
+                        "modeLabel": mode_label,
+                        "systemPreset": true,
+                        "profileId": profile.get("id").cloned().unwrap_or(Value::Null),
+                        "profileLabel": label
+                    }]
+                });
+                if let Some(model_ref) = model_ref {
+                    agent["modelRef"] = json!(model_ref);
+                }
+                system_agents.push(agent);
+            }
+        }
+        Ok(json!({
+            "systemAgents": system_agents,
+            "customAgents": custom_agents,
+        }))
+    }
+
+    fn agents_update_system_override(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let params = params.ok_or_else(|| runtime_error(-32602, "Missing system agent override payload", None))?;
+        let agent_id = params
+            .get("agentId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?
+            .to_string();
+        if !builtin_agent_ids().contains(&agent_id) {
+            return Err(runtime_error(-32602, "System agent does not exist", Some(json!({ "agentId": agent_id }))));
+        }
+        let now = now_ms();
+        let existing = read_system_agent_override(&agent_id)?.unwrap_or_else(|| json!({}));
+        let created_at = existing.get("createdAt").and_then(Value::as_u64).unwrap_or(now);
+        let mut next = existing.as_object().cloned().unwrap_or_default();
+        next.insert("agentId".to_string(), json!(agent_id));
+        for field in ["label", "role", "modelRef", "toolIds", "skillIds", "soul"] {
+            if let Some(value) = params.get(field) {
+                if value.is_null() {
+                    next.remove(field);
+                } else {
+                    next.insert(field.to_string(), value.clone());
+                }
+            }
+        }
+        next.insert("createdAt".to_string(), json!(created_at));
+        next.insert("updatedAt".to_string(), json!(now));
+        let value = Value::Object(next);
+        write_system_agent_override(&value)?;
+        Ok(value)
+    }
+
+    fn agents_reset_system_override(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let agent_id = params
+            .and_then(|value| value.get("agentId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?
+            .to_string();
+        let path = system_agent_override_path(&agent_id)?;
+        if path.exists() {
+            fs::remove_file(path).map_err(|error| {
+                runtime_error(-32060, "Unable to reset system agent override", Some(json!({ "agentId": agent_id, "error": error.to_string() })))
+            })?;
+        }
+        Ok(json!({ "reset": true, "agentId": agent_id }))
     }
 
     fn sessions_create(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -2385,8 +2520,87 @@ fn ensure_custom_agents_root() -> Result<PathBuf, RuntimeJsonRpcError> {
     Ok(root)
 }
 
+fn ensure_system_agent_overrides_root() -> Result<PathBuf, RuntimeJsonRpcError> {
+    let root = workspace_root()
+        .ok_or_else(|| runtime_error(-32060, "Workspace root unavailable for system agent overrides", None))?
+        .join(".ora")
+        .join("agent-overrides");
+    fs::create_dir_all(&root).map_err(|error| {
+        runtime_error(
+            -32060,
+            "Unable to create system agent overrides directory",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })?;
+    Ok(root)
+}
+
 fn custom_agent_dir(name: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
     Ok(ensure_custom_agents_root()?.join(name))
+}
+
+fn system_agent_override_path(agent_id: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
+    Ok(ensure_system_agent_overrides_root()?.join(format!("{agent_id}.json")))
+}
+
+fn read_system_agent_override(agent_id: &str) -> Result<Option<Value>, RuntimeJsonRpcError> {
+    let path = system_agent_override_path(agent_id)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path).map_err(|error| {
+        runtime_error(-32060, "Unable to read system agent override", Some(json!({ "path": path.to_string_lossy(), "error": error.to_string() })))
+    })?;
+    serde_json::from_str(raw.trim())
+        .map(Some)
+        .map_err(|error| runtime_error(-32060, "Unable to parse system agent override", Some(json!({ "path": path.to_string_lossy(), "error": error.to_string() }))))
+}
+
+fn read_system_agent_overrides() -> Result<HashMap<String, Value>, RuntimeJsonRpcError> {
+    let root = ensure_system_agent_overrides_root()?;
+    let mut overrides = HashMap::new();
+    for entry in fs::read_dir(root)
+        .map_err(|error| runtime_error(-32060, "Unable to read system agent overrides directory", Some(json!({ "error": error.to_string() }))))?
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Ok(value) = serde_json::from_str::<Value>(raw.trim()) {
+                if let Some(agent_id) = value.get("agentId").and_then(Value::as_str) {
+                    overrides.insert(agent_id.to_string(), value);
+                }
+            }
+        }
+    }
+    Ok(overrides)
+}
+
+fn write_system_agent_override(value: &Value) -> Result<(), RuntimeJsonRpcError> {
+    let agent_id = value
+        .get("agentId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?;
+    let path = system_agent_override_path(agent_id)?;
+    let raw = serde_json::to_string_pretty(value).map_err(|error| {
+        runtime_error(-32060, "Unable to serialize system agent override", Some(json!({ "agentId": agent_id, "error": error.to_string() })))
+    })?;
+    fs::write(&path, format!("{raw}\n")).map_err(|error| {
+        runtime_error(-32060, "Unable to write system agent override", Some(json!({ "path": path.to_string_lossy(), "error": error.to_string() })))
+    })
+}
+
+fn builtin_agent_ids() -> Vec<String> {
+    patterns_list()
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|mode| mode.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default())
+        .filter_map(|profile| profile.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 fn custom_agent_config_path(agent_dir: &Path) -> PathBuf {

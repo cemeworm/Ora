@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset } from "@ora/shared";
+import { AgentCatalogResultSchema, CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset } from "@ora/shared";
 
 const capturedSystems: string[] = [];
 const providerResponses: string[] = [];
@@ -130,6 +130,95 @@ describe("custom agent runtime behavior", () => {
       system.includes("Custom Agent Persona: review-bot") &&
       system.includes("Look for regressions before polish.")
     )).toBe(true);
+  });
+
+  it("catalogs built-in agents, usage, and rejects new custom name collisions", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
+    await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agents.updateSystemOverride",
+      params: {
+        agentId: "builder",
+        modelRef: "local/smoke-model",
+      },
+    });
+
+    const catalog = AgentCatalogResultSchema.parse(store.agentCatalog());
+    const builder = catalog.systemAgents.find((agent) => agent.id === "builder");
+
+    expect(builder).toBeDefined();
+    expect(builder?.source).toBe("system");
+    expect(builder?.modelRef).toBeUndefined();
+    expect(builder?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
+    expect(store.checkAgentName({ name: "builder" }).available).toBe(false);
+    expect(() => store.createAgent({
+      name: "builder",
+      description: "Should collide",
+      soul: "Nope.",
+    })).toThrow(/built-in system agent/);
+  });
+
+  it("applies and resets global built-in agent overrides during execution", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agents.updateSystemOverride",
+      params: {
+        agentId: "solo_agent",
+        label: "Solo Captain",
+        role: "Own the task with a stricter direct-response style.",
+        modelRef: "explicit-system-model",
+        toolIds: ["file.read"],
+        skillIds: ["long-task-protocol"],
+        soul: "Answer as the overridden solo captain.",
+      },
+    });
+
+    const catalog = AgentCatalogResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "agents.catalog",
+    }));
+    const solo = catalog.systemAgents.find((agent) => agent.id === "solo_agent");
+    expect(solo?.label).toBe("Solo Captain");
+    expect(solo?.modelRef).toBe("explicit-system-model");
+    expect(solo?.overridden).toBe(true);
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Read the project notes." },
+        config: {
+          modeId: "single_agent",
+          toolIds: ["file.read", "web.search"],
+        },
+      },
+    });
+
+    const system = capturedSystems.find((value) => value.includes("System Agent Override: solo_agent")) ?? "";
+    expect(system).toContain("Answer as the overridden solo captain.");
+    expect(system).toContain("file.read");
+    expect(system).not.toContain("web.search");
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "agents.resetSystemOverride",
+      params: { agentId: "solo_agent" },
+    });
+    const resetCatalog = AgentCatalogResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "agents.catalog",
+    }));
+    expect(resetCatalog.systemAgents.find((agent) => agent.id === "solo_agent")?.overridden).toBe(false);
   });
 
   it("propagates the selected custom agent persona through the SessionManager path", async () => {

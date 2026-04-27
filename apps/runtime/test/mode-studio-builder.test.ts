@@ -26,6 +26,12 @@ describe("Mode Studio guided builder", () => {
     expect(bundle.modeDraft.systemPreset).toBe(false);
     expect(bundle.modeDraft.family).toBe("generator_verifier");
     expect(bundle.agentDrafts.map((agent) => agent.name)).toHaveLength(2);
+    expect(bundle.modeDraft.nodes.every((node) => {
+      const story = node.config.story as { summary?: unknown; generatedBy?: unknown } | undefined;
+      return typeof story?.summary === "string"
+        && story.summary.includes("代码审查")
+        && story.generatedBy === "mode_studio_builder";
+    })).toBe(true);
     expect(bundle.guidance.choices.length).toBeGreaterThan(0);
     expect(store.listModes()).toHaveLength(modeCount);
     expect(store.listAgents()).toEqual([]);

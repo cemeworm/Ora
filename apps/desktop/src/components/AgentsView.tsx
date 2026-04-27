@@ -3,10 +3,11 @@ import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@ora/shared";
 import { useWorkbench } from "../lib/state";
-import type { OraCustomAgentGenerateDraftResult, OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
+import type { OraAgentCatalogResult, OraCustomAgentGenerateDraftResult, OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 
-type AgentEditorMode = "gallery" | "create" | "edit" | "team";
+type AgentEditorMode = "gallery" | "create" | "edit" | "edit-system" | "team";
+type AgentGalleryTab = "built-in" | "custom";
 
 interface AgentDraft {
   name: string;
@@ -39,6 +40,11 @@ const TEAM_FAMILIES: CoordinationPattern[] = [
   "message_bus",
   "shared_state",
 ];
+const DEFAULT_AGENT_MODEL_REF = "local/smoke-model";
+
+function explicitAgentModelRef(modelRef: string | undefined): string | undefined {
+  return modelRef === DEFAULT_AGENT_MODEL_REF ? undefined : modelRef;
+}
 
 export function AgentsView({
   runtimeClient,
@@ -53,6 +59,8 @@ export function AgentsView({
 }) {
   const { state, dispatch } = useWorkbench();
   const [agents, setAgents] = useState<OraCustomAgentSummary[]>([]);
+  const [catalog, setCatalog] = useState<OraAgentCatalogResult>({ systemAgents: [], customAgents: [] });
+  const [activeTab, setActiveTab] = useState<AgentGalleryTab>("built-in");
   const [mode, setMode] = useState<AgentEditorMode>("gallery");
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
   const [draftChat, setDraftChat] = useState<AgentDraftChatMessage[]>([{
@@ -68,10 +76,6 @@ export function AgentsView({
   const [busy, setBusy] = useState<string>("");
   const [error, setError] = useState<string>("");
 
-  const selectedAgent = useMemo(
-    () => agents.find((agent) => agent.name === selectedCustomAgentId),
-    [agents, selectedCustomAgentId],
-  );
   const selectableTools = useMemo(
     () => (state.toolRegistry?.tools ?? []).filter((tool) => tool.implemented !== false),
     [state.toolRegistry],
@@ -84,8 +88,9 @@ export function AgentsView({
   async function loadAgents() {
     setBusy("refresh");
     try {
-      const nextAgents = await runtimeClient.listAgents();
-      setAgents(nextAgents);
+      const nextCatalog = await runtimeClient.agentCatalog();
+      setCatalog(nextCatalog);
+      setAgents(nextCatalog.customAgents);
     } finally {
       setBusy("");
     }
@@ -182,7 +187,7 @@ export function AgentsView({
   async function saveAgent() {
     const normalizedName = draft.name.trim().toLowerCase();
     if (!normalizedName) {
-      setError("Custom agent name is required.");
+      setError(mode === "edit-system" ? "System agent label is required." : "Custom agent name is required.");
       return;
     }
 
@@ -191,7 +196,21 @@ export function AgentsView({
     setError("");
 
     try {
-      if (mode === "create") {
+      if (mode === "edit-system") {
+        if (!editingName) {
+          throw new Error("System agent id is missing.");
+        }
+        await runtimeClient.updateSystemAgentOverride({
+          agentId: editingName,
+          label: draft.name.trim(),
+          role: draft.description.trim() || undefined,
+          modelRef: draft.model.trim() || null,
+          toolIds: draft.toolIds.length > 0 ? draft.toolIds : null,
+          skillIds: draft.skillIds.length > 0 ? draft.skillIds : null,
+          soul: draft.soul,
+        });
+        dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Updated built-in agent ${editingName}.` });
+      } else if (mode === "create") {
         const check = await runtimeClient.checkAgentName(normalizedName);
         if (!check.available) {
           throw new Error(`Custom agent '${check.name}' already exists.`);
@@ -222,7 +241,39 @@ export function AgentsView({
       await loadAgents();
       resetEditor();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to save custom agent.");
+      setError(nextError instanceof Error ? nextError.message : "Failed to save agent.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function startEditSystemAgent(agent: OraAgentCatalogResult["systemAgents"][number]) {
+    const modelRef = explicitAgentModelRef(agent.modelRef);
+    setDraft({
+      name: agent.label,
+      description: agent.role,
+      model: modelRef ?? "",
+      toolGroupsText: "",
+      toolIds: agent.toolIds,
+      skillIds: agent.skillIds,
+      soul: agent.soul,
+    });
+    setEditingName(agent.id);
+    setMode("edit-system");
+    setError("");
+    dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Editing built-in agent ${agent.id}.` });
+  }
+
+  async function resetSystemAgent(agentId: string) {
+    setBusy(`reset:${agentId}`);
+    setError("");
+    try {
+      await runtimeClient.resetSystemAgentOverride(agentId);
+      await loadAgents();
+      resetEditor();
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Reset built-in agent ${agentId}.` });
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to reset built-in agent.");
     } finally {
       setBusy("");
     }
@@ -367,52 +418,12 @@ export function AgentsView({
               <Plus size={16} />
               New agent
             </button>
-            <button
-              onClick={() => resetEditor("team")}
-              disabled={busy.length > 0}
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Bot size={16} />
-              New team
-            </button>
           </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="w-full space-y-6">
-          <section className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold">Selected Persona</h3>
-                <p className="mt-1 text-xs text-bench-700">
-                  The selected agent becomes the default persona overlay for the next run you start from chat.
-                </p>
-              </div>
-              {selectedAgent ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-2 rounded-full border border-bench-200 bg-bench-50 px-3 py-1.5 text-xs font-semibold text-bench-900">
-                    <Bot size={13} />
-                    {selectedAgent.name}
-                  </span>
-                  <button
-                    onClick={onClearSelectedCustomAgent}
-                    className="h-8 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition hover:bg-bench-50"
-                  >
-                    Clear
-                  </button>
-                </div>
-              ) : (
-                <span className="rounded-full bg-bench-50 px-3 py-1.5 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
-                  No custom agent selected
-                </span>
-              )}
-            </div>
-            {selectedAgent?.description && (
-              <p className="mt-3 text-sm leading-6 text-bench-700">{selectedAgent.description}</p>
-            )}
-          </section>
-
           {error && (
             <section className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
               {error}
@@ -421,17 +432,75 @@ export function AgentsView({
 
           {mode === "gallery" ? (
             <section className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold">Agent Gallery</h3>
-                  <p className="mt-1 text-xs text-bench-700">Create, revise, delete, or start a new chat with a reusable persona.</p>
-                </div>
-                <span className="rounded-full bg-bench-50 px-3 py-1.5 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
-                  {agents.length} agent{agents.length === 1 ? "" : "s"}
-                </span>
+              <div className="inline-flex rounded-lg bg-bench-100 p-1">
+                {([
+                  ["built-in", `Built-in (${catalog.systemAgents.length})`],
+                  ["custom", `Custom (${catalog.customAgents.length})`],
+                ] as const).map(([tab, label]) => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={cn(
+                      "h-9 rounded-md px-3 text-xs font-semibold transition active:scale-95",
+                      activeTab === tab ? "bg-white text-bench-900 shadow-xs" : "text-bench-700 hover:text-bench-900",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
 
-              {agents.length === 0 ? (
+              {activeTab === "built-in" ? (
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {catalog.systemAgents.map((agent) => (
+                    <article key={agent.id} className="rounded-[20px] bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-base font-semibold">{agent.label}</h4>
+                            <span className="rounded-full bg-bench-50 px-2 py-0.5 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
+                              built-in
+                            </span>
+                            {agent.overridden && (
+                              <span className="rounded-full bg-lime-50 px-2 py-0.5 text-[11px] font-semibold text-bench-900 ring-1 ring-inset ring-lime-200">
+                                overridden
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 font-mono text-[11px] text-bench-600">{agent.id}</p>
+                          <p className="mt-2 line-clamp-3 text-sm leading-6 text-bench-700">{agent.role}</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 space-y-2 text-xs text-bench-700">
+                        <div>Model: {explicitAgentModelRef(agent.modelRef) ?? "未指定"}</div>
+                        <div>Tools: {agent.toolIds.length > 0 ? agent.toolIds.join(", ") : "inherit mode tools"}</div>
+                        <div>Skills: {agent.skillIds.length > 0 ? agent.skillIds.join(", ") : "inherit mode skills"}</div>
+                        <AgentUsageList usages={agent.usages} />
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => startEditSystemAgent(agent)}
+                          disabled={busy.length > 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-xs font-semibold text-white transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Pencil size={14} />
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => void resetSystemAgent(agent.id)}
+                          disabled={busy.length > 0 || !agent.overridden}
+                          className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition hover:bg-bench-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RefreshCcw size={14} />
+                          Reset
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : agents.length === 0 ? (
                 <div className="rounded-[20px] border border-dashed border-bench-200 bg-white px-6 py-12 text-center shadow-pane">
                   <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200">
                     <Bot size={22} />
@@ -475,6 +544,7 @@ export function AgentsView({
                         {agent.toolGroups && agent.toolGroups.length > 0 && (
                           <div>Legacy groups: {agent.toolGroups.join(", ")}</div>
                         )}
+                        <AgentUsageList usages={catalog.customAgents.find((item) => item.name === agent.name)?.usages ?? []} />
                         <div>Updated: {formatDate(agent.updatedAt)}</div>
                       </div>
 
@@ -573,30 +643,56 @@ export function AgentsView({
                 ))}
               </div>
             </section>
-          ) : mode === "edit" ? (
+          ) : mode === "edit" || mode === "edit-system" ? (
             <section className="rounded-[24px] bg-white p-6 shadow-pane ring-1 ring-inset ring-bench-200">
               <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold">{`Edit ${editingName}`}</h3>
-                  <p className="mt-1 text-xs text-bench-700">This v1 editor writes `config.yaml` and `SOUL.md` directly into `.ora/agents/&lt;name&gt;`.</p>
+                  <h3 className="text-sm font-semibold">{mode === "edit-system" ? `Edit built-in ${editingName}` : `Edit ${editingName}`}</h3>
+                  <p className="mt-1 text-xs text-bench-700">
+                    {mode === "edit-system"
+                      ? "Changes are saved as a global override for this built-in agent id."
+                      : "This v1 editor writes `config.yaml` and `SOUL.md` directly into `.ora/agents/&lt;name&gt;`."}
+                  </p>
                 </div>
-                <button
-                  onClick={saveAgent}
-                  disabled={busy.length > 0 || !draft.name.trim()}
-                  className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Save changes
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  {mode === "edit-system" && editingName && (
+                    <button
+                      onClick={() => void resetSystemAgent(editingName)}
+                      disabled={busy.length > 0}
+                      className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RefreshCcw size={16} />
+                      Reset
+                    </button>
+                  )}
+                  <button
+                    onClick={saveAgent}
+                    disabled={busy.length > 0 || !draft.name.trim()}
+                    className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Save changes
+                  </button>
+                </div>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
+                {mode === "edit-system" && (
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">System ID</span>
+                    <input
+                      value={editingName ?? ""}
+                      disabled
+                      className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                  </label>
+                )}
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Name</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">{mode === "edit-system" ? "Label" : "Name"}</span>
                   <input
                     value={draft.name}
                     onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
                     disabled={mode === "edit"}
-                    placeholder="researcher-hk"
+                    placeholder={mode === "edit-system" ? "Research Subagent" : "researcher-hk"}
                     className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
                   />
                 </label>
@@ -619,15 +715,17 @@ export function AgentsView({
                     className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-900"
                   />
                 </label>
-                <label className="space-y-1.5 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Tool Groups</span>
-                  <input
-                    value={draft.toolGroupsText}
-                    onChange={(event) => setDraft((current) => ({ ...current, toolGroupsText: event.target.value }))}
-                    placeholder="web, shell, github"
-                    className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
-                  />
-                </label>
+                {mode !== "edit-system" && (
+                  <label className="space-y-1.5 md:col-span-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Tool Groups</span>
+                    <input
+                      value={draft.toolGroupsText}
+                      onChange={(event) => setDraft((current) => ({ ...current, toolGroupsText: event.target.value }))}
+                      placeholder="web, shell, github"
+                      className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"
+                    />
+                  </label>
+                )}
                 <AgentCapabilitySelectors
                   draft={draft}
                   tools={selectableTools}
@@ -640,7 +738,7 @@ export function AgentsView({
                     value={draft.soul}
                     onChange={(event) => setDraft((current) => ({ ...current, soul: event.target.value }))}
                     rows={14}
-                    placeholder="Long-form persona instructions written into SOUL.md."
+                    placeholder={mode === "edit-system" ? "Global built-in override instructions injected into this system agent." : "Long-form persona instructions written into SOUL.md."}
                     className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 font-mono text-sm outline-none transition focus:border-bench-900"
                   />
                 </label>
@@ -779,6 +877,25 @@ export function AgentsView({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentUsageList({ usages }: { usages: OraAgentCatalogResult["systemAgents"][number]["usages"] }) {
+  if (usages.length === 0) {
+    return <div>Used by modes: none</div>;
+  }
+  const preview = usages.slice(0, 3).map((usage) =>
+    usage.profileLabel
+      ? `${usage.modeLabel} / ${usage.profileLabel}`
+      : usage.nodeLabel
+        ? `${usage.modeLabel} / ${usage.nodeLabel}`
+        : usage.modeLabel,
+  );
+  return (
+    <div>
+      Used by modes: {preview.join(", ")}
+      {usages.length > preview.length ? ` +${usages.length - preview.length}` : ""}
     </div>
   );
 }

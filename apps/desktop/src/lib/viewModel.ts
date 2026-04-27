@@ -552,7 +552,7 @@ function adaptAgentProfile(profile: OraAgentProfile): AgentProfile {
     id: profile.id,
     label: profile.label,
     role: profile.role,
-    model: profile.modelRef,
+    model: profile.modelRef ?? "runtime default",
     tools: [profile.toolPolicyId],
     budget: `${Math.round(profile.budget.maxRuntimeMs / 60000)} min / ${profile.budget.maxTokens.toLocaleString()} tokens`,
     memoryScopes: profile.memoryNamespaces,
