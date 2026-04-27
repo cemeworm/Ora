@@ -57,7 +57,7 @@ const ZH_COPY: Record<string, string> = {
   "Runtime error": "运行时错误",
   "Runtime bridge failed to initialize.": "运行时桥接初始化失败。",
   "Resize trails panel": "调整轨迹面板宽度",
-  "Resize artifact panel": "调整制品面板宽度",
+  "Resize artifact panel": "调整产物面板宽度",
   "What would you like to do?": "想要做点什么？",
   Pause: "暂停",
   Export: "导出",
@@ -126,13 +126,13 @@ const ZH_COPY: Record<string, string> = {
   active: "进行中",
   blocked: "已阻塞",
   recorded: "已记录",
-  Artifact: "制品",
-  "No artifact selected": "未选择制品",
-  "Close artifact": "关闭制品",
+  Artifact: "产物",
+  "No artifact selected": "未选择产物",
+  "Close artifact": "关闭产物",
   "Select an artifact from the chat stream to preview it here.":
-    "从聊天流中选择一个制品，在这里预览。",
+    "从聊天流中选择一个产物，在这里预览。",
   "No inline preview is available for this artifact yet.":
-    "此制品暂不支持内联预览。",
+    "此产物暂不支持内联预览。",
   URI: "URI",
   "Trails will appear here.": "轨迹会显示在这里。",
   "Close trails": "关闭轨迹",
@@ -276,21 +276,9 @@ const ZH_COPY: Record<string, string> = {
   "Select a session to inspect its latest turn, checkpoints, and approvals.":
     "选择一个会话以检查最新轮次、检查点和审批。",
   "Reconnecting to the Ora runtime bridge.": "正在重新连接 Ora 运行时桥接。",
-  "Working on it...": "正在处理...",
-  "I need a bit more information before I can continue this turn.":
-    "继续前，我还需要一点信息。",
-  "I'm waiting for approval before continuing this turn.":
-    "继续前，我正在等待你的确认。",
-  "This turn did not produce a final assistant reply.":
-    "这一轮没有生成最终回复。",
-  "This turn completed and produced attachments below.":
-    "这一轮已完成，附件如下。",
-  "This turn completed without a final assistant reply.":
-    "这一轮已完成，但没有生成最终回复。",
   "Processing state updated.": "处理状态已更新。",
   "The run did not finish. Open Trails for the latest details.":
     "本轮没有完成。可打开轨迹查看最新详情。",
-  "Processing update received.": "已收到处理状态更新。",
   "Continued with limited context.": "已使用有限上下文继续。",
   "Paused after processing was interrupted.": "处理被中断后已暂停。",
   "Processing step failed.": "处理步骤失败。",
@@ -611,7 +599,7 @@ const ZH_COPY: Record<string, string> = {
   control: "控制",
   memory: "记忆",
   delegation: "委派",
-  artifact: "制品",
+  artifact: "产物",
   verification: "验证",
   "idle cycles": "个空闲周期",
   Required: "必需",
@@ -641,6 +629,15 @@ const ZH_COPY: Record<string, string> = {
     "当主智能体完成委派研究与评审结果的综合后停止。",
   "Stop when the shared board stops changing for 2 idle cycles.":
     "共享看板连续 2 个空闲周期不再变化后停止。",
+  preset: "预设",
+  "generator verifier": "生成器-验证器",
+  "Generator-Verifier": "生成器-验证器",
+  "A generator proposes an answer and a verifier checks it against a rubric.":
+    "生成器提出答案，验证器按评分标准检查。",
+  "orchestrator subagent": "编排器-子智能体",
+  "Orchestrator-Subagent": "编排器-子智能体",
+  "An orchestrator decomposes the task and dispatches explicit subagents.":
+    "编排器拆解任务，并派发给明确的子智能体。",
   "DeerFlow-like Harness": "DeerFlow 式框架",
   "A lead agent frames the work, delegates research and review, then synthesizes the final answer.":
     "主智能体界定任务，委派研究与评审，然后综合最终答案。",
@@ -650,6 +647,24 @@ const ZH_COPY: Record<string, string> = {
     "适用于可拆解任务：先由主智能体协调聚焦研究与评审，再给出回答。",
   "Delegation can add coordination overhead when the task is simple or the delegated stages are underspecified.":
     "当任务很简单或委派阶段定义不足时，委派会增加协调开销。",
+  "Single Agent": "单智能体",
+  "One agent makes a compact plan and completes the task without spawning teammates.":
+    "单个智能体制定简洁计划，并在不派生队友的情况下完成任务。",
+  "Ora Self Builder": "Ora 自构建器",
+  "Ora plans, edits, verifies, builds, and promotes a local package slot for itself.":
+    "Ora 为自身规划、编辑、验证、构建并提升本地包槽位。",
+  "agent teams": "智能体团队",
+  "Agent Teams": "智能体团队",
+  "Persistent teammate agents coordinate around a shared backlog and memory.":
+    "持久化队友智能体围绕共享待办和记忆协作。",
+  "message bus": "消息总线",
+  "Message Bus": "消息总线",
+  "Agents publish and subscribe to routed events through a shared bus.":
+    "智能体通过共享总线发布和订阅路由事件。",
+  "shared state": "共享状态",
+  "Shared State": "共享状态",
+  "Agents collaborate through a versioned shared blackboard instead of a central coordinator.":
+    "智能体不依赖中央协调者，而是通过版本化共享黑板协作。",
   "Lead plan": "主控规划",
   "Research subagent": "研究子智能体",
   "Review subagent": "评审子智能体",
@@ -659,7 +674,7 @@ const ZH_COPY: Record<string, string> = {
     "执行开始前，为每次运行准备工作区和线程作用域路径。",
   "Recovery Policy": "恢复策略",
   "Apply configured retry, alternate-tool, skip, and degraded-artifact recovery rules across runtime boundaries.":
-    "跨运行时边界应用重试、替代工具、跳过和降级制品恢复规则。",
+    "跨运行时边界应用重试、替代工具、跳过和降级产物恢复规则。",
   "Tool Error Boundary": "工具错误边界",
   "Convert tool and provider failures into structured runtime events instead of aborting immediately.":
     "将工具和提供方失败转为结构化运行时事件，而不是立即中止。",
@@ -689,9 +704,9 @@ const ZH_COPY: Record<string, string> = {
   "Shared Blackboard": "共享黑板",
   "Maintain a versioned shared board with explicit convergence state across collaborators.":
     "维护带版本的共享看板，并记录协作者之间的显式收敛状态。",
-  "Artifact Publish": "制品发布",
+  "Artifact Publish": "产物发布",
   "Promote stage outputs into explicit runtime artifacts and handoff surfaces.":
-    "将阶段输出提升为显式运行时制品和交接界面。",
+    "将阶段输出提升为显式运行时产物和交接界面。",
   "Token Usage Trace": "Token 用量追踪",
   "Attach token usage and budget accounting to runtime events and reports.":
     "将 Token 用量和预算核算附加到运行时事件与报告。",
@@ -796,7 +811,7 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [
     /^(.+) drafts the first candidate answer or working artifact\.$/,
-    (match) => `${translateCopy("zh", match[1])} 起草第一版候选答案或工作制品。`,
+    (match) => `${translateCopy("zh", match[1])} 起草第一版候选答案或工作产物。`,
   ],
   [
     /^(.+) breaks the request into an executable plan and decides what needs attention first\.$/,
@@ -824,7 +839,7 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [
     /^(.+) publishes an event or artifact so later stages can consume it\.$/,
-    (match) => `${translateCopy("zh", match[1])} 发布事件或制品，供后续阶段消费。`,
+    (match) => `${translateCopy("zh", match[1])} 发布事件或产物，供后续阶段消费。`,
   ],
   [
     /^(.+) routes events to the subscribers that should handle the next piece of work\.$/,
@@ -944,6 +959,7 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
 const textOriginals = new WeakMap<Text, string>();
 const attributeOriginals = new WeakMap<Element, Map<string, string>>();
 const TRANSLATED_ATTRIBUTES = ["title", "placeholder", "aria-label", "alt"];
+const I18N_SKIP_SELECTOR = "[data-i18n-skip]";
 
 export function readStoredLanguage(): AppLanguage {
   if (typeof window === "undefined") {
@@ -982,7 +998,21 @@ export function useDocumentTranslations(language: AppLanguage) {
 
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
 
+    const isInSkippedSubtree = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return Boolean(node.parentElement?.closest(I18N_SKIP_SELECTOR));
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        return Boolean((node as Element).closest(I18N_SKIP_SELECTOR));
+      }
+      return false;
+    };
+
     const translateTextNode = (node: Text) => {
+      if (isInSkippedSubtree(node)) {
+        return;
+      }
+
       const current = node.nodeValue ?? "";
       let original = textOriginals.get(node) ?? current;
       const translatedOriginal = translateCopy("zh", original);
@@ -1022,6 +1052,10 @@ export function useDocumentTranslations(language: AppLanguage) {
     };
 
     const translateElementAttributes = (element: Element) => {
+      if (isInSkippedSubtree(element)) {
+        return;
+      }
+
       let originals = attributeOriginals.get(element);
       for (const attr of TRANSLATED_ATTRIBUTES) {
         const current = element.getAttribute(attr);
@@ -1051,6 +1085,10 @@ export function useDocumentTranslations(language: AppLanguage) {
     };
 
     const translateTree = (root: Node) => {
+      if (isInSkippedSubtree(root)) {
+        return;
+      }
+
       if (root.nodeType === Node.TEXT_NODE) {
         translateTextNode(root as Text);
         return;
@@ -1065,8 +1103,7 @@ export function useDocumentTranslations(language: AppLanguage) {
       const element = root as Element;
       if (
         element instanceof HTMLInputElement ||
-        element instanceof HTMLTextAreaElement ||
-        element.closest?.("[data-i18n-skip]")
+        element instanceof HTMLTextAreaElement
       ) {
         translateElementAttributes(element);
         return;
@@ -1082,6 +1119,10 @@ export function useDocumentTranslations(language: AppLanguage) {
       );
       let node = walker.nextNode();
       while (node) {
+        if (isInSkippedSubtree(node)) {
+          node = walker.nextNode();
+          continue;
+        }
         if (node.nodeType === Node.TEXT_NODE) {
           translateTextNode(node as Text);
         } else if (node.nodeType === Node.ELEMENT_NODE) {

@@ -384,6 +384,9 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "export.report", label: "Export Report", description: "Export a run report.", category: "export", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
 ];
 
+export const DEFAULT_AGENT_MODE_TOOL_IDS = MVP_TOOLS
+  .map((tool) => tool.id);
+
 export const MVP_SKILLS: SkillDescriptor[] = [
   {
     id: "long-task-protocol",

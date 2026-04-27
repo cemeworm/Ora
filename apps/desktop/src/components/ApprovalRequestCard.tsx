@@ -20,16 +20,13 @@ export function ApprovalRequestCard({ actions, onResume, onCancel, disabled }: A
   return (
     <Message from="assistant" className="w-full">
       <div className="flex max-w-full gap-3">
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-200 bg-amber-50 text-amber-700 shadow-xs">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-200 bg-amber-50 text-amber-700 shadow-xs">
           <AlertTriangle size={14} />
         </div>
         <div className="min-w-0 flex-1 space-y-3">
           <MessageContent className="w-full gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <p className="font-medium text-foreground">{isSingleAction ? primaryRequest.title : "Your confirmation is needed"}</p>
-              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
-                {isSingleAction ? "Review before continuing" : "Review all items"}
-              </span>
             </div>
             <p className="text-sm leading-6 text-muted-foreground">
               {isSingleAction

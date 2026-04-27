@@ -15,6 +15,7 @@ import {
   CustomAgentSummarySchema,
   CustomAgentUpdateParamsSchema,
   DEFAULT_PROVIDERS,
+  DEFAULT_AGENT_MODE_TOOL_IDS,
   DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
   DEERFLOW_HARNESS_MODE_ID,
@@ -176,6 +177,7 @@ describe("Ora shared contracts", () => {
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
       expect(["decisive", "balanced", "persistent"]).toContain(mode.completionPolicy.preset);
       if (mode.visibility !== "internal") {
+        expect(mode.capabilityFlags.toolIds).toEqual(DEFAULT_AGENT_MODE_TOOL_IDS);
         for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
           expect(mode.capabilityFlags.toolIds).toContain(toolId);
         }
@@ -241,6 +243,10 @@ describe("Ora shared contracts", () => {
   it("validates recovery policy tool and skip constraints", () => {
     const alternateToolValidation = validateModeSpec({
       ...MVP_MODES[1]!,
+      capabilityFlags: {
+        ...MVP_MODES[1]!.capabilityFlags,
+        toolIds: [],
+      },
       recoveryPolicy: {
         ...MVP_MODES[1]!.recoveryPolicy,
         rules: [

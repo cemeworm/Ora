@@ -665,7 +665,11 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                   </button>
                   <div className="flex shrink-0 items-center gap-1">
                     <span className="rounded-full border border-bench-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-bench-700">
-                      {mode.systemPreset ? "preset" : mode.family}
+                      {mode.systemPreset
+                        ? translateCopy(state.language, "preset")
+                        : state.language === "zh"
+                          ? formatEnumLabel(state.language, mode.family)
+                          : mode.family}
                     </span>
                     {!mode.systemPreset && (
                       <button

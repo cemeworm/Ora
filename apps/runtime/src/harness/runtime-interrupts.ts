@@ -26,6 +26,11 @@ export function createResumeApprovalMatcher(resumeContext: {
   const approvedActionKeys = new Set(
     approvedActions.map((action) => stableApprovalActionKey(action)),
   );
+  const approvedSingleActionScopes = new Set(
+    approvedActions
+      .map((action) => stableSingleApprovalScopeKey(action))
+      .filter((key): key is string => key !== undefined),
+  );
   const approvedBatchActionScopes = new Set(
     approvedActions
       .map((action) => stableBatchApprovalScopeKey(action))
@@ -40,6 +45,10 @@ export function createResumeApprovalMatcher(resumeContext: {
       const key = stableApprovalActionKey(action);
       if (approvedActionKeys.has(key)) {
         approvedActionKeys.delete(key);
+        return true;
+      }
+      const singleScopeKey = stableSingleApprovalScopeKey(action);
+      if (singleScopeKey && approvedSingleActionScopes.has(singleScopeKey)) {
         return true;
       }
       const batchScopeKey = stableBatchApprovalScopeKey(action);
@@ -68,6 +77,21 @@ function approvalComparableInput(input: unknown): unknown {
   return rest;
 }
 
+function stableSingleApprovalScopeKey(action: ApprovedResumeAction): string | undefined {
+  if (action.type !== "file.write") {
+    return undefined;
+  }
+  const targetPath = approvalInputPath(action.input);
+  if (!targetPath) {
+    return undefined;
+  }
+  return stableJson({
+    type: action.type,
+    riskLevel: action.riskLevel,
+    path: targetPath,
+  });
+}
+
 function stableBatchApprovalScopeKey(action: ApprovedResumeAction): string | undefined {
   if (action.type !== "skills.create") {
     return undefined;
@@ -77,4 +101,12 @@ function stableBatchApprovalScopeKey(action: ApprovedResumeAction): string | und
     riskLevel: action.riskLevel,
     agentId: action.agentId ?? null,
   });
+}
+
+function approvalInputPath(input: unknown): string | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return undefined;
+  }
+  const path = (input as Record<string, unknown>).path;
+  return typeof path === "string" && path.trim() ? path.trim() : undefined;
 }

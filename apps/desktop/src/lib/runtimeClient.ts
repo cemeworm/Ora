@@ -589,6 +589,9 @@ export function createRuntimeClient() {
     async resumeRun(runId: string, reason: string, patch: Record<string, unknown> = {}): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.resume", { runId, reason, patch });
     },
+    async resumeStreamingRun(runId: string, reason: string, patch: Record<string, unknown> = {}): Promise<OraRunHandle> {
+      return call<OraRunHandle>("runs.resumeStreaming", { runId, reason, patch });
+    },
     async cancelRun(runId: string, reason = USER_CANCELLED_MESSAGE): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.cancel", { runId, reason });
     },
@@ -1267,6 +1270,19 @@ class LocalJsonRpcRuntime {
         return this.transitionRun(params, "interrupted", "run.interrupted");
       case "runs.resume":
         return this.resumeRun(params);
+      case "runs.resumeStreaming":
+      {
+        const snapshot = this.resumeRun(params);
+        return {
+          runId: snapshot.runId,
+          sessionId: snapshot.sessionId,
+          turnIndex: snapshot.turnIndex,
+          status: snapshot.status,
+          pattern: snapshot.pattern,
+          modeId: snapshot.modeId,
+          startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+        };
+      }
       case "runs.cancel":
         return this.transitionRun(params, "cancelled", "run.cancelled");
       case "runs.checkpoints":

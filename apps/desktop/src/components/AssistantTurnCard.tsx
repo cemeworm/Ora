@@ -31,31 +31,28 @@ interface AssistantTurnCardProps {
   onSubmitFeedback?: (params: { turn: AssistantTurnAttachment; feedbackText: string }) => Promise<void>;
 }
 
+const QUOTED_MESSAGE_PREVIEW_LIMIT = 128;
+
 export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
   const agentMessages = turn?.agentMessages ?? [];
-  const processNeedsAttention =
-    turn?.status === "failed" ||
-    turn?.status === "approval_required" ||
-    processSteps.some((step) => step.status === "blocked");
-  const processShouldOpen =
-    isPlaceholder ||
-    turn?.status === "running" ||
-    processSteps.some((step) => step.status === "active") ||
-    processNeedsAttention;
-  const [processOpen, setProcessOpen] = useState(processShouldOpen);
+  const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const hasProcessSteps = processSteps.length > 0;
+  const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
+  const contentIsLiveProgress = Boolean(turn?.liveProgressText && content.trim() === turn.liveProgressText.trim());
   const hasVisibleAgentMessages = visibleAgentMessages(agentMessages, turn?.status).length > 0;
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
 
   useEffect(() => {
-    setProcessOpen(processShouldOpen);
-  }, [processShouldOpen]);
+    if (!isPlaceholder && (turn?.status !== "running" || (content.trim() && !contentIsLiveProgress))) {
+      setProcessOpen(false);
+    }
+  }, [content, contentIsLiveProgress, isPlaceholder, turn?.status]);
 
   async function handleSubmitFeedback() {
     if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
@@ -93,6 +90,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               title="运行进度"
               icon={<Clock3 size={14} />}
               summary={processSummary(processSteps, turn?.status, isPlaceholder)}
+              collapsedPreview={latestProcessStep ? <ProcessStepItem step={latestProcessStep} /> : undefined}
             >
               {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
@@ -247,7 +245,7 @@ function AgentConversationItem({
       {replyTo ? (
         <div className="mb-2 border-l-2 border-border pl-2 text-xs leading-5 text-muted-foreground">
           <span className="font-medium text-foreground">{replyTo.fromAgentLabel}</span>
-          <span className="break-words">: {spacious ? replyTo.content : truncate(replyTo.content, 120)}</span>
+          <span className="break-words">: {truncate(replyTo.content, QUOTED_MESSAGE_PREVIEW_LIMIT)}</span>
         </div>
       ) : null}
       <div className="flex items-start gap-3">
@@ -318,7 +316,7 @@ function initials(value: string): string {
 }
 
 function truncate(value: string, maxLength: number): string {
-  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1).trimEnd()}...`;
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength).trimEnd()}...`;
 }
 
 function TurnStatusIcon({ status, isPlaceholder }: { status?: AssistantTurnAttachment["status"]; isPlaceholder: boolean }) {
@@ -343,6 +341,7 @@ function CollapsibleCard({
   title,
   icon,
   summary,
+  collapsedPreview,
   children,
 }: {
   open: boolean;
@@ -350,6 +349,7 @@ function CollapsibleCard({
   title: string;
   icon: ReactNode;
   summary?: string;
+  collapsedPreview?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -364,7 +364,7 @@ function CollapsibleCard({
           <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
         </TaskListHeader>
       </button>
-      {open ? <TaskListBody>{children}</TaskListBody> : null}
+      {open ? <TaskListBody>{children}</TaskListBody> : collapsedPreview ? <TaskListBody>{collapsedPreview}</TaskListBody> : null}
     </TaskList>
   );
 }
@@ -376,14 +376,15 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
       : step.tone === "accent"
         ? "text-emerald-700"
         : "text-foreground";
+  const detail = step.detail.trim();
 
   return (
     <TaskItem className="relative">
-      <div className="absolute -left-[1.05rem] top-3 h-2 w-2 rounded-full bg-border" />
+      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className={cn("font-medium", toneClassName)}>{step.label}</p>
-          <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{step.detail}</p>
+          {detail ? <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{detail}</p> : null}
           <TaskItemMeta>
             <span>{step.timestamp}</span>
           </TaskItemMeta>
@@ -464,19 +465,8 @@ function TodoStatusIcon({ status }: { status: TurnTodoItem["status"] }) {
 }
 
 export function processSummary(steps: TurnProcessStep[], status?: AssistantTurnAttachment["status"], isPlaceholder = false) {
-  if ((status === "running" || isPlaceholder) && steps.length > 0) {
-    let latestActiveStep: TurnProcessStep | undefined;
-    for (let index = steps.length - 1; index >= 0; index -= 1) {
-      if (steps[index]?.status === "active") {
-        latestActiveStep = steps[index];
-        break;
-      }
-    }
-    const currentStep = latestActiveStep ?? steps[steps.length - 1];
-    const currentAction = currentStep?.detail.trim() || currentStep?.label.trim();
-    if (currentAction) {
-      return `正在：${currentAction}`;
-    }
+  if (status === "running" || isPlaceholder) {
+    return undefined;
   }
 
   const active = steps.filter((step) => step.status === "active").length;

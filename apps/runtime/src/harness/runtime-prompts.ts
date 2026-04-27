@@ -39,6 +39,59 @@ export function summarizeProgressPayload(payload: unknown): unknown {
   return Object.keys(summary).length > 0 ? summary : undefined;
 }
 
+export function summarizeNarratorProgressPayload(eventType: string, payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const record = payload as Record<string, unknown>;
+
+  if (
+    record.kind === "chat_progress" &&
+    record.source === "progress_narrator" &&
+    typeof record.summary === "string" &&
+    record.summary.trim()
+  ) {
+    return { summary: record.summary.trim() };
+  }
+
+  const summary: Record<string, unknown> = {};
+  if (typeof record.status === "string") {
+    summary.status = record.status;
+  }
+  if (typeof record.phase === "string") {
+    summary.phase = record.phase;
+  }
+
+  const toolId = typeof record.toolId === "string" ? record.toolId : undefined;
+  if (toolId) {
+    summary.toolId = toolId;
+    const input = record.input && typeof record.input === "object" && !Array.isArray(record.input)
+      ? record.input as Record<string, unknown>
+      : {};
+    const output = record.output && typeof record.output === "object" && !Array.isArray(record.output)
+      ? record.output as Record<string, unknown>
+      : {};
+    const query = typeof output.query === "string" ? output.query : typeof input.query === "string" ? input.query : undefined;
+    const path = typeof output.path === "string" ? output.path : typeof input.path === "string" ? input.path : undefined;
+    const url = typeof output.url === "string" ? output.url : typeof input.url === "string" ? input.url : undefined;
+    if (query) summary.query = query;
+    if (path) summary.path = path;
+    if (url) summary.url = url;
+  }
+
+  if (eventType === "approval.required" || eventType === "clarification.required") {
+    if (typeof record.reason === "string") {
+      summary.reason = record.reason;
+    }
+  }
+
+  if (typeof record.error === "string") {
+    summary.error = record.error;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
 export function normalizeProgressNarration(text: string): string | undefined {
   const summary = text
     .replace(/```[\s\S]*?```/g, "")

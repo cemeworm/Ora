@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -663,6 +664,7 @@ impl RuntimeFacade {
             "runs.stream" => self.runs_stream(params.as_ref()),
             "runs.interrupt" => self.runs_interrupt(params.as_ref()),
             "runs.resume" => self.runs_resume(params.as_ref()),
+            "runs.resumeStreaming" => self.runs_resume(params.as_ref()),
             "runs.cancel" => self.runs_cancel(params.as_ref()),
             "runs.state" => self.runs_state(params.as_ref()),
             "runs.trail" => self.runs_trail(params.as_ref()),
@@ -1087,10 +1089,10 @@ impl RuntimeFacade {
 
         visit_project_files(&root_path, &root_path, &mut files, &mut total_files, &mut truncated);
         files.sort_by(|left, right| {
-            left["path"]
-                .as_str()
-                .unwrap_or_default()
-                .cmp(right["path"].as_str().unwrap_or_default())
+            compare_project_path_names(
+                left["path"].as_str().unwrap_or_default(),
+                right["path"].as_str().unwrap_or_default(),
+            )
         });
 
         Ok(json!({
@@ -2511,7 +2513,7 @@ fn run_process_json_rpc_for_app(
     run_process_json_rpc_internal(
         command,
         request,
-        if request.method == "runs.startStreaming" {
+        if request.method == "runs.startStreaming" || request.method == "runs.resumeStreaming" {
             let app = app.cloned();
             Some(Box::new(move |payload| {
                 if let Some(app) = app.as_ref() {
@@ -4073,7 +4075,12 @@ fn visit_project_files(
         return;
     };
     let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    entries.sort_by(|left, right| {
+        compare_project_entry_names(
+            &left.file_name().to_string_lossy(),
+            &right.file_name().to_string_lossy(),
+        )
+    });
 
     for entry in entries {
         if *truncated {
@@ -4117,6 +4124,32 @@ fn relative_project_path(root_path: &Path, file_path: &Path) -> String {
         .unwrap_or(file_path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn compare_project_entry_names(left: &str, right: &str) -> Ordering {
+    compare_project_path_names(left, right)
+}
+
+fn compare_project_path_names(left: &str, right: &str) -> Ordering {
+    let left_parts = left.split('/').collect::<Vec<_>>();
+    let right_parts = right.split('/').collect::<Vec<_>>();
+    let length = left_parts.len().min(right_parts.len());
+
+    for index in 0..length {
+        let left_part = left_parts[index];
+        let right_part = right_parts[index];
+        match (left_part.starts_with('.'), right_part.starts_with('.')) {
+            (true, false) => return Ordering::Greater,
+            (false, true) => return Ordering::Less,
+            _ => {}
+        }
+        match left_part.cmp(right_part) {
+            Ordering::Equal => {}
+            order => return order,
+        }
+    }
+
+    left_parts.len().cmp(&right_parts.len())
 }
 
 fn modified_at_ms(metadata: &fs::Metadata) -> u64 {
@@ -4833,6 +4866,35 @@ mod tests {
     }
 
     #[test]
+    fn process_bridge_forwards_stream_notifications_after_resume_response() {
+        let command = RuntimeCommandSpec::new(
+            "sh -c resume-streaming-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"running\"}}'; sleep 0.2; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"runs.stream\",\"params\":{\"runId\":\"run-0001\",\"fromSeq\":2,\"events\":[{\"seq\":2,\"type\":\"approval.resolved\"}],\"nextSeq\":3,\"status\":\"running\"}}'; sleep 1".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let response = run_process_json_rpc_with_notifications(
+            &command,
+            &request("runs.resumeStreaming", Some(json!({ "runId": "run-0001" }))),
+            Box::new(move |payload| {
+                let _ = sender.send(payload);
+            }),
+        )
+        .expect("streaming resume should return the initial handle response");
+
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        let notification = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("resume stream notification should be forwarded");
+        assert_eq!(notification["events"][0]["type"], json!("approval.resolved"));
+    }
+
+    #[test]
     fn patterns_list_returns_contract_array() {
         let facade = RuntimeFacade::default();
         let response = facade.handle_runtime_json_rpc(request("patterns.list", None));
@@ -5076,9 +5138,11 @@ mod tests {
     fn project_files_list_preview_and_reject_path_escape() {
         let root = env::temp_dir().join(format!("ora-project-files-{}", now_ms()));
         fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join(".space")).unwrap();
         fs::create_dir_all(root.join("node_modules/ignored")).unwrap();
         fs::write(root.join("README.md"), "# Project\n").unwrap();
         fs::write(root.join("src/index.ts"), "export const value = 1;\n").unwrap();
+        fs::write(root.join(".space/cache.md"), "# Hidden workspace cache\n").unwrap();
         fs::write(root.join("node_modules/ignored/package.json"), "{}").unwrap();
         let outside_name = format!("ora-project-outside-{}.md", now_ms());
         let outside_path = root.parent().unwrap().join(&outside_name);
@@ -5106,14 +5170,18 @@ mod tests {
             Some(json!({ "projectId": project_id, "path": format!("../{}", outside_name) })),
         );
 
-        assert_eq!(files["totalFiles"], json!(2));
+        assert_eq!(files["totalFiles"], json!(3));
         let paths = files["files"]
             .as_array()
             .unwrap()
             .iter()
             .map(|file| file["path"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(paths, vec!["README.md".to_string(), "src/index.ts".to_string()]);
+        assert_eq!(paths, vec![
+            "README.md".to_string(),
+            "src/index.ts".to_string(),
+            ".space/cache.md".to_string(),
+        ]);
         assert_eq!(preview["previewKind"], json!("text"));
         assert_eq!(preview["payload"], json!("# Project\n"));
         assert!(rejected.unwrap_err().message.contains("inside the project root"));

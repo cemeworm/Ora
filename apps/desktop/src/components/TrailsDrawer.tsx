@@ -75,7 +75,7 @@ export function TrailsDrawer({
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         {activeSnapshot ? (
           <TrailsTabs
             actions={actions}

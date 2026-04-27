@@ -86,8 +86,8 @@ describe("desktop browser-mock runtime lifecycle", () => {
 
     const steps = messages.find((message) => message.role === "assistant")?.turn?.processSteps ?? [];
     expect(steps.map((step) => step.eventType)).toEqual(["tool.called"]);
-    expect(steps.at(-1)?.label).toBe("Read file");
-    expect(steps.at(-1)?.detail).toBe("Read notes/project.md (2.0 KB).");
+    expect(steps.at(-1)?.label).toBe("读取文件");
+    expect(steps.at(-1)?.detail).toBe("已读取 notes/project.md (2.0 KB).");
     expect(steps.at(-1)?.contextLabel).toBe("notes/project.md");
   });
 
@@ -140,7 +140,7 @@ describe("desktop browser-mock runtime lifecycle", () => {
     );
 
     const assistant = messages.find((message) => message.role === "assistant");
-    expect(assistant?.content).toBe("I'm waiting for approval before continuing this turn.");
+    expect(assistant?.content).toBe("");
     expect(assistant?.isPlaceholder).toBe(true);
   });
 

@@ -7,6 +7,7 @@ import { MVP_TOOLS } from "@ora/shared";
 import {
   IMPLEMENTED_RUNTIME_TOOL_IDS,
   RuntimeToolExecutor,
+  extractRuntimeToolCallFromText,
 } from "../src/harness/runtime-tool-executor.js";
 import { RuntimeSkillRegistry } from "../src/harness/capability-registries.js";
 import { PackageManager } from "../src/package-manager.js";
@@ -63,6 +64,16 @@ describe("RuntimeToolExecutor", () => {
     expect(prompt).toContain("- skills.list:");
     expect(prompt).toContain("- skills.get:");
     expect(prompt).toContain("Use skills.list to discover enabled skills");
+  });
+
+  it("extracts XML-wrapped tool calls from provider text", () => {
+    expect(extractRuntimeToolCallFromText(
+      "<tool_call>\n{\"tool\":\"file.read\",\"args\":{\"path\":\"10-Wiki/项目/西芒杜项目.md\"}}\n</tool_call>",
+      ["file.read"],
+    )).toEqual({
+      tool: "file.read",
+      args: { path: "10-Wiki/项目/西芒杜项目.md" },
+    });
   });
 
   it("lists and reads skills so agents can discover skill instructions during a conversation", async () => {

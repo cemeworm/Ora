@@ -87,11 +87,37 @@ describe("assistant turn display helpers", () => {
     expect(contentIndex).toBeGreaterThan(trajectoryIndex);
   });
 
-  it("summarizes the latest running process action in user-facing copy", () => {
+  it("does not repeat the latest running process action in the progress header", () => {
     expect(processSummary([
       processStep("step-1", "complete", "已完成资料收集。"),
       processStep("step-2", "active", "正在综合专家观点。"),
-    ], "running")).toBe("正在：正在综合专家观点。");
+    ], "running")).toBeUndefined();
+  });
+
+  it("shows only the latest process step before the user expands progress", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      processSteps: [
+        processStep("step-1", "complete", "已完成资料收集。"),
+        processStep("step-2", "active", "正在综合专家观点。"),
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文" turn={turn} />,
+    );
+
+    expect(html).toContain("正在综合专家观点。");
+    expect(html).not.toContain("正在：正在综合专家观点。");
+    expect(html).not.toContain("已完成资料收集。");
   });
 
   it("summarizes completed and blocked process steps without log wording", () => {
@@ -153,6 +179,43 @@ describe("assistant turn display helpers", () => {
       "message-2",
       "message-3",
     ]);
+  });
+
+  it("truncates quoted collaboration content after 128 characters", () => {
+    const quotedPrefix = "0123456789".repeat(12) + "ABCDEFGH";
+    const quotedTail = "SHOULD_NOT_RENDER";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      processSteps: [],
+      agentMessages: [
+        agentMessage("message-1", "route", quotedPrefix + quotedTail),
+        agentMessage("message-2", "reply", "findings are ready", {
+          replyToId: "message-1",
+          fromAgentId: "investigator",
+          fromAgentLabel: "Investigator",
+        }),
+        agentMessage("message-3", "handoff", "please write the final answer", {
+          fromAgentId: "investigator",
+          fromAgentLabel: "Investigator",
+          toAgentIds: ["responder"],
+          toAgentLabels: ["Responder"],
+        }),
+      ],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文" turn={turn} />,
+    );
+
+    expect(html).toContain(`${quotedPrefix}...`);
+    expect(html).not.toContain(quotedTail);
   });
 
   it("uses localized labels for agent message kinds", () => {

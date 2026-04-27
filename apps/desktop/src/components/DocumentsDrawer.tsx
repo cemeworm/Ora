@@ -1,7 +1,6 @@
 import { BookOpenText, ChevronDown, ChevronRight, FileCode2, FileImage, FileText, Folder, FolderOpen, RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { OraProjectFileEntry, OraProjectFilesResult, RuntimeClient } from "../lib/runtimeClient";
-import { useWorkbench } from "../lib/state";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 
@@ -24,7 +23,6 @@ interface FileTreeNode {
 }
 
 export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClose, onOpenFile }: DocumentsDrawerProps) {
-  const { state } = useWorkbench();
   const [result, setResult] = useState<OraProjectFilesResult>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -43,16 +41,12 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
   }
 
   useEffect(() => {
+    setExpandedPaths(new Set());
     void loadFiles();
   }, [projectId, runtimeClient]);
 
   const visibleFiles = useMemo(() => result?.files.slice(0, MAX_VISIBLE_FILES) ?? [], [result]);
   const tree = useMemo(() => buildFileTree(visibleFiles), [visibleFiles]);
-  const hiddenCount = Math.max(0, (result?.files.length ?? 0) - visibleFiles.length);
-
-  useEffect(() => {
-    setExpandedPaths(expandedDirectoryPaths(tree));
-  }, [tree]);
 
   function toggleDirectory(path: string) {
     setExpandedPaths((current) => {
@@ -73,7 +67,7 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
           <BookOpenText size={16} className="text-muted-foreground" />
           <div className="min-w-0">
             <h2 className="truncate text-sm font-medium">Documents</h2>
-            <p className="truncate text-[11px] text-muted-foreground">{projectLabel}</p>
+            <p data-i18n-skip="" className="truncate text-[11px] text-muted-foreground">{result?.rootPath ?? projectLabel}</p>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -94,39 +88,20 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
         ) : result && result.totalFiles === 0 ? (
           <PanelMessage title="No files found" detail="This project folder does not contain readable files." />
         ) : result ? (
-          <div className="space-y-3">
-            <section className="rounded-xl border border-border bg-card/70 p-3 shadow-xs">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-foreground">{formatFileCount(result.totalFiles, state.language)}</h3>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">{result.rootPath}</p>
-                </div>
-                {result.truncated ? (
-                  <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">
-                    Truncated
-                  </span>
-                ) : null}
-              </div>
-              {hiddenCount > 0 ? (
-                <p className="mt-2 text-xs text-muted-foreground">Showing first {formatCount(MAX_VISIBLE_FILES)} files.</p>
-              ) : null}
-            </section>
-
-            <section className="overflow-hidden rounded-xl border border-border bg-background shadow-xs">
-              <div className="py-1">
-                {tree.children.map((node) => (
-                  <TreeNodeRow
-                    key={node.kind === "directory" ? `dir:${node.path}` : `file:${node.path}`}
-                    node={node}
-                    depth={0}
-                    expandedPaths={expandedPaths}
-                    onToggleDirectory={toggleDirectory}
-                    onOpenFile={onOpenFile}
-                  />
-                ))}
-              </div>
-            </section>
-          </div>
+          <section data-i18n-skip="" className="overflow-hidden">
+            <div className="py-1">
+              {tree.children.map((node) => (
+                <TreeNodeRow
+                  key={node.kind === "directory" ? `dir:${node.path}` : `file:${node.path}`}
+                  node={node}
+                  depth={0}
+                  expandedPaths={expandedPaths}
+                  onToggleDirectory={toggleDirectory}
+                  onOpenFile={onOpenFile}
+                />
+              ))}
+            </div>
+          </section>
         ) : null}
       </div>
     </aside>
@@ -228,14 +203,6 @@ function FileIcon({ mimeType }: { mimeType: string }) {
   return <FileText size={15} className="shrink-0 text-muted-foreground" />;
 }
 
-function formatCount(count: number) {
-  return count.toLocaleString();
-}
-
-function formatFileCount(count: number, language: "zh" | "en") {
-  return language === "zh" ? `${formatCount(count)} 个文件` : `${formatCount(count)} files`;
-}
-
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -275,21 +242,18 @@ function sortTree(node: FileTreeNode) {
     if (left.kind !== right.kind) {
       return left.kind === "directory" ? -1 : 1;
     }
-    return left.name.localeCompare(right.name);
+    return compareFileTreeNames(left.name, right.name);
   });
   node.children.forEach(sortTree);
 }
 
-function expandedDirectoryPaths(root: FileTreeNode) {
-  const paths = new Set<string>();
-  const visit = (node: FileTreeNode) => {
-    if (node.kind === "directory" && node.path) {
-      paths.add(node.path);
-    }
-    node.children.forEach(visit);
-  };
-  root.children.forEach(visit);
-  return paths;
+function compareFileTreeNames(left: string, right: string) {
+  const leftHidden = left.startsWith(".");
+  const rightHidden = right.startsWith(".");
+  if (leftHidden !== rightHidden) {
+    return leftHidden ? 1 : -1;
+  }
+  return left.localeCompare(right);
 }
 
 function countFiles(node: FileTreeNode): number {

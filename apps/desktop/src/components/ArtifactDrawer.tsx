@@ -1,4 +1,4 @@
-import { ExternalLink, FileImage, FileJson, FileText, X } from "lucide-react";
+import { FileImage, FileJson, FileText, X } from "lucide-react";
 import { JsonTree } from "./JsonTree";
 import { MarkdownContent } from "./MarkdownContent";
 import { Button } from "./ui/button";
@@ -17,7 +17,9 @@ export function ArtifactDrawer({ artifact, onClose }: ArtifactDrawerProps) {
           <ArtifactKindIcon artifact={artifact} />
           <div className="min-w-0">
             <h2 className="truncate text-sm font-medium">Artifact</h2>
-            <p className="truncate text-[11px] text-muted-foreground">{artifact?.label ?? "No artifact selected"}</p>
+            <p data-i18n-skip={artifact ? "" : undefined} className="truncate text-[11px] text-muted-foreground">
+              {artifact?.label ?? "No artifact selected"}
+            </p>
           </div>
         </div>
         <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close artifact">
@@ -27,30 +29,7 @@ export function ArtifactDrawer({ artifact, onClose }: ArtifactDrawerProps) {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
         {artifact ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-3">
-            <section className="rounded-xl border border-border bg-card/70 p-3 shadow-xs">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate text-sm font-semibold text-foreground">{artifact.label}</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {artifact.kind} · {artifact.mimeType}
-                    {artifact.sizeBytes !== undefined ? ` · ${formatBytes(artifact.sizeBytes)}` : ""}
-                  </p>
-                </div>
-                {artifact.uri ? (
-                  <a
-                    href={artifact.uri}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
-                  >
-                    <ExternalLink size={12} />
-                    URI
-                  </a>
-                ) : null}
-              </div>
-            </section>
-
+          <div data-i18n-skip="" className="flex min-h-0 flex-1 flex-col">
             <ArtifactPreview artifact={artifact} />
           </div>
         ) : (
@@ -76,7 +55,7 @@ function ArtifactKindIcon({ artifact }: { artifact?: ArtifactRecord }) {
 function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
   if (artifact.mimeType.startsWith("image/") && artifact.uri) {
     return (
-      <section className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-background shadow-xs">
+      <section className="flex min-h-0 flex-1 overflow-hidden">
         <img src={artifact.uri} alt={artifact.label} className="h-full max-h-[70vh] w-full object-contain" />
       </section>
     );
@@ -84,8 +63,8 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
 
   if (isJsonArtifact(artifact) && artifact.payload !== undefined) {
     return (
-      <section className="flex min-h-0 flex-1 rounded-xl border border-border bg-background p-3 shadow-xs">
-        <div className="min-h-0 flex-1 overflow-auto rounded-lg bg-bench-50 p-3">
+      <section className="flex min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-auto p-3">
           <JsonTree data={artifact.payload} defaultExpanded={2} />
         </div>
       </section>
@@ -96,7 +75,7 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
   if (text) {
     if (isMarkdownArtifact(artifact)) {
       return (
-        <section className="flex min-h-0 flex-1 rounded-xl border border-border bg-background p-4 shadow-xs">
+        <section className="flex min-h-0 flex-1 p-4">
           <MarkdownContent content={text} className="min-h-0 flex-1 overflow-auto pr-1 text-sm leading-6 text-foreground" />
         </section>
       );
@@ -104,7 +83,7 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
 
     if (isHtmlArtifact(artifact)) {
       return (
-        <section className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-background shadow-xs">
+        <section className="min-h-0 flex-1 overflow-hidden">
           <iframe
             title={artifact.label}
             srcDoc={text}
@@ -116,8 +95,8 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
     }
 
     return (
-      <section className="flex min-h-0 flex-1 rounded-xl border border-border bg-background p-3 shadow-xs">
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bench-50 p-3 font-mono text-xs leading-5 text-bench-800">
+      <section className="flex min-h-0 flex-1 p-3">
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">
           {text}
         </pre>
       </section>
@@ -127,7 +106,7 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
   return (
     <section className="flex-1 rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
       No inline preview is available for this artifact yet.
-      {artifact.uri ? <p className="mt-2 break-all text-xs">{artifact.uri}</p> : null}
+      {artifact.uri ? <p data-i18n-skip="" className="mt-2 break-all text-xs">{artifact.uri}</p> : null}
     </section>
   );
 }
@@ -154,10 +133,4 @@ function artifactText(artifact: ArtifactRecord): string | undefined {
     return artifact.payload === undefined ? undefined : String(artifact.payload);
   }
   return undefined;
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -29,6 +29,8 @@ describe("ApprovalRequestCard", () => {
 
     expect(html).toContain("需要你确认安装技能");
     expect(html).toContain("我准备把 Waza 的 think 技能安装到 Ora 的本地技能库。");
+    expect(html).not.toContain("Review before continuing");
+    expect(html).not.toContain("Review all items");
     expect(html).not.toContain("你正在批准的内容");
     expect(html).not.toContain("What you are approving");
     expect(html).not.toContain("会新增一个本地技能条目");

@@ -392,7 +392,7 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
-    expect(messages[1]).toMatchObject({ role: "assistant", content: "Working on it...", isPlaceholder: true });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "", isPlaceholder: true });
   });
 
   it("keeps the submitted user message visible when a run snapshot arrives before transcript hydration", () => {
@@ -427,7 +427,7 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
-    expect(messages[1]).toMatchObject({ role: "assistant", content: "Working on it...", isPlaceholder: true });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "", isPlaceholder: true });
   });
 
   it("renders pending clarification as the assistant reply and builds a resume patch from the next input", () => {
@@ -819,7 +819,7 @@ describe("desktop composer pending-run behavior", () => {
 
     const messages = adaptChatMessages([], { "run-gv": snapshot });
 
-    expect(messages.find((message) => message.role === "assistant")?.content).toBe("Working on it...");
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe("");
   });
 
   it("uses agent-authored progress narration as the running assistant body", () => {
@@ -950,8 +950,8 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(assistant?.turn?.processSteps.filter((step) => step.eventType === "tool.called")).toHaveLength(1);
     expect(assistant?.turn?.processSteps.find((step) => step.eventType === "tool.called")).toMatchObject({
-      label: "Browse webpage",
-      detail: "Viewed https://example.com.",
+      label: "浏览网页",
+      detail: "已查看 https://example.com.",
       contextLabel: "https://example.com",
     });
   });
@@ -1013,8 +1013,8 @@ describe("desktop composer pending-run behavior", () => {
       .find((message) => message.role === "assistant")?.turn?.processSteps ?? [];
 
     expect(steps).toHaveLength(3);
-    expect(steps.map((step) => step.label)).toEqual(["Browse webpage", "Browse webpage", "Browse webpage"]);
-    expect(steps.map((step) => step.detail)).toEqual(urls.map((url) => `Viewed ${url}.`));
+    expect(steps.map((step) => step.label)).toEqual(["浏览网页", "浏览网页", "浏览网页"]);
+    expect(steps.map((step) => step.detail)).toEqual(urls.map((url) => `已查看 ${url}.`));
     expect(steps.some((step) => step.eventType === "checkpoint.created")).toBe(false);
     expect(steps.some((step) => step.detail.includes("200"))).toBe(false);
   });
@@ -1105,7 +1105,7 @@ describe("desktop composer pending-run behavior", () => {
     );
     expect(assistant?.turn?.processSteps.find((step) => step.eventType === "completion.updated")).toMatchObject({
       label: "Stopped tool use",
-      detail: "The model tried to call another tool after it needed to answer, so Ora stopped tool use and kept the final response readable.",
+      detail: "",
     });
     expect(assistant?.turn?.processSteps.find((step) => step.eventType === "action.updated")).toMatchObject({
       label: "Action failed",

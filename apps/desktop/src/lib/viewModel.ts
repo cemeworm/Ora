@@ -497,53 +497,16 @@ function eventText(event: OraEventEnvelope): string {
   }
 
   switch (event.type) {
-    case "topology.updated":
-      return "Topology updated from Ora runtime state.";
-    case "plan.updated":
-      return "Plan records refreshed from runtime state.";
-    case "task.started":
-      return "Started delegated task.";
-    case "task.progress":
-      return "Delegated task is still running.";
-    case "task.completed":
-      return "Delegated task finished.";
-    case "task.failed":
-      return "Delegated task failed before Ora could continue.";
-    case "approval.required":
-      return "Waiting for your approval before continuing.";
-    case "approval.resolved":
-      return "Approval recorded; continuing the run.";
-    case "clarification.required":
-      return "Waiting for your clarification before continuing.";
-    case "clarification.resolved":
-      return "Clarification recorded; continuing the run.";
     case "completion.updated":
-      if (
-        isRecord(event.payload) &&
-        event.payload.state === "tool_call_text_rejected"
-      ) {
-        return "The model tried to call another tool after it needed to answer, so Ora stopped tool use and kept the final response readable.";
-      }
-      if (isRecord(event.payload) && event.payload.state === "force_final") {
-        return "Ora stopped using tools and answered from the information already collected.";
-      }
-      if (
-        isRecord(event.payload) &&
-        event.payload.state === "tool_calls_ignored"
-      ) {
-        return "The model requested more tools after tool use had stopped, so Ora ignored those requests and finished from the available context.";
-      }
-      return "Ora updated how this turn should finish.";
+      return "";
     case "node.updated":
       return isRecord(event.payload) && typeof event.payload.state === "string"
         ? `Processing state updated: ${event.payload.state}.`
         : "Processing state updated.";
-    case "run.done":
-      return "Run completed and checkpoint metadata is available.";
     case "run.failed":
       return "The run did not finish. Open Trails for the latest details.";
     default:
-      return "Processing update received.";
+      return event.type;
   }
 }
 
@@ -1144,7 +1107,7 @@ export function adaptChatMessages(
         ? assistantTextFromSnapshot(turn.snapshot)
         : undefined;
       const suppressStoredAssistant = turn.snapshot
-        ? hasRejectedFinalToolCall(turn.snapshot)
+        ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
       if (turn.assistant || assistantTurn) {
         messages.push({
@@ -1224,6 +1187,10 @@ function assistantTextFromSnapshot(
   if (hasRejectedFinalToolCall(snapshot)) {
     return undefined;
   }
+  const approvalText = approvalPendingTextFromSnapshot(snapshot);
+  if (approvalText) {
+    return approvalText;
+  }
   if (
     snapshot.status === "queued" ||
     snapshot.status === "running"
@@ -1297,6 +1264,29 @@ function progressTextFromSnapshot(
   return undefined;
 }
 
+function approvalPendingTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  if (
+    snapshot.status !== "interrupted" &&
+    snapshotPendingApprovals(snapshot).length === 0 &&
+    !snapshot.actions.some((action) => action.status === "approval_required")
+  ) {
+    return undefined;
+  }
+
+  return progressTextFromSnapshot(snapshot) ?? approvalRequestTextFromSnapshot(snapshot);
+}
+
+function approvalRequestTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  const pendingIds = new Set(snapshotPendingApprovals(snapshot));
+  const pendingAction =
+    snapshot.actions.find((action) => pendingIds.has(action.id)) ??
+    snapshot.actions.find((action) => action.status === "approval_required");
+  const summary = pendingAction?.approvalRequest?.summary;
+  return typeof summary === "string" && summary.trim()
+    ? summary.trim()
+    : undefined;
+}
+
 function outputTextFromSnapshot(
   snapshot: OraStateSnapshot,
 ): string | undefined {
@@ -1334,6 +1324,15 @@ function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {
   );
 }
 
+function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): boolean {
+  return (
+    hasRejectedFinalToolCall(snapshot) ||
+    snapshot.status === "interrupted" ||
+    snapshotPendingApprovals(snapshot).length > 0 ||
+    snapshot.actions.some((action) => action.status === "approval_required")
+  );
+}
+
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
 ): AssistantTurnAttachment {
@@ -1342,6 +1341,7 @@ function buildAssistantTurnAttachment(
     turnIndex: snapshot.turnIndex ?? 1,
     status: adaptRunStatus(snapshot.status),
     pattern: snapshot.pattern,
+    liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps: deriveProcessSteps(snapshot),
     agentMessages: deriveAgentMessages(snapshot),
     artifacts: snapshot.artifacts.map(adaptTurnArtifact),
@@ -1424,10 +1424,12 @@ function restoreTruncatedAgentMessageContent(content: string, fullContent?: stri
 function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
   const events = snapshot.events.filter(shouldShowProcessEvent);
   const hasWorkEvent = events.some(isWorkProcessEvent);
+  const visibleEvents = events.filter(
+    (event) => hasWorkEvent || !isLifecycleProcessEvent(event),
+  );
 
-  return events
-    .filter((event) => hasWorkEvent || !isLifecycleProcessEvent(event))
-    .map((event) => ({
+  return visibleEvents
+    .map((event, index) => ({
       id: event.id,
       eventType: event.type,
       label: processStepLabel(event),
@@ -1436,7 +1438,11 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
         snapshot.events[0]?.createdAt ?? event.createdAt,
         event.createdAt,
       ),
-      status: processStepStatus(event, snapshot.status),
+      status: processStepStatus(
+        event,
+        snapshot.status,
+        index === visibleEvents.length - 1,
+      ),
       tone: processStepTone(event),
       agentId: event.agentId,
       contextLabel: processContextLabel(event),
@@ -1461,7 +1467,7 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
       if (isCachedWebFetchEvent(event)) {
         return false;
       }
-      return hasToolId(event) || isChatProgressEvent(event);
+      return hasToolId(event) && !isChatProgressEvent(event);
     case "tool.repaired":
       return hasToolId(event);
     case "artifact.exported":
@@ -1527,9 +1533,6 @@ function processStepLabel(event: OraEventEnvelope): string {
   if (event.type === "completion.updated") {
     return "Stopped tool use";
   }
-  if (event.type === "task.progress" && isChatProgressEvent(event)) {
-    return "进度";
-  }
   if (event.type === "approval.required") {
     return "Waiting for approval";
   }
@@ -1547,10 +1550,16 @@ function processStepLabel(event: OraEventEnvelope): string {
 
 function processStepDetail(event: OraEventEnvelope): string {
   if (event.type === "run.done") {
-    return "运行已完成。";
+    return "";
   }
-  if (event.type === "task.progress" && !isChatProgressEvent(event)) {
-    return "任务仍在运行。";
+  if (
+    (event.type === "task.started" ||
+      event.type === "task.progress" ||
+      event.type === "task.completed" ||
+      event.type === "task.failed") &&
+    !isChatProgressEvent(event)
+  ) {
+    return "";
   }
   const detail = eventText(event);
   if (
@@ -1700,39 +1709,39 @@ function toolCallLabel(payload: Record<string, unknown>): string {
   const toolId = rawToolId(payload);
   switch (toolId) {
     case "web.fetch":
-      return "Browse webpage";
+      return "浏览网页";
     case "web.search":
-      return "Search web";
+      return "搜索网页";
     case "file.read":
-      return "Read file";
+      return "读取文件";
     case "file.list":
-      return "List files";
+      return "列出文件";
     case "file.glob":
-      return "Match files";
+      return "匹配文件";
     case "file.grep":
-      return "Search files";
+      return "搜索文件";
     case "file.write":
-      return "Write file";
+      return "写入文件";
     case "file.patch":
-      return "Patch file";
+      return "修改文件";
     case "shell.execute":
-      return "Run command";
+      return "运行命令";
     case "skills.create":
-      return "Install skill";
+      return "安装技能";
     case "skills.checkName":
-      return "Check skill name";
+      return "检查技能名称";
     case "skills.list":
-      return "List skills";
+      return "列出技能";
     case "mcp.listTools":
-      return "List MCP tools";
+      return "列出 MCP 工具";
     case "mcp.readResource":
-      return "Read MCP resource";
+      return "读取 MCP 资源";
     case "mcp.call":
-      return "Call MCP tool";
+      return "调用 MCP 工具";
     default:
       return typeof payload.title === "string" && payload.title.length > 0
         ? payload.title
-        : toolId ?? "Tool call";
+        : toolId ?? "工具调用";
   }
 }
 
@@ -1752,11 +1761,11 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
   switch (toolId) {
     case "file.read":
       return targetPath
-        ? `Read ${targetPath}${sizeSuffix(output.sizeBytes)}`
+        ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes)}`
         : undefined;
     case "file.list":
       return targetPath
-        ? `Listed ${targetPath}${countSuffix(output.entries, "entry", "entries")}`
+        ? `已列出 ${targetPath}${countSuffix(output.entries, "项")}`
         : undefined;
     case "file.glob": {
       const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
@@ -1764,7 +1773,7 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
       if (!pattern) {
         return undefined;
       }
-      return `Matched ${pattern}${basePath ? ` under ${basePath}` : ""}${countSuffix(output.matches, "match", "matches")}`;
+      return `已匹配 ${pattern}${basePath ? `（${basePath} 下）` : ""}${countSuffix(output.matches, "项")}`;
     }
     case "file.grep": {
       const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
@@ -1772,19 +1781,19 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         return undefined;
       }
       const scope = stringValue(input.include) ?? stringValue(input.path);
-      const truncated = output.truncated === true ? ", truncated" : "";
-      return `Searched for "${pattern}"${scope ? ` in ${scope}` : ""}${countSuffix(output.matches, "match", "matches")}${truncated}`;
+      const truncated = output.truncated === true ? "，结果已截断" : "";
+      return `已搜索 "${pattern}"${scope ? `（${scope}）` : ""}${countSuffix(output.matches, "项")}${truncated}`;
     }
     case "file.write":
       return targetPath
-        ? `Wrote ${targetPath}${sizeSuffix(output.sizeBytes)}`
+        ? `已写入 ${targetPath}${sizeSuffix(output.sizeBytes)}`
         : undefined;
     case "file.patch": {
       const replacements =
         typeof output.replacements === "number"
-          ? ` (${output.replacements} replacement${output.replacements === 1 ? "" : "s"})`
+          ? `（${output.replacements} 处替换）`
           : "";
-      return targetPath ? `Patched ${targetPath}${replacements}` : undefined;
+      return targetPath ? `已修改 ${targetPath}${replacements}` : undefined;
     }
     case "shell.execute": {
       const command = stringValue(output.command) ?? stringValue(input.command);
@@ -1792,7 +1801,7 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         typeof output.exitCode === "number" && output.exitCode !== 0
           ? ` (exit ${output.exitCode})`
           : "";
-      return command ? `Ran command: ${command}${exitCode}` : undefined;
+      return command ? `已运行命令：${command}${exitCode}` : undefined;
     }
     case "web.fetch": {
       const url = stringValue(output.url) ?? stringValue(input.url);
@@ -1803,51 +1812,51 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         typeof output.status === "number" && output.status >= 400
           ? ` (HTTP ${output.status})`
           : "";
-      return `Viewed ${url}${status}`;
+      return `已查看 ${url}${status}`;
     }
     case "web.search": {
       const query = stringValue(output.query) ?? stringValue(input.query);
       return query
-        ? `Searched the web for "${query}"${countSuffix(output.results, "result", "results")}`
+        ? `已搜索网页："${query}"${countSuffix(output.results, "条结果")}`
         : undefined;
     }
     case "mcp.listTools": {
       const server = stringValue(input.server);
-      return server ? `Listed MCP tools from ${server}` : "Listed MCP tools";
+      return server ? `已列出 ${server} 的 MCP 工具` : "已列出 MCP 工具";
     }
     case "mcp.readResource": {
       const uri = stringValue(input.uri);
       const server = stringValue(input.server);
       return uri
-        ? `Read MCP resource ${uri}${server ? ` from ${server}` : ""}`
+        ? `已读取 MCP 资源 ${uri}${server ? `（${server}）` : ""}`
         : undefined;
     }
     case "mcp.call": {
       const name = stringValue(input.name);
       const server = stringValue(input.server);
       return name
-        ? `Called MCP tool ${name}${server ? ` on ${server}` : ""}`
+        ? `已调用 MCP 工具 ${name}${server ? `（${server}）` : ""}`
         : undefined;
     }
     case "skills.list":
-      return "Checked installed skills";
+      return "已检查已安装技能";
     case "skills.checkName": {
       const name = stringValue(output.name) ?? stringValue(input.name);
       return name
-        ? `Checked whether ${name} can be installed`
-        : "Checked whether the skill name can be installed";
+        ? `已检查 ${name} 是否可以安装`
+        : "已检查技能名称是否可以安装";
     }
     case "skills.create": {
       const name = stringValue(output.name) ?? stringValue(input.name);
       const target = stringValue(output.path) ?? stringValue(input.path);
       if (name && target) {
-        return `Installed ${name} at ${target}`;
+        return `已安装 ${name} 到 ${target}`;
       }
       return name
-        ? `Installed ${name}`
+        ? `已安装 ${name}`
         : target
-          ? `Installed skill at ${target}`
-          : "Installed skill";
+          ? `已安装技能到 ${target}`
+          : "已安装技能";
     }
     default:
       return undefined;
@@ -1878,11 +1887,11 @@ function sizeSuffix(value: unknown): string {
   return typeof value === "number" ? ` (${formatBytes(value)})` : "";
 }
 
-function countSuffix(value: unknown, singular: string, plural: string): string {
+function countSuffix(value: unknown, unit: string): string {
   if (!Array.isArray(value)) {
     return "";
   }
-  return ` (${value.length} ${value.length === 1 ? singular : plural})`;
+  return `（${value.length} ${unit}）`;
 }
 
 function formatBytes(bytes: number): string {
@@ -1895,10 +1904,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function processStepStatus(event: OraEventEnvelope, runStatus: OraStateSnapshot["status"]): TurnProcessStep["status"] {
+function processStepStatus(
+  event: OraEventEnvelope,
+  runStatus: OraStateSnapshot["status"],
+  isLatestProcessEvent = true,
+): TurnProcessStep["status"] {
   switch (event.type) {
     case "task.progress":
-      return runStatus === "running" ? "active" : "complete";
+      return runStatus === "running" && isLatestProcessEvent
+        ? "active"
+        : "complete";
     case "tool.called": {
       const status = actionStatusFromEvent(event);
       if (status === "failed") {
@@ -2124,35 +2139,31 @@ function todoStatusFromPlan(
 
 function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
   if (!snapshot) {
-    return "Working on it...";
+    return "";
   }
 
   if (snapshotPendingClarifications(snapshot).length > 0) {
-    return "I need a bit more information before I can continue this turn.";
+    return clarificationTextFromSnapshot(snapshot) ?? "";
   }
 
   if (
     snapshotPendingApprovals(snapshot).length > 0 ||
     snapshot.actions.some((action) => action.status === "approval_required")
   ) {
-    return "I'm waiting for approval before continuing this turn.";
+    return approvalPendingTextFromSnapshot(snapshot) ?? "";
   }
 
   switch (snapshot.status) {
     case "running":
     case "queued":
-      return "Working on it...";
+      return progressTextFromSnapshot(snapshot) ?? "";
     case "cancelled":
       return safeCancelledCopy(snapshot.error);
     case "failed":
     case "interrupted":
-      return (
-        snapshot.error ?? "This turn did not produce a final assistant reply."
-      );
+      return snapshot.error ?? "";
     case "succeeded":
-      return snapshot.artifacts.length > 0
-        ? "This turn completed and produced attachments below."
-        : "This turn completed without a final assistant reply.";
+      return "";
   }
 }
 

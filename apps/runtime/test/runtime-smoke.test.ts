@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
+import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
+import { summarizeNarratorProgressPayload } from "../src/harness/runtime-prompts.js";
 
 function createTempStore() {
   return new LocalRunStore({
@@ -240,6 +242,24 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("filters internal stage text out of progress narrator payloads", () => {
+    expect(summarizeNarratorProgressPayload("task.progress", {
+      title: "Route events to subscribers",
+      detail: "Router routes events to the subscribers that should handle the next piece of work.",
+      phase: "running",
+    })).toEqual({ phase: "running" });
+    expect(summarizeNarratorProgressPayload("tool.called", {
+      toolId: "web.search",
+      status: "succeeded",
+      input: { query: "西芒杜项目 2026年 最新进展" },
+      output: { query: "西芒杜项目 2026年 最新进展", results: [{ title: "result" }] },
+    })).toEqual({
+      toolId: "web.search",
+      status: "succeeded",
+      query: "西芒杜项目 2026年 最新进展",
+    });
+  });
+
   it("asks progress narration to follow the user's language", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
@@ -303,6 +323,9 @@ describe("Ora runtime smoke path", () => {
 
       expect(providerBodies.some((body) => body.includes("Match the user's language"))).toBe(true);
       expect(providerBodies.some((body) => body.includes("languageInstruction"))).toBe(true);
+      const progressBodies = providerBodies.filter((body) => body.includes("Match the user's language"));
+      expect(progressBodies.some((body) => body.includes("\"modeId\""))).toBe(false);
+      expect(progressBodies.some((body) => body.includes("\"pattern\""))).toBe(false);
       expect(progressSummaries).toContain("已经读取到用户要安装技能的请求，正在确认下一步需要执行的安装动作。");
     } finally {
       globalThis.fetch = previousFetch;
@@ -1600,6 +1623,178 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("keeps approved file write resume scope reusable for the same path", () => {
+    const matcher = createResumeApprovalMatcher({
+      approvedActions: [{
+        type: "file.write",
+        riskLevel: "high",
+        agentId: "router",
+        input: { path: "notes/result.md", content: "draft one\n" },
+      }],
+    });
+
+    expect(matcher.consume({
+      id: "run-1:action:investigator-tool-1",
+      runId: "run-1",
+      type: "file.write",
+      riskLevel: "high",
+      status: "proposed",
+      agentId: "investigator",
+      input: { path: "notes/result.md", content: "draft two\n" },
+      artifactIds: [],
+    })).toBe(true);
+    expect(matcher.consume({
+      id: "run-1:action:investigator-tool-2",
+      runId: "run-1",
+      type: "file.write",
+      riskLevel: "high",
+      status: "proposed",
+      agentId: "investigator",
+      input: { path: "notes/result.md", content: "draft three\n" },
+      artifactIds: [],
+    })).toBe(true);
+  });
+
+  it("executes the approved file write before asking the model for more work", async () => {
+    const streams: Array<{ status?: string; events: Array<{ type: string }>; snapshot?: unknown }> = [];
+    const handle = createRuntimeMethodHandler(createTempStore(), undefined, {
+      onRunStream(stream) {
+        streams.push(stream);
+      },
+    });
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-file-write-approval-"));
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "Source\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.FILE_WRITE_APPROVAL_KEY;
+    process.env.FILE_WRITE_APPROVAL_KEY = "test";
+    let providerCalls = 0;
+
+    const toolResponse = (id: string, name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null,
+          tool_calls: [{
+            id,
+            type: "function",
+            function: { name, arguments: JSON.stringify(args) },
+          }],
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    globalThis.fetch = (async () => {
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        return toolResponse("call-read-before-write", "file__read", { path: "README.md" });
+      }
+      if (providerCalls === 2) {
+        return toolResponse("call-write-first", "file__write", { path: "notes/result.md", content: "draft one\n" });
+      }
+      if (providerCalls === 3) {
+        return toolResponse("call-search-after-approval", "web__search", { query: "should not run before approved write" });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Wrote the approved project note." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Read the README, then write the project note.",
+            context: { projectWorkspace: { label: "File Write Approval", rootPath: workspaceRoot } },
+          },
+          config: {
+            modeId: "single_agent",
+            providerId: "file-write-approval",
+            modelRef: "file-write-approval-model",
+            providerConfig: {
+              id: "file-write-approval",
+              label: "File Write Approval",
+              type: "openai_compatible",
+              modelId: "file-write-approval-model",
+              baseUrl: "https://file-write-approval.test/v1",
+              apiKeyEnv: "FILE_WRITE_APPROVAL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["file.read", "file.write", "web.search"],
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const approvedActionId = blocked.pendingApprovals[0]!;
+      const resumedHandle = await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resumeStreaming",
+        params: { runId: run.runId, patch: { approvedActionIds: [approvedActionId] } },
+      }) as { runId: string; status: string };
+      expect(resumedHandle.status).toBe("running");
+      await waitFor(() => streams.some((stream) =>
+        stream.snapshot !== undefined &&
+        StateSnapshotSchema.parse(stream.snapshot).status === "succeeded"
+      ));
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.actions.find((action) => action.id === approvedActionId)).toMatchObject({
+        type: "file.write",
+        status: "approval_required",
+        input: expect.objectContaining({ path: "notes/result.md", content: "draft one\n" }),
+      });
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.output).toMatchObject({ text: "Wrote the approved project note." });
+      expect(resumed.pendingApprovals).toEqual([]);
+      expect(resumed.actions.some((action) => action.status === "approval_required")).toBe(false);
+      expect(streams.some((stream) => stream.snapshot !== undefined && StateSnapshotSchema.parse(stream.snapshot).status === "running")).toBe(true);
+      expect(streams.flatMap((stream) => stream.events).length).toBeGreaterThan(0);
+      expect(resumed.events.map((event) => event.type)).toContain("approval.resolved");
+      expect(resumed.events.some((event) =>
+        event.type === "tool.called" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        (event.payload as { toolId?: string }).toolId === "file.write"
+      )).toBe(true);
+      expect(resumed.events.some((event) =>
+        event.type === "tool.called" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        (event.payload as { toolId?: string }).toolId === "web.search"
+      )).toBe(false);
+      expect(resumed.events.some((event) =>
+        event.type === "message.delta" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        (event.payload as { content?: string }).content === "Wrote the approved project note."
+      )).toBe(true);
+      expect(fs.readFileSync(path.join(workspaceRoot, "notes", "result.md"), "utf8")).toBe("draft one\n");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.FILE_WRITE_APPROVAL_KEY;
+      } else {
+        process.env.FILE_WRITE_APPROVAL_KEY = previousKey;
+      }
+    }
+  });
+
   it("continues an approved high-risk skill install batch without another gate", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
@@ -1902,7 +2097,7 @@ describe("Ora runtime smoke path", () => {
       }));
 
       expect(run.status).toBe("succeeded");
-      expect(state.config.budget?.maxToolCalls).toBeGreaterThanOrEqual(32);
+      expect(state.config.budget?.maxToolCalls).toBe(64);
       expect(fetchedUrls).toHaveLength(10);
       expect(state.toolCalls.filter((call) => call.toolId === "skills.create" && call.status === "succeeded")).toHaveLength(8);
       expect(state.output?.text).toContain("Installed all 8 Waza skills");
@@ -2336,7 +2531,7 @@ describe("Ora runtime smoke path", () => {
             toolIds: ["web.fetch"],
             budget: {
               maxTokens: 1024,
-              maxToolCalls: 4,
+              maxToolCalls: 80,
               maxRuntimeMs: 60_000,
             },
             completionPolicy: {
@@ -2358,8 +2553,8 @@ describe("Ora runtime smoke path", () => {
       }));
 
       expect(run.status).toBe("succeeded");
-      expect(webFetchCalls).toBe(3);
-      expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(3);
+      expect(webFetchCalls).toBe(63);
+      expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(63);
       expect(state.events.some((event) =>
         event.type === "completion.updated"
         && typeof event.payload === "object"
@@ -2811,9 +3006,11 @@ describe("Ora runtime smoke path", () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-project-files-"));
     try {
       fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+      fs.mkdirSync(path.join(workspaceRoot, ".space"), { recursive: true });
       fs.mkdirSync(path.join(workspaceRoot, "node_modules", "ignored"), { recursive: true });
       fs.writeFileSync(path.join(workspaceRoot, "README.md"), "# Project\n", "utf8");
       fs.writeFileSync(path.join(workspaceRoot, "src", "index.ts"), "export const value = 1;\n", "utf8");
+      fs.writeFileSync(path.join(workspaceRoot, ".space", "cache.md"), "# Hidden workspace cache\n", "utf8");
       fs.writeFileSync(path.join(workspaceRoot, "node_modules", "ignored", "package.json"), "{}", "utf8");
 
       const handle = createRuntimeMethodHandler(createTempStore());
@@ -2836,8 +3033,8 @@ describe("Ora runtime smoke path", () => {
         params: { projectId: project.projectId, path: "README.md" }
       }) as { path: string; previewKind: string; payload: string };
 
-      expect(files.totalFiles).toBe(2);
-      expect(files.files.map((file) => file.path)).toEqual(["README.md", "src/index.ts"]);
+      expect(files.totalFiles).toBe(3);
+      expect(files.files.map((file) => file.path)).toEqual(["README.md", "src/index.ts", ".space/cache.md"]);
       expect(files.skippedDirs).toContain("node_modules");
       expect(preview).toMatchObject({
         path: "README.md",

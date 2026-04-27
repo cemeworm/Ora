@@ -120,6 +120,7 @@ import {
   UserTaskInputSchema,
   withDefaultWebToolIds
 } from "@ora/shared";
+import type { ActionRecord } from "@ora/shared";
 import {
   ActionLedger,
   AgentProfileRegistry,
@@ -132,6 +133,7 @@ import { CustomAgentFileStore } from "./custom-agents.js";
 import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
+import { RuntimeToolExecutor } from "./harness/runtime-tool-executor.js";
 import { FileLongTermMemoryStore, LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
 import type { LongTermMemoryUpdateTask } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
@@ -1114,7 +1116,7 @@ export class LocalRunStore {
         return;
       }
 
-      entries.sort((left, right) => left.name.localeCompare(right.name));
+      entries.sort(compareProjectDirectoryEntries);
       for (const entry of entries) {
         if (truncated) {
           return;
@@ -1156,7 +1158,7 @@ export class LocalRunStore {
       projectId: project.projectId,
       rootPath,
       totalFiles,
-      files: files.sort((left, right) => left.path.localeCompare(right.path)),
+      files: files.sort((left, right) => compareProjectPathNames(left.path, right.path)),
       truncated,
       skippedDirs: [...PROJECT_WORKSPACE_SKIPPED_DIRS].sort(),
     });
@@ -1718,6 +1720,471 @@ export class LocalRunStore {
     return this.toRunHandle(liveSnapshot);
   }
 
+  private approvedFileWriteResumeActions(snapshot: StateSnapshot, approvedActionIds: string[]): ActionRecord[] {
+    if (snapshot.pendingClarifications.length > 0) {
+      return [];
+    }
+    const approvedIds = new Set(approvedActionIds);
+    const pendingActions = snapshot.actions.filter((action) => action.status === "approval_required");
+    const approvedFileWrites = pendingActions.filter((action) =>
+      approvedIds.has(action.id) && action.type === "file.write"
+    );
+    return approvedFileWrites.length > 0 && approvedFileWrites.length === pendingActions.length
+      ? approvedFileWrites
+      : [];
+  }
+
+  private async completeApprovedFileWriteResume(
+    snapshot: StateSnapshot,
+    approvedActionIds: string[],
+    params: { reason?: string; patch?: unknown } = {},
+    onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
+  ): Promise<StateSnapshot | undefined> {
+    const approvedFileWrites = this.approvedFileWriteResumeActions(snapshot, approvedActionIds);
+    if (approvedFileWrites.length === 0) {
+      return undefined;
+    }
+    const writeResults: Array<{ path?: unknown; sizeBytes?: unknown; content?: unknown }> = [];
+
+    const executor = new RuntimeToolExecutor({
+      workspace: snapshot.input.context?.projectWorkspace,
+      toolDescriptors: new RuntimeToolRegistry().list(),
+      skillRegistry: this.skillRegistry,
+      searchProviderConfig: snapshot.config.searchProvider,
+    });
+
+    let working = StateSnapshotSchema.parse({
+      ...snapshot,
+      status: "running",
+      pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approvedActionIds.includes(actionId)),
+      updatedAt: this.now(),
+    });
+    const append = (type: OraEventEnvelope["type"], payload: unknown, base: StateSnapshot = working) => {
+      working = this.appendEvent(base, type, payload);
+      const event = working.events.at(-1);
+      if (event) {
+        onEvent?.(event, working);
+      }
+    };
+    const replaceAction = (record: ActionRecord) => {
+      working = StateSnapshotSchema.parse({
+        ...working,
+        actions: working.actions.map((action) => (action.id === record.id ? record : action)),
+      });
+    };
+    const replaceToolCall = (
+      actionId: string,
+      status: "approved" | "running" | "succeeded" | "failed",
+      result?: { output?: unknown; error?: string; content?: string },
+    ) => {
+      const updatedAt = this.now();
+      working = StateSnapshotSchema.parse({
+        ...working,
+        toolCalls: working.toolCalls.map((call) =>
+          call.actionId === actionId
+            ? {
+                ...call,
+                status,
+                updatedAt,
+                result: result
+                  ? {
+                      status,
+                      output: result.output,
+                      error: result.error,
+                      content: result.content,
+                      createdAt: updatedAt,
+                      updatedAt,
+                    }
+                  : call.result,
+              }
+            : call
+        ),
+      });
+    };
+
+    append("run.resumed", {
+      reason: params.reason ?? USER_RESUMED_MESSAGE,
+      patch: params.patch ?? {},
+    });
+
+    for (const originalAction of approvedFileWrites) {
+      const action = working.actions.find((item) => item.id === originalAction.id) ?? originalAction;
+      append("approval.resolved", {
+        actionId: action.id,
+        decision: "approved",
+        mode: "resume",
+      });
+
+      const approved = { ...action, status: "approved" as const };
+      replaceAction(approved);
+      replaceToolCall(action.id, "approved");
+      append("action.updated", { actionId: action.id, status: "approved", record: approved });
+
+      const running = { ...approved, status: "running" as const };
+      replaceAction(running);
+      replaceToolCall(action.id, "running");
+      append("action.updated", { actionId: action.id, status: "running", record: running });
+
+      try {
+        const args = action.input && typeof action.input === "object" && !Array.isArray(action.input)
+          ? action.input as Record<string, unknown>
+          : {};
+        const output = await executor.execute({ tool: "file.write", args }, { allowRisky: true });
+        writeResults.push({
+          path: (output as Record<string, unknown>)?.path ?? args.path,
+          sizeBytes: (output as Record<string, unknown>)?.sizeBytes,
+          content: args.content,
+        });
+        const resultText = JSON.stringify(output, null, 2);
+        const succeeded = { ...running, status: "succeeded" as const, output };
+        replaceAction(succeeded);
+        replaceToolCall(action.id, "succeeded", { output, content: resultText });
+        append("tool.called", {
+          toolCallId: working.toolCalls.find((call) => call.actionId === action.id)?.id,
+          actionId: action.id,
+          toolId: action.type,
+          source: "replay",
+          status: "succeeded",
+          input: args,
+          output,
+          cacheHit: false,
+        });
+        append("action.updated", { actionId: action.id, status: "succeeded", record: succeeded });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const failed = { ...running, status: "failed" as const, error: detail };
+        replaceAction(failed);
+        replaceToolCall(action.id, "failed", { error: detail, content: detail });
+        append("tool.called", {
+          toolCallId: working.toolCalls.find((call) => call.actionId === action.id)?.id,
+          actionId: action.id,
+          toolId: action.type,
+          source: "replay",
+          status: "failed",
+          input: action.input,
+          error: detail,
+          cacheHit: false,
+        });
+        append("action.updated", { actionId: action.id, status: "failed", record: failed });
+        append("run.failed", { status: "failed", error: detail });
+        return this.attachTraceMetadata(StateSnapshotSchema.parse({
+          ...working,
+          status: "failed",
+          error: detail,
+          activeAgents: [],
+          updatedAt: this.now(),
+        }));
+      }
+    }
+
+    const finalText = await this.finalTextForApprovedFileWriteResume(snapshot, writeResults);
+    append("message.delta", { role: "assistant", content: finalText });
+    const output = { text: finalText };
+    append("run.done", { status: "succeeded", output });
+    return this.attachTraceMetadata(StateSnapshotSchema.parse({
+      ...working,
+      status: "succeeded",
+      pendingApprovals: [],
+      activeAgents: [],
+      output,
+      updatedAt: this.now(),
+    }));
+  }
+
+  private async finalTextForApprovedFileWriteResume(
+    snapshot: StateSnapshot,
+    writeResults: Array<{ path?: unknown; sizeBytes?: unknown; content?: unknown }>,
+  ): Promise<string> {
+    const writeSummary = writeResults.map((result) => ({
+      path: result.path,
+      sizeBytes: result.sizeBytes,
+    }));
+    const updatedContent = writeResults
+      .map((result) => typeof result.content === "string" ? result.content : "")
+      .filter(Boolean)
+      .join("\n\n---\n\n")
+      .slice(0, 60_000);
+    const messages = [
+      ...(snapshot.sessionId
+        ? this.buildConversationMessages(snapshot.sessionId, snapshot.input.prompt, snapshot.runId)
+        : [{ role: "user" as const, content: snapshot.input.prompt.trim() }]),
+      {
+        role: "user" as const,
+        content: [
+          "The user approved the pending file.write action, and the runtime has already executed it.",
+          "Do not call any tools or emit tool JSON.",
+          "Now provide the final answer in the user's language.",
+          "Briefly confirm the document update and summarize the substantive findings from the updated content.",
+          `Write result: ${JSON.stringify(writeSummary)}`,
+          updatedContent ? `Updated document content:\n${updatedContent}` : undefined,
+        ].filter(Boolean).join("\n\n"),
+      },
+    ];
+    const system = [
+      "You are Ora completing a resumed run after an approved document write.",
+      "The side effect has already happened. Do not request another tool call.",
+      "Answer directly and naturally.",
+    ].join("\n");
+    const first = await invokeRunProvider(snapshot.config, {
+      messages,
+      system,
+      maxTokens: snapshot.config.budget?.maxTokens,
+      tools: [],
+      toolChoice: "none",
+    });
+    if ((first.toolCalls?.length ?? 0) === 0 && first.text.trim()) {
+      return first.text.trim();
+    }
+    const retry = await invokeRunProvider(snapshot.config, {
+      messages: [
+        ...messages,
+        {
+          role: "assistant",
+          content: first.text,
+          toolCalls: first.toolCalls,
+        },
+        {
+          role: "user",
+          content: "Tools are disabled for this final answer. Reply in plain prose only, confirming the document update and summarizing the findings.",
+        },
+      ],
+      system,
+      maxTokens: snapshot.config.budget?.maxTokens,
+      tools: [],
+      toolChoice: "none",
+    });
+    return retry.text.trim() || "文档已更新。";
+  }
+
+  async resumeStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
+    const parsed = RunResumeParamsSchema.parse(params);
+    const snapshot = this.getRunOrThrow(parsed.runId);
+    const patchRecord = parsed.patch && typeof parsed.patch === "object" && parsed.patch !== null
+      ? parsed.patch
+      : {};
+    const clarificationPatch = "clarifications" in patchRecord &&
+      typeof patchRecord.clarifications === "object" &&
+      patchRecord.clarifications !== null
+      ? patchRecord.clarifications as Record<string, unknown>
+      : {};
+    const approvedActionIds = Array.isArray(patchRecord.approvedActionIds)
+      ? patchRecord.approvedActionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+    const hasKernelResumeWork = snapshot.modeSpec !== undefined
+      && (snapshot.pendingClarifications.length > 0 || snapshot.actions.some((action) => action.status === "approval_required"));
+
+    if (!hasKernelResumeWork) {
+      const resumed = await this.resumeRun(params);
+      options.onStream?.(RunEventStreamSchema.parse({
+        runId: resumed.runId,
+        fromSeq: resumed.events.length,
+        events: [],
+        nextSeq: resumed.events.length,
+        status: resumed.status,
+        snapshot: resumed,
+      }));
+      return this.toRunHandle(resumed);
+    }
+
+    const modeSpec = snapshot.modeSpec;
+    if (!modeSpec) {
+      throw new OraRuntimeError("Cannot resume a kernel-backed run without modeSpec.", -32004, {
+        runId: snapshot.runId,
+      });
+    }
+    const sessionId = snapshot.sessionId;
+    if (!sessionId) {
+      throw new OraRuntimeError("Cannot resume a kernel-backed run without sessionId.", -32004, {
+        runId: snapshot.runId,
+      });
+    }
+
+    const approvedIdSet = new Set(approvedActionIds);
+    let liveSnapshot = StateSnapshotSchema.parse({
+      ...snapshot,
+      status: "running",
+      actions: snapshot.actions.map((action) =>
+        action.status === "approval_required" && approvedIdSet.has(action.id)
+          ? { ...action, status: "approved" }
+          : action
+      ),
+      pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approvedIdSet.has(actionId)),
+      updatedAt: this.now(),
+    });
+    this.persistRun(liveSnapshot);
+
+    const publishStream = (events: OraEventEnvelope[], streamSnapshot?: StateSnapshot) => {
+      if (events.length === 0 && !streamSnapshot) {
+        return;
+      }
+      const firstSeq = events[0]?.seq ?? liveSnapshot.events.length;
+      options.onStream?.(RunEventStreamSchema.parse({
+        runId: snapshot.runId,
+        fromSeq: firstSeq,
+        events,
+        nextSeq: events.length > 0 ? events.at(-1)!.seq + 1 : liveSnapshot.events.length,
+        status: streamSnapshot?.status ?? liveSnapshot.status,
+        snapshot: streamSnapshot,
+      }));
+    };
+    publishStream([], liveSnapshot);
+
+    if (this.approvedFileWriteResumeActions(snapshot, approvedActionIds).length > 0) {
+      void this.completeApprovedFileWriteResume(
+        snapshot,
+        approvedActionIds,
+        { reason: parsed.reason, patch: parsed.patch },
+        (event, nextSnapshot) => {
+          liveSnapshot = nextSnapshot;
+          this.cacheRun(liveSnapshot, event.seq % 8 === 0 || event.type.startsWith("run."), {
+            deferInitialTitle: true,
+          });
+          publishStream([event], liveSnapshot);
+        },
+      ).then(async (completed) => {
+        if (!completed) {
+          return;
+        }
+        liveSnapshot = completed;
+        await this.persistRunWithGeneratedTitle(completed);
+        publishStream([], completed);
+      }).catch(async (error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        const failedAt = this.now();
+        const failedEvent = OraEventEnvelopeSchema.parse({
+          id: `${snapshot.runId}:evt-${liveSnapshot.events.length}`,
+          runId: snapshot.runId,
+          seq: liveSnapshot.events.length,
+          type: "run.failed",
+          createdAt: failedAt,
+          pattern: snapshot.config.pattern,
+          payload: { status: "failed", error: detail },
+        });
+        liveSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
+          ...liveSnapshot,
+          status: "failed",
+          error: detail,
+          events: [...liveSnapshot.events, failedEvent],
+          updatedAt: failedAt,
+        }));
+        await this.persistRunWithGeneratedTitle(liveSnapshot);
+        publishStream([failedEvent], liveSnapshot);
+      });
+      return this.toRunHandle(liveSnapshot);
+    }
+
+    const approvedActions = approvedActionIds
+      .map((actionId) => snapshot.actions.find((action) => action.id === actionId))
+      .filter((action): action is NonNullable<typeof action> => action !== undefined)
+      .map((action) => ({
+        type: action.type,
+        riskLevel: action.riskLevel,
+        input: action.input,
+        agentId: action.agentId,
+      }));
+    const nextClarifications = Object.keys(clarificationPatch).length > 0
+      ? {
+          ...(
+            snapshot.input.context?.clarifications
+            && typeof snapshot.input.context.clarifications === "object"
+            && snapshot.input.context.clarifications !== null
+              ? snapshot.input.context.clarifications
+              : {}
+          ),
+          ...clarificationPatch,
+        }
+      : snapshot.input.context?.clarifications;
+    const resumedInput = UserTaskInputSchema.parse({
+      ...snapshot.input,
+      context: {
+        ...snapshot.input.context,
+        ...(nextClarifications ? { clarifications: nextClarifications } : {}),
+      },
+    });
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const baseSeq = snapshot.events.length;
+    const rebaseEvent = (event: OraEventEnvelope) => OraEventEnvelopeSchema.parse({
+      ...event,
+      id: `${snapshot.runId}:evt-${baseSeq + event.seq}`,
+      seq: baseSeq + event.seq,
+    });
+    const applyLiveEvent = (event: OraEventEnvelope) => {
+      const rebasedEvent = rebaseEvent(event);
+      const status = rebasedEvent.type === "run.done"
+        ? "succeeded"
+        : rebasedEvent.type === "run.failed"
+          ? "failed"
+          : rebasedEvent.type === "run.cancelled"
+            ? "cancelled"
+            : rebasedEvent.type === "run.interrupted"
+              ? "interrupted"
+              : liveSnapshot.status;
+      liveSnapshot = StateSnapshotSchema.parse({
+        ...liveSnapshot,
+        status,
+        events: [...liveSnapshot.events, rebasedEvent],
+        updatedAt: rebasedEvent.createdAt,
+      });
+      this.cacheRun(liveSnapshot, rebasedEvent.seq % 8 === 0 || rebasedEvent.type.startsWith("run."), {
+        deferInitialTitle: true,
+      });
+      publishStream([rebasedEvent]);
+    };
+
+    void withLangfuseRunTrace(
+      { runId: snapshot.runId, input: resumedInput, config: snapshot.config },
+      async () => {
+        const { snapshot: nextSnapshot } = await executeRuntimeKernel(snapshot.runId, resumedInput, snapshot.config, {
+          clock: this.clock,
+          modeSpec,
+          definition,
+          skillRegistry: this.skillRegistry,
+          customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
+          customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
+          customAgentContexts: this.customAgentContextsForMode(modeSpec),
+          conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+          resumeContext: {
+            clarifications: clarificationPatch,
+            approvedActionIds,
+            approvedActions,
+          },
+          onEvent: applyLiveEvent,
+        });
+        const finalSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
+          ...nextSnapshot,
+          sessionId,
+          turnIndex: snapshot.turnIndex,
+        }));
+        await this.persistRunWithGeneratedTitle(finalSnapshot);
+        publishStream([], finalSnapshot);
+      },
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const failedAt = this.now();
+      const failedEvent = OraEventEnvelopeSchema.parse({
+        id: `${snapshot.runId}:evt-${liveSnapshot.events.length}`,
+        runId: snapshot.runId,
+        seq: liveSnapshot.events.length,
+        type: "run.failed",
+        createdAt: failedAt,
+        pattern: snapshot.config.pattern,
+        payload: { status: "failed", error: detail },
+      });
+      liveSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
+        ...liveSnapshot,
+        status: "failed",
+        error: detail,
+        events: [...liveSnapshot.events, failedEvent],
+        updatedAt: failedAt,
+      }));
+      await this.persistRunWithGeneratedTitle(liveSnapshot);
+      publishStream([failedEvent], liveSnapshot);
+    });
+
+    return this.toRunHandle(liveSnapshot);
+  }
+
   async startRunWithKernel(
     params: unknown,
     forkedFrom?: { runId: string; checkpointId: string; eventSeq: number }
@@ -1860,6 +2327,15 @@ export class LocalRunStore {
         input: action.input,
         agentId: action.agentId,
       }));
+    const completedApprovedFileWrite = await this.completeApprovedFileWriteResume(
+      snapshot,
+      approvedActionIds,
+      { reason: parsed.reason, patch: parsed.patch },
+    );
+    if (completedApprovedFileWrite) {
+      await this.persistRunWithGeneratedTitle(completedApprovedFileWrite);
+      return completedApprovedFileWrite;
+    }
     const hasKernelResumeWork = snapshot.modeSpec !== undefined
       && (snapshot.pendingClarifications.length > 0 || snapshot.actions.some((action) => action.status === "approval_required"));
 
@@ -4691,6 +5167,32 @@ export function defaultRuntimeStoreDir(): string {
 
 function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
   return modelRef === "local/smoke-model" ? undefined : modelRef;
+}
+
+function compareProjectDirectoryEntries(left: fs.Dirent, right: fs.Dirent): number {
+  return compareProjectPathNames(left.name, right.name);
+}
+
+function compareProjectPathNames(left: string, right: string): number {
+  const leftParts = left.split(path.sep).join("/").split("/");
+  const rightParts = right.split(path.sep).join("/").split("/");
+  const length = Math.min(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? "";
+    const rightPart = rightParts[index] ?? "";
+    const leftHidden = leftPart.startsWith(".");
+    const rightHidden = rightPart.startsWith(".");
+    if (leftHidden !== rightHidden) {
+      return leftHidden ? 1 : -1;
+    }
+    const nameOrder = leftPart.localeCompare(rightPart);
+    if (nameOrder !== 0) {
+      return nameOrder;
+    }
+  }
+
+  return leftParts.length - rightParts.length;
 }
 
 export function defaultEvaluationStoreDir(runtimeDataDir: string): string {

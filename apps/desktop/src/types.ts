@@ -232,6 +232,7 @@ export interface AssistantTurnAttachment {
   turnIndex: number;
   status: RunStatus;
   pattern?: CoordinationPattern;
+  liveProgressText?: string;
   processSteps: TurnProcessStep[];
   agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];

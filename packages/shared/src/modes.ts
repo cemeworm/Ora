@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
-import { withDefaultWebToolIds } from "./capabilities.js";
+import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
 import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
@@ -252,31 +252,31 @@ export type ModeValidateParams = z.infer<typeof ModeValidateParamsSchema>;
 export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudget> = {
   generator_verifier: {
     maxTokens: 12000,
-    maxToolCalls: 8,
+    maxToolCalls: 64,
     maxRuntimeMs: 180000,
     maxCostUsd: 2
   },
   orchestrator_subagent: {
     maxTokens: 18000,
-    maxToolCalls: 16,
+    maxToolCalls: 64,
     maxRuntimeMs: 300000,
     maxCostUsd: 3
   },
   agent_teams: {
     maxTokens: 24000,
-    maxToolCalls: 24,
+    maxToolCalls: 64,
     maxRuntimeMs: 600000,
     maxCostUsd: 5
   },
   message_bus: {
     maxTokens: 20000,
-    maxToolCalls: 18,
+    maxToolCalls: 64,
     maxRuntimeMs: 360000,
     maxCostUsd: 4
   },
   shared_state: {
     maxTokens: 22000,
-    maxToolCalls: 20,
+    maxToolCalls: 64,
     maxRuntimeMs: 420000,
     maxCostUsd: 4
   }
@@ -284,7 +284,7 @@ export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudge
 
 const SINGLE_AGENT_RESOURCE_BUDGET: ResourceBudget = {
   ...DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
-  maxToolCalls: 32
+  maxToolCalls: 64
 };
 
 const MODE_FAMILY_RULES: Record<
@@ -1448,7 +1448,7 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
       supportsEventRouting: definition.supportsEventRouting,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: withDefaultWebToolIds(),
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily(pattern),
     editorConstraints: {
@@ -1553,7 +1553,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: withDefaultWebToolIds(["model.handoff"]),
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
     editorConstraints: {
@@ -1628,7 +1628,7 @@ function createSingleAgentModeSpec(): ModeSpec {
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
       skillIds: [],
-      toolIds: withDefaultWebToolIds(),
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
     editorConstraints: {
@@ -1765,18 +1765,6 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
 
 function createOraSelfBuilderModeSpec(): ModeSpec {
   const now = 0;
-  const packageToolIds = [
-    "file.read",
-    "file.grep",
-    "file.patch",
-    "shell.execute",
-    "package.list",
-    "package.buildCandidate",
-    "package.verify",
-    "package.promote",
-    "package.switch",
-    "package.rollback",
-  ];
   return autoLayoutModeSpec(ModeSpecSchema.parse({
     id: ORA_SELF_BUILDER_MODE_ID,
     family: "agent_teams",
@@ -1846,7 +1834,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
       skillIds: ["long-task-protocol"],
-      toolIds: withDefaultWebToolIds(packageToolIds),
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
     runtimeAtoms: defaultRuntimeAtomsForFamily("agent_teams"),
     editorConstraints: {
@@ -1860,7 +1848,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
     },
     defaultBudget: {
       ...DEFAULT_RESOURCE_BUDGETS.agent_teams,
-      maxToolCalls: 48,
+      maxToolCalls: 64,
       maxRuntimeMs: 900000,
     },
     completionPolicy: completionPolicyForPreset("persistent"),

@@ -3,6 +3,8 @@ import type { RuntimeToolCall } from "./runtime-tool-executor.js";
 import { stableKeyForRuntimeTool, type RuntimeToolAttemptDecision } from "./runtime-tool-loop.js";
 
 export const RUNTIME_TOOL_LOOP_SAFETY_LIMIT = 64;
+export const DEFAULT_MAX_TOOL_CALLS = 64;
+export const TOOL_TYPE_HARD_LIMIT = 64;
 export const FORCED_FINAL_FALLBACK_TEXT = "I need to stop using tools here. Based on the available context, I cannot complete more tool-backed work in this run.";
 
 type RuntimeCompletionEmit = (
@@ -39,11 +41,10 @@ export class RuntimeCompletionController {
     private readonly emit: RuntimeCompletionEmit,
   ) {
     this.policy = config.completionPolicy ?? modeSpec.completionPolicy;
-    this.runToolBudget = config.budget?.maxToolCalls ?? Number.MAX_SAFE_INTEGER;
+    this.runToolBudget = config.budget?.maxToolCalls ?? modeSpec.defaultBudget.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
     this.repeatedToolLimit = Math.max(1, this.policy.maxRepeatedToolCalls);
-    const finiteRunToolBudget = Number.isFinite(this.runToolBudget) ? this.runToolBudget : 16;
-    this.toolTypeHardLimit = Math.max(4, Math.ceil(finiteRunToolBudget * 0.75));
-    this.toolTypeWarnLimit = Math.max(3, Math.floor(this.toolTypeHardLimit / 2));
+    this.toolTypeHardLimit = TOOL_TYPE_HARD_LIMIT;
+    this.toolTypeWarnLimit = Math.floor(this.toolTypeHardLimit / 2);
   }
 
   get completionPolicy(): ModeSpec["completionPolicy"] {

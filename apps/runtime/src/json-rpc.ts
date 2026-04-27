@@ -210,6 +210,8 @@ export function createRuntimeMethodHandler(
           );
         }
         return store.resumeRun(request.params);
+      case "runs.resumeStreaming":
+        return store.resumeStreamingRun(request.params, { onStream: options.onRunStream });
       case "runs.cancel":
         if (sessionManager.isEnabled()) {
           return withManagedSnapshot(

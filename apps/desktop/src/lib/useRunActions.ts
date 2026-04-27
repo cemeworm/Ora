@@ -400,11 +400,12 @@ export function useRunActions() {
     });
     await waitForPendingRunPaint();
     try {
-      const snapshot = await runtimeClient.resumeRun(
+      const handle = await runtimeClient.resumeStreamingRun(
         state.selectedTurnRunId,
         USER_RESUMED_MESSAGE,
         { approvedActionIds },
       );
+      const snapshot = await runtimeClient.getRunState(handle.runId);
       await refreshCurrentSession(snapshot, `Approve completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Approve failed." });

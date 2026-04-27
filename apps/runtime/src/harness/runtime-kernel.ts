@@ -73,7 +73,7 @@ import {
 import {
   checkpointLabelForStatus,
   normalizeProgressNarration,
-  summarizeProgressPayload,
+  summarizeNarratorProgressPayload,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
 import { RuntimeToolCallLedger } from "./runtime-tool-ledger.js";
@@ -109,6 +109,39 @@ export interface RuntimeKernelOptions {
   };
   streamProvider?: boolean;
   onEvent?: (event: OraEventEnvelope) => void;
+}
+
+function countStatuses(statuses: Array<string | undefined>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const status of statuses) {
+    if (!status) {
+      continue;
+    }
+    counts[status] = (counts[status] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function narratorEventKind(eventType: string): string {
+  if (eventType.startsWith("tool.")) {
+    return "tool_activity";
+  }
+  if (eventType.startsWith("approval.")) {
+    return "approval";
+  }
+  if (eventType.startsWith("clarification.")) {
+    return "clarification";
+  }
+  if (eventType.startsWith("task.")) {
+    return "work_progress";
+  }
+  if (eventType.startsWith("recovery.")) {
+    return "recovery";
+  }
+  if (eventType.startsWith("run.")) {
+    return "run_status";
+  }
+  return "activity";
 }
 
 const TOOL_REPAIR_CONTENT =
@@ -458,18 +491,16 @@ export async function executeRuntimeKernel(
     const basedOnSeq = events.at(-1)?.seq ?? -1;
     try {
       const recentEvents = events.slice(-8).map((event) => ({
-        seq: event.seq,
-        type: event.type,
-        agentId: event.agentId,
-        nodeId: event.nodeId,
-        payload: summarizeProgressPayload(event.payload),
-      }));
+        kind: narratorEventKind(event.type),
+        payload: summarizeNarratorProgressPayload(event.type, event.payload),
+      })).filter((event) => event.payload !== undefined);
       const response = await invokeRunProvider(config, {
         system: [
           "You write concise live progress updates for an assistant run.",
           "Match the user's language. If the user wrote in Chinese, write the progress update in Chinese.",
           "Describe only what has happened, what is being worked on, and the likely next step.",
-          "Do not claim the final answer is known. Do not output tool JSON. Do not mention internal event names or sequence numbers.",
+          "Do not claim the final answer is known. Do not output tool JSON. Do not mention internal event names, mode names, stage names, routing, subscribers, or sequence numbers.",
+          "Prefer user-facing work verbs such as reading, searching, comparing, drafting, checking, and waiting for approval.",
           "Return one natural sentence under 64 words.",
         ].join("\n"),
         messages: [
@@ -479,22 +510,9 @@ export async function executeRuntimeKernel(
               userPrompt: input.prompt,
               languageInstruction:
                 "Use the same language as userPrompt for the progress update.",
-              modeId: modeSpec.id,
-              pattern: config.pattern,
-              trigger: params.trigger,
-              title: params.title,
-              detail: params.detail,
-              activeAgents: [...activeAgents],
-              plan: planService
-                .list()
-                .map((item) => ({
-                  title: item.title,
-                  status: item.status,
-                  ownerAgentId: item.ownerAgentId,
-                })),
-              todos: todoService
-                .list()
-                .map((item) => ({ label: item.label, status: item.status })),
+              activeAgentCount: activeAgents.size,
+              planStatusCounts: countStatuses(planService.list().map((item) => item.status)),
+              todoStatusCounts: countStatuses(todoService.list().map((item) => item.status)),
               recentEvents,
             }),
           },
@@ -2248,7 +2266,6 @@ export async function executeRuntimeKernel(
         nodeId: params.nodeId,
         nodeLabel: params.nodeLabel,
         title: params.title,
-        summary: `Delegated ${params.title} to ${params.agentId}.`,
       },
       { agentId: params.agentId, nodeId: params.nodeId },
     );
@@ -2260,7 +2277,6 @@ export async function executeRuntimeKernel(
         nodeLabel: params.nodeLabel,
         title: params.title,
         phase: "running",
-        summary: `Delegated task ${params.title} is running.`,
       },
       { agentId: params.agentId, nodeId: params.nodeId },
     );
@@ -2279,7 +2295,6 @@ export async function executeRuntimeKernel(
           nodeId: params.nodeId,
           nodeLabel: params.nodeLabel,
           title: params.title,
-          summary: `Delegated task ${params.title} completed.`,
         },
         { agentId: params.agentId, nodeId: params.nodeId },
       );
@@ -2300,7 +2315,6 @@ export async function executeRuntimeKernel(
           nodeLabel: params.nodeLabel,
           title: params.title,
           error: detail,
-          summary: `Delegated task ${params.title} failed.`,
         },
         { agentId: params.agentId, nodeId: params.nodeId },
       );

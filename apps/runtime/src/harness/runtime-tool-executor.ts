@@ -115,6 +115,7 @@ export function extractRuntimeToolCallFromText(text: string, toolIds: readonly s
   const candidates = [
     trimmed,
     ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi), (match) => match[1]?.trim() ?? ""),
+    ...Array.from(trimmed.matchAll(/<tool_call(?:\s[^>]*)?>([\s\S]*?)<\/tool_call>/gi), (match) => match[1]?.trim() ?? ""),
   ].filter(Boolean);
 
   for (const candidate of candidates) {

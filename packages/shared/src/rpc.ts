@@ -64,6 +64,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "runs.stream",
   "runs.interrupt",
   "runs.resume",
+  "runs.resumeStreaming",
   "runs.cancel",
   "runs.state",
   "runs.trail",

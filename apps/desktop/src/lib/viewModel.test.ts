@@ -190,6 +190,112 @@ describe("desktop session view model", () => {
     expect(viewModel.actions[0]?.consequence).not.toContain("operator");
   });
 
+  it("does not show stored completion text while approval is pending", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-approval-transcript",
+      sessionId: "session-approval-transcript",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "更新项目文档", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-approval-transcript-test",
+        skillIds: [],
+        toolIds: ["file.write"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [{
+        id: "run-approval-transcript:action:solo_agent-tool-1",
+        runId: "run-approval-transcript",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: { path: "10-Wiki/项目/西芒杜项目.md" },
+        approvalRequest: {
+          title: "需要你确认写入文件",
+          summary: "我已经准备好把调研结果写入项目文档，批准后会继续执行本地写入。",
+          whatWillChange: "会更新 10-Wiki/项目/西芒杜项目.md。",
+          whyNeeded: "这是完成文档更新所需的本地文件写入步骤。",
+          riskNote: "写入文件会改变你的项目内容。",
+          confirmLabel: "批准并继续",
+        },
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-approval-transcript:evt-0",
+        runId: "run-approval-transcript",
+        seq: 0,
+        type: "task.progress",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          kind: "chat_progress",
+          source: "progress_narrator",
+          trigger: "approval.required",
+          summary: "我已经完成调研整理，正在等待你确认后再写入项目文档。",
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: ["run-approval-transcript:action:solo_agent-tool-1"],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [
+        {
+          id: "run-approval-transcript:user",
+          sessionId: "session-approval-transcript",
+          runId: "run-approval-transcript",
+          turnIndex: 1,
+          role: "user",
+          content: "更新项目文档",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt,
+        },
+        {
+          id: "run-approval-transcript:assistant",
+          sessionId: "session-approval-transcript",
+          runId: "run-approval-transcript",
+          turnIndex: 1,
+          role: "assistant",
+          content: "文档已成功更新！以下是我完成的调研与更新总结：",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: createdAt + 1_000,
+        },
+      ],
+      { "run-approval-transcript": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("我已经完成调研整理，正在等待你确认后再写入项目文档。");
+    expect(assistant?.content).not.toContain("文档已成功更新");
+  });
+
   it("adapts structured agent messages into assistant turn attachments", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
@@ -300,7 +406,7 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[0]?.content.endsWith("...")).toBe(false);
   });
 
-  it("shows progress narration as assistant process steps", () => {
+  it("shows progress narration as assistant content without process steps", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-deerflow-progress",
@@ -385,13 +491,11 @@ describe("desktop session view model", () => {
     const assistant = messages.find((message) => message.role === "assistant");
 
     expect(assistant?.content).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
-    expect(assistant?.turn?.processSteps).toHaveLength(1);
-    expect(assistant?.turn?.processSteps[0]?.label).toBe("进度");
-    expect(assistant?.turn?.processSteps[0]?.detail).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
-    expect(assistant?.turn?.processSteps[0]?.status).toBe("active");
+    expect(assistant?.turn?.liveProgressText).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
+    expect(assistant?.turn?.processSteps).toEqual([]);
   });
 
-  it("marks historical progress narration complete after the run finishes", () => {
+  it("keeps historical progress narration out of process steps after the run finishes", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-deerflow-progress-done",
@@ -469,7 +573,7 @@ describe("desktop session view model", () => {
           type: "run.done",
           createdAt: createdAt + 6_000,
           pattern: "orchestrator_subagent",
-          payload: { summary: "Run completed and checkpoint metadata is available." },
+          payload: { summary: "Runtime default completion summary." },
         },
       ],
       artifacts: [],
@@ -501,11 +605,131 @@ describe("desktop session view model", () => {
     const progressSteps = assistant?.turn?.processSteps.filter((step) => step.eventType === "task.progress") ?? [];
 
     expect(assistant?.turn?.status).toBe("done");
-    expect(progressSteps.map((step) => step.status)).toEqual([
-      "complete",
+    expect(progressSteps).toEqual([]);
+    expect(assistant?.turn?.processSteps.some((step) => step.status === "active")).toBe(false);
+    expect(assistant?.turn?.processSteps).toEqual([]);
+  });
+
+  it("marks superseded progress narration complete while the run is still active", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-deerflow-progress-running",
+      sessionId: "session-deerflow-progress-running",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "分析西芒杜项目现况。", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { progressNarration: true },
+        deterministicSeed: "view-model-deerflow-progress-running-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-deerflow-progress-running:evt-0",
+          runId: "run-deerflow-progress-running",
+          seq: 0,
+          type: "run.started",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { input: { prompt: "分析西芒杜项目现况。" } },
+        },
+        {
+          id: "run-deerflow-progress-running:evt-1",
+          runId: "run-deerflow-progress-running",
+          seq: 1,
+          type: "task.progress",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "task.progress",
+            summary: "正在分析项目近况，下一步将分配调研任务。",
+          },
+        },
+        {
+          id: "run-deerflow-progress-running:evt-2",
+          runId: "run-deerflow-progress-running",
+          seq: 2,
+          type: "tool.called",
+          createdAt: createdAt + 4_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            args: { path: "10-Wiki/项目/西芒杜项目.md" },
+            result: { bytes: 1420 },
+          },
+        },
+        {
+          id: "run-deerflow-progress-running:evt-3",
+          runId: "run-deerflow-progress-running",
+          seq: 3,
+          type: "task.progress",
+          createdAt: createdAt + 6_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "task.progress",
+            summary: "团队已读取项目文档，正在规划后续调研任务。",
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 6_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-deerflow-progress-running:user",
+        sessionId: "session-deerflow-progress-running",
+        runId: "run-deerflow-progress-running",
+        turnIndex: 1,
+        role: "user",
+        content: "分析西芒杜项目现况。",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-deerflow-progress-running": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const processSteps = assistant?.turn?.processSteps ?? [];
+
+    expect(assistant?.content).toBe("团队已读取项目文档，正在规划后续调研任务。");
+    expect(assistant?.turn?.liveProgressText).toBe("团队已读取项目文档，正在规划后续调研任务。");
+    expect(processSteps.map((step) => step.status)).toEqual([
       "complete",
     ]);
-    expect(assistant?.turn?.processSteps.some((step) => step.status === "active")).toBe(false);
-    expect(assistant?.turn?.processSteps.at(-1)?.detail).toBe("运行已完成。");
+    expect(processSteps).toHaveLength(1);
+    expect(processSteps[0]?.eventType).toBe("tool.called");
+    expect(processSteps[0]?.label).toBe("读取文件");
   });
 });
