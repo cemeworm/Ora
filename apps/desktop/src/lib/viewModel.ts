@@ -1528,7 +1528,7 @@ function processStepLabel(event: OraEventEnvelope): string {
     return "Stopped tool use";
   }
   if (event.type === "task.progress" && isChatProgressEvent(event)) {
-    return "Progress";
+    return "进度";
   }
   if (event.type === "approval.required") {
     return "Waiting for approval";
@@ -1546,6 +1546,12 @@ function processStepLabel(event: OraEventEnvelope): string {
 }
 
 function processStepDetail(event: OraEventEnvelope): string {
+  if (event.type === "run.done") {
+    return "运行已完成。";
+  }
+  if (event.type === "task.progress" && !isChatProgressEvent(event)) {
+    return "任务仍在运行。";
+  }
   const detail = eventText(event);
   if (
     (event.type === "tool.called" || event.type === "tool.repaired") &&

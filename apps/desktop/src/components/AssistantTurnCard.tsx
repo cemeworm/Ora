@@ -32,16 +32,30 @@ interface AssistantTurnCardProps {
 }
 
 export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
-  const [processOpen, setProcessOpen] = useState(false);
+  const processSteps = turn?.processSteps ?? [];
+  const agentMessages = turn?.agentMessages ?? [];
+  const processNeedsAttention =
+    turn?.status === "failed" ||
+    turn?.status === "approval_required" ||
+    processSteps.some((step) => step.status === "blocked");
+  const processShouldOpen =
+    isPlaceholder ||
+    turn?.status === "running" ||
+    processSteps.some((step) => step.status === "active") ||
+    processNeedsAttention;
+  const [processOpen, setProcessOpen] = useState(processShouldOpen);
   const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
-  const processSteps = turn?.processSteps ?? [];
-  const agentMessages = turn?.agentMessages ?? [];
   const hasProcessSteps = processSteps.length > 0;
+  const hasVisibleAgentMessages = visibleAgentMessages(agentMessages, turn?.status).length > 0;
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
+
+  useEffect(() => {
+    setProcessOpen(processShouldOpen);
+  }, [processShouldOpen]);
 
   async function handleSubmitFeedback() {
     if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
@@ -76,7 +90,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             <CollapsibleCard
               open={processOpen}
               onToggle={() => setProcessOpen((current) => !current)}
-              title={`Steps ${processSteps.length}`}
+              title="运行进度"
               icon={<Clock3 size={14} />}
               summary={processSummary(processSteps, turn?.status, isPlaceholder)}
             >
@@ -86,13 +100,13 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             </CollapsibleCard>
           ) : null}
 
-          {agentMessages.length > 0 ? (
-            <AgentConversationTimeline messages={agentMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
-          ) : null}
-
           <MessageContent className="w-full">
             <MarkdownContent content={content} className={cn(isPlaceholder && "text-muted-foreground")} />
           </MessageContent>
+
+          {hasVisibleAgentMessages ? (
+            <AgentConversationTimeline messages={agentMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
+          ) : null}
 
           {turn && turn.artifacts.length > 0 ? (
             <div className="space-y-3">
@@ -179,6 +193,7 @@ function AgentConversationTimeline({
   const conversationActive = isPlaceholder || status === "running" || messages.some((message) => message.status === "running");
   const [open, setOpen] = useState(conversationActive);
   const byId = new Map(messages.map((message) => [message.id, message]));
+  const visibleMessages = visibleAgentMessages(messages, status);
 
   useEffect(() => {
     if (!conversationActive) {
@@ -194,8 +209,8 @@ function AgentConversationTimeline({
         <TaskListHeader>
           <div className="flex min-w-0 items-center gap-2">
             <GitBranch size={14} />
-            <span className="font-medium text-foreground">Agent conversation</span>
-            <span className="truncate text-xs text-muted-foreground">{messages.length} messages</span>
+            <span className="font-medium text-foreground">协作轨迹</span>
+            <span className="truncate text-xs text-muted-foreground">{agentConversationSummary(messages)}</span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
@@ -204,7 +219,7 @@ function AgentConversationTimeline({
       </button>
       {open ? (
         <TaskListBody className="max-h-[min(70vh,42rem)] divide-y divide-border overflow-y-auto overscroll-contain border-l-0 pl-0">
-          {messages.map((message) => (
+          {visibleMessages.map((message) => (
             <AgentConversationItem
               key={message.id}
               message={message}
@@ -274,7 +289,7 @@ function KindPill({ message }: { message: TurnAgentConversationMessage }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
       {icon}
-      {message.kind}
+      {agentMessageDisplayKind(message)}
     </span>
   );
 }
@@ -448,7 +463,7 @@ function TodoStatusIcon({ status }: { status: TurnTodoItem["status"] }) {
   }
 }
 
-function processSummary(steps: TurnProcessStep[], status?: AssistantTurnAttachment["status"], isPlaceholder = false) {
+export function processSummary(steps: TurnProcessStep[], status?: AssistantTurnAttachment["status"], isPlaceholder = false) {
   if ((status === "running" || isPlaceholder) && steps.length > 0) {
     let latestActiveStep: TurnProcessStep | undefined;
     for (let index = steps.length - 1; index >= 0; index -= 1) {
@@ -460,22 +475,79 @@ function processSummary(steps: TurnProcessStep[], status?: AssistantTurnAttachme
     const currentStep = latestActiveStep ?? steps[steps.length - 1];
     const currentAction = currentStep?.detail.trim() || currentStep?.label.trim();
     if (currentAction) {
-      return `Now: ${currentAction}`;
+      return `正在：${currentAction}`;
     }
   }
 
   const active = steps.filter((step) => step.status === "active").length;
   const blocked = steps.filter((step) => step.status === "blocked").length;
   if (active > 0) {
-    return `${active} active`;
+    return `${active} 个进行中`;
   }
   if (blocked > 0) {
-    return `${blocked} blocked`;
+    return `${blocked} 个需处理`;
   }
-  return `${steps.length} recorded`;
+  return `${steps.length} 条记录`;
 }
 
 function todoSummary(todos: TurnTodoItem[]) {
   const done = todos.filter((todo) => todo.status === "done").length;
   return `${done}/${todos.length} done`;
+}
+
+export function agentConversationSummary(messages: TurnAgentConversationMessage[]): string {
+  const agentLabels = new Set<string>();
+  for (const message of messages) {
+    agentLabels.add(message.fromAgentLabel);
+    for (const label of message.toAgentLabels) {
+      agentLabels.add(label);
+    }
+  }
+  const handoffCount = highValueAgentMessages(messages).length || messages.filter((message) => message.content.trim()).length;
+  if (agentLabels.size > 0 && handoffCount > 0) {
+    return `${agentLabels.size} 个 agent，${handoffCount} 次交接`;
+  }
+  if (agentLabels.size > 0) {
+    return `${agentLabels.size} 个 agent`;
+  }
+  return `${messages.length} 条记录`;
+}
+
+export function visibleAgentMessages(
+  messages: TurnAgentConversationMessage[],
+  status?: AssistantTurnAttachment["status"],
+): TurnAgentConversationMessage[] {
+  const highValueMessages = highValueAgentMessages(messages);
+  const displayMessages = highValueMessages.length > 0
+    ? highValueMessages
+    : messages.filter((message) => message.content.trim() && message.kind !== "publish" && message.kind !== "status");
+
+  if (status === "running") {
+    return displayMessages.slice(-2);
+  }
+  return displayMessages;
+}
+
+export function agentMessageDisplayKind(message: TurnAgentConversationMessage): string {
+  switch (message.kind) {
+    case "handoff":
+      return "交接";
+    case "reply":
+      return "回复";
+    case "route":
+      return "路由";
+    case "mention":
+      return "提及";
+    case "publish":
+      return "发布";
+    case "status":
+      return "状态";
+  }
+}
+
+function highValueAgentMessages(messages: TurnAgentConversationMessage[]): TurnAgentConversationMessage[] {
+  return messages.filter((message) =>
+    message.content.trim().length > 0 &&
+    (message.kind === "handoff" || message.kind === "reply" || message.kind === "route")
+  );
 }

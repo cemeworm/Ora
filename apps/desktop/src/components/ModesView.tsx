@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, Copy, Database, FileText, GitBranchPlus, Globe, ListTree, PencilLine, Plug, Plus, RefreshCcw, Save, Search, Sparkles, Terminal, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, Database, FileText, GitBranchPlus, Globe, Layers3, ListTree, PencilLine, Plug, Plus, RefreshCcw, Route, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Terminal, Trash2, Users } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
@@ -52,6 +52,7 @@ import { Checkbox } from "./ui/checkbox";
 import { Select } from "./ui/select";
 
 type EditorMode = "gallery" | "create" | "edit";
+type ModeInspectorSection = "overview" | "agents" | "capabilities" | "safety" | "advanced";
 
 const NODE_TYPES = {
   modeNode: ModeCanvasNode,
@@ -73,6 +74,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   const [builderInput, setBuilderInput] = useState("");
   const [builderMessages, setBuilderMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const [builderBundle, setBuilderBundle] = useState<OraModeStudioDraftBundle | undefined>();
+  const [previewNodeId, setPreviewNodeId] = useState<string | undefined>();
 
   useEffect(() => {
     setModes(state.modes);
@@ -139,8 +141,21 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
     if (selectedNodeId && canvasSelectionExists(draft, atoms, selectedNodeId)) {
       return;
     }
-    setSelectedNodeId(draft.nodes[0]?.id);
+    if (selectedNodeId) {
+      setSelectedNodeId(draft.nodes[0]?.id);
+    }
   }, [atoms, draft, selectedNodeId]);
+
+  useEffect(() => {
+    if (!previewMode) {
+      setPreviewNodeId(undefined);
+      return;
+    }
+    if (previewNodeId && previewMode.nodes.some((node) => node.id === previewNodeId)) {
+      return;
+    }
+    setPreviewNodeId(undefined);
+  }, [previewMode, previewNodeId]);
 
   async function refreshModes() {
     setBusy("refresh");
@@ -711,15 +726,22 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                 </div>
               </div>
 
+              <ModeRunStoryPanel
+                mode={previewMode}
+                atoms={atoms}
+                executionPreview={getExecutionPreview(previewMode)}
+                language={state.language}
+              />
+
               <section className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
                 <CanvasPanel
                   mode={previewMode}
                   atoms={atoms}
                   language={state.language}
                   readOnly
-                  selectedNodeId={undefined}
-                  onSelectNode={() => undefined}
-                  onClearSelection={() => undefined}
+                  selectedNodeId={previewNodeId}
+                  onSelectNode={setPreviewNodeId}
+                  onClearSelection={() => setPreviewNodeId(undefined)}
                 />
                 <ModeOverviewInspector
                   mode={previewMode}
@@ -727,6 +749,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                   definition={selectedDefinition}
                   executionPreview={getExecutionPreview(previewMode)}
                   language={state.language}
+                  selectedNode={previewMode.nodes.find((node) => node.id === previewNodeId)}
                 />
               </section>
             </section>
@@ -906,7 +929,7 @@ function CanvasPanel({
             <h4 className="mt-1 text-base font-semibold">{displayText(language, mode.label)}</h4>
           </div>
           <div className="rounded-full bg-bench-100 px-3 py-1 text-xs font-semibold text-bench-800">
-            {mode.nodes.filter((node) => node.enabled).length} enabled nodes
+            {mode.nodes.filter((node) => node.enabled).length} {translateCopy(language, "enabled nodes")}
           </div>
         </div>
       </div>
@@ -960,16 +983,38 @@ function ModeOverviewInspector({
   definition,
   executionPreview,
   language,
+  selectedNode,
 }: {
   mode: OraModeSpec;
   atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
   definition: ReturnType<typeof getPatternDefinition> | undefined;
   executionPreview: ReturnType<typeof getExecutionPreview>;
   language: AppLanguage;
+  selectedNode?: OraModeSpec["nodes"][number];
 }) {
+  const [activeSection, setActiveSection] = useState<ModeInspectorSection>("overview");
+
   return (
-    <div className="space-y-5">
-      <ModeSummaryCards mode={mode} atoms={atoms} definition={definition} executionPreview={executionPreview} language={language} />
+    <div className="space-y-4">
+      <InspectorSectionTabs activeSection={activeSection} onChange={setActiveSection} language={language} />
+      {activeSection === "overview" && (
+        <>
+          {selectedNode ? (
+            <StageExplanationPanel mode={mode} node={selectedNode} atoms={atoms} language={language} />
+          ) : (
+            <ModeContractPanel mode={mode} atoms={atoms} executionPreview={executionPreview} language={language} />
+          )}
+          {definition && (
+            <ModePurposePanel mode={mode} definition={definition} language={language} />
+          )}
+        </>
+      )}
+      {activeSection === "agents" && <ReadOnlyAgentsPanel mode={mode} language={language} />}
+      {activeSection === "capabilities" && <ReadOnlyCapabilitiesPanel mode={mode} atoms={atoms} language={language} />}
+      {activeSection === "safety" && <ReadOnlySafetyPanel mode={mode} executionPreview={executionPreview} language={language} />}
+      {activeSection === "advanced" && (
+        <ModeSummaryCards mode={mode} atoms={atoms} definition={definition} executionPreview={executionPreview} language={language} />
+      )}
       {mode.systemPreset && (
         <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
           <h4 className="text-sm font-semibold">Preset status</h4>
@@ -1005,106 +1050,70 @@ function ModeInspector({
   onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
   onDeleteMode?: () => void;
 }) {
+  const [activeSection, setActiveSection] = useState<ModeInspectorSection>("overview");
+
   return (
     <>
-      <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-        <h4 className="text-sm font-semibold">Mode settings</h4>
-        <div className="mt-4 grid gap-3">
-          <label className="grid gap-1 text-sm">
-            <span className="text-bench-700">Mode id</span>
-            <input
-              value={draft.id}
-              disabled={Boolean(editingModeId)}
-              onChange={(event) => onPatchDraft((current) => ({ ...current, id: event.target.value }))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none disabled:bg-bench-50"
-            />
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-bench-700">Label</span>
-            <input
-              value={draft.label}
-              onChange={(event) => onPatchDraft((current) => ({ ...current, label: event.target.value }))}
-              className="h-10 rounded-md border border-bench-200 px-3 outline-none"
-            />
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-bench-700">Summary</span>
-            <textarea
-              value={draft.summary}
-              onChange={(event) => onPatchDraft((current) => ({ ...current, summary: event.target.value }))}
-              rows={3}
-              className="rounded-md border border-bench-200 px-3 py-2 outline-none"
-            />
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-bench-700">Family</span>
-            <Select
-              aria-label="Mode family"
-              value={draft.family}
-              onChange={(event) => onPatchDraft((current) => resetModeDraftFamily(current, event.target.value as CoordinationPattern))}
-            >
-              {CoordinationPatternSchema.options.map((family) => (
-                <option key={family} value={family}>{family}</option>
-              ))}
-            </Select>
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-bench-700">Stop policy</span>
-            <Select
-              aria-label="Stop policy"
-              value={draft.stopPolicy.type}
-              onChange={(event) => onPatchDraft((current) => ({
-                ...current,
-                stopPolicy: { ...current.stopPolicy, type: event.target.value as OraModeSpec["stopPolicy"]["type"] },
-              }))}
-            >
-              {draft.editorConstraints.allowedNodeTemplates.length > 0 && getPatternDefinition(draft.family) && (
-                getModeStopPolicies(draft.family).map((type) => (
-                  <option key={type} value={type}>{type}</option>
-                ))
-              )}
-            </Select>
-          </label>
-        </div>
-      </div>
+      <InspectorSectionTabs activeSection={activeSection} onChange={setActiveSection} language={language} />
 
-      <ModeAgentRosterPanel
-        draft={draft}
-        customAgents={customAgents}
-        onPatchDraft={onPatchDraft}
-      />
+      {activeSection === "overview" && (
+        <>
+          <ModeContractPanel mode={draft} atoms={atoms} executionPreview={executionPreview} language={language} />
+          <ModeSettingsPanel
+            draft={draft}
+            editingModeId={editingModeId}
+            onPatchDraft={onPatchDraft}
+            language={language}
+          />
+        </>
+      )}
 
-      <ModeCapabilityPanel
-        draft={draft}
-        atoms={atoms}
-        language={language}
-        onPatchDraft={onPatchDraft}
-      />
-
-      {toolRegistry && (
-        <WorkspaceToolsPanel
+      {activeSection === "agents" && (
+        <ModeAgentRosterPanel
           draft={draft}
-          toolRegistry={toolRegistry}
+          customAgents={customAgents}
           onPatchDraft={onPatchDraft}
         />
       )}
 
-      <CompletionPolicyPanel
-        draft={draft}
-        onPatchDraft={onPatchDraft}
-      />
+      {activeSection === "capabilities" && (
+        <>
+          <ModeCapabilityPanel
+            draft={draft}
+            atoms={atoms}
+            language={language}
+            onPatchDraft={onPatchDraft}
+          />
+          {toolRegistry && (
+            <WorkspaceToolsPanel
+              draft={draft}
+              toolRegistry={toolRegistry}
+              onPatchDraft={onPatchDraft}
+            />
+          )}
+          <MemoryPolicyPanel
+            draft={draft}
+            onPatchDraft={onPatchDraft}
+          />
+        </>
+      )}
 
-      <RecoveryPolicyPanel
-        draft={draft}
-        onPatchDraft={onPatchDraft}
-      />
+      {activeSection === "safety" && (
+        <>
+          <CompletionPolicyPanel
+            draft={draft}
+            onPatchDraft={onPatchDraft}
+          />
+          <RecoveryPolicyPanel
+            draft={draft}
+            onPatchDraft={onPatchDraft}
+          />
+        </>
+      )}
 
-      <MemoryPolicyPanel
-        draft={draft}
-        onPatchDraft={onPatchDraft}
-      />
-
-      <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} language={language} />
+      {activeSection === "advanced" && (
+        <ModeSummaryCards mode={draft} atoms={atoms} definition={definition} executionPreview={executionPreview} language={language} />
+      )}
 
       {onDeleteMode && (
         <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-rose-200">
@@ -1118,6 +1127,427 @@ function ModeInspector({
         </div>
       )}
     </>
+  );
+}
+
+function InspectorSectionTabs({
+  activeSection,
+  onChange,
+  language,
+}: {
+  activeSection: ModeInspectorSection;
+  onChange: (section: ModeInspectorSection) => void;
+  language: AppLanguage;
+}) {
+  const sections: Array<{ id: ModeInspectorSection; label: string; icon: typeof Route }> = [
+    { id: "overview", label: "Overview", icon: Route },
+    { id: "agents", label: "Agents", icon: Users },
+    { id: "capabilities", label: "Capabilities", icon: Layers3 },
+    { id: "safety", label: "Safety", icon: ShieldCheck },
+    { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
+  ];
+
+  return (
+    <div className="rounded-2xl bg-white p-2 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="grid grid-cols-5 gap-1">
+        {sections.map((section) => {
+          const Icon = section.icon;
+          const active = activeSection === section.id;
+          return (
+            <button
+              key={section.id}
+              type="button"
+              onClick={() => onChange(section.id)}
+              className={cn(
+                "inline-flex h-10 items-center justify-center rounded-md transition active:scale-95",
+                active ? "bg-bench-900 text-white" : "text-bench-600 hover:bg-bench-100 hover:text-bench-950",
+              )}
+              title={translateCopy(language, section.label)}
+              aria-label={translateCopy(language, section.label)}
+            >
+              <Icon size={15} />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ModeRunStoryPanel({
+  mode,
+  atoms,
+  executionPreview,
+  language,
+}: {
+  mode: OraModeSpec;
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  executionPreview: ReturnType<typeof getExecutionPreview>;
+  language: AppLanguage;
+}) {
+  const steps = buildModeRunStory(mode, atoms, executionPreview, language);
+  const mountedCapabilities = resolveModeAtoms(mode, atoms, "mode").length + resolveModeAtoms(mode, atoms, "node").length;
+
+  return (
+    <section className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">{translateCopy(language, "Run story")}</p>
+          <h3 className="mt-1 text-lg font-semibold">{translateCopy(language, "How this mode runs")}</h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-bench-700">
+            {translateCopy(language, "Read this as the mode's operating path: request, stages, runtime capabilities, and stop condition.")}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-semibold text-bench-800">
+          <span className="rounded-full bg-bench-100 px-3 py-1">{executionPreview.nodes.length} {translateCopy(language, "stages")}</span>
+          <span className="rounded-full bg-bench-100 px-3 py-1">{mode.profiles.length} {translateCopy(language, "agents")}</span>
+          <span className="rounded-full bg-bench-100 px-3 py-1">{mountedCapabilities} {translateCopy(language, "capabilities")}</span>
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3 lg:grid-cols-5">
+        {steps.map((step, index) => (
+          <div
+            key={`${step.title}:${index}`}
+            className={cn(
+              "relative min-h-[11rem] rounded-xl border bg-bench-50/80 p-4",
+              step.riskLevel ? riskSurfaceClassName(step.riskLevel) : "border-bench-200",
+            )}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-bench-900 text-xs font-semibold text-white">
+                {index + 1}
+              </span>
+              <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-bench-700 ring-1 ring-inset ring-bench-200">
+                {step.kind}
+              </span>
+            </div>
+            <h4 className="mt-4 text-sm font-semibold leading-5 text-bench-950">{step.title}</h4>
+            <p className="mt-2 text-xs leading-5 text-bench-700">{step.description}</p>
+            {step.meta.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {step.meta.map((item) => (
+                  <span key={item} className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-bench-700 ring-1 ring-inset ring-bench-200">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ModeContractPanel({
+  mode,
+  atoms,
+  executionPreview,
+  language,
+}: {
+  mode: OraModeSpec;
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  executionPreview: ReturnType<typeof getExecutionPreview> | undefined;
+  language: AppLanguage;
+}) {
+  const enabledTools = mode.capabilityFlags.toolIds.length;
+  const enabledSkills = mode.capabilityFlags.skillIds.length;
+  const activeAtoms = resolveModeAtoms(mode, atoms, "mode");
+  const riskyNodes = mode.nodes.filter((node) => node.enabled && node.riskLevel);
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">{translateCopy(language, "Run contract")}</p>
+      <h4 className="mt-1 text-sm font-semibold">{translateCopy(language, "What the runtime promises")}</h4>
+      <div className="mt-4 grid gap-3">
+        <ContractRow
+          icon={Users}
+          label={translateCopy(language, "Owners")}
+          value={mode.profiles.map((profile) => displayText(language, profile.label)).join(", ") || translateCopy(language, "Runtime default")}
+        />
+        <ContractRow
+          icon={Layers3}
+          label={translateCopy(language, "Capabilities")}
+          value={activeAtoms.map((atom) => displayText(language, atom.label)).join(", ") || translateCopy(language, "none")}
+        />
+        <ContractRow
+          icon={Terminal}
+          label={translateCopy(language, "Tool envelope")}
+          value={`${enabledTools} ${translateCopy(language, "tools")} · ${enabledSkills} ${translateCopy(language, "skills")}`}
+        />
+        <ContractRow
+          icon={ShieldCheck}
+          label={translateCopy(language, "Safety boundary")}
+          value={`${formatEnumLabel(language, mode.capabilityFlags.approvalMode)} · ${riskyNodes.length} ${translateCopy(language, "risky stages")}`}
+        />
+        <ContractRow
+          icon={Check}
+          label={translateCopy(language, "Stops when")}
+          value={describeStopPolicy(language, mode.stopPolicy)}
+        />
+        {executionPreview && executionPreview.disabledNodes.length > 0 && (
+          <ContractRow
+            icon={SlidersHorizontal}
+            label={translateCopy(language, "Disabled stages")}
+            value={executionPreview.disabledNodes.map((node) => displayText(language, node.label)).join(", ")}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContractRow({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof Route;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex gap-3 rounded-lg border border-bench-200 bg-bench-50/80 px-3 py-3">
+      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white text-bench-800 ring-1 ring-inset ring-bench-200">
+        <Icon size={15} />
+      </span>
+      <div className="min-w-0">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-600">{label}</p>
+        <p className="mt-1 text-sm leading-5 text-bench-900">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function ModePurposePanel({
+  mode,
+  definition,
+  language,
+}: {
+  mode: OraModeSpec;
+  definition: ReturnType<typeof getPatternDefinition>;
+  language: AppLanguage;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <h4 className="text-sm font-semibold">{translateCopy(language, "Mode fit")}</h4>
+      <div className="mt-3 grid gap-3 text-sm leading-6 text-bench-700">
+        <p>{translateCopy(language, "Use:")} {displayText(language, mode.recommendedUse ?? definition.recommendedUse)}</p>
+        <p>{translateCopy(language, "Failure:")} {displayText(language, mode.failureMode ?? definition.failureMode)}</p>
+      </div>
+    </div>
+  );
+}
+
+function StageExplanationPanel({
+  mode,
+  node,
+  atoms,
+  language,
+}: {
+  mode: OraModeSpec;
+  node: OraModeSpec["nodes"][number];
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  language: AppLanguage;
+}) {
+  const owner = ownerDisplayName(mode, node, language);
+  const nodeAtoms = resolveNodeAtoms(node, atoms);
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">{translateCopy(language, "Selected stage")}</p>
+      <h4 className="mt-1 text-base font-semibold">{displayText(language, node.label)}</h4>
+      <p className="mt-3 text-sm leading-6 text-bench-700">{nodeStoryDescription(language, mode, node)}</p>
+      <div className="mt-4 grid gap-2 text-sm text-bench-800">
+        <p><span className="font-semibold">{translateCopy(language, "Owner:")}</span> {owner}</p>
+        <p><span className="font-semibold">{translateCopy(language, "Template:")}</span> {formatEnumLabel(language, node.template)}</p>
+        <p><span className="font-semibold">{translateCopy(language, "Attached capabilities:")}</span> {nodeAtoms.map((atom) => displayText(language, atom.label)).join(", ") || translateCopy(language, "none")}</p>
+        <p><span className="font-semibold">{translateCopy(language, "Failure handling:")}</span> {stageFailureSummary(language, mode, node)}</p>
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlyAgentsPanel({
+  mode,
+  language,
+}: {
+  mode: OraModeSpec;
+  language: AppLanguage;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <h4 className="text-sm font-semibold">{translateCopy(language, "Agent roster")}</h4>
+      <div className="mt-4 grid gap-3">
+        {mode.profiles.map((profile) => (
+          <div key={profile.id} className="rounded-lg border border-bench-200 bg-bench-50 px-3 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-semibold text-bench-950">{displayText(language, profile.label)}</p>
+              <span className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] text-bench-700 ring-1 ring-inset ring-bench-200">{profile.id}</span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-bench-700">{displayText(language, profile.role)}</p>
+            {profile.customAgentId && (
+              <p className="mt-2 text-[11px] font-medium text-bench-600">{translateCopy(language, "Bound saved agent:")} {profile.customAgentId}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlyCapabilitiesPanel({
+  mode,
+  atoms,
+  language,
+}: {
+  mode: OraModeSpec;
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  language: AppLanguage;
+}) {
+  const modeAtoms = resolveModeAtoms(mode, atoms, "mode");
+  const nodeAtoms = resolveModeAtoms(mode, atoms, "node");
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <h4 className="text-sm font-semibold">{translateCopy(language, "Runtime capabilities")}</h4>
+      <CapabilityChipGroup title={translateCopy(language, "Mode capabilities")} atoms={modeAtoms} language={language} />
+      <CapabilityChipGroup title={translateCopy(language, "Stage capabilities")} atoms={nodeAtoms} language={language} />
+      <div className="mt-4 rounded-lg border border-bench-200 bg-bench-50 px-3 py-3 text-sm leading-6 text-bench-700">
+        {translateCopy(language, "Mode capabilities mount on the runtime harness. Stage capabilities mount only on their source stage.")}
+      </div>
+    </div>
+  );
+}
+
+function CapabilityChipGroup({
+  title,
+  atoms,
+  language,
+}: {
+  title: string;
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"];
+  language: AppLanguage;
+}) {
+  return (
+    <div className="mt-4">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">{title}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {atoms.length > 0 ? atoms.map((atom) => (
+          <span key={atom.id} className="rounded-full bg-bench-100 px-3 py-1 text-xs font-medium text-bench-800">
+            {displayText(language, atom.label)}
+          </span>
+        )) : (
+          <span className="text-sm text-bench-700">{translateCopy(language, "none")}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlySafetyPanel({
+  mode,
+  executionPreview,
+  language,
+}: {
+  mode: OraModeSpec;
+  executionPreview: ReturnType<typeof getExecutionPreview> | undefined;
+  language: AppLanguage;
+}) {
+  const riskyNodes = mode.nodes.filter((node) => node.enabled && node.riskLevel);
+  const recoveryEnabled = mode.runtimeAtoms.includes("recovery_policy");
+  const memoryEnabled = mode.runtimeAtoms.includes("long_term_memory") && mode.memoryPolicy.enabled;
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <h4 className="text-sm font-semibold">{translateCopy(language, "Safety and completion")}</h4>
+      <div className="mt-4 grid gap-3 text-sm leading-6 text-bench-700">
+        <p>{translateCopy(language, "Approval:")} {formatEnumLabel(language, mode.capabilityFlags.approvalMode)}</p>
+        <p>{translateCopy(language, "Risky stages:")} {riskyNodes.length > 0 ? riskyNodes.map((node) => displayText(language, node.label)).join(", ") : translateCopy(language, "none")}</p>
+        <p>{translateCopy(language, "Recovery:")} {translateCopy(language, recoveryEnabled ? "Enabled" : "Disabled")}</p>
+        <p>{translateCopy(language, "Memory:")} {translateCopy(language, memoryEnabled ? "Enabled" : "Disabled")}</p>
+        <p>{translateCopy(language, "Stop:")} {describeStopPolicy(language, mode.stopPolicy)}</p>
+        {executionPreview && executionPreview.disabledNodes.length > 0 && (
+          <p>{translateCopy(language, "Disabled stages:")} {executionPreview.disabledNodes.map((node) => displayText(language, node.label)).join(", ")}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModeSettingsPanel({
+  draft,
+  editingModeId,
+  language,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  editingModeId?: string;
+  language: AppLanguage;
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <h4 className="text-sm font-semibold">{translateCopy(language, "Mode settings")}</h4>
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-1 text-sm">
+          <span className="text-bench-700">Mode id</span>
+          <input
+            value={draft.id}
+            disabled={Boolean(editingModeId)}
+            onChange={(event) => onPatchDraft((current) => ({ ...current, id: event.target.value }))}
+            className="h-10 rounded-md border border-bench-200 px-3 outline-none disabled:bg-bench-50"
+          />
+        </label>
+        <label className="grid gap-1 text-sm">
+          <span className="text-bench-700">Label</span>
+          <input
+            value={draft.label}
+            onChange={(event) => onPatchDraft((current) => ({ ...current, label: event.target.value }))}
+            className="h-10 rounded-md border border-bench-200 px-3 outline-none"
+          />
+        </label>
+        <label className="grid gap-1 text-sm">
+          <span className="text-bench-700">Summary</span>
+          <textarea
+            value={draft.summary}
+            onChange={(event) => onPatchDraft((current) => ({ ...current, summary: event.target.value }))}
+            rows={3}
+            className="rounded-md border border-bench-200 px-3 py-2 outline-none"
+          />
+        </label>
+        <label className="grid gap-1 text-sm">
+          <span className="text-bench-700">Family</span>
+          <Select
+            aria-label="Mode family"
+            value={draft.family}
+            onChange={(event) => onPatchDraft((current) => resetModeDraftFamily(current, event.target.value as CoordinationPattern))}
+          >
+            {CoordinationPatternSchema.options.map((family) => (
+              <option key={family} value={family}>{family}</option>
+            ))}
+          </Select>
+        </label>
+        <label className="grid gap-1 text-sm">
+          <span className="text-bench-700">Stop policy</span>
+          <Select
+            aria-label="Stop policy"
+            value={draft.stopPolicy.type}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              stopPolicy: { ...current.stopPolicy, type: event.target.value as OraModeSpec["stopPolicy"]["type"] },
+            }))}
+          >
+            {draft.editorConstraints.allowedNodeTemplates.length > 0 && getPatternDefinition(draft.family) && (
+              getModeStopPolicies(draft.family).map((type) => (
+                <option key={type} value={type}>{type}</option>
+              ))
+            )}
+          </Select>
+        </label>
+      </div>
+    </div>
   );
 }
 
@@ -2079,6 +2509,8 @@ function NodeInspector({
 
   return (
     <>
+      <StageExplanationPanel mode={draft} node={node} atoms={atoms} language={language} />
+
       <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -2407,6 +2839,144 @@ function ModeCanvasNode({ data, selected }: NodeProps<ModeCanvasNodeData>) {
       </div>
     </div>
   );
+}
+
+function buildModeRunStory(
+  mode: OraModeSpec,
+  atoms: Awaited<ReturnType<RuntimeClient["bootstrap"]>>["atoms"],
+  executionPreview: ReturnType<typeof getExecutionPreview>,
+  language: AppLanguage,
+) {
+  const enabledNodes = executionPreview.nodes;
+  const modeAtoms = resolveModeAtoms(mode, atoms, "mode");
+  const steps: Array<{
+    kind: string;
+    title: string;
+    description: string;
+    meta: string[];
+    riskLevel?: NonNullable<OraModeSpec["nodes"][number]["riskLevel"]>;
+  }> = [
+    {
+      kind: translateCopy(language, "Input"),
+      title: translateCopy(language, "User request enters the mode"),
+      description: displayText(language, mode.summary) || translateCopy(language, "The runtime receives the request and applies this mode's default contract before work begins."),
+      meta: [
+        formatEnumLabel(language, mode.family),
+        `${mode.profiles.length} ${translateCopy(language, "agents")}`,
+      ],
+    },
+  ];
+
+  const visibleNodes = enabledNodes.length <= 3
+    ? enabledNodes
+    : [enabledNodes[0], enabledNodes[Math.floor(enabledNodes.length / 2)], enabledNodes[enabledNodes.length - 1]];
+
+  visibleNodes.forEach((node, index) => {
+    const skippedCount = enabledNodes.length > 3 && index === 1 ? enabledNodes.length - 3 : 0;
+    steps.push({
+      kind: skippedCount > 0 ? translateCopy(language, "Middle") : translateCopy(language, "Stage"),
+      title: skippedCount > 0
+        ? translateCopy(language, "Middle stages coordinate the work")
+        : displayText(language, node.label),
+      description: skippedCount > 0
+        ? translateCopy(language, `This section compresses ${skippedCount + 1} enabled stages so the operating path stays readable.`)
+        : nodeStoryDescription(language, mode, node),
+      meta: [
+        ownerDisplayName(mode, node, language),
+        formatEnumLabel(language, node.template),
+        ...(node.riskLevel ? [formatRiskLabel(language, node.riskLevel)] : []),
+      ],
+      riskLevel: node.riskLevel,
+    });
+  });
+
+  steps.push({
+    kind: translateCopy(language, "Finish"),
+    title: translateCopy(language, "Runtime stops and publishes the answer"),
+    description: describeStopPolicy(language, mode.stopPolicy),
+    meta: [
+      `${mode.capabilityFlags.toolIds.length} ${translateCopy(language, "tools")}`,
+      `${modeAtoms.length} ${translateCopy(language, "runtime capabilities")}`,
+    ],
+  });
+
+  return steps.slice(0, 5);
+}
+
+function ownerDisplayName(mode: OraModeSpec, node: OraModeSpec["nodes"][number], language: AppLanguage): string {
+  const ownerProfile = mode.profiles.find((profile) => profile.id === node.ownerAgentId);
+  if (ownerProfile) {
+    return displayText(language, ownerProfile.label);
+  }
+  return node.ownerAgentId ? displayText(language, node.ownerAgentId) : translateCopy(language, "Runtime default");
+}
+
+function nodeStoryDescription(
+  language: AppLanguage,
+  mode: OraModeSpec,
+  node: OraModeSpec["nodes"][number],
+): string {
+  const owner = ownerDisplayName(mode, node, language);
+  switch (node.template) {
+    case "draft":
+      return translateCopy(language, `${owner} drafts the first candidate answer or working artifact.`);
+    case "decompose":
+      return translateCopy(language, `${owner} breaks the request into an executable plan and decides what needs attention first.`);
+    case "research":
+      return translateCopy(language, `${owner} gathers focused context before the mode commits to an answer.`);
+    case "review":
+      return translateCopy(language, `${owner} reviews the work for gaps, risks, and missing evidence.`);
+    case "verify":
+      return translateCopy(language, `${owner} checks the result against the mode's quality and risk boundary.`);
+    case "decide":
+      return translateCopy(language, `${owner} chooses the next action from the available state and constraints.`);
+    case "respond":
+      return translateCopy(language, `${owner} turns the completed work into the final response for the user.`);
+    case "publish":
+      return translateCopy(language, `${owner} publishes an event or artifact so later stages can consume it.`);
+    case "route":
+      return translateCopy(language, `${owner} routes events to the subscribers that should handle the next piece of work.`);
+    case "handle":
+      return translateCopy(language, `${owner} handles subscribed work and updates the shared runtime state.`);
+    case "synthesize":
+      return translateCopy(language, `${owner} combines partial outputs into a coherent answer.`);
+    case "triage":
+      return translateCopy(language, `${owner} classifies the request and chooses the right handling lane.`);
+    case "build":
+      return translateCopy(language, `${owner} executes the main construction or implementation step.`);
+    case "check":
+      return translateCopy(language, `${owner} checks the completed work before handoff.`);
+    case "handoff":
+      return translateCopy(language, `${owner} packages the result for the next stage or the final response.`);
+    case "seed":
+      return translateCopy(language, `${owner} initializes the shared state so collaborators start from the same context.`);
+    case "converge":
+      return translateCopy(language, `${owner} watches for shared-state convergence before the run wraps up.`);
+    default:
+      return translateCopy(language, `${owner} runs this stage using the selected runtime template.`);
+  }
+}
+
+function stageFailureSummary(
+  language: AppLanguage,
+  mode: OraModeSpec,
+  node: OraModeSpec["nodes"][number],
+): string {
+  const matchingRules = mode.recoveryPolicy.rules.filter((rule) =>
+    rule.enabled
+    && (
+      rule.nodeIds.includes(node.id)
+      || rule.nodeTemplates.includes(node.template)
+      || (rule.nodeIds.length === 0 && rule.nodeTemplates.length === 0)
+    ),
+  );
+  if (mode.runtimeAtoms.includes("recovery_policy") && matchingRules.length > 0) {
+    return matchingRules.map((rule) => formatEnumLabel(language, rule.action)).join(", ");
+  }
+  if (node.riskLevel) {
+    return translateCopy(language, "Risk level may trigger approval or guarded execution.");
+  }
+  return translateCopy(language, "Uses the mode default recovery behavior.");
 }
 
 function resolveModeAtoms(

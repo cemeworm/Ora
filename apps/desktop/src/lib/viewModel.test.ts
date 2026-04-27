@@ -386,7 +386,7 @@ describe("desktop session view model", () => {
 
     expect(assistant?.content).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
     expect(assistant?.turn?.processSteps).toHaveLength(1);
-    expect(assistant?.turn?.processSteps[0]?.label).toBe("Progress");
+    expect(assistant?.turn?.processSteps[0]?.label).toBe("进度");
     expect(assistant?.turn?.processSteps[0]?.detail).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
     expect(assistant?.turn?.processSteps[0]?.status).toBe("active");
   });
@@ -506,5 +506,6 @@ describe("desktop session view model", () => {
       "complete",
     ]);
     expect(assistant?.turn?.processSteps.some((step) => step.status === "active")).toBe(false);
+    expect(assistant?.turn?.processSteps.at(-1)?.detail).toBe("运行已完成。");
   });
 });
