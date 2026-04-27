@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { withDefaultWebToolIds } from "./capabilities.js";
-import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -190,6 +190,7 @@ export const ModeSpecSchema = z.object({
   recommendedUse: z.string().min(1).optional(),
   failureMode: z.string().min(1).optional(),
   systemPreset: z.boolean().default(false),
+  visibility: z.enum(["user", "internal"]).default("user"),
   nodes: z.array(ModeNodeSpecSchema).min(1),
   edges: z.array(ModeEdgeSpecSchema).default([]),
   stopPolicy: ModeStopPolicySchema,
@@ -1655,6 +1656,113 @@ function createSingleAgentModeSpec(): ModeSpec {
   }));
 }
 
+function createModeStudioBuilderModeSpec(): ModeSpec {
+  const now = 0;
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: MODE_STUDIO_BUILDER_MODE_ID,
+    family: "agent_teams",
+    label: "Mode Studio Builder",
+    summary: "Internal builder run that turns Mode Studio conversations into validated mode and agent drafts.",
+    description: "Hidden runtime mode used by Mode Studio to generate and refine complete ModeSpec drafts with stage prompts, agent roles, capabilities, and validation feedback.",
+    recommendedUse: "Internal only: use when Mode Studio needs to generate or refine a mode from natural language.",
+    failureMode: "Generated JSON may need repair or user clarification before it can be applied.",
+    systemPreset: true,
+    visibility: "internal",
+    nodes: [
+      {
+        id: "triage",
+        template: "triage",
+        label: "Understand builder context",
+        title: "Understand builder context",
+        ownerAgentId: "builder_lead",
+        enabled: true,
+        config: {},
+      },
+      {
+        id: "build",
+        template: "build",
+        label: "Draft mode bundle",
+        title: "Draft mode bundle",
+        ownerAgentId: "draft_architect",
+        enabled: true,
+        config: {},
+      },
+      {
+        id: "check",
+        template: "check",
+        label: "Validate draft quality",
+        title: "Validate draft quality",
+        ownerAgentId: "quality_reviewer",
+        enabled: true,
+        config: {},
+      },
+      {
+        id: "handoff",
+        template: "handoff",
+        label: "Return structured bundle",
+        title: "Return structured bundle",
+        ownerAgentId: "builder_lead",
+        enabled: true,
+        config: {},
+      },
+    ],
+    edges: [
+      { id: "triage-build", source: "triage", target: "build", kind: "control", label: "draft", enabled: true },
+      { id: "build-check", source: "build", target: "check", kind: "verification", label: "review", enabled: true },
+      { id: "check-handoff", source: "check", target: "handoff", kind: "control", label: "handoff", enabled: true },
+    ],
+    stopPolicy: {
+      type: "queue_drained",
+      detail: "Stop after Mode Studio receives a structured draft bundle or clarification request.",
+    },
+    capabilityFlags: {
+      supportsPersistentWorkers: true,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "auto",
+      skillIds: [],
+      toolIds: [],
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily("agent_teams"),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.agent_teams.allowedTemplates,
+      requiredNodeTemplates: MODE_FAMILY_RULES.agent_teams.requiredTemplates,
+      readOnly: true,
+      allowReorder: false,
+      allowCreate: false,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: DEFAULT_RESOURCE_BUDGETS.agent_teams,
+    completionPolicy: completionPolicyForPreset("decisive"),
+    profiles: [
+      profile(
+        "builder_lead",
+        "Builder Lead",
+        "Track the Mode Studio conversation, current draft, validation state, and requested refinement.",
+        "agent_teams",
+        ["session", "project"],
+      ),
+      profile(
+        "draft_architect",
+        "Draft Architect",
+        "Write the complete ModeSpec and generated agent roster with concrete stage prompts and capabilities.",
+        "agent_teams",
+        ["session", "artifact"],
+      ),
+      profile(
+        "quality_reviewer",
+        "Quality Reviewer",
+        "Check naming, schema validity, stage prompts, agent instructions, tools, and Apply readiness.",
+        "agent_teams",
+        ["session", "artifact"],
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
 const BUILTIN_PATTERN_MODES = CoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern));
 const ORCHESTRATOR_MODE_INDEX = BUILTIN_PATTERN_MODES.findIndex((mode) => mode.id === "orchestrator_subagent");
 
@@ -1662,6 +1770,7 @@ export const MVP_MODES = [
   ...BUILTIN_PATTERN_MODES.slice(0, ORCHESTRATOR_MODE_INDEX + 1),
   createDeerflowHarnessModeSpec(),
   createSingleAgentModeSpec(),
+  createModeStudioBuilderModeSpec(),
   ...BUILTIN_PATTERN_MODES.slice(ORCHESTRATOR_MODE_INDEX + 1),
 ];
 

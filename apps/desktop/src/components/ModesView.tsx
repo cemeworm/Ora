@@ -48,7 +48,7 @@ import {
 } from "../lib/modeCanvas";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
-import type { OraCustomAgentSummary, OraModeCreateParams, OraModeSpec, OraModeStudioDraftBundle, OraModeValidationResult, RuntimeClient } from "../lib/runtimeClient";
+import type { OraCustomAgentSummary, OraModeCreateParams, OraModeSpec, OraModeStudioDraftBundle, OraModeValidationResult, OraRunHandle, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { Checkbox } from "./ui/checkbox";
 import { Select } from "./ui/select";
@@ -76,6 +76,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   const [builderInput, setBuilderInput] = useState("");
   const [builderMessages, setBuilderMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const [builderBundle, setBuilderBundle] = useState<OraModeStudioDraftBundle | undefined>();
+  const [builderRun, setBuilderRun] = useState<OraRunHandle | undefined>();
   const [previewNodeId, setPreviewNodeId] = useState<string | undefined>();
 
   useEffect(() => {
@@ -318,6 +319,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
     setBuilderInput("");
     setBuilderMessages([]);
     setBuilderBundle(undefined);
+    setBuilderRun(undefined);
     setError("");
     setEditorMode("create");
   }
@@ -333,23 +335,28 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
     setBuilderMessages(nextMessages);
     setBusy("builder");
     try {
-      const result = builderBundle
-        ? await runtimeClient.refineModeStudioDraft({
-            messages: nextMessages,
-            draftBundle: builderBundle,
-            currentDraft: draft,
-          })
-        : await runtimeClient.generateModeStudioDraft({
-            messages: nextMessages,
-            baseModeId: selectedMode?.id,
-            currentDraft: draft,
-          });
-      setBuilderBundle(result);
-      setBuilderMessages([...nextMessages, { role: "assistant", content: result.guidance.assistantMessage }]);
-      setDraft(hydrateModeDraft(result.modeDraft));
-      setValidation(result.validation);
+      const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
+      const handle = await runtimeClient.startModeStudioBuilderRun({
+        operation: builderBundle ? "refine" : "generate",
+        messages: nextMessages,
+        baseModeId: selectedMode?.id,
+        currentDraft: draft,
+        draftBundle: builderBundle,
+        providerId: state.selectedProviderId,
+        providerConfig: provider,
+        modelRef: provider?.modelId ?? "local/smoke-model",
+      });
+      setBuilderRun(handle);
+      const result = await runtimeClient.modeStudioBuilderResult(handle.runId);
+      if (!result.draftBundle) {
+        throw new Error(result.issues[0]?.message ?? "Mode builder did not return a draft.");
+      }
+      setBuilderBundle(result.draftBundle);
+      setBuilderMessages([...nextMessages, { role: "assistant", content: result.draftBundle.guidance.assistantMessage }]);
+      setDraft(hydrateModeDraft(result.draftBundle.modeDraft));
+      setValidation(result.draftBundle.validation);
       setEditorMode(editingModeId ? "edit" : "create");
-      setSelectedNodeId(result.modeDraft.nodes[0]?.id);
+      setSelectedNodeId(result.draftBundle.modeDraft.nodes[0]?.id);
       setError("");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Mode builder failed.");
@@ -376,6 +383,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
       dispatch({ type: "SET_MODE", modeId: result.mode.id });
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${result.mode.label} generated and selected for the next turn.` });
       setBuilderBundle(undefined);
+      setBuilderRun(undefined);
       setDraft(undefined);
       setSelectedNodeId(undefined);
       setEditingModeId(undefined);
@@ -559,6 +567,16 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
 
         {builderBundle && (
           <div className="mt-4 space-y-3">
+            {builderRun && (
+              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-bench-600">
+                <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">
+                  Runtime run {builderRun.status}
+                </span>
+                <span className="rounded-full bg-bench-100 px-2 py-1 text-bench-700">
+                  {builderRun.runId}
+                </span>
+              </div>
+            )}
             <div className="rounded-md bg-bench-50 px-3 py-2 text-sm leading-6 text-bench-800">
               {builderBundle.guidance.assistantMessage}
             </div>
@@ -3085,7 +3103,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, completionPolicy, recoveryPolicy, memoryPolicy } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, completionPolicy, recoveryPolicy, memoryPolicy } = spec;
   return {
     id,
     family,
@@ -3094,6 +3112,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     description,
     recommendedUse,
     failureMode,
+    visibility,
     nodes,
     edges,
     stopPolicy,

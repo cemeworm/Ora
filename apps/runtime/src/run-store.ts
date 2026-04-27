@@ -27,9 +27,13 @@ import {
   DEFAULT_RESOURCE_BUDGETS,
   EvaluationFeedbackDraftCaseSchema,
   EvaluationFeedbackRecord,
+  MODE_STUDIO_BUILDER_MODE_ID,
   ModeStudioApplyDraftParamsSchema,
   ModeStudioApplyDraftResult,
   ModeStudioApplyDraftResultSchema,
+  ModeStudioBuilderResult,
+  ModeStudioBuilderResultParamsSchema,
+  ModeStudioBuilderResultSchema,
   ModeStudioContextResult,
   ModeStudioContextResultSchema,
   ModeStudioDraftBundle,
@@ -37,6 +41,8 @@ import {
   ModeStudioGenerateDraftParams,
   ModeStudioGenerateDraftParamsSchema,
   ModeStudioRefineDraftParamsSchema,
+  ModeStudioStartBuilderRunParams,
+  ModeStudioStartBuilderRunParamsSchema,
   ModeStudioValidateDraftParamsSchema,
   createModeSpecFromPattern,
   getModeNodeRuntimeTemplateDefinition,
@@ -44,6 +50,7 @@ import {
   modeSpecToPatternDefinition,
   MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
+  ModeSpecSchema,
   orderedEnabledModeNodes,
   type ModeCreateParams,
   type ModeSpec,
@@ -205,6 +212,18 @@ const AgentDraftProviderResponseSchema = z.object({
   needsInput: z.boolean().optional(),
   issues: z.array(z.object({
     field: z.enum(["name", "description", "model", "toolGroups", "soul", "general"]).default("general"),
+    message: z.string().min(1),
+  })).default([]),
+});
+
+const ModeStudioBuilderProviderResponseSchema = z.object({
+  assistantMessage: z.string().min(1),
+  needsInput: z.boolean().default(false),
+  modeDraft: z.unknown().optional(),
+  agentDrafts: z.array(z.unknown()).default([]),
+  changeSummary: z.array(z.string().min(1)).default([]),
+  issues: z.array(z.object({
+    field: z.string().min(1).default("general"),
     message: z.string().min(1),
   })).default([]),
 });
@@ -468,7 +487,9 @@ export class LocalRunStore {
   }
 
   listModes(): ModeSpec[] {
-    return this.modeStore.list().map((mode) => this.applySystemAgentOverridesToMode(mode));
+    return this.modeStore.list()
+      .filter((mode) => mode.visibility !== "internal")
+      .map((mode) => this.applySystemAgentOverridesToMode(mode));
   }
 
   getMode(params: unknown): ModeSpec {
@@ -587,6 +608,118 @@ export class LocalRunStore {
     return this.buildModeStudioDraft({
       ...parsed,
       currentDraft: parsed.draftBundle.modeDraft,
+    });
+  }
+
+  async startModeStudioBuilderRun(params: ModeStudioStartBuilderRunParams | unknown): Promise<RunHandle> {
+    const parsed = ModeStudioStartBuilderRunParamsSchema.parse(params);
+    const runId = this.nextRunId();
+    const createdAt = this.now();
+    const input = UserTaskInputSchema.parse({
+      prompt: modeStudioUserText(parsed.messages) || "Mode Studio builder request",
+      context: {
+        kind: "mode_studio_builder",
+        operation: parsed.operation,
+        messages: parsed.messages,
+        baseModeId: parsed.baseModeId,
+        currentDraft: parsed.currentDraft,
+        draftBundle: parsed.draftBundle,
+      },
+      createdAt,
+    });
+    const modeSpec = this.modeStore.get({ modeId: MODE_STUDIO_BUILDER_MODE_ID });
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const config = RunConfigSchema.parse({
+      pattern: modeSpec.family,
+      modeId: modeSpec.id,
+      providerId: parsed.providerId,
+      providerConfig: parsed.providerConfig,
+      modelRef: parsed.modelRef ?? parsed.providerConfig?.modelId ?? "local/smoke-model",
+      approvalMode: "auto",
+      metadata: {
+        modeStudioBuilder: true,
+        operation: parsed.operation,
+      },
+      deterministicSeed: "mode-studio-builder",
+    });
+
+    let snapshot = this.createStandaloneSnapshot({ runId, input, config, modeSpec, definition });
+    snapshot = this.appendEvent(snapshot, "run.started", {
+      kind: "mode_studio_builder",
+      operation: parsed.operation,
+      messageCount: parsed.messages.length,
+    });
+    snapshot = this.appendEvent(snapshot, "agent.started", {
+      agentId: "builder_lead",
+      title: "Read Mode Studio context",
+    }, { agentId: "builder_lead", nodeId: "triage" });
+
+    const result = await this.createModeStudioBuilderResult(parsed, config);
+    const output = {
+      kind: "mode_studio_builder_result",
+      runId,
+      draftBundle: result.draftBundle,
+      issues: result.issues,
+      rawText: result.rawText,
+    };
+    const finalStatus = result.draftBundle ? "succeeded" : "failed";
+    const finalEventType = finalStatus === "succeeded" ? "run.done" : "run.failed";
+    snapshot = StateSnapshotSchema.parse({
+      ...snapshot,
+      status: finalStatus,
+      output,
+      artifacts: result.draftBundle
+        ? [
+            ...snapshot.artifacts,
+            ArtifactRefSchema.parse({
+              id: `${runId}:artifact:mode-studio-builder-result`,
+              runId,
+              kind: "log",
+              label: "Mode Studio builder result",
+              mimeType: "application/json",
+              createdAt: this.now(),
+              payload: output,
+            }),
+          ]
+        : snapshot.artifacts,
+      queueSummary: {
+        ...snapshot.queueSummary,
+        pending: 0,
+        inProgress: 0,
+        completed: result.draftBundle ? definition.planTemplate.length : 0,
+      },
+    });
+    snapshot = this.appendEvent(snapshot, "agent.completed", {
+      agentId: "builder_lead",
+      title: result.draftBundle?.needsInput ? "Needs more input" : "Draft bundle ready",
+      issues: result.issues,
+    }, { agentId: "builder_lead", nodeId: "handoff" });
+    if (result.draftBundle) {
+      snapshot = this.appendEvent(snapshot, "artifact.exported", {
+        artifact: snapshot.artifacts.at(-1),
+      });
+    }
+    snapshot = this.appendEvent(snapshot, finalEventType, {
+      kind: "mode_studio_builder",
+      valid: result.draftBundle?.validation.valid ?? false,
+      issueCount: result.issues.length,
+    });
+    this.cacheRun(this.attachTraceMetadata(snapshot), true);
+    return this.toRunHandle(snapshot);
+  }
+
+  modeStudioBuilderResult(params: unknown): ModeStudioBuilderResult {
+    const parsed = ModeStudioBuilderResultParamsSchema.parse(params);
+    const snapshot = this.getRunOrThrow(parsed.runId);
+    const output = snapshot.output && typeof snapshot.output === "object"
+      ? snapshot.output as Record<string, unknown>
+      : {};
+    return ModeStudioBuilderResultSchema.parse({
+      runId: snapshot.runId,
+      status: snapshot.status,
+      draftBundle: output.draftBundle,
+      issues: output.issues ?? [],
+      rawText: output.rawText,
     });
   }
 
@@ -742,6 +875,184 @@ export class LocalRunStore {
     return ModeStudioDraftBundleSchema.parse({
       ...bundle,
       validation,
+    });
+  }
+
+  private async createModeStudioBuilderResult(
+    params: ModeStudioStartBuilderRunParams,
+    config: RunConfig,
+  ): Promise<{ draftBundle?: ModeStudioDraftBundle; issues: Array<{ field: string; message: string }>; rawText?: string }> {
+    if (config.providerId === "local-smoke" || config.modelRef === "local/smoke-model") {
+      return { draftBundle: this.buildModeStudioDraft(params), issues: [] };
+    }
+    try {
+      const firstResponse = await invokeRunProvider(config, {
+        system: modeStudioBuilderSystemPrompt(),
+        messages: params.messages.map((message): ModelMessage => ({
+          role: message.role,
+          content: message.content,
+        })),
+        prompt: modeStudioBuilderUserPrompt(params, this.modeStudioContext()),
+        temperature: 0.2,
+        maxTokens: 5000,
+        toolChoice: "none",
+      });
+      const firstParsed = parseModeStudioBuilderProviderText(firstResponse.text);
+      const parsed = firstParsed.success
+        ? firstParsed
+        : parseModeStudioBuilderProviderText((await invokeRunProvider(config, {
+            system: "Repair the previous response into strict JSON only. Do not add markdown.",
+            messages: [
+              {
+                role: "user",
+                content: [
+                  "Invalid Mode Studio builder response:",
+                  firstResponse.text,
+                  "Return JSON matching: {\"assistantMessage\": string, \"needsInput\": boolean, \"modeDraft\": ModeSpec, \"agentDrafts\": CustomAgentGeneratedDraft[], \"changeSummary\": string[], \"issues\": [{\"field\": string, \"message\": string}]}",
+                ].join("\n\n"),
+              },
+            ],
+            temperature: 0,
+            maxTokens: 5000,
+            toolChoice: "none",
+          })).text);
+      if (!parsed.success) {
+        return {
+          draftBundle: this.withModeStudioValidation(modeStudioNeedsInputBundle(this.modeStudioSourceMode(params), params, "Builder returned invalid JSON after repair.")),
+          issues: [{ field: "general", message: "Builder returned invalid JSON after repair." }],
+          rawText: firstResponse.text,
+        };
+      }
+      const draftBundle = this.modeStudioBundleFromProvider(parsed.data, params);
+      return { draftBundle, issues: parsed.data.issues, rawText: firstResponse.text };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        draftBundle: this.withModeStudioValidation(modeStudioNeedsInputBundle(this.modeStudioSourceMode(params), params, message)),
+        issues: [{ field: "general", message }],
+      };
+    }
+  }
+
+  private modeStudioBundleFromProvider(
+    providerResult: z.infer<typeof ModeStudioBuilderProviderResponseSchema>,
+    params: ModeStudioStartBuilderRunParams,
+  ): ModeStudioDraftBundle {
+    const text = modeStudioUserText(params.messages);
+    const source = this.modeStudioSourceMode(params);
+    const rawMode = isPlainRecord(providerResult.modeDraft) ? providerResult.modeDraft : {};
+    const rawFamily = typeof rawMode.family === "string" && isCoordinationPattern(rawMode.family)
+      ? rawMode.family
+      : source.family;
+    const base = params.currentDraft && params.currentDraft.family === rawFamily
+      ? params.currentDraft
+      : source.family === rawFamily
+        ? source
+        : createModeSpecFromPattern(rawFamily);
+    const now = this.now();
+    const idSeed = typeof rawMode.id === "string"
+      ? rawMode.id
+      : typeof rawMode.label === "string"
+        ? rawMode.label
+        : modeStudioPurpose(text);
+    const modeDraft = ModeSpecSchema.parse({
+      ...base,
+      ...rawMode,
+      id: slugifyModeStudio(idSeed) || slugifyModeStudio(base.id) || "guided-mode",
+      family: rawFamily,
+      label: typeof rawMode.label === "string" && rawMode.label.trim() ? rawMode.label.trim() : modeStudioLabel(text),
+      summary: typeof rawMode.summary === "string" && rawMode.summary.trim() ? rawMode.summary.trim() : modeStudioSummary(text, base.summary),
+      description: typeof rawMode.description === "string" && rawMode.description.trim() ? rawMode.description.trim() : modeStudioDescription(text, getPatternDefinition(rawFamily)),
+      recommendedUse: typeof rawMode.recommendedUse === "string" && rawMode.recommendedUse.trim() ? rawMode.recommendedUse.trim() : `Use when the user wants: ${modeStudioPurpose(text)}.`,
+      systemPreset: false,
+      visibility: "user",
+      nodes: Array.isArray(rawMode.nodes) ? rawMode.nodes : base.nodes,
+      edges: Array.isArray(rawMode.edges) ? rawMode.edges : base.edges,
+      profiles: Array.isArray(rawMode.profiles) ? rawMode.profiles : base.profiles,
+      createdAt: params.currentDraft?.createdAt ?? now,
+      updatedAt: now,
+    });
+    const agentDrafts = providerResult.agentDrafts.map((draft) => normalizeGeneratedAgentDraft(draft));
+    const enrichedDraft = enrichModeStudioGeneratedDraft(modeDraft, {
+      text,
+      agentDrafts,
+      currentDraft: params.currentDraft,
+    });
+    const bundle = ModeStudioDraftBundleSchema.parse({
+      modeDraft: enrichedDraft,
+      agentDrafts,
+      guidance: {
+        step: providerResult.needsInput ? "goal" : "preview",
+        assistantMessage: providerResult.assistantMessage,
+        choices: providerResult.needsInput ? modeStudioTopologyChoices() : modeStudioGuidance(enrichedDraft.family, text).choices,
+      },
+      changeSummary: providerResult.changeSummary.length > 0
+        ? providerResult.changeSummary
+        : [`Generated ${enrichedDraft.label} through the runtime-backed Mode Studio builder.`],
+      validation: { valid: false, errors: [], warnings: [] },
+      needsInput: providerResult.needsInput,
+    });
+    return this.withModeStudioValidation(bundle);
+  }
+
+  private createStandaloneSnapshot(params: {
+    runId: string;
+    input: UserTaskInput;
+    config: RunConfig;
+    modeSpec: ModeSpec;
+    definition: PatternDefinition;
+  }): StateSnapshot {
+    const startedAt = params.input.createdAt ?? this.now();
+    const planService = new PlanService(params.runId, params.definition);
+    const todoService = new TodoService(params.runId, () => this.now(), planService.list());
+    return StateSnapshotSchema.parse({
+      runId: params.runId,
+      status: "running",
+      pattern: params.config.pattern,
+      coordinationKind: params.config.pattern,
+      modeId: params.modeSpec.id,
+      input: params.input,
+      config: params.config,
+      topology: {
+        nodes: params.definition.topology.nodes.map((node) => ({
+          ...node,
+          status: node.kind === "run" ? "running" : node.status,
+        })),
+        edges: params.definition.topology.edges,
+      },
+      profiles: new AgentProfileRegistry(params.definition).list(params.config.profileIds),
+      memory: [],
+      plan: planService.list(),
+      todos: todoService.list(),
+      actions: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: ["builder_lead"],
+      queueSummary: {
+        mode: "backlog",
+        pending: params.definition.planTemplate.length,
+        inProgress: 1,
+        completed: 0,
+        topics: [],
+      },
+      sharedStateSummary: {
+        enabled: false,
+        storeKind: "none",
+        version: 0,
+        entries: [],
+      },
+      busStats: {
+        enabled: false,
+        publishedCount: 0,
+        routedCount: 0,
+        topicCounts: {},
+      },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      modeSpec: params.modeSpec,
+      updatedAt: startedAt,
     });
   }
 
@@ -954,7 +1265,7 @@ export class LocalRunStore {
   }
 
   agentCatalog(): AgentCatalogResult {
-    const rawModes = this.modeStore.list();
+    const rawModes = this.modeStore.list().filter((mode) => mode.visibility !== "internal");
     const effectiveModes = rawModes.map((mode) => this.applySystemAgentOverridesToMode(mode));
     const effectiveModeById = new Map(effectiveModes.map((mode) => [mode.id, mode]));
     const systemProfiles = new Map<string, {
@@ -3756,10 +4067,14 @@ function parseJsonObject(text: string): Record<string, unknown> {
 }
 
 function parseJsonRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isPlainRecord(value)) {
     throw new Error("Curator JSON must be an object.");
   }
-  return value as Record<string, unknown>;
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isVagueAgentDraftRequest(text: string, partialDraft: CustomAgentGenerateDraftParams["partialDraft"]): boolean {
@@ -3802,6 +4117,78 @@ function parseAgentDraftProviderText(text: string) {
   } catch {
     return AgentDraftProviderResponseSchema.safeParse(undefined);
   }
+}
+
+function parseModeStudioBuilderProviderText(text: string) {
+  try {
+    return ModeStudioBuilderProviderResponseSchema.safeParse(parseJsonObject(text));
+  } catch {
+    return ModeStudioBuilderProviderResponseSchema.safeParse(undefined);
+  }
+}
+
+function modeStudioBuilderSystemPrompt(): string {
+  return [
+    "You are Ora Mode Studio's runtime builder agent system.",
+    "Return strict JSON only. Do not use markdown or commentary outside JSON.",
+    "Generate or refine a complete ModeStudio draft bundle from the supplied context.",
+    "The JSON shape is: {\"assistantMessage\": string, \"needsInput\": boolean, \"modeDraft\": ModeSpec, \"agentDrafts\": CustomAgentGeneratedDraft[], \"changeSummary\": string[], \"issues\": [{\"field\": string, \"message\": string}]}",
+    "ModeDraft must use Ora ModeSpec fields exactly. Keep family and node templates compatible with the selected topology.",
+    "Name the mode for the actual user purpose, not by copying the entire prompt. Use a concise human label and a lowercase kebab-case id.",
+    "Every enabled stage must have ownerAgentId, a concrete prompt, and config.story explaining what happens in that stage.",
+    "Every generated agent must include name, description, toolGroups, toolIds, skillIds, and long-form soul instructions.",
+    "If the current draft contains manual edits, preserve them unless the user explicitly asks to change them.",
+    "Set systemPreset false and visibility user on generated modes.",
+    "If the request is too vague, set needsInput true and explain exactly what is missing.",
+  ].join("\n");
+}
+
+function modeStudioBuilderUserPrompt(
+  params: ModeStudioStartBuilderRunParams,
+  context: ModeStudioContextResult,
+): string {
+  const contextPayload = {
+    operation: params.operation,
+    messages: params.messages,
+    baseModeId: params.baseModeId,
+    currentDraft: params.currentDraft,
+    previousDraftBundle: params.draftBundle,
+    validation: params.draftBundle?.validation,
+    availableModes: context.modes.map((mode) => ({
+      id: mode.id,
+      label: mode.label,
+      family: mode.family,
+      summary: mode.summary,
+      templates: mode.nodes.map((node) => node.template),
+    })),
+    availableAgents: context.agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
+      toolIds: agent.toolIds,
+      skillIds: agent.skillIds,
+    })),
+    availableTools: context.tools.tools.map((tool) => ({
+      id: tool.id,
+      label: tool.label,
+      riskLevel: tool.riskLevel,
+    })),
+    availableSkills: context.skills.skills.map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      enabled: skill.enabled,
+    })),
+    availableAtoms: context.atoms.map((atom) => ({
+      id: atom.id,
+      scope: atom.scope,
+      compatibleFamilies: atom.compatibleFamilies,
+    })),
+  };
+  return [
+    "Generate or refine the Mode Studio draft from this runtime context.",
+    "Respect existing currentDraft values unless the latest user message asks to change them.",
+    JSON.stringify(contextPayload, null, 2),
+    "Return only the strict JSON object.",
+  ].join("\n\n");
 }
 
 function normalizeGeneratedAgentDraft(draft: unknown): CustomAgentGeneratedDraft {
@@ -4008,6 +4395,87 @@ function modeStudioPurpose(text: string): string {
   return compact.slice(0, 96) || "a custom workflow";
 }
 
+function isCoordinationPattern(value: string): value is CoordinationPattern {
+  return value === "generator_verifier"
+    || value === "orchestrator_subagent"
+    || value === "agent_teams"
+    || value === "message_bus"
+    || value === "shared_state";
+}
+
+function modeStudioNeedsInputBundle(
+  source: ModeSpec,
+  params: Pick<ModeStudioStartBuilderRunParams, "messages" | "currentDraft">,
+  message: string,
+): ModeStudioDraftBundle {
+  const text = modeStudioUserText(params.messages);
+  return ModeStudioDraftBundleSchema.parse({
+    modeDraft: prepareModeStudioDraft(params.currentDraft ?? source, text, [], params),
+    agentDrafts: [],
+    guidance: {
+      step: "goal",
+      assistantMessage: `这次 builder run 还不能生成可应用草稿：${message}`,
+      choices: modeStudioTopologyChoices(),
+    },
+    changeSummary: ["Kept the current draft unchanged because the builder could not produce a valid bundle."],
+    validation: { valid: false, errors: [], warnings: [] },
+    needsInput: true,
+  });
+}
+
+function enrichModeStudioGeneratedDraft(
+  mode: ModeSpec,
+  params: {
+    text: string;
+    agentDrafts: CustomAgentGeneratedDraft[];
+    currentDraft?: ModeSpec;
+  },
+): ModeSpec {
+  const agentNames = params.agentDrafts.map((agent) => agent.name);
+  const profiles = mode.profiles.map((profile, index) => ({
+    ...profile,
+    customAgentId: profile.customAgentId ?? agentNames[index] ?? params.currentDraft?.profiles[index]?.customAgentId,
+    toolIds: profile.toolIds.length > 0 ? profile.toolIds : params.agentDrafts[index]?.toolIds ?? profile.toolIds,
+    skillIds: profile.skillIds.length > 0 ? profile.skillIds : params.agentDrafts[index]?.skillIds ?? profile.skillIds,
+  }));
+  return ModeSpecSchema.parse({
+    ...mode,
+    systemPreset: false,
+    visibility: "user",
+    profiles,
+    nodes: mode.nodes.map((node) => {
+      const currentNode = params.currentDraft?.nodes.find((candidate) => candidate.id === node.id);
+      const ownerAgentId = node.ownerAgentId ?? currentNode?.ownerAgentId ?? profiles[0]?.id;
+      const prompt = node.prompt?.trim()
+        ? node.prompt
+        : currentNode?.prompt?.trim()
+          ? currentNode.prompt
+          : modeStudioNodePrompt(node.template, params.text, undefined);
+      return {
+        ...node,
+        ownerAgentId,
+        prompt,
+        config: {
+          ...currentNode?.config,
+          ...node.config,
+          story: node.config?.story ?? currentNode?.config?.story ?? modeStudioNodeStoryConfig(mode.family, node, ownerAgentId, profiles, params.text),
+        },
+      };
+    }),
+    capabilityFlags: {
+      ...mode.capabilityFlags,
+      toolIds: [...new Set([
+        ...mode.capabilityFlags.toolIds,
+        ...params.agentDrafts.flatMap((agent) => agent.toolIds),
+      ])],
+      skillIds: [...new Set([
+        ...mode.capabilityFlags.skillIds,
+        ...params.agentDrafts.flatMap((agent) => agent.skillIds),
+      ])],
+    },
+  });
+}
+
 function modeStudioRuntimeAtoms(family: CoordinationPattern, text: string, existing: ModeSpec["runtimeAtoms"]): ModeSpec["runtimeAtoms"] {
   const atoms = new Set(existing);
   const add = (atomId: ModeSpec["runtimeAtoms"][number]) => {
@@ -4181,6 +4649,7 @@ function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     description,
     recommendedUse,
     failureMode,
+    visibility,
     nodes,
     edges,
     stopPolicy,
@@ -4201,6 +4670,7 @@ function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     description,
     recommendedUse,
     failureMode,
+    visibility,
     nodes,
     edges,
     stopPolicy,

@@ -66,6 +66,10 @@ export function createRuntimeMethodHandler(
         return store.generateModeStudioDraft(request.params);
       case "modeStudio.refineDraft":
         return store.refineModeStudioDraft(request.params);
+      case "modeStudio.startBuilderRun":
+        return store.startModeStudioBuilderRun(request.params);
+      case "modeStudio.builderResult":
+        return store.modeStudioBuilderResult(request.params);
       case "modeStudio.validateDraft":
         return store.validateModeStudioDraft(request.params);
       case "modeStudio.applyDraft":

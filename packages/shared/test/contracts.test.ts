@@ -49,6 +49,7 @@ import {
   EvaluationSpecSchema,
   JsonRpcRequestSchema,
   JsonRpcResponseSchema,
+  MODE_STUDIO_BUILDER_MODE_ID,
   MVP_MODES,
   MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
@@ -58,9 +59,13 @@ import {
   MVP_TOOLS,
   MemoryRecordSchema,
   ModeStudioApplyDraftParamsSchema,
+  ModeStudioBuilderResultParamsSchema,
+  ModeStudioBuilderResultSchema,
   ModeStudioDraftBundleSchema,
   ModeStudioGenerateDraftParamsSchema,
   ModeStudioGuidanceSchema,
+  ModeStudioStartBuilderRunParamsSchema,
+  ModeStudioStartBuilderRunResultSchema,
   OraEventEnvelopeSchema,
   OraToolCallEnvelopeSchema,
   OpenAICompatibleProtocolSchema,
@@ -132,7 +137,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(7);
+    expect(MVP_MODES).toHaveLength(8);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -145,6 +150,7 @@ describe("Ora shared contracts", () => {
       "orchestrator_subagent",
       DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
+      MODE_STUDIO_BUILDER_MODE_ID,
       "agent_teams",
       "message_bus",
       "shared_state"
@@ -167,11 +173,13 @@ describe("Ora shared contracts", () => {
       expect(mode.nodes.every((node) => node.position)).toBe(true);
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
       expect(["decisive", "balanced", "persistent"]).toContain(mode.completionPolicy.preset);
-      for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
-        expect(mode.capabilityFlags.toolIds).toContain(toolId);
-      }
-      for (const toolId of DEFAULT_WEB_TOOL_IDS) {
-        expect(mode.capabilityFlags.toolIds).toContain(toolId);
+      if (mode.visibility !== "internal") {
+        for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
+          expect(mode.capabilityFlags.toolIds).toContain(toolId);
+        }
+        for (const toolId of DEFAULT_WEB_TOOL_IDS) {
+          expect(mode.capabilityFlags.toolIds).toContain(toolId);
+        }
       }
       expect(validateModeSpec(mode).valid).toBe(true);
       expect(ModeValidationResultSchema.parse({ valid: true, errors: [], warnings: [] }).valid).toBe(true);
@@ -186,6 +194,16 @@ describe("Ora shared contracts", () => {
       "research",
       "review",
     ]);
+    const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
+    expect(builderMode.visibility).toBe("internal");
+    expect(builderMode.family).toBe("agent_teams");
+  });
+
+  it("accepts legacy mode specs without visibility", () => {
+    const { visibility: _visibility, ...legacy } = MVP_MODES[1]!;
+    const parsed = ModeSpecSchema.parse(legacy);
+
+    expect(parsed.visibility).toBe("user");
   });
 
   it("accepts legacy mode specs without stored node positions", () => {
@@ -389,7 +407,7 @@ describe("Ora shared contracts", () => {
     expect(deerflowHarnessProjected.edges.some((edge) => edge.target === "capability:research:subagent_delegate")).toBe(true);
     expect(deerflowHarnessProjected.edges.some((edge) => edge.target === "capability:review:subagent_delegate")).toBe(true);
 
-    const messageBusProjected = projectModeRuntimeTopology(MVP_MODES[5]!);
+    const messageBusProjected = projectModeRuntimeTopology(MVP_MODES.find((mode) => mode.id === "message_bus")!);
     expect(messageBusProjected.nodes.filter((node) => node.id === "triage_topic")).toHaveLength(1);
     expect(messageBusProjected.nodes.find((node) => node.id === "triage_topic")?.metadata).toMatchObject({
       atomId: "event_routing",
@@ -780,6 +798,33 @@ describe("Ora shared contracts", () => {
     });
     expect(bundle.modeDraft.profiles[0]!.customAgentId).toBe("generator-agent");
     expect(ModeStudioApplyDraftParamsSchema.parse({ draftBundle: bundle }).saveAgentDrafts).toBe(true);
+
+    const startParams = ModeStudioStartBuilderRunParamsSchema.parse({
+      operation: "refine",
+      messages: params.messages,
+      baseModeId: "generator_verifier",
+      currentDraft: modeDraft,
+      draftBundle: bundle,
+      providerId: "local-smoke",
+    });
+    expect(startParams.operation).toBe("refine");
+
+    const handle = ModeStudioStartBuilderRunResultSchema.parse({
+      runId: "run-builder-1",
+      status: "succeeded",
+      pattern: "agent_teams",
+      modeId: MODE_STUDIO_BUILDER_MODE_ID,
+      startedAt: 1,
+    });
+    expect(handle.modeId).toBe(MODE_STUDIO_BUILDER_MODE_ID);
+    expect(ModeStudioBuilderResultParamsSchema.parse({ runId: handle.runId }).runId).toBe(handle.runId);
+    const builderResult = ModeStudioBuilderResultSchema.parse({
+      runId: handle.runId,
+      status: "succeeded",
+      draftBundle: bundle,
+      issues: [],
+    });
+    expect(builderResult.draftBundle?.validation.valid).toBe(true);
   });
 
   it("validates second milestone run API contracts", () => {
@@ -1465,7 +1510,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes).toHaveLength(7);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(7);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

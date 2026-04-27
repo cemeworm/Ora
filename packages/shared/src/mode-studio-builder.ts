@@ -7,6 +7,8 @@ import {
 } from "./capabilities.js";
 import { ModeSpecSchema, ModeValidationResultSchema, ModeRuntimeAtomDefinitionSchema } from "./modes.js";
 import { ProviderConfigSchema } from "./providers.js";
+import { RunStatusSchema } from "./primitives.js";
+import { RunHandleSchema } from "./runtime.js";
 
 export const ModeStudioBuilderMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -90,3 +92,35 @@ export const ModeStudioApplyDraftResultSchema = z.object({
   agents: z.array(CustomAgentSummarySchema).default([]),
 });
 export type ModeStudioApplyDraftResult = z.infer<typeof ModeStudioApplyDraftResultSchema>;
+
+export const ModeStudioBuilderOperationSchema = z.enum(["generate", "refine"]);
+export type ModeStudioBuilderOperation = z.infer<typeof ModeStudioBuilderOperationSchema>;
+
+export const ModeStudioStartBuilderRunParamsSchema = ModeStudioGenerateDraftParamsSchema.extend({
+  operation: ModeStudioBuilderOperationSchema.default("generate"),
+  draftBundle: ModeStudioDraftBundleSchema.optional(),
+});
+export type ModeStudioStartBuilderRunParams = z.infer<typeof ModeStudioStartBuilderRunParamsSchema>;
+
+export const ModeStudioStartBuilderRunResultSchema = RunHandleSchema;
+export type ModeStudioStartBuilderRunResult = z.infer<typeof ModeStudioStartBuilderRunResultSchema>;
+
+export const ModeStudioBuilderResultParamsSchema = z.object({
+  runId: z.string().min(1),
+});
+export type ModeStudioBuilderResultParams = z.infer<typeof ModeStudioBuilderResultParamsSchema>;
+
+export const ModeStudioBuilderIssueSchema = z.object({
+  field: z.string().min(1).default("general"),
+  message: z.string().min(1),
+});
+export type ModeStudioBuilderIssue = z.infer<typeof ModeStudioBuilderIssueSchema>;
+
+export const ModeStudioBuilderResultSchema = z.object({
+  runId: z.string().min(1),
+  status: RunStatusSchema,
+  draftBundle: ModeStudioDraftBundleSchema.optional(),
+  issues: z.array(ModeStudioBuilderIssueSchema).default([]),
+  rawText: z.string().optional(),
+});
+export type ModeStudioBuilderResult = z.infer<typeof ModeStudioBuilderResultSchema>;

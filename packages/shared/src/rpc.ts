@@ -16,6 +16,8 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "modeStudio.context",
   "modeStudio.generateDraft",
   "modeStudio.refineDraft",
+  "modeStudio.startBuilderRun",
+  "modeStudio.builderResult",
   "modeStudio.validateDraft",
   "modeStudio.applyDraft",
   "tools.list",

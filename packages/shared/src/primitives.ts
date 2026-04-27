@@ -12,6 +12,7 @@ export const CoordinationKindSchema = CoordinationPatternSchema;
 export type CoordinationKind = CoordinationPattern;
 export const DEERFLOW_HARNESS_MODE_ID = "deerflow_harness" as const;
 export const SINGLE_AGENT_MODE_ID = "single_agent" as const;
+export const MODE_STUDIO_BUILDER_MODE_ID = "mode_studio_builder" as const;
 
 export const ModeIdSchema = z
   .string()

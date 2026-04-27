@@ -30,10 +30,12 @@ import type {
   MemoryRecord as OraMemoryRecord,
   ModeStudioApplyDraftParams as OraModeStudioApplyDraftParams,
   ModeStudioApplyDraftResult as OraModeStudioApplyDraftResult,
+  ModeStudioBuilderResult as OraModeStudioBuilderResult,
   ModeStudioContextResult as OraModeStudioContextResult,
   ModeStudioDraftBundle as OraModeStudioDraftBundle,
   ModeStudioGenerateDraftParams as OraModeStudioGenerateDraftParams,
   ModeStudioRefineDraftParams as OraModeStudioRefineDraftParams,
+  ModeStudioStartBuilderRunParams as OraModeStudioStartBuilderRunParams,
   ModeRuntimeAtomDefinition as OraModeRuntimeAtomDefinition,
   ModeCreateParams as OraModeCreateParams,
   ModeSpec as OraModeSpec,
@@ -120,10 +122,12 @@ export type {
   OraMemoryRecord,
   OraModeStudioApplyDraftParams,
   OraModeStudioApplyDraftResult,
+  OraModeStudioBuilderResult,
   OraModeStudioContextResult,
   OraModeStudioDraftBundle,
   OraModeStudioGenerateDraftParams,
   OraModeStudioRefineDraftParams,
+  OraModeStudioStartBuilderRunParams,
   OraModeRuntimeAtomDefinition,
   OraModeCreateParams,
   OraModeSpec,
@@ -276,7 +280,7 @@ export function createRuntimeClient() {
             detail: tauriUnavailableReason,
           },
           patterns,
-          modes: MVP_MODES,
+          modes: MVP_MODES.filter((mode) => mode.visibility !== "internal"),
           atoms: MVP_MODE_RUNTIME_ATOMS,
           providerRegistry,
           toolRegistry: { tools: MVP_TOOLS, defaultPolicyId: "runtime.default_policy" },
@@ -489,6 +493,12 @@ export function createRuntimeClient() {
     },
     async refineModeStudioDraft(params: OraModeStudioRefineDraftParams): Promise<OraModeStudioDraftBundle> {
       return call<OraModeStudioDraftBundle>("modeStudio.refineDraft", params);
+    },
+    async startModeStudioBuilderRun(params: OraModeStudioStartBuilderRunParams): Promise<OraRunHandle> {
+      return call<OraRunHandle>("modeStudio.startBuilderRun", params);
+    },
+    async modeStudioBuilderResult(runId: string): Promise<OraModeStudioBuilderResult> {
+      return call<OraModeStudioBuilderResult>("modeStudio.builderResult", { runId });
     },
     async validateModeStudioDraft(draftBundle: OraModeStudioDraftBundle): Promise<OraModeStudioDraftBundle> {
       return call<OraModeStudioDraftBundle>("modeStudio.validateDraft", { draftBundle });
@@ -847,6 +857,7 @@ class LocalJsonRpcRuntime {
   private projects = new Map<string, OraProjectSummary>();
   private sessions = new Map<string, OraSessionSummary>();
   private runs = new Map<string, OraStateSnapshot>();
+  private modeStudioBuilderResults = new Map<string, OraModeStudioBuilderResult>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
   private systemAgentOverrides = new Map<string, OraSystemAgentOverride>();
   private customSkills = new Map<string, OraSkillDetail>();
@@ -910,7 +921,7 @@ class LocalJsonRpcRuntime {
           detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
         },
         patterns: MVP_PATTERNS,
-        modes: [...MVP_MODES],
+        modes: MVP_MODES.filter((mode) => mode.visibility !== "internal"),
         atoms: MVP_MODE_RUNTIME_ATOMS,
         tools: {
           tools: MVP_TOOLS,
@@ -948,6 +959,10 @@ class LocalJsonRpcRuntime {
         return this.generateModeStudioDraft(params);
       case "modeStudio.refineDraft":
         return this.refineModeStudioDraft(params);
+      case "modeStudio.startBuilderRun":
+        return this.startModeStudioBuilderRun(params);
+      case "modeStudio.builderResult":
+        return this.modeStudioBuilderResult(params);
       case "modeStudio.validateDraft":
         return this.validateModeStudioDraft(params);
       case "modeStudio.applyDraft":
@@ -1942,6 +1957,7 @@ class LocalJsonRpcRuntime {
 
   private listModes(): OraModeSpec[] {
     return [...MVP_MODES, ...this.modes.values()]
+      .filter((mode) => mode.visibility !== "internal")
       .map((mode) => this.applySystemAgentOverridesToMode(mode))
       .sort((left, right) =>
         Number(right.systemPreset) - Number(left.systemPreset) ||
@@ -2106,6 +2122,54 @@ class LocalJsonRpcRuntime {
       ...(isRecord(params) ? params : {}),
       currentDraft: draftBundle?.modeDraft,
     });
+  }
+
+  private startModeStudioBuilderRun(params: unknown): OraRunHandle {
+    const bundle = this.mockModeStudioDraftBundle(params);
+    const runId = `run-${this.runs.size + 1}`;
+    const now = Date.now();
+    const mode = MVP_MODES.find((candidate) => candidate.id === "mode_studio_builder")
+      ?? this.resolveMode(undefined, "agent_teams");
+    const snapshot = this.createSnapshot(
+      runId,
+      mode,
+      modeStudioMockPrompt(params),
+      now,
+      "succeeded",
+      undefined,
+      { providerId: "local-smoke", modelRef: "local/smoke-model" },
+    );
+    const completed = {
+      ...snapshot,
+      output: {
+        kind: "mode_studio_builder_result",
+        draftBundle: bundle,
+        issues: [],
+      },
+    };
+    this.runs.set(runId, completed);
+    this.modeStudioBuilderResults.set(runId, {
+      runId,
+      status: "succeeded",
+      draftBundle: bundle,
+      issues: [],
+    });
+    return {
+      runId,
+      status: "succeeded",
+      pattern: mode.family,
+      modeId: mode.id,
+      startedAt: now,
+    };
+  }
+
+  private modeStudioBuilderResult(params: unknown): OraModeStudioBuilderResult {
+    const runId = isRecord(params) && typeof params.runId === "string" ? params.runId : "";
+    const result = this.modeStudioBuilderResults.get(runId);
+    if (!result) {
+      throw new Error(`Mode Studio builder result not found: ${runId}`);
+    }
+    return result;
   }
 
   private validateModeStudioDraft(params: unknown): OraModeStudioDraftBundle {
@@ -3710,6 +3774,17 @@ interface MockModeStudioRole {
   id: string;
   label: string;
   role: string;
+}
+
+function modeStudioMockPrompt(params: unknown): string {
+  const messages = isRecord(params) && Array.isArray(params.messages) ? params.messages : [];
+  return messages
+    .filter((message): message is { role: string; content: string } =>
+      isRecord(message) && typeof message.role === "string" && typeof message.content === "string"
+    )
+    .map((message) => `${message.role}: ${message.content.trim()}`)
+    .filter(Boolean)
+    .join("\n") || "Mode Studio builder request";
 }
 
 function mockModeStudioFamily(text: string): CoordinationPattern {
