@@ -1,13 +1,10 @@
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
   ArtifactRef,
   ArtifactRefSchema,
   CheckpointMeta,
   AgentCatalogResult,
-  AgentCatalogResultSchema,
-  CustomAgentCatalogItemSchema,
   CustomAgentCheckNameResult,
   CustomAgentCreateParams,
   CustomAgentDetail,
@@ -30,19 +27,15 @@ import {
   ModeStudioContextResult,
   ModeStudioContextResultSchema,
   ModeStudioDraftBundle,
-  ModeStudioDraftBundleSchema,
   ModeStudioGenerateDraftParams,
   ModeStudioGenerateDraftParamsSchema,
   ModeStudioRefineDraftParamsSchema,
   ModeStudioStartBuilderRunParams,
   ModeStudioStartBuilderRunParamsSchema,
   ModeStudioValidateDraftParamsSchema,
-  createModeSpecFromPattern,
-  getPatternDefinition,
   modeSpecToPatternDefinition,
   MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
-  ModeSpecSchema,
   type ModeCreateParams,
   type ModeSpec,
   type ModeUpdateParams,
@@ -108,12 +101,23 @@ import {
   UserTaskInputSchema,
   withDefaultWebToolIds
 } from "@ora/shared";
-import type { ActionRecord } from "@ora/shared";
 import { TodoService } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
-import { RuntimeToolExecutor } from "./harness/runtime-tool-executor.js";
+import {
+  approvedFileWriteResumeActions,
+  completeApprovedFileWriteResume,
+  type ApprovedFileWriteResumeDeps
+} from "./approved-file-write-resume.js";
+import {
+  applySystemAgentOverridesToMode,
+  buildAgentCatalog,
+  customAgentContextsForMode,
+  customAgentOverlaysForMode,
+  systemAgentIds,
+  systemAgentOverlaysForMode
+} from "./agent-catalog.js";
 import { FileLongTermMemoryStore, LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
 import type { LongTermMemoryUpdateTask } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
@@ -143,36 +147,14 @@ import {
 } from "./project-workspace.js";
 import { OraRuntimeError } from "./runtime-errors.js";
 import { generateCustomAgentDraft } from "./agent-draft.js";
-import { isPlainRecord, parseJsonObject } from "./provider-json.js";
+import { parseJsonObject } from "./provider-json.js";
+import { modeCreateParamsFromSpec } from "./mode-studio-draft.js";
 import {
-  assessModeStudioDesignCompleteness,
-  enrichModeStudioGeneratedDraft,
-  inferModeStudioFamily,
-  isCoordinationPattern,
-  modeCreateParamsFromSpec,
-  modeStudioAgentDraft,
-  modeStudioBuilderSystemPrompt,
-  modeStudioBuilderUserPrompt,
-  type ModeStudioBuilderProviderResponse,
-  modeStudioDescription,
-  modeStudioFamilyReason,
-  modeStudioGuidance,
-  modeStudioLabel,
-  modeStudioNeedsInputBundle,
-  modeStudioNodePrompt,
-  modeStudioNodeStoryConfig,
-  modeStudioPurpose,
-  modeStudioRolePlans,
-  modeStudioRuntimeAtoms,
-  modeStudioSummary,
-  modeStudioTopologyChoices,
-  modeStudioUserText,
-  normalizeGeneratedAgentDraft,
-  ownerForModeStudioTemplate,
-  parseModeStudioBuilderProviderText,
-  prepareModeStudioDraft,
-  slugifyModeStudio
-} from "./mode-studio-draft.js";
+  buildModeStudioDraft,
+  createModeStudioBuilderResult,
+  withModeStudioValidation,
+  type ModeStudioStoreDeps
+} from "./mode-studio-store.js";
 import {
   approvedActionsForResume,
   hasKernelResumeWork,
@@ -209,9 +191,25 @@ import {
   createModeStudioBuilderConfig,
   createModeStudioBuilderInput,
   modeStudioBuilderResultFromSnapshot,
-  startModeStudioBuilderSnapshot,
-  type ModeStudioBuilderRunResult
+  startModeStudioBuilderSnapshot
 } from "./mode-studio-builder-run.js";
+import {
+  defaultCustomAgentsDir,
+  defaultEvaluationStoreDir,
+  defaultFeedbackLoopStoreDir,
+  defaultMemoryDir,
+  defaultModesDir,
+  defaultPublicSkillsDir,
+  defaultRuntimeStoreDir,
+  defaultSkillsDir,
+  defaultSystemAgentOverridesDir
+} from "./runtime-store-paths.js";
+import {
+  DEFAULT_SESSION_TITLE,
+  assistantTextForRun,
+  defaultSessionTitle,
+  generateSessionTitle
+} from "./session-title.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -236,10 +234,6 @@ const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 
 const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
-const DEFAULT_SESSION_TITLE = "New Chat";
-const SESSION_TITLE_MAX_INPUT_CHARS = 500;
-const SESSION_TITLE_MAX_CHARS = 60;
-const SESSION_TITLE_FALLBACK_CHARS = 50;
 const AutoModeRouterResponseSchema = z.object({
   modeId: z.string().min(1),
   confidence: z.number().min(0).max(1),
@@ -340,75 +334,19 @@ export class LocalRunStore {
   }
 
   private applySystemAgentOverridesToMode(modeSpec: ModeSpec): ModeSpec {
-    return {
-      ...modeSpec,
-      profiles: modeSpec.profiles.map((profile) => this.systemAgentOverrideStore.apply(profile)),
-    };
+    return applySystemAgentOverridesToMode(modeSpec, this.systemAgentOverrideStore);
   }
 
   private customAgentOverlaysForMode(modeSpec: ModeSpec): Record<string, string> {
-    const overlays: Record<string, string> = {};
-    for (const customAgentId of this.customAgentIdsForMode(modeSpec)) {
-      if (!customAgentId || overlays[customAgentId]) {
-        continue;
-      }
-      try {
-        const overlay = this.customAgentStore.personaOverlay(customAgentId);
-        if (overlay) {
-          overlays[customAgentId] = overlay;
-        }
-      } catch {
-        // A deleted custom agent should not make an otherwise valid mode unusable.
-      }
-    }
-    return overlays;
+    return customAgentOverlaysForMode(modeSpec, this.customAgentStore);
   }
 
   private customAgentContextsForMode(modeSpec: ModeSpec): Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }> {
-    const contexts: Record<string, Pick<CustomAgentDetail, "model" | "skillIds" | "toolIds"> & { overlay: string }> = {};
-    for (const customAgentId of this.customAgentIdsForMode(modeSpec)) {
-      if (!customAgentId || contexts[customAgentId]) {
-        continue;
-      }
-      try {
-        const agent = this.customAgentStore.get({ name: customAgentId });
-        const overlay = this.customAgentStore.personaOverlay(customAgentId);
-        if (overlay) {
-          contexts[customAgentId] = {
-            overlay,
-            model: agent.model,
-            toolIds: agent.toolIds,
-            skillIds: agent.skillIds,
-          };
-        }
-      } catch {
-        // A deleted custom agent should not make an otherwise valid mode unusable.
-      }
-    }
-    return contexts;
-  }
-
-  private customAgentIdsForMode(modeSpec: ModeSpec): string[] {
-    return [
-      ...modeSpec.profiles.map((profile) => profile.customAgentId?.trim() ?? ""),
-      ...modeSpec.nodes.map((node) =>
-        typeof node.config?.customAgentId === "string" ? node.config.customAgentId.trim() : "",
-      ),
-    ].filter(Boolean);
+    return customAgentContextsForMode(modeSpec, this.customAgentStore);
   }
 
   private systemAgentOverlaysForMode(modeSpec: ModeSpec): Record<string, string> {
-    const overlays: Record<string, string> = {};
-    for (const profile of modeSpec.profiles) {
-      if (profile.customAgentId) {
-        continue;
-      }
-      const overlay = this.systemAgentOverrideStore.overlay(profile.id);
-      if (overlay) {
-        overlays[profile.id] = overlay;
-      }
-    }
-    return overlays;
+    return systemAgentOverlaysForMode(modeSpec, this.systemAgentOverrideStore);
   }
 
   updateMode(params: ModeUpdateParams | unknown): ModeSpec {
@@ -439,15 +377,15 @@ export class LocalRunStore {
 
   generateModeStudioDraft(params: ModeStudioGenerateDraftParams | unknown): ModeStudioDraftBundle {
     const parsed = ModeStudioGenerateDraftParamsSchema.parse(params);
-    return this.buildModeStudioDraft(parsed);
+    return buildModeStudioDraft(parsed, this.modeStudioDeps());
   }
 
   refineModeStudioDraft(params: unknown): ModeStudioDraftBundle {
     const parsed = ModeStudioRefineDraftParamsSchema.parse(params);
-    return this.buildModeStudioDraft({
+    return buildModeStudioDraft({
       ...parsed,
       currentDraft: parsed.draftBundle.modeDraft,
-    });
+    }, this.modeStudioDeps());
   }
 
   async startModeStudioBuilderRun(params: ModeStudioStartBuilderRunParams | unknown): Promise<RunHandle> {
@@ -472,7 +410,7 @@ export class LocalRunStore {
       appendEvent,
     });
 
-    const result = await this.createModeStudioBuilderResult(parsed, config);
+    const result = await createModeStudioBuilderResult(parsed, config, this.modeStudioDeps());
     snapshot = completeModeStudioBuilderSnapshot({
       snapshot,
       result,
@@ -493,12 +431,12 @@ export class LocalRunStore {
 
   validateModeStudioDraft(params: unknown): ModeStudioDraftBundle {
     const parsed = ModeStudioValidateDraftParamsSchema.parse(params);
-    return this.withModeStudioValidation(parsed.draftBundle);
+    return withModeStudioValidation(parsed.draftBundle, this.modeStudioDeps());
   }
 
   applyModeStudioDraft(params: unknown): ModeStudioApplyDraftResult {
     const parsed = ModeStudioApplyDraftParamsSchema.parse(params);
-    const bundle = this.withModeStudioValidation(parsed.draftBundle);
+    const bundle = withModeStudioValidation(parsed.draftBundle, this.modeStudioDeps());
     if (bundle.needsInput) {
       throw new Error("Mode Studio draft still needs input before it can be applied.");
     }
@@ -535,250 +473,15 @@ export class LocalRunStore {
     return ModeStudioApplyDraftResultSchema.parse({ mode, agents: savedAgents });
   }
 
-  private buildModeStudioDraft(params: ModeStudioGenerateDraftParams & { draftBundle?: ModeStudioDraftBundle }): ModeStudioDraftBundle {
-    const userText = modeStudioUserText(params.messages);
-    const source = this.modeStudioSourceMode(params);
-    const completeness = assessModeStudioDesignCompleteness(userText, {
-      currentDraft: params.currentDraft,
-      previousDraftBundle: params.draftBundle,
-    });
-    if (!completeness.complete) {
-      return this.withModeStudioValidation(ModeStudioDraftBundleSchema.parse({
-        modeDraft: prepareModeStudioDraft(source, userText, [], params),
-        agentDrafts: [],
-        guidance: {
-          step: completeness.missing.includes("topology") ? "topology" : "goal",
-          assistantMessage: completeness.assistantMessage,
-          choices: completeness.missing.includes("topology") ? modeStudioTopologyChoices() : [],
-        },
-        changeSummary: ["Kept a preview draft open while the builder collects enough mode design detail."],
-        validation: { valid: false, errors: [], warnings: [] },
-        needsInput: true,
-      }));
-    }
-
-    const family = inferModeStudioFamily(userText, source.family);
-    const pattern = getPatternDefinition(family);
-    const base = params.currentDraft && params.currentDraft.family === family
-      ? params.currentDraft
-      : createModeSpecFromPattern(family);
-    const rolePlans = modeStudioRolePlans(family, userText);
-    const usedNames = new Set(this.listAgents().map((agent) => agent.name));
-    const agentDrafts = rolePlans.map((role) => modeStudioAgentDraft(role, userText, usedNames));
-    const modeDraft = prepareModeStudioDraft(base, userText, agentDrafts, params);
-    const profiles = rolePlans.map((role, index) => {
-      const draft = agentDrafts[index]!;
-      return {
-        id: role.profileId,
-        label: role.label,
-        role: role.role,
-        customAgentId: draft.name,
-        modelRef: base.profiles[index]?.modelRef,
-        toolPolicyId: base.profiles[index]?.toolPolicyId ?? `${family}.default`,
-        toolIds: draft.toolIds,
-        skillIds: draft.skillIds,
-        memoryNamespaces: base.profiles[index]?.memoryNamespaces ?? ["session", "project"],
-        budget: base.profiles[index]?.budget ?? DEFAULT_RESOURCE_BUDGETS[family],
-      };
-    });
-    const toolIds = [...new Set(agentDrafts.flatMap((agent) => agent.toolIds))];
-    const skillIds = [...new Set(agentDrafts.flatMap((agent) => agent.skillIds))];
-    const runtimeAtoms = modeStudioRuntimeAtoms(family, userText, base.runtimeAtoms);
-    const nextDraft = {
-      ...modeDraft,
-      family,
-      summary: modeStudioSummary(userText, pattern.summary),
-      description: modeStudioDescription(userText, pattern),
-      recommendedUse: `Use when the user wants: ${modeStudioPurpose(userText)}.`,
-      failureMode: pattern.failureMode,
-      profiles,
-      nodes: modeDraft.nodes.map((node) => {
-        const ownerAgentId = ownerForModeStudioTemplate(node.template, rolePlans) ?? node.ownerAgentId;
-        return {
-          ...node,
-          ownerAgentId,
-          prompt: modeStudioNodePrompt(node.template, userText, node.prompt),
-          config: {
-            ...node.config,
-            story: modeStudioNodeStoryConfig(family, node, ownerAgentId, profiles, userText),
-          },
-        };
-      }),
-      capabilityFlags: {
-        ...modeDraft.capabilityFlags,
-        supportsPersistentWorkers: pattern.supportsPersistentWorkers,
-        supportsSharedState: pattern.supportsSharedState,
-        supportsEventRouting: pattern.supportsEventRouting,
-        toolIds,
-        skillIds,
-      },
-      runtimeAtoms,
-      updatedAt: Date.now(),
+  private modeStudioDeps(): ModeStudioStoreDeps {
+    return {
+      now: () => this.now(),
+      listAgents: () => this.listAgents(),
+      listModes: () => this.listModes(),
+      getMode: (params) => this.getMode(params),
+      validateMode: (params) => this.validateMode(params),
+      modeStudioContext: () => this.modeStudioContext(),
     };
-    const guidance = modeStudioGuidance(family, userText);
-    return this.withModeStudioValidation(ModeStudioDraftBundleSchema.parse({
-      modeDraft: nextDraft,
-      agentDrafts,
-      guidance,
-      changeSummary: [
-        `Selected ${pattern.label} because the request implies ${modeStudioFamilyReason(family)}.`,
-        `Drafted ${agentDrafts.length} agent${agentDrafts.length === 1 ? "" : "s"} with role-specific style and capabilities.`,
-        toolIds.length > 0 ? `Mounted ${toolIds.length} tool${toolIds.length === 1 ? "" : "s"} across the agent roster.` : "Kept tools minimal until the user asks for more capability.",
-      ],
-      validation: { valid: false, errors: [], warnings: [] },
-      needsInput: false,
-    }));
-  }
-
-  private modeStudioSourceMode(params: ModeStudioGenerateDraftParams): ModeSpec {
-    if (params.currentDraft) {
-      return params.currentDraft;
-    }
-    if (params.baseModeId) {
-      try {
-        return this.getMode({ modeId: params.baseModeId });
-      } catch {
-        // Fall back to the default pattern when a stale UI reference is supplied.
-      }
-    }
-    return this.listModes().find((mode) => mode.id === SINGLE_AGENT_MODE_ID)
-      ?? createModeSpecFromPattern("orchestrator_subagent");
-  }
-
-  private withModeStudioValidation(bundle: ModeStudioDraftBundle): ModeStudioDraftBundle {
-    const validation = this.validateMode({ spec: bundle.modeDraft });
-    return ModeStudioDraftBundleSchema.parse({
-      ...bundle,
-      validation,
-    });
-  }
-
-  private async createModeStudioBuilderResult(
-    params: ModeStudioStartBuilderRunParams,
-    config: RunConfig,
-  ): Promise<ModeStudioBuilderRunResult> {
-    if (config.providerId === "local-smoke" || config.modelRef === "local/smoke-model") {
-      return { draftBundle: this.buildModeStudioDraft(params), issues: [] };
-    }
-    try {
-      const firstResponse = await invokeRunProvider(config, {
-        system: modeStudioBuilderSystemPrompt(),
-        messages: params.messages.map((message): ModelMessage => ({
-          role: message.role,
-          content: message.content,
-        })),
-        prompt: modeStudioBuilderUserPrompt(params, this.modeStudioContext()),
-        temperature: 0.2,
-        maxTokens: 5000,
-        toolChoice: "none",
-      });
-      const firstParsed = parseModeStudioBuilderProviderText(firstResponse.text);
-      const parsed = firstParsed.success
-        ? firstParsed
-        : parseModeStudioBuilderProviderText((await invokeRunProvider(config, {
-            system: "Repair the previous response into strict JSON only. Do not add markdown.",
-            messages: [
-              {
-                role: "user",
-                content: [
-                  "Invalid Mode Studio builder response:",
-                  firstResponse.text,
-                  "Return JSON matching: {\"assistantMessage\": string, \"needsInput\": boolean, \"modeDraft\": ModeSpec, \"agentDrafts\": CustomAgentGeneratedDraft[], \"changeSummary\": string[], \"issues\": [{\"field\": string, \"message\": string}]}",
-                ].join("\n\n"),
-              },
-            ],
-            temperature: 0,
-            maxTokens: 5000,
-            toolChoice: "none",
-          })).text);
-      if (!parsed.success) {
-        return {
-          draftBundle: this.withModeStudioValidation(modeStudioNeedsInputBundle(this.modeStudioSourceMode(params), params, "Builder returned invalid JSON after repair.")),
-          issues: [{ field: "general", message: "Builder returned invalid JSON after repair." }],
-          rawText: firstResponse.text,
-        };
-      }
-      const draftBundle = this.modeStudioBundleFromProvider(parsed.data, params);
-      return { draftBundle, issues: parsed.data.issues, rawText: firstResponse.text };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        draftBundle: this.withModeStudioValidation(modeStudioNeedsInputBundle(this.modeStudioSourceMode(params), params, message)),
-        issues: [{ field: "general", message }],
-      };
-    }
-  }
-
-  private modeStudioBundleFromProvider(
-    providerResult: ModeStudioBuilderProviderResponse,
-    params: ModeStudioStartBuilderRunParams,
-  ): ModeStudioDraftBundle {
-    const text = modeStudioUserText(params.messages);
-    const source = this.modeStudioSourceMode(params);
-    const rawMode = isPlainRecord(providerResult.modeDraft) ? providerResult.modeDraft : {};
-    const rawFamily = typeof rawMode.family === "string" && isCoordinationPattern(rawMode.family)
-      ? rawMode.family
-      : source.family;
-    const base = params.currentDraft && params.currentDraft.family === rawFamily
-      ? params.currentDraft
-      : source.family === rawFamily
-        ? source
-        : createModeSpecFromPattern(rawFamily);
-    const now = this.now();
-    const idSeed = typeof rawMode.id === "string"
-      ? rawMode.id
-      : typeof rawMode.label === "string"
-        ? rawMode.label
-        : modeStudioPurpose(text);
-    const modeDraft = ModeSpecSchema.parse({
-      ...base,
-      ...rawMode,
-      id: slugifyModeStudio(idSeed) || slugifyModeStudio(base.id) || "guided-mode",
-      family: rawFamily,
-      label: typeof rawMode.label === "string" && rawMode.label.trim() ? rawMode.label.trim() : modeStudioLabel(text),
-      summary: typeof rawMode.summary === "string" && rawMode.summary.trim() ? rawMode.summary.trim() : modeStudioSummary(text, base.summary),
-      description: typeof rawMode.description === "string" && rawMode.description.trim() ? rawMode.description.trim() : modeStudioDescription(text, getPatternDefinition(rawFamily)),
-      recommendedUse: typeof rawMode.recommendedUse === "string" && rawMode.recommendedUse.trim() ? rawMode.recommendedUse.trim() : `Use when the user wants: ${modeStudioPurpose(text)}.`,
-      systemPreset: false,
-      visibility: "user",
-      nodes: Array.isArray(rawMode.nodes) ? rawMode.nodes : base.nodes,
-      edges: Array.isArray(rawMode.edges) ? rawMode.edges : base.edges,
-      profiles: Array.isArray(rawMode.profiles) ? rawMode.profiles : base.profiles,
-      createdAt: params.currentDraft?.createdAt ?? now,
-      updatedAt: now,
-    });
-    const agentDrafts = providerResult.agentDrafts.map((draft) => normalizeGeneratedAgentDraft(draft));
-    const enrichedDraft = enrichModeStudioGeneratedDraft(modeDraft, {
-      text,
-      agentDrafts,
-      currentDraft: params.currentDraft,
-    });
-    const completeness = assessModeStudioDesignCompleteness(text, {
-      currentDraft: params.currentDraft,
-      previousDraftBundle: params.draftBundle,
-    });
-    const needsInput = providerResult.needsInput || !completeness.complete;
-    const bundle = ModeStudioDraftBundleSchema.parse({
-      modeDraft: enrichedDraft,
-      agentDrafts,
-      guidance: {
-        step: needsInput ? "goal" : "preview",
-        assistantMessage: providerResult.needsInput
-          ? providerResult.assistantMessage
-          : needsInput
-            ? completeness.assistantMessage
-            : providerResult.assistantMessage,
-        choices: needsInput
-          ? (completeness.missing.includes("topology") ? modeStudioTopologyChoices() : [])
-          : modeStudioGuidance(enrichedDraft.family, text).choices,
-      },
-      changeSummary: providerResult.changeSummary.length > 0
-        ? providerResult.changeSummary
-        : [`Generated ${enrichedDraft.label} through the runtime-backed Mode Studio builder.`],
-      validation: { valid: false, errors: [], warnings: [] },
-      needsInput,
-    });
-    return this.withModeStudioValidation(bundle);
   }
 
   createProject(params: unknown = {}): ProjectSummary {
@@ -902,103 +605,10 @@ export class LocalRunStore {
   }
 
   agentCatalog(): AgentCatalogResult {
-    const rawModes = this.modeStore.list().filter((mode) => mode.visibility !== "internal");
-    const effectiveModes = rawModes.map((mode) => this.applySystemAgentOverridesToMode(mode));
-    const effectiveModeById = new Map(effectiveModes.map((mode) => [mode.id, mode]));
-    const systemProfiles = new Map<string, {
-      source: "system";
-      id: string;
-      label: string;
-      role: string;
-      modelRef?: string;
-      toolPolicyId: string;
-      toolIds: string[];
-      skillIds: string[];
-      memoryNamespaces: string[];
-      soul: string;
-      overridden: boolean;
-      override?: SystemAgentOverride;
-      usages: unknown[];
-    }>();
-    const customUsages = new Map<string, unknown[]>();
-    const addCustomUsage = (name: string | undefined, usage: unknown) => {
-      if (!name) {
-        return;
-      }
-      const normalized = name.trim().toLowerCase();
-      const current = customUsages.get(normalized) ?? [];
-      const key = JSON.stringify(usage);
-      if (!current.some((item) => JSON.stringify(item) === key)) {
-        current.push(usage);
-      }
-      customUsages.set(normalized, current);
-    };
-
-    for (const mode of rawModes.filter((candidate) => candidate.systemPreset)) {
-      const effectiveMode = effectiveModeById.get(mode.id) ?? mode;
-      for (const profile of mode.profiles) {
-        if (systemProfiles.has(profile.id)) {
-          continue;
-        }
-        const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
-        const override = this.systemAgentOverrideStore.get(profile.id);
-        const modelRef = explicitSystemAgentModelRef(effectiveProfile.modelRef);
-        systemProfiles.set(profile.id, {
-          source: "system",
-          id: profile.id,
-          label: effectiveProfile.label,
-          role: effectiveProfile.role,
-          ...(modelRef ? { modelRef } : {}),
-          toolPolicyId: effectiveProfile.toolPolicyId,
-          toolIds: effectiveProfile.toolIds,
-          skillIds: effectiveProfile.skillIds,
-          memoryNamespaces: effectiveProfile.memoryNamespaces,
-          soul: override?.soul ?? effectiveProfile.systemPrompt ?? "",
-          overridden: override !== undefined,
-          ...(override ? { override } : {}),
-          usages: [],
-        });
-      }
-    }
-
-    for (const mode of rawModes) {
-      const effectiveMode = effectiveModeById.get(mode.id) ?? mode;
-      for (const profile of mode.profiles) {
-        const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
-        const usage = {
-          modeId: mode.id,
-          modeLabel: effectiveMode.label,
-          systemPreset: mode.systemPreset,
-          profileId: profile.id,
-          profileLabel: effectiveProfile.label,
-        };
-        if (profile.customAgentId) {
-          addCustomUsage(profile.customAgentId, usage);
-          continue;
-        }
-        systemProfiles.get(profile.id)?.usages.push(usage);
-      }
-      for (const node of mode.nodes) {
-        addCustomUsage(
-          typeof node.config?.customAgentId === "string" ? node.config.customAgentId : undefined,
-          {
-            modeId: mode.id,
-            modeLabel: effectiveMode.label,
-            systemPreset: mode.systemPreset,
-            nodeId: node.id,
-            nodeLabel: node.title ?? node.label,
-          },
-        );
-      }
-    }
-
-    return AgentCatalogResultSchema.parse({
-      systemAgents: [...systemProfiles.values()].sort((left, right) => left.label.localeCompare(right.label)),
-      customAgents: this.listAgents().map((agent) => CustomAgentCatalogItemSchema.parse({
-        ...agent,
-        source: "custom",
-        usages: customUsages.get(agent.name) ?? [],
-      })),
+    return buildAgentCatalog({
+      modeStore: this.modeStore,
+      systemAgentOverrideStore: this.systemAgentOverrideStore,
+      agents: this.listAgents(),
     });
   }
 
@@ -1019,11 +629,7 @@ export class LocalRunStore {
   }
 
   private systemAgentIds(): Set<string> {
-    return new Set(
-      this.modeStore.list()
-        .filter((mode) => mode.systemPreset)
-        .flatMap((mode) => mode.profiles.map((profile) => profile.id)),
-    );
+    return systemAgentIds(this.modeStore);
   }
 
   getAgent(params: unknown): CustomAgentDetail {
@@ -1214,240 +820,15 @@ export class LocalRunStore {
     return this.toRunHandle(liveSnapshot);
   }
 
-  private approvedFileWriteResumeActions(snapshot: StateSnapshot, approvedActionIds: string[]): ActionRecord[] {
-    if (snapshot.pendingClarifications.length > 0) {
-      return [];
-    }
-    const approvedIds = new Set(approvedActionIds);
-    const pendingActions = snapshot.actions.filter((action) => action.status === "approval_required");
-    const approvedFileWrites = pendingActions.filter((action) =>
-      approvedIds.has(action.id) && action.type === "file.write"
-    );
-    return approvedFileWrites.length > 0 && approvedFileWrites.length === pendingActions.length
-      ? approvedFileWrites
-      : [];
-  }
-
-  private async completeApprovedFileWriteResume(
-    snapshot: StateSnapshot,
-    approvedActionIds: string[],
-    params: { reason?: string; patch?: unknown } = {},
-    onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
-  ): Promise<StateSnapshot | undefined> {
-    const approvedFileWrites = this.approvedFileWriteResumeActions(snapshot, approvedActionIds);
-    if (approvedFileWrites.length === 0) {
-      return undefined;
-    }
-    const writeResults: Array<{ path?: unknown; sizeBytes?: unknown; content?: unknown }> = [];
-
-    const executor = new RuntimeToolExecutor({
-      workspace: snapshot.input.context?.projectWorkspace,
-      toolDescriptors: new RuntimeToolRegistry().list(),
+  private approvedFileWriteResumeDeps(): ApprovedFileWriteResumeDeps {
+    return {
       skillRegistry: this.skillRegistry,
-      searchProviderConfig: snapshot.config.searchProvider,
-    });
-
-    let working = StateSnapshotSchema.parse({
-      ...snapshot,
-      status: "running",
-      pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approvedActionIds.includes(actionId)),
-      updatedAt: this.now(),
-    });
-    const append = (type: OraEventEnvelope["type"], payload: unknown, base: StateSnapshot = working) => {
-      working = this.appendEvent(base, type, payload);
-      const event = working.events.at(-1);
-      if (event) {
-        onEvent?.(event, working);
-      }
+      now: () => this.now(),
+      appendEvent: (snapshot, type, payload, extra) => this.appendEvent(snapshot, type, payload, extra),
+      attachTraceMetadata: (snapshot) => this.attachTraceMetadata(snapshot),
+      buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
+        this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
     };
-    const replaceAction = (record: ActionRecord) => {
-      working = StateSnapshotSchema.parse({
-        ...working,
-        actions: working.actions.map((action) => (action.id === record.id ? record : action)),
-      });
-    };
-    const replaceToolCall = (
-      actionId: string,
-      status: "approved" | "running" | "succeeded" | "failed",
-      result?: { output?: unknown; error?: string; content?: string },
-    ) => {
-      const updatedAt = this.now();
-      working = StateSnapshotSchema.parse({
-        ...working,
-        toolCalls: working.toolCalls.map((call) =>
-          call.actionId === actionId
-            ? {
-                ...call,
-                status,
-                updatedAt,
-                result: result
-                  ? {
-                      status,
-                      output: result.output,
-                      error: result.error,
-                      content: result.content,
-                      createdAt: updatedAt,
-                      updatedAt,
-                    }
-                  : call.result,
-              }
-            : call
-        ),
-      });
-    };
-
-    append("run.resumed", {
-      reason: params.reason ?? USER_RESUMED_MESSAGE,
-      patch: params.patch ?? {},
-    });
-
-    for (const originalAction of approvedFileWrites) {
-      const action = working.actions.find((item) => item.id === originalAction.id) ?? originalAction;
-      append("approval.resolved", {
-        actionId: action.id,
-        decision: "approved",
-        mode: "resume",
-      });
-
-      const approved = { ...action, status: "approved" as const };
-      replaceAction(approved);
-      replaceToolCall(action.id, "approved");
-      append("action.updated", { actionId: action.id, status: "approved", record: approved });
-
-      const running = { ...approved, status: "running" as const };
-      replaceAction(running);
-      replaceToolCall(action.id, "running");
-      append("action.updated", { actionId: action.id, status: "running", record: running });
-
-      try {
-        const args = action.input && typeof action.input === "object" && !Array.isArray(action.input)
-          ? action.input as Record<string, unknown>
-          : {};
-        const output = await executor.execute({ tool: "file.write", args }, { allowRisky: true });
-        writeResults.push({
-          path: (output as Record<string, unknown>)?.path ?? args.path,
-          sizeBytes: (output as Record<string, unknown>)?.sizeBytes,
-          content: args.content,
-        });
-        const resultText = JSON.stringify(output, null, 2);
-        const succeeded = { ...running, status: "succeeded" as const, output };
-        replaceAction(succeeded);
-        replaceToolCall(action.id, "succeeded", { output, content: resultText });
-        append("tool.called", {
-          toolCallId: working.toolCalls.find((call) => call.actionId === action.id)?.id,
-          actionId: action.id,
-          toolId: action.type,
-          source: "replay",
-          status: "succeeded",
-          input: args,
-          output,
-          cacheHit: false,
-        });
-        append("action.updated", { actionId: action.id, status: "succeeded", record: succeeded });
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        const failed = { ...running, status: "failed" as const, error: detail };
-        replaceAction(failed);
-        replaceToolCall(action.id, "failed", { error: detail, content: detail });
-        append("tool.called", {
-          toolCallId: working.toolCalls.find((call) => call.actionId === action.id)?.id,
-          actionId: action.id,
-          toolId: action.type,
-          source: "replay",
-          status: "failed",
-          input: action.input,
-          error: detail,
-          cacheHit: false,
-        });
-        append("action.updated", { actionId: action.id, status: "failed", record: failed });
-        append("run.failed", { status: "failed", error: detail });
-        return this.attachTraceMetadata(StateSnapshotSchema.parse({
-          ...working,
-          status: "failed",
-          error: detail,
-          activeAgents: [],
-          updatedAt: this.now(),
-        }));
-      }
-    }
-
-    const finalText = await this.finalTextForApprovedFileWriteResume(snapshot, writeResults);
-    append("message.delta", { role: "assistant", content: finalText });
-    const output = { text: finalText };
-    append("run.done", { status: "succeeded", output });
-    return this.attachTraceMetadata(StateSnapshotSchema.parse({
-      ...working,
-      status: "succeeded",
-      pendingApprovals: [],
-      activeAgents: [],
-      output,
-      updatedAt: this.now(),
-    }));
-  }
-
-  private async finalTextForApprovedFileWriteResume(
-    snapshot: StateSnapshot,
-    writeResults: Array<{ path?: unknown; sizeBytes?: unknown; content?: unknown }>,
-  ): Promise<string> {
-    const writeSummary = writeResults.map((result) => ({
-      path: result.path,
-      sizeBytes: result.sizeBytes,
-    }));
-    const updatedContent = writeResults
-      .map((result) => typeof result.content === "string" ? result.content : "")
-      .filter(Boolean)
-      .join("\n\n---\n\n")
-      .slice(0, 60_000);
-    const messages = [
-      ...(snapshot.sessionId
-        ? this.buildConversationMessages(snapshot.sessionId, snapshot.input.prompt, snapshot.runId)
-        : [{ role: "user" as const, content: snapshot.input.prompt.trim() }]),
-      {
-        role: "user" as const,
-        content: [
-          "The user approved the pending file.write action, and the runtime has already executed it.",
-          "Do not call any tools or emit tool JSON.",
-          "Now provide the final answer in the user's language.",
-          "Briefly confirm the document update and summarize the substantive findings from the updated content.",
-          `Write result: ${JSON.stringify(writeSummary)}`,
-          updatedContent ? `Updated document content:\n${updatedContent}` : undefined,
-        ].filter(Boolean).join("\n\n"),
-      },
-    ];
-    const system = [
-      "You are Ora completing a resumed run after an approved document write.",
-      "The side effect has already happened. Do not request another tool call.",
-      "Answer directly and naturally.",
-    ].join("\n");
-    const first = await invokeRunProvider(snapshot.config, {
-      messages,
-      system,
-      maxTokens: snapshot.config.budget?.maxTokens,
-      tools: [],
-      toolChoice: "none",
-    });
-    if ((first.toolCalls?.length ?? 0) === 0 && first.text.trim()) {
-      return first.text.trim();
-    }
-    const retry = await invokeRunProvider(snapshot.config, {
-      messages: [
-        ...messages,
-        {
-          role: "assistant",
-          content: first.text,
-          toolCalls: first.toolCalls,
-        },
-        {
-          role: "user",
-          content: "Tools are disabled for this final answer. Reply in plain prose only, confirming the document update and summarizing the findings.",
-        },
-      ],
-      system,
-      maxTokens: snapshot.config.budget?.maxTokens,
-      tools: [],
-      toolChoice: "none",
-    });
-    return retry.text.trim() || "文档已更新。";
   }
 
   async resumeStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
@@ -1495,11 +876,12 @@ export class LocalRunStore {
     };
     publishStream([], liveSnapshot);
 
-    if (this.approvedFileWriteResumeActions(snapshot, approvedActionIds).length > 0) {
-      void this.completeApprovedFileWriteResume(
+    if (approvedFileWriteResumeActions(snapshot, approvedActionIds).length > 0) {
+      void completeApprovedFileWriteResume(
         snapshot,
         approvedActionIds,
         { reason: parsed.reason, patch: parsed.patch },
+        this.approvedFileWriteResumeDeps(),
         (event, nextSnapshot) => {
           liveSnapshot = nextSnapshot;
           this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
@@ -1700,10 +1082,11 @@ export class LocalRunStore {
     const snapshot = this.getRunOrThrow(parsed.runId);
     const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
     const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
-    const completedApprovedFileWrite = await this.completeApprovedFileWriteResume(
+    const completedApprovedFileWrite = await completeApprovedFileWriteResume(
       snapshot,
       approvedActionIds,
       { reason: parsed.reason, patch: parsed.patch },
+      this.approvedFileWriteResumeDeps(),
     );
     if (completedApprovedFileWrite) {
       await this.persistRunWithGeneratedTitle(completedApprovedFileWrite);
@@ -2403,7 +1786,10 @@ export class LocalRunStore {
   }
 
   private async persistRunWithGeneratedTitle(snapshot: StateSnapshot): Promise<void> {
-    const titleOverride = await this.generateSessionTitle(snapshot);
+    const titleOverride = await generateSessionTitle(
+      snapshot,
+      snapshot.sessionId ? this.sessions.get(snapshot.sessionId)?.title : undefined,
+    );
     this.cacheRun(snapshot, true, { titleOverride });
     this.scheduleLongTermMemoryUpdate(snapshot);
   }
@@ -2430,88 +1816,6 @@ export class LocalRunStore {
     }
   }
 
-  private async generateSessionTitle(snapshot: StateSnapshot): Promise<string | undefined> {
-    if (!this.shouldGenerateSessionTitle(snapshot)) {
-      return undefined;
-    }
-
-    const userMsg = snapshot.input.prompt.trim();
-    const assistantMsg = this.assistantTextForRun(snapshot);
-    try {
-      const response = await invokeRunProvider(snapshot.config, {
-        system: [
-          "You are Ora's conversation title generator.",
-          "Generate a concise title in the same language as the user message.",
-          "Use at most 6 English words or roughly 16 Chinese characters, and never exceed 60 characters.",
-          "Return only the title, with no quotes, markdown, label, or explanation.",
-        ].join(" "),
-        messages: [{
-          role: "user",
-          content: [
-            "User message:",
-            truncateForTitlePrompt(userMsg),
-            "",
-            "Assistant response:",
-            truncateForTitlePrompt(assistantMsg),
-          ].join("\n"),
-        }],
-        temperature: 0,
-        maxTokens: 80,
-        toolChoice: "none",
-      });
-      return this.parseGeneratedSessionTitle(response.text) ?? this.fallbackSessionTitle(userMsg);
-    } catch {
-      return this.fallbackSessionTitle(userMsg);
-    }
-  }
-
-  private shouldGenerateSessionTitle(snapshot: StateSnapshot): boolean {
-    if (!snapshot.sessionId || snapshot.status === "queued" || snapshot.status === "running") {
-      return false;
-    }
-    if ((snapshot.turnIndex ?? 1) !== 1) {
-      return false;
-    }
-    const existing = this.sessions.get(snapshot.sessionId);
-    if (existing?.title && existing.title !== DEFAULT_SESSION_TITLE) {
-      return false;
-    }
-    return snapshot.input.prompt.trim().length > 0 && this.assistantTextForRun(snapshot).length > 0;
-  }
-
-  private parseGeneratedSessionTitle(content: string): string | undefined {
-    const line = content
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .find((item) => item.length > 0);
-    if (!line) {
-      return undefined;
-    }
-    const title = line
-      .replace(/^#+\s*/, "")
-      .replace(/^[*-]\s*/, "")
-      .replace(/^title\s*:\s*/i, "")
-      .trim()
-      .replace(/^["']+|["']+$/g, "")
-      .trim();
-    if (!title) {
-      return undefined;
-    }
-    return title.length > SESSION_TITLE_MAX_CHARS
-      ? title.slice(0, SESSION_TITLE_MAX_CHARS).trim()
-      : title;
-  }
-
-  private fallbackSessionTitle(prompt: string): string {
-    const trimmed = prompt.trim().replace(/\s+/g, " ");
-    if (!trimmed) {
-      return DEFAULT_SESSION_TITLE;
-    }
-    return trimmed.length > SESSION_TITLE_FALLBACK_CHARS
-      ? `${trimmed.slice(0, SESSION_TITLE_FALLBACK_CHARS).trim()}...`
-      : trimmed;
-  }
-
   private scheduleLongTermMemoryUpdate(snapshot: StateSnapshot): void {
     if (snapshot.status === "queued" || snapshot.status === "running") {
       return;
@@ -2525,7 +1829,7 @@ export class LocalRunStore {
       .map((message) => ({ role: message.role, content: message.content }));
     this.longTermMemoryQueue.enqueue({
       snapshot,
-      assistantText: this.assistantTextForRun(snapshot),
+      assistantText: assistantTextForRun(snapshot),
       conversationMessages,
       policy,
       invokeModel: policy.updater === "provider"
@@ -2681,7 +1985,7 @@ export class LocalRunStore {
         ? existing.title
         : snapshot.status === "queued" || snapshot.status === "running" || options.deferInitialTitle
           ? existing?.title ?? DEFAULT_SESSION_TITLE
-          : this.defaultSessionTitle(snapshot.input.prompt));
+          : defaultSessionTitle(snapshot.input.prompt));
     return SessionSummarySchema.parse({
       sessionId,
       title,
@@ -2697,11 +2001,6 @@ export class LocalRunStore {
       updatedAt: snapshot.updatedAt,
       archivedAt: existing?.archivedAt,
     });
-  }
-
-  private defaultSessionTitle(prompt: string): string {
-    const trimmed = prompt.trim();
-    return trimmed.length > 0 ? trimmed.slice(0, 120) : DEFAULT_SESSION_TITLE;
   }
 
   private syncProjectSummary(projectId: string): void {
@@ -2733,7 +2032,7 @@ export class LocalRunStore {
       if (prompt) {
         messages.push({ role: "user", content: prompt });
       }
-      const assistant = this.assistantTextForRun(turn);
+      const assistant = assistantTextForRun(turn);
       if (assistant) {
         messages.push({ role: "assistant", content: assistant });
       }
@@ -2759,7 +2058,7 @@ export class LocalRunStore {
       sessionId: snapshot.sessionId,
       turnIndex: snapshot.turnIndex,
       userPrompt: snapshot.input.prompt,
-      assistantOutput: this.assistantTextForRun(snapshot),
+      assistantOutput: assistantTextForRun(snapshot),
       transcript,
       pattern: snapshot.pattern,
       modeId: snapshot.modeId,
@@ -2855,29 +2154,6 @@ export class LocalRunStore {
     });
   }
 
-  private assistantTextForRun(snapshot: StateSnapshot): string {
-    if (typeof snapshot.output === "string") {
-      return snapshot.output.trim();
-    }
-    if (snapshot.output && typeof snapshot.output === "object") {
-      const candidate = (snapshot.output as Record<string, unknown>).text;
-      if (typeof candidate === "string" && candidate.trim()) {
-        return candidate.trim();
-      }
-    }
-    for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
-      const event = snapshot.events[index];
-      if (!event || event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
-        continue;
-      }
-      const content = (event.payload as Record<string, unknown>).content;
-      if (typeof content === "string" && content.trim()) {
-        return content.trim();
-      }
-    }
-    return "";
-  }
-
   private sessionTranscript(sessionId: string): SessionTranscriptMessage[] {
     const transcript: SessionTranscriptMessage[] = [];
     for (const run of this.runsForSession(sessionId)) {
@@ -2896,7 +2172,7 @@ export class LocalRunStore {
           createdAt,
         }));
       }
-      const assistant = this.assistantTextForRun(run);
+      const assistant = assistantTextForRun(run);
       if (assistant) {
         transcript.push(SessionTranscriptMessageSchema.parse({
           id: `${run.runId}:assistant`,
@@ -2941,7 +2217,7 @@ export class LocalRunStore {
       if (!this.sessions.has(sessionId)) {
         this.sessions.set(sessionId, SessionSummarySchema.parse({
           sessionId,
-          title: this.defaultSessionTitle(migrated.input.prompt),
+          title: defaultSessionTitle(migrated.input.prompt),
           projectId: migrated.input.projectId,
           status: migrated.status,
           latestRunId: migrated.runId,
@@ -3037,64 +2313,14 @@ function summarizeEventPayload(payload: unknown): unknown {
   return Object.keys(summary).length > 0 ? summary : undefined;
 }
 
-function truncateForTitlePrompt(value: string): string {
-  return value.length > SESSION_TITLE_MAX_INPUT_CHARS
-    ? value.slice(0, SESSION_TITLE_MAX_INPUT_CHARS)
-    : value;
-}
-
-export function defaultRuntimeStoreDir(): string {
-  return fileURLToPath(pathToFileURL(path.join(process.cwd(), ".ora", "runtime.db")));
-}
-
-function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
-  return modelRef === "local/smoke-model" ? undefined : modelRef;
-}
-
-export function defaultEvaluationStoreDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "evaluation-store")
-    : path.join(runtimeDataDir, "evaluation-store");
-}
-
-export function defaultFeedbackLoopStoreDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "feedback-loop-store")
-    : path.join(runtimeDataDir, "feedback-loop-store");
-}
-
-export function defaultCustomAgentsDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "agents")
-    : path.join(runtimeDataDir, "agents");
-}
-
-export function defaultSystemAgentOverridesDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "agent-overrides")
-    : path.join(runtimeDataDir, "agent-overrides");
-}
-
-export function defaultModesDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "modes")
-    : path.join(runtimeDataDir, "modes");
-}
-
-export function defaultSkillsDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "skills", "private")
-    : path.join(runtimeDataDir, "skills", "private");
-}
-
-export function defaultPublicSkillsDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "skills", "public")
-    : path.join(runtimeDataDir, "skills", "public");
-}
-
-export function defaultMemoryDir(runtimeDataDir: string): string {
-  return runtimeDataDir.endsWith(".db")
-    ? path.join(path.dirname(runtimeDataDir), "memory")
-    : path.join(runtimeDataDir, "memory");
-}
+export {
+  defaultCustomAgentsDir,
+  defaultEvaluationStoreDir,
+  defaultFeedbackLoopStoreDir,
+  defaultMemoryDir,
+  defaultModesDir,
+  defaultPublicSkillsDir,
+  defaultRuntimeStoreDir,
+  defaultSkillsDir,
+  defaultSystemAgentOverridesDir
+};
