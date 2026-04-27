@@ -2,43 +2,23 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
-  ArtifactRef,
   ArtifactRefSchema,
-  ProjectSummary,
   ProjectSummarySchema,
-  SessionSummary,
   SessionSummarySchema,
-  StateSnapshot,
   StateSnapshotSchema
 } from "@ora/shared";
-import { OraRuntimeError } from "../run-store.js";
+import type { ArtifactRef } from "@ora/shared";
+import { OraRuntimeError } from "../runtime-errors.js";
+import type {
+  PersistedArtifact,
+  RuntimePersistenceBackend,
+  StoreManifest,
+  StoredProject,
+  StoredRun,
+  StoredSession
+} from "./types.js";
 
 const MANIFEST_SCHEMA_VERSION = 3;
-
-interface StoreManifest {
-  schemaVersion: 3;
-  nextRunNumber: number;
-  nextSessionNumber: number;
-  nextProjectNumber: number;
-}
-
-interface StoredRun extends StateSnapshot {}
-interface StoredSession extends SessionSummary {}
-interface StoredProject extends ProjectSummary {}
-
-interface PersistedArtifact {
-  ref: ArtifactRef;
-  payload: unknown;
-}
-
-export interface RuntimePersistenceBackend {
-  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] };
-  saveManifest(manifest: StoreManifest): void;
-  saveRun(run: StoredRun): void;
-  saveSession(session: StoredSession): void;
-  saveProject(project: StoredProject): void;
-  saveArtifact(artifact: PersistedArtifact): ArtifactRef;
-}
 
 const CREATE_MANIFEST_TABLE = `
 CREATE TABLE IF NOT EXISTS manifest (

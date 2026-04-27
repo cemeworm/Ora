@@ -5,7 +5,8 @@ import {
   JsonRpcResponseSchema
 } from "@ora/shared";
 import { ZodError } from "zod";
-import { LocalRunStore, OraRuntimeError } from "./run-store.js";
+import { LocalRunStore } from "./run-store.js";
+import { OraRuntimeError } from "./runtime-errors.js";
 import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";

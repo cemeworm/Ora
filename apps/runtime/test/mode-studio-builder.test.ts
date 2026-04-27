@@ -58,6 +58,8 @@ describe("Mode Studio guided builder", () => {
     expect(bundle.modeDraft.systemPreset).toBe(false);
     expect(bundle.modeDraft.family).toBe("generator_verifier");
     expect(bundle.agentDrafts.map((agent) => agent.name)).toHaveLength(2);
+    expect(bundle.guidance.assistantMessage).toContain("Apply");
+    expect(bundle.guidance.assistantMessage).toContain("继续");
     expect(bundle.modeDraft.nodes.every((node) => {
       const story = node.config.story as { summary?: unknown; generatedBy?: unknown } | undefined;
       return typeof story?.summary === "string"
@@ -67,6 +69,21 @@ describe("Mode Studio guided builder", () => {
     expect(bundle.guidance.choices.length).toBeGreaterThan(0);
     expect(store.listModes()).toHaveLength(modeCount);
     expect(store.listAgents()).toEqual([]);
+  });
+
+  it("asks focused clarification questions for incomplete mode designs", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+
+    const bundle = store.generateModeStudioDraft({
+      messages: [{ role: "user", content: "做一个客服 mode" }],
+    });
+
+    expect(bundle.needsInput).toBe(true);
+    expect(bundle.agentDrafts).toEqual([]);
+    expect(bundle.guidance.assistantMessage).toContain("关键设计点");
+    expect(bundle.guidance.assistantMessage).toContain("最终输出");
+    expect(bundle.guidance.choices.map((choice) => choice.label)).toContain("Team Parallel");
+    expect(() => store.applyModeStudioDraft({ draftBundle: bundle })).toThrow(/needs input/i);
   });
 
   it("applies a draft bundle only when explicitly requested", () => {
@@ -217,6 +234,33 @@ describe("Mode Studio guided builder", () => {
     expect(result.draftBundle?.modeDraft.nodes[0]?.prompt).toBe("MANUAL PROMPT: preserve this stage instruction.");
   });
 
+  it("keeps current draft edits when refining an apply-ready local draft", () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+    const firstBundle = store.generateModeStudioDraft({
+      messages: [{ role: "user", content: "做一个代码审查 mode，builder 先产出实现摘要，reviewer 检查风险和测试，最终输出通过/不通过结论。" }],
+      baseModeId: "generator_verifier",
+    });
+    const editedDraft = {
+      ...firstBundle.modeDraft,
+      nodes: firstBundle.modeDraft.nodes.map((node) => node.id === firstBundle.modeDraft.nodes[0]?.id
+        ? { ...node, prompt: "MANUAL PROMPT: keep this exact instruction." }
+        : node),
+    };
+
+    const refined = store.refineModeStudioDraft({
+      messages: [
+        { role: "user", content: "做一个代码审查 mode，builder 先产出实现摘要，reviewer 检查风险和测试，最终输出通过/不通过结论。" },
+        { role: "assistant", content: firstBundle.guidance.assistantMessage },
+        { role: "user", content: "名字更专业一点，保持我手动改过的阶段 prompt。" },
+      ],
+      draftBundle: { ...firstBundle, modeDraft: editedDraft },
+    });
+
+    expect(refined.needsInput).toBe(false);
+    expect(refined.validation.valid).toBe(true);
+    expect(refined.modeDraft.nodes[0]?.prompt).toBe("MANUAL PROMPT: keep this exact instruction.");
+  });
+
   it("repairs invalid provider JSON before returning the builder result", async () => {
     const store = new LocalRunStore({ dataDir: freshStoreDir() });
     const base = createModeSpecFromPattern("agent_teams");
@@ -261,5 +305,28 @@ describe("Mode Studio guided builder", () => {
 
     expect(result.draftBundle?.modeDraft.label).toBe("Team Implementation");
     expect(result.draftBundle?.validation.valid).toBe(true);
+  });
+
+  it("keeps provider clarification results non-apply-ready", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+    providerResponses.push(JSON.stringify({
+      assistantMessage: "还需要确认这个 mode 的输出格式和验收标准。",
+      needsInput: true,
+      changeSummary: ["Asked for missing mode design details."],
+      issues: [{ field: "outcome", message: "Output shape is missing." }],
+    }));
+
+    const handle = await store.startModeStudioBuilderRun({
+      operation: "generate",
+      messages: [{ role: "user", content: "做一个运营分析 mode" }],
+      providerId: "mock-provider",
+      modelRef: "mock-model",
+    });
+    const result = store.modeStudioBuilderResult({ runId: handle.runId });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.draftBundle?.needsInput).toBe(true);
+    expect(result.draftBundle?.guidance.assistantMessage).toContain("输出格式");
+    expect(() => store.applyModeStudioDraft({ draftBundle: result.draftBundle })).toThrow(/needs input/i);
   });
 });

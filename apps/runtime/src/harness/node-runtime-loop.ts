@@ -1,0 +1,835 @@
+import type {
+  CompletionStopReason,
+  ModeSpec,
+  OraEventEnvelope,
+  OraToolCallEnvelope,
+  RunConfig,
+} from "@ora/shared";
+import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
+import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
+import {
+  classifyRecoveryError,
+  type RecoveryCoordinator,
+  type RecoveryDecision,
+  type RecoveryIncident,
+} from "./recovery-policy.js";
+import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from "./runtime-completion.js";
+import { ApprovalInterruptError, ClarificationInterruptError } from "./runtime-interrupts.js";
+import { forcedFinalSystemPrompt } from "./runtime-output.js";
+import type { RuntimeActionDeps } from "./runtime-action-runner.js";
+import {
+  recordRuntimeToolActionFailed,
+  recordRuntimeToolActionSucceeded,
+  resolveRuntimeActionApproval,
+  transitionRuntimeAction,
+} from "./runtime-action-runner.js";
+import {
+  providerSupportsNativeTools,
+  providerToolCallToAttempt,
+  cacheKeyForRuntimeTool,
+  type RuntimeToolAttempt,
+} from "./runtime-tool-loop.js";
+import { RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
+import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
+
+const TOOL_REPAIR_CONTENT =
+  "Tool call was interrupted before a result was produced. Continue from available context or choose another action.";
+
+export type NodeRuntimeLoopState =
+  | "pending"
+  | "running_model"
+  | "tool_requested"
+  | "tool_running"
+  | "tool_result_observed"
+  | "repairing"
+  | "finalizing"
+  | "completed"
+  | "degraded"
+  | "interrupted"
+  | "failed";
+
+type RuntimeLoopEmit = (
+  type: OraEventEnvelope["type"],
+  payload: unknown,
+  extra?: Partial<OraEventEnvelope>,
+) => OraEventEnvelope;
+
+export interface RunNodeRuntimeLoopParams {
+  agentId: string;
+  nodeId: string;
+  title: string;
+  prompt: string;
+  system: string;
+  toolIds: string[];
+}
+
+export interface RunNodeRuntimeLoopDeps {
+  config: RunConfig;
+  modeSpec: ModeSpec;
+  conversationMessages?: ModelMessage[];
+  streamProvider?: boolean;
+  inputPrompt: string;
+  now: () => number;
+  eventsLength: () => number;
+  runtimeToolExecutor: RuntimeToolExecutor;
+  completion: RuntimeCompletionController;
+  runtimeToolResultCache: Map<string, unknown>;
+  recoveryCoordinator: RecoveryCoordinator;
+  appendToolCall: (params: AppendRuntimeToolCallParams) => OraToolCallEnvelope;
+  emit: RuntimeLoopEmit;
+  emitNodeRuntimeState: (
+    state: NodeRuntimeLoopState,
+    params: {
+      agentId: string;
+      title?: string;
+      actionId?: string;
+      reason?: string;
+      detail?: string;
+      toolId?: string;
+      iteration?: number;
+    },
+  ) => void;
+  emitProgressNarration: (params: {
+    trigger: string;
+    agentId?: string;
+    nodeId?: string;
+    title?: string;
+    detail?: string;
+  }) => Promise<void>;
+  emitRecoveryDecision: (
+    incident: RecoveryIncident,
+    decision: RecoveryDecision,
+  ) => void;
+  emitRejectedFinalToolIntent: (
+    call: RuntimeToolCall,
+    reason: CompletionStopReason,
+  ) => void;
+  coerceNoToolResponse: (
+    response: ModelResponse,
+    reason: CompletionStopReason,
+    options?: { emitRejectedToolIntent?: boolean },
+  ) => ModelResponse;
+  runForcedFinalProviderCall: (params: {
+    invokeProvider: typeof invokeRunProvider | typeof invokeRunProviderStream;
+    config: RunConfig;
+    messages: ModelMessage[];
+    system: string;
+    nativeTools: ReturnType<RuntimeToolExecutor["toolDefinitions"]>;
+    streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
+    reason: CompletionStopReason;
+    agentId?: string;
+    nodeId?: string;
+    title?: string;
+  }) => Promise<ModelResponse>;
+  publishRecoveryArtifact: (
+    incident: RecoveryIncident,
+    decision: RecoveryDecision,
+  ) => { id: string };
+  sleep: (ms: number) => Promise<void>;
+  actionDeps: () => RuntimeActionDeps;
+}
+
+export async function runNodeRuntimeLoop(
+  params: RunNodeRuntimeLoopParams,
+  deps: RunNodeRuntimeLoopDeps,
+): Promise<ModelResponse> {
+  const {
+    config,
+    modeSpec,
+    runtimeToolExecutor,
+    completion,
+    runtimeToolResultCache,
+    recoveryCoordinator,
+    appendToolCall,
+    now,
+    emit,
+    emitNodeRuntimeState,
+    emitProgressNarration,
+    emitRecoveryDecision,
+    emitRejectedFinalToolIntent,
+    coerceNoToolResponse,
+    runForcedFinalProviderCall,
+    publishRecoveryArtifact,
+    sleep,
+    actionDeps,
+  } = deps;
+  const options = {
+    conversationMessages: deps.conversationMessages,
+    streamProvider: deps.streamProvider,
+  };
+  const input = { prompt: deps.inputPrompt };
+  const events = {
+    get length(): number {
+      return deps.eventsLength();
+    },
+  };
+  const { actionLedger } = actionDeps();
+
+  const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
+  const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
+  const nativeTools = providerSupportsNativeTools(config)
+    ? runtimeToolExecutor.toolDefinitions(params.toolIds)
+    : [];
+  let messages: ModelMessage[] = [...(options.conversationMessages ?? [])];
+  const invokeProvider = options.streamProvider
+    ? invokeRunProviderStream
+    : invokeRunProvider;
+  const streamCallbacks = options.streamProvider
+    ? {
+        onTextDelta: (chunk: {
+          delta: string;
+          text: string;
+          raw?: unknown;
+        }) => {
+          emit(
+            "message.delta",
+            {
+              role: "assistant",
+              content: chunk.text,
+              delta: chunk.delta,
+              streaming: true,
+              raw: chunk.raw,
+            },
+            { agentId: params.agentId, nodeId: params.agentId },
+          );
+          emit(
+            "token.delta",
+            {
+              text: chunk.delta,
+              tokenCount: Math.max(
+                1,
+                chunk.delta.split(/\s+/).filter(Boolean).length,
+              ),
+              budget: config.budget,
+              streaming: true,
+            },
+            { agentId: params.agentId, nodeId: params.agentId },
+          );
+        },
+      }
+    : undefined;
+  const repairDanglingToolCalls = (candidateMessages: ModelMessage[]) => {
+    const pending = new Map<
+      string,
+      { call: ModelToolCall; messageIndex: number }
+    >();
+    for (let index = 0; index < candidateMessages.length; index += 1) {
+      const message = candidateMessages[index];
+      if (message.role === "assistant" && message.toolCalls?.length) {
+        for (const call of message.toolCalls) {
+          pending.set(call.id, { call, messageIndex: index });
+        }
+        continue;
+      }
+      if (message.role === "tool" && message.toolCallId) {
+        pending.delete(message.toolCallId);
+      }
+    }
+    if (pending.size === 0) {
+      return candidateMessages;
+    }
+    const repairedMessages = [...candidateMessages];
+    for (const { call } of pending.values()) {
+      appendToolCall({
+        providerCallId: call.id,
+        toolId: call.toolId,
+        args: call.args,
+        source: "manual_repair",
+        status: "repaired",
+        agentId: params.agentId,
+        nodeId: params.agentId,
+        result: {
+          status: "interrupted",
+          error: TOOL_REPAIR_CONTENT,
+          content: TOOL_REPAIR_CONTENT,
+          createdAt: now(),
+          updatedAt: now(),
+        },
+        error: TOOL_REPAIR_CONTENT,
+        repairReason: "missing_provider_tool_result",
+      });
+      emit(
+        "tool.repaired",
+        {
+          providerCallId: call.id,
+          toolId: call.toolId,
+          status: "repaired",
+          resultStatus: "interrupted",
+          repairReason: "missing_provider_tool_result",
+          content: TOOL_REPAIR_CONTENT,
+        },
+        { agentId: params.agentId, nodeId: params.agentId },
+      );
+      repairedMessages.push({
+        role: "tool",
+        toolCallId: call.id,
+        toolName: call.toolId,
+        content: TOOL_REPAIR_CONTENT,
+      });
+    }
+    return repairedMessages;
+  };
+  emitNodeRuntimeState("pending", {
+    agentId: params.agentId,
+    title: params.title,
+  });
+  messages = repairDanglingToolCalls(messages);
+  const initialToolsAllowed = completion.toolsAllowed(completionScope);
+  if (!initialToolsAllowed && completion.toolAttempts >= completion.maxToolCalls) {
+    completion.forceFinalAnswer("tool_budget_exhausted");
+  }
+  emitNodeRuntimeState(initialToolsAllowed ? "running_model" : "finalizing", {
+    agentId: params.agentId,
+    title: params.title,
+  });
+  let response = await invokeProvider(
+    config,
+    {
+      prompt: params.prompt,
+      messages,
+      system: initialToolsAllowed
+        ? params.system
+        : forcedFinalSystemPrompt(
+            params.system,
+            completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
+          ),
+      maxTokens: config.budget?.maxTokens,
+      tools: nativeTools,
+      toolChoice:
+        nativeTools.length > 0
+          ? initialToolsAllowed
+            ? "auto"
+            : "none"
+          : undefined,
+    },
+    streamCallbacks,
+  );
+  if (!initialToolsAllowed) {
+    const finalResponse = coerceNoToolResponse(
+      response,
+      completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
+    );
+    emitNodeRuntimeState("completed", {
+      agentId: params.agentId,
+      title: params.title,
+    });
+    return finalResponse;
+  }
+
+  if (enabledTools.length === 0) {
+    emitNodeRuntimeState("completed", {
+      agentId: params.agentId,
+      title: params.title,
+    });
+    return response;
+  }
+
+  const remainingToolBudget = Number.isFinite(completion.maxToolCalls)
+    ? Math.max(0, completion.maxToolCalls - completion.toolAttempts)
+    : RUNTIME_TOOL_LOOP_SAFETY_LIMIT;
+  const toolLoopLimit = Math.max(
+    1,
+    Math.min(RUNTIME_TOOL_LOOP_SAFETY_LIMIT, remainingToolBudget),
+  );
+  for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
+    if (!completion.toolsAllowed(completionScope)) {
+      return runForcedFinalProviderCall({
+        invokeProvider,
+        config,
+        messages,
+        system: params.system,
+        nativeTools,
+        streamCallbacks,
+        reason: completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        title: params.title,
+      });
+    }
+
+    const nativeToolCall = response.toolCalls
+      ?.map(providerToolCallToAttempt)
+      .find(Boolean);
+    const fallbackToolCall = nativeToolCall
+      ? undefined
+      : runtimeToolExecutor.extractToolCall(response.text, params.toolIds);
+    const toolCall: RuntimeToolAttempt | undefined =
+      nativeToolCall ??
+      (fallbackToolCall
+        ? { ...fallbackToolCall, source: "json_fallback" }
+        : undefined);
+    if (!toolCall) {
+      emitNodeRuntimeState("completed", {
+        agentId: params.agentId,
+        title: params.title,
+        iteration,
+      });
+      return response;
+    }
+    emitNodeRuntimeState("tool_requested", {
+      agentId: params.agentId,
+      title: params.title,
+      toolId: toolCall.tool,
+      iteration,
+    });
+
+    const attemptDecision = completion.registerToolAttempt(toolCall, completionScope);
+    if (!attemptDecision.allowed) {
+      emitNodeRuntimeState("finalizing", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        reason: attemptDecision.reason,
+        iteration,
+      });
+      return runForcedFinalProviderCall({
+        invokeProvider,
+        config,
+        messages,
+        system: params.system,
+        nativeTools,
+        streamCallbacks,
+        reason: attemptDecision.reason,
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        title: params.title,
+      });
+    }
+
+    const riskLevel = runtimeToolExecutor.riskLevel(toolCall);
+    const action = actionLedger.propose({
+      id: `${params.agentId}-tool-${events.length}`,
+      type: toolCall.tool,
+      riskLevel,
+      input: toolCall.args,
+      approvalRequest:
+        riskLevel === "high"
+          ? runtimeToolExecutor.approvalRequest(toolCall, input.prompt)
+          : undefined,
+      agentId: params.agentId,
+    });
+    const toolCallRecord = appendToolCall({
+      providerCallId: toolCall.providerCallId,
+      toolId: toolCall.tool,
+      args: toolCall.args,
+      source: toolCall.source,
+      status: "proposed",
+      actionId: action.id,
+      agentId: params.agentId,
+      nodeId: params.agentId,
+    });
+    emit(
+      "action.updated",
+      { actionId: action.id, status: "proposed", record: action },
+      { agentId: params.agentId, nodeId: params.agentId },
+    );
+
+    const { approvedForRiskyExecution } = await resolveRuntimeActionApproval({
+      action,
+      context: {
+        agentId: params.agentId,
+        nodeId: params.agentId,
+        title: params.title,
+      },
+      deps: actionDeps(),
+      toolCallRecord,
+    });
+
+    transitionRuntimeAction({
+      action,
+      status: "running",
+      context: { agentId: params.agentId, nodeId: params.agentId },
+      deps: actionDeps(),
+      toolCallRecord,
+    });
+    emitNodeRuntimeState("tool_running", {
+      agentId: params.agentId,
+      title: params.title,
+      actionId: action.id,
+      toolId: toolCall.tool,
+      iteration,
+    });
+
+    try {
+      const cacheKey = cacheKeyForRuntimeTool(toolCall);
+      const cacheHit =
+        cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
+      const output = cacheHit
+        ? runtimeToolResultCache.get(cacheKey)
+        : await runtimeToolExecutor.execute(toolCall, {
+            allowRisky: approvedForRiskyExecution,
+          });
+      if (cacheKey && !cacheHit) {
+        runtimeToolResultCache.set(cacheKey, output);
+      }
+      completion.markToolResultObserved(toolCall, cacheHit, completionScope);
+      const { resultText } = recordRuntimeToolActionSucceeded({
+        action,
+        context: { agentId: params.agentId, nodeId: params.agentId },
+        deps: actionDeps(),
+        toolCall,
+        output,
+        cacheHit,
+        toolCallRecord,
+        now,
+      });
+      emitNodeRuntimeState("tool_result_observed", {
+        agentId: params.agentId,
+        title: params.title,
+        actionId: action.id,
+        toolId: toolCall.tool,
+        iteration,
+      });
+      await emitProgressNarration({
+        trigger: "tool.succeeded",
+        agentId: params.agentId,
+        nodeId: params.agentId,
+        title: params.title,
+        detail: `${toolCall.tool} returned a result.`,
+      });
+
+      messages =
+        toolCall.source === "provider_native" && toolCall.providerCallId
+          ? [
+              ...messages,
+              {
+                role: "assistant",
+                content: response.text,
+                reasoningContent: response.reasoningContent,
+                toolCalls: response.toolCalls?.filter(
+                  (call) => call.id === toolCall.providerCallId,
+                ),
+              },
+              {
+                role: "tool",
+                toolCallId: toolCall.providerCallId,
+                toolName: toolCall.tool,
+                content: resultText,
+              },
+            ]
+          : [
+              ...messages,
+              { role: "assistant", content: response.text },
+              {
+                role: "user",
+                content: `Workspace tool result for ${toolCall.tool}:\n${resultText}`,
+              },
+            ];
+      messages = repairDanglingToolCalls(messages);
+      if (completion.forcedFinalIsActive(completionScope)) {
+        const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
+        emitNodeRuntimeState("finalizing", {
+          agentId: params.agentId,
+          title: params.title,
+          toolId: toolCall.tool,
+          reason: stopReason,
+          iteration,
+        });
+        response = await runForcedFinalProviderCall({
+          invokeProvider,
+          config,
+          messages,
+          system: params.system,
+          nativeTools,
+          streamCallbacks,
+          reason: stopReason,
+          agentId: params.agentId,
+          nodeId: params.nodeId,
+          title: params.title,
+        });
+        return response;
+      }
+      emitNodeRuntimeState("running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        iteration: iteration + 1,
+      });
+      response = await invokeProvider(
+        config,
+        {
+          messages,
+          system: params.system,
+          maxTokens: config.budget?.maxTokens,
+          tools: nativeTools,
+          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+        },
+        streamCallbacks,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      recordRuntimeToolActionFailed({
+        action,
+        context: { agentId: params.agentId, nodeId: params.agentId },
+        deps: actionDeps(),
+        toolCall,
+        detail,
+        toolCallRecord,
+        now,
+      });
+      emitNodeRuntimeState("degraded", {
+        agentId: params.agentId,
+        title: params.title,
+        actionId: action.id,
+        toolId: toolCall.tool,
+        detail,
+      });
+      await emitProgressNarration({
+        trigger: "tool.failed",
+        agentId: params.agentId,
+        nodeId: params.agentId,
+        title: params.title,
+        detail,
+      });
+
+      const incident = classifyRecoveryError(error, {
+        surface: "tool",
+        nodeId: params.agentId,
+        agentId: params.agentId,
+        toolId: toolCall.tool,
+        actionId: action.id,
+      });
+      const recoveryDecision = recoveryCoordinator.resolve(incident);
+      emitRecoveryDecision(incident, recoveryDecision);
+      await emitProgressNarration({
+        trigger: "recovery.updated",
+        agentId: params.agentId,
+        nodeId: params.agentId,
+        title: params.title,
+        detail: recoveryDecision.summary,
+      });
+
+      if (recoveryDecision.action === "retry") {
+        await sleep(recoveryDecision.retryDelayMs ?? 0);
+        continue;
+      }
+
+      if (
+        recoveryDecision.action === "alternate_tool" &&
+        recoveryDecision.alternateToolId
+      ) {
+        const alternateCall: RuntimeToolCall = {
+          tool: recoveryDecision.alternateToolId as RuntimeToolCall["tool"],
+          args: toolCall.args,
+        };
+        const alternateAttemptDecision =
+          completion.registerToolAttempt(alternateCall, completionScope);
+        if (!alternateAttemptDecision.allowed) {
+          emitNodeRuntimeState("finalizing", {
+            agentId: params.agentId,
+            title: params.title,
+            toolId: alternateCall.tool,
+            reason: alternateAttemptDecision.reason,
+            iteration,
+          });
+          return runForcedFinalProviderCall({
+            invokeProvider,
+            config,
+            messages,
+            system: params.system,
+            nativeTools,
+            streamCallbacks,
+            reason: alternateAttemptDecision.reason,
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+            title: params.title,
+          });
+        }
+        const alternateRiskLevel =
+          runtimeToolExecutor.riskLevel(alternateCall);
+        const alternateAction = actionLedger.propose({
+          id: `${params.agentId}-tool-recovery-${events.length}`,
+          type: alternateCall.tool,
+          riskLevel: alternateRiskLevel,
+          input: alternateCall.args,
+          approvalRequest:
+            alternateRiskLevel === "high"
+              ? runtimeToolExecutor.approvalRequest(
+                  alternateCall,
+                  input.prompt,
+                )
+              : undefined,
+          agentId: params.agentId,
+        });
+        emit(
+          "action.updated",
+          {
+            actionId: alternateAction.id,
+            status: "proposed",
+            record: alternateAction,
+          },
+          { agentId: params.agentId, nodeId: params.agentId },
+        );
+        const alternateApproval = await resolveRuntimeActionApproval({
+          action: alternateAction,
+          context: {
+            agentId: params.agentId,
+            nodeId: params.agentId,
+            title: params.title,
+          },
+          deps: actionDeps(),
+        });
+        transitionRuntimeAction({
+          action: alternateAction,
+          status: "running",
+          context: { agentId: params.agentId, nodeId: params.agentId },
+          deps: actionDeps(),
+        });
+        emitNodeRuntimeState("tool_running", {
+          agentId: params.agentId,
+          title: params.title,
+          actionId: alternateAction.id,
+          toolId: alternateCall.tool,
+          iteration,
+        });
+        const alternateOutput = await runtimeToolExecutor.execute(
+          alternateCall,
+          {
+            allowRisky:
+              alternateApproval.approvedForRiskyExecution,
+          },
+        );
+        completion.markToolResultObserved(alternateCall, false, completionScope);
+        const { resultText: alternateResultText } =
+          recordRuntimeToolActionSucceeded({
+            action: alternateAction,
+            context: { agentId: params.agentId, nodeId: params.agentId },
+            deps: actionDeps(),
+            toolCall: alternateCall,
+            output: alternateOutput,
+            recoveredFrom: toolCall.tool,
+            now,
+          });
+        emitNodeRuntimeState("tool_result_observed", {
+          agentId: params.agentId,
+          title: params.title,
+          actionId: alternateAction.id,
+          toolId: alternateCall.tool,
+          iteration,
+        });
+        messages = [
+          ...messages,
+            { role: "assistant", content: response.text },
+            {
+              role: "user",
+              content: `Workspace tool result for ${alternateCall.tool}:\n${alternateResultText}`,
+            },
+          ];
+        if (completion.forcedFinalIsActive(completionScope)) {
+          const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
+          emitNodeRuntimeState("finalizing", {
+            agentId: params.agentId,
+            title: params.title,
+            toolId: alternateCall.tool,
+            reason: stopReason,
+            iteration,
+          });
+          response = await runForcedFinalProviderCall({
+            invokeProvider,
+            config,
+            messages,
+            system: params.system,
+            nativeTools,
+            streamCallbacks,
+            reason: stopReason,
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+            title: params.title,
+          });
+          return response;
+        }
+        emitNodeRuntimeState("running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          iteration: iteration + 1,
+        });
+        response = await invokeProvider(
+          config,
+          {
+            messages,
+            system: params.system,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+          },
+          streamCallbacks,
+        );
+        continue;
+      }
+
+      if (recoveryDecision.action === "fallback_artifact") {
+        const recoveryArtifact = publishRecoveryArtifact(
+          incident,
+          recoveryDecision,
+        );
+        const fallbackPrefix = modeSpec.runtimeAtoms.includes(
+          "tool_error_boundary",
+        )
+          ? "[tool-error-boundary]"
+          : "[recovery:fallback]";
+        emit(
+          "message.delta",
+          {
+            role: "assistant",
+            content: `${fallbackPrefix} ${toolCall.tool} degraded after ${incident.errorType}: ${incident.detail}`,
+            boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
+              ? "recovery_policy"
+              : "tool_error_boundary",
+          },
+          { agentId: params.agentId, nodeId: params.agentId },
+        );
+        const fallbackOutput = recoveryDecision.usableOutput ?? {
+          degraded: true,
+          recoveryArtifactId: recoveryArtifact.id,
+          errorType: incident.errorType,
+          error: incident.detail,
+        };
+        messages = [
+          ...messages,
+          { role: "assistant", content: response.text },
+          {
+            role: "user",
+            content: `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`,
+          },
+        ];
+        emitNodeRuntimeState("repairing", {
+          agentId: params.agentId,
+          title: params.title,
+          toolId: toolCall.tool,
+          detail: incident.detail,
+        });
+        response = await invokeProvider(
+          config,
+          {
+            messages,
+            system: params.system,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+          },
+          streamCallbacks,
+        );
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  completion.forceFinalAnswer("runtime_tool_loop_limit");
+  emitNodeRuntimeState("finalizing", {
+    agentId: params.agentId,
+    title: params.title,
+    reason: "runtime_tool_loop_limit",
+  });
+  return runForcedFinalProviderCall({
+    invokeProvider,
+    config,
+    messages,
+    system: params.system,
+    nativeTools,
+    streamCallbacks,
+    reason: "runtime_tool_loop_limit",
+    agentId: params.agentId,
+    title: params.title,
+  });
+}

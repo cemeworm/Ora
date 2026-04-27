@@ -14,7 +14,8 @@ export {
 export { ModeSpecFileStore } from "./modes.js";
 export { createRuntimeMethodHandler, handleJsonRpcLine } from "./json-rpc.js";
 export { PackageManager } from "./package-manager.js";
-export { InMemoryRunStore, LocalRunStore, OraRuntimeError } from "./run-store.js";
+export { InMemoryRunStore, LocalRunStore } from "./run-store.js";
+export { OraRuntimeError } from "./runtime-errors.js";
 export { runStdioServer } from "./stdio.js";
 export {
   RuntimeSkillRegistry,
@@ -25,7 +26,8 @@ export { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 
 // Persistence
 export { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
-export type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
+export { JsonFileRuntimePersistenceBackend } from "./persistence/json-file-backend.js";
+export type { RuntimePersistenceBackend } from "./persistence/types.js";
 
 // Providers
 export {

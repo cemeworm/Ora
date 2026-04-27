@@ -556,7 +556,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
           {builderBundle && (
             <button
               onClick={() => void applyBuilderBundle()}
-              disabled={busy === "builder:apply" || !builderBundle.validation.valid}
+              disabled={busy === "builder:apply" || builderBundle.needsInput || !builderBundle.validation.valid}
               className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Save size={14} />
