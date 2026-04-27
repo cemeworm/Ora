@@ -26,26 +26,6 @@ export { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 // Persistence
 export { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 export type { RuntimePersistenceBackend } from "./persistence/sqlite-backend.js";
-export {
-  OraSqliteCheckpointer,
-  createOraSqliteCheckpointer
-} from "./persistence/sqlite-checkpointer.js";
-
-// Graph state
-export { OraGraphAnnotation } from "./graph/ora-state.js";
-export type { OraGraphState } from "./graph/ora-state.js";
-
-// Event adapter
-export { adaptGraphEvents } from "./graph/event-adapter.js";
-
-// Pattern graphs
-export {
-  createPatternGraph,
-  createPatternGraphWithCheckpointer,
-  createGeneratorVerifierGraph,
-  createOrchestratorSubagentGraph,
-  createAgentTeamsGraph
-} from "./patterns/registry.js";
 
 // Providers
 export {
@@ -80,6 +60,3 @@ export {
   traceLangfuseGeneration,
   withLangfuseRunTrace
 } from "./telemetry/langfuse.js";
-
-// Session manager
-export { SessionManager } from "./session/session-manager.js";

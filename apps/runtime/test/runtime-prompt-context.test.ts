@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "@ora/shared";
 import { buildAgentPromptContext, userClarificationContextPrompt } from "../src/harness/prompt-context.js";
-import { withGraphPersona } from "../src/patterns/system-prompt.js";
 
 const profile: AgentProfile = {
   id: "researcher",
@@ -71,38 +70,30 @@ describe("buildAgentPromptContext", () => {
     expect(context.system).toBe("You are the solo agent.");
   });
 
-  it("reuses the builder for LangGraph personas with profile and runtime context", () => {
-    const system = withGraphPersona({
-      input: {
-        prompt: "Research Ora prompts",
-        createdAt: 1,
-        context: {
-          clarifications: { environment: "staging" },
-          projectWorkspace: { label: "Ora", rootPath: "/repo" },
-        },
-      },
-      profiles: [profile],
-      config: {
-        metadata: {
-          memoryPromptOverlay: "Use relevant long-term memory.",
-          skillPromptOverlay: "Skill instructions here.",
-          systemAgentOverlays: {
-            researcher: "System Agent Override: researcher\nSOUL:\nBe skeptical.",
-          },
-        },
-      },
-    } as Parameters<typeof withGraphPersona>[0], "You are the graph researcher.", "researcher");
+  it("reuses the builder for profile and runtime context", () => {
+    const system = buildAgentPromptContext({
+      agentId: "researcher",
+      profile,
+      systemAgentOverride: "System Agent Override: researcher\nSOUL:\nBe skeptical.",
+      stageSystem: "You are the researcher.",
+      workspaceContext: "Ora project workspace context:\n- Root path: /repo",
+      clarificationContext: userClarificationContextPrompt({
+        clarifications: { environment: "staging" },
+      }),
+      memoryContext: "Use relevant long-term memory.",
+      skillSnippets: ["Skill instructions here."],
+    }).system;
 
     expect(system).toContain("System Agent Override: researcher");
     expect(system).toContain("Ora agent profile: researcher");
-    expect(system).toContain("You are the graph researcher.");
+    expect(system).toContain("You are the researcher.");
     expect(system).toContain("Root path: /repo");
     expect(system).toContain("- environment: staging");
     expect(system).toContain("Use relevant long-term memory.");
     expect(system).toContain("Skill instructions here.");
   });
 
-  it("formats user clarification context for shared runtime and graph prompts", () => {
+  it("formats user clarification context for runtime prompts", () => {
     expect(userClarificationContextPrompt({
       clarifications: { target: "runtime prompt builder" },
     })).toContain("- target: runtime prompt builder");

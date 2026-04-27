@@ -36,7 +36,7 @@ vi.mock("../src/providers/index.js", async () => {
   };
 });
 
-import { LocalRunStore, SessionManager, createRuntimeMethodHandler } from "../src/index.js";
+import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
 const FIXED_TIME = 1_700_100_000_000;
 const clock = () => FIXED_TIME;
@@ -221,10 +221,9 @@ describe("custom agent runtime behavior", () => {
     expect(resetCatalog.systemAgents.find((agent) => agent.id === "solo_agent")?.overridden).toBe(false);
   });
 
-  it("propagates the selected custom agent persona through the SessionManager path", async () => {
+  it("propagates the selected custom agent persona with legacy graph metadata ignored", async () => {
     const handle = createRuntimeMethodHandler(
       new LocalRunStore({ dataDir: freshStoreDir(), clock }),
-      new SessionManager(true),
     );
 
     await handle({
@@ -232,9 +231,9 @@ describe("custom agent runtime behavior", () => {
       id: 1,
       method: "agents.create",
       params: {
-        name: "langgraph-review-bot",
-        description: "LangGraph review mindset",
-        soul: "Keep the persona visible even on managed runtime paths.",
+        name: "legacy-review-bot",
+        description: "Review mindset",
+        soul: "Keep the persona visible even when legacy graph metadata is present.",
         toolGroups: ["files"],
       },
     });
@@ -247,15 +246,15 @@ describe("custom agent runtime behavior", () => {
         input: { prompt: "Inspect this managed change." },
         config: {
           pattern: "orchestrator_subagent",
-          customAgentId: "langgraph-review-bot",
+          customAgentId: "legacy-review-bot",
           metadata: { langGraphOrchestration: true },
         },
       },
     });
 
     expect(capturedSystems.some((system) =>
-      system.includes("Custom Agent Persona: langgraph-review-bot") &&
-      system.includes("Keep the persona visible even on managed runtime paths.")
+      system.includes("Custom Agent Persona: legacy-review-bot") &&
+      system.includes("Keep the persona visible even when legacy graph metadata is present.")
     )).toBe(true);
   });
 

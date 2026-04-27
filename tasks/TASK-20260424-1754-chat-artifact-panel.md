@@ -291,7 +291,7 @@ Must provide the following evidence:
   - Existing server already occupied port 1420: `Error: Port 1420 is already in use`.
   - Reused the running dev server at `http://127.0.0.1:1420/`.
 - Browser automation evidence:
-  - Page title: `Ora Operator Workbench · Chat`.
+  - Page title: `Ora · Chat`.
   - `animate-spin count after done 0`.
   - DOM showed both `Trails` and `Artifact` headings after opening both panels.
   - Artifact JSON preview showed keys `runId`, `pattern`, `status`, `eventCount`, `checkpointCount`.

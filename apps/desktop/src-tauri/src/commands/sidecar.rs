@@ -24,7 +24,6 @@ const RUNTIME_MODE_PROCESS: &str = "process";
 const BUNDLED_RUNTIME_ROOT: &str = "runtime-sidecar";
 const BUNDLED_RUNTIME_ENTRYPOINT: &str = "runtime-sidecar.cjs";
 const BUNDLED_RUNTIME_STORE_DB: &str = "runtime.db";
-const BUNDLED_RUNTIME_CHECKPOINT_DB: &str = "langgraph-checkpoints.db";
 const ORA_HOST_ABI_VERSION: &str = "ora-host-slot-v1";
 const ORA_RUNTIME_ABI_VERSION: &str = "ora-runtime-slot-v1";
 const STATUS_REASON_FACADE: &str =
@@ -2791,16 +2790,11 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
 
     let runtime_data_dir = app_data_dir.join("runtime");
     let runtime_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_STORE_DB);
-    let checkpoint_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_CHECKPOINT_DB);
     let mut environment = optional_langfuse_runtime_env();
     environment.extend([
         (
             "ORA_RUNTIME_STORE_DIR".to_string(),
             runtime_db_path.to_string_lossy().into_owned(),
-        ),
-        (
-            "ORA_LANGGRAPH_CHECKPOINT_DB".to_string(),
-            checkpoint_db_path.to_string_lossy().into_owned(),
         ),
     ]);
 

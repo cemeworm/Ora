@@ -14,9 +14,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@langchain/core": "^1.1.40",
-    "@langchain/langgraph": "^1.2.9",
-    "@langchain/langgraph-checkpoint": "^1.0.1",
     "@langfuse/core": "^5.2.0",
     "@langfuse/otel": "^5.2.0",
     "@langfuse/tracing": "^5.2.0",

@@ -1,4 +1,16 @@
-import { Component, Suspense, lazy, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type PointerEvent, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ErrorInfo,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import { LoaderCircle } from "lucide-react";
 import { AppShell } from "./components/AppShell";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
@@ -7,26 +19,61 @@ import { DocumentsDrawer } from "./components/DocumentsDrawer";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
-import { mergeRunStreamSnapshot, useWorkbench, WorkbenchProvider } from "./lib/state";
+import {
+  mergeRunStreamSnapshot,
+  useWorkbench,
+  WorkbenchProvider,
+} from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
-import { adaptChatMessages, adaptPendingRunMessages, isSessionProcessing } from "./lib/viewModel";
-import type { OraProjectFileReadResult, OraStateSnapshot } from "./lib/runtimeClient";
-import { translateCopy, useDocumentTranslations, type AppLanguage } from "./lib/i18n";
+import {
+  adaptChatMessages,
+  adaptPendingRunMessages,
+  isSessionProcessing,
+} from "./lib/viewModel";
+import type {
+  OraProjectFileReadResult,
+  OraStateSnapshot,
+} from "./lib/runtimeClient";
+import {
+  translateCopy,
+  useDocumentTranslations,
+  type AppLanguage,
+} from "./lib/i18n";
 
-const AgentsView = lazy(() => import("./components/AgentsView").then((module) => ({ default: module.AgentsView })));
-const EvaluationView = lazy(() => import("./components/EvaluationView").then((module) => ({ default: module.EvaluationView })));
-const ModesView = lazy(() => import("./components/ModesView").then((module) => ({ default: module.ModesView })));
-const SkillsView = lazy(() => import("./components/SkillsView").then((module) => ({ default: module.SkillsView })));
+const AgentsView = lazy(() =>
+  import("./components/AgentsView").then((module) => ({
+    default: module.AgentsView,
+  })),
+);
+const EvaluationView = lazy(() =>
+  import("./components/EvaluationView").then((module) => ({
+    default: module.EvaluationView,
+  })),
+);
+const ModesView = lazy(() =>
+  import("./components/ModesView").then((module) => ({
+    default: module.ModesView,
+  })),
+);
+const SkillsView = lazy(() =>
+  import("./components/SkillsView").then((module) => ({
+    default: module.SkillsView,
+  })),
+);
 
 const DEFAULT_DETAIL_PANEL_WIDTH = 460;
 const DEFAULT_ARTIFACT_PANEL_WIDTH = 420;
 const MIN_DETAIL_PANEL_WIDTH = 360;
 const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
-const WINDOW_TITLE_BASE = "Ora Operator Workbench";
+const WINDOW_TITLE_BASE = "Ora";
 
-function windowTitleForView(activeView: AppView, settingsOpen: boolean, language: AppLanguage) {
+function windowTitleForView(
+  activeView: AppView,
+  settingsOpen: boolean,
+  language: AppLanguage,
+) {
   const base = translateCopy(language, WINDOW_TITLE_BASE);
   if (settingsOpen) return `${base} · ${translateCopy(language, "Settings")}`;
 
@@ -45,7 +92,15 @@ function windowTitleForView(activeView: AppView, settingsOpen: boolean, language
   }
 }
 
-function WorkspacePane({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
+function WorkspacePane({
+  children,
+  className,
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+}) {
   return (
     <section
       className={cn(
@@ -61,13 +116,20 @@ function WorkspacePane({ children, className, style }: { children: ReactNode; cl
 
 function LoadingPane() {
   return (
-    <div className="flex h-full w-full items-center justify-center" role="status" aria-label="Loading">
+    <div
+      className="flex h-full w-full items-center justify-center"
+      role="status"
+      aria-label="Loading"
+    >
       <LoaderCircle size={24} className="animate-spin text-muted-foreground" />
     </div>
   );
 }
 
-class WorkbenchErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
+class WorkbenchErrorBoundary extends Component<
+  { children: ReactNode },
+  { error?: Error }
+> {
   state: { error?: Error } = {};
 
   static getDerivedStateFromError(error: Error) {
@@ -88,9 +150,12 @@ class WorkbenchErrorBoundary extends Component<{ children: ReactNode }, { error?
         <WorkspacePane className="w-full">
           <div className="flex h-full w-full items-center justify-center p-6">
             <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-pane">
-              <p className="text-sm font-semibold text-foreground">Ora hit a render error.</p>
+              <p className="text-sm font-semibold text-foreground">
+                Ora hit a render error.
+              </p>
               <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
-                {this.state.error.message || "The workbench could not render this session."}
+                {this.state.error.message ||
+                  "The workbench could not render this session."}
               </p>
               <button
                 type="button"
@@ -109,38 +174,70 @@ class WorkbenchErrorBoundary extends Component<{ children: ReactNode }, { error?
 
 function WorkbenchInner() {
   const { state, dispatch } = useWorkbench();
-  const { runtimeClient, viewModel, selectedSession, selectedNode, selectedBeat, selectedAgent, selectedCheckpoint, actions } = useRunActions();
+  const {
+    runtimeClient,
+    viewModel,
+    selectedSession,
+    selectedNode,
+    selectedBeat,
+    selectedAgent,
+    selectedCheckpoint,
+    actions,
+  } = useRunActions();
   const splitContainerRef = useRef<HTMLDivElement>(null);
-  const [detailPanelWidth, setDetailPanelWidth] = useState(DEFAULT_DETAIL_PANEL_WIDTH);
-  const [artifactPanelWidth, setArtifactPanelWidth] = useState(DEFAULT_ARTIFACT_PANEL_WIDTH);
-  const [turnSnapshots, setTurnSnapshots] = useState<Record<string, OraStateSnapshot>>({});
-  const [projectFileArtifact, setProjectFileArtifact] = useState<ArtifactRecord>();
+  const [detailPanelWidth, setDetailPanelWidth] = useState(
+    DEFAULT_DETAIL_PANEL_WIDTH,
+  );
+  const [artifactPanelWidth, setArtifactPanelWidth] = useState(
+    DEFAULT_ARTIFACT_PANEL_WIDTH,
+  );
+  const [turnSnapshots, setTurnSnapshots] = useState<
+    Record<string, OraStateSnapshot>
+  >({});
+  const [projectFileArtifact, setProjectFileArtifact] =
+    useState<ArtifactRecord>();
   useDocumentTranslations(state.language);
 
   function clampDetailPanelWidth(nextWidth: number) {
-    const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
+    const containerWidth =
+      splitContainerRef.current?.getBoundingClientRect().width ?? 0;
     if (containerWidth <= 0) return nextWidth;
-    const reservedArtifactWidth = state.artifactPanelOpen ? artifactPanelWidth + 8 : 0;
+    const reservedArtifactWidth = state.artifactPanelOpen
+      ? artifactPanelWidth + 8
+      : 0;
 
     const maxAllowedWidth = Math.max(
       MIN_DETAIL_PANEL_WIDTH,
-      Math.min(720, containerWidth - MIN_MAIN_PANEL_WIDTH - reservedArtifactWidth - 24),
+      Math.min(
+        720,
+        containerWidth - MIN_MAIN_PANEL_WIDTH - reservedArtifactWidth - 24,
+      ),
     );
 
-    return Math.min(Math.max(nextWidth, MIN_DETAIL_PANEL_WIDTH), maxAllowedWidth);
+    return Math.min(
+      Math.max(nextWidth, MIN_DETAIL_PANEL_WIDTH),
+      maxAllowedWidth,
+    );
   }
 
   function clampArtifactPanelWidth(nextWidth: number) {
-    const containerWidth = splitContainerRef.current?.getBoundingClientRect().width ?? 0;
+    const containerWidth =
+      splitContainerRef.current?.getBoundingClientRect().width ?? 0;
     if (containerWidth <= 0) return nextWidth;
     const reservedDetailWidth = state.detailDrawer ? detailPanelWidth + 8 : 0;
 
     const maxAllowedWidth = Math.max(
       MIN_ARTIFACT_PANEL_WIDTH,
-      Math.min(680, containerWidth - MIN_MAIN_PANEL_WIDTH - reservedDetailWidth - 24),
+      Math.min(
+        680,
+        containerWidth - MIN_MAIN_PANEL_WIDTH - reservedDetailWidth - 24,
+      ),
     );
 
-    return Math.min(Math.max(nextWidth, MIN_ARTIFACT_PANEL_WIDTH), maxAllowedWidth);
+    return Math.min(
+      Math.max(nextWidth, MIN_ARTIFACT_PANEL_WIDTH),
+      maxAllowedWidth,
+    );
   }
 
   function handleDetailResizeStart(event: PointerEvent<HTMLButtonElement>) {
@@ -223,13 +320,17 @@ function WorkbenchInner() {
           health: bootstrap.health,
         });
         const sessions = await runtimeClient.listSessions();
-        const firstSession = sessions[0] ?? await runtimeClient.createSession();
+        const firstSession =
+          sessions[0] ?? (await runtimeClient.createSession());
         const detail = await runtimeClient.getSession(firstSession.sessionId);
         if (cancelled) return;
         dispatch({
           type: "HYDRATE_SESSION",
           projects,
-          sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+          sessions:
+            firstSession === sessions[0]
+              ? sessions
+              : [firstSession, ...sessions],
           detail,
         });
       } catch (error) {
@@ -240,52 +341,74 @@ function WorkbenchInner() {
             mode: "error",
             ok: false,
             label: "Runtime error",
-            detail: error instanceof Error ? error.message : "Runtime bridge failed to initialize.",
+            detail:
+              error instanceof Error
+                ? error.message
+                : "Runtime bridge failed to initialize.",
           },
         });
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [runtimeClient, dispatch]);
 
   useEffect(() => {
     if (!state.detailDrawer && !state.artifactPanelOpen) return;
 
     const syncPanelWidth = () => {
-      setDetailPanelWidth((currentWidth) => clampDetailPanelWidth(currentWidth));
-      setArtifactPanelWidth((currentWidth) => clampArtifactPanelWidth(currentWidth));
+      setDetailPanelWidth((currentWidth) =>
+        clampDetailPanelWidth(currentWidth),
+      );
+      setArtifactPanelWidth((currentWidth) =>
+        clampArtifactPanelWidth(currentWidth),
+      );
     };
 
     syncPanelWidth();
     window.addEventListener("resize", syncPanelWidth);
     return () => window.removeEventListener("resize", syncPanelWidth);
-  }, [state.detailDrawer, state.artifactPanelOpen, detailPanelWidth, artifactPanelWidth]);
+  }, [
+    state.detailDrawer,
+    state.artifactPanelOpen,
+    detailPanelWidth,
+    artifactPanelWidth,
+  ]);
 
   useEffect(() => {
-    const title = windowTitleForView(state.activeView, state.settingsOpen, state.language);
+    const title = windowTitleForView(
+      state.activeView,
+      state.settingsOpen,
+      state.language,
+    );
     document.title = title;
 
     void import("@tauri-apps/api/webviewWindow")
-      .then(({ getCurrentWebviewWindow }) => getCurrentWebviewWindow().setTitle(title))
+      .then(({ getCurrentWebviewWindow }) =>
+        getCurrentWebviewWindow().setTitle(title),
+      )
       .catch(() => {});
   }, [state.activeView, state.settingsOpen, state.language]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     let cancelled = false;
-    void runtimeClient.subscribeRunEvents((stream) => {
-      dispatch({ type: "APPLY_RUN_STREAM", stream });
-      setTurnSnapshots((current) => {
-        const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
-        return merged ? { ...current, [stream.runId]: merged } : current;
+    void runtimeClient
+      .subscribeRunEvents((stream) => {
+        dispatch({ type: "APPLY_RUN_STREAM", stream });
+        setTurnSnapshots((current) => {
+          const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
+          return merged ? { ...current, [stream.runId]: merged } : current;
+        });
+      })
+      .then((nextUnsubscribe) => {
+        if (cancelled) {
+          nextUnsubscribe();
+          return;
+        }
+        unsubscribe = nextUnsubscribe;
       });
-    }).then((nextUnsubscribe) => {
-      if (cancelled) {
-        nextUnsubscribe();
-        return;
-      }
-      unsubscribe = nextUnsubscribe;
-    });
     return () => {
       cancelled = true;
       unsubscribe?.();
@@ -360,20 +483,30 @@ function WorkbenchInner() {
     if (!pendingRun || pendingRun.sessionId !== state.selectedSessionId) {
       return [];
     }
-    const runAlreadyMaterialized = Object.values(activeSessionTurnSnapshots).some((snapshot) => (
-      snapshot?.sessionId === pendingRun.sessionId
-      && snapshot.input.prompt === pendingRun.prompt
-      && (snapshot.status === "queued" || snapshot.status === "running")
-    ));
+    const runAlreadyMaterialized = Object.values(
+      activeSessionTurnSnapshots,
+    ).some(
+      (snapshot) =>
+        snapshot?.sessionId === pendingRun.sessionId &&
+        snapshot.input.prompt === pendingRun.prompt &&
+        (snapshot.status === "queued" || snapshot.status === "running"),
+    );
     return runAlreadyMaterialized ? [] : adaptPendingRunMessages(pendingRun);
   }, [activeSessionTurnSnapshots, state.pendingRun, state.selectedSessionId]);
 
   const chatMessages = useMemo(() => {
     return [
-      ...adaptChatMessages(state.activeSessionDetail?.transcript ?? [], activeSessionTurnSnapshots),
+      ...adaptChatMessages(
+        state.activeSessionDetail?.transcript ?? [],
+        activeSessionTurnSnapshots,
+      ),
       ...pendingRunMessages,
     ];
-  }, [activeSessionTurnSnapshots, pendingRunMessages, state.activeSessionDetail]);
+  }, [
+    activeSessionTurnSnapshots,
+    pendingRunMessages,
+    state.activeSessionDetail,
+  ]);
   const selectedArtifact = useMemo(() => {
     if (!state.selectedArtifactId) return undefined;
 
@@ -381,13 +514,20 @@ function WorkbenchInner() {
       return projectFileArtifact;
     }
 
-    const activeArtifact = viewModel?.artifacts.find((artifact) => artifact.id === state.selectedArtifactId);
+    const activeArtifact = viewModel?.artifacts.find(
+      (artifact) => artifact.id === state.selectedArtifactId,
+    );
     if (activeArtifact) return activeArtifact;
 
     return chatMessages
       .flatMap((message) => message.turn?.artifacts ?? [])
       .find((artifact) => artifact.id === state.selectedArtifactId);
-  }, [chatMessages, projectFileArtifact, state.selectedArtifactId, viewModel?.artifacts]);
+  }, [
+    chatMessages,
+    projectFileArtifact,
+    state.selectedArtifactId,
+    viewModel?.artifacts,
+  ]);
 
   async function handleOpenProjectFile(projectId: string, path: string) {
     try {
@@ -398,11 +538,17 @@ function WorkbenchInner() {
     } catch (error) {
       dispatch({
         type: "SET_COMMAND_FEEDBACK",
-        feedback: error instanceof Error ? error.message : "Project file preview failed.",
+        feedback:
+          error instanceof Error
+            ? error.message
+            : "Project file preview failed.",
       });
     }
   }
-  async function handleSubmitFeedback(message: ChatMessage, feedbackText: string) {
+  async function handleSubmitFeedback(
+    message: ChatMessage,
+    feedbackText: string,
+  ) {
     if (!message.turn) {
       throw new Error("Feedback requires an assistant turn.");
     }
@@ -443,7 +589,10 @@ function WorkbenchInner() {
         {settingsDialog}
         <WorkspacePane className="w-full">
           <Suspense fallback={<LoadingPane />}>
-            <EvaluationView runtimeClient={runtimeClient} bridgeStatus={state.bridgeStatus} />
+            <EvaluationView
+              runtimeClient={runtimeClient}
+              bridgeStatus={state.bridgeStatus}
+            />
           </Suspense>
         </WorkspacePane>
       </AppShell>
@@ -495,17 +644,33 @@ function WorkbenchInner() {
   }
 
   // Chat view (default)
-  const { actions: actionRecords, agents, artifacts, checkpoints, modeCards, planItems, streamLines, topologyEdges, topologyNodes, activeMode } = viewModel;
+  const {
+    actions: actionRecords,
+    agents,
+    artifacts,
+    checkpoints,
+    modeCards,
+    planItems,
+    streamLines,
+    topologyEdges,
+    topologyNodes,
+    activeMode,
+  } = viewModel;
   const isRunning = isSessionProcessing(selectedSession, state.pendingRun);
   const isApprovalRequired = selectedSession.status === "approval_required";
   const selectedProject = selectedSession.projectId
-    ? state.projects.find((project) => project.projectId === selectedSession.projectId)
+    ? state.projects.find(
+        (project) => project.projectId === selectedSession.projectId,
+      )
     : undefined;
 
   return (
     <AppShell>
       {settingsDialog}
-      <div ref={splitContainerRef} className="flex h-full min-h-0 items-stretch gap-0.5">
+      <div
+        ref={splitContainerRef}
+        className="flex h-full min-h-0 items-stretch gap-0.5"
+      >
         <WorkspacePane className="min-w-0 flex-1">
           <ChatView
             activeMode={activeMode}
@@ -525,7 +690,9 @@ function WorkbenchInner() {
             streamLines={streamLines}
             topologyEdges={topologyEdges}
             topologyNodes={topologyNodes}
-            onComposerPromptChange={(text) => dispatch({ type: "SET_PROMPT", text })}
+            onComposerPromptChange={(text) =>
+              dispatch({ type: "SET_PROMPT", text })
+            }
             onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
             onExportReport={actions.exportReport}
             onForkRun={actions.forkRun}
@@ -533,13 +700,19 @@ function WorkbenchInner() {
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
             onCancelRun={actions.cancelRun}
-            onOpenArtifact={(artifactId) => dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })}
+            onOpenArtifact={(artifactId) =>
+              dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })
+            }
             onSubmitFeedback={handleSubmitFeedback}
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
-            onSelectModeSelection={(selection) => dispatch({ type: "SET_MODE_SELECTION", selection })}
+            onSelectModeSelection={(selection) =>
+              dispatch({ type: "SET_MODE_SELECTION", selection })
+            }
             onSelectNode={(id) => dispatch({ type: "SELECT_NODE", nodeId: id })}
             onStartRun={actions.startRun}
-            onToggleDetailDrawer={(drawer) => dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer })}
+            onToggleDetailDrawer={(drawer) =>
+              dispatch({ type: "TOGGLE_DETAIL_DRAWER", drawer })
+            }
             detailDrawer={state.detailDrawer}
           />
         </WorkspacePane>
@@ -559,13 +732,18 @@ function WorkbenchInner() {
               className="min-w-0 shrink-0 flex-none"
               style={{ width: detailPanelWidth }}
             >
-              {state.detailDrawer === "documents" && selectedSession.projectId ? (
+              {state.detailDrawer === "documents" &&
+              selectedSession.projectId ? (
                 <DocumentsDrawer
                   projectId={selectedSession.projectId}
-                  projectLabel={selectedProject?.label ?? selectedSession.project}
+                  projectLabel={
+                    selectedProject?.label ?? selectedSession.project
+                  }
                   runtimeClient={runtimeClient}
                   onClose={() => dispatch({ type: "CLOSE_DETAIL_DRAWER" })}
-                  onOpenFile={(path) => void handleOpenProjectFile(selectedSession.projectId!, path)}
+                  onOpenFile={(path) =>
+                    void handleOpenProjectFile(selectedSession.projectId!, path)
+                  }
                 />
               ) : (
                 <TrailsDrawer
@@ -610,7 +788,11 @@ function WorkbenchInner() {
               style={{ width: artifactPanelWidth }}
             >
               <ArtifactDrawer
-                artifact={selectedArtifact ? toArtifactRecord(selectedArtifact) : undefined}
+                artifact={
+                  selectedArtifact
+                    ? toArtifactRecord(selectedArtifact)
+                    : undefined
+                }
                 onClose={() => dispatch({ type: "CLOSE_ARTIFACT_PANEL" })}
               />
             </WorkspacePane>
@@ -651,7 +833,10 @@ function formatArtifactTime(timestamp: number) {
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
     return "Unknown";
   }
-  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export function App() {

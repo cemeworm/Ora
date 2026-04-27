@@ -69,7 +69,7 @@ vi.mock("../src/providers/index.js", async () => {
   };
 });
 
-import { LocalRunStore, SessionManager, createOraSqliteCheckpointer, createRuntimeMethodHandler } from "../src/index.js";
+import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 
 const FIXED_TIME = 1_700_000_000_000;
 const clock = () => FIXED_TIME;
@@ -459,7 +459,7 @@ describe("session thread runtime behavior", () => {
       method: "runs.start",
       params: {
         input: { prompt: "Fork source" },
-        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true, langGraphOrchestration: true } },
       },
     }) as { runId: string; sessionId: string; turnIndex: number };
 
@@ -571,20 +571,9 @@ describe("session thread runtime behavior", () => {
     expect(reloaded.getRunState({ runId: run.runId }).input.projectId).toBeUndefined();
   });
 
-  it("uses the runtime kernel by default even when a LangGraph session manager is enabled", async () => {
-    let langGraphStartCount = 0;
-    const managerBackedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
-    const fakeSessionManager = {
-      isEnabled: () => true,
-      startRun: async () => {
-        langGraphStartCount += 1;
-        throw new Error("LangGraph orchestration should require explicit opt-in.");
-      },
-    };
-    const handle = createRuntimeMethodHandler(
-      managerBackedStore,
-      fakeSessionManager as never
-    );
+  it("uses the runtime kernel even when legacy graph metadata is present", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
 
     const run = await handle({
       jsonrpc: "2.0",
@@ -595,41 +584,15 @@ describe("session thread runtime behavior", () => {
         config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
       },
     }) as { runId: string };
-    const state = StateSnapshotSchema.parse(managerBackedStore.getRunState({ runId: run.runId }));
+    const state = StateSnapshotSchema.parse(store.getRunState({ runId: run.runId }));
 
-    expect(langGraphStartCount).toBe(0);
-    expect(state.config.metadata.runtimeRoute).toBe("runtime-kernel");
+    expect(state.status).toBe("succeeded");
+    expect(state.output).toMatchObject({ pattern: "orchestrator_subagent" });
   });
 
-  it("passes rebuilt session transcript through the explicit LangGraph session manager path", async () => {
-    const capturedConversationMessages: Array<Array<{ role: string; content: string }>> = [];
-    const managerBackedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
-    const fakeSessionManager = {
-      isEnabled: () => true,
-      startRun: async (
-        _runId: string,
-        input: { prompt: string },
-        config: { pattern: string },
-        conversationMessages: Array<{ role: string; content: string }>
-      ) => {
-        capturedConversationMessages.push(
-          conversationMessages.map((message) => ({
-            role: message.role,
-            content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
-          }))
-        );
-        const nestedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
-        const handle = await nestedStore.startRun({
-          input: { prompt: input.prompt },
-          config: { pattern: config.pattern },
-        });
-        return nestedStore.getRunState({ runId: handle.runId });
-      },
-    };
-    const handle = createRuntimeMethodHandler(
-      managerBackedStore,
-      fakeSessionManager as never
-    );
+  it("ignores explicit legacy graph orchestration metadata for new JSON-RPC runs", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
 
     const first = await handle({
       jsonrpc: "2.0",
@@ -652,29 +615,15 @@ describe("session thread runtime behavior", () => {
       },
     });
 
-    expect(capturedConversationMessages).toHaveLength(2);
-    expect(capturedConversationMessages[0]).toEqual([
-      { role: "user", content: "First managed turn" },
-    ]);
-    expect(capturedConversationMessages[1]).toHaveLength(3);
-    expect(capturedConversationMessages[1]?.[0]).toEqual({
-      role: "user",
-      content: "First managed turn",
-    });
-    expect(capturedConversationMessages[1]?.[1]?.role).toBe("assistant");
-    expect(capturedConversationMessages[1]?.[1]?.content).toContain("First managed turn");
-    expect(capturedConversationMessages[1]?.[2]).toEqual({
-      role: "user",
-      content: "Second managed turn",
-    });
+    const detail = store.getSession({ sessionId: first.sessionId });
+    expect(detail.session.turnCount).toBe(2);
+    expect(detail.latestSnapshot?.config.metadata.langGraphOrchestration).toBe(true);
+    expect(detail.latestSnapshot?.output).toMatchObject({ pattern: "orchestrator_subagent" });
   });
 
-  it("passes rebuilt session transcript into real LangGraph provider calls", async () => {
-    const dbPath = path.join(freshStoreDir(), "checkpoints.db");
-    const checkpointer = createOraSqliteCheckpointer({ dbPath });
-    const managerBackedStore = new LocalRunStore({ dataDir: freshStoreDir(), clock });
-    const manager = new SessionManager(true, { checkpointer });
-    const handle = createRuntimeMethodHandler(managerBackedStore, manager);
+  it("passes rebuilt session transcript into runtime-kernel provider calls", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
 
     const first = await handle({
       jsonrpc: "2.0",
@@ -697,27 +646,30 @@ describe("session thread runtime behavior", () => {
       },
     });
 
-    const decomposeRequests = capturedRequests.filter((request) =>
-      request.system.includes("Ora's orchestrator") &&
-      request.prompt.includes("Decompose this task")
+    const firstTurnRequests = capturedRequests.filter((request) =>
+      !request.system.includes("Ora's conversation title generator") &&
+      request.prompt.includes("First real managed turn")
+    );
+    const secondTurnRequests = capturedRequests.filter((request) =>
+      !request.system.includes("Ora's conversation title generator") &&
+      request.prompt.includes("Second real managed turn")
     );
 
-    expect(decomposeRequests).toHaveLength(2);
-    expect(decomposeRequests[0]?.messages).toEqual([
+    expect(firstTurnRequests.length).toBeGreaterThan(0);
+    expect(secondTurnRequests.length).toBeGreaterThan(0);
+    expect(firstTurnRequests[0]?.messages).toEqual([
       { role: "user", content: "First real managed turn" },
     ]);
-    expect(decomposeRequests[1]?.messages).toHaveLength(3);
-    expect(decomposeRequests[1]?.messages[0]).toEqual({
+    expect(secondTurnRequests[0]?.messages).toHaveLength(3);
+    expect(secondTurnRequests[0]?.messages[0]).toEqual({
       role: "user",
       content: "First real managed turn",
     });
-    expect(decomposeRequests[1]?.messages[1]?.role).toBe("assistant");
-    expect(decomposeRequests[1]?.messages[1]?.content).toContain("First real managed turn");
-    expect(decomposeRequests[1]?.messages[2]).toEqual({
+    expect(secondTurnRequests[0]?.messages[1]?.role).toBe("assistant");
+    expect(secondTurnRequests[0]?.messages[1]?.content).toContain("First real managed turn");
+    expect(secondTurnRequests[0]?.messages[2]).toEqual({
       role: "user",
       content: "Second real managed turn",
     });
-
-    checkpointer.close();
   });
 });

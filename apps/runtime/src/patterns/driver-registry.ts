@@ -1,126 +1,31 @@
 import {
   createModeSpecFromPattern,
-  getModeNodeRuntimeTemplateDefinition,
   type RunConfig,
-  type MemoryKind,
   modeSpecToPatternDefinition,
   orderedEnabledModeNodes,
-  type BusStats,
   type CoordinationPattern,
   type ModeNodeSpec,
   type ModeSpec,
   type PatternDefinition,
-  type QueueSummary,
-  type SharedStateSummary,
 } from "@ora/shared";
 import { assessGeneratorVerifierResponse } from "./generator-verifier-utils.js";
-
-export interface PatternExecutionContext {
-  projectId: string;
-  queueSummary: QueueSummary;
-  sharedStateSummary: SharedStateSummary;
-  busStats: BusStats;
-  systemPrompt(extra: string): string;
-  setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
-  setQueueSummary(patch: Partial<QueueSummary>): void;
-  runRecoverableNode<T>(params: {
-    nodeId: string;
-    nodeTemplate: string;
-    nodeLabel: string;
-    agentId?: string;
-  }, execute: () => Promise<T>): Promise<{ status: "completed"; output: T } | { status: "skipped"; output?: unknown }>;
-  runDelegatedTask<T>(params: {
-    taskId: string;
-    nodeId: string;
-    nodeLabel: string;
-    agentId: string;
-    title: string;
-  }, execute: () => Promise<T>): Promise<T>;
-  ensureClarification(params: {
-    id: string;
-    key: string;
-    nodeId: string;
-    nodeLabel: string;
-    question: string;
-    narrate?: boolean;
-  }): Promise<unknown>;
-  claimWorker(agentId: string): void;
-  releaseWorker(agentId: string): void;
-  callAgent(params: {
-    agentId: string;
-    planItemId?: string;
-    title: string;
-    prompt: string;
-    system: string;
-    customAgentId?: string;
-    riskLevel?: "low" | "medium" | "high";
-  }): Promise<string>;
-  remember(params: {
-    id: string;
-    namespace: string[];
-    kind: "profile" | "project" | "session" | "worker" | "artifact";
-    value: unknown;
-    sourceActionId?: string;
-  }): void;
-  captureMemory(params: {
-    id: string;
-    namespace: string[];
-    kind: MemoryKind;
-    value: unknown;
-    sourceActionId?: string;
-  }): void;
-  publishArtifact(params: {
-    id: string;
-    label: string;
-    kind?: "report" | "file" | "log";
-    mimeType?: string;
-    payload: unknown;
-  }): void;
-  publishMessage(params: {
-    agentId: string;
-    topic: string;
-    correlationId: string;
-    summary: string;
-    payload: unknown;
-  }): void;
-  routeMessage(params: {
-    agentId: string;
-    fromTopic: string;
-    toTopic: string;
-    correlationId: string;
-    summary: string;
-  }): void;
-  emitAgentMessage(params: {
-    fromAgentId: string;
-    toAgentIds?: string[];
-    replyToId?: string;
-    threadId: string;
-    nodeId?: string;
-    planItemId?: string;
-    kind: "mention" | "reply" | "handoff" | "route" | "publish" | "status";
-    status?: "sent" | "running" | "done" | "failed";
-    content: string;
-    topic?: string;
-    correlationId?: string;
-    artifactIds?: string[];
-  }): { id: string };
-  writeSharedState(params: {
-    agentId: string;
-    key: string;
-    summary: string;
-    value: unknown;
-  }): void;
-  currentSharedState(): SharedStateSummary;
-}
-
-export interface PatternExecutionResult {
-  output: unknown;
-}
-
-export interface PatternDriver {
-  id: CoordinationPattern;
-  execute(context: PatternExecutionContext, prompt: string): Promise<PatternExecutionResult>;
-}
+import type { PatternDriver, PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
+import {
+  agentMessageContent,
+  asText,
+  correlationId,
+  initializeQueueSummary,
+  mention,
+  modeUsesSingleOwner,
+  nodeAtomIds,
+  nodeCustomAgentId,
+  nodeSystemPrompt,
+  ownerForTemplate,
+  primaryOwnerAgentId,
+  promptTemplate,
+  runtimeFallbackPrompt,
+  titleForNode,
+} from "./driver-utils.js";
 
 interface ModeExecutionInput {
   context: PatternExecutionContext;
@@ -131,133 +36,6 @@ interface ModeExecutionInput {
 }
 
 type ExecutionBag = Record<string, unknown>;
-
-function correlationId(base: string): string {
-  return `${base}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function asText(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value === undefined || value === null) {
-    return "";
-  }
-  return JSON.stringify(value);
-}
-
-function interpolate(template: string, values: Record<string, unknown>): string {
-  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => asText(values[key]));
-}
-
-function promptTemplate(
-  node: ModeNodeSpec,
-  fallback: string,
-  values: Record<string, unknown>,
-): string {
-  return interpolate(node.prompt ?? fallback, values);
-}
-
-function nodeInstructions(
-  modeSpec: ModeSpec,
-  node: ModeNodeSpec,
-  values: Record<string, unknown>,
-  fallback?: string,
-): string {
-  const template = node.instructions
-    ?? getModeNodeRuntimeTemplateDefinition(modeSpec.family, node.template).fallbackInstructions
-    ?? fallback
-    ?? "";
-  return interpolate(template, values);
-}
-
-function nodeSystemPrompt(
-  context: PatternExecutionContext,
-  modeSpec: ModeSpec,
-  node: ModeNodeSpec,
-  values: Record<string, unknown>,
-  fallback?: string,
-): string {
-  return context.systemPrompt(nodeInstructions(modeSpec, node, values, fallback));
-}
-
-function titleForNode(node: ModeNodeSpec, fallback: string): string {
-  return node.title ?? node.label ?? fallback;
-}
-
-function nodeCustomAgentId(node: ModeNodeSpec): string | undefined {
-  return typeof node.config?.customAgentId === "string" && node.config.customAgentId.trim()
-    ? node.config.customAgentId.trim()
-    : undefined;
-}
-
-function mention(agentId: string): string {
-  return `@${agentId}`;
-}
-
-function agentMessageContent(prefix: string, value: unknown): string {
-  const text = asText(value).trim();
-  return text ? `${prefix}${text}` : prefix.trimEnd();
-}
-
-function ownerForTemplate(
-  nodes: ModeNodeSpec[],
-  template: ModeNodeSpec["template"],
-  fallback: string,
-): string {
-  return nodes.find((node) => node.template === template)?.ownerAgentId ?? fallback;
-}
-
-function runtimeFallbackPrompt(family: CoordinationPattern, template: ModeNodeSpec["template"]): string {
-  return getModeNodeRuntimeTemplateDefinition(family, template).fallbackPrompt ?? "";
-}
-
-function queueModeForFamily(family: CoordinationPattern): QueueSummary["mode"] {
-  switch (family) {
-    case "agent_teams":
-      return "backlog";
-    case "message_bus":
-      return "event_bus";
-    case "shared_state":
-      return "shared_state";
-    default:
-      return "dag";
-  }
-}
-
-function nodeAtomIds(node: ModeNodeSpec): Set<string> {
-  return new Set(
-    Array.isArray(node.config?.atoms)
-      ? node.config.atoms.filter((value): value is string => typeof value === "string")
-      : [],
-  );
-}
-
-function modeUsesSingleOwner(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): boolean {
-  const fallbackAgentId = modeSpec.profiles[0]?.id;
-  const ownerIds = new Set(
-    nodes.map((node) => node.ownerAgentId ?? fallbackAgentId).filter((id): id is string => typeof id === "string"),
-  );
-  return ownerIds.size <= 1 && !nodes.some((node) => nodeAtomIds(node).has("subagent_delegate"));
-}
-
-function primaryOwnerAgentId(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): string {
-  return nodes.find((node) => node.ownerAgentId)?.ownerAgentId ?? modeSpec.profiles[0]?.id ?? "agent";
-}
-
-function initializeQueueSummary(
-  context: PatternExecutionContext,
-  family: CoordinationPattern,
-  totalActiveNodes: number,
-): void {
-  context.setQueueSummary({
-    mode: queueModeForFamily(family),
-    pending: totalActiveNodes,
-    inProgress: 0,
-    completed: 0,
-    topics: family === "message_bus" ? ["task.input", "task.findings", "task.response"] : [],
-  });
-}
 
 async function runNode(
   context: PatternExecutionContext,

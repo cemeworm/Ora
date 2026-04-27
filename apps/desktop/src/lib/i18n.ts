@@ -15,7 +15,6 @@ export const LANGUAGE_OPTIONS: Array<{
 
 const ZH_COPY: Record<string, string> = {
   Settings: "设置",
-  "Ora Operator Workbench": "Ora 操作员工作台",
   General: "通用",
   Language: "语言",
   Chinese: "中文",
@@ -744,115 +743,143 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [
     /^(.+) drafts a candidate answer that the verifier can inspect and improve\.$/,
-    (match) => `${translateCopy("zh", match[1])} 起草候选答案，供验证者检查和改进。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 起草候选答案，供验证者检查和改进。`,
   ],
   [
     /^(.+) checks the candidate against the rubric and decides whether it is ready\.$/,
-    (match) => `${translateCopy("zh", match[1])} 按 rubric 检查候选答案，并判断是否就绪。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 按 rubric 检查候选答案，并判断是否就绪。`,
   ],
   [
     /^(.+) makes the accept, retry, or stop decision for this verification loop\.$/,
-    (match) => `${translateCopy("zh", match[1])} 为这轮验证循环做出接受、重试或停止决策。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 为这轮验证循环做出接受、重试或停止决策。`,
   ],
   [
     /^(.+) breaks the request into clear responsibilities before other stages start\.$/,
-    (match) => `${translateCopy("zh", match[1])} 在其他阶段开始前，将请求拆成清晰职责。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 在其他阶段开始前，将请求拆成清晰职责。`,
   ],
   [
     /^(.+) gathers focused context for the plan instead of answering from first impressions\.$/,
-    (match) => `${translateCopy("zh", match[1])} 为计划收集聚焦上下文，而不是凭第一印象回答。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 为计划收集聚焦上下文，而不是凭第一印象回答。`,
   ],
   [
     /^(.+) reviews the work for gaps, contradictions, risks, and missing evidence\.$/,
-    (match) => `${translateCopy("zh", match[1])} 检查工作中的缺口、矛盾、风险和缺失证据。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 检查工作中的缺口、矛盾、风险和缺失证据。`,
   ],
   [
     /^(.+) combines the completed work into a final response with the mode's context intact\.$/,
-    (match) => `${translateCopy("zh", match[1])} 在保留模式上下文的前提下，将已完成工作合成为最终回复。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 在保留模式上下文的前提下，将已完成工作合成为最终回复。`,
   ],
   [
     /^(.+) turns the request into a small backlog with explicit ownership\.$/,
-    (match) => `${translateCopy("zh", match[1])} 将请求转成带明确负责人的小型 backlog。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 将请求转成带明确负责人的小型 backlog。`,
   ],
   [
     /^(.+) completes the assigned work item using the mode's available capabilities\.$/,
-    (match) => `${translateCopy("zh", match[1])} 使用模式可用能力完成分配到的工作项。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 使用模式可用能力完成分配到的工作项。`,
   ],
   [
     /^(.+) checks the completed work and reports approval or concrete issues\.$/,
-    (match) => `${translateCopy("zh", match[1])} 检查已完成工作，并给出通过结论或具体问题。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 检查已完成工作，并给出通过结论或具体问题。`,
   ],
   [
     /^(.+) packages the current state so the next stage knows what changed and what remains\.$/,
-    (match) => `${translateCopy("zh", match[1])} 打包当前状态，让下一阶段知道发生了什么、还剩什么。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 打包当前状态，让下一阶段知道发生了什么、还剩什么。`,
   ],
   [
     /^(.+) publishes the initial event so downstream subscribers can react to it\.$/,
-    (match) => `${translateCopy("zh", match[1])} 发布初始事件，让下游订阅者能够响应。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 发布初始事件，让下游订阅者能够响应。`,
   ],
   [
     /^(.+) classifies the event and routes it to the subscriber that should handle it\.$/,
-    (match) => `${translateCopy("zh", match[1])} 对事件分类，并路由给应该处理它的订阅者。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 对事件分类，并路由给应该处理它的订阅者。`,
   ],
   [
     /^(.+) handles the routed work item and emits findings back into the bus\.$/,
-    (match) => `${translateCopy("zh", match[1])} 处理被路由的工作项，并把发现发回消息总线。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 处理被路由的工作项，并把发现发回消息总线。`,
   ],
   [
     /^(.+) turns routed findings into the final response event for the user\.$/,
-    (match) => `${translateCopy("zh", match[1])} 将路由后的发现转成给用户的最终响应事件。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 将路由后的发现转成给用户的最终响应事件。`,
   ],
   [
     /^(.+) initializes the shared board so every collaborator starts from the same state\.$/,
-    (match) => `${translateCopy("zh", match[1])} 初始化共享看板，让所有协作者从同一状态开始。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 初始化共享看板，让所有协作者从同一状态开始。`,
   ],
   [
     /^(.+) contributes the next useful finding to the shared board\.$/,
-    (match) => `${translateCopy("zh", match[1])} 向共享看板补充下一条有用发现。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 向共享看板补充下一条有用发现。`,
   ],
   [
     /^(.+) reviews the shared board and decides whether the collaborators have converged\.$/,
-    (match) => `${translateCopy("zh", match[1])} 检查共享看板，并判断协作者是否已经收敛。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 检查共享看板，并判断协作者是否已经收敛。`,
   ],
   [
     /^(.+) drafts the first candidate answer or working artifact\.$/,
-    (match) => `${translateCopy("zh", match[1])} 起草第一版候选答案或工作产物。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 起草第一版候选答案或工作产物。`,
   ],
   [
     /^(.+) breaks the request into an executable plan and decides what needs attention first\.$/,
-    (match) => `${translateCopy("zh", match[1])} 将请求拆成可执行计划，并判断最先需要关注什么。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 将请求拆成可执行计划，并判断最先需要关注什么。`,
   ],
   [
     /^(.+) gathers focused context before the mode commits to an answer\.$/,
-    (match) => `${translateCopy("zh", match[1])} 在模式给出答案前收集聚焦上下文。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 在模式给出答案前收集聚焦上下文。`,
   ],
   [
     /^(.+) reviews the work for gaps, risks, and missing evidence\.$/,
-    (match) => `${translateCopy("zh", match[1])} 检查工作中的缺口、风险和缺失证据。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 检查工作中的缺口、风险和缺失证据。`,
   ],
   [
     /^(.+) checks the result against the mode's quality and risk boundary\.$/,
-    (match) => `${translateCopy("zh", match[1])} 按模式的质量和风险边界检查结果。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 按模式的质量和风险边界检查结果。`,
   ],
   [
     /^(.+) chooses the next action from the available state and constraints\.$/,
-    (match) => `${translateCopy("zh", match[1])} 根据当前状态和约束选择下一步动作。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 根据当前状态和约束选择下一步动作。`,
   ],
   [
     /^(.+) turns the completed work into the final response for the user\.$/,
-    (match) => `${translateCopy("zh", match[1])} 将已完成的工作转成给用户的最终回复。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 将已完成的工作转成给用户的最终回复。`,
   ],
   [
     /^(.+) publishes an event or artifact so later stages can consume it\.$/,
-    (match) => `${translateCopy("zh", match[1])} 发布事件或产物，供后续阶段消费。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 发布事件或产物，供后续阶段消费。`,
   ],
   [
     /^(.+) routes events to the subscribers that should handle the next piece of work\.$/,
-    (match) => `${translateCopy("zh", match[1])} 将事件路由给应该处理下一段工作的订阅者。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 将事件路由给应该处理下一段工作的订阅者。`,
   ],
   [
     /^(.+) handles subscribed work and updates the shared runtime state\.$/,
-    (match) => `${translateCopy("zh", match[1])} 处理订阅工作，并更新共享运行时状态。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 处理订阅工作，并更新共享运行时状态。`,
   ],
   [
     /^(.+) combines partial outputs into a coherent answer\.$/,
@@ -860,7 +887,8 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [
     /^(.+) classifies the request and chooses the right handling lane\.$/,
-    (match) => `${translateCopy("zh", match[1])} 对请求分类，并选择合适的处理通道。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 对请求分类，并选择合适的处理通道。`,
   ],
   [
     /^(.+) executes the main construction or implementation step\.$/,
@@ -872,19 +900,23 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [
     /^(.+) packages the result for the next stage or the final response\.$/,
-    (match) => `${translateCopy("zh", match[1])} 将结果打包给下一阶段或最终回复。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 将结果打包给下一阶段或最终回复。`,
   ],
   [
     /^(.+) initializes the shared state so collaborators start from the same context\.$/,
-    (match) => `${translateCopy("zh", match[1])} 初始化共享状态，让协作者从同一上下文开始。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 初始化共享状态，让协作者从同一上下文开始。`,
   ],
   [
     /^(.+) watches for shared-state convergence before the run wraps up\.$/,
-    (match) => `${translateCopy("zh", match[1])} 在运行收束前观察共享状态是否收敛。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 在运行收束前观察共享状态是否收敛。`,
   ],
   [
     /^(.+) runs this stage using the selected runtime template\.$/,
-    (match) => `${translateCopy("zh", match[1])} 使用选定的运行时模板执行这个阶段。`,
+    (match) =>
+      `${translateCopy("zh", match[1])} 使用选定的运行时模板执行这个阶段。`,
   ],
   [
     /^(.+) in progress\.$/,

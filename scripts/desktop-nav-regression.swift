@@ -4,7 +4,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-private let windowTitleBase = "Ora Operator Workbench"
+private let windowTitleBase = "Ora"
 private let windowOwnerName = "ora-desktop"
 
 private struct RegressionStep {
