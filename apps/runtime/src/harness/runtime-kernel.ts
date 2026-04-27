@@ -620,9 +620,10 @@ export async function executeRuntimeKernel(
     streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
     reason: CompletionStopReason;
     agentId?: string;
+    nodeId?: string;
     title?: string;
   }): Promise<ModelResponse> => {
-    completion.markForcedFinalConsumed();
+    completion.markForcedFinalConsumed({ agentId: params.agentId, nodeId: params.nodeId });
     const response = await params.invokeProvider(
       params.config,
       {
@@ -894,11 +895,13 @@ export async function executeRuntimeKernel(
 
   const runNodeRuntimeLoop = async (params: {
     agentId: string;
+    nodeId: string;
     title: string;
     prompt: string;
     system: string;
     toolIds: string[];
   }): Promise<ModelResponse> => {
+    const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
     const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
     const nativeTools = providerSupportsNativeTools(config)
       ? runtimeToolExecutor.toolDefinitions(params.toolIds)
@@ -1007,8 +1010,8 @@ export async function executeRuntimeKernel(
       title: params.title,
     });
     messages = repairDanglingToolCalls(messages);
-    const initialToolsAllowed = completion.toolsAllowed();
-    if (!initialToolsAllowed) {
+    const initialToolsAllowed = completion.toolsAllowed(completionScope);
+    if (!initialToolsAllowed && completion.toolAttempts >= completion.maxToolCalls) {
       completion.forceFinalAnswer("tool_budget_exhausted");
     }
     emitNodeRuntimeState(initialToolsAllowed ? "running_model" : "finalizing", {
@@ -1024,7 +1027,7 @@ export async function executeRuntimeKernel(
           ? params.system
           : forcedFinalSystemPrompt(
               params.system,
-              completion.completionStopReason ?? "tool_budget_exhausted",
+              completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
             ),
         maxTokens: config.budget?.maxTokens,
         tools: nativeTools,
@@ -1040,7 +1043,7 @@ export async function executeRuntimeKernel(
     if (!initialToolsAllowed) {
       const finalResponse = coerceNoToolResponse(
         response,
-        completion.completionStopReason ?? "tool_budget_exhausted",
+        completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
       );
       emitNodeRuntimeState("completed", {
         agentId: params.agentId,
@@ -1065,7 +1068,7 @@ export async function executeRuntimeKernel(
       Math.min(RUNTIME_TOOL_LOOP_SAFETY_LIMIT, remainingToolBudget),
     );
     for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
-      if (!completion.toolsAllowed()) {
+      if (!completion.toolsAllowed(completionScope)) {
         return runForcedFinalProviderCall({
           invokeProvider,
           config,
@@ -1073,8 +1076,9 @@ export async function executeRuntimeKernel(
           system: params.system,
           nativeTools,
           streamCallbacks,
-          reason: completion.completionStopReason ?? "tool_budget_exhausted",
+          reason: completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
           agentId: params.agentId,
+          nodeId: params.nodeId,
           title: params.title,
         });
       }
@@ -1105,7 +1109,7 @@ export async function executeRuntimeKernel(
         iteration,
       });
 
-      const attemptDecision = completion.registerToolAttempt(toolCall);
+      const attemptDecision = completion.registerToolAttempt(toolCall, completionScope);
       if (!attemptDecision.allowed) {
         emitNodeRuntimeState("finalizing", {
           agentId: params.agentId,
@@ -1123,6 +1127,7 @@ export async function executeRuntimeKernel(
           streamCallbacks,
           reason: attemptDecision.reason,
           agentId: params.agentId,
+          nodeId: params.nodeId,
           title: params.title,
         });
       }
@@ -1234,7 +1239,7 @@ export async function executeRuntimeKernel(
         if (cacheKey && !cacheHit) {
           runtimeToolResultCache.set(cacheKey, output);
         }
-        completion.markToolResultObserved(toolCall, cacheHit);
+        completion.markToolResultObserved(toolCall, cacheHit, completionScope);
         const succeeded = actionLedger.transition(action.id, "succeeded", {
           output,
         });
@@ -1313,12 +1318,13 @@ export async function executeRuntimeKernel(
                 },
               ];
         messages = repairDanglingToolCalls(messages);
-        if (completion.forcedFinalIsActive) {
+        if (completion.forcedFinalIsActive(completionScope)) {
+          const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
           emitNodeRuntimeState("finalizing", {
             agentId: params.agentId,
             title: params.title,
             toolId: toolCall.tool,
-            reason: completion.completionStopReason ?? "forced_final_answer",
+            reason: stopReason,
             iteration,
           });
           response = await runForcedFinalProviderCall({
@@ -1328,8 +1334,9 @@ export async function executeRuntimeKernel(
             system: params.system,
             nativeTools,
             streamCallbacks,
-            reason: completion.completionStopReason ?? "forced_final_answer",
+            reason: stopReason,
             agentId: params.agentId,
+            nodeId: params.nodeId,
             title: params.title,
           });
           return response;
@@ -1432,7 +1439,7 @@ export async function executeRuntimeKernel(
             args: toolCall.args,
           };
           const alternateAttemptDecision =
-            completion.registerToolAttempt(alternateCall);
+            completion.registerToolAttempt(alternateCall, completionScope);
           if (!alternateAttemptDecision.allowed) {
             emitNodeRuntimeState("finalizing", {
               agentId: params.agentId,
@@ -1450,6 +1457,7 @@ export async function executeRuntimeKernel(
               streamCallbacks,
               reason: alternateAttemptDecision.reason,
               agentId: params.agentId,
+              nodeId: params.nodeId,
               title: params.title,
             });
           }
@@ -1568,7 +1576,7 @@ export async function executeRuntimeKernel(
                 alternateApproved,
             },
           );
-          completion.markToolResultObserved(alternateCall, false);
+          completion.markToolResultObserved(alternateCall, false, completionScope);
           const alternateSucceeded = actionLedger.transition(
             alternateAction.id,
             "succeeded",
@@ -1610,12 +1618,13 @@ export async function executeRuntimeKernel(
               content: `Workspace tool result for ${alternateCall.tool}:\n${JSON.stringify(alternateOutput, null, 2)}`,
             },
           ];
-          if (completion.forcedFinalIsActive) {
+          if (completion.forcedFinalIsActive(completionScope)) {
+            const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
             emitNodeRuntimeState("finalizing", {
               agentId: params.agentId,
               title: params.title,
               toolId: alternateCall.tool,
-              reason: completion.completionStopReason ?? "forced_final_answer",
+              reason: stopReason,
               iteration,
             });
             response = await runForcedFinalProviderCall({
@@ -1625,8 +1634,9 @@ export async function executeRuntimeKernel(
               system: params.system,
               nativeTools,
               streamCallbacks,
-              reason: completion.completionStopReason ?? "forced_final_answer",
+              reason: stopReason,
               agentId: params.agentId,
+              nodeId: params.nodeId,
               title: params.title,
             });
             return response;
@@ -1842,6 +1852,7 @@ export async function executeRuntimeKernel(
         const effectiveToolIds = effectiveAgentToolIds(params.agentId, effectiveCustomAgentId);
         const response = await runNodeRuntimeLoop({
           agentId: params.agentId,
+          nodeId: params.planItemId ?? params.agentId,
           title: params.title,
           prompt: params.prompt,
           system: withAgentRuntimeContext(params.system, {

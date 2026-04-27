@@ -119,18 +119,45 @@ export class SkillFileStore {
   update(params: SkillUpdateParams | unknown): SkillDetail {
     const parsed = SkillUpdateParamsSchema.parse(params);
     const name = normalizeSkillName(parsed.name);
+    const nextName = normalizeSkillName(parsed.nextName ?? parsed.name);
     const existing = this.get({ name });
     if (!existing.editable) {
       throw new Error(`Skill '${name}' cannot be edited.`);
     }
 
-    validateSkillContent(name, parsed.content);
-    if (existing.category === "public") {
-      this.writePublicSkill(name, parsed.content);
-    } else {
-      this.writePrivateSkill(name, parsed.content);
+    if (nextName !== name && this.findAnySkill(nextName)) {
+      throw new Error(`Skill '${nextName}' already exists.`);
     }
-    this.updateState(name, { deleted: false, updatedAt: this.clock() });
+
+    validateSkillContent(nextName, parsed.content);
+    if (existing.category === "public") {
+      this.writePublicSkill(nextName, parsed.content);
+      if (nextName !== name) {
+        fs.rmSync(this.publicSkillDir(name), { recursive: true, force: true });
+      }
+    } else {
+      this.writePrivateSkill(nextName, parsed.content);
+      if (nextName !== name) {
+        fs.rmSync(this.privateSkillDir(name), { recursive: true, force: true });
+        fs.rmSync(this.legacyCustomSkillDir(name), { recursive: true, force: true });
+      }
+    }
+    const now = this.clock();
+    if (nextName !== name) {
+      if (existing.category === "public") {
+        this.updateState(name, { deleted: true, enabled: false, updatedAt: now });
+      } else {
+        this.removeState(name);
+      }
+      this.updateState(nextName, {
+        enabled: existing.enabled,
+        createdAt: existing.createdAt,
+        deleted: false,
+        updatedAt: now,
+      });
+      return this.get({ name: nextName });
+    }
+    this.updateState(name, { deleted: false, updatedAt: now });
     return this.get({ name });
   }
 

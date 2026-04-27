@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   AtSign,
@@ -11,11 +11,9 @@ import {
   GitBranch,
   ListTodo,
   LoaderCircle,
-  Maximize2,
   MessageSquareWarning,
   Reply,
   Send,
-  X,
 } from "lucide-react";
 import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnProcessStep, TurnTodoItem } from "../types";
 import { cn } from "../lib/utils";
@@ -89,7 +87,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
           ) : null}
 
           {agentMessages.length > 0 ? (
-            <AgentConversationTimeline messages={agentMessages} />
+            <AgentConversationTimeline messages={agentMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
           ) : null}
 
           <MessageContent className="w-full">
@@ -169,70 +167,54 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   );
 }
 
-function AgentConversationTimeline({ messages }: { messages: TurnAgentConversationMessage[] }) {
-  const [fullOpen, setFullOpen] = useState(false);
+function AgentConversationTimeline({
+  messages,
+  status,
+  isPlaceholder,
+}: {
+  messages: TurnAgentConversationMessage[];
+  status?: AssistantTurnAttachment["status"];
+  isPlaceholder: boolean;
+}) {
+  const conversationActive = isPlaceholder || status === "running" || messages.some((message) => message.status === "running");
+  const [open, setOpen] = useState(conversationActive);
   const byId = new Map(messages.map((message) => [message.id, message]));
 
+  useEffect(() => {
+    if (!conversationActive) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+  }, [conversationActive]);
+
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-background shadow-xs">
-      <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-foreground">
-          <GitBranch size={14} />
-          <span>Agent conversation</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="text-xs text-muted-foreground">{messages.length} messages</span>
-          <button
-            type="button"
-            onClick={() => setFullOpen(true)}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent/35 hover:text-foreground active:scale-[0.98]"
-          >
-            <Maximize2 size={12} />
-            Open full
-          </button>
-        </div>
-      </div>
-      <div className="max-h-[min(52vh,34rem)] divide-y divide-border overflow-y-auto overscroll-contain">
-        {messages.map((message) => (
-          <AgentConversationItem
-            key={message.id}
-            message={message}
-            replyTo={message.replyToId ? byId.get(message.replyToId) : undefined}
-          />
-        ))}
-      </div>
-      <Dialog open={fullOpen} onOpenChange={setFullOpen}>
-        <DialogContent className="flex h-[min(86vh,820px)] w-[min(1120px,calc(100vw-2rem))] max-w-none flex-col overflow-hidden rounded-2xl border border-border bg-background p-0 shadow-lift">
-          <DialogHeader className="mb-0 border-b border-border bg-muted/25 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <DialogTitle className="flex min-w-0 items-center gap-2 text-sm">
-                <GitBranch size={15} />
-                <span className="truncate">Agent conversation</span>
-                <span className="shrink-0 text-xs font-normal text-muted-foreground">{messages.length} messages</span>
-              </DialogTitle>
-              <button
-                type="button"
-                onClick={() => setFullOpen(false)}
-                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-foreground active:scale-[0.98]"
-                aria-label="Close full agent conversation"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          </DialogHeader>
-          <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain">
-            {messages.map((message) => (
-              <AgentConversationItem
-                key={`full:${message.id}`}
-                message={message}
-                replyTo={message.replyToId ? byId.get(message.replyToId) : undefined}
-                spacious
-              />
-            ))}
+    <TaskList>
+      <button type="button" onClick={() => setOpen((current) => !current)} className="w-full text-left" aria-expanded={open}>
+        <TaskListHeader>
+          <div className="flex min-w-0 items-center gap-2">
+            <GitBranch size={14} />
+            <span className="font-medium text-foreground">Agent conversation</span>
+            <span className="truncate text-xs text-muted-foreground">{messages.length} messages</span>
           </div>
-        </DialogContent>
-      </Dialog>
-    </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
+          </div>
+        </TaskListHeader>
+      </button>
+      {open ? (
+        <TaskListBody className="max-h-[min(70vh,42rem)] divide-y divide-border overflow-y-auto overscroll-contain border-l-0 pl-0">
+          {messages.map((message) => (
+            <AgentConversationItem
+              key={message.id}
+              message={message}
+              replyTo={message.replyToId ? byId.get(message.replyToId) : undefined}
+              spacious
+            />
+          ))}
+        </TaskListBody>
+      ) : null}
+    </TaskList>
   );
 }
 

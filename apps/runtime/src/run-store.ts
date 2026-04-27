@@ -80,6 +80,7 @@ import {
   RunSummary,
   RunSummarySchema,
   RunsListParamsSchema,
+  SessionArchiveParamsSchema,
   SessionCreateParamsSchema,
   SessionDetail,
   SessionDetailSchema,
@@ -864,10 +865,24 @@ export class LocalRunStore {
   listSessions(params: unknown = {}): SessionSummary[] {
     const parsed = SessionListParamsSchema.parse(params ?? {});
     return [...this.sessions.values()]
+      .filter((session) => session.archivedAt === undefined)
       .filter((session) => (parsed.projectId ? session.projectId === parsed.projectId : true))
       .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
       .slice(0, parsed.limit)
       .map((session) => SessionSummarySchema.parse(session));
+  }
+
+  archiveSession(params: unknown): SessionSummary {
+    const parsed = SessionArchiveParamsSchema.parse(params);
+    const existing = this.getSessionOrThrow(parsed.sessionId);
+    const archivedAt = existing.archivedAt ?? this.now();
+    const session = SessionSummarySchema.parse({
+      ...existing,
+      archivedAt,
+      updatedAt: Math.max(existing.updatedAt, archivedAt),
+    });
+    this.persistSession(session);
+    return session;
   }
 
   getSession(params: unknown): SessionDetail {
@@ -3116,6 +3131,7 @@ export class LocalRunStore {
       turnCount,
       createdAt: existing?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
       updatedAt: snapshot.updatedAt,
+      archivedAt: existing?.archivedAt,
     });
   }
 
@@ -3133,7 +3149,9 @@ export class LocalRunStore {
     if (!existing) {
       return;
     }
-    const sessions = [...this.sessions.values()].filter((session) => session.projectId === projectId);
+    const sessions = [...this.sessions.values()].filter((session) =>
+      session.projectId === projectId && session.archivedAt === undefined
+    );
     const updatedAt = sessions.reduce((max, session) => Math.max(max, session.updatedAt), existing.createdAt);
     const nextProject = ProjectSummarySchema.parse({
       ...existing,

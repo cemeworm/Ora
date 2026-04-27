@@ -1436,7 +1436,7 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
         snapshot.events[0]?.createdAt ?? event.createdAt,
         event.createdAt,
       ),
-      status: processStepStatus(event),
+      status: processStepStatus(event, snapshot.status),
       tone: processStepTone(event),
       agentId: event.agentId,
       contextLabel: processContextLabel(event),
@@ -1446,7 +1446,6 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
 function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
   switch (event.type) {
     case "task.started":
-    case "task.progress":
     case "task.completed":
     case "task.failed":
     case "approval.required":
@@ -1458,6 +1457,11 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
         return false;
       }
       return hasToolId(event);
+    case "task.progress":
+      if (isCachedWebFetchEvent(event)) {
+        return false;
+      }
+      return hasToolId(event) || isChatProgressEvent(event);
     case "tool.repaired":
       return hasToolId(event);
     case "artifact.exported":
@@ -1500,6 +1504,16 @@ function isUserVisibleCompletionEvent(event: OraEventEnvelope): boolean {
   );
 }
 
+function isChatProgressEvent(event: OraEventEnvelope): boolean {
+  return (
+    isRecord(event.payload) &&
+    event.payload.kind === "chat_progress" &&
+    event.payload.source === "progress_narrator" &&
+    typeof event.payload.summary === "string" &&
+    event.payload.summary.trim().length > 0
+  );
+}
+
 function processStepLabel(event: OraEventEnvelope): string {
   if (
     (event.type === "tool.called" || event.type === "tool.repaired") &&
@@ -1512,6 +1526,9 @@ function processStepLabel(event: OraEventEnvelope): string {
   }
   if (event.type === "completion.updated") {
     return "Stopped tool use";
+  }
+  if (event.type === "task.progress" && isChatProgressEvent(event)) {
+    return "Progress";
   }
   if (event.type === "approval.required") {
     return "Waiting for approval";
@@ -1872,10 +1889,10 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function processStepStatus(event: OraEventEnvelope): TurnProcessStep["status"] {
+function processStepStatus(event: OraEventEnvelope, runStatus: OraStateSnapshot["status"]): TurnProcessStep["status"] {
   switch (event.type) {
     case "task.progress":
-      return "active";
+      return runStatus === "running" ? "active" : "complete";
     case "tool.called": {
       const status = actionStatusFromEvent(event);
       if (status === "failed") {

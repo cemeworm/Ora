@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MVP_MODES, MVP_PATTERNS, SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
@@ -298,5 +298,213 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Builder"]);
     expect(assistant?.turn?.agentMessages[0]?.content).toContain("Full team lead assignment with the ending preserved.");
     expect(assistant?.turn?.agentMessages[0]?.content.endsWith("...")).toBe(false);
+  });
+
+  it("shows progress narration as assistant process steps", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-deerflow-progress",
+      sessionId: "session-deerflow-progress",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "维特根斯坦和尼采的哲学论述有什么不同？", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { progressNarration: true },
+        deterministicSeed: "view-model-deerflow-progress-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-deerflow-progress:evt-0",
+          runId: "run-deerflow-progress",
+          seq: 0,
+          type: "run.started",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { input: { prompt: "维特根斯坦和尼采的哲学论述有什么不同？" } },
+        },
+        {
+          id: "run-deerflow-progress:evt-1",
+          runId: "run-deerflow-progress",
+          seq: 1,
+          type: "task.progress",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "task.progress",
+            summary: "研究已完成，审核子代理正在运行，下一步将进行综合。",
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-deerflow-progress:user",
+        sessionId: "session-deerflow-progress",
+        runId: "run-deerflow-progress",
+        turnIndex: 1,
+        role: "user",
+        content: "维特根斯坦和尼采的哲学论述有什么不同？",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-deerflow-progress": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
+    expect(assistant?.turn?.processSteps).toHaveLength(1);
+    expect(assistant?.turn?.processSteps[0]?.label).toBe("Progress");
+    expect(assistant?.turn?.processSteps[0]?.detail).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
+    expect(assistant?.turn?.processSteps[0]?.status).toBe("active");
+  });
+
+  it("marks historical progress narration complete after the run finishes", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-deerflow-progress-done",
+      sessionId: "session-deerflow-progress-done",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "维特根斯坦和尼采的哲学论述有什么不同？", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { progressNarration: true },
+        deterministicSeed: "view-model-deerflow-progress-done-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-deerflow-progress-done:evt-0",
+          runId: "run-deerflow-progress-done",
+          seq: 0,
+          type: "run.started",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { input: { prompt: "维特根斯坦和尼采的哲学论述有什么不同？" } },
+        },
+        {
+          id: "run-deerflow-progress-done:evt-1",
+          runId: "run-deerflow-progress-done",
+          seq: 1,
+          type: "task.progress",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "task.progress",
+            summary: "研究已完成，审核子代理正在运行，下一步将进行综合。",
+          },
+        },
+        {
+          id: "run-deerflow-progress-done:evt-2",
+          runId: "run-deerflow-progress-done",
+          seq: 2,
+          type: "task.progress",
+          createdAt: createdAt + 4_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "task.completed",
+            summary: "研究完成，正在生成最终回答。",
+          },
+        },
+        {
+          id: "run-deerflow-progress-done:evt-3",
+          runId: "run-deerflow-progress-done",
+          seq: 3,
+          type: "run.done",
+          createdAt: createdAt + 6_000,
+          pattern: "orchestrator_subagent",
+          payload: { summary: "Run completed and checkpoint metadata is available." },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 2, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "维特根斯坦与尼采的哲学论述差异如下。" },
+      updatedAt: createdAt + 6_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-deerflow-progress-done:user",
+        sessionId: "session-deerflow-progress-done",
+        runId: "run-deerflow-progress-done",
+        turnIndex: 1,
+        role: "user",
+        content: "维特根斯坦和尼采的哲学论述有什么不同？",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-deerflow-progress-done": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const progressSteps = assistant?.turn?.processSteps.filter((step) => step.eventType === "task.progress") ?? [];
+
+    expect(assistant?.turn?.status).toBe("done");
+    expect(progressSteps.map((step) => step.status)).toEqual([
+      "complete",
+      "complete",
+    ]);
+    expect(assistant?.turn?.processSteps.some((step) => step.status === "active")).toBe(false);
   });
 });

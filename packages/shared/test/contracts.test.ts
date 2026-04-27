@@ -1396,7 +1396,7 @@ describe("SkillRegistrySchema", () => {
     expect(detail.category).toBe("private");
     expect(SkillDetailSchema.parse({ ...detail, category: "custom" }).category).toBe("private");
     expect(SkillCreateParamsSchema.parse({ name: "custom-review" }).enabled).toBe(true);
-    expect(SkillUpdateParamsSchema.parse({ name: "custom-review", content: detail.content }).name).toBe("custom-review");
+    expect(SkillUpdateParamsSchema.parse({ name: "custom-review", nextName: "custom-review-v2", content: detail.content }).nextName).toBe("custom-review-v2");
     expect(SkillSetEnabledParamsSchema.parse({ name: "custom-review", enabled: true }).enabled).toBe(true);
     expect(SkillCheckNameResultSchema.parse({ name: "custom-review", available: false }).available).toBe(false);
   });
@@ -1496,11 +1496,13 @@ describe("Session thread contracts", () => {
       turnCount: 0,
       createdAt: 1000,
       updatedAt: 1000,
+      archivedAt: 2000,
     });
 
     expect(createParams.projectId).toBe("ora-mvp");
     expect(summary.turnCount).toBe(0);
     expect(summary.title).toBe("New Chat");
+    expect(summary.archivedAt).toBe(2000);
   });
 
   it("accepts session detail with transcript and latest snapshot", () => {

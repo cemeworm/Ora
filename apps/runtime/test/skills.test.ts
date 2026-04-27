@@ -110,20 +110,37 @@ describe("managed skill runtime behavior", () => {
     }) as { description: string };
     expect(updated.description).toBe("Updated runtime review skill.");
 
+    const renamed = handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "skills.update",
+      params: {
+        name: "runtime-review",
+        nextName: "runtime-review-renamed",
+        content: skillContent("runtime-review-renamed", "Renamed runtime review skill."),
+      },
+    }) as { name: string; description: string };
+    expect(renamed).toMatchObject({
+      name: "runtime-review-renamed",
+      description: "Renamed runtime review skill.",
+    });
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review", "SKILL.md"))).toBe(false);
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review-renamed", "SKILL.md"))).toBe(true);
+
     const reloaded = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
     const loaded = reloaded({
       jsonrpc: "2.0",
       id: 3,
       method: "skills.get",
-      params: { name: "runtime-review" },
+      params: { name: "runtime-review-renamed" },
     }) as { description: string; enabled: boolean };
-    expect(loaded.description).toBe("Updated runtime review skill.");
+    expect(loaded.description).toBe("Renamed runtime review skill.");
 
     const disabled = reloaded({
       jsonrpc: "2.0",
       id: 4,
       method: "skills.setEnabled",
-      params: { name: "runtime-review", enabled: false },
+      params: { name: "runtime-review-renamed", enabled: false },
     }) as { enabled: boolean };
     expect(disabled.enabled).toBe(false);
 
@@ -131,13 +148,19 @@ describe("managed skill runtime behavior", () => {
       jsonrpc: "2.0",
       id: 5,
       method: "skills.delete",
-      params: { name: "runtime-review" },
-    })).toEqual({ deleted: true, name: "runtime-review" });
+      params: { name: "runtime-review-renamed" },
+    })).toEqual({ deleted: true, name: "runtime-review-renamed" });
     expect((reloaded({
       jsonrpc: "2.0",
       id: 6,
       method: "skills.checkName",
       params: { name: "runtime-review" },
+    }) as { available: boolean }).available).toBe(true);
+    expect((reloaded({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "skills.checkName",
+      params: { name: "runtime-review-renamed" },
     }) as { available: boolean }).available).toBe(true);
   });
 
@@ -160,11 +183,29 @@ describe("managed skill runtime behavior", () => {
     });
     expect(fs.existsSync(path.join(dataDir, "skills", "public", "long-task-protocol", "SKILL.md"))).toBe(true);
 
+    const renamed = handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "skills.update",
+      params: {
+        name: "long-task-protocol",
+        nextName: "long-task-protocol-custom",
+        content: skillContent("long-task-protocol-custom", "Renamed public skill."),
+      },
+    }) as { name: string; category: string; description: string };
+    expect(renamed).toMatchObject({
+      name: "long-task-protocol-custom",
+      category: "public",
+      description: "Renamed public skill.",
+    });
+    expect(fs.existsSync(path.join(dataDir, "skills", "public", "long-task-protocol", "SKILL.md"))).toBe(false);
+    expect(fs.existsSync(path.join(dataDir, "skills", "public", "long-task-protocol-custom", "SKILL.md"))).toBe(true);
+
     const disabled = handle({
       jsonrpc: "2.0",
       id: 2,
       method: "skills.setEnabled",
-      params: { name: "long-task-protocol", enabled: false },
+      params: { name: "long-task-protocol-custom", enabled: false },
     }) as { enabled: boolean };
     expect(disabled.enabled).toBe(false);
 
@@ -172,8 +213,8 @@ describe("managed skill runtime behavior", () => {
       jsonrpc: "2.0",
       id: 3,
       method: "skills.delete",
-      params: { name: "long-task-protocol" },
-    })).toEqual({ deleted: true, name: "long-task-protocol" });
+      params: { name: "long-task-protocol-custom" },
+    })).toEqual({ deleted: true, name: "long-task-protocol-custom" });
 
     const reloaded = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
     expect((reloaded({
@@ -181,6 +222,12 @@ describe("managed skill runtime behavior", () => {
       id: 4,
       method: "skills.checkName",
       params: { name: "long-task-protocol" },
+    }) as { available: boolean }).available).toBe(true);
+    expect((reloaded({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "skills.checkName",
+      params: { name: "long-task-protocol-custom" },
     }) as { available: boolean }).available).toBe(true);
   });
 

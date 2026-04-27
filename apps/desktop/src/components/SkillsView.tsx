@@ -1,4 +1,4 @@
-import { ArrowLeft, Eye, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Eye, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useWorkbench } from "../lib/state";
 import type { OraSkillDetail, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
@@ -21,6 +21,55 @@ const EMPTY_DETAIL: OraSkillDetail = {
   content: "",
 };
 
+function syncSkillContentMetadata(content: string, name: string, description: string): string {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (!match) {
+    return content;
+  }
+
+  const frontmatter = upsertFrontmatterValue(
+    upsertFrontmatterValue(match[1] ?? "", "name", name),
+    "description",
+    description,
+  );
+  return content.replace(match[0], `---\n${frontmatter}\n---\n`);
+}
+
+function upsertFrontmatterValue(frontmatter: string, key: "name" | "description", value: string): string {
+  const nextLine = `${key}: ${formatFrontmatterValue(value)}`;
+  const lines = frontmatter.split(/\r?\n/);
+  const nextLines: string[] = [];
+  let replaced = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.match(new RegExp(`^${key}:\\s*`))) {
+      nextLines.push(nextLine);
+      replaced = true;
+      while (index + 1 < lines.length && !/^[A-Za-z0-9_-]+:\s*/.test(lines[index + 1]!)) {
+        index += 1;
+      }
+      continue;
+    }
+    nextLines.push(line);
+  }
+
+  if (!replaced) {
+    if (key === "description") {
+      const nameIndex = nextLines.findIndex((line) => /^name:\s*/.test(line));
+      nextLines.splice(nameIndex >= 0 ? nameIndex + 1 : 0, 0, nextLine);
+    } else {
+      nextLines.unshift(nextLine);
+    }
+  }
+
+  return nextLines.join("\n").replace(/\n+$/, "");
+}
+
+function formatFrontmatterValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
 export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   const { dispatch } = useWorkbench();
   const [registry, setRegistry] = useState<OraSkillRegistry>({ skills: [] });
@@ -41,7 +90,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
     });
   }, [enabledFilter, registry.skills]);
 
-  async function loadSkills(nextQuery = query, nextCategory = category) {
+  async function loadSkills(nextQuery = query, nextCategory = category, activeName = selectedSkill?.name) {
     setBusy("refresh");
     setError("");
     try {
@@ -51,7 +100,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
       });
       setRegistry(nextRegistry);
       dispatch({ type: "SET_SKILL_REGISTRY", skillRegistry: nextRegistry });
-      if (selectedSkill && !nextRegistry.skills.some((skill) => skill.name === selectedSkill.name)) {
+      if (activeName && !nextRegistry.skills.some((skill) => skill.name === activeName)) {
         setSelectedSkill(undefined);
       }
     } catch (nextError) {
@@ -100,6 +149,12 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
     setError("");
   }
 
+  function cancelDraft() {
+    setMode("gallery");
+    setDraft(selectedSkill ?? EMPTY_DETAIL);
+    setError("");
+  }
+
   async function saveSkill() {
     const name = draft.name.trim().toLowerCase();
     if (!name) {
@@ -107,6 +162,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
       return;
     }
 
+    const content = syncSkillContentMetadata(draft.content, name, draft.description);
     setBusy(mode === "create" ? "create" : "save");
     setError("");
     try {
@@ -114,20 +170,21 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
         ? await runtimeClient.createSkill({
           name,
           description: draft.description,
-          content: draft.content.trim() || undefined,
+          content: content.trim() || undefined,
           enabled: draft.enabled,
         })
         : await runtimeClient.updateSkill({
-          name,
-          content: draft.content,
+          name: selectedSkill?.name ?? name,
+          nextName: name,
+          content,
         });
-      const detail = mode === "edit" && selectedSkill && selectedSkill.enabled !== draft.enabled
-        ? await runtimeClient.setSkillEnabled({ name, enabled: draft.enabled })
+      const detail = mode === "edit" && saved.enabled !== draft.enabled
+        ? await runtimeClient.setSkillEnabled({ name: saved.name, enabled: draft.enabled })
         : saved;
       setSelectedSkill(detail);
       setDraft(detail);
       setMode("gallery");
-      await loadSkills();
+      await loadSkills(query, category, detail.name);
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${detail.name} skill saved.` });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to save skill.");
@@ -185,19 +242,6 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
       <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            {mode !== "gallery" && (
-              <button
-                onClick={() => {
-                  setMode("gallery");
-                  setDraft(selectedSkill ?? EMPTY_DETAIL);
-                  setError("");
-                }}
-                className="rounded-md border border-bench-200 bg-white p-2 text-bench-700 shadow-sm transition hover:text-bench-900 active:scale-95"
-                title="Back to skills"
-              >
-                <ArrowLeft size={16} />
-              </button>
-            )}
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Skills</p>
             </div>
@@ -310,13 +354,23 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                   <h3 className="text-sm font-semibold">{mode === "create" ? "Create private skill" : `Edit ${draft.name}`}</h3>
                   <p className="mt-1 text-xs text-bench-700">Private skills are stored as `.ora/skills/private/&lt;name&gt;/SKILL.md`.</p>
                 </div>
-                <button
-                  onClick={saveSkill}
-                  disabled={busy.length > 0 || !draft.name.trim()}
-                  className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {mode === "create" ? "Create skill" : "Save changes"}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={cancelDraft}
+                    disabled={busy.length > 0}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={saveSkill}
+                    disabled={busy.length > 0 || !draft.name.trim()}
+                    className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {mode === "create" ? "Create skill" : "Save changes"}
+                  </button>
+                </div>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
@@ -324,10 +378,16 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Name</span>
                   <input
                     value={draft.name}
-                    onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
-                    disabled={mode === "edit"}
+                    onChange={(event) => setDraft((current) => {
+                      const nextName = event.target.value;
+                      return {
+                        ...current,
+                        name: nextName,
+                        content: syncSkillContentMetadata(current.content, nextName, current.description),
+                      };
+                    })}
                     placeholder="research-review"
-                    className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 font-mono text-sm outline-none transition focus:border-bench-900"
                   />
                 </label>
                 <label className="space-y-1.5">
@@ -344,11 +404,17 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Description</span>
                   <textarea
                     value={draft.description}
-                    onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+                    onChange={(event) => setDraft((current) => {
+                      const nextDescription = event.target.value;
+                      return {
+                        ...current,
+                        description: nextDescription,
+                        content: syncSkillContentMetadata(current.content, current.name, nextDescription),
+                      };
+                    })}
                     rows={3}
-                    disabled={mode === "edit"}
                     placeholder="What this skill helps the agent do."
-                    className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-900"
                   />
                 </label>
                 <label className="space-y-1.5 md:col-span-2">

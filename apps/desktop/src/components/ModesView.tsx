@@ -250,7 +250,12 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   }
 
   async function deleteMode(modeId: string) {
-    if (!window.confirm(`Delete mode '${modeId}'?`)) {
+    const target = modes.find((mode) => mode.id === modeId);
+    if (target?.systemPreset) {
+      setError("System presets cannot be deleted. Customize it first to create an editable mode.");
+      return;
+    }
+    if (!window.confirm(`Delete mode '${target?.label ?? modeId}'?`)) {
       return;
     }
     setBusy(`delete:${modeId}`);
@@ -286,6 +291,18 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
     } finally {
       setBusy("");
     }
+  }
+
+  function startBuilderFlow() {
+    setDraft(undefined);
+    setEditingModeId(undefined);
+    setSelectedNodeId(undefined);
+    setValidation(undefined);
+    setBuilderInput("");
+    setBuilderMessages([]);
+    setBuilderBundle(undefined);
+    setError("");
+    setEditorMode("create");
   }
 
   async function submitBuilder(promptOverride?: string) {
@@ -360,6 +377,9 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
     setSelectedNodeId(undefined);
     setEditingModeId(undefined);
     setValidation(undefined);
+    setBuilderInput("");
+    setBuilderMessages([]);
+    setBuilderBundle(undefined);
     setError("");
     setEditorMode("gallery");
   }
@@ -443,6 +463,15 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
             <Plus size={14} />
             Add stage
           </button>
+          {editingModeId && (
+            <button
+              onClick={() => void deleteMode(editingModeId)}
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-rose-200 bg-white px-4 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
+            >
+              <Trash2 size={14} />
+              Delete mode
+            </button>
+          )}
           <button
             onClick={() => void saveDraft()}
             className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition hover:bg-bench-800"
@@ -451,6 +480,94 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
             Save mode
           </button>
         </div>
+      </div>
+    );
+  }
+
+  function renderBuilderPanel(compact = false) {
+    return (
+      <div className={cn(
+        "rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200",
+        !compact && "mx-auto max-w-3xl",
+      )}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-bench-900 text-white">
+              <Sparkles size={16} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Builder agent</p>
+              <h3 className="mt-1 text-base font-semibold">Create a mode from natural language</h3>
+              <p className="mt-1 text-sm leading-6 text-bench-700">Describe the workflow, roles, tools, and handoff style you want.</p>
+            </div>
+          </div>
+          {!compact && (
+            <button
+              onClick={exitEditor}
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50"
+            >
+              <ArrowLeft size={14} />
+              Back
+            </button>
+          )}
+        </div>
+
+        <textarea
+          value={builderInput}
+          onChange={(event) => setBuilderInput(event.target.value)}
+          rows={compact ? 3 : 5}
+          placeholder="Describe the mode you want..."
+          className="mt-4 min-h-24 w-full resize-none rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-500 focus:bg-white"
+        />
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            onClick={() => void submitBuilder()}
+            disabled={busy === "builder" || !builderInput.trim()}
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white transition hover:bg-bench-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Sparkles size={14} className={cn(busy === "builder" && "animate-pulse")} />
+            {builderBundle ? "Refine" : "Generate"}
+          </button>
+          {builderBundle && (
+            <button
+              onClick={() => void applyBuilderBundle()}
+              disabled={busy === "builder:apply" || !builderBundle.validation.valid}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Save size={14} />
+              Apply
+            </button>
+          )}
+        </div>
+
+        {builderBundle && (
+          <div className="mt-4 space-y-3">
+            <div className="rounded-md bg-bench-50 px-3 py-2 text-sm leading-6 text-bench-800">
+              {builderBundle.guidance.assistantMessage}
+            </div>
+            {builderBundle.guidance.choices.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {builderBundle.guidance.choices.map((choice) => (
+                  <button
+                    key={choice.id}
+                    onClick={() => void submitBuilder(choice.prompt)}
+                    className="rounded-md border border-bench-200 bg-white px-2.5 py-1.5 text-left text-xs font-semibold text-bench-800 transition hover:bg-bench-50"
+                    title={choice.description}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {builderBundle.changeSummary.length > 0 && (
+              <ul className="space-y-1 text-xs leading-5 text-bench-700">
+                {builderBundle.changeSummary.slice(0, 3).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -473,7 +590,7 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
           </div>
           <div className="mt-3 flex gap-2">
             <button
-              onClick={() => startDraft(undefined, true)}
+              onClick={startBuilderFlow}
               className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white transition hover:bg-bench-800"
             >
               <Plus size={14} />
@@ -491,79 +608,11 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
           </div>
         </div>
 
-        <div className="border-b border-border px-4 py-4">
-          <div className="rounded-xl border border-bench-200 bg-white p-3 shadow-pane">
-            <div className="flex items-center gap-2">
-              <Sparkles size={15} className="text-bench-700" />
-              <div>
-                <div className="text-sm font-semibold">Builder agent</div>
-                <div className="text-xs text-bench-700">Guide mode, agents, style, tools</div>
-              </div>
-            </div>
-            <textarea
-              value={builderInput}
-              onChange={(event) => setBuilderInput(event.target.value)}
-              rows={4}
-              placeholder="Describe the mode you want..."
-              className="mt-3 min-h-24 w-full resize-none rounded-md border border-bench-200 bg-bench-50 px-3 py-2 text-sm outline-none transition focus:border-bench-500 focus:bg-white"
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                onClick={() => void submitBuilder()}
-                disabled={busy === "builder" || !builderInput.trim()}
-                className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white transition hover:bg-bench-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Sparkles size={14} />
-                Generate
-              </button>
-              {builderBundle && (
-                <button
-                  onClick={() => void applyBuilderBundle()}
-                  disabled={busy === "builder:apply" || !builderBundle.validation.valid}
-                  className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Save size={14} />
-                  Apply
-                </button>
-              )}
-            </div>
-            {builderBundle && (
-              <div className="mt-3 space-y-3">
-                <div className="rounded-md bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-800">
-                  {builderBundle.guidance.assistantMessage}
-                </div>
-                {builderBundle.guidance.choices.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {builderBundle.guidance.choices.map((choice) => (
-                      <button
-                        key={choice.id}
-                        onClick={() => void submitBuilder(choice.prompt)}
-                        className="rounded-md border border-bench-200 bg-white px-2 py-1 text-left text-xs font-semibold text-bench-800 transition hover:bg-bench-50"
-                        title={choice.description}
-                      >
-                        {choice.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {builderBundle.changeSummary.length > 0 && (
-                  <ul className="space-y-1 text-xs leading-5 text-bench-700">
-                    {builderBundle.changeSummary.slice(0, 3).map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           <div className="space-y-2">
             {modes.map((mode) => (
-              <button
+              <div
                 key={mode.id}
-                onClick={() => dispatch({ type: "SET_MODE", modeId: mode.id })}
                 className={cn(
                   "w-full rounded-xl border px-3 py-3 text-left transition",
                   state.selectedModeId === mode.id
@@ -571,14 +620,32 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                     : "border-transparent bg-white/70 hover:border-bench-200 hover:bg-white",
                 )}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-semibold">{displayText(state.language, mode.label)}</div>
-                  <span className="rounded-full border border-bench-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-bench-700">
-                    {mode.systemPreset ? "preset" : mode.family}
-                  </span>
+                <div className="flex items-start justify-between gap-2">
+                  <button
+                    onClick={() => dispatch({ type: "SET_MODE", modeId: mode.id })}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="font-semibold">{displayText(state.language, mode.label)}</div>
+                    <p className="mt-1 text-xs leading-5 text-bench-700">{displayText(state.language, mode.summary)}</p>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <span className="rounded-full border border-bench-200 px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-bench-700">
+                      {mode.systemPreset ? "preset" : mode.family}
+                    </span>
+                    {!mode.systemPreset && (
+                      <button
+                        type="button"
+                        onClick={() => void deleteMode(mode.id)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-rose-600 opacity-70 transition hover:bg-rose-50 hover:opacity-100"
+                        aria-label={`Delete ${displayText(state.language, mode.label)}`}
+                        title="Delete mode"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-bench-700">{displayText(state.language, mode.summary)}</p>
-              </button>
+              </div>
             ))}
           </div>
         </div>
@@ -631,6 +698,15 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
                       <GitBranchPlus size={15} />
                       {selectedMode.systemPreset ? "Customize" : "Edit"}
                     </button>
+                    {!selectedMode.systemPreset && (
+                      <button
+                        onClick={() => void deleteMode(selectedMode.id)}
+                        className="inline-flex h-10 items-center gap-2 rounded-md border border-rose-200 bg-white px-4 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
+                      >
+                        <Trash2 size={15} />
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -655,97 +731,102 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
               </section>
             </section>
           ) : draft ? (
-            <section className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-              <CanvasPanel
-                mode={draft}
-                atoms={atoms}
-                language={state.language}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={setSelectedNodeId}
-                onClearSelection={() => setSelectedNodeId(undefined)}
-                onConnect={handleConnect}
-                onDeleteEdges={(edges) => patchDraft((current) => removeModeEdges(current, edges.map((edge) => edge.id)))}
-                onMoveNode={(node) => {
-                  if (node.data.kind !== "stage") return;
-                  patchDraft((current) => patchModeNodePosition(
-                    current,
-                    node.id,
-                    modeCanvasStagePositionToStoredPosition(current, atoms, node.position),
-                  ));
-                }}
-              />
-              <div className="space-y-5">
-                {selectedNode ? (
-                  <NodeInspector
-                    draft={draft}
-                    node={selectedNode}
-                    atoms={atoms}
-                    customAgents={customAgents}
-                    allowedTemplates={allowedTemplates}
-                    language={state.language}
-                    onPatchNode={(updater) => patchDraft((current) => ({
-                      ...current,
-                      nodes: current.nodes.map((item) => item.id === selectedNode.id ? updater(item) : item),
-                    }))}
-                    onDeleteNode={() => {
-                      if (!canDeleteModeNode(draft, selectedNode.id)) return;
-                      patchDraft((current) => ({
+            <section className="space-y-5">
+              {builderBundle ? renderBuilderPanel(true) : null}
+              <div className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+                <CanvasPanel
+                  mode={draft}
+                  atoms={atoms}
+                  language={state.language}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                  onClearSelection={() => setSelectedNodeId(undefined)}
+                  onConnect={handleConnect}
+                  onDeleteEdges={(edges) => patchDraft((current) => removeModeEdges(current, edges.map((edge) => edge.id)))}
+                  onMoveNode={(node) => {
+                    if (node.data.kind !== "stage") return;
+                    patchDraft((current) => patchModeNodePosition(
+                      current,
+                      node.id,
+                      modeCanvasStagePositionToStoredPosition(current, atoms, node.position),
+                    ));
+                  }}
+                />
+                <div className="space-y-5">
+                  {selectedNode ? (
+                    <NodeInspector
+                      draft={draft}
+                      node={selectedNode}
+                      atoms={atoms}
+                      customAgents={customAgents}
+                      allowedTemplates={allowedTemplates}
+                      language={state.language}
+                      onPatchNode={(updater) => patchDraft((current) => ({
                         ...current,
-                        nodes: current.nodes.filter((node) => node.id !== selectedNode.id),
-                        edges: current.edges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
-                      }));
-                      setSelectedNodeId(undefined);
-                    }}
-                  />
-                ) : selectedModeAtom ? (
-                  <CapabilityInspector
-                    mode={draft}
-                    atom={selectedModeAtom}
-                    language={state.language}
-                    onToggle={() => patchDraft((current) => ({
-                      ...current,
-                      runtimeAtoms: current.runtimeAtoms.includes(selectedModeAtom.id)
-                        ? current.runtimeAtoms.filter((atomId) => atomId !== selectedModeAtom.id)
-                        : [...current.runtimeAtoms, selectedModeAtom.id],
-                    }))}
-                  />
-                ) : selectedNodeAttachment ? (
-                  <CapabilityInspector
-                    mode={draft}
-                    atom={selectedNodeAttachment.atom}
-                    sourceNode={selectedNodeAttachment.sourceNode}
-                    language={state.language}
-                    onToggle={() => patchDraft((current) => ({
-                      ...current,
-                      nodes: current.nodes.map((node) =>
-                        node.id !== selectedNodeAttachment.sourceNode.id
-                          ? node
-                          : {
-                              ...node,
-                              config: {
-                                ...node.config,
-                                atoms: toggleNodeAtom(node, selectedNodeAttachment.atom.id),
+                        nodes: current.nodes.map((item) => item.id === selectedNode.id ? updater(item) : item),
+                      }))}
+                      onDeleteNode={() => {
+                        if (!canDeleteModeNode(draft, selectedNode.id)) return;
+                        patchDraft((current) => ({
+                          ...current,
+                          nodes: current.nodes.filter((node) => node.id !== selectedNode.id),
+                          edges: current.edges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
+                        }));
+                        setSelectedNodeId(undefined);
+                      }}
+                    />
+                  ) : selectedModeAtom ? (
+                    <CapabilityInspector
+                      mode={draft}
+                      atom={selectedModeAtom}
+                      language={state.language}
+                      onToggle={() => patchDraft((current) => ({
+                        ...current,
+                        runtimeAtoms: current.runtimeAtoms.includes(selectedModeAtom.id)
+                          ? current.runtimeAtoms.filter((atomId) => atomId !== selectedModeAtom.id)
+                          : [...current.runtimeAtoms, selectedModeAtom.id],
+                      }))}
+                    />
+                  ) : selectedNodeAttachment ? (
+                    <CapabilityInspector
+                      mode={draft}
+                      atom={selectedNodeAttachment.atom}
+                      sourceNode={selectedNodeAttachment.sourceNode}
+                      language={state.language}
+                      onToggle={() => patchDraft((current) => ({
+                        ...current,
+                        nodes: current.nodes.map((node) =>
+                          node.id !== selectedNodeAttachment.sourceNode.id
+                            ? node
+                            : {
+                                ...node,
+                                config: {
+                                  ...node.config,
+                                  atoms: toggleNodeAtom(node, selectedNodeAttachment.atom.id),
+                                },
                               },
-                            },
-                      ),
-                    }))}
-                  />
-                ) : (
-                  <ModeInspector
-                    draft={draft}
-                    atoms={atoms}
-                    toolRegistry={state.toolRegistry}
-                    customAgents={customAgents}
-                    editingModeId={editingModeId}
-                    definition={draftDefinition}
-                    executionPreview={executionPreview}
-                    language={state.language}
-                    onPatchDraft={patchDraft}
-                    onDeleteMode={editingModeId ? () => void deleteMode(editingModeId) : undefined}
-                  />
-                )}
+                        ),
+                      }))}
+                    />
+                  ) : (
+                    <ModeInspector
+                      draft={draft}
+                      atoms={atoms}
+                      toolRegistry={state.toolRegistry}
+                      customAgents={customAgents}
+                      editingModeId={editingModeId}
+                      definition={draftDefinition}
+                      executionPreview={executionPreview}
+                      language={state.language}
+                      onPatchDraft={patchDraft}
+                      onDeleteMode={editingModeId ? () => void deleteMode(editingModeId) : undefined}
+                    />
+                  )}
+                </div>
               </div>
             </section>
+          ) : editorMode === "create" ? (
+            renderBuilderPanel()
           ) : null}
         </div>
       </main>

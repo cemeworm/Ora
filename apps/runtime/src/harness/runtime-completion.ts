@@ -10,10 +10,18 @@ type RuntimeCompletionEmit = (
   payload: unknown,
 ) => void;
 
+export interface RuntimeToolScope {
+  agentId?: string;
+  nodeId?: string;
+}
+
 export class RuntimeCompletionController {
   private stopReason: CompletionStopReason | undefined;
   private forcedFinalActive = false;
   private forcedFinalConsumed = false;
+  private readonly scopedStopReasons = new Map<string, CompletionStopReason>();
+  private readonly scopedForcedFinalActive = new Set<string>();
+  private readonly scopedForcedFinalConsumed = new Set<string>();
   private toolAttemptsValue = 0;
   private readonly repeatedToolCounts = new Map<string, number>();
   private readonly warnedRepeatedToolKeys = new Set<string>();
@@ -43,15 +51,24 @@ export class RuntimeCompletionController {
   }
 
   get completionStopReason(): CompletionStopReason | undefined {
-    return this.stopReason;
+    return this.stopReason ?? this.firstScopedStopReason();
   }
 
   get forcedFinal(): boolean {
-    return this.forcedFinalActive || this.forcedFinalConsumed;
+    return this.forcedFinalActive
+      || this.forcedFinalConsumed
+      || this.scopedForcedFinalActive.size > 0
+      || this.scopedForcedFinalConsumed.size > 0;
   }
 
-  get forcedFinalIsActive(): boolean {
-    return this.forcedFinalActive;
+  forcedFinalIsActive(scope?: RuntimeToolScope): boolean {
+    const scopeKey = this.scopeKey(scope);
+    return this.forcedFinalActive || (scopeKey ? this.scopedForcedFinalActive.has(scopeKey) : false);
+  }
+
+  stopReasonForScope(scope?: RuntimeToolScope): CompletionStopReason | undefined {
+    const scopeKey = this.scopeKey(scope);
+    return (scopeKey ? this.scopedStopReasons.get(scopeKey) : undefined) ?? this.stopReason;
   }
 
   get toolAttempts(): number {
@@ -66,30 +83,52 @@ export class RuntimeCompletionController {
     this.stopReason ??= reason;
   }
 
-  forceFinalAnswer(reason: CompletionStopReason, extra: Record<string, unknown> = {}): void {
-    this.setCompletionStopReason(reason);
-    if (!this.forcedFinalActive) {
+  forceFinalAnswer(
+    reason: CompletionStopReason,
+    extra: Record<string, unknown> = {},
+    options: { scope?: RuntimeToolScope } = {},
+  ): void {
+    const scopeKey = this.scopeKey(options.scope);
+    if (scopeKey) {
+      this.scopedStopReasons.set(scopeKey, reason);
+    } else {
+      this.setCompletionStopReason(reason);
+    }
+    const alreadyActive = scopeKey
+      ? this.scopedForcedFinalActive.has(scopeKey)
+      : this.forcedFinalActive;
+    if (!alreadyActive) {
       this.emit("completion.updated", {
         state: "force_final",
         reason,
         toolAttempts: this.toolAttemptsValue,
         maxToolCalls: this.runToolBudget,
         policy: this.policy,
+        ...(scopeKey ? { scopeKey } : {}),
         ...extra,
       });
     }
-    this.forcedFinalActive = true;
+    if (scopeKey) {
+      this.scopedForcedFinalActive.add(scopeKey);
+    } else {
+      this.forcedFinalActive = true;
+    }
   }
 
-  markForcedFinalConsumed(): void {
+  markForcedFinalConsumed(scope?: RuntimeToolScope): void {
+    const scopeKey = this.scopeKey(scope);
+    if (scopeKey) {
+      this.scopedForcedFinalConsumed.add(scopeKey);
+      return;
+    }
     this.forcedFinalConsumed = true;
   }
 
-  toolsAllowed(): boolean {
-    return !this.forcedFinalActive && this.toolAttemptsValue < this.runToolBudget;
+  toolsAllowed(scope?: RuntimeToolScope): boolean {
+    return !this.forcedFinalIsActive(scope) && this.toolAttemptsValue < this.runToolBudget;
   }
 
-  registerToolAttempt(call: RuntimeToolCall): RuntimeToolAttemptDecision {
+  registerToolAttempt(call: RuntimeToolCall, scope?: RuntimeToolScope): RuntimeToolAttemptDecision {
     if (this.toolAttemptsValue >= this.runToolBudget) {
       if (this.policy.forceFinalOnBudgetExhausted) {
         this.forceFinalAnswer("tool_budget_exhausted");
@@ -97,7 +136,9 @@ export class RuntimeCompletionController {
       return { allowed: false, reason: "tool_budget_exhausted" };
     }
 
-    const key = stableKeyForRuntimeTool(call);
+    const toolKey = stableKeyForRuntimeTool(call);
+    const scopeKey = this.scopeKey(scope);
+    const key = scopeKey ? `${scopeKey}:${toolKey}` : toolKey;
     const repeatCount = (this.repeatedToolCounts.get(key) ?? 0) + 1;
     if (repeatCount === this.repeatedToolLimit && repeatCount > 1 && !this.warnedRepeatedToolKeys.has(key)) {
       this.warnedRepeatedToolKeys.add(key);
@@ -108,6 +149,8 @@ export class RuntimeCompletionController {
         repeatCount,
         repeatedToolLimit: this.repeatedToolLimit,
         key,
+        toolKey,
+        ...(scopeKey ? { scopeKey } : {}),
       });
     }
     if (repeatCount > this.repeatedToolLimit && this.policy.forceFinalOnRepeatedTool) {
@@ -120,6 +163,8 @@ export class RuntimeCompletionController {
           repeatCount,
           repeatedToolLimit: this.repeatedToolLimit,
           key,
+          toolKey,
+          ...(scopeKey ? { scopeKey } : {}),
         });
       }
       this.forceFinalAnswer("repeated_tool_blocked", {
@@ -127,7 +172,9 @@ export class RuntimeCompletionController {
         repeatCount,
         repeatedToolLimit: this.repeatedToolLimit,
         key,
-      });
+        toolKey,
+        ...(scopeKey ? { scopeKey } : {}),
+      }, scopeKey ? { scope } : {});
       return { allowed: false, reason: "repeated_tool_blocked", key, repeatCount };
     }
 
@@ -157,13 +204,27 @@ export class RuntimeCompletionController {
     return { allowed: true, key, repeatCount, toolTypeCount };
   }
 
-  markToolResultObserved(call: RuntimeToolCall, cacheHit: boolean): void {
+  markToolResultObserved(call: RuntimeToolCall, cacheHit: boolean, scope?: RuntimeToolScope): void {
     if (this.toolAttemptsValue >= this.runToolBudget && this.policy.forceFinalOnBudgetExhausted) {
       this.forceFinalAnswer("tool_budget_exhausted", { toolId: call.tool });
       return;
     }
     if (cacheHit && this.policy.forceFinalOnRepeatedTool) {
-      this.forceFinalAnswer("repeated_tool_blocked", { toolId: call.tool, cacheHit });
+      const toolKey = stableKeyForRuntimeTool(call);
+      const scopeKey = this.scopeKey(scope);
+      const key = scopeKey ? `${scopeKey}:${toolKey}` : toolKey;
+      const repeatCount = this.repeatedToolCounts.get(key) ?? 0;
+      if (repeatCount >= this.repeatedToolLimit && repeatCount > 1) {
+        this.forceFinalAnswer("repeated_tool_blocked", {
+          toolId: call.tool,
+          cacheHit,
+          repeatCount,
+          repeatedToolLimit: this.repeatedToolLimit,
+          key,
+          toolKey,
+          ...(scopeKey ? { scopeKey } : {}),
+        }, scopeKey ? { scope } : {});
+      }
     }
   }
 
@@ -175,11 +236,27 @@ export class RuntimeCompletionController {
     completionPolicy: ModeSpec["completionPolicy"];
   } {
     return {
-      stopReason: this.stopReason ?? "completed",
+      stopReason: this.completionStopReason ?? "completed",
       forcedFinal: this.forcedFinal,
       toolAttempts: this.toolAttemptsValue,
       maxToolCalls: this.runToolBudget,
       completionPolicy: this.policy,
     };
+  }
+
+  private scopeKey(scope?: RuntimeToolScope): string | undefined {
+    const agentId = scope?.agentId?.trim();
+    const nodeId = scope?.nodeId?.trim();
+    if (!agentId && !nodeId) {
+      return undefined;
+    }
+    return `agent:${agentId || "unknown"}|node:${nodeId || agentId || "unknown"}`;
+  }
+
+  private firstScopedStopReason(): CompletionStopReason | undefined {
+    for (const reason of this.scopedStopReasons.values()) {
+      return reason;
+    }
+    return undefined;
   }
 }

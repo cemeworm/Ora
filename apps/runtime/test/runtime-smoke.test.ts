@@ -2146,6 +2146,132 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("scopes repeated tool blocking to the current agent node", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-agent-team-tools-"));
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "Agent team scoped tool result\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.AGENT_TEAM_SCOPED_TOOL_KEY;
+    process.env.AGENT_TEAM_SCOPED_TOOL_KEY = "test";
+    let autoProviderCalls = 0;
+    const toolCall = (id: string) => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null,
+          tool_calls: [{
+            id,
+            type: "function",
+            function: {
+              name: "file__read",
+              arguments: "{\"path\":\"README.md\"}",
+            },
+          }],
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Team lead stopped after repeated file reads." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      autoProviderCalls += 1;
+      if (autoProviderCalls <= 3) {
+        return toolCall(`call-team-lead-${autoProviderCalls}`);
+      }
+      if (autoProviderCalls === 4) {
+        return toolCall("call-builder-readme");
+      }
+      if (autoProviderCalls === 5) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Builder completed with README evidence." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (autoProviderCalls === 6) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Checker validated the builder output." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Team handoff complete." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Use the agent team to read and validate the README.",
+            context: {
+              projectWorkspace: { label: "Agent Team Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            pattern: "agent_teams",
+            providerId: "agent-team-scoped-tool",
+            modelRef: "agent-team-scoped-tool-model",
+            providerConfig: {
+              id: "agent-team-scoped-tool",
+              label: "Agent Team Scoped Tool",
+              type: "openai_compatible",
+              modelId: "agent-team-scoped-tool-model",
+              baseUrl: "https://agent-team-scoped-tool.test/v1",
+              apiKeyEnv: "AGENT_TEAM_SCOPED_TOOL_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const readCalls = state.toolCalls.filter((call) => call.toolId === "file.read");
+      const forceFinalEvents = state.events.filter((event) =>
+        event.type === "completion.updated"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).state === "force_final"
+      );
+
+      expect(run.status).toBe("succeeded");
+      expect(readCalls).toEqual([
+        expect.objectContaining({ agentId: "team_lead", status: "succeeded" }),
+        expect.objectContaining({ agentId: "team_lead", status: "succeeded" }),
+        expect.objectContaining({ agentId: "builder", status: "succeeded" }),
+      ]);
+      expect(forceFinalEvents).toHaveLength(1);
+      expect(forceFinalEvents[0]?.payload).toMatchObject({
+        reason: "repeated_tool_blocked",
+        scopeKey: "agent:team_lead|node:triage",
+      });
+      expect(state.agentMessages.some((message) =>
+        message.fromAgentId === "builder"
+        && message.content.includes("Builder completed with README evidence.")
+      )).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.AGENT_TEAM_SCOPED_TOOL_KEY;
+      } else {
+        process.env.AGENT_TEAM_SCOPED_TOOL_KEY = previousKey;
+      }
+    }
+  });
+
   it("forces final answer after too many calls to the same tool type with different args", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;

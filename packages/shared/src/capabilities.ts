@@ -128,6 +128,7 @@ export type SkillCreateParams = z.infer<typeof SkillCreateParamsSchema>;
 
 export const SkillUpdateParamsSchema = z.object({
   name: SkillNameSchema,
+  nextName: SkillNameSchema.optional(),
   content: z.string().min(1),
 });
 export type SkillUpdateParams = z.infer<typeof SkillUpdateParamsSchema>;

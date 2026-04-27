@@ -247,6 +247,50 @@ export function useRunActions() {
     return { projects, sessions, detail };
   }
 
+  async function archiveSession(sessionId: string) {
+    dispatch({ type: "ARCHIVE_SESSION_OPTIMISTIC", sessionId });
+    try {
+      const archived = await runtimeClient.archiveSession(sessionId);
+      const [projects, sessions] = await Promise.all([
+        runtimeClient.listProjects(),
+        runtimeClient.listSessions(),
+      ]);
+      if (state.selectedSessionId !== sessionId) {
+        dispatch({ type: "SET_COLLECTIONS", projects, sessions, feedback: "Archived chat session." });
+        return;
+      }
+
+      const fallbackSession = sessions.find((session) => session.projectId === archived.projectId) ?? sessions[0]
+        ?? await runtimeClient.createSession(archived.projectId ? { projectId: archived.projectId } : {});
+      const refreshedSessions = fallbackSession === sessions[0]
+        ? sessions
+        : await runtimeClient.listSessions();
+      const refreshedProjects = fallbackSession === sessions[0]
+        ? projects
+        : await runtimeClient.listProjects();
+      const detail = await runtimeClient.getSession(fallbackSession.sessionId);
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects: refreshedProjects,
+        sessions: refreshedSessions,
+        detail,
+        feedback: "Archived chat session.",
+      });
+    } catch (error) {
+      const feedback = error instanceof Error ? error.message : "Archive failed.";
+      try {
+        const [projects, sessions] = await Promise.all([
+          runtimeClient.listProjects(),
+          runtimeClient.listSessions(),
+        ]);
+        dispatch({ type: "SET_COLLECTIONS", projects, sessions, feedback });
+      } catch {
+        dispatch({ type: "SET_COMMAND_FEEDBACK", feedback });
+        dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+      }
+    }
+  }
+
   async function refreshCurrentSession(snapshot?: OraStateSnapshot, feedback?: string) {
     const sessionId = snapshot?.sessionId ?? state.selectedSessionId;
     if (!sessionId) return;
@@ -564,6 +608,7 @@ export function useRunActions() {
       prefetchSession,
       prefetchSessions,
       ensureInitialSession,
+      archiveSession,
       selectSession,
       selectTurn,
       startRun,

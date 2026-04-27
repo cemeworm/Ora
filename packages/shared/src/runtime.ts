@@ -305,6 +305,11 @@ export const SessionGetParamsSchema = z.object({
 });
 export type SessionGetParams = z.infer<typeof SessionGetParamsSchema>;
 
+export const SessionArchiveParamsSchema = z.object({
+  sessionId: z.string().min(1),
+});
+export type SessionArchiveParams = z.infer<typeof SessionArchiveParamsSchema>;
+
 export const SessionSummarySchema = z.object({
   sessionId: z.string().min(1),
   title: z.string().min(1),
@@ -318,6 +323,7 @@ export const SessionSummarySchema = z.object({
   turnCount: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  archivedAt: z.number().int().nonnegative().optional(),
 });
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 

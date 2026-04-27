@@ -325,6 +325,9 @@ export function createRuntimeClient() {
     async listSessions(): Promise<OraSessionSummary[]> {
       return call<OraSessionSummary[]>("sessions.list");
     },
+    async archiveSession(sessionId: string): Promise<OraSessionSummary> {
+      return call<OraSessionSummary>("sessions.archive", { sessionId });
+    },
     async importEvaluationDataset(params: {
       name?: string;
       description?: string;
@@ -1042,6 +1045,7 @@ class LocalJsonRpcRuntime {
         return this.createSession(params);
       case "sessions.list":
         return [...this.sessions.values()]
+          .filter((session) => session.archivedAt === undefined)
           .filter((session) => {
             if (typeof params !== "object" || params === null || !("projectId" in params)) return true;
             return typeof params.projectId === "string" ? session.projectId === params.projectId : true;
@@ -1049,6 +1053,8 @@ class LocalJsonRpcRuntime {
           .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
       case "sessions.get":
         return this.getSessionDetail(params);
+      case "sessions.archive":
+        return this.archiveSession(params);
       case "evaluation.datasets.import":
         return this.importEvaluationDataset(params);
       case "evaluation.datasets.list":
@@ -1565,6 +1571,27 @@ class LocalJsonRpcRuntime {
     return session;
   }
 
+  private archiveSession(params: unknown): OraSessionSummary {
+    if (typeof params !== "object" || params === null || !("sessionId" in params) || typeof params.sessionId !== "string") {
+      throw new Error("Missing sessionId");
+    }
+    const existing = this.sessions.get(params.sessionId);
+    if (!existing) {
+      throw new Error(`Session not found: ${params.sessionId}`);
+    }
+    const archivedAt = existing.archivedAt ?? Date.now();
+    const session: OraSessionSummary = {
+      ...existing,
+      archivedAt,
+      updatedAt: Math.max(existing.updatedAt, archivedAt),
+    };
+    this.sessions.set(session.sessionId, session);
+    if (session.projectId) {
+      this.syncProjectSummary(session.projectId);
+    }
+    return session;
+  }
+
   private createProject(params: unknown): OraProjectSummary {
     const rootPath =
       typeof params === "object" && params !== null && "rootPath" in params && typeof params.rootPath === "string"
@@ -1606,7 +1633,7 @@ class LocalJsonRpcRuntime {
       throw new Error(`Project not found: ${params.projectId}`);
     }
     const sessions = [...this.sessions.values()]
-      .filter((session) => session.projectId === params.projectId)
+      .filter((session) => session.projectId === params.projectId && session.archivedAt === undefined)
       .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
     return {
       project,
@@ -1806,20 +1833,34 @@ class LocalJsonRpcRuntime {
       throw new Error("Skill content is required.");
     }
     const name = normalizeMockSkillName(params.name);
+    const nextName = normalizeMockSkillName(params.nextName ?? params.name);
     const existing = this.findSkill(name);
     if (!existing) {
       throw new Error(`Skill not found: ${name}`);
     }
-    const metadata = parseMockSkillContent(name, params.content);
+    if (nextName !== name && this.findSkill(nextName)) {
+      throw new Error(`Skill '${nextName}' already exists.`);
+    }
+    const metadata = parseMockSkillContent(nextName, params.content);
     const next: OraSkillDetail = {
       ...existing,
+      id: nextName,
+      name: nextName,
       description: metadata.description,
       promptSnippet: metadata.description,
+      path: `.ora/skills/${existing.category}/${nextName}/SKILL.md`,
       content: params.content,
       updatedAt: Date.now(),
     };
-    this.customSkills.set(name, next);
-    this.deletedSkills.delete(name);
+    if (nextName !== name) {
+      this.customSkills.delete(name);
+      this.skillEnabled.delete(name);
+      if (existing.category === "public") {
+        this.deletedSkills.add(name);
+      }
+    }
+    this.customSkills.set(nextName, next);
+    this.deletedSkills.delete(nextName);
     return next;
   }
 
@@ -1858,7 +1899,7 @@ class LocalJsonRpcRuntime {
       throw new Error(`Skill not found: ${name}`);
     }
     this.skillEnabled.set(skill.id, params.enabled);
-    if (skill.category === "private") {
+    if (this.customSkills.has(name)) {
       const next = {
         ...skill,
         enabled: params.enabled,
@@ -3126,6 +3167,7 @@ class LocalJsonRpcRuntime {
       projectId: snapshot.input.projectId ?? existing.projectId,
       turnCount: [...this.runs.values()].filter((run) => run.sessionId === sessionId).length,
       updatedAt: snapshot.updatedAt,
+      archivedAt: existing.archivedAt,
     };
     this.sessions.set(sessionId, updatedSession);
     if (updatedSession.projectId) {
@@ -3150,7 +3192,9 @@ class LocalJsonRpcRuntime {
     if (!project) {
       return;
     }
-    const sessions = [...this.sessions.values()].filter((session) => session.projectId === projectId);
+    const sessions = [...this.sessions.values()].filter((session) =>
+      session.projectId === projectId && session.archivedAt === undefined
+    );
     this.projects.set(projectId, {
       ...project,
       sessionCount: sessions.length,

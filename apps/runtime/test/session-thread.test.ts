@@ -117,6 +117,23 @@ describe("session thread runtime behavior", () => {
     expect(reloaded.getSession({ sessionId: created.sessionId }).session.turnCount).toBe(0);
   });
 
+  it("archives sessions and hides them from session lists", () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const project = store.createProject({ rootPath: dir, label: "alpha" });
+    const first = store.createSession({ projectId: project.projectId });
+    const second = store.createSession({ projectId: project.projectId });
+
+    const archived = store.archiveSession({ sessionId: first.sessionId });
+    expect(archived.archivedAt).toBeDefined();
+    expect(store.listSessions().map((session) => session.sessionId)).toEqual([second.sessionId]);
+    expect(store.getProject({ projectId: project.projectId }).project.sessionCount).toBe(1);
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    expect(reloaded.listSessions().map((session) => session.sessionId)).toEqual([second.sessionId]);
+    expect(reloaded.getSession({ sessionId: first.sessionId }).session.archivedAt).toBe(archived.archivedAt);
+  });
+
   it("creates projects, deduplicates repeated paths, and groups project sessions", () => {
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });

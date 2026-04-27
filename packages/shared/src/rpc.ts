@@ -44,6 +44,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "sessions.create",
   "sessions.list",
   "sessions.get",
+  "sessions.archive",
   "runs.start",
   "runs.startStreaming",
   "runs.list",

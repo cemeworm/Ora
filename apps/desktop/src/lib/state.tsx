@@ -88,6 +88,8 @@ export type WorkbenchAction =
       feedback?: string;
     }
   | { type: "CACHE_SESSION_DETAIL"; detail: OraSessionDetail }
+  | { type: "SET_COLLECTIONS"; projects: OraProjectSummary[]; sessions: OraSessionSummary[]; feedback?: string }
+  | { type: "ARCHIVE_SESSION_OPTIMISTIC"; sessionId: string }
   | { type: "SET_PROJECTS"; projects: OraProjectSummary[] }
   | { type: "SET_MODES"; modes: OraModeSpec[] }
   | { type: "SELECT_PROJECT"; projectId: string | undefined }
@@ -568,6 +570,31 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         pendingRun: undefined,
         isLoading: false,
         busyCommand: undefined,
+      };
+    }
+
+    case "SET_COLLECTIONS":
+      return {
+        ...state,
+        projects: action.projects,
+        sessions: action.sessions,
+        commandFeedback: action.feedback ?? state.commandFeedback,
+        busyCommand: undefined,
+      };
+
+    case "ARCHIVE_SESSION_OPTIMISTIC": {
+      const archivedSession = state.sessions.find((session) => session.sessionId === action.sessionId);
+      return {
+        ...state,
+        sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
+        projects: archivedSession?.projectId
+          ? state.projects.map((project) =>
+            project.projectId === archivedSession.projectId
+              ? { ...project, sessionCount: Math.max(0, project.sessionCount - 1) }
+              : project
+          )
+          : state.projects,
+        busyCommand: "Archive chat",
       };
     }
 

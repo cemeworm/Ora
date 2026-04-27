@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  Archive,
   Bot,
   ChartNoAxesColumn,
   Folder,
@@ -91,33 +92,85 @@ function SessionRow({
   title,
   status,
   selected,
+  confirmOpen,
   onClick,
   onPrefetch,
+  onArchiveRequest,
+  onArchiveCancel,
+  onArchiveConfirm,
 }: {
   title: string;
   status: RunStatus;
   selected: boolean;
+  confirmOpen: boolean;
   onClick: () => void;
   onPrefetch: () => void;
+  onArchiveRequest: () => void;
+  onArchiveCancel: () => void;
+  onArchiveConfirm: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
+    <div
       onMouseEnter={onPrefetch}
-      onFocus={onPrefetch}
       className={cn(
-        "group flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        "group/session relative flex min-h-[36px] w-full items-center rounded-lg text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         selected
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "text-muted-foreground",
       )}
     >
-      {status !== "done" && <SessionLeadingIndicator status={status} />}
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium">{title}</div>
-      </div>
-      <SessionStatusBadge status={status} />
-    </button>
+      <button
+        type="button"
+        onClick={onClick}
+        onFocus={onPrefetch}
+        className="flex min-h-[36px] min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left"
+      >
+        {status !== "done" && <SessionLeadingIndicator status={status} />}
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium">{title}</div>
+        </div>
+        <SessionStatusBadge status={status} />
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onArchiveRequest();
+        }}
+        className={cn(
+          "mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-background/85 hover:text-foreground focus-visible:opacity-100 active:scale-95 group-hover/session:opacity-100",
+          confirmOpen && "opacity-100",
+        )}
+        title="Archive chat"
+        aria-label={`Archive ${title}`}
+      >
+        <Archive size={13} />
+      </button>
+      {confirmOpen && (
+        <div
+          className="absolute right-0 top-[calc(100%+4px)] z-30 w-48 rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-lift"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="px-2 pb-2 pt-1 text-[12px] font-medium text-foreground">Archive this chat?</div>
+          <div className="flex justify-end gap-1">
+            <button
+              type="button"
+              onClick={onArchiveCancel}
+              className="h-7 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-95"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onArchiveConfirm}
+              className="h-7 rounded-md bg-foreground px-2 text-[12px] font-medium text-background transition hover:bg-foreground/85 active:scale-95"
+            >
+              Archive
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -126,6 +179,7 @@ export function Sidebar() {
   const { actions } = useRunActions();
   const { open } = useSidebar();
   const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
+  const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<string | undefined>();
   const projects = useMemo(() => state.projects.map((project) => ({
     ...project,
     expanded: state.expandedProjectIds[project.projectId] ?? true,
@@ -336,8 +390,15 @@ export function Sidebar() {
                                       title={session.title}
                                       status={session.status}
                                       selected={selected}
+                                      confirmOpen={confirmArchiveSessionId === session.id}
                                       onClick={() => void actions.selectSession(session.id)}
                                       onPrefetch={() => void actions.prefetchSession(session.id)}
+                                      onArchiveRequest={() => setConfirmArchiveSessionId(session.id)}
+                                      onArchiveCancel={() => setConfirmArchiveSessionId(undefined)}
+                                      onArchiveConfirm={() => {
+                                        setConfirmArchiveSessionId(undefined);
+                                        void actions.archiveSession(session.id);
+                                      }}
                                     />
                                   );
                                 })}
@@ -409,8 +470,15 @@ export function Sidebar() {
                             title={session.title}
                             status={session.status}
                             selected={selected}
+                            confirmOpen={confirmArchiveSessionId === session.id}
                             onClick={() => void actions.selectSession(session.id)}
                             onPrefetch={() => void actions.prefetchSession(session.id)}
+                            onArchiveRequest={() => setConfirmArchiveSessionId(session.id)}
+                            onArchiveCancel={() => setConfirmArchiveSessionId(undefined)}
+                            onArchiveConfirm={() => {
+                              setConfirmArchiveSessionId(undefined);
+                              void actions.archiveSession(session.id);
+                            }}
                           />
                         );
                       })

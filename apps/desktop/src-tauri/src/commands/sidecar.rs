@@ -645,6 +645,7 @@ impl RuntimeFacade {
             "sessions.create" => self.sessions_create(params.as_ref()),
             "sessions.list" => self.sessions_list(params.as_ref()),
             "sessions.get" => self.sessions_get(params.as_ref()),
+            "sessions.archive" => self.sessions_archive(params.as_ref()),
             "runs.start" => self.runs_start(params.as_ref()),
             "runs.startStreaming" => self.runs_start(params.as_ref()),
             "runs.list" => self.runs_list(params.as_ref()),
@@ -1026,6 +1027,9 @@ impl RuntimeFacade {
             .sessions
             .values()
             .filter(|session| {
+                if session.get("archivedAt").and_then(Value::as_u64).is_some() {
+                    return false;
+                }
                 project_id.map_or(true, |expected| session["projectId"].as_str() == Some(expected))
             })
             .cloned()
@@ -1044,6 +1048,24 @@ impl RuntimeFacade {
         });
         sessions.truncate(limit);
         Ok(Value::Array(sessions))
+    }
+
+    fn sessions_archive(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let mut state = self.lock_state()?;
+        let mut session = get_session(&state, &session_id)?.clone();
+        let archived_at = session
+            .get("archivedAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(now_ms);
+        session["archivedAt"] = json!(archived_at);
+        let updated_at = session["updatedAt"].as_u64().unwrap_or(0).max(archived_at);
+        session["updatedAt"] = json!(updated_at);
+        state.sessions.insert(session_id.clone(), session.clone());
+        if let Some(project_id) = session["projectId"].as_str().map(str::to_string) {
+            sync_project_summary(&mut state, &project_id);
+        }
+        Ok(session)
     }
 
     fn sessions_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -3337,7 +3359,10 @@ fn sync_project_summary(state: &mut FacadeState, project_id: &str) {
     let sessions = state
         .sessions
         .values()
-        .filter(|session| session["projectId"].as_str() == Some(project_id))
+        .filter(|session| {
+            session["projectId"].as_str() == Some(project_id)
+                && session.get("archivedAt").and_then(Value::as_u64).is_none()
+        })
         .cloned()
         .collect::<Vec<Value>>();
     let updated_at = sessions

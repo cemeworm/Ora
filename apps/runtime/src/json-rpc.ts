@@ -126,6 +126,8 @@ export function createRuntimeMethodHandler(
         return store.listSessions(request.params);
       case "sessions.get":
         return store.getSession(request.params);
+      case "sessions.archive":
+        return store.archiveSession(request.params);
       case "runs.start":
         if (sessionManager.isEnabled()) {
           return store.startRunWithSnapshot(request.params, async ({ runId, input, config, modeSpec, definition, sessionId, turnIndex, conversationMessages, customAgentOverlay, customAgentContexts }) => {
