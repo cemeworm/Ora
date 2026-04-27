@@ -4,6 +4,7 @@ import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from 
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
 import type {
   OraModeSpec,
+  OraPackageStoreSnapshot,
   OraActionRecord,
   OraPatternDefinition,
   OraProviderConfig,
@@ -40,6 +41,7 @@ export interface WorkbenchState {
   modes: OraModeSpec[];
   providerRegistry: OraProviderRegistry | undefined;
   toolRegistry: OraToolRegistry | undefined;
+  packageStore: OraPackageStoreSnapshot | undefined;
   skillRegistry: OraSkillRegistry | undefined;
   providerSecretStatuses: OraProviderSecretStatus[];
   providerStatuses: OraProviderStatus[];
@@ -70,6 +72,7 @@ export type WorkbenchAction =
       projects: OraProjectSummary[];
       providerRegistry: OraProviderRegistry;
       toolRegistry: OraToolRegistry;
+      packageStore: OraPackageStoreSnapshot;
       skillRegistry: OraSkillRegistry;
       providerSecretStatuses: OraProviderSecretStatus[];
       providerStatuses: OraProviderStatus[];
@@ -97,6 +100,7 @@ export type WorkbenchAction =
   | { type: "SET_PROVIDER"; providerId: string }
   | { type: "SET_SELECTED_CUSTOM_AGENT"; agentId: string | undefined }
   | { type: "SET_PROVIDER_REGISTRY"; providerRegistry: OraProviderRegistry }
+  | { type: "SET_PACKAGE_STORE"; packageStore: OraPackageStoreSnapshot }
   | { type: "SET_SKILL_REGISTRY"; skillRegistry: OraSkillRegistry }
   | { type: "UPSERT_PROVIDER"; provider: OraProviderConfig }
   | { type: "DELETE_PROVIDER"; providerId: string }
@@ -152,6 +156,7 @@ export const initialWorkbenchState: WorkbenchState = {
   modes: [],
   providerRegistry: undefined,
   toolRegistry: undefined,
+  packageStore: undefined,
   skillRegistry: undefined,
   providerSecretStatuses: [],
   providerStatuses: [],
@@ -524,6 +529,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         projects: action.projects,
         providerRegistry: action.providerRegistry,
         toolRegistry: action.toolRegistry,
+        packageStore: action.packageStore,
         skillRegistry: action.skillRegistry,
         providerSecretStatuses: action.providerSecretStatuses,
         providerStatuses: action.providerStatuses,
@@ -684,6 +690,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedProviderId: selectedProvider,
       };
     }
+
+    case "SET_PACKAGE_STORE":
+      return {
+        ...state,
+        packageStore: action.packageStore,
+      };
 
     case "SET_SKILL_REGISTRY":
       return {

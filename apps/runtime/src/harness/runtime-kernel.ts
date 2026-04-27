@@ -77,6 +77,7 @@ import {
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
 import { RuntimeToolCallLedger } from "./runtime-tool-ledger.js";
+import { PackageManager } from "../package-manager.js";
 import {
   cacheKeyForRuntimeTool,
   providerSupportsNativeTools,
@@ -248,11 +249,13 @@ export async function executeRuntimeKernel(
   const projectId = input.projectId ?? "local-project";
   const skillRegistry = options.skillRegistry ?? new RuntimeSkillRegistry();
   const toolRegistry = options.toolRegistry ?? new RuntimeToolRegistry();
+  const packageManager = new PackageManager();
   const tools = toolRegistry.snapshot();
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
     toolDescriptors: tools.tools,
     skillRegistry,
+    packageManager,
     searchProviderConfig: config.searchProvider,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);

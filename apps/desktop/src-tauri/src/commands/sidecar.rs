@@ -24,6 +24,8 @@ const BUNDLED_RUNTIME_ROOT: &str = "runtime-sidecar";
 const BUNDLED_RUNTIME_ENTRYPOINT: &str = "runtime-sidecar.cjs";
 const BUNDLED_RUNTIME_STORE_DB: &str = "runtime.db";
 const BUNDLED_RUNTIME_CHECKPOINT_DB: &str = "langgraph-checkpoints.db";
+const ORA_HOST_ABI_VERSION: &str = "ora-host-slot-v1";
+const ORA_RUNTIME_ABI_VERSION: &str = "ora-runtime-slot-v1";
 const STATUS_REASON_FACADE: &str =
     "Runtime process spawning is disabled; Rust is serving deterministic Ora facade responses.";
 const STATUS_REASON_PROCESS: &str =
@@ -631,6 +633,12 @@ impl RuntimeFacade {
             "runtime.health" => Ok(runtime_health()),
             "patterns.list" => Ok(patterns_list()),
             "providers.list" => Ok(providers_list()),
+            "packages.list" | "packages.active" => package_store_snapshot(),
+            "packages.buildCandidate" => packages_build_candidate(params.as_ref()),
+            "packages.verify" => packages_verify(params.as_ref()),
+            "packages.promote" | "packages.switch" => packages_promote(params.as_ref()),
+            "packages.rollback" => packages_rollback(),
+            "packages.prune" => packages_prune(params.as_ref()),
             "agents.list" => self.agents_list(),
             "agents.get" => self.agents_get(params.as_ref()),
             "agents.create" => self.agents_create(params.as_ref()),
@@ -1749,6 +1757,356 @@ fn runtime_health() -> Value {
     })
 }
 
+fn package_store_snapshot() -> Result<Value, RuntimeJsonRpcError> {
+    let root = package_versions_root();
+    fs::create_dir_all(&root).map_err(|error| {
+        runtime_error(
+            -32000,
+            "Unable to create Ora package store.",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })?;
+    let active = read_package_active_pointer();
+    let packages = read_package_manifests()?
+        .into_iter()
+        .map(|manifest| mark_package_status(manifest, &active))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "rootPath": root.to_string_lossy(),
+        "active": active,
+        "packages": packages
+    }))
+}
+
+fn packages_build_candidate(params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+    let now = now_ms();
+    let semver = params
+        .and_then(|value| value.get("semver"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("0.1.0");
+    let version_id = params
+        .and_then(|value| value.get("versionId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(safe_package_version_id)
+        .unwrap_or_else(|| safe_package_version_id(&format!("facade-{semver}-{now}")));
+    let channel = params
+        .and_then(|value| value.get("channel"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("local");
+    let slot_path = package_versions_root().join(&version_id);
+    fs::create_dir_all(&slot_path).map_err(|error| {
+        runtime_error(
+            -32000,
+            "Unable to create Ora package slot.",
+            Some(json!({ "versionId": version_id, "error": error.to_string() })),
+        )
+    })?;
+    let build_log_path = slot_path.join("build.log");
+    let _ = fs::write(&build_log_path, "Facade package candidate created without shell authority.\n");
+    let active = read_package_active_pointer();
+    let manifest = json!({
+        "versionId": version_id,
+        "semver": semver,
+        "status": "candidate",
+        "channel": channel,
+        "gitCommit": "facade",
+        "builtAt": now,
+        "hostAbiVersion": ORA_HOST_ABI_VERSION,
+        "runtimeAbiVersion": ORA_RUNTIME_ABI_VERSION,
+        "slotPath": slot_path.to_string_lossy(),
+        "frontendDistPath": slot_path.join("frontend").to_string_lossy(),
+        "runtimeSidecarPath": slot_path.join("runtime-sidecar").to_string_lossy(),
+        "buildLogPath": build_log_path.to_string_lossy(),
+        "verification": {
+            "status": "passed",
+            "checkedAt": now,
+            "commands": ["facade package candidate"],
+            "logPath": build_log_path.to_string_lossy(),
+            "errors": []
+        },
+        "migrationNotes": ["Created by the Rust fallback facade."],
+        "rollbackTarget": active.get("activeVersionId").and_then(Value::as_str)
+    });
+    write_package_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn packages_verify(params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+    let version_id = require_package_version_id(params)?;
+    let mut manifest = read_package_manifest(&version_id)?;
+    let errors = if package_manifest_compatible(&manifest) {
+        vec![]
+    } else {
+        vec!["Package ABI is incompatible with this host.".to_string()]
+    };
+    manifest["status"] = json!(if errors.is_empty() { "candidate" } else { "failed" });
+    manifest["verification"] = json!({
+        "status": if errors.is_empty() { "passed" } else { "failed" },
+        "checkedAt": now_ms(),
+        "commands": [],
+        "logPath": manifest.get("buildLogPath").and_then(Value::as_str).unwrap_or(""),
+        "errors": errors
+    });
+    write_package_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn packages_promote(params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+    let version_id = require_package_version_id(params)?;
+    let mut manifest = read_package_manifest(&version_id)?;
+    if !package_manifest_compatible(&manifest) {
+        return Err(runtime_error(
+            -32000,
+            "Ora package slot is not compatible with this host.",
+            Some(json!({ "versionId": version_id })),
+        ));
+    }
+    if manifest
+        .pointer("/verification/status")
+        .and_then(Value::as_str)
+        != Some("passed")
+    {
+        return Err(runtime_error(
+            -32000,
+            "Ora package slot must pass verification before promotion.",
+            Some(json!({ "versionId": version_id })),
+        ));
+    }
+    let active = read_package_active_pointer();
+    let now = now_ms();
+    manifest["status"] = json!("active");
+    manifest["promotedAt"] = manifest.get("promotedAt").cloned().unwrap_or(json!(now));
+    manifest["activatedAt"] = json!(now);
+    write_package_manifest(&manifest)?;
+    write_package_active_pointer(&json!({
+        "activeVersionId": version_id,
+        "previousVersionId": active.get("activeVersionId").and_then(Value::as_str),
+        "channel": manifest.get("channel").and_then(Value::as_str).unwrap_or("local"),
+        "activatedAt": now,
+        "compatibilityStatus": "compatible"
+    }))?;
+    package_store_snapshot()
+}
+
+fn packages_rollback() -> Result<Value, RuntimeJsonRpcError> {
+    let active = read_package_active_pointer();
+    let Some(previous_version_id) = active.get("previousVersionId").and_then(Value::as_str) else {
+        return Err(runtime_error(
+            -32000,
+            "No previous Ora package slot is available for rollback.",
+            None,
+        ));
+    };
+    packages_promote(Some(&json!({ "versionId": previous_version_id })))
+}
+
+fn packages_prune(params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+    let include_failed = params
+        .and_then(|value| value.get("includeFailed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if include_failed {
+        for manifest in read_package_manifests()? {
+            if manifest.get("status").and_then(Value::as_str) == Some("failed") {
+                if let Some(slot_path) = manifest.get("slotPath").and_then(Value::as_str) {
+                    let _ = fs::remove_dir_all(slot_path);
+                }
+            }
+        }
+    }
+    package_store_snapshot()
+}
+
+fn package_app_data_root() -> PathBuf {
+    if let Ok(value) = env::var("ORA_APP_DATA_DIR") {
+        return PathBuf::from(value);
+    }
+    if cfg!(target_os = "macos") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("dev.ora.workbench");
+        }
+    }
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".ora")
+        .join("workbench")
+}
+
+fn package_versions_root() -> PathBuf {
+    package_app_data_root().join("versions")
+}
+
+fn package_active_pointer_path() -> PathBuf {
+    package_app_data_root().join("active-version.json")
+}
+
+fn read_package_active_pointer() -> Value {
+    let path = package_active_pointer_path();
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .unwrap_or_else(|| json!({
+            "channel": "local",
+            "compatibilityStatus": "unknown"
+        }))
+}
+
+fn write_package_active_pointer(pointer: &Value) -> Result<(), RuntimeJsonRpcError> {
+    write_json_atomic(&package_active_pointer_path(), pointer)
+}
+
+fn read_package_manifests() -> Result<Vec<Value>, RuntimeJsonRpcError> {
+    let root = package_versions_root();
+    if !root.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut manifests = vec![];
+    for entry in fs::read_dir(root).map_err(|error| {
+        runtime_error(
+            -32000,
+            "Unable to read Ora package store.",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })? {
+        let Ok(entry) = entry else { continue };
+        let manifest_path = entry.path().join("manifest.json");
+        if let Ok(content) = fs::read_to_string(manifest_path) {
+            if let Ok(manifest) = serde_json::from_str::<Value>(&content) {
+                manifests.push(manifest);
+            }
+        }
+    }
+    manifests.sort_by(|left, right| {
+        right
+            .get("builtAt")
+            .and_then(Value::as_u64)
+            .cmp(&left.get("builtAt").and_then(Value::as_u64))
+    });
+    Ok(manifests)
+}
+
+fn read_package_manifest(version_id: &str) -> Result<Value, RuntimeJsonRpcError> {
+    let manifest_path = package_versions_root()
+        .join(safe_package_version_id(version_id))
+        .join("manifest.json");
+    let content = fs::read_to_string(&manifest_path).map_err(|_| {
+        runtime_error(
+            -32000,
+            "Ora package slot not found.",
+            Some(json!({ "versionId": version_id })),
+        )
+    })?;
+    serde_json::from_str::<Value>(&content).map_err(|error| {
+        runtime_error(
+            -32000,
+            "Ora package manifest is invalid.",
+            Some(json!({ "versionId": version_id, "error": error.to_string() })),
+        )
+    })
+}
+
+fn write_package_manifest(manifest: &Value) -> Result<(), RuntimeJsonRpcError> {
+    let Some(slot_path) = manifest.get("slotPath").and_then(Value::as_str) else {
+        return Err(runtime_error(-32602, "Package manifest slotPath is required.", None));
+    };
+    fs::create_dir_all(slot_path).map_err(|error| {
+        runtime_error(
+            -32000,
+            "Unable to create Ora package slot.",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })?;
+    write_json_atomic(&PathBuf::from(slot_path).join("manifest.json"), manifest)
+}
+
+fn write_json_atomic(path: &Path, value: &Value) -> Result<(), RuntimeJsonRpcError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            runtime_error(
+                -32000,
+                "Unable to create Ora package directory.",
+                Some(json!({ "error": error.to_string() })),
+            )
+        })?;
+    }
+    let temp_path = path.with_extension("tmp");
+    fs::write(
+        &temp_path,
+        serde_json::to_vec_pretty(value).map_err(|error| {
+            runtime_error(
+                -32000,
+                "Unable to encode Ora package JSON.",
+                Some(json!({ "error": error.to_string() })),
+            )
+        })?,
+    )
+    .map_err(|error| {
+        runtime_error(
+            -32000,
+            "Unable to write Ora package JSON.",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })?;
+    fs::rename(&temp_path, path).map_err(|error| {
+        runtime_error(
+            -32000,
+            "Unable to commit Ora package JSON.",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })
+}
+
+fn require_package_version_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
+    params
+        .and_then(|value| value.get("versionId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(safe_package_version_id)
+        .ok_or_else(|| runtime_error(-32602, "Package versionId is required.", None))
+}
+
+fn safe_package_version_id(value: &str) -> String {
+    let normalized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if normalized.is_empty() {
+        "slot".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn package_manifest_compatible(manifest: &Value) -> bool {
+    manifest.get("hostAbiVersion").and_then(Value::as_str) == Some(ORA_HOST_ABI_VERSION)
+        && manifest.get("runtimeAbiVersion").and_then(Value::as_str)
+            == Some(ORA_RUNTIME_ABI_VERSION)
+}
+
+fn mark_package_status(mut manifest: Value, active: &Value) -> Value {
+    let version_id = manifest.get("versionId").and_then(Value::as_str).map(str::to_string);
+    if version_id.as_deref() == active.get("activeVersionId").and_then(Value::as_str) {
+        manifest["status"] = json!("active");
+    } else if version_id.as_deref() == active.get("previousVersionId").and_then(Value::as_str) {
+        manifest["status"] = json!("previous");
+    }
+    manifest
+}
+
 fn resolve_runtime_command(app: &AppHandle) -> (Option<RuntimeCommandSpec>, bool) {
     if let Ok(command) = env::var(RUNTIME_COMMAND_ENV) {
         let resolved = match command.trim().to_ascii_lowercase().as_str() {
@@ -2418,7 +2776,9 @@ fn find_workspace_tsx_cli(repo_root: &Path) -> Option<PathBuf> {
 
 fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
     let resource_dir = app.path().resource_dir().ok()?;
-    let runtime_root = resource_dir.join(BUNDLED_RUNTIME_ROOT);
+    let app_data_dir = app.path().app_data_dir().ok()?;
+    let runtime_root = active_package_runtime_root_from_app_data(&app_data_dir)
+        .unwrap_or_else(|| resource_dir.join(BUNDLED_RUNTIME_ROOT));
     let node_path = runtime_root.join("bin").join(bundled_node_binary_name());
     let entrypoint_path = runtime_root.join("app").join(BUNDLED_RUNTIME_ENTRYPOINT);
     let working_directory = runtime_root.join("app");
@@ -2427,7 +2787,6 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
         return None;
     }
 
-    let app_data_dir = app.path().app_data_dir().ok()?;
     let runtime_data_dir = app_data_dir.join("runtime");
     let runtime_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_STORE_DB);
     let checkpoint_db_path = runtime_data_dir.join(BUNDLED_RUNTIME_CHECKPOINT_DB);
@@ -2454,6 +2813,40 @@ fn bundled_runtime_command(app: &AppHandle) -> Option<RuntimeCommandSpec> {
         Some(working_directory),
         environment,
     ))
+}
+
+fn active_package_runtime_root_from_app_data(app_data_dir: &Path) -> Option<PathBuf> {
+    let pointer_path = app_data_dir.join("active-version.json");
+    let pointer = fs::read_to_string(pointer_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())?;
+    let active_version_id = pointer.get("activeVersionId")?.as_str()?;
+    let manifest_path = app_data_dir
+        .join("versions")
+        .join(safe_package_version_id(active_version_id))
+        .join("manifest.json");
+    let manifest = fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())?;
+    if !package_manifest_compatible(&manifest) {
+        return None;
+    }
+    if manifest
+        .pointer("/verification/status")
+        .and_then(Value::as_str)
+        != Some("passed")
+    {
+        return None;
+    }
+    let runtime_root = PathBuf::from(manifest.get("runtimeSidecarPath")?.as_str()?);
+    let node_path = runtime_root.join("bin").join(bundled_node_binary_name());
+    let entrypoint_path = runtime_root.join("app").join(BUNDLED_RUNTIME_ENTRYPOINT);
+    let working_directory = runtime_root.join("app");
+    if node_path.is_file() && entrypoint_path.is_file() && working_directory.is_dir() {
+        Some(runtime_root)
+    } else {
+        None
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4208,6 +4601,52 @@ mod tests {
         assert_eq!(status.command, DEV_RUNTIME_COMMAND_DISPLAY);
         assert!(status.process_spawn_available);
         assert!(status.sidecar_process_spawn_enabled);
+    }
+
+    #[test]
+    fn active_package_runtime_root_requires_valid_manifest_and_assets() {
+        let root = env::temp_dir().join(format!("ora-package-slot-test-{}", now_ms()));
+        let runtime_root = root.join("versions").join("slot-a").join("runtime-sidecar");
+        fs::create_dir_all(runtime_root.join("bin")).unwrap();
+        fs::create_dir_all(runtime_root.join("app")).unwrap();
+        fs::write(runtime_root.join("bin").join(bundled_node_binary_name()), "").unwrap();
+        fs::write(runtime_root.join("app").join(BUNDLED_RUNTIME_ENTRYPOINT), "").unwrap();
+        fs::write(
+            root.join("active-version.json"),
+            serde_json::to_vec(&json!({
+                "activeVersionId": "slot-a",
+                "channel": "local",
+                "compatibilityStatus": "compatible"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("versions").join("slot-a").join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "versionId": "slot-a",
+                "semver": "0.1.1",
+                "status": "active",
+                "channel": "local",
+                "builtAt": now_ms(),
+                "hostAbiVersion": ORA_HOST_ABI_VERSION,
+                "runtimeAbiVersion": ORA_RUNTIME_ABI_VERSION,
+                "slotPath": root.join("versions").join("slot-a").to_string_lossy(),
+                "frontendDistPath": root.join("versions").join("slot-a").join("frontend").to_string_lossy(),
+                "runtimeSidecarPath": runtime_root.to_string_lossy(),
+                "buildLogPath": root.join("versions").join("slot-a").join("build.log").to_string_lossy(),
+                "verification": { "status": "passed", "commands": [], "errors": [] },
+                "migrationNotes": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            active_package_runtime_root_from_app_data(&root).unwrap(),
+            runtime_root
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -42,6 +42,9 @@ import type {
   ModeUpdateParams as OraModeUpdateParams,
   ModeValidationResult as OraModeValidationResult,
   ModeSelection as OraModeSelection,
+  PackageBuildCandidateParams as OraPackageBuildCandidateParams,
+  PackageManifest as OraPackageManifest,
+  PackageStoreSnapshot as OraPackageStoreSnapshot,
   OraEventEnvelope,
   PatternDefinition as OraPatternDefinition,
   PlanItem as OraPlanItem,
@@ -86,7 +89,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SystemAgentOverrideUpdateParamsSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SystemAgentOverrideUpdateParamsSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
@@ -133,6 +136,9 @@ export type {
   OraModeSpec,
   OraModeUpdateParams,
   OraModeValidationResult,
+  OraPackageBuildCandidateParams,
+  OraPackageManifest,
+  OraPackageStoreSnapshot,
   OraPatternDefinition,
   OraProviderConfig,
   OraProviderRegistry,
@@ -190,6 +196,7 @@ export interface RuntimeBootstrap {
   atoms: OraModeRuntimeAtomDefinition[];
   providerRegistry: OraProviderRegistry;
   toolRegistry: OraToolRegistry;
+  packageStore: OraPackageStoreSnapshot;
   skillRegistry: OraSkillRegistry;
   providerSecretStatuses: OraProviderSecretStatus[];
   providerStatuses: OraProviderStatus[];
@@ -284,6 +291,7 @@ export function createRuntimeClient() {
           atoms: MVP_MODE_RUNTIME_ATOMS,
           providerRegistry,
           toolRegistry: { tools: MVP_TOOLS, defaultPolicyId: "runtime.default_policy" },
+          packageStore: await call<OraPackageStoreSnapshot>("packages.active"),
           skillRegistry: { skills: MVP_SKILLS },
           providerSecretStatuses,
           providerStatuses,
@@ -309,6 +317,7 @@ export function createRuntimeClient() {
         atoms: bootstrap.atoms,
         providerRegistry,
         toolRegistry: bootstrap.tools,
+        packageStore: bootstrap.packages ?? await call<OraPackageStoreSnapshot>("packages.active"),
         skillRegistry: bootstrap.skills,
         providerSecretStatuses,
         providerStatuses,
@@ -331,6 +340,30 @@ export function createRuntimeClient() {
     },
     async readProjectFile(projectId: string, path: string): Promise<OraProjectFileReadResult> {
       return call<OraProjectFileReadResult>("projects.file.read", { projectId, path });
+    },
+    async listPackages(): Promise<OraPackageStoreSnapshot> {
+      return call<OraPackageStoreSnapshot>("packages.list");
+    },
+    async activePackage(): Promise<OraPackageStoreSnapshot> {
+      return call<OraPackageStoreSnapshot>("packages.active");
+    },
+    async buildPackageCandidate(params: Partial<OraPackageBuildCandidateParams> = {}): Promise<OraPackageManifest> {
+      return call<OraPackageManifest>("packages.buildCandidate", params);
+    },
+    async verifyPackage(versionId: string): Promise<OraPackageManifest> {
+      return call<OraPackageManifest>("packages.verify", { versionId });
+    },
+    async promotePackage(versionId: string): Promise<OraPackageStoreSnapshot> {
+      return call<OraPackageStoreSnapshot>("packages.promote", { versionId });
+    },
+    async switchPackage(versionId: string): Promise<OraPackageStoreSnapshot> {
+      return call<OraPackageStoreSnapshot>("packages.switch", { versionId });
+    },
+    async rollbackPackage(): Promise<OraPackageStoreSnapshot> {
+      return call<OraPackageStoreSnapshot>("packages.rollback");
+    },
+    async prunePackages(includeFailed = true): Promise<OraPackageStoreSnapshot> {
+      return call<OraPackageStoreSnapshot>("packages.prune", { includeFailed });
     },
     async listSessions(): Promise<OraSessionSummary[]> {
       return call<OraSessionSummary[]>("sessions.list");
@@ -864,6 +897,7 @@ class LocalJsonRpcRuntime {
   private deletedSkills = new Set<string>();
   private skillEnabled = new Map<string, boolean>();
   private modes = new Map<string, OraModeSpec>();
+  private packageStore: OraPackageStoreSnapshot = createMockPackageStore();
   private memory = LongTermMemoryProfileSchema.parse({
     version: "1.0",
     lastUpdated: new Date(0).toISOString(),
@@ -927,6 +961,7 @@ class LocalJsonRpcRuntime {
           tools: MVP_TOOLS,
           defaultPolicyId: "runtime.default_policy",
           },
+          packages: this.packageStore,
           skills: {
             skills: this.listSkills().skills,
           },
@@ -972,6 +1007,20 @@ class LocalJsonRpcRuntime {
           tools: MVP_TOOLS,
           defaultPolicyId: "runtime.default_policy",
         };
+      case "packages.list":
+      case "packages.active":
+        return this.packageStore;
+      case "packages.buildCandidate":
+        return this.buildPackageCandidate(params);
+      case "packages.verify":
+        return this.verifyPackage(params);
+      case "packages.promote":
+      case "packages.switch":
+        return this.promotePackage(params);
+      case "packages.rollback":
+        return this.rollbackPackage();
+      case "packages.prune":
+        return this.prunePackages(params);
       case "skills.list":
         return {
           skills: this.listSkills(params).skills,
@@ -1953,6 +2002,121 @@ class LocalJsonRpcRuntime {
       enabled: params.enabled,
       updatedAt: Date.now(),
     };
+  }
+
+  private buildPackageCandidate(params: unknown): OraPackageManifest {
+    const record = isRecord(params) ? params : {};
+    const now = Date.now();
+    const semver = typeof record.semver === "string" && record.semver.trim()
+      ? record.semver.trim()
+      : `0.1.${this.packageStore.packages.length + 1}`;
+    const versionId = typeof record.versionId === "string" && record.versionId.trim()
+      ? record.versionId.trim()
+      : `browser-${semver}-${now}`;
+    const manifest: OraPackageManifest = {
+      versionId,
+      semver,
+      status: "candidate",
+      channel: typeof record.channel === "string" && record.channel.trim() ? record.channel.trim() : "local",
+      gitCommit: "browser-mock",
+      builtAt: now,
+      hostAbiVersion: ORA_HOST_ABI_VERSION,
+      runtimeAbiVersion: ORA_RUNTIME_ABI_VERSION,
+      slotPath: `/browser-mock/versions/${versionId}`,
+      frontendDistPath: `/browser-mock/versions/${versionId}/frontend`,
+      runtimeSidecarPath: `/browser-mock/versions/${versionId}/runtime-sidecar`,
+      buildLogPath: `/browser-mock/versions/${versionId}/build.log`,
+      verification: {
+        status: "passed",
+        checkedAt: now,
+        commands: Array.isArray(record.verificationCommands)
+          ? record.verificationCommands.filter((item): item is string => typeof item === "string")
+          : ["browser mock verification"],
+        logPath: `/browser-mock/versions/${versionId}/build.log`,
+        errors: [],
+      },
+      migrationNotes: Array.isArray(record.migrationNotes)
+        ? record.migrationNotes.filter((item): item is string => typeof item === "string")
+        : [],
+      rollbackTarget: this.packageStore.active.activeVersionId,
+    };
+    this.packageStore = {
+      ...this.packageStore,
+      packages: [manifest, ...this.packageStore.packages.filter((item) => item.versionId !== versionId)],
+    };
+    return manifest;
+  }
+
+  private verifyPackage(params: unknown): OraPackageManifest {
+    const versionId = requireMockVersionId(params);
+    const manifest = this.packageStore.packages.find((item) => item.versionId === versionId);
+    if (!manifest) throw new Error(`Ora package slot not found: ${versionId}`);
+    const verified: OraPackageManifest = {
+      ...manifest,
+      status: manifest.status === "active" ? "active" : "candidate",
+      verification: {
+        ...manifest.verification,
+        status: "passed",
+        checkedAt: Date.now(),
+        errors: [],
+      },
+    };
+    this.packageStore = replaceMockPackage(this.packageStore, verified);
+    return verified;
+  }
+
+  private promotePackage(params: unknown): OraPackageStoreSnapshot {
+    const versionId = requireMockVersionId(params);
+    const manifest = this.packageStore.packages.find((item) => item.versionId === versionId);
+    if (!manifest) throw new Error(`Ora package slot not found: ${versionId}`);
+    if (manifest.verification.status !== "passed") {
+      throw new Error("Ora package slot must pass verification before promotion.");
+    }
+    const now = Date.now();
+    const previousVersionId = this.packageStore.active.activeVersionId;
+    const activeManifest: OraPackageManifest = {
+      ...manifest,
+      status: "active",
+      promotedAt: manifest.promotedAt ?? now,
+      activatedAt: now,
+    };
+    this.packageStore = {
+      ...this.packageStore,
+      active: {
+        activeVersionId: versionId,
+        previousVersionId,
+        channel: manifest.channel,
+        activatedAt: now,
+        compatibilityStatus: "compatible",
+      },
+      packages: this.packageStore.packages.map((item) => {
+        if (item.versionId === versionId) return activeManifest;
+        if (item.versionId === previousVersionId) return { ...item, status: "previous" };
+        return item.status === "active" ? { ...item, status: "candidate" } : item;
+      }),
+    };
+    return this.packageStore;
+  }
+
+  private rollbackPackage(): OraPackageStoreSnapshot {
+    const previousVersionId = this.packageStore.active.previousVersionId;
+    if (!previousVersionId) {
+      throw new Error("No previous Ora package slot is available for rollback.");
+    }
+    return this.promotePackage({ versionId: previousVersionId });
+  }
+
+  private prunePackages(params: unknown): OraPackageStoreSnapshot {
+    const includeFailed = !isRecord(params) || params.includeFailed !== false;
+    const keepIds = new Set([
+      this.packageStore.active.activeVersionId,
+      this.packageStore.active.previousVersionId,
+    ].filter(Boolean));
+    this.packageStore = {
+      ...this.packageStore,
+      packages: this.packageStore.packages.filter((item) => keepIds.has(item.versionId) || (!includeFailed && item.status !== "failed")),
+    };
+    return this.packageStore;
   }
 
   private listModes(): OraModeSpec[] {
@@ -3712,6 +3876,57 @@ function asReplayRunParams(params: unknown): { runId: string; checkpointId?: str
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function createMockPackageStore(): OraPackageStoreSnapshot {
+  return {
+    rootPath: "/browser-mock/versions",
+    active: {
+      activeVersionId: "bundled",
+      channel: "bundled",
+      activatedAt: 0,
+      compatibilityStatus: "compatible",
+    },
+    packages: [
+      {
+        versionId: "bundled",
+        semver: "0.1.0",
+        status: "active",
+        channel: "bundled",
+        gitCommit: "browser-mock",
+        builtAt: 0,
+        activatedAt: 0,
+        hostAbiVersion: ORA_HOST_ABI_VERSION,
+        runtimeAbiVersion: ORA_RUNTIME_ABI_VERSION,
+        slotPath: "/browser-mock/versions/bundled",
+        frontendDistPath: "/browser-mock/versions/bundled/frontend",
+        runtimeSidecarPath: "/browser-mock/versions/bundled/runtime-sidecar",
+        buildLogPath: "/browser-mock/versions/bundled/build.log",
+        verification: {
+          status: "passed",
+          checkedAt: 0,
+          commands: [],
+          logPath: "/browser-mock/versions/bundled/build.log",
+          errors: [],
+        },
+        migrationNotes: ["Browser fallback package slot."],
+      },
+    ],
+  };
+}
+
+function requireMockVersionId(params: unknown): string {
+  if (!isRecord(params) || typeof params.versionId !== "string" || !params.versionId.trim()) {
+    throw new Error("Package versionId is required.");
+  }
+  return params.versionId.trim();
+}
+
+function replaceMockPackage(store: OraPackageStoreSnapshot, manifest: OraPackageManifest): OraPackageStoreSnapshot {
+  return {
+    ...store,
+    packages: store.packages.map((item) => item.versionId === manifest.versionId ? manifest : item),
+  };
 }
 
 function normalizeMockAgentName(value: unknown): string {

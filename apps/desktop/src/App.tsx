@@ -216,6 +216,7 @@ function WorkbenchInner() {
           projects,
           providerRegistry: bootstrap.providerRegistry,
           toolRegistry: bootstrap.toolRegistry,
+          packageStore: bootstrap.packageStore,
           skillRegistry: bootstrap.skillRegistry,
           providerSecretStatuses: bootstrap.providerSecretStatuses,
           providerStatuses: bootstrap.providerStatuses,

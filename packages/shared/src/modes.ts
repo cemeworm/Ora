@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { withDefaultWebToolIds } from "./capabilities.js";
-import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -1763,6 +1763,135 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
   }));
 }
 
+function createOraSelfBuilderModeSpec(): ModeSpec {
+  const now = 0;
+  const packageToolIds = [
+    "file.read",
+    "file.grep",
+    "file.patch",
+    "shell.execute",
+    "package.list",
+    "package.buildCandidate",
+    "package.verify",
+    "package.promote",
+    "package.switch",
+    "package.rollback",
+  ];
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: ORA_SELF_BUILDER_MODE_ID,
+    family: "agent_teams",
+    label: "Ora Self Builder",
+    summary: "Ora plans, edits, verifies, builds, and promotes a local package slot for itself.",
+    description: "Use the local self-upgrade workflow when Ora should iterate its own source, produce a verified candidate package slot, and activate it through an explicit package gate.",
+    recommendedUse: "Use for bounded Ora product/runtime improvements that can be verified locally before switching the active package slot.",
+    failureMode: "Self-upgrade work can create a candidate package that passes code checks but still needs host ABI compatibility and rollback protection before activation.",
+    systemPreset: true,
+    nodes: [
+      {
+        id: "triage",
+        template: "triage",
+        label: "Plan task journal",
+        title: "Plan task journal",
+        ownerAgentId: "upgrade_lead",
+        enabled: true,
+        prompt: "Create or update the task journal, clarify the requested Ora change, and define verification gates before edits.",
+        config: {},
+      },
+      {
+        id: "build",
+        template: "build",
+        label: "Edit and build",
+        title: "Edit and build",
+        ownerAgentId: "code_builder",
+        enabled: true,
+        prompt: "Make the smallest source changes, run focused checks, and build a candidate package slot with package.buildCandidate.",
+        riskLevel: "high",
+        config: {},
+      },
+      {
+        id: "check",
+        template: "check",
+        label: "Verify package",
+        title: "Verify package",
+        ownerAgentId: "release_reviewer",
+        enabled: true,
+        prompt: "Review the diff, package manifest, build logs, compatibility status, and rollback target before promotion.",
+        riskLevel: "high",
+        config: {},
+      },
+      {
+        id: "handoff",
+        template: "handoff",
+        label: "Promote or report",
+        title: "Promote or report",
+        ownerAgentId: "upgrade_lead",
+        enabled: true,
+        prompt: "Promote the verified slot only after final approval, otherwise report the candidate status and next fix.",
+        riskLevel: "high",
+        config: {},
+      },
+    ],
+    edges: [
+      { id: "triage-build", source: "triage", target: "build", kind: "control", label: "edit", enabled: true },
+      { id: "build-check", source: "build", target: "check", kind: "verification", label: "verify", enabled: true },
+      { id: "check-handoff", source: "check", target: "handoff", kind: "control", label: "promote", enabled: true },
+    ],
+    stopPolicy: {
+      type: "queue_drained",
+      detail: "Stop after the candidate package is either promoted or reported with concrete verification failures.",
+    },
+    capabilityFlags: {
+      supportsPersistentWorkers: true,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "high_risk_only",
+      skillIds: ["long-task-protocol"],
+      toolIds: withDefaultWebToolIds(packageToolIds),
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily("agent_teams"),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.agent_teams.allowedTemplates,
+      requiredNodeTemplates: MODE_FAMILY_RULES.agent_teams.requiredTemplates,
+      readOnly: true,
+      allowReorder: true,
+      allowCreate: true,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: {
+      ...DEFAULT_RESOURCE_BUDGETS.agent_teams,
+      maxToolCalls: 48,
+      maxRuntimeMs: 900000,
+    },
+    completionPolicy: completionPolicyForPreset("persistent"),
+    profiles: [
+      profile(
+        "upgrade_lead",
+        "Upgrade Lead",
+        "Own task scope, approval gates, package promotion, and rollback readiness.",
+        "agent_teams",
+        ["session", "project"],
+      ),
+      profile(
+        "code_builder",
+        "Code Builder",
+        "Make scoped Ora source changes and build candidate package slots.",
+        "agent_teams",
+        ["session", "project"],
+      ),
+      profile(
+        "release_reviewer",
+        "Release Reviewer",
+        "Review verification logs, package manifests, compatibility, and rollback safety.",
+        "agent_teams",
+        ["session", "artifact"],
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
 const BUILTIN_PATTERN_MODES = CoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern));
 const ORCHESTRATOR_MODE_INDEX = BUILTIN_PATTERN_MODES.findIndex((mode) => mode.id === "orchestrator_subagent");
 
@@ -1770,6 +1899,7 @@ export const MVP_MODES = [
   ...BUILTIN_PATTERN_MODES.slice(0, ORCHESTRATOR_MODE_INDEX + 1),
   createDeerflowHarnessModeSpec(),
   createSingleAgentModeSpec(),
+  createOraSelfBuilderModeSpec(),
   createModeStudioBuilderModeSpec(),
   ...BUILTIN_PATTERN_MODES.slice(ORCHESTRATOR_MODE_INDEX + 1),
 ];

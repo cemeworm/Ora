@@ -4,6 +4,7 @@ export * from "./actions.js";
 export * from "./topology.js";
 export * from "./providers.js";
 export * from "./capabilities.js";
+export * from "./packages.js";
 export * from "./modes.js";
 export * from "./mode-studio-builder.js";
 export * from "./runtime.js";

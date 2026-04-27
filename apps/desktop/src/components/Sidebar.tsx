@@ -3,16 +3,21 @@ import {
   Archive,
   Bot,
   ChartNoAxesColumn,
+  CheckCircle2,
+  ChevronDown,
   Folder,
   FolderOpen,
   GitBranchPlus,
   MessageSquarePlus,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { useWorkbench } from "../lib/state";
+import { getSharedRuntimeClient, type OraPackageManifest } from "../lib/runtimeClient";
 import { useRunActions } from "../lib/useRunActions";
 import { cn } from "../lib/utils";
 import type { RunStatus } from "../types";
@@ -42,6 +47,159 @@ function SidebarSectionHeader({
       {action}
     </div>
   );
+}
+
+function VersionSelector() {
+  const { state, dispatch } = useWorkbench();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | undefined>();
+  const store = state.packageStore;
+  const active = store?.packages.find((item) => item.versionId === store.active.activeVersionId)
+    ?? store?.packages.find((item) => item.status === "active");
+  const packages = store?.packages ?? [];
+
+  async function refresh(nextFeedback?: string) {
+    const packageStore = await getSharedRuntimeClient().activePackage();
+    dispatch({ type: "SET_PACKAGE_STORE", packageStore });
+    if (nextFeedback) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: nextFeedback });
+    }
+  }
+
+  async function runVersionAction(key: string, action: () => Promise<void>) {
+    setBusy(key);
+    try {
+      await action();
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  if (!store) {
+    return (
+      <span className="inline-flex h-6 items-center rounded-md bg-sidebar-accent/70 px-2 text-[11px] font-medium text-muted-foreground">
+        v...
+      </span>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="inline-flex h-6 max-w-[116px] items-center gap-1 rounded-md bg-sidebar-accent/75 px-1.5 text-[11px] font-medium text-sidebar-accent-foreground transition hover:bg-sidebar-accent active:scale-95"
+        title="Ora package version"
+        aria-label="Ora package version"
+      >
+        <span className="truncate">{active ? `v${active.semver}` : "bundled"}</span>
+        <ChevronDown size={12} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+6px)] z-40 w-72 rounded-lg bg-popover p-2 text-popover-foreground shadow-lift">
+          <div className="flex items-center justify-between px-2 pb-2 pt-1">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Versions</span>
+            <button
+              type="button"
+              onClick={() => void runVersionAction("rollback", async () => refreshAfterRollback(dispatch, setOpen))}
+              disabled={!store.active.previousVersionId || busy !== undefined}
+              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-95"
+              title="Rollback"
+            >
+              <RotateCcw size={12} />
+              Rollback
+            </button>
+          </div>
+          <div className="max-h-64 overflow-y-auto pr-1">
+            {packages.map((item) => (
+              <VersionRow
+                key={item.versionId}
+                item={item}
+                active={item.versionId === store.active.activeVersionId}
+                busy={busy !== undefined}
+                onSwitch={() => void runVersionAction(item.versionId, async () => {
+                  await getSharedRuntimeClient().switchPackage(item.versionId);
+                  setOpen(false);
+                  await refresh(`Ora package ${item.semver} is active.`);
+                })}
+              />
+            ))}
+            {packages.length === 0 && (
+              <div className="px-2 py-3 text-sm text-muted-foreground">No package slots yet.</div>
+            )}
+          </div>
+          <div className="mt-2 flex justify-end border-t border-border/70 pt-2">
+            <button
+              type="button"
+              onClick={() => void runVersionAction("prune", async () => {
+                const packageStore = await getSharedRuntimeClient().prunePackages(true);
+                dispatch({ type: "SET_PACKAGE_STORE", packageStore });
+                dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Failed package slots pruned." });
+              })}
+              disabled={busy !== undefined}
+              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-40 active:scale-95"
+              title="Prune failed slots"
+            >
+              <Trash2 size={12} />
+              Prune failed
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VersionRow({
+  item,
+  active,
+  busy,
+  onSwitch,
+}: {
+  item: OraPackageManifest;
+  active: boolean;
+  busy: boolean;
+  onSwitch: () => void;
+}) {
+  const statusTone = item.status === "failed"
+    ? "text-rose-700 bg-rose-100/75"
+    : item.status === "previous"
+      ? "text-amber-800 bg-amber-100/75"
+      : active
+        ? "text-emerald-800 bg-emerald-100/80"
+        : "text-muted-foreground bg-sidebar-accent/70";
+  return (
+    <div className="flex min-h-[44px] items-center gap-2 rounded-md px-2 py-1.5 text-sm transition hover:bg-sidebar-accent/80">
+      <CheckCircle2 size={14} className={active ? "text-emerald-700" : "text-muted-foreground/55"} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-foreground">v{item.semver}</div>
+        <div className="truncate text-[11px] text-muted-foreground">{item.versionId}</div>
+      </div>
+      <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusTone)}>
+        {active ? "active" : item.status}
+      </span>
+      {!active && item.verification.status === "passed" && (
+        <button
+          type="button"
+          onClick={onSwitch}
+          disabled={busy}
+          className="h-7 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-background/85 hover:text-foreground disabled:opacity-40 active:scale-95"
+        >
+          Switch
+        </button>
+      )}
+    </div>
+  );
+}
+
+async function refreshAfterRollback(
+  dispatch: ReturnType<typeof useWorkbench>["dispatch"],
+  setOpen: (open: boolean) => void,
+) {
+  const packageStore = await getSharedRuntimeClient().rollbackPackage();
+  dispatch({ type: "SET_PACKAGE_STORE", packageStore });
+  dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Rolled back to the previous Ora package slot." });
+  setOpen(false);
 }
 
 function SessionStatusBadge({ status }: { status: RunStatus }) {
@@ -237,7 +395,10 @@ export function Sidebar() {
       <div className="flex h-12 shrink-0 flex-col justify-center px-2">
         {open ? (
           <div className="flex items-center justify-between gap-2">
-            <div className="ml-1 cursor-default font-serif text-[15px] text-primary">Ora</div>
+            <div className="ml-1 flex min-w-0 items-center gap-2">
+              <div className="cursor-default font-serif text-[15px] text-primary">Ora</div>
+              <VersionSelector />
+            </div>
             <SidebarTrigger />
           </div>
         ) : (

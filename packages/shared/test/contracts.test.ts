@@ -53,6 +53,7 @@ import {
   MVP_MODES,
   MVP_MODE_RUNTIME_ATOMS,
   MVP_PATTERNS,
+  ORA_SELF_BUILDER_MODE_ID,
   ModeRecoveryPolicySchema,
   ModeSpecSchema,
   ModeValidationResultSchema,
@@ -137,7 +138,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(8);
+    expect(MVP_MODES).toHaveLength(9);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -150,6 +151,7 @@ describe("Ora shared contracts", () => {
       "orchestrator_subagent",
       DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
+      ORA_SELF_BUILDER_MODE_ID,
       MODE_STUDIO_BUILDER_MODE_ID,
       "agent_teams",
       "message_bus",
@@ -1510,7 +1512,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(7);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(8);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

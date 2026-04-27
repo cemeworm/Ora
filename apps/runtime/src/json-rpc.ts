@@ -12,6 +12,7 @@ import { RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { executeRuntimeKernel } from "./harness/runtime-kernel.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
 import type { RunEventStream } from "@ora/shared";
+import { PackageManager } from "./package-manager.js";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;
 
@@ -26,6 +27,7 @@ export function createRuntimeMethodHandler(
 ): JsonRpcMethodHandler {
   const providerRegistry = createDefaultProviderRegistry().config;
   const toolRegistry = new RuntimeToolRegistry().snapshot();
+  const packageManager = new PackageManager();
   return (request) => {
     switch (request.method) {
       case "runtime.health":
@@ -41,6 +43,7 @@ export function createRuntimeMethodHandler(
           modes: store.listModes(),
           atoms: MVP_MODE_RUNTIME_ATOMS,
           tools: toolRegistry,
+          packages: packageManager.snapshot(),
           skills: store.listSkills(),
           providers: providerRegistry
         });
@@ -76,6 +79,20 @@ export function createRuntimeMethodHandler(
         return store.applyModeStudioDraft(request.params);
       case "tools.list":
         return ToolRegistrySchema.parse(toolRegistry);
+      case "packages.list":
+      case "packages.active":
+        return packageManager.snapshot();
+      case "packages.buildCandidate":
+        return packageManager.buildCandidate(request.params);
+      case "packages.verify":
+        return packageManager.verify(request.params);
+      case "packages.promote":
+      case "packages.switch":
+        return packageManager.promote(request.params);
+      case "packages.rollback":
+        return packageManager.rollback();
+      case "packages.prune":
+        return packageManager.prune(request.params);
       case "skills.list":
         return SkillRegistrySchema.parse(store.listSkills(request.params));
       case "skills.get":

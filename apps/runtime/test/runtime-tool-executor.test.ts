@@ -9,6 +9,7 @@ import {
   RuntimeToolExecutor,
 } from "../src/harness/runtime-tool-executor.js";
 import { RuntimeSkillRegistry } from "../src/harness/capability-registries.js";
+import { PackageManager } from "../src/package-manager.js";
 
 const cleanupPaths: string[] = [];
 
@@ -121,6 +122,37 @@ describe("RuntimeToolExecutor", () => {
     await executor.execute(patchCall, { allowRisky: true });
 
     expect(fs.readFileSync(path.join(rootPath, "notes", "result.md"), "utf8")).toBe("after\n");
+  });
+
+  it("routes package tools through the package manager", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-package-tool-repo-"));
+    const appDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-package-tool-data-"));
+    cleanupPaths.push(repoRoot, appDataRoot);
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "apps", "desktop", "dist", "index.html"), "<div>Ora</div>");
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop", "src-tauri", "resources", "runtime-sidecar", "bin"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop", "src-tauri", "resources", "runtime-sidecar", "app"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "apps", "desktop", "src-tauri", "resources", "runtime-sidecar", "bin", "node"), "");
+    fs.writeFileSync(path.join(repoRoot, "apps", "desktop", "src-tauri", "resources", "runtime-sidecar", "app", "runtime-sidecar.cjs"), "");
+    const packageManager = new PackageManager({
+      appDataRoot,
+      repoRoot,
+      runCommand: (command) => `ran ${command}\n`,
+    });
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS, packageManager });
+
+    const candidate = await executor.execute({
+      tool: "package.buildCandidate",
+      args: { versionId: "slot-tool", semver: "0.1.9", verificationCommands: ["pnpm typecheck"] },
+    }, { allowRisky: true }) as { versionId: string; verification: { status: string } };
+    const promoted = await executor.execute({
+      tool: "package.promote",
+      args: { versionId: "slot-tool" },
+    }, { allowRisky: true }) as { active: { activeVersionId?: string } };
+
+    expect(executor.riskLevel({ tool: "package.promote", args: { versionId: "slot-tool" } })).toBe("high");
+    expect(candidate.verification.status).toBe("passed");
+    expect(promoted.active.activeVersionId).toBe("slot-tool");
   });
 
   it("builds natural approval copy for high-risk local tools", () => {

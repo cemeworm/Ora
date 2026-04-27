@@ -20,6 +20,7 @@ describe("desktop composer pending-run behavior", () => {
       projects: [],
       providerRegistry: { defaultProviderId: "local-smoke", providers: [] } as any,
       toolRegistry: { tools: [] } as any,
+      packageStore: { rootPath: "/tmp", active: { channel: "local", compatibilityStatus: "unknown" }, packages: [] } as any,
       skillRegistry: { skills: [] } as any,
       providerSecretStatuses: [],
       providerStatuses: [],

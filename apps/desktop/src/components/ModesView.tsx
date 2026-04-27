@@ -1754,7 +1754,7 @@ function WorkspaceToolsPanel({
   };
   const tools = toolRegistry.tools
     .filter((tool) => tool.implemented !== false)
-    .filter((tool) => ["file", "shell", "network", "mcp"].includes(tool.category))
+    .filter((tool) => ["file", "shell", "network", "mcp", "package"].includes(tool.category))
     .map((tool) => ({
       ...tool,
       icon: toolIcons[tool.id as keyof typeof toolIcons] ?? FileText,

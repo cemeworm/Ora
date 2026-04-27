@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SkillRegistrySchema, ToolRegistrySchema } from "./capabilities.js";
 import { ModeRuntimeAtomDefinitionSchema, ModeSpecSchema, PatternDefinitionSchema } from "./modes.js";
+import { PackageStoreSnapshotSchema } from "./packages.js";
 import { ProviderRegistrySchema } from "./providers.js";
 
 export const RuntimeBootstrapSchema = z.object({
@@ -15,6 +16,7 @@ export const RuntimeBootstrapSchema = z.object({
   modes: z.array(ModeSpecSchema),
   atoms: z.array(ModeRuntimeAtomDefinitionSchema),
   tools: ToolRegistrySchema,
+  packages: PackageStoreSnapshotSchema.optional(),
   skills: SkillRegistrySchema,
   providers: ProviderRegistrySchema
 });

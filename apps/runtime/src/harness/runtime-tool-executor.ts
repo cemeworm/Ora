@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ActionApprovalRequestCopySchema } from "@ora/shared";
 import type { ActionApprovalRequestCopy, ActionRiskLevel, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
+import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
 
@@ -27,6 +28,12 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "mcp.listTools",
   "mcp.readResource",
   "mcp.call",
+  "package.list",
+  "package.buildCandidate",
+  "package.verify",
+  "package.promote",
+  "package.switch",
+  "package.rollback",
 ] as const;
 
 export type RuntimeToolId = typeof IMPLEMENTED_RUNTIME_TOOL_IDS[number];
@@ -45,6 +52,7 @@ export interface RuntimeToolExecutorOptions {
   searchProvider?: SearchProvider;
   searchProviderConfig?: SearchProviderConfig;
   searchEnv?: NodeJS.ProcessEnv;
+  packageManager?: PackageManager;
 }
 
 interface SkillRegistryTools {
@@ -175,12 +183,14 @@ export class RuntimeToolExecutor {
   private readonly skillRegistry?: SkillRegistryTools;
   private readonly mcpConfigPaths?: string[];
   private readonly searchProvider: SearchProvider;
+  private readonly packageManager?: PackageManager;
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.toolDescriptors = options.toolDescriptors ?? [];
     this.skillRegistry = options.skillRegistry;
     this.mcpConfigPaths = options.mcpConfigPaths;
+    this.packageManager = options.packageManager;
     this.workspace = options.workspace;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
       fetchImpl: this.fetchImpl,
@@ -264,6 +274,7 @@ export class RuntimeToolExecutor {
       || call.tool === "skills.create"
       || call.tool === "skills.update"
       || call.tool === "skills.setEnabled"
+      || call.tool.startsWith("package.")
     ) {
       return "high";
     }
@@ -320,6 +331,17 @@ export class RuntimeToolExecutor {
         return readMcpResource(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
       case "mcp.call":
         return callMcpTool(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
+      case "package.list":
+        return packageManager(this.packageManager).snapshot();
+      case "package.buildCandidate":
+        return packageManager(this.packageManager).buildCandidate(call.args);
+      case "package.verify":
+        return packageManager(this.packageManager).verify(call.args);
+      case "package.promote":
+      case "package.switch":
+        return packageManager(this.packageManager).promote(call.args);
+      case "package.rollback":
+        return packageManager(this.packageManager).rollback();
       default: {
         const neverTool: never = call.tool;
         throw new Error(`Unsupported runtime tool: ${neverTool}`);
@@ -380,7 +402,8 @@ function toolNeedsUserApprovalCopy(toolId: RuntimeToolId): boolean {
     || toolId === "skills.create"
     || toolId === "skills.update"
     || toolId === "skills.setEnabled"
-    || toolId === "mcp.call";
+    || toolId === "mcp.call"
+    || toolId.startsWith("package.");
 }
 
 function parseProvidedApprovalRequest(value: unknown): ActionApprovalRequestCopy | undefined {
@@ -616,7 +639,26 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"mcp.readResource\",\"args\":{\"server\":\"local-docs\",\"uri\":\"docs://intro\"}}";
     case "mcp.call":
       return "{\"tool\":\"mcp.call\",\"args\":{\"server\":\"local-docs\",\"name\":\"search\",\"arguments\":{\"query\":\"ora\"}}}";
+    case "package.list":
+      return "{\"tool\":\"package.list\",\"args\":{}}";
+    case "package.buildCandidate":
+      return "{\"tool\":\"package.buildCandidate\",\"args\":{\"semver\":\"0.1.1\"}}";
+    case "package.verify":
+      return "{\"tool\":\"package.verify\",\"args\":{\"versionId\":\"local-0.1.1\"}}";
+    case "package.promote":
+      return "{\"tool\":\"package.promote\",\"args\":{\"versionId\":\"local-0.1.1\"}}";
+    case "package.switch":
+      return "{\"tool\":\"package.switch\",\"args\":{\"versionId\":\"local-0.1.1\"}}";
+    case "package.rollback":
+      return "{\"tool\":\"package.rollback\",\"args\":{}}";
   }
+}
+
+function packageManager(manager: PackageManager | undefined): PackageManager {
+  if (!manager) {
+    throw new Error("A package manager is required for package tools.");
+  }
+  return manager;
 }
 
 function workspaceRootPath(workspace: unknown): string | undefined {
