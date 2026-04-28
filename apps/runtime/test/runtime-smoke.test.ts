@@ -1772,6 +1772,27 @@ describe("Ora runtime smoke path", () => {
         event.payload !== null &&
         (event.payload as { toolId?: string }).toolId === "file.write"
       )).toBe(true);
+      const fileChangeArtifact = resumed.artifacts.find((artifact) => artifact.label === "notes/result.md");
+      expect(fileChangeArtifact).toMatchObject({
+        kind: "file",
+        mimeType: "text/markdown",
+        payload: expect.objectContaining({
+          kind: "file_change",
+          path: "notes/result.md",
+          operation: "write",
+          beforeContent: "",
+          afterContent: "draft one\n",
+          additions: 2,
+          deletions: 0,
+        }),
+      });
+      expect(resumed.actions.find((action) => action.id === approvedActionId)?.artifactIds).toEqual([fileChangeArtifact?.id]);
+      expect(resumed.events.some((event) =>
+        event.type === "artifact.exported" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        (event.payload as { artifact?: { id?: string } }).artifact?.id === fileChangeArtifact?.id
+      )).toBe(true);
       expect(resumed.events.some((event) =>
         event.type === "tool.called" &&
         typeof event.payload === "object" &&

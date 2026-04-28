@@ -45,6 +45,7 @@ import {
 import {
   extractRuntimeToolCallFromText,
   RuntimeToolExecutor,
+  type RuntimeFileChangeMetadata,
   type RuntimeToolCall,
 } from "./runtime-tool-executor.js";
 import {
@@ -84,6 +85,7 @@ import {
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
 import { RuntimeToolCallLedger } from "./runtime-tool-ledger.js";
+import { fileChangeArtifact } from "./file-change-artifact.js";
 import { emitRuntimeProgressNarration } from "./runtime-progress.js";
 import {
   runRecoverableRuntimeNode,
@@ -678,6 +680,7 @@ export async function executeRuntimeKernel(
       coerceNoToolResponse,
       runForcedFinalProviderCall,
       publishRecoveryArtifact,
+      publishFileChangeArtifact,
       sleep,
       actionDeps,
     });
@@ -1013,6 +1016,25 @@ export async function executeRuntimeKernel(
     });
     artifacts.push(artifact);
     emit("artifact.exported", { artifact });
+  };
+
+  const publishFileChangeArtifact = (
+    fileChange: RuntimeFileChangeMetadata,
+    context: { agentId?: string; nodeId?: string; actionId?: string },
+  ) => {
+    const artifact = fileChangeArtifact({
+      runId,
+      artifactIndex: artifacts.length,
+      fileChange,
+      createdAt: now(),
+    });
+    artifacts.push(artifact);
+    emit(
+      "artifact.exported",
+      { artifact, actionId: context.actionId },
+      { agentId: context.agentId, nodeId: context.nodeId },
+    );
+    return artifact;
   };
 
   const ensureClarification = async (params: {

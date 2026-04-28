@@ -163,6 +163,51 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("Smoke run report");
   });
 
+  it("renders file-change artifacts before the diff panel", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [
+        artifact("run-1:file-change:0", "apps/desktop/src/lib/viewModel.ts", {
+          kind: "file",
+          mimeType: "text/plain",
+        }),
+      ],
+      fileChanges: [{
+        artifactId: "run-1:file-change:0",
+        path: "apps/desktop/src/lib/viewModel.ts",
+        operation: "patch",
+        beforeContent: "const oldValue = true;\n",
+        afterContent: "const newValue = true;\n",
+        additions: 1,
+        deletions: 1,
+        sizeBytes: 24,
+        replacements: 1,
+        created: false,
+      }],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文" turn={turn} />,
+    );
+    const artifactIndex = html.indexOf("apps/desktop/src/lib/viewModel.ts");
+    const diffIndex = html.indexOf("1 个文件已更改");
+
+    expect(artifactIndex).toBeGreaterThanOrEqual(0);
+    expect(diffIndex).toBeGreaterThan(artifactIndex);
+    expect(html).toContain("+1");
+    expect(html).toContain("-1");
+    expect(html).toContain("const oldValue = true;");
+    expect(html).toContain("const newValue = true;");
+  });
+
   it("summarizes completed and blocked process steps without log wording", () => {
     expect(processSummary([
       processStep("step-1", "complete", "已完成资料收集。"),

@@ -1,4 +1,5 @@
 import type {
+  ArtifactRef,
   CompletionStopReason,
   ModeSpec,
   OraEventEnvelope,
@@ -29,7 +30,7 @@ import {
   cacheKeyForRuntimeTool,
   type RuntimeToolAttempt,
 } from "./runtime-tool-loop.js";
-import { RuntimeToolExecutor, type RuntimeToolCall } from "./runtime-tool-executor.js";
+import { RuntimeToolExecutor, type RuntimeFileChangeMetadata, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
 
 const TOOL_REPAIR_CONTENT =
@@ -125,6 +126,10 @@ export interface RunNodeRuntimeLoopDeps {
     incident: RecoveryIncident,
     decision: RecoveryDecision,
   ) => { id: string };
+  publishFileChangeArtifact: (
+    fileChange: RuntimeFileChangeMetadata,
+    context: { agentId?: string; nodeId?: string; actionId?: string },
+  ) => ArtifactRef;
   sleep: (ms: number) => Promise<void>;
   actionDeps: () => RuntimeActionDeps;
 }
@@ -150,6 +155,7 @@ export async function runNodeRuntimeLoop(
     coerceNoToolResponse,
     runForcedFinalProviderCall,
     publishRecoveryArtifact,
+    publishFileChangeArtifact,
     sleep,
     actionDeps,
   } = deps;
@@ -454,14 +460,22 @@ export async function runNodeRuntimeLoop(
       const cacheKey = cacheKeyForRuntimeTool(toolCall);
       const cacheHit =
         cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
-      const output = cacheHit
-        ? runtimeToolResultCache.get(cacheKey)
-        : await runtimeToolExecutor.execute(toolCall, {
+      const execution = cacheHit
+        ? { output: runtimeToolResultCache.get(cacheKey) }
+        : await runtimeToolExecutor.executeWithMetadata(toolCall, {
             allowRisky: approvedForRiskyExecution,
           });
+      const output = execution.output;
       if (cacheKey && !cacheHit) {
         runtimeToolResultCache.set(cacheKey, output);
       }
+      const artifact = execution.fileChange
+        ? publishFileChangeArtifact(execution.fileChange, {
+            actionId: action.id,
+            agentId: params.agentId,
+            nodeId: params.agentId,
+          })
+        : undefined;
       completion.markToolResultObserved(toolCall, cacheHit, completionScope);
       const { resultText } = recordRuntimeToolActionSucceeded({
         action,
@@ -469,6 +483,8 @@ export async function runNodeRuntimeLoop(
         deps: actionDeps(),
         toolCall,
         output,
+        fileChange: execution.fileChange,
+        artifactIds: artifact ? [artifact.id] : undefined,
         cacheHit,
         toolCallRecord,
         now,
@@ -681,13 +697,21 @@ export async function runNodeRuntimeLoop(
           toolId: alternateCall.tool,
           iteration,
         });
-        const alternateOutput = await runtimeToolExecutor.execute(
+        const alternateExecution = await runtimeToolExecutor.executeWithMetadata(
           alternateCall,
           {
             allowRisky:
               alternateApproval.approvedForRiskyExecution,
           },
         );
+        const alternateOutput = alternateExecution.output;
+        const alternateArtifact = alternateExecution.fileChange
+          ? publishFileChangeArtifact(alternateExecution.fileChange, {
+              actionId: alternateAction.id,
+              agentId: params.agentId,
+              nodeId: params.agentId,
+            })
+          : undefined;
         completion.markToolResultObserved(alternateCall, false, completionScope);
         const { resultText: alternateResultText } =
           recordRuntimeToolActionSucceeded({
@@ -696,6 +720,8 @@ export async function runNodeRuntimeLoop(
             deps: actionDeps(),
             toolCall: alternateCall,
             output: alternateOutput,
+            fileChange: alternateExecution.fileChange,
+            artifactIds: alternateArtifact ? [alternateArtifact.id] : undefined,
             recoveredFrom: toolCall.tool,
             now,
           });

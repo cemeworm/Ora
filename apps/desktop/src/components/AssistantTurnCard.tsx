@@ -15,7 +15,7 @@ import {
   Reply,
   Send,
 } from "lucide-react";
-import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnProcessStep, TurnTodoItem } from "../types";
+import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnFileChangeAttachment, TurnProcessStep, TurnTodoItem } from "../types";
 import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
 import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
@@ -47,6 +47,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const contentIsLiveProgress = Boolean(turn?.liveProgressText && content.trim() === turn.liveProgressText.trim());
   const hasVisibleAgentMessages = visibleAgentMessages(agentMessages, turn?.status).length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
+  const fileChanges = turn?.fileChanges ?? [];
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
 
   useEffect(() => {
@@ -113,6 +114,10 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
                 <ArtifactCard key={artifact.id} artifact={artifact} onOpenArtifact={onOpenArtifact} />
               ))}
             </div>
+          ) : null}
+
+          {fileChanges.length > 0 ? (
+            <FileChangeDiffPanel fileChanges={fileChanges} />
           ) : null}
 
           {turn && turn.todos.length > 0 ? (
@@ -434,6 +439,166 @@ function ArtifactCard({ artifact, onOpenArtifact }: { artifact: TurnArtifactAtta
       </Artifact>
     </button>
   );
+}
+
+function FileChangeDiffPanel({ fileChanges }: { fileChanges: TurnFileChangeAttachment[] }) {
+  const [openPaths, setOpenPaths] = useState<Set<string>>(() => new Set(fileChanges.slice(0, 1).map((change) => change.path)));
+  const additions = fileChanges.reduce((total, change) => total + change.additions, 0);
+  const deletions = fileChanges.reduce((total, change) => total + change.deletions, 0);
+
+  function togglePath(path: string) {
+    setOpenPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }
+
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-card/70 text-sm shadow-xs">
+      <div className="flex h-10 items-center justify-between gap-3 bg-muted/35 px-3">
+        <div className="min-w-0 font-medium text-foreground">
+          <span>{fileChanges.length} 个文件已更改 </span>
+          <span className="font-semibold text-emerald-700">+{additions}</span>
+          <span className="mx-1 text-muted-foreground"> </span>
+          <span className="font-semibold text-rose-700">-{deletions}</span>
+        </div>
+      </div>
+      <div className="divide-y divide-border">
+        {fileChanges.map((change) => {
+          const open = openPaths.has(change.path);
+          return (
+            <div key={`${change.artifactId}:${change.path}`}>
+              <button
+                type="button"
+                onClick={() => togglePath(change.path)}
+                className="flex h-9 w-full items-center justify-between gap-3 bg-muted/55 px-3 text-left transition hover:bg-muted/75 active:scale-[0.998]"
+              >
+                <div className="min-w-0 truncate font-mono text-xs text-foreground">
+                  {change.path}
+                  <span className="ml-2 font-sans font-semibold text-emerald-700">+{change.additions}</span>
+                  <span className="ml-1 font-sans font-semibold text-rose-700">-{change.deletions}</span>
+                </div>
+                <ChevronDown size={14} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+              </button>
+              {open ? <DiffLines change={change} /> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DiffLines({ change }: { change: TurnFileChangeAttachment }) {
+  const lines = buildLineDiff(change.beforeContent, change.afterContent);
+  return (
+    <div className="max-h-[28rem] overflow-auto bg-background font-mono text-xs leading-5">
+      {lines.map((line, index) => (
+        <div
+          key={`${line.kind}:${line.beforeLine ?? ""}:${line.afterLine ?? ""}:${index}`}
+          className={cn(
+            "grid grid-cols-[3.25rem_1fr] border-l-2 pr-3",
+            line.kind === "add" && "border-emerald-500 bg-emerald-50/80 text-emerald-950",
+            line.kind === "delete" && "border-rose-400 bg-rose-50/80 text-rose-950",
+            line.kind === "context" && "border-transparent text-foreground",
+          )}
+        >
+          <span className="select-none px-3 text-right text-muted-foreground">
+            {line.kind === "add" ? line.afterLine : line.beforeLine}
+          </span>
+          <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+            <span className={cn("mr-2 select-none", line.kind === "add" && "text-emerald-700", line.kind === "delete" && "text-rose-700")}>
+              {line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " "}
+            </span>
+            {line.text || " "}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type DiffLine = {
+  kind: "context" | "add" | "delete";
+  text: string;
+  beforeLine?: number;
+  afterLine?: number;
+};
+
+function buildLineDiff(beforeContent: string, afterContent: string): DiffLine[] {
+  const beforeLines = splitDiffLines(beforeContent);
+  const afterLines = splitDiffLines(afterContent);
+  const table = lcsTable(beforeLines, afterLines);
+  const lines: DiffLine[] = [];
+  let beforeIndex = 0;
+  let afterIndex = 0;
+  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
+    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
+      lines.push({
+        kind: "context",
+        text: beforeLines[beforeIndex] ?? "",
+        beforeLine: beforeIndex + 1,
+        afterLine: afterIndex + 1,
+      });
+      beforeIndex += 1;
+      afterIndex += 1;
+    } else if ((table[beforeIndex + 1]?.[afterIndex] ?? 0) >= (table[beforeIndex]?.[afterIndex + 1] ?? 0)) {
+      lines.push({
+        kind: "delete",
+        text: beforeLines[beforeIndex] ?? "",
+        beforeLine: beforeIndex + 1,
+      });
+      beforeIndex += 1;
+    } else {
+      lines.push({
+        kind: "add",
+        text: afterLines[afterIndex] ?? "",
+        afterLine: afterIndex + 1,
+      });
+      afterIndex += 1;
+    }
+  }
+  while (beforeIndex < beforeLines.length) {
+    lines.push({
+      kind: "delete",
+      text: beforeLines[beforeIndex] ?? "",
+      beforeLine: beforeIndex + 1,
+    });
+    beforeIndex += 1;
+  }
+  while (afterIndex < afterLines.length) {
+    lines.push({
+      kind: "add",
+      text: afterLines[afterIndex] ?? "",
+      afterLine: afterIndex + 1,
+    });
+    afterIndex += 1;
+  }
+  return lines;
+}
+
+function splitDiffLines(content: string): string[] {
+  if (!content) {
+    return [];
+  }
+  return content.split(/\r?\n/);
+}
+
+function lcsTable(beforeLines: string[], afterLines: string[]): number[][] {
+  const table = Array.from({ length: beforeLines.length + 1 }, () => new Array(afterLines.length + 1).fill(0));
+  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
+    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
+      table[beforeIndex]![afterIndex] = beforeLines[beforeIndex] === afterLines[afterIndex]
+        ? (table[beforeIndex + 1]?.[afterIndex + 1] ?? 0) + 1
+        : Math.max(table[beforeIndex + 1]?.[afterIndex] ?? 0, table[beforeIndex]?.[afterIndex + 1] ?? 0);
+    }
+  }
+  return table;
 }
 
 function isContentArtifact(artifact: TurnArtifactAttachment): boolean {

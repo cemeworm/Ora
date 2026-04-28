@@ -43,6 +43,26 @@ export interface RuntimeToolCall {
   args: Record<string, unknown>;
 }
 
+export interface RuntimeFileChangeMetadata {
+  kind: "file_change";
+  path: string;
+  operation: "write" | "patch";
+  beforeContent: string;
+  afterContent: string;
+  additions: number;
+  deletions: number;
+  metadata: {
+    sizeBytes: number;
+    replacements?: number;
+    created: boolean;
+  };
+}
+
+export interface RuntimeToolExecutionResult {
+  output: unknown;
+  fileChange?: RuntimeFileChangeMetadata;
+}
+
 export interface RuntimeToolExecutorOptions {
   workspace?: unknown;
   toolDescriptors?: readonly ToolDescriptor[];
@@ -295,54 +315,58 @@ export class RuntimeToolExecutor {
   }
 
   async execute(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<unknown> {
+    return (await this.executeWithMetadata(call, options)).output;
+  }
+
+  async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<RuntimeToolExecutionResult> {
     switch (call.tool) {
       case "file.read":
-        return readWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args);
+        return { output: readWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args) };
       case "file.list":
-        return listWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args);
+        return { output: listWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args) };
       case "file.glob":
-        return globWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args);
+        return { output: globWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args) };
       case "file.grep":
-        return grepWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args);
+        return { output: grepWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args) };
       case "file.write":
         return writeWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args);
       case "file.patch":
         return patchWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args);
       case "shell.execute":
-        return executeWorkspaceShell(requireWorkspaceRoot(this.workspace), call.args, options.allowRisky === true);
+        return { output: executeWorkspaceShell(requireWorkspaceRoot(this.workspace), call.args, options.allowRisky === true) };
       case "web.fetch":
-        return fetchUrl(this.fetchImpl, call.args);
+        return { output: await fetchUrl(this.fetchImpl, call.args) };
       case "web.search":
-        return searchWithProvider(this.searchProvider, call.args);
+        return { output: await searchWithProvider(this.searchProvider, call.args) };
       case "skills.list":
-        return listRuntimeSkills(this.skillRegistry, call.args);
+        return { output: listRuntimeSkills(this.skillRegistry, call.args) };
       case "skills.get":
-        return getRuntimeSkill(this.skillRegistry, call.args);
+        return { output: getRuntimeSkill(this.skillRegistry, call.args) };
       case "skills.checkName":
-        return checkRuntimeSkillName(this.skillRegistry, call.args);
+        return { output: checkRuntimeSkillName(this.skillRegistry, call.args) };
       case "skills.create":
-        return createRuntimeSkill(this.skillRegistry, call.args);
+        return { output: createRuntimeSkill(this.skillRegistry, call.args) };
       case "skills.update":
-        return updateRuntimeSkill(this.skillRegistry, call.args);
+        return { output: updateRuntimeSkill(this.skillRegistry, call.args) };
       case "skills.setEnabled":
-        return setRuntimeSkillEnabled(this.skillRegistry, call.args);
+        return { output: setRuntimeSkillEnabled(this.skillRegistry, call.args) };
       case "mcp.listTools":
-        return listMcpTools(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
+        return { output: await listMcpTools(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl) };
       case "mcp.readResource":
-        return readMcpResource(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
+        return { output: await readMcpResource(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl) };
       case "mcp.call":
-        return callMcpTool(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl);
+        return { output: await callMcpTool(this.workspace, call.args, this.mcpConfigPaths, this.fetchImpl) };
       case "package.list":
-        return packageManager(this.packageManager).snapshot();
+        return { output: packageManager(this.packageManager).snapshot() };
       case "package.buildCandidate":
-        return packageManager(this.packageManager).buildCandidate(call.args);
+        return { output: await packageManager(this.packageManager).buildCandidate(call.args) };
       case "package.verify":
-        return packageManager(this.packageManager).verify(call.args);
+        return { output: await packageManager(this.packageManager).verify(call.args) };
       case "package.promote":
       case "package.switch":
-        return packageManager(this.packageManager).promote(call.args);
+        return { output: await packageManager(this.packageManager).promote(call.args) };
       case "package.rollback":
-        return packageManager(this.packageManager).rollback();
+        return { output: await packageManager(this.packageManager).rollback() };
       default: {
         const neverTool: never = call.tool;
         throw new Error(`Unsupported runtime tool: ${neverTool}`);
@@ -802,11 +826,24 @@ function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
     throw new Error(`file.write content is too large (${sizeBytes} bytes).`);
   }
   const absolutePath = resolveWorkspacePath(rootPath, args.path);
+  const existed = fs.existsSync(absolutePath);
+  const beforeContent = existed ? fs.readFileSync(absolutePath, "utf8") : "";
   fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
   fs.writeFileSync(absolutePath, args.content, "utf8");
-  return {
+  const output = {
     path: relativeWorkspacePath(rootPath, absolutePath),
     sizeBytes,
+  };
+  return {
+    output,
+    fileChange: buildFileChangeMetadata({
+      path: output.path,
+      operation: "write",
+      beforeContent,
+      afterContent: args.content,
+      sizeBytes,
+      created: !existed,
+    }),
   };
 }
 
@@ -831,11 +868,84 @@ function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
   }
   const next = current.replace(args.search, args.replace);
   fs.writeFileSync(absolutePath, next, "utf8");
-  return {
+  const output = {
     path: relativeWorkspacePath(rootPath, absolutePath),
     replacements: 1,
     sizeBytes: Buffer.byteLength(next),
   };
+  return {
+    output,
+    fileChange: buildFileChangeMetadata({
+      path: output.path,
+      operation: "patch",
+      beforeContent: current,
+      afterContent: next,
+      sizeBytes: output.sizeBytes,
+      replacements: output.replacements,
+      created: false,
+    }),
+  };
+}
+
+function buildFileChangeMetadata(params: {
+  path: string;
+  operation: RuntimeFileChangeMetadata["operation"];
+  beforeContent: string;
+  afterContent: string;
+  sizeBytes: number;
+  replacements?: number;
+  created: boolean;
+}): RuntimeFileChangeMetadata {
+  const { additions, deletions } = countLineChanges(params.beforeContent, params.afterContent);
+  return {
+    kind: "file_change",
+    path: params.path,
+    operation: params.operation,
+    beforeContent: params.beforeContent,
+    afterContent: params.afterContent,
+    additions,
+    deletions,
+    metadata: {
+      sizeBytes: params.sizeBytes,
+      replacements: params.replacements,
+      created: params.created,
+    },
+  };
+}
+
+function countLineChanges(beforeContent: string, afterContent: string): { additions: number; deletions: number } {
+  const beforeLines = splitComparableLines(beforeContent);
+  const afterLines = splitComparableLines(afterContent);
+  const common = longestCommonSubsequenceLength(beforeLines, afterLines);
+  return {
+    additions: afterLines.length - common,
+    deletions: beforeLines.length - common,
+  };
+}
+
+function splitComparableLines(content: string): string[] {
+  if (!content) {
+    return [];
+  }
+  return content.split(/\r?\n/);
+}
+
+function longestCommonSubsequenceLength(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const previous = new Array(right.length + 1).fill(0);
+  const current = new Array(right.length + 1).fill(0);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      current[rightIndex + 1] = left[leftIndex] === right[rightIndex]
+        ? previous[rightIndex] + 1
+        : Math.max(previous[rightIndex + 1], current[rightIndex]);
+    }
+    previous.splice(0, previous.length, ...current);
+    current.fill(0);
+  }
+  return previous[right.length] ?? 0;
 }
 
 function walkFiles(rootPath: string, startPath: string, maxFiles: number): string[] {

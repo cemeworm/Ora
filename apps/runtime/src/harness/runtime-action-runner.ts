@@ -7,7 +7,7 @@ import type {
 } from "@ora/shared";
 import type { ActionLedger, PolicyService } from "../capabilities.js";
 import { ApprovalInterruptError } from "./runtime-interrupts.js";
-import type { RuntimeToolCall } from "./runtime-tool-executor.js";
+import type { RuntimeFileChangeMetadata, RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
 
 type RuntimeActionEmit = (
@@ -171,6 +171,8 @@ export function recordRuntimeToolActionSucceeded(params: {
     source?: OraToolCallEnvelope["source"];
   };
   output: unknown;
+  fileChange?: RuntimeFileChangeMetadata;
+  artifactIds?: string[];
   cacheHit?: boolean;
   recoveredFrom?: string;
   toolCallRecord?: OraToolCallEnvelope;
@@ -179,7 +181,10 @@ export function recordRuntimeToolActionSucceeded(params: {
   const record = params.deps.actionLedger.transition(
     params.action.id,
     "succeeded",
-    { output: params.output },
+    {
+      output: params.output,
+      artifactIds: params.artifactIds,
+    },
   );
   const resultText = JSON.stringify(params.output, null, 2);
   if (params.toolCallRecord) {
@@ -208,6 +213,7 @@ export function recordRuntimeToolActionSucceeded(params: {
       status: "succeeded",
       input: params.toolCall.args,
       output: params.output,
+      ...(params.fileChange ? { fileChange: params.fileChange } : {}),
       ...(params.cacheHit !== undefined ? { cacheHit: params.cacheHit } : {}),
       ...(params.recoveredFrom ? { recoveredFrom: params.recoveredFrom } : {}),
     },

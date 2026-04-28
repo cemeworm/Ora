@@ -53,6 +53,17 @@ function ArtifactKindIcon({ artifact }: { artifact?: ArtifactRecord }) {
 }
 
 function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
+  const fileChange = fileChangePayload(artifact.payload);
+  if (fileChange) {
+    return (
+      <section className="flex min-h-0 flex-1 p-3">
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">
+          {fileChange.afterContent}
+        </pre>
+      </section>
+    );
+  }
+
   if (artifact.mimeType.startsWith("image/") && artifact.uri) {
     return (
       <section className="flex min-h-0 flex-1 overflow-hidden">
@@ -109,6 +120,19 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
       {artifact.uri ? <p data-i18n-skip="" className="mt-2 break-all text-xs">{artifact.uri}</p> : null}
     </section>
   );
+}
+
+function fileChangePayload(value: unknown): { afterContent: string } | undefined {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { kind?: unknown }).kind === "file_change" &&
+    typeof (value as { afterContent?: unknown }).afterContent === "string"
+  ) {
+    return { afterContent: (value as { afterContent: string }).afterContent };
+  }
+  return undefined;
 }
 
 function isJsonArtifact(artifact?: ArtifactRecord) {

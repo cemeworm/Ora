@@ -17,6 +17,7 @@ import type {
   SessionTurnItem,
   StreamLine,
   TurnArtifactAttachment,
+  TurnFileChangeAttachment,
   TurnAgentConversationMessage,
   TurnProcessStep,
   TurnTodoItem,
@@ -1366,6 +1367,7 @@ function buildAssistantTurnAttachment(
     processSteps: deriveProcessSteps(snapshot),
     agentMessages: deriveAgentMessages(snapshot),
     artifacts: snapshot.artifacts.map(adaptTurnArtifact),
+    fileChanges: snapshot.artifacts.flatMap(adaptTurnFileChange),
     todos: deriveTurnTodos(snapshot),
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
@@ -2060,6 +2062,52 @@ function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
     payload: artifact.payload,
     previewable: artifact.mimeType.startsWith("image/"),
   };
+}
+
+function adaptTurnFileChange(artifact: OraArtifactRef): TurnFileChangeAttachment[] {
+  if (!isFileChangePayload(artifact.payload)) {
+    return [];
+  }
+  return [{
+    artifactId: artifact.id,
+    path: artifact.payload.path,
+    operation: artifact.payload.operation,
+    beforeContent: artifact.payload.beforeContent,
+    afterContent: artifact.payload.afterContent,
+    additions: artifact.payload.additions,
+    deletions: artifact.payload.deletions,
+    sizeBytes: artifact.payload.metadata.sizeBytes,
+    replacements: artifact.payload.metadata.replacements,
+    created: artifact.payload.metadata.created,
+  }];
+}
+
+function isFileChangePayload(value: unknown): value is {
+  kind: "file_change";
+  path: string;
+  operation: "write" | "patch";
+  beforeContent: string;
+  afterContent: string;
+  additions: number;
+  deletions: number;
+  metadata: {
+    sizeBytes?: number;
+    replacements?: number;
+    created: boolean;
+  };
+} {
+  return (
+    isRecord(value) &&
+    value.kind === "file_change" &&
+    typeof value.path === "string" &&
+    (value.operation === "write" || value.operation === "patch") &&
+    typeof value.beforeContent === "string" &&
+    typeof value.afterContent === "string" &&
+    typeof value.additions === "number" &&
+    typeof value.deletions === "number" &&
+    isRecord(value.metadata) &&
+    typeof value.metadata.created === "boolean"
+  );
 }
 
 function deriveTurnTodos(snapshot: OraStateSnapshot): TurnTodoItem[] {

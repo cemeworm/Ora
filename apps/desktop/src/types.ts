@@ -208,6 +208,19 @@ export interface TurnArtifactAttachment {
   previewable: boolean;
 }
 
+export interface TurnFileChangeAttachment {
+  artifactId: string;
+  path: string;
+  operation: "write" | "patch";
+  beforeContent: string;
+  afterContent: string;
+  additions: number;
+  deletions: number;
+  sizeBytes?: number;
+  replacements?: number;
+  created: boolean;
+}
+
 export interface TurnAgentConversationMessage {
   id: string;
   fromAgentId: string;
@@ -236,6 +249,7 @@ export interface AssistantTurnAttachment {
   processSteps: TurnProcessStep[];
   agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];
+  fileChanges?: TurnFileChangeAttachment[];
   todos: TurnTodoItem[];
   approvalCount: number;
   clarificationCount: number;

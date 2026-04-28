@@ -99,6 +99,102 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("Cancelled by caller.");
   });
 
+  it("derives file-change artifacts and diff metadata for assistant turns", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-file-change",
+      sessionId: "session-file-change",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "更新文档", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-file-change-test",
+        skillIds: [],
+        toolIds: ["file.patch"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [{
+        id: "run-file-change:file-change:0",
+        runId: "run-file-change",
+        kind: "file",
+        label: "notes/project.md",
+        mimeType: "text/markdown",
+        createdAt,
+        payload: {
+          kind: "file_change",
+          path: "notes/project.md",
+          operation: "patch",
+          beforeContent: "alpha\nold\nomega\n",
+          afterContent: "alpha\nnew\nomega\n",
+          additions: 1,
+          deletions: 1,
+          metadata: { sizeBytes: 16, replacements: 1, created: false },
+        },
+      }],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "文档已更新。" },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-file-change:user",
+        sessionId: "session-file-change",
+        runId: "run-file-change",
+        turnIndex: 1,
+        role: "user",
+        content: "更新文档",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-file-change": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.artifacts[0]).toMatchObject({
+      id: "run-file-change:file-change:0",
+      label: "notes/project.md",
+      kind: "file",
+    });
+    expect(assistant?.turn?.fileChanges).toEqual([
+      expect.objectContaining({
+        artifactId: "run-file-change:file-change:0",
+        path: "notes/project.md",
+        operation: "patch",
+        additions: 1,
+        deletions: 1,
+        beforeContent: "alpha\nold\nomega\n",
+        afterContent: "alpha\nnew\nomega\n",
+      }),
+    ]);
+  });
+
   it("carries natural approval copy into action records", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {

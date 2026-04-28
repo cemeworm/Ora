@@ -1,6 +1,7 @@
 import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@ora/shared";
 import type { ActionRecord } from "@ora/shared";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
+import { fileChangeArtifact } from "./harness/file-change-artifact.js";
 import { RuntimeToolExecutor } from "./harness/runtime-tool-executor.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 
@@ -132,14 +133,35 @@ export async function completeApprovedFileWriteResume(
       const args = action.input && typeof action.input === "object" && !Array.isArray(action.input)
         ? action.input as Record<string, unknown>
         : {};
-      const output = await executor.execute({ tool: "file.write", args }, { allowRisky: true });
+      const execution = await executor.executeWithMetadata({ tool: "file.write", args }, { allowRisky: true });
+      const output = execution.output;
+      const artifact = execution.fileChange
+        ? fileChangeArtifact({
+            runId: working.runId,
+            artifactIndex: working.artifacts.length,
+            fileChange: execution.fileChange,
+            createdAt: deps.now(),
+          })
+        : undefined;
+      if (artifact) {
+        working = StateSnapshotSchema.parse({
+          ...working,
+          artifacts: [...working.artifacts, artifact],
+        });
+        append("artifact.exported", { artifact, actionId: action.id });
+      }
       writeResults.push({
         path: (output as Record<string, unknown>)?.path ?? args.path,
         sizeBytes: (output as Record<string, unknown>)?.sizeBytes,
         content: args.content,
       });
       const resultText = JSON.stringify(output, null, 2);
-      const succeeded = { ...running, status: "succeeded" as const, output };
+      const succeeded = {
+        ...running,
+        status: "succeeded" as const,
+        output,
+        artifactIds: artifact ? [artifact.id] : running.artifactIds,
+      };
       replaceAction(succeeded);
       replaceToolCall(action.id, "succeeded", { output, content: resultText });
       append("tool.called", {
@@ -150,6 +172,7 @@ export async function completeApprovedFileWriteResume(
         status: "succeeded",
         input: args,
         output,
+        ...(execution.fileChange ? { fileChange: execution.fileChange } : {}),
         cacheHit: false,
       });
       append("action.updated", { actionId: action.id, status: "succeeded", record: succeeded });

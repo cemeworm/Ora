@@ -129,10 +129,30 @@ describe("RuntimeToolExecutor", () => {
     expect(executor.riskLevel(writeCall)).toBe("high");
     expect(executor.riskLevel(patchCall)).toBe("high");
 
-    await executor.execute(writeCall, { allowRisky: true });
-    await executor.execute(patchCall, { allowRisky: true });
+    const write = await executor.executeWithMetadata(writeCall, { allowRisky: true });
+    const patch = await executor.executeWithMetadata(patchCall, { allowRisky: true });
 
     expect(fs.readFileSync(path.join(rootPath, "notes", "result.md"), "utf8")).toBe("after\n");
+    expect(write.fileChange).toMatchObject({
+      kind: "file_change",
+      path: "notes/result.md",
+      operation: "write",
+      beforeContent: "",
+      afterContent: "before\n",
+      additions: 2,
+      deletions: 0,
+      metadata: { created: true, sizeBytes: 7 },
+    });
+    expect(patch.fileChange).toMatchObject({
+      kind: "file_change",
+      path: "notes/result.md",
+      operation: "patch",
+      beforeContent: "before\n",
+      afterContent: "after\n",
+      additions: 1,
+      deletions: 1,
+      metadata: { created: false, replacements: 1, sizeBytes: 6 },
+    });
   });
 
   it("routes package tools through the package manager", async () => {
