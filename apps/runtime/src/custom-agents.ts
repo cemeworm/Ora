@@ -39,6 +39,17 @@ interface PersistedCustomAgentConfig {
   updated_at: number;
 }
 
+interface PersistedSystemAgentConfig {
+  agent_id: string;
+  label?: string;
+  role?: string;
+  model_ref?: string;
+  tool_ids?: string[];
+  skill_ids?: string[];
+  created_at: number;
+  updated_at: number;
+}
+
 export class CustomAgentFileStore {
   constructor(
     private readonly rootDir: string,
@@ -223,14 +234,18 @@ export class SystemAgentOverrideFileStore {
   list(): SystemAgentOverride[] {
     fs.mkdirSync(this.rootDir, { recursive: true });
     const overrides = new Map<string, SystemAgentOverride>();
-    for (const entry of fs.readdirSync(this.rootDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    ) {
+    for (const entry of fs.readdirSync(this.rootDir, { withFileTypes: true })) {
       try {
-        const value = JSON.parse(fs.readFileSync(path.join(this.rootDir, entry.name), "utf8"));
-        const parsed = SystemAgentOverrideSchema.parse(value);
+        const parsed = entry.isDirectory()
+          ? this.readDirectoryOverride(entry.name)
+          : entry.isFile() && entry.name.endsWith(".json")
+            ? this.readLegacyJsonOverride(entry.name)
+            : undefined;
+        if (!parsed) {
+          continue;
+        }
         const agentId = canonicalSystemAgentId(parsed.agentId);
-        if (!overrides.has(agentId) || entry.name === `${agentId}.json`) {
+        if (!overrides.has(agentId) || entry.name === agentId || entry.name === `${agentId}.json`) {
           overrides.set(agentId, { ...parsed, agentId });
         }
       } catch {
@@ -244,12 +259,16 @@ export class SystemAgentOverrideFileStore {
     const parsedAgentId = canonicalSystemAgentId(SystemAgentIdSchema.parse(agentId));
     const candidates = [parsedAgentId, ...legacySystemAgentIdsFor(parsedAgentId)];
     for (const candidate of candidates) {
-      const overridePath = this.overridePath(candidate);
-      if (!fs.existsSync(overridePath)) {
-        continue;
+      const directoryOverride = this.readDirectoryOverrideIfExists(candidate);
+      if (directoryOverride) {
+        return { ...directoryOverride, agentId: parsedAgentId };
       }
-      const parsed = SystemAgentOverrideSchema.parse(JSON.parse(fs.readFileSync(overridePath, "utf8")));
-      return { ...parsed, agentId: parsedAgentId };
+    }
+    for (const candidate of candidates) {
+      const legacyOverride = this.readLegacyJsonOverrideIfExists(candidate);
+      if (legacyOverride) {
+        return { ...legacyOverride, agentId: parsedAgentId };
+      }
     }
     return undefined;
   }
@@ -277,9 +296,11 @@ export class SystemAgentOverrideFileStore {
   reset(params: SystemAgentOverrideResetParams | unknown): { reset: true; agentId: string } {
     const parsed = SystemAgentOverrideResetParamsSchema.parse(params);
     const agentId = canonicalSystemAgentId(parsed.agentId);
-    fs.rmSync(this.overridePath(agentId), { force: true });
+    fs.rmSync(this.overrideDir(agentId), { recursive: true, force: true });
+    fs.rmSync(this.legacyOverridePath(agentId), { force: true });
     for (const legacyId of legacySystemAgentIdsFor(agentId)) {
-      fs.rmSync(this.overridePath(legacyId), { force: true });
+      fs.rmSync(this.overrideDir(legacyId), { recursive: true, force: true });
+      fs.rmSync(this.legacyOverridePath(legacyId), { force: true });
     }
     return { reset: true, agentId };
   }
@@ -322,11 +343,71 @@ export class SystemAgentOverrideFileStore {
   }
 
   private writeOverride(override: SystemAgentOverride): void {
-    fs.mkdirSync(this.rootDir, { recursive: true });
-    fs.writeFileSync(this.overridePath(override.agentId), `${JSON.stringify(override, null, 2)}\n`, "utf8");
+    const overrideDir = this.overrideDir(override.agentId);
+    fs.mkdirSync(overrideDir, { recursive: true });
+
+    const config: PersistedSystemAgentConfig = {
+      agent_id: override.agentId,
+      label: override.label,
+      role: override.role,
+      model_ref: override.modelRef,
+      tool_ids: override.toolIds,
+      skill_ids: override.skillIds,
+      created_at: override.createdAt,
+      updated_at: override.updatedAt,
+    };
+
+    fs.writeFileSync(path.join(overrideDir, "config.yaml"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    fs.writeFileSync(path.join(overrideDir, "SOUL.md"), override.soul, "utf8");
   }
 
-  private overridePath(agentId: string): string {
+  private readDirectoryOverrideIfExists(agentId: string): SystemAgentOverride | undefined {
+    const overrideDir = this.overrideDir(agentId);
+    if (!fs.existsSync(path.join(overrideDir, "config.yaml"))) {
+      return undefined;
+    }
+    return this.readDirectoryOverride(agentId);
+  }
+
+  private readDirectoryOverride(agentId: string): SystemAgentOverride {
+    const overrideDir = this.overrideDir(agentId);
+    const rawConfig = fs.readFileSync(path.join(overrideDir, "config.yaml"), "utf8").trim();
+    const decoded = rawConfig ? JSON.parse(rawConfig) as PersistedSystemAgentConfig : undefined;
+    if (!decoded) {
+      throw new Error(`System agent override '${agentId}' has an empty config.yaml.`);
+    }
+    const soulPath = path.join(overrideDir, "SOUL.md");
+    return SystemAgentOverrideSchema.parse({
+      agentId: decoded.agent_id,
+      label: decoded.label,
+      role: decoded.role,
+      modelRef: decoded.model_ref,
+      toolIds: decoded.tool_ids,
+      skillIds: decoded.skill_ids,
+      soul: fs.existsSync(soulPath) ? fs.readFileSync(soulPath, "utf8") : "",
+      createdAt: decoded.created_at,
+      updatedAt: decoded.updated_at,
+    });
+  }
+
+  private readLegacyJsonOverrideIfExists(agentId: string): SystemAgentOverride | undefined {
+    const overridePath = this.legacyOverridePath(agentId);
+    if (!fs.existsSync(overridePath)) {
+      return undefined;
+    }
+    return this.readLegacyJsonOverride(`${SystemAgentIdSchema.parse(agentId)}.json`);
+  }
+
+  private readLegacyJsonOverride(fileName: string): SystemAgentOverride {
+    const value = JSON.parse(fs.readFileSync(path.join(this.rootDir, fileName), "utf8"));
+    return SystemAgentOverrideSchema.parse(value);
+  }
+
+  private overrideDir(agentId: string): string {
+    return path.join(this.rootDir, SystemAgentIdSchema.parse(agentId));
+  }
+
+  private legacyOverridePath(agentId: string): string {
     return path.join(this.rootDir, `${SystemAgentIdSchema.parse(agentId)}.json`);
   }
 }

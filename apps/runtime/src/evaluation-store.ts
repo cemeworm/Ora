@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   EvaluationAttempt,
   EvaluationAttemptSchema,
+  EvaluationAssertion,
   EvaluationBaseline,
   EvaluationBaselineListParamsSchema,
   EvaluationBaselineSchema,
@@ -35,6 +36,12 @@ import {
   EvaluationFeedbackSubmitParamsSchema,
   EvaluationFeedbackUpdateParamsSchema,
   EvaluationImportParamsSchema,
+  EvaluationMetricId,
+  EvaluationMetricScore,
+  EvaluationMetricScoreSchema,
+  EvaluationObjective,
+  EvaluationObjectiveSchema,
+  EvaluationObservation,
   EvaluationProfileKind,
   EvaluationPromoteBaselineParamsSchema,
   EvaluationRun,
@@ -53,6 +60,7 @@ import {
   EvaluationSliceSummary,
   EvaluationSpec,
   EvaluationSpecSchema,
+  EvaluationStructuredExpectedSchema,
   EvaluationStreamEvent,
   EvaluationStreamEventSchema,
   RunConfig,
@@ -265,6 +273,7 @@ export class LocalEvaluationStore {
             },
           });
           const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? attemptStartedAt));
+          const assessment = scoreEvaluationAttempt(spec, evaluationCase, snapshot, runtimeMs);
           const attempt = EvaluationAttemptSchema.parse({
             id: `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`,
             evaluationRunId,
@@ -273,9 +282,11 @@ export class LocalEvaluationStore {
             repetition,
             status: snapshot.status === "failed" ? "failed" : "succeeded",
             underlyingRunId: snapshot.runId,
-            output: snapshot.output,
+            output: assessment.output ?? snapshot.output,
             error: snapshot.error,
-            score: scoreSnapshot(spec.profileId, evaluationCase, snapshot),
+            score: assessment.score,
+            metricScores: assessment.metricScores,
+            observations: assessment.observations,
             runtimeMs,
             costUsd: estimateCostUsd(snapshot),
             startedAt: attemptStartedAt,
@@ -378,7 +389,7 @@ export class LocalEvaluationStore {
     }
 
     const rows = [
-      "case_id,config_id,overall_score,outcome_score,process_score,efficiency_score,safety_score,failure_tags,trace_run_ids",
+      "case_id,config_id,overall_score,outcome_score,process_score,efficiency_score,safety_score,failure_tags,trace_run_ids,metric_scores_json,observations_json",
       ...run.run.caseResults.map((result) => [
         csvCell(result.caseId),
         csvCell(result.configId),
@@ -389,6 +400,8 @@ export class LocalEvaluationStore {
         result.averageScore.safetyScore.toFixed(4),
         csvCell(result.averageScore.failureTags.join("|")),
         csvCell(result.traceRunIds.join("|")),
+        csvCell(JSON.stringify(result.metricScores)),
+        csvCell(JSON.stringify(result.observations)),
       ].join(",")),
     ];
     return EvaluationExportResultSchema.parse({
@@ -843,6 +856,9 @@ function normalizeExpected(raw: unknown): EvaluationExpected | undefined {
     if (typeof record.text === "string") {
       return { text: record.text, structured: record.structured };
     }
+    if (record.structured !== undefined) {
+      return { structured: record.structured };
+    }
     return { structured: raw };
   }
   return { text: String(raw) };
@@ -908,7 +924,9 @@ function buildCaseResults(
         configId: config.id,
         attemptIds: matchingAttempts.map((attempt) => attempt.id),
         averageScore,
+        metricScores: averageMetricScoresFromAttempts(matchingAttempts),
         latestOutput: matchingAttempts.at(-1)?.output,
+        observations: matchingAttempts.at(-1)?.observations ?? {},
         expected: evaluationCase.expected,
         metadata: evaluationCase.metadata,
         traceRunIds: matchingAttempts.flatMap((attempt) => attempt.underlyingRunId ? [attempt.underlyingRunId] : []),
@@ -1020,6 +1038,382 @@ function averageScoreFromAttempts(attempts: EvaluationAttempt[]): EvaluationScor
   });
 }
 
+function averageMetricScoresFromAttempts(attempts: EvaluationAttempt[]): EvaluationMetricScore[] {
+  const byMetric = new Map<EvaluationMetricId, EvaluationMetricScore[]>();
+  for (const attempt of attempts) {
+    for (const metric of attempt.metricScores) {
+      const existing = byMetric.get(metric.metricId) ?? [];
+      existing.push(metric);
+      byMetric.set(metric.metricId, existing);
+    }
+  }
+  return [...byMetric.entries()].map(([metricId, metrics]) => EvaluationMetricScoreSchema.parse({
+    metricId,
+    score: roundScore(average(metrics.map((metric) => metric.score))),
+    passed: average(metrics.map((metric) => metric.passed ? 1 : 0)) >= 0.75,
+    rationale: metrics.at(-1)?.rationale ?? "No metric attempts recorded.",
+    failureTags: [...new Set(metrics.flatMap((metric) => metric.failureTags))],
+    details: {
+      attemptCount: metrics.length,
+      passRate: roundScore(average(metrics.map((metric) => metric.passed ? 1 : 0))),
+    },
+  }));
+}
+
+function scoreEvaluationAttempt(
+  spec: EvaluationSpec,
+  evaluationCase: EvaluationCase,
+  snapshot: StateSnapshot,
+  runtimeMs: number
+): {
+  score: EvaluationScore;
+  metricScores: EvaluationMetricScore[];
+  observations: EvaluationObservation;
+  output?: unknown;
+} {
+  const observations = extractEvaluationObservations(snapshot, runtimeMs);
+  const objective = spec.objective ?? objectiveForProfile(spec.profileId, evaluationCase);
+  if (!spec.objective) {
+    return {
+      score: scoreSnapshot(spec.profileId, evaluationCase, snapshot),
+      metricScores: [],
+      observations,
+    };
+  }
+
+  const metricScores = scoreObjectiveMetrics(objective, evaluationCase, observations);
+  const score = aggregateMetricScores(metricScores, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error));
+  return {
+    score,
+    metricScores,
+    observations,
+    output: outputForObjective(objective, observations, evaluationCase),
+  };
+}
+
+function objectiveForProfile(profileId: EvaluationProfileKind, evaluationCase: EvaluationCase): EvaluationObjective {
+  const hasExpectedText = Boolean(evaluationCase.expected?.text);
+  return EvaluationObjectiveSchema.parse({
+    kind: "outcome",
+    target: "run.output",
+    metrics: hasExpectedText ? ["text_similarity"] : ["trace_coverage", "latency_score"],
+    metadata: { profileId },
+  });
+}
+
+function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: number): EvaluationObservation {
+  const autoModeRouter = snapshot.config.metadata.autoModeRouter && typeof snapshot.config.metadata.autoModeRouter === "object"
+    ? snapshot.config.metadata.autoModeRouter as Record<string, unknown>
+    : {};
+  return {
+    run: {
+      status: snapshot.status,
+      outputText: extractOutputText(snapshot),
+      runtimeMs,
+      costUsd: estimateCostUsd(snapshot),
+    },
+    runtime: {
+      modeId: snapshot.modeId,
+      pattern: snapshot.pattern,
+      autoModeRouter: {
+        selectedModeId: stringValue(autoModeRouter.selectedModeId),
+        status: stringValue(autoModeRouter.status),
+        confidence: numberValue(autoModeRouter.confidence),
+        reason: stringValue(autoModeRouter.reason),
+      },
+    },
+    trace: {
+      eventTypes: snapshot.events.map((event) => event.type),
+      eventCount: snapshot.events.length,
+      toolCallIds: snapshot.toolCalls.map((call) => call.toolId),
+      toolCallCount: snapshot.toolCalls.length,
+    },
+  };
+}
+
+function scoreObjectiveMetrics(
+  objective: EvaluationObjective,
+  evaluationCase: EvaluationCase,
+  observations: EvaluationObservation
+): EvaluationMetricScore[] {
+  const metrics = objective.metrics.length > 0
+    ? objective.metrics
+    : defaultMetricsForObjective(objective);
+  return metrics.map((metricId) => scoreMetric(metricId, objective, evaluationCase, observations));
+}
+
+function defaultMetricsForObjective(objective: EvaluationObjective): EvaluationMetricId[] {
+  if (objective.target === "runtime.mode_selection") {
+    return ["acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"];
+  }
+  switch (objective.kind) {
+    case "classification":
+      return ["exact_match", "assertion_pass_rate"];
+    case "assertions":
+      return ["assertion_pass_rate"];
+    case "latency":
+      return ["latency_score"];
+    case "cost":
+      return ["cost_score"];
+    case "regression":
+      return ["assertion_pass_rate"];
+    case "outcome":
+    default:
+      return ["text_similarity"];
+  }
+}
+
+function scoreMetric(
+  metricId: EvaluationMetricId,
+  objective: EvaluationObjective,
+  evaluationCase: EvaluationCase,
+  observations: EvaluationObservation
+): EvaluationMetricScore {
+  switch (metricId) {
+    case "text_similarity":
+      return textSimilarityMetric(evaluationCase, observations);
+    case "exact_match":
+      return exactMatchMetric(evaluationCase, observations);
+    case "acceptable_match":
+      return acceptableMatchMetric(evaluationCase, observations);
+    case "assertion_pass_rate":
+      return assertionPassRateMetric(objective, evaluationCase, observations);
+    case "fallback_rate":
+      return fallbackRateMetric(observations);
+    case "confidence_calibration":
+      return confidenceCalibrationMetric(evaluationCase, observations);
+    case "latency_score":
+      return latencyMetric(observations);
+    case "cost_score":
+      return costMetric(observations);
+    case "trace_coverage":
+      return traceCoverageMetric(observations);
+  }
+}
+
+function textSimilarityMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
+  const expectedText = evaluationCase.expected?.text?.toLowerCase();
+  const outputText = String(getObservationPath(observations, "run.outputText") ?? "").toLowerCase();
+  const score = expectedText ? textSimilarity(expectedText, outputText) : outputText.length > 0 ? 0.72 : 0.25;
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "text_similarity",
+    score,
+    passed: score >= 0.75,
+    rationale: expectedText ? "Compared output text against expected text." : "No expected text was provided; scored by output presence.",
+    failureTags: score >= 0.75 ? [] : ["incorrect_output"],
+  });
+}
+
+function exactMatchMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
+  const preferred = structuredExpected(evaluationCase)?.preferred;
+  if (!preferred) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "exact_match",
+      score: 0.5,
+      passed: false,
+      rationale: "No preferred value was provided for exact match.",
+      failureTags: ["missing_oracle"],
+    });
+  }
+  const actual = getObservationPath(observations, preferred.path);
+  const passed = valuesEqual(actual, preferred.value);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "exact_match",
+    score: passed ? 1 : 0,
+    passed,
+    rationale: passed ? "Observed value matched preferred oracle." : "Observed value did not match preferred oracle.",
+    failureTags: passed ? [] : ["wrong_value"],
+    details: { path: preferred.path, expected: preferred.value, actual },
+  });
+}
+
+function acceptableMatchMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
+  const structured = structuredExpected(evaluationCase);
+  const preferred = structured?.preferred;
+  const oneOf = structured?.assertions.find((assertion) => assertion.type === "one_of" && Array.isArray(assertion.values));
+  const path = oneOf?.path ?? preferred?.path;
+  const acceptableValues = oneOf?.values ?? (preferred ? [preferred.value] : []);
+  if (!path || acceptableValues.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "acceptable_match",
+      score: 0.5,
+      passed: false,
+      rationale: "No acceptable oracle values were provided.",
+      failureTags: ["missing_oracle"],
+    });
+  }
+  const actual = getObservationPath(observations, path);
+  const passed = acceptableValues.some((value) => valuesEqual(actual, value));
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "acceptable_match",
+    score: passed ? 1 : 0,
+    passed,
+    rationale: passed ? "Observed value was in the acceptable set." : "Observed value was outside the acceptable set.",
+    failureTags: passed ? [] : [oneOf?.failureTag ?? "wrong_value"],
+    details: { path, acceptableValues, actual },
+  });
+}
+
+function assertionPassRateMetric(
+  objective: EvaluationObjective,
+  evaluationCase: EvaluationCase,
+  observations: EvaluationObservation
+): EvaluationMetricScore {
+  const assertions = [
+    ...objective.assertions,
+    ...(structuredExpected(evaluationCase)?.assertions ?? []),
+  ];
+  if (assertions.length === 0) {
+    return EvaluationMetricScoreSchema.parse({
+      metricId: "assertion_pass_rate",
+      score: 1,
+      passed: true,
+      rationale: "No structured assertions were provided.",
+    });
+  }
+  const results = assertions.map((assertion) => {
+    const actual = getObservationPath(observations, assertion.path);
+    return {
+      assertion,
+      actual,
+      passed: evaluateAssertion(assertion, actual),
+    };
+  });
+  const totalWeight = results.reduce((sum, result) => sum + result.assertion.weight, 0);
+  const passedWeight = results.reduce((sum, result) => sum + (result.passed ? result.assertion.weight : 0), 0);
+  const score = totalWeight > 0 ? roundScore(passedWeight / totalWeight) : 1;
+  const failureTags = results
+    .filter((result) => !result.passed)
+    .map((result) => result.assertion.failureTag ?? failureTagForAssertion(result.assertion));
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "assertion_pass_rate",
+    score,
+    passed: score >= 0.75,
+    rationale: `${results.filter((result) => result.passed).length}/${results.length} assertions passed.`,
+    failureTags: [...new Set(failureTags)],
+    details: {
+      assertionCount: results.length,
+      failed: results.filter((result) => !result.passed).map((result) => ({
+        path: result.assertion.path,
+        type: result.assertion.type,
+        actual: result.actual,
+      })),
+    },
+  });
+}
+
+function fallbackRateMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const status = getObservationPath(observations, "runtime.autoModeRouter.status");
+  const passed = status !== "fallback";
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "fallback_rate",
+    score: passed ? 1 : 0,
+    passed,
+    rationale: passed ? "Router selected a mode without fallback." : "Router fell back instead of selecting a mode.",
+    failureTags: passed ? [] : ["fallback_route"],
+    details: { status },
+  });
+}
+
+function confidenceCalibrationMetric(evaluationCase: EvaluationCase, observations: EvaluationObservation): EvaluationMetricScore {
+  const confidence = numberValue(getObservationPath(observations, "runtime.autoModeRouter.confidence")) ?? 0;
+  const minConfidence = minConfidenceOracle(evaluationCase) ?? 0.55;
+  const acceptable = acceptableMatchMetric(evaluationCase, observations).passed;
+  const score = acceptable
+    ? Math.min(1, confidence / minConfidence)
+    : Math.max(0, 1 - confidence);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "confidence_calibration",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: acceptable
+      ? "Confidence is scored against the minimum expected confidence for a correct route."
+      : "Incorrect routes are penalized more when confidence is high.",
+    failureTags: score >= 0.75 ? [] : ["miscalibrated_confidence"],
+    details: { confidence, minConfidence, acceptable },
+  });
+}
+
+function latencyMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const runtimeMs = numberValue(getObservationPath(observations, "run.runtimeMs")) ?? 0;
+  const score = Math.max(0.35, 1 - runtimeMs / 8_000);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "latency_score",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored runtime latency against the default evaluation threshold.",
+    failureTags: score >= 0.75 ? [] : ["slow_runtime"],
+    details: { runtimeMs },
+  });
+}
+
+function costMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const costUsd = numberValue(getObservationPath(observations, "run.costUsd")) ?? 0;
+  const score = Math.max(0, 1 - costUsd / 0.05);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "cost_score",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored estimated cost against the default evaluation budget.",
+    failureTags: score >= 0.75 ? [] : ["high_cost"],
+    details: { costUsd },
+  });
+}
+
+function traceCoverageMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const eventCount = numberValue(getObservationPath(observations, "trace.eventCount")) ?? 0;
+  const score = Math.min(1, 0.45 + Math.min(eventCount, 4) * 0.12);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "trace_coverage",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored whether the run produced enough trace activity for diagnosis.",
+    failureTags: score >= 0.75 ? [] : ["process_issue"],
+    details: { eventCount },
+  });
+}
+
+function aggregateMetricScores(metricScores: EvaluationMetricScore[], profileId: EvaluationProfileKind, runtimeFailed: boolean): EvaluationScore {
+  if (metricScores.length === 0) {
+    return EvaluationScoreSchema.parse({
+      outcomeScore: runtimeFailed ? 0 : 0.72,
+      processScore: runtimeFailed ? 0.2 : 0.72,
+      efficiencyScore: runtimeFailed ? 0.25 : 0.72,
+      safetyScore: runtimeFailed ? 0.2 : 0.92,
+      overallScore: runtimeFailed ? 0 : 0.72,
+      judgeRationale: "No metric scores were produced.",
+      failureTags: runtimeFailed ? ["runtime_failed"] : [],
+    });
+  }
+  const scoreFor = (ids: EvaluationMetricId[], fallback: number) => {
+    const matches = metricScores.filter((metric) => ids.includes(metric.metricId));
+    return matches.length > 0 ? average(matches.map((metric) => metric.score)) : fallback;
+  };
+  const overallScore = roundScore(average(metricScores.map((metric) => metric.score)));
+  const outcomeScore = roundScore(scoreFor(["text_similarity", "exact_match", "acceptable_match", "assertion_pass_rate"], overallScore));
+  const processScore = roundScore(scoreFor(["fallback_rate", "trace_coverage"], overallScore));
+  const efficiencyScore = roundScore(scoreFor(["latency_score", "cost_score"], runtimeFailed ? 0.25 : 0.9));
+  const safetyScore = runtimeFailed ? 0.2 : metricScores.some((metric) => metric.failureTags.includes("reject_value") || metric.failureTags.includes("wrong_mode")) ? 0.55 : 0.92;
+  const failureTags = [
+    ...(runtimeFailed ? ["runtime_failed"] : []),
+    ...metricScores.flatMap((metric) => metric.failureTags),
+  ];
+  return EvaluationScoreSchema.parse({
+    outcomeScore,
+    processScore,
+    efficiencyScore,
+    safetyScore: roundScore(safetyScore),
+    overallScore: roundScore(
+      outcomeScore * profileWeights(profileId).outcome +
+      processScore * profileWeights(profileId).process +
+      efficiencyScore * profileWeights(profileId).efficiency +
+      safetyScore * profileWeights(profileId).safety
+    ),
+    judgeRationale: metricScores.map((metric) => `${metric.metricId}: ${metric.rationale}`).join(" "),
+    failureTags: [...new Set(failureTags)],
+  });
+}
+
 function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: EvaluationCase, snapshot: StateSnapshot): EvaluationScore {
   const outputText = extractOutputText(snapshot).toLowerCase();
   const expectedText = evaluationCase.expected?.text?.toLowerCase();
@@ -1096,6 +1490,101 @@ function buildJudgeRationale(
   return outputText.length > 0
     ? `No reference answer was provided, so the ${profileId} profile used reference-free heuristics over the output and trace.`
     : `No reference answer was provided and the run produced little usable output, so the ${profileId} profile scored this conservatively.`;
+}
+
+function structuredExpected(evaluationCase: EvaluationCase) {
+  const structured = evaluationCase.expected?.structured;
+  if (!structured || typeof structured !== "object") {
+    return undefined;
+  }
+  const parsed = EvaluationStructuredExpectedSchema.safeParse(structured);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function minConfidenceOracle(evaluationCase: EvaluationCase): number | undefined {
+  const structured = evaluationCase.expected?.structured;
+  if (!structured || typeof structured !== "object") {
+    return undefined;
+  }
+  const value = (structured as Record<string, unknown>).minConfidence;
+  return typeof value === "number" ? value : undefined;
+}
+
+function outputForObjective(
+  objective: EvaluationObjective,
+  observations: EvaluationObservation,
+  evaluationCase: EvaluationCase
+): unknown | undefined {
+  if (objective.target !== "runtime.mode_selection") {
+    return undefined;
+  }
+  const structured = structuredExpected(evaluationCase);
+  return {
+    selectedModeId: getObservationPath(observations, "runtime.modeId"),
+    routerStatus: getObservationPath(observations, "runtime.autoModeRouter.status"),
+    confidence: getObservationPath(observations, "runtime.autoModeRouter.confidence"),
+    reason: getObservationPath(observations, "runtime.autoModeRouter.reason"),
+    preferred: structured?.preferred,
+    assertions: structured?.assertions ?? [],
+  };
+}
+
+function getObservationPath(source: unknown, pathExpression: string): unknown {
+  return pathExpression.split(".").reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    return (current as Record<string, unknown>)[segment];
+  }, source);
+}
+
+function evaluateAssertion(assertion: EvaluationAssertion, actual: unknown): boolean {
+  switch (assertion.type) {
+    case "equals":
+      return valuesEqual(actual, assertion.value);
+    case "not_equals":
+      return !valuesEqual(actual, assertion.value);
+    case "one_of":
+      return (assertion.values ?? []).some((value) => valuesEqual(actual, value));
+    case "not_one_of":
+      return !(assertion.values ?? []).some((value) => valuesEqual(actual, value));
+    case "min":
+      return typeof actual === "number" && typeof assertion.value === "number" && actual >= assertion.value;
+    case "max":
+      return typeof actual === "number" && typeof assertion.value === "number" && actual <= assertion.value;
+    case "exists":
+      return actual !== undefined && actual !== null && actual !== "";
+    case "contains":
+      return typeof actual === "string" && typeof assertion.value === "string" && actual.includes(assertion.value);
+  }
+}
+
+function failureTagForAssertion(assertion: EvaluationAssertion) {
+  if (assertion.path === "runtime.modeId") {
+    return assertion.type === "not_one_of" || assertion.type === "not_equals" ? "reject_value" : "wrong_mode";
+  }
+  if (assertion.path.includes("confidence")) {
+    return "miscalibrated_confidence";
+  }
+  return "assertion_failed";
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (typeof left === "string" || typeof right === "string" || typeof left === "number" || typeof right === "number" || typeof left === "boolean" || typeof right === "boolean") {
+    return String(left) === String(right);
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function extractOutputText(snapshot: StateSnapshot) {

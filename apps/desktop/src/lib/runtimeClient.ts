@@ -2948,6 +2948,8 @@ class LocalJsonRpcRuntime {
             output: snapshot.output,
             error: snapshot.error,
             score: scoreMockEvaluationCase(spec.profileId, evaluationCase, snapshot),
+            metricScores: [],
+            observations: buildMockEvaluationObservations(snapshot),
             runtimeMs: Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt)),
             costUsd: Number((snapshot.events.length * 0.0002).toFixed(4)),
             startedAt: snapshot.events[0]?.createdAt ?? startedAt,
@@ -4503,6 +4505,33 @@ function scoreMockEvaluationCase(profileId: "outcome" | "orchestration" | "task_
   };
 }
 
+function buildMockEvaluationObservations(snapshot: OraStateSnapshot): Record<string, unknown> {
+  const autoModeRouter = isRecord(snapshot.config.metadata.autoModeRouter)
+    ? snapshot.config.metadata.autoModeRouter
+    : {};
+  return {
+    run: {
+      status: snapshot.status,
+      outputText: snapshot.output && typeof snapshot.output === "object" && "text" in snapshot.output && typeof snapshot.output.text === "string"
+        ? snapshot.output.text
+        : "",
+      runtimeMs: Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt)),
+      costUsd: Number((snapshot.events.length * 0.0002).toFixed(4)),
+    },
+    runtime: {
+      modeId: snapshot.modeId,
+      pattern: snapshot.pattern,
+      autoModeRouter,
+    },
+    trace: {
+      eventTypes: snapshot.events.map((event) => event.type),
+      eventCount: snapshot.events.length,
+      toolCallIds: snapshot.toolCalls.map((call) => call.toolId),
+      toolCallCount: snapshot.toolCalls.length,
+    },
+  };
+}
+
 function buildMockCaseResults(
   cases: OraEvaluationDatasetDetail["cases"],
   spec: OraEvaluationSpec,
@@ -4531,7 +4560,9 @@ function buildMockCaseResults(
         configId: config.id,
         attemptIds: matchingAttempts.map((attempt) => attempt.id),
         averageScore: average,
+        metricScores: [],
         latestOutput: matchingAttempts.at(-1)?.output,
+        observations: matchingAttempts.at(-1)?.observations ?? {},
         expected: evaluationCase.expected,
         metadata: evaluationCase.metadata,
         traceRunIds: matchingAttempts.flatMap((attempt) => attempt.underlyingRunId ? [attempt.underlyingRunId] : []),

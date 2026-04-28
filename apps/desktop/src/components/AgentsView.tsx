@@ -650,7 +650,7 @@ export function AgentsView({
                   <h3 className="text-sm font-semibold">{mode === "edit-system" ? `Edit built-in ${editingName}` : `Edit ${editingName}`}</h3>
                   <p className="mt-1 text-xs text-bench-700">
                     {mode === "edit-system"
-                      ? "Changes are saved as a global override for this built-in agent id."
+                      ? "Changes are saved as a file-backed global override with `config.yaml` and `SOUL.md`."
                       : "This v1 editor writes `config.yaml` and `SOUL.md` directly into `.ora/agents/&lt;name&gt;`."}
                   </p>
                 </div>
@@ -734,13 +734,13 @@ export function AgentsView({
                 />
                 <label className="space-y-1.5 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">
-                    {mode === "edit-system" ? "System Prompt" : "SOUL"}
+                    SOUL
                   </span>
                   <textarea
                     value={draft.soul}
                     onChange={(event) => setDraft((current) => ({ ...current, soul: event.target.value }))}
                     rows={14}
-                    placeholder={mode === "edit-system" ? "Global built-in override instructions injected into this system agent." : "Long-form persona instructions written into SOUL.md."}
+                    placeholder={mode === "edit-system" ? "Long-form built-in override instructions written into SOUL.md." : "Long-form persona instructions written into SOUL.md."}
                     className="w-full rounded-md border border-bench-200 bg-bench-50 px-3 py-2 font-mono text-sm outline-none transition focus:border-bench-900"
                   />
                 </label>

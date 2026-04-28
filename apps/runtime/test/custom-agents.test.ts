@@ -209,7 +209,8 @@ describe("custom agent runtime behavior", () => {
   });
 
   it("applies and resets global built-in agent overrides during execution", async () => {
-    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
     const handle = createRuntimeMethodHandler(store);
 
     await handle({
@@ -226,6 +227,11 @@ describe("custom agent runtime behavior", () => {
         soul: "Answer as the overridden solo captain.",
       },
     });
+    const soloOverrideDir = path.join(dir, "agent-overrides", "solo_agent");
+    expect(fs.existsSync(path.join(soloOverrideDir, "config.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(soloOverrideDir, "SOUL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "agent-overrides", "solo_agent.json"))).toBe(false);
+    expect(fs.readFileSync(path.join(soloOverrideDir, "SOUL.md"), "utf8")).toContain("overridden solo captain");
 
     const catalog = AgentCatalogResultSchema.parse(await handle({
       jsonrpc: "2.0",
@@ -267,6 +273,7 @@ describe("custom agent runtime behavior", () => {
       method: "agents.catalog",
     }));
     expect(resetCatalog.systemAgents.find((agent) => agent.id === "solo_agent")?.overridden).toBe(false);
+    expect(fs.existsSync(soloOverrideDir)).toBe(false);
   });
 
   it("propagates the selected custom agent persona with legacy graph metadata ignored", async () => {

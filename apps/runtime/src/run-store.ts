@@ -643,6 +643,41 @@ export class LocalRunStore {
     const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
+    if (fullConfig.metadata.evaluationRouterOnly === true) {
+      const baseSnapshot = createRunningRunSnapshot({
+        runId,
+        sessionId: session.sessionId,
+        turnIndex,
+        input,
+        config: fullConfig,
+        modeSpec,
+        definition,
+        clock: this.clock,
+      });
+      const completedAt = this.now();
+      const routerOnlySnapshot = StateSnapshotSchema.parse({
+        ...baseSnapshot,
+        status: "succeeded",
+        plan: baseSnapshot.plan.map((item) => ({ ...item, status: "skipped" as const })),
+        todos: baseSnapshot.todos.map((item) => ({ ...item, status: "skipped" as const, updatedAt: completedAt })),
+        activeAgents: [],
+        queueSummary: {
+          ...baseSnapshot.queueSummary,
+          pending: 0,
+          inProgress: 0,
+          completed: definition.planTemplate.length,
+        },
+        output: {
+          text: `Evaluation router-only run selected mode '${modeSpec.id}'.`,
+          selectedModeId: modeSpec.id,
+          autoModeRouter: fullConfig.metadata.autoModeRouter,
+        },
+        updatedAt: completedAt,
+      });
+      const tracedSnapshot = attachTraceMetadata(routerOnlySnapshot);
+      this.persistRun(tracedSnapshot);
+      return toRunHandle(tracedSnapshot);
+    }
     const sessionBoundSnapshot = await executeTracedKernelRun({
       runId,
       input,

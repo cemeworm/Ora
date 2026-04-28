@@ -17,11 +17,13 @@ import {
   ProjectInsightSchema,
   ProjectSignalSchema,
   RunTrailSchema,
+  DEERFLOW_HARNESS_MODE_ID,
   createModeSpecFromPattern,
   getPatternDefinition,
   MemoryRecordSchema,
   PlanItemSchema,
   PolicyDecisionSchema,
+  SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema
 } from "@ora/shared";
 import {
@@ -964,6 +966,164 @@ describe("LocalRunStore", () => {
       params: { evaluationRunId: detail.run.id, format: "csv" }
     }));
     expect(exportResult.content).toContain("case_id,config_id,overall_score");
+  });
+
+  it("scores auto mode routing with objective metrics and router-only execution", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.AUTO_ROUTER_EVAL_KEY;
+    process.env.AUTO_ROUTER_EVAL_KEY = "test";
+    let providerCalls = 0;
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      const content = systemText.includes("agent mode router")
+        ? JSON.stringify({
+            modeId: DEERFLOW_HARNESS_MODE_ID,
+            confidence: 0.91,
+            reason: "The task needs planning, research, review, and synthesis.",
+          })
+        : "Unexpected downstream provider call.";
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "evaluation.datasets.import",
+        params: {
+          name: "Router Objective Dataset",
+          sourceFileName: "router.json",
+          sourceFormat: "json",
+          content: JSON.stringify([{
+            id: "router-case-1",
+            prompt: "调研 Ora 当前 evaluation 体系，并给出可落地改造方案。",
+            expected: {
+              structured: {
+                assertions: [
+                  {
+                    type: "one_of",
+                    path: "runtime.modeId",
+                    values: [DEERFLOW_HARNESS_MODE_ID, "orchestrator_subagent"],
+                    failureTag: "wrong_mode",
+                  },
+                  {
+                    type: "not_one_of",
+                    path: "runtime.modeId",
+                    values: [SINGLE_AGENT_MODE_ID],
+                    failureTag: "under_delegated",
+                  },
+                  {
+                    type: "min",
+                    path: "runtime.autoModeRouter.confidence",
+                    value: 0.55,
+                  },
+                ],
+                preferred: {
+                  path: "runtime.modeId",
+                  value: DEERFLOW_HARNESS_MODE_ID,
+                },
+                minConfidence: 0.55,
+              },
+            },
+            metadata: {
+              taskType: "router",
+              difficulty: "medium",
+              tags: ["router", "decomposable"],
+            },
+          }]),
+        },
+      }));
+
+      const detail = EvaluationRunDetailSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "evaluation.runs.start",
+        params: {
+          datasetId: dataset.dataset.id,
+          objective: {
+            kind: "classification",
+            target: "runtime.mode_selection",
+            metrics: ["acceptable_match", "exact_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
+            displayColumns: ["runtime.modeId", "runtime.autoModeRouter.confidence"],
+          },
+          repetitions: 1,
+          concurrency: 1,
+          configs: [{
+            id: "auto-router",
+            label: "Auto Router",
+            runConfig: {
+              pattern: "orchestrator_subagent",
+              modeSelection: "auto",
+              providerId: "auto-router-eval",
+              modelRef: "auto-router-eval-model",
+              metadata: {
+                evaluationRouterOnly: true,
+                providerId: "auto-router-eval",
+              },
+              providerConfig: {
+                id: "auto-router-eval",
+                label: "Auto Router Eval",
+                type: "openai_compatible",
+                modelId: "auto-router-eval-model",
+                baseUrl: "https://auto-router-eval.test/v1",
+                apiKeyEnv: "AUTO_ROUTER_EVAL_KEY",
+                capabilities: ["chat"],
+                headers: {},
+              },
+            },
+          }],
+        },
+      }));
+
+      expect(providerCalls).toBe(1);
+      expect(detail.attempts).toHaveLength(1);
+      expect(detail.attempts[0]?.metricScores.map((metric) => metric.metricId)).toContain("acceptable_match");
+      expect(detail.attempts[0]?.score.failureTags).toEqual([]);
+      expect(detail.attempts[0]?.observations.runtime).toMatchObject({
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+      });
+      expect(detail.run.caseResults[0]?.metricScores.find((metric) => metric.metricId === "exact_match")?.score).toBe(1);
+      expect(detail.run.scorecard.passRate).toBe(1);
+
+      const underlyingRunId = detail.attempts[0]?.underlyingRunId;
+      expect(underlyingRunId).toBeTruthy();
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.state",
+        params: { runId: underlyingRunId },
+      }));
+      expect(state.events).toHaveLength(0);
+      expect(state.output).toMatchObject({
+        selectedModeId: DEERFLOW_HARNESS_MODE_ID,
+      });
+
+      const exportResult = EvaluationExportResultSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "evaluation.runs.export",
+        params: { evaluationRunId: detail.run.id, format: "csv" },
+      }));
+      expect(exportResult.content).toContain("metric_scores_json");
+      expect(exportResult.content).toContain("observations_json");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.AUTO_ROUTER_EVAL_KEY;
+      } else {
+        process.env.AUTO_ROUTER_EVAL_KEY = previousKey;
+      }
+    }
   });
 
   it("turns chat feedback into reviewable evaluation cases", async () => {

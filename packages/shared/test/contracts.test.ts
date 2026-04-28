@@ -32,6 +32,9 @@ import {
   EvaluationFeedbackRejectParamsSchema,
   EvaluationFeedbackSubmitParamsSchema,
   EvaluationFeedbackUpdateParamsSchema,
+  EvaluationMetricScoreSchema,
+  EvaluationObjectiveSchema,
+  EvaluationObservationSchema,
   FeedbackLoopActionApplyParamsSchema,
   FeedbackLoopActionPreviewParamsSchema,
   FeedbackLoopActionResultSchema,
@@ -48,6 +51,7 @@ import {
   EvaluationRunStreamSchema,
   EvaluationScorecardSchema,
   EvaluationSpecSchema,
+  EvaluationStructuredExpectedSchema,
   JsonRpcRequestSchema,
   JsonRpcResponseSchema,
   MODE_STUDIO_BUILDER_MODE_ID,
@@ -1139,6 +1143,71 @@ describe("Ora shared contracts", () => {
       format: "json",
       content: "{}",
     }).format).toBe("json");
+
+    const objective = EvaluationObjectiveSchema.parse({
+      kind: "classification",
+      target: "runtime.mode_selection",
+      metrics: ["acceptable_match", "assertion_pass_rate", "confidence_calibration"],
+      assertions: [{
+        type: "one_of",
+        path: "runtime.modeId",
+        values: ["deerflow_harness", "orchestrator_subagent"],
+        weight: 1,
+        failureTag: "wrong_mode",
+      }],
+      displayColumns: ["runtime.modeId", "runtime.autoModeRouter.confidence"],
+    });
+    expect(objective.target).toBe("runtime.mode_selection");
+
+    const structuredExpected = EvaluationStructuredExpectedSchema.parse({
+      assertions: [{
+        type: "not_one_of",
+        path: "runtime.modeId",
+        values: ["single_agent"],
+        weight: 0.5,
+      }],
+      preferred: {
+        path: "runtime.modeId",
+        value: "deerflow_harness",
+      },
+      goldRationale: "The task needs research and review before synthesis.",
+    });
+    expect(structuredExpected.preferred?.value).toBe("deerflow_harness");
+
+    const objectiveSpec = EvaluationSpecSchema.parse({
+      datasetId: dataset.id,
+      objective,
+      configs: [{
+        id: "auto-router",
+        label: "Auto Router",
+        runConfig: {
+          pattern: "orchestrator_subagent",
+          modeSelection: "auto",
+          metadata: { evaluationRouterOnly: true },
+        },
+      }],
+    });
+    expect(objectiveSpec.profileId).toBe("outcome");
+    expect(objectiveSpec.objective?.metrics).toContain("acceptable_match");
+
+    const metricScore = EvaluationMetricScoreSchema.parse({
+      metricId: "acceptable_match",
+      score: 1,
+      passed: true,
+      rationale: "Selected mode is acceptable.",
+      details: { selectedModeId: "deerflow_harness" },
+    });
+    expect(metricScore.passed).toBe(true);
+    expect(EvaluationObservationSchema.parse({
+      runtime: {
+        modeId: "deerflow_harness",
+        autoModeRouter: {
+          status: "selected",
+          confidence: 0.88,
+          reason: "Needs decomposition.",
+        },
+      },
+    }).runtime).toBeDefined();
   });
 
   it("validates evaluation feedback inbox contracts", () => {

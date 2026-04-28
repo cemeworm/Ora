@@ -26,6 +26,92 @@ export const EvaluationProfileSchema = z.object({
 });
 export type EvaluationProfile = z.infer<typeof EvaluationProfileSchema>;
 
+export const EvaluationMetricIdSchema = z.enum([
+  "text_similarity",
+  "exact_match",
+  "acceptable_match",
+  "assertion_pass_rate",
+  "fallback_rate",
+  "confidence_calibration",
+  "latency_score",
+  "cost_score",
+  "trace_coverage",
+]);
+export type EvaluationMetricId = z.infer<typeof EvaluationMetricIdSchema>;
+
+export const EvaluationObjectiveKindSchema = z.enum([
+  "outcome",
+  "classification",
+  "assertions",
+  "regression",
+  "latency",
+  "cost",
+]);
+export type EvaluationObjectiveKind = z.infer<typeof EvaluationObjectiveKindSchema>;
+
+export const EvaluationTargetSchema = z.enum([
+  "run.output",
+  "runtime.mode_selection",
+  "trace.events",
+  "tool.calls",
+  "artifact.files",
+  "memory.updates",
+]);
+export type EvaluationTarget = z.infer<typeof EvaluationTargetSchema>;
+
+export const EvaluationAssertionSchema = z.object({
+  type: z.enum([
+    "equals",
+    "not_equals",
+    "one_of",
+    "not_one_of",
+    "min",
+    "max",
+    "exists",
+    "contains",
+  ]),
+  path: z.string().min(1),
+  value: z.unknown().optional(),
+  values: z.array(z.unknown()).optional(),
+  weight: z.number().positive().default(1),
+  failureTag: z.string().min(1).optional(),
+  rationale: z.string().min(1).optional(),
+});
+export type EvaluationAssertion = z.infer<typeof EvaluationAssertionSchema>;
+
+export const EvaluationStructuredExpectedSchema = z.object({
+  assertions: z.array(EvaluationAssertionSchema).default([]),
+  preferred: z.object({
+    path: z.string().min(1),
+    value: z.unknown(),
+  }).optional(),
+  notes: z.string().min(1).optional(),
+}).passthrough();
+export type EvaluationStructuredExpected = z.infer<typeof EvaluationStructuredExpectedSchema>;
+
+export const EvaluationObjectiveSchema = z.object({
+  kind: EvaluationObjectiveKindSchema,
+  target: EvaluationTargetSchema,
+  metrics: z.array(EvaluationMetricIdSchema).default([]),
+  assertions: z.array(EvaluationAssertionSchema).default([]),
+  displayColumns: z.array(z.string().min(1)).default([]),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type EvaluationObjective = z.infer<typeof EvaluationObjectiveSchema>;
+
+export const EvaluationMetricScoreSchema = z.object({
+  metricId: EvaluationMetricIdSchema,
+  score: z.number().min(0).max(1),
+  passed: z.boolean().default(false),
+  rationale: z.string().min(1),
+  failureTags: z.array(z.string().min(1)).default([]),
+  details: z.record(z.unknown()).default({}),
+});
+export type EvaluationMetricScore = z.infer<typeof EvaluationMetricScoreSchema>;
+
+export const EvaluationObservationSchema = z.record(z.unknown());
+export type EvaluationObservation = z.infer<typeof EvaluationObservationSchema>;
+
 export const EvaluationCaseInputSchema = z.object({
   prompt: z.string().min(1),
   context: z.record(z.unknown()).default({}),
@@ -109,6 +195,7 @@ export type EvaluationConfig = z.infer<typeof EvaluationConfigSchema>;
 export const EvaluationSpecSchema = z.object({
   datasetId: z.string().min(1),
   profileId: EvaluationProfileKindSchema.default("outcome"),
+  objective: EvaluationObjectiveSchema.optional(),
   configs: z.array(EvaluationConfigSchema).min(1),
   repetitions: z.number().int().positive().max(10).default(1),
   concurrency: z.number().int().positive().max(32).default(1),
@@ -147,6 +234,8 @@ export const EvaluationAttemptSchema = z.object({
   output: z.unknown().optional(),
   error: z.string().optional(),
   score: EvaluationScoreSchema,
+  metricScores: z.array(EvaluationMetricScoreSchema).default([]),
+  observations: EvaluationObservationSchema.default({}),
   runtimeMs: z.number().int().nonnegative().default(0),
   costUsd: z.number().nonnegative().default(0),
   startedAt: z.number().int().nonnegative(),
@@ -168,7 +257,9 @@ export const EvaluationCaseResultSchema = z.object({
   configId: z.string().min(1),
   attemptIds: z.array(z.string().min(1)).min(1),
   averageScore: EvaluationScoreSchema,
+  metricScores: z.array(EvaluationMetricScoreSchema).default([]),
   latestOutput: z.unknown().optional(),
+  observations: EvaluationObservationSchema.default({}),
   expected: EvaluationExpectedSchema.optional(),
   metadata: z.record(z.unknown()).default({}),
   traceRunIds: z.array(z.string().min(1)).default([]),
