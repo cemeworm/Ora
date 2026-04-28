@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
+import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
 import { summarizeNarratorProgressPayload } from "../src/harness/runtime-prompts.js";
@@ -3205,20 +3205,31 @@ describe("Ora runtime smoke path", () => {
     const previousFetch = globalThis.fetch;
     const previousKey = process.env.AUTO_MODE_KEY;
     process.env.AUTO_MODE_KEY = "test";
+    let routerRequest: { max_tokens?: number; messages?: Array<{ role: string; content?: string }> } | undefined;
+    let routerPrompt: { candidates?: Array<{ id: string }>; recentMessages?: Array<{ role: string; content: string }> } | undefined;
+    let routerCandidateIds: string[] = [];
     globalThis.fetch = (async (_input, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
+        max_tokens?: number;
         messages?: Array<{ role: string; content?: string }>;
       };
       const systemText = body.messages
         ?.filter((message) => message.role === "system")
         .map((message) => message.content ?? "")
         .join("\n") ?? "";
-      const content = systemText.includes("agent mode router")
-        ? JSON.stringify({
+      const isRouterRequest = systemText.includes("agent mode router");
+      if (isRouterRequest) {
+        routerRequest = body;
+        const promptText = body.messages?.find((message) => message.role === "user")?.content ?? "{}";
+        routerPrompt = JSON.parse(promptText) as typeof routerPrompt;
+        routerCandidateIds = routerPrompt?.candidates?.map((candidate) => candidate.id) ?? [];
+      }
+      const content = isRouterRequest
+        ? `router result:\n${JSON.stringify({
             modeId: cloned.id,
             confidence: 0.91,
             reason: "This task benefits from a team workflow.",
-          })
+          })}\n`
         : "Mock provider content.";
       return new Response(JSON.stringify({
         choices: [{ message: { role: "assistant", content } }],
@@ -3231,7 +3242,15 @@ describe("Ora runtime smoke path", () => {
         id: 2,
         method: "runs.start",
         params: {
-          input: { prompt: "Work this as a coordinated team." },
+          input: {
+            prompt: "Work this as a coordinated team.",
+            context: {
+              recentMessages: [
+                { role: "user", content: "Earlier we discussed a quick one-off edit." },
+                { role: "assistant", content: "A single agent would be enough for that earlier request." },
+              ],
+            },
+          },
           config: {
             modeSelection: "auto",
             providerId: "auto-router",
@@ -3267,6 +3286,14 @@ describe("Ora runtime smoke path", () => {
         selectedModeId: cloned.id,
         status: "selected",
       });
+      expect(routerRequest?.max_tokens).toBe(800);
+      expect(routerCandidateIds).toContain(cloned.id);
+      expect(routerCandidateIds).not.toContain(MODE_STUDIO_BUILDER_MODE_ID);
+      expect(routerPrompt?.recentMessages).toEqual([
+        { role: "user", content: "Earlier we discussed a quick one-off edit." },
+        { role: "assistant", content: "A single agent would be enough for that earlier request." },
+        { role: "user", content: "Work this as a coordinated team." },
+      ]);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

@@ -19,10 +19,16 @@ import { ModeSpecFileStore } from "./modes.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 
 const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
+const AUTO_MODE_ROUTER_MAX_TOKENS = 800;
+const AUTO_MODE_ROUTER_RECENT_MESSAGE_LIMIT = 6;
 const AutoModeRouterResponseSchema = z.object({
   modeId: z.string().min(1),
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1),
+});
+const ContextRouterMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().min(1),
 });
 
 export interface ModeSelectionDeps {
@@ -135,15 +141,17 @@ async function routeAutoMode(
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
 ): Promise<{ modeId: string; metadata: Record<string, unknown> }> {
-  const candidates = deps.modeStore.list().map((mode) => ({
-    id: mode.id,
-    label: mode.label,
-    family: mode.family,
-    summary: mode.summary,
-    recommendedUse: mode.recommendedUse,
-    failureMode: mode.failureMode,
-    systemPreset: mode.systemPreset,
-  }));
+  const candidates = deps.modeStore.list()
+    .filter((mode) => mode.visibility !== "internal")
+    .map((mode) => ({
+      id: mode.id,
+      label: mode.label,
+      family: mode.family,
+      summary: mode.summary,
+      recommendedUse: mode.recommendedUse,
+      failureMode: mode.failureMode,
+      systemPreset: mode.systemPreset,
+    }));
   const candidateIds = new Set(candidates.map((mode) => mode.id));
   const fallbackModeId = candidateIds.has(SINGLE_AGENT_MODE_ID)
     ? SINGLE_AGENT_MODE_ID
@@ -170,18 +178,21 @@ async function routeAutoMode(
         "Choose exactly one modeId from the provided candidates for the next run.",
         "Return only compact JSON with keys modeId, confidence, and reason.",
         "confidence must be a number from 0 to 1.",
+        "reason must be a short plain string under 120 characters.",
+        "If the task is underspecified, choose the fallbackModeId with confidence below the threshold.",
         "Do not include markdown or extra text.",
       ].join(" "),
       prompt: JSON.stringify({
         task: input.prompt,
         projectId: input.projectId,
         context: input.context ?? {},
-        recentMessages: session ? deps.buildConversationMessages(session.sessionId, input.prompt).slice(-6) : [],
+        recentMessages: resolveAutoRouterRecentMessages(input, session, deps),
         candidates,
         fallbackModeId,
       }),
       temperature: 0,
-      maxTokens: 300,
+      maxTokens: AUTO_MODE_ROUTER_MAX_TOKENS,
+      toolChoice: "none",
     });
     const parsed = parseAutoModeRouterResponse(response.text);
     if (!candidateIds.has(parsed.modeId)) {
@@ -208,10 +219,66 @@ async function routeAutoMode(
   }
 }
 
+function resolveAutoRouterRecentMessages(
+  input: UserTaskInput,
+  session: SessionSummary | undefined,
+  deps: ModeSelectionDeps,
+): ModelMessage[] {
+  const contextMessages = readContextRecentMessages(input.context);
+  const sessionMessages = session ? deps.buildConversationMessages(session.sessionId, input.prompt) : [];
+  return [...contextMessages, ...sessionMessages].slice(-AUTO_MODE_ROUTER_RECENT_MESSAGE_LIMIT);
+}
+
+function readContextRecentMessages(context: Record<string, unknown> | undefined): ModelMessage[] {
+  const raw = context?.recentMessages ?? context?.priorMessages ?? context?.conversationMessages;
+  const parsed = z.array(ContextRouterMessageSchema).safeParse(raw);
+  if (!parsed.success) {
+    return [];
+  }
+  return parsed.data.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
 function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRouterResponseSchema> {
   const trimmed = text.trim();
-  const jsonText = trimmed.startsWith("{")
-    ? trimmed
-    : trimmed.match(/\{[\s\S]*\}/)?.[0] ?? trimmed;
+  const jsonText = extractFirstJsonObject(trimmed) ?? trimmed;
   return AutoModeRouterResponseSchema.parse(JSON.parse(jsonText));
+}
+
+function extractFirstJsonObject(text: string): string | undefined {
+  const start = text.indexOf("{");
+  if (start === -1) {
+    return undefined;
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, index + 1);
+      }
+    }
+  }
+  return undefined;
 }

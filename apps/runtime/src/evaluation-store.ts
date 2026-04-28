@@ -1320,7 +1320,7 @@ function confidenceCalibrationMetric(evaluationCase: EvaluationCase, observation
   const minConfidence = minConfidenceOracle(evaluationCase) ?? 0.55;
   const acceptable = acceptableMatchMetric(evaluationCase, observations).passed;
   const score = acceptable
-    ? Math.min(1, confidence / minConfidence)
+    ? minConfidence <= 0 ? 1 : Math.min(1, confidence / minConfidence)
     : Math.max(0, 1 - confidence);
   return EvaluationMetricScoreSchema.parse({
     metricId: "confidence_calibration",

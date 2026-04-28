@@ -1,0 +1,67 @@
+{
+  "datasetId": "dataset-0001",
+  "profileId": "outcome",
+  "objective": {
+    "kind": "classification",
+    "target": "runtime.mode_selection",
+    "metrics": [
+      "exact_match",
+      "acceptable_match",
+      "assertion_pass_rate",
+      "fallback_rate",
+      "confidence_calibration"
+    ],
+    "displayColumns": [
+      "runtime.modeId",
+      "runtime.autoModeRouter.status",
+      "runtime.autoModeRouter.confidence",
+      "runtime.autoModeRouter.reason"
+    ],
+    "metadata": {
+      "routerProvider": "deepseek",
+      "scenario": "contextual-multiturn"
+    }
+  },
+  "configs": [
+    {
+      "id": "auto-router-contextual-deepseek-v4-flash",
+      "label": "Auto Router Contextual DeepSeek V4 Flash",
+      "runConfig": {
+        "pattern": "orchestrator_subagent",
+        "modeSelection": "auto",
+        "providerId": "deepseek",
+        "modelRef": "deepseek-v4-flash",
+        "providerConfig": {
+          "id": "deepseek",
+          "label": "DeepSeek",
+          "type": "openai_compatible",
+          "modelId": "deepseek-v4-flash",
+          "baseUrl": "https://api.deepseek.com",
+          "apiKeyEnv": "DEEPSEEK_API_KEY",
+          "protocol": "chat_completions",
+          "capabilities": [
+            "chat",
+            "tool_use",
+            "reasoning",
+            "json_mode"
+          ],
+          "maxTokens": 8192,
+          "dropParams": [],
+          "headers": {}
+        },
+        "metadata": {
+          "providerId": "deepseek",
+          "evaluationRouterOnly": true
+        }
+      }
+    }
+  ],
+  "repetitions": 1,
+  "concurrency": 1,
+  "metadata": {
+    "datasetPath": "evals/router/auto-mode-router-contextual-v1.jsonl",
+    "requiresEnv": "DEEPSEEK_API_KEY",
+    "routerProvider": "deepseek",
+    "scenario": "contextual-multiturn"
+  }
+}
