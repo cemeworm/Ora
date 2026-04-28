@@ -127,6 +127,7 @@ export interface RuntimeKernelOptions {
     approvedActionIds?: string[];
     approvedActions?: ApprovedResumeAction[];
   };
+  resumeState?: Pick<StateSnapshot, "plan" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation">;
   streamProvider?: boolean;
   onEvent?: (event: OraEventEnvelope) => void;
 }
@@ -143,6 +144,51 @@ function selectedModeProgressText(modeSpec: ModeSpec, checkingRequest: boolean):
   return checkingRequest
     ? `已选择${label}，我准备好了`
     : `已选择${label}，正在准备执行`;
+}
+
+function continuationForKernelSnapshot(params: {
+  previous?: StateSnapshot["continuation"];
+  runId: string;
+  status: StateSnapshot["status"];
+  reason?: "approval_required" | "clarification_required";
+  pendingApprovals: string[];
+  pendingApprovalToolCallIds: string[];
+  pendingClarificationIds: string[];
+  agentId?: string;
+  nodeId?: string;
+  planItemId?: string;
+  conversationCursor: number;
+  now: number;
+}): StateSnapshot["continuation"] {
+  const previousFrames = params.previous?.frames ?? [];
+  if (params.status !== "interrupted" || !params.reason) {
+    return params.previous ?? { frames: [] };
+  }
+  const activeFrameId = params.previous?.activeFrameId ?? `${params.runId}:continuation:${previousFrames.length}`;
+  const existing = previousFrames.find((frame) => frame.id === activeFrameId);
+  const frame = {
+    id: activeFrameId,
+    runId: params.runId,
+    status: "paused" as const,
+    reason: params.reason,
+    conversationCursor: params.conversationCursor,
+    pendingActionIds: params.pendingApprovals,
+    pendingToolCallIds: params.pendingApprovalToolCallIds,
+    pendingClarificationIds: params.pendingClarificationIds,
+    approvedActionIds: existing?.approvedActionIds ?? [],
+    resolvedClarificationIds: existing?.resolvedClarificationIds ?? [],
+    agentId: params.agentId ?? existing?.agentId,
+    nodeId: params.nodeId ?? existing?.nodeId,
+    planItemId: params.planItemId ?? existing?.planItemId,
+    createdAt: existing?.createdAt ?? params.now,
+    updatedAt: params.now,
+  };
+  return {
+    activeFrameId,
+    frames: existing
+      ? previousFrames.map((item) => (item.id === activeFrameId ? frame : item))
+      : [...previousFrames, frame],
+  };
 }
 
 export async function executeRuntimeKernel(
@@ -177,16 +223,20 @@ export async function executeRuntimeKernel(
   const profiles = new AgentProfileRegistry(definition).list(config.profileIds);
   const memoryService = new MemoryService(runId, now);
   const memoryCaptureQueue = new MemoryCaptureQueue();
-  const planService = new PlanService(runId, definition);
-  const todoService = new TodoService(runId, now, planService.list());
-  const actionLedger = new ActionLedger(runId);
+  const planService = new PlanService(runId, definition, options.resumeState?.plan);
+  const todoService = new TodoService(runId, now, planService.list(), options.resumeState?.todos);
+  const actionLedger = new ActionLedger(runId, options.resumeState?.actions);
   const policyService = new PolicyService(runId, now);
   const resumeApprovals = createResumeApprovalMatcher(options.resumeContext);
   const events: OraEventEnvelope[] = [];
   const artifacts: ArtifactRef[] = [];
   const agentMessages: AgentConversationMessage[] = [];
-  const toolCallLedger = new RuntimeToolCallLedger(runId, now);
-  const runtimeToolResultCache = new Map<string, unknown>();
+  const toolCallLedger = new RuntimeToolCallLedger(runId, now, options.resumeState?.toolCalls);
+  const runtimeToolResultCache = new Map<string, unknown>(
+    (options.resumeState?.toolResults ?? [])
+      .filter((entry) => entry.status === "succeeded")
+      .map((entry) => [entry.key, entry.output] as const),
+  );
   const pendingClarifications: PendingClarification[] = [];
   const activeAgents = new Set<string>();
   const busTopicCounts: Record<string, number> = {};
@@ -1399,6 +1449,38 @@ export async function executeRuntimeKernel(
     { checkpointId: checkpoint.id },
   );
   planService.attachCheckpoint(checkpoint.id);
+  const pendingApprovals = actionLedger
+    .list()
+    .filter((action) => action.status === "approval_required")
+    .map((action) => action.id);
+  const pendingApprovalActions = actionLedger
+    .list()
+    .filter((action) => action.status === "approval_required");
+  const pendingApprovalToolCallIds = toolCallLedger
+    .list()
+    .filter((call) => call.actionId && pendingApprovals.includes(call.actionId))
+    .map((call) => call.id);
+  const pendingApprovalToolCalls = toolCallLedger
+    .list()
+    .filter((call) => call.actionId && pendingApprovals.includes(call.actionId));
+  const continuation = continuationForKernelSnapshot({
+    previous: options.resumeState?.continuation,
+    runId,
+    status,
+    reason: pendingApprovals.length > 0
+      ? "approval_required"
+      : pendingClarifications.length > 0
+        ? "clarification_required"
+        : undefined,
+    pendingApprovals,
+    pendingApprovalToolCallIds,
+    pendingClarificationIds: pendingClarifications.map((clarification) => clarification.id),
+    agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
+    nodeId: pendingApprovalToolCalls[0]?.nodeId,
+    planItemId: pendingApprovalActions[0]?.planItemId,
+    conversationCursor: options.resumeState?.conversation.length ?? 0,
+    now: now(),
+  });
 
   const snapshot = StateSnapshotSchema.parse({
     runId,
@@ -1415,6 +1497,9 @@ export async function executeRuntimeKernel(
     todos: todoService.list(),
     actions: actionLedger.list(),
     toolCalls: toolCallLedger.list(),
+    continuation,
+    conversation: options.resumeState?.conversation ?? [],
+    toolResults: options.resumeState?.toolResults ?? [],
     policyDecisions: [],
     checkpoints: [checkpoint],
     events,
@@ -1425,10 +1510,7 @@ export async function executeRuntimeKernel(
     sharedStateSummary,
     busStats,
     pendingClarifications,
-    pendingApprovals: actionLedger
-      .list()
-      .filter((action) => action.status === "approval_required")
-      .map((action) => action.id),
+    pendingApprovals,
     modeSpec,
     output,
     error,

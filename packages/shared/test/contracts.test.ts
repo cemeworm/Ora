@@ -112,6 +112,9 @@ import {
   RunHandleSchema,
   RunReplayParamsSchema,
   RunResumeParamsSchema,
+  RunContinuationFrameSchema,
+  RuntimeConversationEntrySchema,
+  RuntimeToolResultLedgerEntrySchema,
   RuntimeJsonRpcMethodSchema,
   RunTraceMetadataSchema,
   RunTrailParamsSchema,
@@ -704,8 +707,7 @@ describe("Ora shared contracts", () => {
     });
 
     expect(toolCall.providerCallId).toBe("call-provider-1");
-    expect(
-      StateSnapshotSchema.parse({
+    const snapshotWithDefaults = StateSnapshotSchema.parse({
         runId: "run-1",
         status: "succeeded",
         pattern: "orchestrator_subagent",
@@ -720,8 +722,54 @@ describe("Ora shared contracts", () => {
         checkpoints: [],
         events: [],
         updatedAt: 1
-      }).toolCalls
-    ).toEqual([]);
+      });
+    expect(snapshotWithDefaults.toolCalls).toEqual([]);
+    expect(snapshotWithDefaults.continuation).toEqual({ frames: [] });
+    expect(snapshotWithDefaults.conversation).toEqual([]);
+    expect(snapshotWithDefaults.toolResults).toEqual([]);
+  });
+
+  it("validates continuation, conversation, and tool result ledger contracts", () => {
+    const frame = RunContinuationFrameSchema.parse({
+      id: "run-1:frame-0",
+      runId: "run-1",
+      status: "paused",
+      reason: "approval_required",
+      conversationCursor: 1,
+      pendingActionIds: ["run-1:action:tool-0"],
+      pendingToolCallIds: ["run-1:tool-call-0"],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(frame.pendingClarificationIds).toEqual([]);
+
+    expect(() =>
+      RunContinuationFrameSchema.parse({
+        ...frame,
+        status: "waiting",
+      })
+    ).toThrow();
+
+    expect(RuntimeConversationEntrySchema.parse({
+      role: "tool",
+      toolCallId: "run-1:tool-call-0",
+      providerCallId: "call-0",
+      toolId: "skills.create",
+      status: "succeeded",
+      content: "{\"name\":\"think\"}",
+      createdAt: 2,
+    }).status).toBe("succeeded");
+
+    expect(RuntimeToolResultLedgerEntrySchema.parse({
+      key: "skills.create:abc",
+      toolId: "skills.create",
+      argsDigest: "abc",
+      resultToolCallId: "run-1:tool-call-0",
+      status: "succeeded",
+      output: { name: "think" },
+      createdAt: 2,
+      updatedAt: 2,
+    }).toolId).toBe("skills.create");
   });
 
   it("validates JSON-RPC request and response shapes", () => {

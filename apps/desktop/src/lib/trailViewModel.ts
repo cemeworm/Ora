@@ -348,6 +348,19 @@ export function collectTrailFindings(
       suggestedTab: "overview",
     });
   }
+  const activeContinuation = snapshot.continuation.frames.find((frame) =>
+    frame.id === snapshot.continuation.activeFrameId
+  );
+  if (activeContinuation) {
+    push({
+      id: `continuation.${activeContinuation.status}:${activeContinuation.id}`,
+      severity: activeContinuation.status === "failed" ? "error" : "info",
+      title: "Continuation frame active",
+      message: `Runtime continuation is ${activeContinuation.status} for ${activeContinuation.reason}.`,
+      targetType: "run",
+      suggestedTab: "flow",
+    });
+  }
   for (const clarification of snapshotPendingClarifications(snapshot)) {
     push({
       id: `clarification.pending:${clarification.id}`,

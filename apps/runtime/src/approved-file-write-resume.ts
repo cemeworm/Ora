@@ -2,7 +2,8 @@ import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@ora/share
 import type { ActionRecord } from "@ora/shared";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { fileChangeArtifact } from "./harness/file-change-artifact.js";
-import { RuntimeToolExecutor } from "./harness/runtime-tool-executor.js";
+import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolId } from "./harness/runtime-tool-executor.js";
+import { PackageManager } from "./package-manager.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
@@ -20,7 +21,20 @@ export interface ApprovedFileWriteResumeDeps {
   buildConversationMessages: (sessionId: string, currentPrompt: string, excludeRunId?: string) => ModelMessage[];
 }
 
-export function approvedFileWriteResumeActions(
+const DETERMINISTIC_APPROVED_TOOL_IDS = new Set<string>([
+  "file.write",
+  "file.patch",
+  "shell.execute",
+  "skills.create",
+  "skills.update",
+  "skills.setEnabled",
+  "mcp.call",
+  "package.promote",
+  "package.switch",
+  "package.rollback",
+]);
+
+export function approvedToolContinuationActions(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
 ): ActionRecord[] {
@@ -29,38 +43,80 @@ export function approvedFileWriteResumeActions(
   }
   const approvedIds = new Set(approvedActionIds);
   const pendingActions = snapshot.actions.filter((action) => action.status === "approval_required");
-  const approvedFileWrites = pendingActions.filter((action) =>
-    approvedIds.has(action.id) && action.type === "file.write"
+  const pendingToolActionIds = new Set(
+    snapshot.toolCalls
+      .filter((call) => call.actionId && call.status === "approval_required")
+      .map((call) => call.actionId!),
   );
-  return approvedFileWrites.length > 0 && approvedFileWrites.length === pendingActions.length
-    ? approvedFileWrites
+  const approvedTools = pendingActions.filter((action) =>
+    approvedIds.has(action.id) &&
+    pendingToolActionIds.has(action.id) &&
+    DETERMINISTIC_APPROVED_TOOL_IDS.has(action.type)
+  );
+  return approvedTools.length > 0 && approvedTools.length === pendingActions.length
+    ? approvedTools
     : [];
 }
 
-export async function completeApprovedFileWriteResume(
+export function approvedFileWriteResumeActions(
+  snapshot: StateSnapshot,
+  approvedActionIds: string[],
+): ActionRecord[] {
+  return approvedToolContinuationActions(snapshot, approvedActionIds)
+    .filter((action) => action.type === "file.write");
+}
+
+export async function completeApprovedToolContinuation(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
   params: { reason?: string; patch?: unknown } = {},
   deps: ApprovedFileWriteResumeDeps,
   onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
 ): Promise<StateSnapshot | undefined> {
-  const approvedFileWrites = approvedFileWriteResumeActions(snapshot, approvedActionIds);
-  if (approvedFileWrites.length === 0) {
+  const approvedTools = approvedToolContinuationActions(snapshot, approvedActionIds);
+  if (approvedTools.length === 0) {
     return undefined;
   }
-  const writeResults: Array<{ path?: unknown; sizeBytes?: unknown; content?: unknown }> = [];
+  const toolResults: Array<{ toolId: string; path?: unknown; sizeBytes?: unknown; content?: unknown; output?: unknown }> = [];
 
   const executor = new RuntimeToolExecutor({
     workspace: snapshot.input.context?.projectWorkspace,
     toolDescriptors: new RuntimeToolRegistry().list(),
     skillRegistry: deps.skillRegistry,
     searchProviderConfig: snapshot.config.searchProvider,
+    packageManager: new PackageManager(),
   });
 
+  const approvedIdSet = new Set(approvedActionIds);
+  const frameId = snapshot.continuation.activeFrameId ?? `${snapshot.runId}:continuation:${snapshot.continuation.frames.length}`;
+  const existingFrame = snapshot.continuation.frames.find((frame) => frame.id === frameId);
+  const createdAt = existingFrame?.createdAt ?? deps.now();
+  const pendingToolCallIds = snapshot.toolCalls
+    .filter((call) => call.actionId && approvedIdSet.has(call.actionId))
+    .map((call) => call.id);
   let working = StateSnapshotSchema.parse({
     ...snapshot,
     status: "running",
     pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approvedActionIds.includes(actionId)),
+    continuation: upsertContinuationFrame(snapshot, {
+      id: frameId,
+      runId: snapshot.runId,
+      status: "resuming",
+      reason: "approval_required",
+      conversationCursor: snapshot.conversation.length,
+      pendingActionIds: approvedTools.map((action) => action.id),
+      pendingToolCallIds,
+      pendingClarificationIds: [],
+      approvedActionIds,
+      resolvedClarificationIds: [],
+      agentId: existingFrame?.agentId,
+      nodeId: existingFrame?.nodeId,
+      planItemId: existingFrame?.planItemId,
+      modelIteration: existingFrame?.modelIteration,
+      resumedFromFrameId: existingFrame?.resumedFromFrameId,
+      createdAt,
+      updatedAt: deps.now(),
+    }),
     updatedAt: deps.now(),
   });
   const append = (type: OraEventEnvelope["type"], payload: unknown, base: StateSnapshot = working) => {
@@ -111,8 +167,24 @@ export async function completeApprovedFileWriteResume(
     patch: params.patch ?? {},
   });
 
-  for (const originalAction of approvedFileWrites) {
+  const updateContinuationStatus = (status: "resuming" | "executing_tool" | "awaiting_model" | "completed" | "failed") => {
+    working = StateSnapshotSchema.parse({
+      ...working,
+      continuation: upsertContinuationFrame(working, {
+        ...working.continuation.frames.find((frame) => frame.id === frameId)!,
+        status,
+        pendingActionIds: status === "completed" ? [] : working.continuation.frames.find((frame) => frame.id === frameId)?.pendingActionIds ?? [],
+        pendingToolCallIds: status === "completed" ? [] : working.continuation.frames.find((frame) => frame.id === frameId)?.pendingToolCallIds ?? [],
+        updatedAt: deps.now(),
+      }),
+    });
+  };
+
+  for (const originalAction of approvedTools) {
     const action = working.actions.find((item) => item.id === originalAction.id) ?? originalAction;
+    if (!isRuntimeToolImplemented(action.type) || !DETERMINISTIC_APPROVED_TOOL_IDS.has(action.type)) {
+      return undefined;
+    }
     append("approval.resolved", {
       actionId: action.id,
       decision: "approved",
@@ -127,13 +199,15 @@ export async function completeApprovedFileWriteResume(
     const running = { ...approved, status: "running" as const };
     replaceAction(running);
     replaceToolCall(action.id, "running");
+    updateContinuationStatus("executing_tool");
     append("action.updated", { actionId: action.id, status: "running", record: running });
 
     try {
       const args = action.input && typeof action.input === "object" && !Array.isArray(action.input)
         ? action.input as Record<string, unknown>
         : {};
-      const execution = await executor.executeWithMetadata({ tool: "file.write", args }, { allowRisky: true });
+      const toolId = action.type as RuntimeToolId;
+      const execution = await executor.executeWithMetadata({ tool: toolId, args }, { allowRisky: true });
       const output = execution.output;
       const artifact = execution.fileChange
         ? fileChangeArtifact({
@@ -150,10 +224,12 @@ export async function completeApprovedFileWriteResume(
         });
         append("artifact.exported", { artifact, actionId: action.id });
       }
-      writeResults.push({
+      toolResults.push({
+        toolId,
         path: (output as Record<string, unknown>)?.path ?? args.path,
         sizeBytes: (output as Record<string, unknown>)?.sizeBytes,
         content: args.content,
+        output,
       });
       const resultText = JSON.stringify(output, null, 2);
       const succeeded = {
@@ -167,7 +243,7 @@ export async function completeApprovedFileWriteResume(
       append("tool.called", {
         toolCallId: working.toolCalls.find((call) => call.actionId === action.id)?.id,
         actionId: action.id,
-        toolId: action.type,
+        toolId,
         source: "replay",
         status: "succeeded",
         input: args,
@@ -175,6 +251,48 @@ export async function completeApprovedFileWriteResume(
         ...(execution.fileChange ? { fileChange: execution.fileChange } : {}),
         cacheHit: false,
       });
+      const toolCall = working.toolCalls.find((call) => call.actionId === action.id);
+      if (toolCall) {
+        working = StateSnapshotSchema.parse({
+          ...working,
+          conversation: [
+            ...working.conversation,
+            {
+              role: "assistant",
+              content: "",
+              toolCalls: [{
+                id: toolCall.id,
+                providerCallId: toolCall.providerCallId,
+                toolId,
+                args,
+              }],
+              createdAt: deps.now(),
+            },
+            {
+              role: "tool",
+              toolCallId: toolCall.id,
+              providerCallId: toolCall.providerCallId,
+              toolId,
+              content: resultText,
+              status: "succeeded",
+              createdAt: deps.now(),
+            },
+          ],
+          toolResults: [
+            ...working.toolResults,
+            {
+              key: `${toolId}:${stableArgsDigest(args)}`,
+              toolId,
+              argsDigest: stableArgsDigest(args),
+              resultToolCallId: toolCall.id,
+              status: "succeeded",
+              output,
+              createdAt: deps.now(),
+              updatedAt: deps.now(),
+            },
+          ],
+        });
+      }
       append("action.updated", { actionId: action.id, status: "succeeded", record: succeeded });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -191,8 +309,54 @@ export async function completeApprovedFileWriteResume(
         error: detail,
         cacheHit: false,
       });
+      const toolCall = working.toolCalls.find((call) => call.actionId === action.id);
+      if (toolCall) {
+        const args = action.input && typeof action.input === "object" && !Array.isArray(action.input)
+          ? action.input as Record<string, unknown>
+          : {};
+        working = StateSnapshotSchema.parse({
+          ...working,
+          conversation: [
+            ...working.conversation,
+            {
+              role: "assistant",
+              content: "",
+              toolCalls: [{
+                id: toolCall.id,
+                providerCallId: toolCall.providerCallId,
+                toolId: action.type,
+                args,
+              }],
+              createdAt: deps.now(),
+            },
+            {
+              role: "tool",
+              toolCallId: toolCall.id,
+              providerCallId: toolCall.providerCallId,
+              toolId: action.type,
+              content: detail,
+              status: "failed",
+              createdAt: deps.now(),
+            },
+          ],
+          toolResults: [
+            ...working.toolResults,
+            {
+              key: `${action.type}:${stableArgsDigest(args)}`,
+              toolId: action.type,
+              argsDigest: stableArgsDigest(args),
+              resultToolCallId: toolCall.id,
+              status: "failed",
+              error: detail,
+              createdAt: deps.now(),
+              updatedAt: deps.now(),
+            },
+          ],
+        });
+      }
       append("action.updated", { actionId: action.id, status: "failed", record: failed });
       append("run.failed", { status: "failed", error: detail });
+      updateContinuationStatus("failed");
       return deps.attachTraceMetadata(StateSnapshotSchema.parse({
         ...working,
         status: "failed",
@@ -203,10 +367,12 @@ export async function completeApprovedFileWriteResume(
     }
   }
 
-  const finalText = await finalTextForApprovedFileWriteResume(snapshot, writeResults, deps);
+  updateContinuationStatus("awaiting_model");
+  const finalText = await finalTextForApprovedToolContinuation(snapshot, toolResults, deps);
   append("message.delta", { role: "assistant", content: finalText });
   const output = { text: finalText };
   append("run.done", { status: "succeeded", output });
+  updateContinuationStatus("completed");
   return deps.attachTraceMetadata(StateSnapshotSchema.parse({
     ...working,
     status: "succeeded",
@@ -217,16 +383,28 @@ export async function completeApprovedFileWriteResume(
   }));
 }
 
-async function finalTextForApprovedFileWriteResume(
+export async function completeApprovedFileWriteResume(
   snapshot: StateSnapshot,
-  writeResults: Array<{ path?: unknown; sizeBytes?: unknown; content?: unknown }>,
+  approvedActionIds: string[],
+  params: { reason?: string; patch?: unknown } = {},
+  deps: ApprovedFileWriteResumeDeps,
+  onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
+): Promise<StateSnapshot | undefined> {
+  return completeApprovedToolContinuation(snapshot, approvedActionIds, params, deps, onEvent);
+}
+
+async function finalTextForApprovedToolContinuation(
+  snapshot: StateSnapshot,
+  toolResults: Array<{ toolId: string; path?: unknown; sizeBytes?: unknown; content?: unknown; output?: unknown }>,
   deps: ApprovedFileWriteResumeDeps,
 ): Promise<string> {
-  const writeSummary = writeResults.map((result) => ({
+  const resultSummary = toolResults.map((result) => ({
+    toolId: result.toolId,
     path: result.path,
     sizeBytes: result.sizeBytes,
+    output: result.output,
   }));
-  const updatedContent = writeResults
+  const updatedContent = toolResults
     .map((result) => typeof result.content === "string" ? result.content : "")
     .filter(Boolean)
     .join("\n\n---\n\n")
@@ -238,17 +416,17 @@ async function finalTextForApprovedFileWriteResume(
     {
       role: "user" as const,
       content: [
-        "The user approved the pending file.write action, and the runtime has already executed it.",
+        "The user approved the pending tool action, and the runtime has already executed the exact stored action.",
         "Do not call any tools or emit tool JSON.",
         "Now provide the final answer in the user's language.",
-        "Briefly confirm the document update and summarize the substantive findings from the updated content.",
-        `Write result: ${JSON.stringify(writeSummary)}`,
+        "Briefly confirm the completed action and summarize the concrete result.",
+        `Tool results: ${JSON.stringify(resultSummary)}`,
         updatedContent ? `Updated document content:\n${updatedContent}` : undefined,
       ].filter(Boolean).join("\n\n"),
     },
   ];
   const system = [
-    "You are Ora completing a resumed run after an approved document write.",
+    "You are Ora completing a resumed run after an approved tool action.",
     "The side effect has already happened. Do not request another tool call.",
     "Answer directly and naturally.",
   ].join("\n");
@@ -272,7 +450,7 @@ async function finalTextForApprovedFileWriteResume(
       },
       {
         role: "user",
-        content: "Tools are disabled for this final answer. Reply in plain prose only, confirming the document update and summarizing the findings.",
+        content: "Tools are disabled for this final answer. Reply in plain prose only, confirming the completed action and summarizing the result.",
       },
     ],
     system,
@@ -280,5 +458,36 @@ async function finalTextForApprovedFileWriteResume(
     tools: [],
     toolChoice: "none",
   });
-  return retry.text.trim() || "文档已更新。";
+  return retry.text.trim() || "已完成批准的操作。";
+}
+
+function upsertContinuationFrame(
+  snapshot: StateSnapshot,
+  frame: StateSnapshot["continuation"]["frames"][number],
+): StateSnapshot["continuation"] {
+  const frames = snapshot.continuation.frames.some((item) => item.id === frame.id)
+    ? snapshot.continuation.frames.map((item) => (item.id === frame.id ? frame : item))
+    : [...snapshot.continuation.frames, frame];
+  return {
+    activeFrameId: frame.status === "completed" || frame.status === "failed" ? undefined : frame.id,
+    frames,
+  };
+}
+
+function stableArgsDigest(args: Record<string, unknown>): string {
+  return JSON.stringify(sortJson(args));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, sortJson(entry)]),
+    );
+  }
+  return value;
 }

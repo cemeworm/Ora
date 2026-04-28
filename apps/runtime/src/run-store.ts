@@ -83,8 +83,8 @@ import { CustomAgentFileStore } from "./custom-agents.js";
 import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import {
-  approvedFileWriteResumeActions,
-  completeApprovedFileWriteResume,
+  approvedToolContinuationActions,
+  completeApprovedToolContinuation,
   type ApprovedFileWriteResumeDeps
 } from "./approved-file-write-resume.js";
 import {
@@ -115,6 +115,7 @@ import { LocalFeedbackLoopStore } from "./feedback-loop-store.js";
 import {
   projectWorkspaceContext
 } from "./project-workspace.js";
+import { runtimeConversationToModelMessages } from "./runtime-conversation.js";
 import { OraRuntimeError } from "./runtime-errors.js";
 import { generateCustomAgentDraft } from "./agent-draft.js";
 import { modeCreateParamsFromSpec } from "./mode-studio-draft.js";
@@ -855,8 +856,8 @@ export class LocalRunStore {
     };
     publishStream([], liveSnapshot);
 
-    if (approvedFileWriteResumeActions(snapshot, approvedActionIds).length > 0) {
-      void completeApprovedFileWriteResume(
+    if (approvedToolContinuationActions(snapshot, approvedActionIds).length > 0) {
+      void completeApprovedToolContinuation(
         snapshot,
         approvedActionIds,
         { reason: parsed.reason, patch: parsed.patch },
@@ -917,10 +918,14 @@ export class LocalRunStore {
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
-      conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+      conversationMessages: [
+        ...this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+        ...runtimeConversationToModelMessages(snapshot.conversation),
+      ],
       clarificationPatch,
       approvedActionIds,
       approvedActions,
+      resumeSnapshot: approvedActionIds.length === 0 ? snapshot : undefined,
       onEvent: applyLiveEvent,
     }).then(async (nextSnapshot) => {
       const finalSnapshot = attachTraceMetadata(nextSnapshot);
@@ -1049,15 +1054,15 @@ export class LocalRunStore {
     const snapshot = this.getRunOrThrow(parsed.runId);
     const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
     const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
-    const completedApprovedFileWrite = await completeApprovedFileWriteResume(
+    const completedApprovedTool = await completeApprovedToolContinuation(
       snapshot,
       approvedActionIds,
       { reason: parsed.reason, patch: parsed.patch },
       this.approvedFileWriteResumeDeps(),
     );
-    if (completedApprovedFileWrite) {
-      await this.persistRunWithGeneratedTitle(completedApprovedFileWrite);
-      return completedApprovedFileWrite;
+    if (completedApprovedTool) {
+      await this.persistRunWithGeneratedTitle(completedApprovedTool);
+      return completedApprovedTool;
     }
     const hasKernelWork = hasKernelResumeWork(snapshot);
 
@@ -1091,10 +1096,14 @@ export class LocalRunStore {
         customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
         systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
         customAgentContexts: this.customAgentContextsForMode(modeSpec),
-        conversationMessages: this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+        conversationMessages: [
+          ...this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+          ...runtimeConversationToModelMessages(snapshot.conversation),
+        ],
         clarificationPatch,
         approvedActionIds,
         approvedActions,
+        resumeSnapshot: approvedActionIds.length === 0 ? snapshot : undefined,
       });
       const tracedSnapshot = attachTraceMetadata(resumedSnapshot);
       await this.persistRunWithGeneratedTitle(tracedSnapshot);
@@ -1189,7 +1198,7 @@ export class LocalRunStore {
       });
     }
 
-    return this.startRunWithKernel({
+    const forkHandle = await this.startRunWithKernel({
       sessionId: source.sessionId,
       input: {
         ...source.input,
@@ -1220,6 +1229,28 @@ export class LocalRunStore {
       checkpointId: checkpoint.id,
       eventSeq: checkpoint.eventSeq
     });
+    const continuationFrames = source.continuation.frames.filter((frame) => frame.createdAt <= checkpoint.createdAt);
+    if (continuationFrames.length === 0) {
+      return forkHandle;
+    }
+    const forkSnapshot = this.getRunOrThrow(forkHandle.runId);
+    const updated = StateSnapshotSchema.parse({
+      ...forkSnapshot,
+      continuation: {
+        frames: continuationFrames.map((frame, index) => ({
+          ...frame,
+          id: `${forkSnapshot.runId}:forked-continuation:${index}`,
+          runId: forkSnapshot.runId,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          resumedFromFrameId: frame.id,
+        })),
+      },
+      updatedAt: this.now(),
+    });
+    this.persistRun(updated);
+    return toRunHandle(updated);
   }
 
   exportReport(params: unknown): ArtifactRef {
@@ -1669,6 +1700,9 @@ export class LocalRunStore {
       const prompt = turn.input.prompt.trim();
       if (prompt) {
         messages.push({ role: "user", content: prompt });
+      }
+      if (turn.conversation.length > 0) {
+        messages.push(...runtimeConversationToModelMessages(turn.conversation));
       }
       const assistant = assistantTextForRun(turn);
       if (assistant) {

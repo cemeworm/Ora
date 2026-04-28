@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   Bot,
@@ -8,6 +8,7 @@ import {
   Folder,
   FolderOpen,
   GitBranchPlus,
+  MessageSquare,
   MessageSquarePlus,
   Plus,
   RotateCcw,
@@ -17,14 +18,20 @@ import {
   Trash2,
 } from "lucide-react";
 import { useWorkbench } from "../lib/state";
-import { getSharedRuntimeClient, type OraPackageManifest } from "../lib/runtimeClient";
+import {
+  getSharedRuntimeClient,
+  type OraPackageManifest,
+} from "../lib/runtimeClient";
+import { buildSessionSearchResults, type SessionSearchResult } from "../lib/sessionSearch";
 import { useRunActions } from "../lib/useRunActions";
 import { cn } from "../lib/utils";
 import type { RunStatus } from "../types";
+import { Dialog, DialogContent } from "./ui/dialog";
 import { SidebarTrigger, useSidebar } from "./ui/sidebar";
 
 const MAX_VISIBLE_PROJECT_SESSIONS = 4;
 const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
+const MAX_SESSION_SEARCH_RESULTS = 9;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
 function statusFromSession(status: string | undefined): RunStatus {
@@ -332,12 +339,106 @@ function SessionRow({
   );
 }
 
+function SessionSearchDialog({
+  open,
+  query,
+  results,
+  onQueryChange,
+  onOpenChange,
+  onSelect,
+  onPrefetch,
+}: {
+  open: boolean;
+  query: string;
+  results: SessionSearchResult[];
+  onQueryChange: (query: string) => void;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (sessionId: string) => void;
+  onPrefetch: (sessionId: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const hasQuery = query.trim().length > 0;
+
+  useEffect(() => {
+    if (!open) return;
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex h-[min(76vh,430px)] w-[min(520px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[22px] border border-black/[0.04] bg-background p-0 shadow-lift">
+        <div className="border-b border-border/55 px-4 py-3">
+          <div className="relative">
+            <Search size={15} className="pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) {
+                  const shortcutSession = results[Number(event.key) - 1];
+                  if (shortcutSession) {
+                    event.preventDefault();
+                    onSelect(shortcutSession.id);
+                  }
+                  return;
+                }
+                if (event.key === "Enter" && results[0]) {
+                  onSelect(results[0].id);
+                }
+              }}
+              placeholder="搜索对话"
+              aria-label="搜索对话"
+              className="h-8 w-full bg-transparent pl-6 pr-2 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          <div className="px-1.5 pb-2 text-[12px] text-muted-foreground">
+            {hasQuery ? "匹配结果" : "近期对话"}
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {results.map((session, index) => (
+              <button
+                key={session.id}
+                type="button"
+                onClick={() => onSelect(session.id)}
+                onMouseEnter={() => onPrefetch(session.id)}
+                onFocus={() => onPrefetch(session.id)}
+                className="group flex min-h-[32px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:bg-sidebar-accent focus-visible:text-sidebar-accent-foreground focus-visible:outline-none active:scale-[0.99]"
+              >
+                <MessageSquare size={14} className="shrink-0 text-muted-foreground group-hover:text-sidebar-accent-foreground/75" />
+                <span className="min-w-0 flex-1 truncate font-medium">{session.title}</span>
+                {session.projectLabel && (
+                  <span className="shrink-0 text-[12px] text-muted-foreground group-hover:text-sidebar-accent-foreground/70">
+                    {session.projectLabel}
+                  </span>
+                )}
+                <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground group-hover:bg-background/80">
+                  ⌘{index + 1}
+                </span>
+              </button>
+            ))}
+            {results.length === 0 && (
+              <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                没有找到匹配的对话
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function Sidebar() {
   const { state, dispatch } = useWorkbench();
   const { actions } = useRunActions();
   const { open } = useSidebar();
   const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
   const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<string | undefined>();
+  const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const projects = useMemo(() => state.projects.map((project) => ({
     ...project,
     expanded: state.expandedProjectIds[project.projectId] ?? true,
@@ -350,6 +451,10 @@ export function Sidebar() {
         status: statusFromSession(session.status),
       })),
   })), [state.expandedProjectIds, state.projects, state.sessions]);
+  const sessionSearchResults = useMemo(
+    () => buildSessionSearchResults(state.sessions, state.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
+    [sessionSearchQuery, state.projects, state.sessions],
+  );
   const recentChats = useMemo(() => state.sessions
     .filter((session) => !session.projectId)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
@@ -383,6 +488,17 @@ export function Sidebar() {
     if (!open || visiblePrefetchSessionIds.length === 0) return;
     void actions.prefetchSessions(visiblePrefetchSessionIds);
   }, [open, visiblePrefetchSessionKey]);
+
+  function openSessionSearch() {
+    setSessionSearchQuery("");
+    setSessionSearchOpen(true);
+  }
+
+  function selectSearchSession(sessionId: string) {
+    setSessionSearchOpen(false);
+    setSessionSearchQuery("");
+    void actions.selectSession(sessionId);
+  }
 
   return (
     <aside
@@ -430,6 +546,7 @@ export function Sidebar() {
         <div className="px-2 pb-2">
           <button
             type="button"
+            onClick={openSessionSearch}
             className={cn(
               "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               !open && "justify-center px-0",
@@ -668,6 +785,15 @@ export function Sidebar() {
           </button>
         </div>
       </footer>
+      <SessionSearchDialog
+        open={sessionSearchOpen}
+        query={sessionSearchQuery}
+        results={sessionSearchResults}
+        onQueryChange={setSessionSearchQuery}
+        onOpenChange={setSessionSearchOpen}
+        onSelect={selectSearchSession}
+        onPrefetch={(sessionId) => void actions.prefetchSession(sessionId)}
+      />
     </aside>
   );
 }

@@ -26,7 +26,10 @@ export class RuntimeToolCallLedger {
   constructor(
     private readonly runId: string,
     private readonly now: () => number,
-  ) {}
+    seedCalls: OraToolCallEnvelope[] = [],
+  ) {
+    this.calls = seedCalls.map((call) => OraToolCallEnvelopeSchema.parse(call));
+  }
 
   append(params: AppendRuntimeToolCallParams): OraToolCallEnvelope {
     const updatedAt = this.now();

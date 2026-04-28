@@ -101,6 +101,37 @@ export function synthesizeLocalTrail(snapshot: StateSnapshot, base?: RunTraceMet
         status: action.status,
       },
     })),
+    ...snapshot.continuation.frames.map((frame) => ({
+      id: `${frame.id}:trail`,
+      traceId,
+      parentObservationId: rootObservationId,
+      type: "span" as const,
+      name: `continuation.${frame.reason}`,
+      level: frame.status === "failed" ? "ERROR" as const : undefined,
+      statusMessage: frame.status,
+      input: {
+        pendingActionIds: frame.pendingActionIds,
+        pendingToolCallIds: frame.pendingToolCallIds,
+        pendingClarificationIds: frame.pendingClarificationIds,
+      },
+      output: {
+        approvedActionIds: frame.approvedActionIds,
+        resolvedClarificationIds: frame.resolvedClarificationIds,
+      },
+      metadata: {
+        source: "ora-continuation",
+        runId: snapshot.runId,
+        frameId: frame.id,
+        status: frame.status,
+        reason: frame.reason,
+        agentId: frame.agentId,
+        nodeId: frame.nodeId,
+        planItemId: frame.planItemId,
+        resumedFromFrameId: frame.resumedFromFrameId,
+      },
+      startTime: new Date(frame.createdAt).toISOString(),
+      endTime: new Date(frame.updatedAt).toISOString(),
+    })),
   ];
 
   return {

@@ -100,20 +100,23 @@ export class PlanService {
 
   constructor(
     private readonly runId: string,
-    definition: PatternDefinition
+    definition: PatternDefinition,
+    seedItems: PlanItem[] = [],
   ) {
-    this.items = definition.planTemplate.map((item, index) =>
-      PlanItemSchema.parse({
-        id: `${runId}:${item.id}`,
-        runId,
-        ownerAgentId: item.ownerAgentId,
-        status: index === 0 ? "ready" : "planned",
-        title: item.title,
-        dependencies: item.dependencies.map((dependency) => `${runId}:${dependency}`),
-        linkedActionIds: [],
-        checkpointIds: []
-      })
-    );
+    this.items = seedItems.length > 0
+      ? seedItems.map((item) => PlanItemSchema.parse(item))
+      : definition.planTemplate.map((item, index) =>
+          PlanItemSchema.parse({
+            id: `${runId}:${item.id}`,
+            runId,
+            ownerAgentId: item.ownerAgentId,
+            status: index === 0 ? "ready" : "planned",
+            title: item.title,
+            dependencies: item.dependencies.map((dependency) => `${runId}:${dependency}`),
+            linkedActionIds: [],
+            checkpointIds: []
+          })
+        );
   }
 
   list(): PlanItem[] {
@@ -272,9 +275,11 @@ export class PolicyService {
 }
 
 export class ActionLedger {
-  private readonly records: ActionRecord[] = [];
+  private readonly records: ActionRecord[];
 
-  constructor(private readonly runId: string) {}
+  constructor(private readonly runId: string, seedRecords: ActionRecord[] = []) {
+    this.records = seedRecords.map((record) => ActionRecordSchema.parse(record));
+  }
 
   propose(params: {
     id: string;

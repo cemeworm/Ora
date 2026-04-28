@@ -1,7 +1,7 @@
 # TASK-20260428-2121-ora-continuation-runtime
 
 **Created:** 2026-04-28 21:21 CST
-**Status:** Design source of truth
+**Status:** Completed
 **Owner:** Ora runtime
 **Principle:** This file is the single source of truth for the continuation-runtime redesign. Chat summaries are non-authoritative.
 
@@ -651,6 +651,44 @@ Closeout commands expected:
 
 This is a likely implementation surface, not permission to edit all files at once.
 
+## Active Files Touched In 2026-04-28 Slice
+
+Task journal:
+
+- `tasks/TASK-20260428-2121-ora-continuation-runtime.md`
+
+Shared contracts:
+
+- `packages/shared/src/runtime.ts`
+- `packages/shared/test/contracts.test.ts`
+
+Runtime:
+
+- `apps/runtime/src/approved-file-write-resume.ts`
+- `apps/runtime/src/capabilities.ts`
+- `apps/runtime/src/harness/runtime-kernel.ts`
+- `apps/runtime/src/harness/runtime-tool-ledger.ts`
+- `apps/runtime/src/run-kernel-lifecycle.ts`
+- `apps/runtime/src/run-state-operations.ts`
+- `apps/runtime/src/run-store.ts`
+- `apps/runtime/src/runtime-conversation.ts`
+- `apps/runtime/src/telemetry/trails.ts`
+- `apps/runtime/test/runtime-integration.test.ts`
+- `apps/runtime/test/runtime-smoke.test.ts`
+
+Desktop:
+
+- `apps/desktop/src/lib/runtimeClient.ts`
+- `apps/desktop/src/lib/trailViewModel.ts`
+- `apps/desktop/src/lib/trailViewModel.test.ts`
+- `apps/desktop/src/lib/viewModel.ts`
+
+Unrelated worktree files observed but not owned by this slice:
+
+- `apps/desktop/src/components/Sidebar.tsx`
+- `apps/desktop/src/lib/sessionSearch.ts`
+- `apps/desktop/src/lib/sessionSearch.test.ts`
+
 Task file:
 
 - `tasks/TASK-20260428-2121-ora-continuation-runtime.md`
@@ -734,77 +772,89 @@ This task creation only adds `tasks/TASK-20260428-2121-ora-continuation-runtime.
 - Requirement: current approval resume weirdness is captured in a failing test.
 - Verification method: focused runtime smoke test.
 - Pass criteria: test fails before continuation implementation and passes after deterministic approved-tool continuation.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: `apps/runtime/test/runtime-smoke.test.ts` now covers `skills.create` approval after `file.list` / `file.read` and asserts resume executes only the stored `skills.create` action with no repeated source reads.
 
 ### Checkpoint 2: Shared Contract
 
 - Requirement: continuation/conversation/tool-result fields are schema-backed and backward compatible.
 - Verification method: shared contract tests.
 - Pass criteria: legacy snapshots parse; malformed continuation records fail.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: `packages/shared/src/runtime.ts` adds defaulted `continuation`, `conversation`, and `toolResults`; `packages/shared/test/contracts.test.ts` covers legacy defaults and malformed continuation status rejection.
 
 ### Checkpoint 3: Seeded Runtime State
 
 - Requirement: runtime resume can rehydrate ledgers/services from snapshot.
 - Verification method: service unit tests and focused runtime resume test.
 - Pass criteria: plan/todo/actions/toolCalls are not reset across resume.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: `PlanService`, `TodoService`, `ActionLedger`, and `RuntimeToolCallLedger` accept seed state; `executeTracedKernelResume` passes seed state for clarification-only resumes; continuation tests prove plan/action/tool-call state no longer has to be reconstructed from prompt text.
 
 ### Checkpoint 4: Generic Approved Tool Continuation
 
 - Requirement: approved pending tools execute from stored action/tool args.
 - Verification method: file/write, skills/create, batch approval, and failure tests.
 - Pass criteria: no model regeneration is needed before executing the approved tool.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: `completeApprovedToolContinuation(...)` executes stored pending `file.write`, `file.patch`, `skills.create`, `skills.update`, `skills.setEnabled`, `shell.execute`, `mcp.call`, and package risky tool actions when they are backed by pending tool-call records.
 
 ### Checkpoint 5: Model-Visible Tool Result Continuity
 
 - Requirement: provider calls after resume receive valid tool result history.
 - Verification method: native provider repair tests and JSON fallback parity tests.
 - Pass criteria: no dangling tool-call history reaches provider adapters.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: deterministic approved-tool continuation now writes provider-neutral assistant/tool conversation entries and tool result ledger entries; `runtimeConversationToModelMessages(...)` feeds durable assistant tool calls and tool results back into later provider calls; existing provider dangling repair tests still pass.
 
 ### Checkpoint 6: Clarification And Interrupt Continuity
 
 - Requirement: non-approval pauses use continuation frames.
 - Verification method: clarification resume and manual interrupt tests.
 - Pass criteria: same frame resumes; tool interruptions are explicit.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: clarification resume seeds state; manual interrupt marks unfinished tool calls as interrupted and writes conversation/tool-result evidence.
 
 ### Checkpoint 7: Multi-Agent Continuity
 
 - Requirement: child agent frames can pause/resume and return to parent frame.
 - Verification method: agent teams or orchestrator-subagent approval test.
 - Pass criteria: resumed child result reaches parent without restarting the whole plan.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: `apps/runtime/test/runtime-smoke.test.ts` covers an `agent_teams` high-risk `skills.create` approval pause/resume and asserts the continuation frame preserves the paused agent id and resumes the approved tool result without restarting the team plan.
 
 ### Checkpoint 8: Desktop And Trails
 
 - Requirement: UI reflects continuation lifecycle.
 - Verification method: desktop view model and Trails tests.
 - Pass criteria: user can see pause -> approval -> original tool execution -> continuation.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: desktop mock snapshots include defaults, typecheck passes, Trails findings surface active continuation frames, and local Trails now synthesize continuation observations from frame lifecycle.
 
 ### Checkpoint 9: Persistence, Fork, Replay
 
 - Requirement: continuation survives persistence and checkpoint operations.
 - Verification method: JSON/checkpointer/fork/replay tests.
 - Pass criteria: persisted run can resume with the same continuation frame.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: JSON and SQLite persistence roundtrips preserve continuation/conversation/toolResults; fork copies checkpoint-prefix continuation provenance; replay and export report include continuation summaries.
 
 ### Checkpoint 10: Full Closeout
 
 - Requirement: focused and broad verification pass.
 - Verification method: commands listed in Test Matrix.
 - Pass criteria: all relevant tests/typechecks pass, task journal contains evidence, Retrospective is completed.
-- Status: [ ] Pending
+- Status: [x] Passed
+- Evidence: all focused and broad checks listed in the final Progress Log passed, and remaining continuation-specific assertions were added before closeout.
 
-## Open Issues
+## Resolved Decisions
 
-- Decide whether continuation is embedded in `StateSnapshot` only or also stored separately in persistence. Default: embed in `StateSnapshot` for compatibility and simplicity.
-- Decide exact event name for repair. Default: reuse existing event shapes if possible; add `tool.repaired` only if Trails and tests benefit from a distinct event.
-- Decide how much provider message history to persist. Default: store provider-neutral conversation entries and generate provider-specific wire messages at the boundary.
-- Decide whether final answer after deterministic tool execution should be model-generated or templated for some tools. Default: model-generated with tools disabled when the approved side effect has already completed.
+- Continuation is embedded in `StateSnapshot` for this slice.
+- `tool.repaired` already exists and remains the repair event; deterministic approved-tool continuation writes `tool.called` plus tool-result ledger entries.
+- Durable provider-neutral conversation entries are converted to `ModelMessage[]` by `runtimeConversationToModelMessages(...)` and included in session/history and resume provider calls.
+- Final answer after deterministic approved-tool execution is model-generated with tools disabled; if the provider still emits tool calls, runtime falls back to a short local confirmation.
+- Multi-agent frame evidence is covered for `agent_teams` approved high-risk tool continuation.
+- Fork/replay/export report continuation-specific assertions are covered.
 
 ## Risks
 
@@ -834,10 +884,69 @@ Status: local_only
   2. Add shared continuation/conversation/tool-result schemas with defaults.
   3. Generalize `approved-file-write-resume` into deterministic approved-tool continuation.
 
+### 2026-04-28 22:07 CST
+
+- Implemented the first vertical continuation slice:
+  - shared continuation, runtime conversation, and tool-result ledger schemas with legacy defaults;
+  - seedable plan/todo/action/tool-call services;
+  - generic approved-tool continuation for pending risky tool actions backed by tool-call records;
+  - deterministic `skills.create` approval resume that does not repeat precursor `file.list` / `file.read`;
+  - deterministic file-write resume parity preserved through the generic executor;
+  - manual interrupt now records interrupted tool results for unfinished tool calls;
+  - desktop mock defaults and Trails continuation findings.
+- Added JSON persistence roundtrip coverage for `continuation`, `conversation`, and `toolResults`.
+- Verification passed:
+  - `pnpm --filter @ora/shared build`
+  - `pnpm --filter @ora/shared test -- contracts.test.ts` -> 84 passed
+  - `pnpm --filter @ora/runtime typecheck`
+  - `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts` -> 60 passed
+  - `pnpm --filter @ora/runtime exec vitest run test/runtime-integration.test.ts` -> 32 passed
+  - `pnpm --filter @ora/runtime exec vitest run test/providers/provider-registry.test.ts test/runtime-tool-executor.test.ts` -> 38 passed
+  - `pnpm --filter @ora/desktop typecheck`
+  - `pnpm --filter @ora/desktop test -- trailViewModel.test.ts viewModel.test.ts` -> 56 passed
+  - `bash /Users/quintenchen/developer/quantfox/.codex/skills/long-task-protocol/scripts/todo_scan.sh` -> PASS, but it scanned the Quantfox task due script-local task discovery, so the higher-signal Ora check was targeted `rg -n "TODO|FIXME"` over touched Ora files -> no matches.
+- Residual risk:
+  - this is not a full completion of every phase in the original design; multi-agent child-frame resume and fork/replay-specific continuation assertions remain open.
+  - unrelated desktop session-search/sidebar changes are present in the worktree and were not touched by this implementation.
+- Next:
+  1. Add a true child-agent high-risk approval resume test and frame restoration.
+  2. Wire durable runtime conversation conversion into provider message construction.
+  3. Add continuation-specific SQLite/fork/replay/export-report assertions.
+
+### 2026-04-28 22:18 CST
+
+- Completed the remaining continuation-runtime closeout items:
+  - added durable `RuntimeConversationEntry[] -> ModelMessage[]` conversion and wired it into session history plus resume provider calls;
+  - persisted assistant tool-call entries before tool result entries during deterministic approved-tool continuation, so provider history has valid structured pairs;
+  - preserved agent/node/plan metadata on continuation frames and added an `agent_teams` approval-resume test for paused agent-frame continuity;
+  - added local Trails continuation observations;
+  - included continuation summaries in replay/export-report payloads;
+  - copied checkpoint-prefix continuation provenance into forked runs;
+  - added SQLite continuation/conversation/tool-result persistence coverage.
+- Final verification passed:
+  - `pnpm --filter @ora/shared build`
+  - `pnpm --filter @ora/shared test -- contracts.test.ts` -> 84 passed
+  - `pnpm --filter @ora/runtime typecheck`
+  - `pnpm --filter @ora/runtime exec vitest run test/runtime-smoke.test.ts` -> 62 passed
+  - `pnpm --filter @ora/runtime exec vitest run test/runtime-integration.test.ts` -> 33 passed
+  - `pnpm --filter @ora/runtime exec vitest run test/providers/provider-registry.test.ts test/runtime-tool-executor.test.ts` -> 38 passed
+  - `pnpm --filter @ora/desktop typecheck`
+  - `pnpm --filter @ora/desktop test -- trailViewModel.test.ts viewModel.test.ts` -> 56 passed
+  - `bash /Users/quintenchen/developer/quantfox/.codex/skills/long-task-protocol/scripts/todo_scan.sh` -> PASS, but it still scanned Quantfox due script-local discovery; targeted Ora `rg -n "TODO|FIXME"` over touched files found no matches.
+- Residual risk:
+  - The continuation model is now structurally covered across approval, clarification seeding, manual interruption, Trails, persistence, fork, replay, and report export. Future hardening can add more tool-family-specific failure fixtures, but no task-gating item remains open in this journal.
+  - Unrelated desktop session-search/sidebar changes and `tasks/TASK-20260428-2207-ora-root-agent-orchestration.md` remain present in the worktree and are not owned by this task.
+- Next:
+  1. Keep any future continuation expansion behind the same frame/conversation/tool-result contract.
+  2. Add tool-family-specific regression tests only when a real tool family exposes a new failure mode.
+
 ## Compressed State
 
 - User rejected single-tool patching and asked for a structural solution matching DeerFlow-style continuous progress.
 - Root cause: Ora generic resume restarts the kernel and uses approvals as future-action authorization instead of executing the stored pending action.
 - DeerFlow comparison: durable thread/checkpoint state plus ToolMessage/Command updates keep graph execution continuous.
 - Target: add durable continuation frames, provider-neutral conversation/tool result ledgers, seeded runtime services, and a generic deterministic approved-tool executor.
-- First acceptance test: approving `skills.create` must execute original pending args and must not repeat `file.list` / `file.read`.
+- Landed: approving `skills.create` executes original pending args and does not repeat `file.list` / `file.read`.
+- Landed: continuation/conversation/toolResults are shared-schema-backed and persist through JSON backend.
+- Landed: approved pending file/skill risky tool actions execute through a generic deterministic executor when backed by pending tool-call records.
+- Completed: multi-agent frame evidence, durable provider conversation replay, and fork/replay/export-report continuation assertions are now covered.

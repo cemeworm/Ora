@@ -1677,6 +1677,395 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("executes an approved skill install from the paused action without repeating source file reads", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-skill-continuation-"));
+    fs.mkdirSync(path.join(workspaceRoot, ".agents", "skills", "think"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceRoot, ".agents", "skills", "think", "SKILL.md"),
+      "---\nname: continuation-think\ndescription: Continuation think skill\n---\nUse this skill for continuation tests.\n",
+      "utf8",
+    );
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.SKILL_CONTINUATION_KEY;
+    process.env.SKILL_CONTINUATION_KEY = "test";
+    const skillContent = "---\nname: continuation-think\ndescription: Continuation think skill\n---\nUse this skill for continuation tests.\n";
+    let toolProviderCalls = 0;
+
+    const toolResponse = (id: string, name: string, args: Record<string, unknown>) => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null,
+          tool_calls: [{
+            id,
+            type: "function",
+            function: { name, arguments: JSON.stringify(args) },
+          }],
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const tools = Array.isArray(body.tools) ? body.tools : [];
+      if (tools.length === 0 || body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Installed continuation-think from the approved action." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      toolProviderCalls += 1;
+      if (toolProviderCalls === 1) {
+        return toolResponse("call-source-list", "file__list", { path: ".agents/skills/think" });
+      }
+      if (toolProviderCalls === 2) {
+        return toolResponse("call-source-read", "file__read", { path: ".agents/skills/think/SKILL.md" });
+      }
+      if (toolProviderCalls === 3) {
+        return toolResponse("call-skill-create", "skills__create", {
+          name: "continuation-think",
+          description: "Continuation think skill",
+          content: skillContent,
+          enabled: true,
+        });
+      }
+      return toolResponse(`call-repeat-source-${toolProviderCalls}`, "file__list", { path: ".agents/skills/think" });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Read the local think skill package, then install it.",
+            context: { projectWorkspace: { label: "Skill Continuation", rootPath: workspaceRoot } },
+          },
+          config: {
+            modeId: "single_agent",
+            providerId: "skill-continuation",
+            modelRef: "skill-continuation-model",
+            providerConfig: {
+              id: "skill-continuation",
+              label: "Skill Continuation",
+              type: "openai_compatible",
+              modelId: "skill-continuation-model",
+              baseUrl: "https://skill-continuation.test/v1",
+              apiKeyEnv: "SKILL_CONTINUATION_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["file.list", "file.read", "skills.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const approvedAction = blocked.actions.find((action) => action.id === blocked.pendingApprovals[0]);
+      const blockedEventCount = blocked.events.length;
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: { approvedActionIds: [blocked.pendingApprovals[0]!] },
+        },
+      }));
+      const resumeToolEvents = resumed.events.slice(blockedEventCount).filter((event) =>
+        event.type === "tool.called" &&
+        typeof event.payload === "object" &&
+        event.payload !== null
+      );
+
+      expect(run.status).toBe("interrupted");
+      expect(approvedAction).toMatchObject({
+        type: "skills.create",
+        status: "approval_required",
+        input: expect.objectContaining({ name: "continuation-think", content: skillContent }),
+      });
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.pendingApprovals).toEqual([]);
+      expect(resumeToolEvents.map((event) => (event.payload as { toolId?: string }).toolId)).toEqual(["skills.create"]);
+      expect(resumed.toolCalls.filter((call) => call.toolId === "file.list")).toHaveLength(1);
+      expect(resumed.toolCalls.filter((call) => call.toolId === "file.read")).toHaveLength(1);
+      expect(resumed.toolCalls.find((call) => call.actionId === approvedAction?.id)).toMatchObject({
+        toolId: "skills.create",
+        status: "succeeded",
+      });
+      expect(resumed.toolResults.some((entry) =>
+        entry.toolId === "skills.create" &&
+        entry.status === "succeeded" &&
+        entry.resultToolCallId === resumed.toolCalls.find((call) => call.actionId === approvedAction?.id)?.id
+      )).toBe(true);
+      expect(resumed.conversation.some((entry) =>
+        entry.role === "tool" &&
+        entry.toolId === "skills.create" &&
+        entry.status === "succeeded"
+      )).toBe(true);
+      expect(resumed.continuation.frames.at(-1)).toMatchObject({
+        status: "completed",
+        reason: "approval_required",
+        approvedActionIds: [approvedAction?.id],
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.SKILL_CONTINUATION_KEY;
+      } else {
+        process.env.SKILL_CONTINUATION_KEY = previousKey;
+      }
+    }
+  });
+
+  it("passes durable runtime conversation tool results into later provider calls", async () => {
+    const store = createTempStore();
+    const handle = createRuntimeMethodHandler(store);
+    const session = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sessions.create",
+      params: { label: "Durable Conversation" },
+    }) as { sessionId: string };
+    const previousRunId = "run-durable-conversation";
+    store.persistExternalSnapshot(StateSnapshotSchema.parse({
+      runId: previousRunId,
+      sessionId: session.sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Install previous skill.", createdAt: 1, context: {} },
+      config: {
+        pattern: "orchestrator_subagent",
+        modeId: "single_agent",
+        modeSelection: "manual",
+        profileIds: [],
+        skillIds: [],
+        toolIds: ["skills.create"],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "durable-conversation",
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      continuation: { frames: [] },
+      conversation: [
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{
+            id: `${previousRunId}:tool-call-0`,
+            providerCallId: "call-durable-skill",
+            toolId: "skills.create",
+            args: { name: "durable-skill" },
+          }],
+          createdAt: 2,
+        },
+        {
+          role: "tool",
+          toolCallId: `${previousRunId}:tool-call-0`,
+          providerCallId: "call-durable-skill",
+          toolId: "skills.create",
+          content: "{\"name\":\"durable-skill\"}",
+          status: "succeeded",
+          createdAt: 3,
+        },
+      ],
+      toolResults: [],
+      output: { text: "Installed durable-skill." },
+      updatedAt: 4,
+    }));
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.DURABLE_CONVERSATION_KEY;
+    process.env.DURABLE_CONVERSATION_KEY = "test";
+    const providerBodies: Array<{ messages?: unknown[] }> = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: unknown[] };
+      providerBodies.push(body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Saw durable tool history." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.start",
+        params: {
+          sessionId: session.sessionId,
+          input: { prompt: "Continue with that context." },
+          config: {
+            modeId: "single_agent",
+            providerId: "durable-conversation",
+            modelRef: "durable-conversation-model",
+            providerConfig: {
+              id: "durable-conversation",
+              label: "Durable Conversation",
+              type: "openai_compatible",
+              modelId: "durable-conversation-model",
+              baseUrl: "https://durable-conversation.test/v1",
+              apiKeyEnv: "DURABLE_CONVERSATION_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: [],
+          },
+        },
+      }) as { status: string };
+
+      expect(run.status).toBe("succeeded");
+      expect(JSON.stringify(providerBodies[0]?.messages)).toContain("call-durable-skill");
+      expect(JSON.stringify(providerBodies[0]?.messages)).toContain("tool_call_id");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.DURABLE_CONVERSATION_KEY;
+      } else {
+        process.env.DURABLE_CONVERSATION_KEY = previousKey;
+      }
+    }
+  });
+
+  it("records the paused agent frame for agent-team approved tool continuation", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.AGENT_TEAM_CONTINUATION_KEY;
+    process.env.AGENT_TEAM_CONTINUATION_KEY = "test";
+    const skillContent = "---\nname: team-continuation\ndescription: Team continuation skill\n---\nUse this skill for team continuation tests.\n";
+    let toolProviderCalls = 0;
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const tools = Array.isArray(body.tools) ? body.tools : [];
+      if (tools.length === 0 || body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Installed team-continuation from the paused agent frame." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      toolProviderCalls += 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-team-continuation-${toolProviderCalls}`,
+              type: "function",
+              function: {
+                name: "skills__create",
+                arguments: JSON.stringify({
+                  name: "team-continuation",
+                  description: "Team continuation skill",
+                  content: skillContent,
+                  enabled: true,
+                }),
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Use the agent team to install this skill." },
+          config: {
+            pattern: "agent_teams",
+            providerId: "agent-team-continuation",
+            modelRef: "agent-team-continuation-model",
+            providerConfig: {
+              id: "agent-team-continuation",
+              label: "Agent Team Continuation",
+              type: "openai_compatible",
+              modelId: "agent-team-continuation-model",
+              baseUrl: "https://agent-team-continuation.test/v1",
+              apiKeyEnv: "AGENT_TEAM_CONTINUATION_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["skills.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const frame = blocked.continuation.frames.find((item) => item.id === blocked.continuation.activeFrameId);
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: { approvedActionIds: [blocked.pendingApprovals[0]!] },
+        },
+      }));
+      const completedFrame = resumed.continuation.frames.find((item) => item.id === frame?.id);
+
+      expect(run.status).toBe("interrupted");
+      expect(frame).toMatchObject({
+        status: "paused",
+        reason: "approval_required",
+        agentId: "team_lead",
+        pendingActionIds: [blocked.pendingApprovals[0]],
+      });
+      expect(resumed.status).toBe("succeeded");
+      expect(completedFrame).toMatchObject({
+        status: "completed",
+        agentId: "team_lead",
+        approvedActionIds: [blocked.pendingApprovals[0]],
+      });
+      expect(resumed.toolCalls.find((call) => call.toolId === "skills.create")).toMatchObject({
+        agentId: "team_lead",
+        status: "succeeded",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.AGENT_TEAM_CONTINUATION_KEY;
+      } else {
+        process.env.AGENT_TEAM_CONTINUATION_KEY = previousKey;
+      }
+    }
+  });
+
   it("keeps approved file write resume scope reusable for the same path", () => {
     const matcher = createResumeApprovalMatcher({
       approvedActions: [{
@@ -1878,7 +2267,14 @@ describe("Ora runtime smoke path", () => {
     const skillContent = (name: string) => `---\nname: ${name}\ndescription: ${name} from Waza\n---\nUse ${name} from Waza.\n`;
     let providerCalls = 0;
 
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (_input, init) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const tools = Array.isArray(body.tools) ? body.tools : [];
+      if (tools.length === 0 || body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Installed the Waza skill batch." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       providerCalls += 1;
       if (providerCalls <= 3) {
         const skillName = providerCalls <= 2 ? "waza-think" : "waza-design";
@@ -1964,7 +2360,7 @@ describe("Ora runtime smoke path", () => {
       expect(resumed.status).toBe("succeeded");
       expect(resumed.pendingApprovals).toEqual([]);
       expect(resumed.actions.some((action) => action.status === "approval_required")).toBe(false);
-      expect(resumed.toolCalls.filter((call) => call.toolId === "skills.create" && call.status === "succeeded")).toHaveLength(2);
+      expect(resumed.toolCalls.filter((call) => call.toolId === "skills.create" && call.status === "succeeded")).toHaveLength(1);
       expect(resumed.output?.text).toContain("Installed the Waza skill batch");
     } finally {
       globalThis.fetch = previousFetch;
@@ -4081,6 +4477,50 @@ describe("Ora runtime smoke path", () => {
       method: "runs.exportReport",
       params: { runId: run.runId }
     });
+    const beforeReload = StateSnapshotSchema.parse(await handleFirst({
+      jsonrpc: "2.0",
+      id: "state-before-continuation-roundtrip",
+      method: "runs.state",
+      params: { runId: run.runId }
+    }));
+    firstStore.persistExternalSnapshot(StateSnapshotSchema.parse({
+      ...beforeReload,
+      continuation: {
+        activeFrameId: `${run.runId}:continuation:0`,
+        frames: [{
+          id: `${run.runId}:continuation:0`,
+          runId: run.runId,
+          status: "completed",
+          reason: "approval_required",
+          conversationCursor: 1,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          approvedActionIds: [`${run.runId}:action:example`],
+          resolvedClarificationIds: [],
+          createdAt: beforeReload.updatedAt,
+          updatedAt: beforeReload.updatedAt,
+        }],
+      },
+      conversation: [{
+        role: "tool",
+        toolCallId: `${run.runId}:tool-call-0`,
+        toolId: "skills.create",
+        content: "{\"ok\":true}",
+        status: "succeeded",
+        createdAt: beforeReload.updatedAt,
+      }],
+      toolResults: [{
+        key: "skills.create:{}",
+        toolId: "skills.create",
+        argsDigest: "{}",
+        resultToolCallId: `${run.runId}:tool-call-0`,
+        status: "succeeded",
+        output: { ok: true },
+        createdAt: beforeReload.updatedAt,
+        updatedAt: beforeReload.updatedAt,
+      }],
+    }));
 
     const handleSecond = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
     const runs = (await handleSecond({
@@ -4100,6 +4540,21 @@ describe("Ora runtime smoke path", () => {
     expect(runs.map((summary) => summary.runId)).toContain(run.runId);
     expect(runs.find((summary) => summary.runId === run.runId)?.artifactCount).toBe(1);
     expect(state.artifacts[0]?.uri).toMatch(/^file:\/\//);
+    expect(state.continuation.frames[0]).toMatchObject({
+      status: "completed",
+      reason: "approval_required",
+      approvedActionIds: [`${run.runId}:action:example`],
+    });
+    expect(state.conversation[0]).toMatchObject({
+      role: "tool",
+      toolId: "skills.create",
+      status: "succeeded",
+    });
+    expect(state.toolResults[0]).toMatchObject({
+      toolId: "skills.create",
+      status: "succeeded",
+      output: { ok: true },
+    });
   });
 
   it("returns ordered event streams after an optional sequence", async () => {
@@ -4547,7 +5002,8 @@ describe("Ora runtime smoke path", () => {
   });
 
   it("replays events through a checkpoint and records the replay request", async () => {
-    const handle = createRuntimeMethodHandler(createTempStore());
+    const store = createTempStore();
+    const handle = createRuntimeMethodHandler(store);
     const run = (await handle({
       jsonrpc: "2.0",
       id: 1,
@@ -4565,6 +5021,44 @@ describe("Ora runtime smoke path", () => {
         params: { runId: run.runId }
       })
     );
+    store.persistExternalSnapshot(StateSnapshotSchema.parse({
+      ...source,
+      continuation: {
+        activeFrameId: undefined,
+        frames: [{
+          id: `${source.runId}:continuation:0`,
+          runId: source.runId,
+          status: "completed",
+          reason: "approval_required",
+          conversationCursor: 1,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          approvedActionIds: [`${source.runId}:action:approved`],
+          resolvedClarificationIds: [],
+          createdAt: source.checkpoints[0]!.createdAt,
+          updatedAt: source.checkpoints[0]!.createdAt,
+        }],
+      },
+      conversation: [{
+        role: "tool",
+        toolCallId: `${source.runId}:tool-call-0`,
+        toolId: "skills.create",
+        content: "{\"name\":\"replay\"}",
+        status: "succeeded",
+        createdAt: source.checkpoints[0]!.createdAt,
+      }],
+      toolResults: [{
+        key: "skills.create:{\"name\":\"replay\"}",
+        toolId: "skills.create",
+        argsDigest: "{\"name\":\"replay\"}",
+        resultToolCallId: `${source.runId}:tool-call-0`,
+        status: "succeeded",
+        output: { name: "replay" },
+        createdAt: source.checkpoints[0]!.createdAt,
+        updatedAt: source.checkpoints[0]!.createdAt,
+      }],
+    }));
 
     const replay = (await handle({
       jsonrpc: "2.0",
@@ -4589,5 +5083,12 @@ describe("Ora runtime smoke path", () => {
     expect(replay.events.length).toBe(source.checkpoints[0]!.eventSeq + 1);
     expect(replay.nextSeq).toBe(replayedState.events.length);
     expect(replayedState.events.at(-1)?.type).toBe("run.replayed");
+    expect(replayedState.events.at(-1)?.payload).toMatchObject({
+      continuation: {
+        frameCount: 1,
+        conversationEntryCount: 1,
+        toolResultCount: 1,
+      },
+    });
   });
 });

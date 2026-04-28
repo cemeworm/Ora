@@ -764,6 +764,98 @@ describe("LocalRunStore", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("persists continuation ledgers in sqlite runtime storage", async () => {
+    const dir = freshStoreDir();
+    const dbPath = path.join(dir, "runtime.db");
+    const store1 = new LocalRunStore({ dataDir: dbPath, clock });
+    const runId = "run-sqlite-continuation";
+    store1.persistExternalSnapshot(StateSnapshotSchema.parse({
+      runId,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      input: { prompt: "Persist continuation sqlite.", createdAt: FIXED_TIME, context: {} },
+      config: {
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: [],
+        skillIds: [],
+        toolIds: [],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "sqlite-continuation",
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: {},
+      sharedStateSummary: {},
+      busStats: {},
+      pendingClarifications: [],
+      pendingApprovals: [],
+      continuation: {
+        activeFrameId: undefined,
+        frames: [{
+          id: `${runId}:continuation:0`,
+          runId,
+          status: "completed",
+          reason: "approval_required",
+          conversationCursor: 1,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          approvedActionIds: [`${runId}:action:approved`],
+          resolvedClarificationIds: [],
+          createdAt: FIXED_TIME,
+          updatedAt: FIXED_TIME,
+        }],
+      },
+      conversation: [{
+        role: "tool",
+        toolCallId: `${runId}:tool-call-0`,
+        toolId: "skills.create",
+        content: "{\"name\":\"sqlite\"}",
+        status: "succeeded",
+        createdAt: FIXED_TIME,
+      }],
+      toolResults: [{
+        key: "skills.create:{\"name\":\"sqlite\"}",
+        toolId: "skills.create",
+        argsDigest: "{\"name\":\"sqlite\"}",
+        resultToolCallId: `${runId}:tool-call-0`,
+        status: "succeeded",
+        output: { name: "sqlite" },
+        createdAt: FIXED_TIME,
+        updatedAt: FIXED_TIME,
+      }],
+      updatedAt: FIXED_TIME,
+    }));
+
+    const handle2 = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
+    const state = StateSnapshotSchema.parse(await handle2({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.state",
+      params: { runId },
+    }));
+
+    expect(state.continuation.frames[0]).toMatchObject({ status: "completed", reason: "approval_required" });
+    expect(state.conversation[0]).toMatchObject({ role: "tool", toolId: "skills.create" });
+    expect(state.toolResults[0]).toMatchObject({ toolId: "skills.create", output: { name: "sqlite" } });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("handles interrupt/resume lifecycle", async () => {
     const handle = createRuntimeMethodHandler(createStore());
 
@@ -800,7 +892,8 @@ describe("LocalRunStore", () => {
   });
 
   it("handles fork with checkpoint metadata", async () => {
-    const handle = createRuntimeMethodHandler(createStore());
+    const store = createStore();
+    const handle = createRuntimeMethodHandler(store);
 
     const source = await handle({
       jsonrpc: "2.0",
@@ -822,6 +915,44 @@ describe("LocalRunStore", () => {
     );
 
     expect(state.checkpoints.length).toBeGreaterThanOrEqual(1);
+    store.persistExternalSnapshot(StateSnapshotSchema.parse({
+      ...state,
+      continuation: {
+        activeFrameId: undefined,
+        frames: [{
+          id: `${state.runId}:continuation:0`,
+          runId: state.runId,
+          status: "completed",
+          reason: "approval_required",
+          conversationCursor: 1,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          approvedActionIds: [`${state.runId}:action:approved`],
+          resolvedClarificationIds: [],
+          createdAt: state.checkpoints[0]!.createdAt,
+          updatedAt: state.checkpoints[0]!.createdAt,
+        }],
+      },
+      conversation: [{
+        role: "tool",
+        toolCallId: `${state.runId}:tool-call-0`,
+        toolId: "skills.create",
+        content: "{\"name\":\"forked\"}",
+        status: "succeeded",
+        createdAt: state.checkpoints[0]!.createdAt,
+      }],
+      toolResults: [{
+        key: "skills.create:{\"name\":\"forked\"}",
+        toolId: "skills.create",
+        argsDigest: "{\"name\":\"forked\"}",
+        resultToolCallId: `${state.runId}:tool-call-0`,
+        status: "succeeded",
+        output: { name: "forked" },
+        createdAt: state.checkpoints[0]!.createdAt,
+        updatedAt: state.checkpoints[0]!.createdAt,
+      }],
+    }));
 
     const fork = await handle({
       jsonrpc: "2.0",
@@ -849,6 +980,11 @@ describe("LocalRunStore", () => {
 
     expect(forkState.events.map((e) => e.type)).toContain("run.forked");
     expect(forkState.config.metadata.forkedFromRunId).toBe(source.runId);
+    expect(forkState.continuation.frames[0]).toMatchObject({
+      runId: fork.runId,
+      status: "completed",
+      resumedFromFrameId: `${state.runId}:continuation:0`,
+    });
   });
 
   it("exports report artifacts", async () => {
@@ -866,16 +1002,66 @@ describe("LocalRunStore", () => {
       }
     }) as { runId: string };
 
+    const baseState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-before-report",
+      method: "runs.state",
+      params: { runId: run.runId },
+    }));
+    store.persistExternalSnapshot(StateSnapshotSchema.parse({
+      ...baseState,
+      continuation: {
+        activeFrameId: undefined,
+        frames: [{
+          id: `${run.runId}:continuation:0`,
+          runId: run.runId,
+          status: "completed",
+          reason: "approval_required",
+          conversationCursor: 1,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+          approvedActionIds: [`${run.runId}:action:approved`],
+          resolvedClarificationIds: [],
+          createdAt: baseState.updatedAt,
+          updatedAt: baseState.updatedAt,
+        }],
+      },
+      conversation: [{
+        role: "tool",
+        toolCallId: `${run.runId}:tool-call-0`,
+        toolId: "skills.create",
+        content: "{\"name\":\"report\"}",
+        status: "succeeded",
+        createdAt: baseState.updatedAt,
+      }],
+      toolResults: [{
+        key: "skills.create:{\"name\":\"report\"}",
+        toolId: "skills.create",
+        argsDigest: "{\"name\":\"report\"}",
+        resultToolCallId: `${run.runId}:tool-call-0`,
+        status: "succeeded",
+        output: { name: "report" },
+        createdAt: baseState.updatedAt,
+        updatedAt: baseState.updatedAt,
+      }],
+    }));
+
     const report = await handle({
       jsonrpc: "2.0",
       id: 2,
       method: "runs.exportReport",
       params: { runId: run.runId }
-    }) as { kind: string; uri: string; payload: { eventCount: number } };
+    }) as { kind: string; uri: string; payload: { eventCount: number; continuation?: { frameCount: number; conversationEntryCount: number; toolResultCount: number } } };
 
     expect(report.kind).toBe("report");
     expect(report.uri).toMatch(/^file:\/\//);
     expect(report.payload.eventCount).toBeGreaterThan(0);
+    expect(report.payload.continuation).toMatchObject({
+      frameCount: 1,
+      conversationEntryCount: 1,
+      toolResultCount: 1,
+    });
     ArtifactRefSchema.parse(report);
 
     // Verify file exists on disk
@@ -885,6 +1071,7 @@ describe("LocalRunStore", () => {
     // Verify the file content is valid JSON
     const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(content.runId).toBe(run.runId);
+    expect(content.continuation.frameCount).toBe(1);
 
     // Clean up
     fs.rmSync(dir, { recursive: true, force: true });

@@ -38,6 +38,7 @@ interface KernelResumeParams extends KernelLifecycleBaseParams {
   clarificationPatch: Record<string, unknown>;
   approvedActionIds: string[];
   approvedActions: ApprovedResumeAction[];
+  resumeSnapshot?: StateSnapshot;
 }
 
 export async function executeTracedKernelRun(params: KernelLifecycleBaseParams): Promise<StateSnapshot> {
@@ -61,6 +62,7 @@ export async function executeTracedKernelResume(params: KernelResumeParams): Pro
           approvedActionIds: params.approvedActionIds,
           approvedActions: params.approvedActions,
         },
+        resumeState: params.resumeSnapshot,
       });
       return sessionBoundSnapshot(snapshot, params.sessionId, params.turnIndex);
     },

@@ -213,6 +213,107 @@ export const ArtifactRefSchema = z.object({
 });
 export type ArtifactRef = z.infer<typeof ArtifactRefSchema>;
 
+export const RunContinuationStatusSchema = z.enum([
+  "none",
+  "paused",
+  "resuming",
+  "executing_tool",
+  "awaiting_model",
+  "completed",
+  "failed",
+]);
+export type RunContinuationStatus = z.infer<typeof RunContinuationStatusSchema>;
+
+export const RunContinuationReasonSchema = z.enum([
+  "approval_required",
+  "clarification_required",
+  "tool_interrupted",
+  "tool_failed",
+  "provider_failed",
+  "manual_interrupt",
+  "fork",
+  "replay",
+]);
+export type RunContinuationReason = z.infer<typeof RunContinuationReasonSchema>;
+
+export const RunContinuationFrameSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  status: RunContinuationStatusSchema,
+  reason: RunContinuationReasonSchema,
+  agentId: z.string().min(1).optional(),
+  nodeId: z.string().min(1).optional(),
+  planItemId: z.string().min(1).optional(),
+  modelIteration: z.number().int().nonnegative().optional(),
+  conversationCursor: z.number().int().nonnegative().default(0),
+  pendingActionIds: z.array(z.string().min(1)).default([]),
+  pendingToolCallIds: z.array(z.string().min(1)).default([]),
+  pendingClarificationIds: z.array(z.string().min(1)).default([]),
+  approvedActionIds: z.array(z.string().min(1)).default([]),
+  resolvedClarificationIds: z.array(z.string().min(1)).default([]),
+  resumedFromFrameId: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type RunContinuationFrame = z.infer<typeof RunContinuationFrameSchema>;
+
+export const RunContinuationSchema = z.object({
+  activeFrameId: z.string().min(1).optional(),
+  frames: z.array(RunContinuationFrameSchema).default([]),
+});
+export type RunContinuation = z.infer<typeof RunContinuationSchema>;
+
+export const RuntimeConversationToolCallRefSchema = z.object({
+  id: z.string().min(1),
+  providerCallId: z.string().min(1).optional(),
+  toolId: z.string().min(1),
+  args: z.record(z.unknown()).default({}),
+});
+export type RuntimeConversationToolCallRef = z.infer<typeof RuntimeConversationToolCallRefSchema>;
+
+export const RuntimeConversationEntrySchema = z.discriminatedUnion("role", [
+  z.object({
+    role: z.literal("system"),
+    content: z.string().default(""),
+    createdAt: z.number().int().nonnegative(),
+  }),
+  z.object({
+    role: z.literal("user"),
+    content: z.string(),
+    createdAt: z.number().int().nonnegative(),
+  }),
+  z.object({
+    role: z.literal("assistant"),
+    content: z.string(),
+    toolCalls: z.array(RuntimeConversationToolCallRefSchema).default([]),
+    providerMessageId: z.string().min(1).optional(),
+    createdAt: z.number().int().nonnegative(),
+  }),
+  z.object({
+    role: z.literal("tool"),
+    toolCallId: z.string().min(1),
+    providerCallId: z.string().min(1).optional(),
+    toolId: z.string().min(1),
+    content: z.string(),
+    status: z.enum(["succeeded", "failed", "interrupted", "denied"]),
+    createdAt: z.number().int().nonnegative(),
+  }),
+]);
+export type RuntimeConversationEntry = z.infer<typeof RuntimeConversationEntrySchema>;
+
+export const RuntimeToolResultLedgerEntrySchema = z.object({
+  key: z.string().min(1),
+  toolId: z.string().min(1),
+  argsDigest: z.string().min(1),
+  resultToolCallId: z.string().min(1),
+  status: z.enum(["succeeded", "failed", "interrupted", "denied"]),
+  output: z.unknown().optional(),
+  error: z.string().optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type RuntimeToolResultLedgerEntry = z.infer<typeof RuntimeToolResultLedgerEntrySchema>;
+
 export const RunEventStreamSchema = z.object({
   runId: z.string().min(1),
   fromSeq: z.number().int().nonnegative(),
@@ -543,6 +644,9 @@ export const StateSnapshotSchema = z.object({
   todos: z.array(TodoItemSchema).default([]),
   actions: z.array(ActionRecordSchema),
   toolCalls: z.array(OraToolCallEnvelopeSchema).default([]),
+  continuation: RunContinuationSchema.default({ frames: [] }),
+  conversation: z.array(RuntimeConversationEntrySchema).default([]),
+  toolResults: z.array(RuntimeToolResultLedgerEntrySchema).default([]),
   policyDecisions: z.array(PolicyDecisionSchema).default([]),
   checkpoints: z.array(CheckpointMetaSchema),
   events: z.array(OraEventEnvelopeSchema),

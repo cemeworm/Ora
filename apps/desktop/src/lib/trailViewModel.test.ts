@@ -179,6 +179,36 @@ describe("trail debugger view model", () => {
     });
   });
 
+  it("surfaces active continuation frames as flow findings", () => {
+    const snapshot = baseSnapshot({
+      continuation: {
+        activeFrameId: "run-test:continuation:0",
+        frames: [{
+          id: "run-test:continuation:0",
+          runId: "run-test",
+          status: "paused",
+          reason: "approval_required",
+          conversationCursor: 2,
+          pendingActionIds: ["run-test:action:tool-1"],
+          pendingToolCallIds: ["run-test:tool-call-1"],
+          pendingClarificationIds: [],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          createdAt: 3,
+          updatedAt: 4,
+        }],
+      },
+    });
+
+    expect(collectTrailFindings(snapshot, undefined, undefined, [])).toContainEqual(
+      expect.objectContaining({
+        id: "continuation.paused:run-test:continuation:0",
+        severity: "info",
+        suggestedTab: "flow",
+      }),
+    );
+  });
+
   it("summarizes degraded effective runtime strategy", () => {
     const snapshot = baseSnapshot({
       config: {
@@ -267,6 +297,9 @@ function baseSnapshot(patch: Partial<OraStateSnapshot> = {}): OraStateSnapshot {
     todos: [],
     actions: [],
     toolCalls: [],
+    continuation: { frames: [] },
+    conversation: [],
+    toolResults: [],
     policyDecisions: [],
     checkpoints: [],
     events: [],
