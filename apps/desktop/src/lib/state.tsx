@@ -457,6 +457,47 @@ function readAgentConversationMessage(value: Record<string, unknown>): OraStateS
     topic: typeof value.topic === "string" ? value.topic : undefined,
     correlationId: typeof value.correlationId === "string" ? value.correlationId : undefined,
     artifactIds: Array.isArray(value.artifactIds) ? value.artifactIds.filter((item): item is string => typeof item === "string") : [],
+    transcript: readAgentConversationTranscript(value.transcript),
+  };
+}
+
+function readAgentConversationTranscript(value: unknown): OraStateSnapshot["agentMessages"][number]["transcript"] | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (
+    value.kind !== "stage_transcript" ||
+    typeof value.groupId !== "string" ||
+    typeof value.stageId !== "string" ||
+    typeof value.stageLabel !== "string" ||
+    typeof value.sequence !== "number" ||
+    typeof value.speakerLabel !== "string"
+  ) {
+    return undefined;
+  }
+  const stance = value.stance === "affirmative" ||
+    value.stance === "negative" ||
+    value.stance === "moderator" ||
+    value.stance === "neutral"
+    ? value.stance
+    : "neutral";
+  const status = value.status === "sent" ||
+    value.status === "running" ||
+    value.status === "done" ||
+    value.status === "failed"
+    ? value.status
+    : "done";
+  return {
+    kind: "stage_transcript",
+    groupId: value.groupId,
+    groupLabel: typeof value.groupLabel === "string" ? value.groupLabel : undefined,
+    stageId: value.stageId,
+    stageLabel: value.stageLabel,
+    sequence: value.sequence,
+    speakerLabel: value.speakerLabel,
+    speakerId: typeof value.speakerId === "string" ? value.speakerId : undefined,
+    stance,
+    status,
   };
 }
 

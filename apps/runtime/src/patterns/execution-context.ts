@@ -1,4 +1,5 @@
 import type {
+  AgentConversationTranscript,
   BusStats,
   CoordinationPattern,
   MemoryKind,
@@ -94,6 +95,7 @@ export interface PatternExecutionContext {
     topic?: string;
     correlationId?: string;
     artifactIds?: string[];
+    transcript?: AgentConversationTranscript;
   }): { id: string };
   writeSharedState(params: {
     agentId: string;

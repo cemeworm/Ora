@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
@@ -501,6 +501,141 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Builder"]);
     expect(assistant?.turn?.agentMessages[0]?.content).toContain("Full team lead assignment with the ending preserved.");
     expect(assistant?.turn?.agentMessages[0]?.content.endsWith("...")).toBe(false);
+  });
+
+  it("preserves stage transcript metadata on assistant turns", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-debate",
+      sessionId: "session-debate",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: DEBATE_MODE_ID,
+      input: { prompt: "debate this", createdAt, context: {} },
+      config: {
+        modeId: DEBATE_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["moderator", "debate_agent"],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-debate-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: "moderator",
+          label: "Moderator",
+          role: "Synthesize.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "debate_agent",
+          label: "Debate Agent",
+          role: "Argue both sides.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [
+        {
+          id: "run-debate:agent-message:0",
+          runId: "run-debate",
+          createdAt: createdAt + 1,
+          fromAgentId: "debate_agent",
+          toAgentIds: ["moderator"],
+          threadId: "run-debate:debate",
+          nodeId: "debate",
+          kind: "reply",
+          status: "done",
+          content: "Affirmative opening.",
+          artifactIds: [],
+          transcript: {
+            kind: "stage_transcript",
+            groupId: "debate",
+            groupLabel: "结构化辩论",
+            stageId: "affirmative-lead-opening",
+            stageLabel: "开篇立论",
+            sequence: 0,
+            speakerLabel: "正方主辩",
+            speakerId: "affirmative_lead",
+            stance: "affirmative",
+            status: "done",
+          },
+        },
+        {
+          id: "run-debate:agent-message:1",
+          runId: "run-debate",
+          createdAt: createdAt + 2,
+          fromAgentId: "debate_agent",
+          toAgentIds: ["moderator"],
+          threadId: "run-debate:debate",
+          nodeId: "debate",
+          kind: "reply",
+          status: "done",
+          content: "Negative opening.",
+          artifactIds: [],
+          transcript: {
+            kind: "stage_transcript",
+            groupId: "debate",
+            groupLabel: "结构化辩论",
+            stageId: "negative-lead-opening",
+            stageLabel: "开篇立论",
+            sequence: 1,
+            speakerLabel: "反方主辩",
+            speakerId: "negative_lead",
+            stance: "negative",
+            status: "done",
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Moderator synthesis." },
+      updatedAt: createdAt + 3,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-debate:user",
+        sessionId: "session-debate",
+        runId: "run-debate",
+        turnIndex: 1,
+        role: "user",
+        content: "debate this",
+        pattern: "orchestrator_subagent",
+        modeId: DEBATE_MODE_ID,
+        createdAt,
+      }],
+      { "run-debate": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.agentMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["正方主辩", "反方主辩"]);
+    expect(new Set(assistant?.turn?.agentMessages.map((message) => message.fromAgentId))).toEqual(new Set(["debate_agent"]));
   });
 
   it("keeps orchestrator subagent handoff messages in assistant turns", () => {

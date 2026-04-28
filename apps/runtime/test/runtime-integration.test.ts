@@ -20,6 +20,7 @@ import {
   ProjectInsightSchema,
   ProjectSignalSchema,
   RunTrailSchema,
+  DEBATE_MODE_ID,
   DEERFLOW_HARNESS_MODE_ID,
   createModeSpecFromPattern,
   getPatternDefinition,
@@ -514,6 +515,45 @@ describe("LocalRunStore", () => {
 
     expect(publishedInput?.content).toContain(suffix);
     expect(publishedInput?.content.endsWith("...")).toBe(false);
+  });
+
+  it("emits ordered debate transcript messages from one reusable debate agent", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: "start-debate",
+      method: "runs.start",
+      params: {
+        input: { prompt: "AI should be allowed in classrooms." },
+        config: { pattern: "orchestrator_subagent", modeId: DEBATE_MODE_ID }
+      }
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-debate",
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const transcriptMessages = state.agentMessages.filter((message) => message.transcript);
+
+    expect(state.modeId).toBe(DEBATE_MODE_ID);
+    expect(transcriptMessages).toHaveLength(9);
+    expect(transcriptMessages.map((message) => message.transcript?.speakerLabel)).toEqual([
+      "正方主辩",
+      "反方主辩",
+      "正方第一副辩",
+      "反方第一副辩",
+      "正方第二副辩",
+      "反方第二副辩",
+      "正方主辩",
+      "反方主辩",
+      "主持人总结",
+    ]);
+    expect(transcriptMessages.map((message) => message.transcript?.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(new Set(transcriptMessages.slice(0, 8).map((message) => message.fromAgentId))).toEqual(new Set(["debate_agent"]));
+    expect(new Set(transcriptMessages.map((message) => message.transcript?.groupId))).toEqual(new Set(["debate"]));
+    expect(transcriptMessages.at(-1)?.fromAgentId).toBe("moderator");
   });
 
   it("emits root Ora handoff and observer messages for orchestrator subagent runs", async () => {

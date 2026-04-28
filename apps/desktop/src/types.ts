@@ -237,6 +237,18 @@ export interface TurnAgentConversationMessage {
   topic?: string;
   correlationId?: string;
   artifactIds: string[];
+  transcript?: {
+    kind: "stage_transcript";
+    groupId: string;
+    groupLabel?: string;
+    stageId: string;
+    stageLabel: string;
+    sequence: number;
+    speakerLabel: string;
+    speakerId?: string;
+    stance: "affirmative" | "negative" | "moderator" | "neutral";
+    status: "sent" | "running" | "done" | "failed";
+  };
   timestamp: string;
 }
 

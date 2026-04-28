@@ -18,6 +18,7 @@ import {
   DEFAULT_AGENT_MODE_TOOL_IDS,
   DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
+  DEBATE_MODE_ID,
   DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
   EvaluationAnnotationListParamsSchema,
@@ -162,7 +163,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(9);
+    expect(MVP_MODES).toHaveLength(10);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -175,6 +176,7 @@ describe("Ora shared contracts", () => {
       "orchestrator_subagent",
       DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
+      DEBATE_MODE_ID,
       ORA_SELF_BUILDER_MODE_ID,
       MODE_STUDIO_BUILDER_MODE_ID,
       "agent_teams",
@@ -229,6 +231,11 @@ describe("Ora shared contracts", () => {
       "research",
       "review",
     ]);
+    const debate = MVP_MODES.find((mode) => mode.id === DEBATE_MODE_ID)!;
+    expect(debate.systemPreset).toBe(true);
+    expect(debate.family).toBe("orchestrator_subagent");
+    expect(debate.profiles.map((profile) => profile.id)).toEqual(["moderator", "debate_agent"]);
+    expect(debate.nodes.map((node) => node.id)).toEqual(["frame", "debate", "synthesis"]);
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
@@ -266,7 +273,9 @@ describe("Ora shared contracts", () => {
 
     expect([...systemProfiles.keys()].sort()).toEqual([
       "builder",
+      "debate_agent",
       "generator",
+      "moderator",
       "ora",
       "orchestrator",
       "release_reviewer",
@@ -610,6 +619,36 @@ describe("Ora shared contracts", () => {
     });
     expect(agentMessage.status).toBe("sent");
     expect(agentMessage.artifactIds).toEqual([]);
+    expect(agentMessage.transcript).toBeUndefined();
+
+    const transcriptMessage = AgentConversationMessageSchema.parse({
+      id: "run-1:agent-message:1",
+      runId: "run-1",
+      createdAt: 2,
+      fromAgentId: "debate_agent",
+      toAgentIds: ["moderator"],
+      threadId: "debate:run-1",
+      nodeId: "debate",
+      planItemId: "run-1:debate",
+      kind: "reply",
+      status: "done",
+      content: "The affirmative case stands unless the negative side proves the risk dominates.",
+      transcript: {
+        kind: "stage_transcript",
+        groupId: "debate",
+        groupLabel: "结构化辩论",
+        stageId: "affirmative-lead-opening",
+        stageLabel: "开篇立论",
+        sequence: 0,
+        speakerLabel: "正方主辩",
+        speakerId: "affirmative_lead",
+        stance: "affirmative",
+        status: "done",
+      },
+    });
+    expect(transcriptMessage.transcript?.speakerLabel).toBe("正方主辩");
+    expect(transcriptMessage.transcript?.sequence).toBe(0);
+    expect(transcriptMessage.transcript?.stance).toBe("affirmative");
 
     const decision = PolicyDecisionSchema.parse({
       id: "policy-1",
@@ -1872,7 +1911,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(8);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(9);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

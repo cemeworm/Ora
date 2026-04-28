@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
-import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -1831,6 +1831,116 @@ function createSingleAgentModeSpec(): ModeSpec {
   }));
 }
 
+function createDebateModeSpec(): ModeSpec {
+  const now = 0;
+  const debateAgentSoul = [
+    "You are Debate Agent, Ora's reusable adversarial argument specialist.",
+    "Responsibility: for each assigned virtual speaker turn, firmly defend the assigned stance and attack weak assumptions, missing evidence, contradictions, and burden-of-proof failures in the opposing side.",
+    "Boundary: do not fabricate facts, knowingly use invalid arguments, make personal attacks, or concede casually; any concession must be narrow, explicit, and strategically integrated.",
+    "Output: separate claims, evidence, rebuttal, and burden-of-proof pressure while responding to prior arguments instead of giving isolated generic speeches.",
+  ].join("\n");
+  const moderatorSoul = [
+    "You are Moderator, Ora's structured debate lead.",
+    "Responsibility: frame the proposition, enforce the speaking order, and synthesize the strongest evidence and unresolved burden-of-proof questions.",
+    "Boundary: do not let either side's rhetoric hide missing evidence, and do not present unresolved factual dependencies as settled.",
+    "Output: give concise framing and final synthesis that identifies the strongest arguments, remaining uncertainty, and the most defensible conclusion.",
+  ].join("\n");
+
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: DEBATE_MODE_ID,
+    family: "orchestrator_subagent",
+    label: "Debate",
+    summary: "A moderator frames a proposition, one reusable Debate Agent argues both sides through virtual speaker seats, then the moderator synthesizes.",
+    description: "Use a structured debate surface for watching staged adversarial argumentation in the assistant content area without creating separate real agents for each debate seat.",
+    recommendedUse: "Use when a proposition benefits from explicit pro/con pressure, rebuttal, and a final moderated synthesis.",
+    failureMode: "Debate can over-amplify adversarial framing when the user needs direct execution, research, or a neutral answer.",
+    systemPreset: true,
+    nodes: [
+      {
+        id: "frame",
+        template: "decompose",
+        label: "Moderator framing",
+        title: "Moderator framing",
+        ownerAgentId: "moderator",
+        enabled: true,
+        instructions: "Frame the user's proposition, restate debate rules, and identify the burden of proof before dispatching the debate turns.",
+        prompt: "Proposition or user request:\n{{prompt}}\n\nFrame the structured debate. Keep it concise and make the speaking order explicit.",
+        config: {},
+      },
+      {
+        id: "debate",
+        template: "research",
+        label: "Debate speeches",
+        title: "Debate speeches",
+        ownerAgentId: "debate_agent",
+        enabled: true,
+        instructions: debateAgentSoul,
+        config: {},
+      },
+      {
+        id: "synthesis",
+        template: "synthesize",
+        label: "Moderator synthesis",
+        title: "Moderator synthesis",
+        ownerAgentId: "moderator",
+        enabled: true,
+        instructions: "Synthesize the completed debate. Identify the strongest arguments on each side, unresolved factual dependencies, and the most defensible conclusion without pretending the debate resolved what it did not.",
+        prompt: "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{framing}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis.",
+        config: {},
+      },
+    ],
+    edges: [
+      { id: "frame-debate", source: "frame", target: "debate", kind: "delegation", label: "dispatch", enabled: true },
+      { id: "debate-synthesis", source: "debate", target: "synthesis", kind: "control", label: "synthesize", enabled: true },
+    ],
+    stopPolicy: {
+      type: "queue_drained",
+      detail: "Stop after the moderator has synthesized the ordered debate transcript.",
+    },
+    capabilityFlags: {
+      supportsPersistentWorkers: false,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "high_risk_only",
+      skillIds: [],
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily("orchestrator_subagent"),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.orchestrator_subagent.allowedTemplates,
+      requiredNodeTemplates: ["decompose", "synthesize"],
+      readOnly: true,
+      allowReorder: false,
+      allowCreate: false,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+    completionPolicy: completionPolicyForPreset("persistent"),
+    runtimePolicy: runtimePolicyForPreset("delegated"),
+    profiles: [
+      profile(
+        "moderator",
+        "Moderator",
+        "Frame the proposition, enforce debate order, and synthesize the final answer.",
+        "orchestrator_subagent",
+        ["session", "project"],
+        moderatorSoul,
+      ),
+      profile(
+        "debate_agent",
+        "Debate Agent",
+        "Reuse one adversarial but honest argumentation agent for every virtual debate seat.",
+        "orchestrator_subagent",
+        ["session", "project"],
+        debateAgentSoul,
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
 function createModeStudioBuilderModeSpec(): ModeSpec {
   const now = 0;
   return autoLayoutModeSpec(ModeSpecSchema.parse({
@@ -2072,6 +2182,7 @@ export const MVP_MODES = [
   ...BUILTIN_PATTERN_MODES.slice(0, ORCHESTRATOR_MODE_INDEX + 1),
   createDeerflowHarnessModeSpec(),
   createSingleAgentModeSpec(),
+  createDebateModeSpec(),
   createOraSelfBuilderModeSpec(),
   createModeStudioBuilderModeSpec(),
   ...BUILTIN_PATTERN_MODES.slice(ORCHESTRATOR_MODE_INDEX + 1),

@@ -325,6 +325,7 @@ export async function executeRuntimeKernel(
     topic?: string;
     correlationId?: string;
     artifactIds?: string[];
+    transcript?: AgentConversationMessage["transcript"];
   }) => {
     const message = AgentConversationMessageSchema.parse({
       id: `${runId}:agent-message:${agentMessages.length}`,

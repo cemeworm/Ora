@@ -1,7 +1,7 @@
 # TASK-20260429-0003-debate-mode-stage-transcript
 
 **Created:** 2026-04-29 00:03 CST
-**Status:** Planned
+**Status:** Done
 
 ---
 
@@ -71,8 +71,14 @@ Implement a reusable Stage Transcript content surface and use debate mode as its
 - apps/desktop/src/components/StageTranscript.tsx
 - apps/desktop/src/lib/state.tsx
 - apps/desktop/src/lib/runtimeClient.ts
+- apps/desktop/src/lib/runtimeClient.test.ts
 - apps/desktop/src/lib/viewModel.ts
 - apps/desktop/src/lib/viewModel.test.ts
+- apps/desktop/src/components/AssistantTurnCard.test.tsx
+- apps/desktop/src/lib/state.test.ts
+- apps/runtime/test/runtime-integration.test.ts
+- apps/runtime/test/runtime-smoke.test.ts
+- packages/shared/test/contracts.test.ts
 
 ## Decisions
 - Decision: Debate v1 is a mode preset, not a new coordination pattern.
@@ -97,56 +103,61 @@ Implement a reusable Stage Transcript content surface and use debate mode as its
   - Tradeoffs: mode-specific driver logic adds a special case, but avoids broad pattern/schema blast radius while preserving correct debate order.
 
 ## Open Issues
-- [ ] Confirm whether debate preset should be user-visible in Modes immediately or hidden behind a mock/dev flag for first iteration.
-- [ ] Decide final Chinese/English labels for Stage Transcript UI once implementation starts.
-- [ ] Decide whether the debate mode id should be `debate`, `structured_debate`, or another lowercase preset id before adding the built-in mode.
+- None.
 
 ## TODO
-- [ ] Inspect current projection path from runtime snapshot to `AssistantTurnAttachment.agentMessages`.
-- [ ] Add typed transcript metadata to shared/runtime/desktop message contracts.
-- [ ] Preserve transcript metadata through stream merge and view-model projection.
-- [ ] Implement Stage Transcript component.
-- [ ] Add debate mode preset, Debate Agent soul, and mode-specific debate execution path.
-- [ ] Add mock debate run data.
-- [ ] Add tests and verification evidence.
+- None.
 
 ## Progress Log
 - 2026-04-29 00:03 CST - Task created with initial debate mode and Stage Transcript plan.
   Next: review architecture risks, refine transcript metadata decision, then implement.
 - 2026-04-29 CST - Plan revised after architecture review. Key corrections: use typed `AgentConversationMessage.transcript`, preserve metadata through stream merge/projection, avoid `primitives.ts` unless adding a new pattern, and add mode-specific debate execution instead of forcing eight speeches through the generic four-slot orchestrator driver.
   Next: inspect projection path in detail, patch shared/runtime message contracts, then build Stage Transcript.
+- 2026-04-29 CST - Implementation started. Assumptions: debate preset will be user-visible immediately, mode id will be `debate`, and Stage Transcript UI labels will use concise Chinese labels matching the existing desktop UI.
+  Next: inspect snapshot-to-turn projection, identify the smallest runtime debate special case, then patch transcript contracts and tests.
+- 2026-04-29 CST - Implementation completed. Added typed transcript metadata, Stage Transcript rendering, stream/view-model preservation, debate preset/runtime sequence, mock debate sequence, and focused/shared/runtime/desktop tests. Verification passed for root test, typecheck, build, and lint; repo-wide TODO helper remains noisy from historical/generated files, with no blocking TODOs in this task after closure.
+  Next: none.
 
 ## Retrospective
 - Record 0-3 highest-value pitfalls from this task.
 - Leave reusable operational lessons here even when they later get promoted into a skill.
 
 ### Item 1
-- Pitfall:
-- Symptom:
-- Root Cause:
-- Reusable Guardrail:
-- Evidence:
-- Scope:
-- Suggested Writeback Target:
-- Status: local_only | candidate_for_skill | promoted_to_skill
+- Pitfall: A repo-wide TODO helper is too noisy to serve as the sole DONE gate in this Ora workspace.
+- Symptom: `todo_scan.sh` exited 0 but emitted historical task TODOs, skill-template TODOs, runtime DB binary hits, and generated sidecar/target TODOs unrelated to this change.
+- Root Cause: The helper scans broadly across repo-local historical/generated artifacts instead of only active task-owned files.
+- Reusable Guardrail: Record the mandated helper output, then pair it with a task-owned file review and source/test verification evidence.
+- Evidence: Current run emitted unrelated hits under historical `tasks/*`, `.ora/runtime.db`, `skills/skill-creator`, `apps/desktop/src-tauri/target/**`, and bundled sidecar assets; the active task TODO section is now `None`.
+- Scope: local_only
+- Suggested Writeback Target: None.
+- Status: local_only
 
 ## Functional Verification
 
 ### Code Verification (Code Correctness)
-- [ ] Code compiles/runs without errors
-- [ ] Unit tests pass
-- [ ] Lint checks pass
+- [x] Code compiles/runs without errors
+- [x] Unit tests pass
+- [x] Lint checks pass
 
-**Output**: Not run yet.
+**Output**:
+- `pnpm typecheck` -> PASS (`packages/shared`, `apps/runtime`, `apps/desktop` typechecks completed).
+- `pnpm test` -> PASS (`packages/shared`: 85 tests; `apps/desktop`: 60 tests; `apps/runtime`: 244 tests).
+- `pnpm build` -> PASS (`packages/shared` build, `apps/runtime` build, `apps/desktop` production build). Vite emitted only the existing chunk-size warning.
+- `pnpm lint` -> PASS (`pnpm -r --if-present lint`, no package lint scripts reported failures).
 
 ### Functional Verification (Feature Works)
-- [ ] Stage Transcript displays the required debate order in the main content area.
-- [ ] The same underlying Debate Agent can render as multiple virtual speakers.
-- [ ] Existing non-debate collaboration timeline behavior remains unchanged.
-- [ ] Transcript messages do not also appear in `协作轨迹`.
-- [ ] Moderator synthesis remains the final assistant answer, with transcript treated as visible process.
+- [x] Stage Transcript displays the required debate order in the main content area.
+- [x] The same underlying Debate Agent can render as multiple virtual speakers.
+- [x] Existing non-debate collaboration timeline behavior remains unchanged.
+- [x] Transcript messages do not also appear in `协作轨迹`.
+- [x] Moderator synthesis remains the final assistant answer, with transcript treated as visible process.
 
-**Output**: Not run yet.
+**Output**:
+- `apps/runtime/test/runtime-integration.test.ts` debate case asserts 9 transcript entries in the required order and the first 8 all come from `debate_agent`.
+- `apps/desktop/src/components/AssistantTurnCard.test.tsx` asserts Stage Transcript renders in the main turn and `visibleAgentMessages` filters transcript messages out of `协作轨迹`.
+- `apps/desktop/src/lib/viewModel.test.ts` asserts transcript metadata survives projection and same `fromAgentId` renders multiple virtual speaker labels.
+- `apps/desktop/src/lib/state.test.ts` asserts stream merge preserves `message.transcript`.
+- Browser/mock support is covered by `apps/desktop/src/lib/runtimeClient.ts` deterministic `debate` snapshot and full desktop test suite.
 
 ## Comparison
 
@@ -154,10 +165,10 @@ Implement a reusable Stage Transcript content surface and use debate mode as its
 - Reference implementation/template/similar task: existing `AssistantTurnCard` collaboration timeline and current mode preset architecture in shared `modes.ts`.
 
 ### Comparison Points
-- [ ] Stage Transcript reuses existing assistant turn/message data rather than introducing a parallel source of truth.
-- [ ] Debate preset follows current mode preset validation and runtime projection patterns.
-- [ ] UI avoids debate-only layout assumptions so the component can serve future staged agent interactions.
-- [ ] Debate execution does not rely on generic orchestrator bag slots that would overwrite repeated speeches.
+- [x] Stage Transcript reuses existing assistant turn/message data rather than introducing a parallel source of truth.
+- [x] Debate preset follows current mode preset validation and runtime projection patterns.
+- [x] UI avoids debate-only layout assumptions so the component can serve future staged agent interactions.
+- [x] Debate execution does not rely on generic orchestrator bag slots that would overwrite repeated speeches.
 
 ### Findings
 - Consistency: planned direction matches existing mode-driven architecture and task-source-of-truth workflow.
@@ -169,20 +180,20 @@ Implement a reusable Stage Transcript content surface and use debate mode as its
 ### Checkpoint 1: Transcript Contract
 - Requirement: transcript entries can represent stage, speaker label, stance, order, status, and content without breaking existing agent messages.
 - Verification method: shared schema tests, stream merge tests, and view-model projection/grouping tests.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Not run yet.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `packages/shared/test/contracts.test.ts`, `apps/desktop/src/lib/state.test.ts`, and `apps/desktop/src/lib/viewModel.test.ts` passed in `pnpm test`.
 
 ### Checkpoint 2: Debate Preset Semantics
 - Requirement: debate preset uses Moderator + one Debate Agent and enforces the required speaking order.
 - Verification method: shared/runtime tests or mock runtime snapshot assertions covering all eight speeches and moderator synthesis.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Not run yet.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `packages/shared/test/contracts.test.ts` validates the `debate` preset profiles/nodes; `apps/runtime/test/runtime-integration.test.ts` validates 8 Debate Agent speeches plus moderator synthesis.
 
 ### Checkpoint 3: Desktop Rendering
 - Requirement: debate process is visible as Stage Transcript in the main assistant content area and existing non-debate turns still render correctly.
 - Verification method: component tests plus browser/manual smoke if UI changes are substantial.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Not run yet.
+- Status: [x] Pass / [ ] Fail
+- Evidence: `apps/desktop/src/components/AssistantTurnCard.test.tsx` validates Stage Transcript rendering and collaboration filtering; full desktop test/build passed.
 
 ## Compressed State (<= 20 lines)
 - Objective: Build debate mode as first user of generic Stage Transcript.
@@ -194,24 +205,34 @@ Implement a reusable Stage Transcript content surface and use debate mode as its
 - UI direction: Stage Transcript in main assistant content area, not a debate-only split arena.
 - Transcript messages must be filtered out of the old collaboration timeline to avoid duplicate process display.
 - Active likely files: shared runtime/modes, runtime execution-context/driver-registry, desktop state/types/AssistantTurnCard/new StageTranscript/runtimeClient/viewModel tests.
-- Open issues: visibility gating, final UI labels, final preset id.
-- Verification status: Not run yet.
-- Next actions (top 3; exact file/function): inspect snapshot-to-turn projection; patch transcript message contracts; implement Stage Transcript.
-- Blockers/Risks: over-customizing debate UI; losing transcript fields in stream merge; accidentally using generic driver state slots for repeated debate turns.
+- Open issues resolved for v1 implementation: debate preset visible immediately; mode id `debate`; Stage Transcript labels in concise Chinese.
+- Verification status: Passed root `pnpm test`, `pnpm typecheck`, `pnpm build`, and `pnpm lint`.
+- Next actions (top 3; exact file/function): none.
+- Blockers/Risks: No known blockers. Preview HTTP smoke passed; no interactive browser screenshot pass was run.
 
 ## Verification
 
 ### Evidence Requirements
 Must provide the following evidence before Done:
-- [ ] Code Verification output (compilation/tests/lint)
-- [ ] Functional Verification output (feature verification)
-- [ ] Retrospective Evidence (if applicable)
-- [ ] Comparison Evidence (if applicable)
-- [ ] Checkpoints Evidence (if applicable)
+- [x] Code Verification output (compilation/tests/lint)
+- [x] Functional Verification output (feature verification)
+- [x] Retrospective Evidence (if applicable)
+- [x] Comparison Evidence (if applicable)
+- [x] Checkpoints Evidence (if applicable)
 
 ### Environment
 - Environment: `/Users/quintenchen/developer/Ora`, zsh, CST.
 
 ### Commands run + outputs
 - Commands run + outputs:
-  - Not run yet.
+  - `pnpm --filter @ora/shared test` -> PASS, 1 file / 85 tests.
+  - `pnpm --filter @ora/desktop test` -> PASS, 11 files / 60 tests.
+  - `pnpm --filter @ora/runtime test` -> PASS, 16 files / 244 tests.
+  - `pnpm typecheck` -> PASS, shared/runtime/desktop typechecks completed.
+  - `pnpm test` -> PASS, shared 85 + desktop 60 + runtime 244 tests.
+  - `pnpm build` -> PASS, shared/runtime TS builds and desktop Vite production build completed; Vite reported only chunk-size warning.
+  - `pnpm lint` -> PASS, no lint failures from packages with lint scripts.
+  - `git diff --check` -> PASS.
+  - `pnpm --filter @ora/desktop preview --host 127.0.0.1 --port 4173` + `curl -I http://127.0.0.1:4173` -> PASS, HTTP 200; preview server was stopped after smoke.
+  - `bash /Users/quintenchen/.codex/skills/long-task-protocol/scripts/todo_scan.sh` -> exited 0 but emitted unrelated historical/generated/binary TODO noise; active task TODO section is closed as `None`.
+  - `rg --pcre2 -n "TODO(?!\\(FOLLOWUP\\))|FIXME|XXX" <changed source/test files>` -> PASS, no matches.

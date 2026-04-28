@@ -347,6 +347,17 @@ describe("desktop workbench state", () => {
             status: "done",
             content: "@builder build this.",
             artifactIds: [],
+            transcript: {
+              kind: "stage_transcript",
+              groupId: "debate",
+              groupLabel: "结构化辩论",
+              stageId: "affirmative-lead-opening",
+              stageLabel: "开篇立论",
+              sequence: 0,
+              speakerLabel: "正方主辩",
+              stance: "affirmative",
+              status: "done",
+            },
           },
         },
       }],
@@ -357,5 +368,7 @@ describe("desktop workbench state", () => {
     expect(merged?.agentMessages).toHaveLength(1);
     expect(merged?.agentMessages[0]?.fromAgentId).toBe("team_lead");
     expect(merged?.agentMessages[0]?.toAgentIds).toEqual(["builder"]);
+    expect(merged?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
+    expect(merged?.agentMessages[0]?.transcript?.sequence).toBe(0);
   });
 });

@@ -1431,6 +1431,7 @@ function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationM
       topic: message.topic,
       correlationId: message.correlationId,
       artifactIds: message.artifactIds,
+      transcript: message.transcript,
       timestamp: formatClock(message.createdAt),
     };
   });

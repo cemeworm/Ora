@@ -181,6 +181,28 @@ export const AgentConversationMessageStatusSchema = z.enum([
 ]);
 export type AgentConversationMessageStatus = z.infer<typeof AgentConversationMessageStatusSchema>;
 
+export const AgentConversationTranscriptStanceSchema = z.enum([
+  "affirmative",
+  "negative",
+  "moderator",
+  "neutral",
+]);
+export type AgentConversationTranscriptStance = z.infer<typeof AgentConversationTranscriptStanceSchema>;
+
+export const AgentConversationTranscriptSchema = z.object({
+  kind: z.literal("stage_transcript").default("stage_transcript"),
+  groupId: z.string().min(1),
+  groupLabel: z.string().min(1).optional(),
+  stageId: z.string().min(1),
+  stageLabel: z.string().min(1),
+  sequence: z.number().int().nonnegative(),
+  speakerLabel: z.string().min(1),
+  speakerId: z.string().min(1).optional(),
+  stance: AgentConversationTranscriptStanceSchema.default("neutral"),
+  status: AgentConversationMessageStatusSchema.default("done"),
+});
+export type AgentConversationTranscript = z.infer<typeof AgentConversationTranscriptSchema>;
+
 export const AgentConversationMessageSchema = z.object({
   id: z.string().min(1),
   runId: z.string().min(1),
@@ -197,6 +219,7 @@ export const AgentConversationMessageSchema = z.object({
   topic: z.string().min(1).optional(),
   correlationId: z.string().min(1).optional(),
   artifactIds: z.array(z.string().min(1)).default([]),
+  transcript: AgentConversationTranscriptSchema.optional(),
 });
 export type AgentConversationMessage = z.infer<typeof AgentConversationMessageSchema>;
 

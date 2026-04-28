@@ -21,6 +21,7 @@ import { Message, MessageContent } from "./ai-elements/message";
 import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
 import { TaskItem, TaskItemMeta, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
 import { MarkdownContent } from "./MarkdownContent";
+import { StageTranscript } from "./StageTranscript";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
 interface AssistantTurnCardProps {
@@ -36,6 +37,8 @@ const QUOTED_MESSAGE_PREVIEW_LIMIT = 128;
 export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
   const agentMessages = turn?.agentMessages ?? [];
+  const stageTranscriptMessages = agentMessages.filter((message) => message.transcript);
+  const collaborationMessages = agentMessages.filter((message) => !message.transcript);
   const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -46,7 +49,8 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const hasProcessSteps = processSteps.length > 0 || showLiveProgressInProcess;
   const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
   const contentIsLiveProgress = Boolean(turn?.liveProgressText && content.trim() === turn.liveProgressText.trim());
-  const hasVisibleAgentMessages = visibleAgentMessages(agentMessages, turn?.status).length > 0;
+  const hasStageTranscript = stageTranscriptMessages.length > 0;
+  const hasVisibleAgentMessages = visibleAgentMessages(collaborationMessages, turn?.status).length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
@@ -106,8 +110,12 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             </CollapsibleCard>
           ) : null}
 
+          {hasStageTranscript ? (
+            <StageTranscript messages={stageTranscriptMessages} />
+          ) : null}
+
           {hasVisibleAgentMessages ? (
-            <AgentConversationTimeline messages={agentMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
+            <AgentConversationTimeline messages={collaborationMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
           ) : null}
 
           <MessageContent className="w-full">
@@ -700,10 +708,11 @@ export function visibleAgentMessages(
   messages: TurnAgentConversationMessage[],
   status?: AssistantTurnAttachment["status"],
 ): TurnAgentConversationMessage[] {
-  const highValueMessages = highValueAgentMessages(messages);
+  const conversationMessages = messages.filter((message) => !message.transcript);
+  const highValueMessages = highValueAgentMessages(conversationMessages);
   const displayMessages = highValueMessages.length > 0
     ? highValueMessages
-    : messages.filter((message) => message.content.trim() && message.kind !== "publish" && message.kind !== "status");
+    : conversationMessages.filter((message) => message.content.trim() && message.kind !== "publish" && message.kind !== "status");
 
   if (status === "running") {
     return displayMessages.slice(-2);

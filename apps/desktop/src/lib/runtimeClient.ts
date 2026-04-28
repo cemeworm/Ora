@@ -98,7 +98,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
@@ -3036,7 +3036,8 @@ class LocalJsonRpcRuntime {
     const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
     const startedAt = Date.now();
     const turnIndex = [...this.runs.values()].filter((snapshot) => snapshot.sessionId === sessionId).length + 1;
-    const snapshot = this.createSnapshot(runId, mode, parsed.input.prompt, startedAt, "interrupted", undefined, {
+    const mockStatus = mode.id === DEBATE_MODE_ID ? "succeeded" : "interrupted";
+    const snapshot = this.createSnapshot(runId, mode, parsed.input.prompt, startedAt, mockStatus, undefined, {
       providerId: parsed.config?.providerId ?? "local-smoke",
       modelRef: parsed.config?.modelRef ?? "local/smoke-model",
       customAgentId: parsed.config?.customAgentId,
@@ -3909,7 +3910,7 @@ class LocalJsonRpcRuntime {
       policyDecisions: [],
       checkpoints: [checkpoint],
       events,
-      agentMessages: buildMockAgentMessages(runId, pattern, definition, eventBase, prompt),
+      agentMessages: buildMockAgentMessages(runId, pattern, definition, eventBase, prompt, mode.id),
       artifacts: [],
       todos: definition.planTemplate.map((item, index) => ({
         id: `${runId}:todo-${index}`,
@@ -3978,7 +3979,9 @@ class LocalJsonRpcRuntime {
     modeSpec: mode,
       output: status === "succeeded"
         ? {
-            text: `Smoke result for ${mode.label}: ${prompt}`,
+            text: mode.id === DEBATE_MODE_ID
+              ? `主持人总结：围绕“${prompt}”，正方强调收益、可行性与正当性，反方持续追问证据、边界条件与替代方案。当前更稳妥的结论取决于关键事实是否成立；若事实基础不足，应先补证据，再决定是否采纳正方主张。`
+              : `Smoke result for ${mode.label}: ${prompt}`,
           }
         : undefined,
       trace: createMockTraceMetadata(runId, provider?.providerId, provider?.modelRef),
@@ -5051,6 +5054,7 @@ function buildMockAgentMessages(
   definition: OraPatternDefinition,
   baseTime: number,
   prompt: string,
+  modeId?: string,
 ): OraStateSnapshot["agentMessages"] {
   const owner = (templateId: string, fallback: string) =>
     definition.planTemplate.find((item) => item.id === templateId)?.ownerAgentId ?? fallback;
@@ -5067,6 +5071,42 @@ function buildMockAgentMessages(
     artifactIds: [],
     ...params,
   });
+
+  if (modeId === DEBATE_MODE_ID) {
+    const debateTurns = [
+      { speakerLabel: "正方主辩", stageId: "affirmative-lead-opening", stageLabel: "开篇立论", stance: "affirmative" as const, content: `正方主辩：我方支持“${prompt}”。核心理由是它能带来明确收益，并且反方必须证明风险高到足以推翻该收益。` },
+      { speakerLabel: "反方主辩", stageId: "negative-lead-opening", stageLabel: "开篇立论", stance: "negative" as const, content: `反方主辩：我方反对。正方尚未证明收益可持续，也没有排除成本、误用和替代方案。` },
+      { speakerLabel: "正方第一副辩", stageId: "affirmative-deputy-one", stageLabel: "第一副辩", stance: "affirmative" as const, content: "正方第一副辩：反方指出风险，但没有证明风险必然发生；合理边界和验证机制足以降低主要疑虑。" },
+      { speakerLabel: "反方第一副辩", stageId: "negative-deputy-one", stageLabel: "第一副辩", stance: "negative" as const, content: "反方第一副辩：正方把“可以控制”当成“已经可控”，这正是论证缺口；没有执行证据，收益判断过早。" },
+      { speakerLabel: "正方第二副辩", stageId: "affirmative-deputy-two", stageLabel: "第二副辩", stance: "affirmative" as const, content: "正方第二副辩：我方承认需要验证，但这支持分阶段推进，而不是直接否定命题。" },
+      { speakerLabel: "反方第二副辩", stageId: "negative-deputy-two", stageLabel: "第二副辩", stance: "negative" as const, content: "反方第二副辩：分阶段推进仍需先说明停止条件和失败成本，否则只是把风险后移。" },
+      { speakerLabel: "正方主辩", stageId: "affirmative-lead-final", stageLabel: "总结陈词", stance: "affirmative" as const, content: "正方主辩总结：反方的质疑要求更好治理，但没有推翻命题本身；最强结论是审慎推进。" },
+      { speakerLabel: "反方主辩", stageId: "negative-lead-final", stageLabel: "总结陈词", stance: "negative" as const, content: "反方主辩总结：正方仍依赖未验证假设；在关键证据补齐前，不应把命题当作成立。" },
+      { speakerLabel: "主持人总结", stageId: "moderator-synthesis", stageLabel: "主持总结", stance: "moderator" as const, content: `主持人总结：围绕“${prompt}”，正方胜在提出可推进路径，反方胜在指出证据和边界缺口。结论应取决于关键事实能否被验证。` },
+    ];
+    return debateTurns.map((turn, index) => message(index, {
+      fromAgentId: turn.stance === "moderator" ? "moderator" : "debate_agent",
+      toAgentIds: [turn.stance === "moderator" ? "debate_agent" : "moderator"],
+      replyToId: index > 0 ? `${runId}:agent-message:${index - 1}` : undefined,
+      threadId: `${runId}:debate`,
+      nodeId: turn.stance === "moderator" ? "synthesis" : "debate",
+      planItemId: turn.stance === "moderator" ? "synthesis" : "debate",
+      kind: "reply",
+      content: turn.content,
+      transcript: {
+        kind: "stage_transcript",
+        groupId: "debate",
+        groupLabel: "结构化辩论",
+        stageId: turn.stageId,
+        stageLabel: turn.stageLabel,
+        sequence: index,
+        speakerLabel: turn.speakerLabel,
+        speakerId: turn.stageId,
+        stance: turn.stance,
+        status: "done",
+      },
+    }));
+  }
 
   if (pattern === "orchestrator_subagent") {
     const orchestrator = owner("decompose", "orchestrator");

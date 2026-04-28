@@ -31,6 +31,7 @@ function agentMessage(
     topic: extra.topic,
     correlationId: extra.correlationId,
     artifactIds: extra.artifactIds ?? [],
+    transcript: extra.transcript,
     timestamp: extra.timestamp ?? "13:39",
   };
 }
@@ -335,5 +336,49 @@ describe("assistant turn display helpers", () => {
     expect(agentMessageDisplayKind(agentMessage("message-1", "route", "route"))).toBe("路由");
     expect(agentMessageDisplayKind(agentMessage("message-2", "reply", "reply"))).toBe("回复");
     expect(agentMessageDisplayKind(agentMessage("message-3", "handoff", "handoff"))).toBe("交接");
+  });
+
+  it("renders stage transcript in the main turn and filters it from collaboration", () => {
+    const transcriptMessage = agentMessage("message-1", "reply", "正方开篇内容", {
+      fromAgentId: "debate_agent",
+      fromAgentLabel: "Debate Agent",
+      toAgentIds: ["moderator"],
+      toAgentLabels: ["Moderator"],
+      transcript: {
+        kind: "stage_transcript",
+        groupId: "debate",
+        groupLabel: "结构化辩论",
+        stageId: "affirmative-lead-opening",
+        stageLabel: "开篇立论",
+        sequence: 0,
+        speakerLabel: "正方主辩",
+        speakerId: "affirmative_lead",
+        stance: "affirmative",
+        status: "done",
+      },
+    });
+    const collaborationMessage = agentMessage("message-2", "handoff", "普通协作交接");
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      agentMessages: [transcriptMessage, collaborationMessage],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="主持人总结" turn={turn} />,
+    );
+
+    expect(html).toContain("结构化辩论");
+    expect(html).toContain("正方主辩");
+    expect(html).toContain("正方开篇内容");
+    expect(html).toContain("协作轨迹");
+    expect(visibleAgentMessages([transcriptMessage, collaborationMessage], "done").map((message) => message.id)).toEqual(["message-2"]);
   });
 });

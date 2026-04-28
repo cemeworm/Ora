@@ -1,5 +1,6 @@
 import {
   createModeSpecFromPattern,
+  DEBATE_MODE_ID,
   type RunConfig,
   modeSpecToPatternDefinition,
   orderedEnabledModeNodes,
@@ -277,8 +278,174 @@ async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<Patt
   };
 }
 
+const DEBATE_GROUP_ID = "debate";
+const DEBATE_GROUP_LABEL = "结构化辩论";
+const DEBATE_TURNS = [
+  { stageId: "affirmative-lead-opening", stageLabel: "开篇立论", speakerLabel: "正方主辩", stance: "affirmative" as const, instruction: "Open for the affirmative. Define the proposition favorably, make the strongest affirmative case, and set the burden of proof for the negative side." },
+  { stageId: "negative-lead-opening", stageLabel: "开篇立论", speakerLabel: "反方主辩", stance: "negative" as const, instruction: "Open for the negative. Attack the affirmative framing, present the strongest opposing case, and identify what the affirmative has not proven." },
+  { stageId: "affirmative-deputy-one", stageLabel: "第一副辩", speakerLabel: "正方第一副辩", stance: "affirmative" as const, instruction: "Rebut the negative opening. Strengthen the affirmative evidence and expose contradictions or overreach in the negative case." },
+  { stageId: "negative-deputy-one", stageLabel: "第一副辩", speakerLabel: "反方第一副辩", stance: "negative" as const, instruction: "Rebut the affirmative deputy. Press weak assumptions, missing evidence, and unresolved burden-of-proof gaps." },
+  { stageId: "affirmative-deputy-two", stageLabel: "第二副辩", speakerLabel: "正方第二副辩", stance: "affirmative" as const, instruction: "Advance the affirmative response. Address the strongest negative attacks and sharpen the affirmative comparative advantage." },
+  { stageId: "negative-deputy-two", stageLabel: "第二副辩", speakerLabel: "反方第二副辩", stance: "negative" as const, instruction: "Advance the negative response. Answer the latest affirmative claims and show why the negative position remains more defensible." },
+  { stageId: "affirmative-lead-final", stageLabel: "总结陈词", speakerLabel: "正方主辩", stance: "affirmative" as const, instruction: "Give the affirmative final statement. Weigh the debate, answer the decisive negative objections, and close without introducing unsupported new facts." },
+  { stageId: "negative-lead-final", stageLabel: "总结陈词", speakerLabel: "反方主辩", stance: "negative" as const, instruction: "Give the negative final statement. Weigh the debate, answer the affirmative closing line, and close without introducing unsupported new facts." },
+];
+
+function debateTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
+  return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
+}
+
+async function executeDebateMode(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const frameNode = nodes.find((node) => node.id === "frame") ?? nodes.find((node) => node.template === "decompose") ?? nodes[0];
+  const debateNode = nodes.find((node) => node.id === "debate") ?? nodes.find((node) => node.template === "research") ?? frameNode;
+  const synthesisNode = nodes.find((node) => node.id === "synthesis") ?? nodes.find((node) => node.template === "synthesize") ?? nodes.at(-1) ?? debateNode;
+  const moderatorId = frameNode.ownerAgentId ?? "moderator";
+  const debateAgentId = debateNode.ownerAgentId ?? "debate_agent";
+  const bag: ExecutionBag = { prompt };
+  const speeches: Array<{ speakerLabel: string; content: string }> = [];
+  let completedNodes = 0;
+  let previousSpeechMessageId: string | undefined;
+
+  completedNodes = await runNode(context, modeSpec, frameNode, totalActiveNodes, completedNodes, async () => {
+    bag.framing = await context.callAgent({
+      agentId: moderatorId,
+      planItemId: frameNode.id,
+      title: titleForNode(frameNode, "Debate framing"),
+      prompt: promptTemplate(
+        frameNode,
+        "Proposition or user request:\n{{prompt}}\n\nFrame the structured debate and dispatch the speaking order.",
+        bag,
+      ),
+      system: nodeSystemPrompt(context, modeSpec, frameNode, bag),
+      customAgentId: nodeCustomAgentId(frameNode),
+      riskLevel: frameNode.riskLevel,
+    });
+    return bag.framing;
+  });
+
+  completedNodes = await runNode(context, modeSpec, debateNode, totalActiveNodes, completedNodes, async () => {
+    for (const [index, turn] of DEBATE_TURNS.entries()) {
+      const priorTranscript = speeches.map(debateTranscriptLine).join("\n\n") || "No prior debate speeches yet.";
+      const speech = await context.callAgent({
+        agentId: debateAgentId,
+        planItemId: debateNode.id,
+        title: `${turn.speakerLabel} ${turn.stageLabel}`,
+        prompt: [
+          `Proposition or user request:\n${prompt}`,
+          `Moderator framing:\n${asText(bag.framing)}`,
+          `Current virtual speaker: ${turn.speakerLabel}`,
+          `Assigned stance: ${turn.stance}`,
+          `Turn instruction: ${turn.instruction}`,
+          `Prior debate transcript:\n${priorTranscript}`,
+          "Write only this speaker's speech. Keep the stance firm, responsive, and intellectually honest.",
+        ].join("\n\n"),
+        system: nodeSystemPrompt(context, modeSpec, debateNode, { ...bag, priorTranscript, speakerLabel: turn.speakerLabel }),
+        customAgentId: nodeCustomAgentId(debateNode),
+        riskLevel: debateNode.riskLevel,
+      });
+      const message = context.emitAgentMessage({
+        fromAgentId: debateAgentId,
+        toAgentIds: [moderatorId],
+        replyToId: previousSpeechMessageId,
+        threadId: `${DEBATE_GROUP_ID}:${context.projectId}`,
+        nodeId: debateNode.id,
+        planItemId: debateNode.id,
+        kind: "reply",
+        status: "done",
+        content: speech,
+        transcript: {
+          kind: "stage_transcript",
+          groupId: DEBATE_GROUP_ID,
+          groupLabel: DEBATE_GROUP_LABEL,
+          stageId: turn.stageId,
+          stageLabel: turn.stageLabel,
+          sequence: index,
+          speakerLabel: turn.speakerLabel,
+          speakerId: turn.stageId,
+          stance: turn.stance,
+          status: "done",
+        },
+      });
+      previousSpeechMessageId = message.id;
+      speeches.push({ speakerLabel: turn.speakerLabel, content: speech });
+    }
+    bag.debateTranscript = speeches.map(debateTranscriptLine).join("\n\n");
+    return bag.debateTranscript;
+  });
+
+  completedNodes = await runNode(context, modeSpec, synthesisNode, totalActiveNodes, completedNodes, async () => {
+    bag.synthesis = await context.callAgent({
+      agentId: moderatorId,
+      planItemId: synthesisNode.id,
+      title: titleForNode(synthesisNode, "Moderator synthesis"),
+      prompt: promptTemplate(
+        synthesisNode,
+        "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{framing}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis.",
+        bag,
+      ),
+      system: nodeSystemPrompt(context, modeSpec, synthesisNode, bag),
+      customAgentId: nodeCustomAgentId(synthesisNode),
+      riskLevel: synthesisNode.riskLevel,
+    });
+    context.emitAgentMessage({
+      fromAgentId: moderatorId,
+      toAgentIds: [debateAgentId],
+      replyToId: previousSpeechMessageId,
+      threadId: `${DEBATE_GROUP_ID}:${context.projectId}`,
+      nodeId: synthesisNode.id,
+      planItemId: synthesisNode.id,
+      kind: "reply",
+      status: "done",
+      content: asText(bag.synthesis),
+      transcript: {
+        kind: "stage_transcript",
+        groupId: DEBATE_GROUP_ID,
+        groupLabel: DEBATE_GROUP_LABEL,
+        stageId: "moderator-synthesis",
+        stageLabel: "主持总结",
+        sequence: DEBATE_TURNS.length,
+        speakerLabel: "主持人总结",
+        speakerId: "moderator",
+        stance: "moderator",
+        status: "done",
+      },
+    });
+    return bag.synthesis;
+  });
+
+  context.remember({
+    id: `mode-${modeSpec.id}-result`,
+    namespace: ["session", context.projectId, modeSpec.id],
+    kind: "session",
+    value: { framing: bag.framing, speeches, synthesis: bag.synthesis, completedNodes },
+  });
+
+  return {
+    output: {
+      text: asText(bag.synthesis),
+      pattern: modeSpec.family,
+      modeId: modeSpec.id,
+      moderator: {
+        framing: bag.framing,
+        synthesis: bag.synthesis,
+      },
+      debateAgent: {
+        id: debateAgentId,
+        speeches,
+      },
+    },
+  };
+}
+
 async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, modeSpec } = input;
+  if (modeSpec.id === DEBATE_MODE_ID) {
+    return executeDebateMode(input);
+  }
   const nodes = orderedEnabledModeNodes(modeSpec);
   const singleOwnerMode = modeUsesSingleOwner(modeSpec, nodes);
   const primaryAgentId = primaryOwnerAgentId(modeSpec, nodes);
