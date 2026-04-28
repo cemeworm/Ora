@@ -203,6 +203,36 @@ describe("Ora shared contracts", () => {
     expect(builderMode.family).toBe("agent_teams");
   });
 
+  it("keeps canonical built-in agents on concrete responsibility contracts", () => {
+    const systemProfiles = new Map<string, string>();
+    for (const mode of MVP_MODES.filter((candidate) => candidate.systemPreset)) {
+      for (const profile of mode.profiles) {
+        systemProfiles.set(profile.id, profile.systemPrompt ?? "");
+      }
+    }
+
+    expect([...systemProfiles.keys()].sort()).toEqual([
+      "builder",
+      "generator",
+      "orchestrator",
+      "release_reviewer",
+      "researcher",
+      "responder",
+      "reviewer",
+      "router",
+      "solo_agent",
+      "team_lead",
+      "verifier",
+    ]);
+
+    for (const [agentId, systemPrompt] of systemProfiles) {
+      expect(systemPrompt, `${agentId} system prompt`).toContain("Responsibility:");
+      expect(systemPrompt, `${agentId} system prompt`).toContain("Boundary:");
+      expect(systemPrompt, `${agentId} system prompt`).toContain("Output:");
+      expect(systemPrompt, `${agentId} system prompt`).toMatch(/evidence|verification|verdict|findings|handoff|route|rollback|reasoning/i);
+    }
+  });
+
   it("accepts legacy mode specs without visibility", () => {
     const { visibility: _visibility, ...legacy } = MVP_MODES[1]!;
     const parsed = ModeSpecSchema.parse(legacy);
