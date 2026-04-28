@@ -89,7 +89,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SystemAgentOverrideUpdateParamsSchema, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
@@ -2159,7 +2159,7 @@ class LocalJsonRpcRuntime {
         if (profile.customAgentId) {
           return { ...profile };
         }
-        const override = this.systemAgentOverrides.get(profile.id);
+        const override = this.systemAgentOverrideFor(profile.id);
         if (!override) {
           return { ...profile };
         }
@@ -2177,7 +2177,19 @@ class LocalJsonRpcRuntime {
   }
 
   private systemAgentIds(): Set<string> {
-    return new Set(MVP_MODES.flatMap((mode) => mode.profiles.map((profile) => profile.id)));
+    return new Set([
+      ...MVP_MODES.flatMap((mode) => mode.profiles.map((profile) => profile.id)),
+      ...Object.keys(SYSTEM_AGENT_ID_ALIASES),
+    ]);
+  }
+
+  private systemAgentOverrideFor(agentId: string): OraSystemAgentOverride | undefined {
+    const canonicalId = canonicalSystemAgentId(agentId);
+    const override = this.systemAgentOverrides.get(canonicalId)
+      ?? legacySystemAgentIdsFor(canonicalId)
+        .map((legacyId) => this.systemAgentOverrides.get(legacyId))
+        .find((candidate): candidate is OraSystemAgentOverride => Boolean(candidate));
+    return override ? { ...override, agentId: canonicalId } : undefined;
   }
 
   private createMode(params: unknown): OraModeSpec {
@@ -2430,39 +2442,24 @@ class LocalJsonRpcRuntime {
       };
     }
     const roles = mockModeStudioRoles(family);
-    const used = new Set([...this.customAgents.keys()]);
-    const agentDrafts = roles.map((role) => {
-      const name = uniqueMockAgentName(slugifyMockAgentName(`${role.id} ${userText}`), (candidate) => used.has(candidate));
-      used.add(name);
+    const agentDrafts: OraModeStudioDraftBundle["agentDrafts"] = [];
+    const profiles = roles.map((role, index) => {
       const wantsWeb = /\b(web|search|research|source|资料|搜索|研究)\b/i.test(userText) || role.id.includes("research");
-      const wantsCode = /\b(code|repo|file|test|build|代码|仓库|测试|构建)\b/i.test(userText) || role.id.includes("builder") || role.id.includes("checker");
+      const wantsCode = /\b(code|repo|file|test|build|代码|仓库|测试|构建)\b/i.test(userText) || role.id.includes("builder") || role.id.includes("reviewer");
       const toolIds = [
         ...(wantsWeb ? ["web.search", "web.fetch"] : []),
         ...(wantsCode ? ["file.read", "file.grep"] : []),
       ];
       return {
-        name,
-        description: `${role.label} for ${userText.slice(0, 96)}.`,
-        model: undefined,
-        toolGroups: [...new Set([
-          ...(wantsWeb ? ["web"] : []),
-          ...(wantsCode ? ["files"] : []),
-        ])],
+        ...(base.profiles.find((profile) => profile.id === role.id) ?? base.profiles[index] ?? base.profiles[0]),
+        id: role.id,
+        label: role.label,
+        role: role.role,
         toolIds,
         skillIds: [],
-        soul: `You are ${role.label}. ${role.role} User goal: ${userText}. Keep assumptions explicit and hand off concrete evidence.`,
       };
     });
-    const profiles = roles.map((role, index) => ({
-      ...(base.profiles[index] ?? base.profiles[0]),
-      id: role.id,
-      label: role.label,
-      role: role.role,
-      customAgentId: agentDrafts[index]?.name,
-      toolIds: agentDrafts[index]?.toolIds ?? [],
-      skillIds: [],
-    }));
-    const toolIds = [...new Set(agentDrafts.flatMap((agent) => agent.toolIds))];
+    const toolIds = [...new Set(profiles.flatMap((profile) => profile.toolIds))];
     const modeDraft: OraModeSpec = {
       ...base,
       id: `${slugifyMockAgentName(userText)}-mode`,
@@ -2496,7 +2493,7 @@ class LocalJsonRpcRuntime {
           { id: "parallel", label: "Use more parallel work", description: "提高多个 agent 分工并行的倾向。", prompt: "让这个 mode 更偏并行分工。" },
         ],
       },
-      changeSummary: [`Selected ${family.replace(/_/g, " ")} topology.`, `Drafted ${agentDrafts.length} agents.`],
+      changeSummary: [`Selected ${family.replace(/_/g, " ")} topology.`, "Reused Ora's canonical system agents."],
       validation: this.validateMode({ spec: modeDraft }),
       needsInput: false,
     };
@@ -2549,12 +2546,12 @@ class LocalJsonRpcRuntime {
       customUsages.set(normalized, current);
     };
 
-    for (const mode of MVP_MODES) {
+    for (const mode of MVP_MODES.filter((candidate) => candidate.visibility !== "internal")) {
       const effectiveMode = this.applySystemAgentOverridesToMode(mode);
       for (const profile of mode.profiles) {
         if (systemProfiles.has(profile.id)) continue;
         const effectiveProfile = effectiveMode.profiles.find((candidate) => candidate.id === profile.id) ?? profile;
-        const override = this.systemAgentOverrides.get(profile.id);
+        const override = this.systemAgentOverrideFor(profile.id);
         const modelRef = explicitSystemAgentModelRef(effectiveProfile.modelRef);
         systemProfiles.set(profile.id, {
           source: "system",
@@ -2617,13 +2614,14 @@ class LocalJsonRpcRuntime {
 
   private updateSystemAgentOverride(params: unknown): OraSystemAgentOverride {
     const parsed = SystemAgentOverrideUpdateParamsSchema.parse(params);
-    if (!this.systemAgentIds().has(parsed.agentId)) {
+    const agentId = canonicalSystemAgentId(parsed.agentId);
+    if (!this.systemAgentIds().has(agentId)) {
       throw new Error(`System agent '${parsed.agentId}' does not exist.`);
     }
-    const existing = this.systemAgentOverrides.get(parsed.agentId);
+    const existing = this.systemAgentOverrideFor(agentId);
     const now = Date.now();
     const next: OraSystemAgentOverride = {
-      agentId: parsed.agentId,
+      agentId,
       label: parsed.label ?? existing?.label,
       role: parsed.role ?? existing?.role,
       modelRef: parsed.modelRef === null ? undefined : parsed.modelRef ?? existing?.modelRef,
@@ -2638,11 +2636,15 @@ class LocalJsonRpcRuntime {
   }
 
   private resetSystemAgentOverride(params: unknown): { reset: true; agentId: string } {
-    const agentId = isRecord(params) && typeof params.agentId === "string" ? params.agentId : "";
+    const requestedAgentId = isRecord(params) && typeof params.agentId === "string" ? params.agentId : "";
+    const agentId = canonicalSystemAgentId(requestedAgentId);
     if (!this.systemAgentIds().has(agentId)) {
-      throw new Error(`System agent '${agentId}' does not exist.`);
+      throw new Error(`System agent '${requestedAgentId}' does not exist.`);
     }
     this.systemAgentOverrides.delete(agentId);
+    for (const legacyId of legacySystemAgentIdsFor(agentId)) {
+      this.systemAgentOverrides.delete(legacyId);
+    }
     return { reset: true, agentId };
   }
 
@@ -4038,21 +4040,21 @@ function mockModeStudioRoles(family: CoordinationPattern): MockModeStudioRole[] 
     return [
       { id: "team_lead", label: "Team Lead", role: "Coordinate the agent roster." },
       { id: "builder", label: "Builder", role: "Complete assigned work." },
-      { id: "checker", label: "Checker", role: "Validate outputs and risks." },
+      { id: "reviewer", label: "Reviewer", role: "Validate outputs and risks." },
     ];
   }
   if (family === "message_bus") {
     return [
       { id: "router", label: "Router", role: "Route events to handlers." },
-      { id: "investigator", label: "Investigator", role: "Handle routed work and publish findings." },
+      { id: "researcher", label: "Researcher", role: "Handle routed work and publish findings." },
       { id: "responder", label: "Responder", role: "Synthesize final response." },
     ];
   }
   if (family === "shared_state") {
     return [
-      { id: "seed_agent", label: "Seed Agent", role: "Seed shared state." },
-      { id: "research_agent", label: "Research Agent", role: "Add findings to shared state." },
-      { id: "critic_agent", label: "Critic Agent", role: "Validate convergence." },
+      { id: "orchestrator", label: "Orchestrator", role: "Seed shared state." },
+      { id: "researcher", label: "Researcher", role: "Add findings to shared state." },
+      { id: "reviewer", label: "Reviewer", role: "Validate convergence." },
     ];
   }
   return [
@@ -4066,16 +4068,14 @@ function mockModeStudioOwner(template: OraModeSpec["nodes"][number]["template"],
   const ids = new Set(roles.map((role) => role.id));
   if ((template === "verify" || template === "review" || template === "check") && ids.has("verifier")) return "verifier";
   if ((template === "verify" || template === "review" || template === "check") && ids.has("reviewer")) return "reviewer";
-  if ((template === "verify" || template === "review" || template === "check") && ids.has("checker")) return "checker";
   if ((template === "draft" || template === "build") && ids.has("generator")) return "generator";
   if ((template === "draft" || template === "build") && ids.has("builder")) return "builder";
   if ((template === "research" || template === "handle") && ids.has("researcher")) return "researcher";
-  if ((template === "research" || template === "handle") && ids.has("research_agent")) return "research_agent";
   if ((template === "decompose" || template === "synthesize") && ids.has("orchestrator")) return "orchestrator";
   if ((template === "triage" || template === "handoff") && ids.has("team_lead")) return "team_lead";
   if ((template === "route" || template === "publish") && ids.has("router")) return "router";
   if (template === "respond" && ids.has("responder")) return "responder";
-  if (template === "seed" && ids.has("seed_agent")) return "seed_agent";
+  if (template === "seed" && ids.has("orchestrator")) return "orchestrator";
   return roles[0]?.id;
 }
 
@@ -4384,22 +4384,22 @@ function buildMockAgentMessages(
 
   if (pattern === "message_bus") {
     const router = owner("route", "router");
-    const investigator = owner("handle", "investigator");
+    const researcher = owner("handle", "researcher");
     const responder = owner("respond", "responder");
     return [
       message(0, {
         fromAgentId: router,
-        toAgentIds: [investigator],
+        toAgentIds: [researcher],
         threadId: `${runId}:bus`,
         nodeId: "route",
         planItemId: "route",
         kind: "route",
         topic: "task.findings",
         correlationId: `${runId}:bus`,
-        content: `@${investigator} routed task.findings for: ${prompt}`,
+        content: `@${researcher} routed task.findings for: ${prompt}`,
       }),
       message(1, {
-        fromAgentId: investigator,
+        fromAgentId: researcher,
         toAgentIds: [responder],
         replyToId: `${runId}:agent-message:0`,
         threadId: `${runId}:bus`,
@@ -4414,35 +4414,35 @@ function buildMockAgentMessages(
   }
 
   if (pattern === "shared_state") {
-    const seed = owner("seed", "seed_agent");
-    const research = owner("research", "research_agent");
-    const critic = owner("converge", "critic_agent");
+    const orchestrator = owner("seed", "orchestrator");
+    const researcher = owner("research", "researcher");
+    const reviewer = owner("converge", "reviewer");
     return [
       message(0, {
-        fromAgentId: seed,
-        toAgentIds: [research],
+        fromAgentId: orchestrator,
+        toAgentIds: [researcher],
         threadId: "shared-state:board",
         nodeId: "seed",
         planItemId: "seed",
         kind: "mention",
-        content: `@${research} shared board is seeded.`,
+        content: `@${researcher} shared board is seeded.`,
       }),
       message(1, {
-        fromAgentId: research,
-        toAgentIds: [critic],
+        fromAgentId: researcher,
+        toAgentIds: [reviewer],
         replyToId: `${runId}:agent-message:0`,
         threadId: "shared-state:board",
         nodeId: "research",
         planItemId: "research",
         kind: "reply",
-        content: `@${critic} findings were added to the board.`,
+        content: `@${reviewer} findings were added to the board.`,
       }),
     ];
   }
 
   const lead = owner("triage", "team_lead");
   const builder = owner("build", "builder");
-  const checker = owner("check", "checker");
+  const reviewer = owner("check", "reviewer");
   return [
     message(0, {
       fromAgentId: lead,
@@ -4455,13 +4455,13 @@ function buildMockAgentMessages(
     }),
     message(1, {
       fromAgentId: builder,
-      toAgentIds: [checker],
+      toAgentIds: [reviewer],
       replyToId: `${runId}:agent-message:0`,
       threadId: "agent-teams:build",
       nodeId: "build",
       planItemId: "build",
       kind: "reply",
-      content: `@${checker} build is ready for validation.`,
+      content: `@${reviewer} build is ready for validation.`,
     }),
   ];
 }

@@ -20,7 +20,6 @@ import {
   enrichModeStudioGeneratedDraft,
   inferModeStudioFamily,
   isCoordinationPattern,
-  modeStudioAgentDraft,
   modeStudioBuilderSystemPrompt,
   modeStudioBuilderUserPrompt,
   type ModeStudioBuilderProviderResponse,
@@ -35,6 +34,7 @@ import {
   modeStudioRolePlans,
   modeStudioRuntimeAtoms,
   modeStudioSummary,
+  modeStudioToolIds,
   modeStudioTopologyChoices,
   modeStudioUserText,
   normalizeGeneratedAgentDraft,
@@ -85,26 +85,24 @@ export function buildModeStudioDraft(
     ? params.currentDraft
     : createModeSpecFromPattern(family);
   const rolePlans = modeStudioRolePlans(family, userText);
-  const usedNames = new Set(deps.listAgents().map((agent) => agent.name));
-  const agentDrafts = rolePlans.map((role) => modeStudioAgentDraft(role, userText, usedNames));
+  const agentDrafts: ModeStudioDraftBundle["agentDrafts"] = [];
   const modeDraft = prepareModeStudioDraft(base, userText, agentDrafts, params);
   const profiles = rolePlans.map((role, index) => {
-    const draft = agentDrafts[index]!;
+    const baseProfile = base.profiles.find((profile) => profile.id === role.profileId) ?? base.profiles[index];
     return {
       id: role.profileId,
       label: role.label,
       role: role.role,
-      customAgentId: draft.name,
-      modelRef: base.profiles[index]?.modelRef,
-      toolPolicyId: base.profiles[index]?.toolPolicyId ?? `${family}.default`,
-      toolIds: draft.toolIds,
-      skillIds: draft.skillIds,
-      memoryNamespaces: base.profiles[index]?.memoryNamespaces ?? ["session", "project"],
-      budget: base.profiles[index]?.budget ?? DEFAULT_RESOURCE_BUDGETS[family],
+      modelRef: baseProfile?.modelRef,
+      toolPolicyId: baseProfile?.toolPolicyId ?? `${family}.default`,
+      toolIds: modeStudioToolIds(role.toolIntent, userText),
+      skillIds: baseProfile?.skillIds ?? [],
+      memoryNamespaces: baseProfile?.memoryNamespaces ?? ["session", "project"],
+      budget: baseProfile?.budget ?? DEFAULT_RESOURCE_BUDGETS[family],
     };
   });
-  const toolIds = [...new Set(agentDrafts.flatMap((agent) => agent.toolIds))];
-  const skillIds = [...new Set(agentDrafts.flatMap((agent) => agent.skillIds))];
+  const toolIds = [...new Set(profiles.flatMap((profile) => profile.toolIds))];
+  const skillIds = [...new Set(profiles.flatMap((profile) => profile.skillIds))];
   const runtimeAtoms = modeStudioRuntimeAtoms(family, userText, base.runtimeAtoms);
   const nextDraft = {
     ...modeDraft,
@@ -144,8 +142,8 @@ export function buildModeStudioDraft(
     guidance,
     changeSummary: [
       `Selected ${pattern.label} because the request implies ${modeStudioFamilyReason(family)}.`,
-      `Drafted ${agentDrafts.length} agent${agentDrafts.length === 1 ? "" : "s"} with role-specific style and capabilities.`,
-      toolIds.length > 0 ? `Mounted ${toolIds.length} tool${toolIds.length === 1 ? "" : "s"} across the agent roster.` : "Kept tools minimal until the user asks for more capability.",
+      "Reused Ora's canonical system agents for the mode roles.",
+      toolIds.length > 0 ? `Mounted ${toolIds.length} tool${toolIds.length === 1 ? "" : "s"} across the mode profiles.` : "Kept tools minimal until the user asks for more capability.",
     ],
     validation: { valid: false, errors: [], warnings: [] },
     needsInput: false,

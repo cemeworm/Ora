@@ -783,28 +783,18 @@ describe("Ora shared contracts", () => {
       systemPreset: false,
       profiles: MVP_MODES[0]!.profiles.map((profile) => ({
         ...profile,
-        customAgentId: `${profile.id}-agent`,
         toolIds: ["file.read"],
       })),
     };
     const bundle = ModeStudioDraftBundleSchema.parse({
       modeDraft,
-      agentDrafts: [
-        {
-          name: "generator-agent",
-          description: "Generator for code review mode.",
-          toolGroups: ["files"],
-          toolIds: ["file.read"],
-          skillIds: [],
-          soul: "Produce the candidate answer."
-        }
-      ],
+      agentDrafts: [],
       guidance,
       changeSummary: ["Selected generator-verifier topology."],
       validation: { valid: true, errors: [], warnings: [] },
       needsInput: false
     });
-    expect(bundle.modeDraft.profiles[0]!.customAgentId).toBe("generator-agent");
+    expect(bundle.modeDraft.profiles[0]!.customAgentId).toBeUndefined();
     expect(ModeStudioApplyDraftParamsSchema.parse({ draftBundle: bundle }).saveAgentDrafts).toBe(true);
 
     const startParams = ModeStudioStartBuilderRunParamsSchema.parse({
@@ -1944,19 +1934,20 @@ describe("Custom agent contracts", () => {
 describe("Unified agent catalog contracts", () => {
   it("accepts system/custom catalog items and override payloads", () => {
     const overrideParams = SystemAgentOverrideUpdateParamsSchema.parse({
-      agentId: "research_subagent",
-      label: "Research Subagent",
+      agentId: "researcher",
+      label: "Researcher",
       role: "Gather evidence before synthesis.",
       modelRef: "gpt-5.4",
       toolIds: ["web.search"],
       skillIds: ["read"],
       soul: "Prefer cited evidence.",
     });
-    const resetParams = SystemAgentOverrideResetParamsSchema.parse({ agentId: "research_subagent" });
+    const legacyOverrideParams = SystemAgentOverrideUpdateParamsSchema.parse({ agentId: "research_subagent" });
+    const resetParams = SystemAgentOverrideResetParamsSchema.parse({ agentId: "researcher" });
     const systemAgent = SystemAgentCatalogItemSchema.parse({
       source: "system",
-      id: "research_subagent",
-      label: "Research Subagent",
+      id: "researcher",
+      label: "Researcher",
       role: "Gather focused context.",
       modelRef: "local/smoke-model",
       toolPolicyId: "orchestrator_subagent.default_policy",
@@ -1965,7 +1956,7 @@ describe("Unified agent catalog contracts", () => {
       memoryNamespaces: ["session", "project"],
       overridden: true,
       override: {
-        agentId: "research_subagent",
+        agentId: "researcher",
         role: "Gather evidence before synthesis.",
         soul: "Prefer cited evidence.",
         createdAt: 1000,
@@ -1975,8 +1966,8 @@ describe("Unified agent catalog contracts", () => {
         modeId: "deerflow_harness",
         modeLabel: "DeerFlow-like Harness",
         systemPreset: true,
-        profileId: "research_subagent",
-        profileLabel: "Research Subagent",
+        profileId: "researcher",
+        profileLabel: "Researcher",
       }],
     });
     const customAgent = CustomAgentCatalogItemSchema.parse({
@@ -2000,8 +1991,9 @@ describe("Unified agent catalog contracts", () => {
       customAgents: [customAgent],
     });
 
-    expect(overrideParams.agentId).toBe("research_subagent");
-    expect(resetParams.agentId).toBe("research_subagent");
+    expect(overrideParams.agentId).toBe("researcher");
+    expect(legacyOverrideParams.agentId).toBe("research_subagent");
+    expect(resetParams.agentId).toBe("researcher");
     expect(catalog.systemAgents[0].overridden).toBe(true);
     expect(catalog.customAgents[0].usages[0].modeId).toBe("research-team");
   });

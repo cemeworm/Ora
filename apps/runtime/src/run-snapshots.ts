@@ -45,7 +45,7 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
     checkpoints: [],
     events: [],
     artifacts: [],
-    activeAgents: ["builder_lead"],
+    activeAgents: ["orchestrator"],
     queueSummary: {
       mode: "backlog",
       pending: params.definition.planTemplate.length,

@@ -78,9 +78,9 @@ export function startModeStudioBuilderSnapshot(params: {
     messageCount: params.builderParams.messages.length,
   });
   snapshot = params.appendEvent(snapshot, "agent.started", {
-    agentId: "builder_lead",
+    agentId: "orchestrator",
     title: "Read Mode Studio context",
-  }, { agentId: "builder_lead", nodeId: "triage" });
+  }, { agentId: "orchestrator", nodeId: "triage" });
   return snapshot;
 }
 
@@ -127,10 +127,10 @@ export function completeModeStudioBuilderSnapshot(params: {
     },
   });
   snapshot = params.appendEvent(snapshot, "agent.completed", {
-    agentId: "builder_lead",
+    agentId: "orchestrator",
     title: params.result.draftBundle?.needsInput ? "Needs more input" : "Draft bundle ready",
     issues: params.result.issues,
-  }, { agentId: "builder_lead", nodeId: "handoff" });
+  }, { agentId: "orchestrator", nodeId: "handoff" });
   if (params.result.draftBundle) {
     snapshot = params.appendEvent(snapshot, "artifact.exported", {
       artifact: snapshot.artifacts.at(-1),

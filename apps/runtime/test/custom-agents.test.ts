@@ -160,6 +160,54 @@ describe("custom agent runtime behavior", () => {
     })).toThrow(/built-in system agent/);
   });
 
+  it("maps legacy built-in override ids onto canonical system agents", async () => {
+    const dir = freshStoreDir();
+    const overrideDir = path.join(dir, "agent-overrides");
+    fs.mkdirSync(overrideDir, { recursive: true });
+    fs.writeFileSync(path.join(overrideDir, "research_subagent.json"), JSON.stringify({
+      agentId: "research_subagent",
+      label: "Legacy Research Override",
+      role: "Legacy id should still tune the canonical researcher.",
+      soul: "Carry forward the legacy research override.",
+      createdAt: FIXED_TIME,
+      updatedAt: FIXED_TIME,
+    }, null, 2));
+
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const handle = createRuntimeMethodHandler(store);
+    const catalog = AgentCatalogResultSchema.parse(store.agentCatalog());
+    const researcher = catalog.systemAgents.find((agent) => agent.id === "researcher");
+
+    expect(researcher).toMatchObject({
+      id: "researcher",
+      label: "Legacy Research Override",
+      overridden: true,
+    });
+    expect(catalog.systemAgents.some((agent) => agent.id === "research_subagent")).toBe(false);
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Use the DeerFlow-like harness." },
+        config: { modeId: "deerflow_harness" },
+      },
+    });
+
+    const system = capturedSystems.find((value) => value.includes("System Agent Override: researcher")) ?? "";
+    expect(system).toContain("Carry forward the legacy research override.");
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "agents.resetSystemOverride",
+      params: { agentId: "research_subagent" },
+    });
+    expect(fs.existsSync(path.join(overrideDir, "research_subagent.json"))).toBe(false);
+    expect(store.agentCatalog().systemAgents.find((agent) => agent.id === "researcher")?.overridden).toBe(false);
+  });
+
   it("applies and resets global built-in agent overrides during execution", async () => {
     const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
     const handle = createRuntimeMethodHandler(store);

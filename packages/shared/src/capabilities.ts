@@ -279,6 +279,33 @@ export const SystemAgentIdSchema = z
   .regex(/^[A-Za-z0-9_-]+$/, "System agent ids must contain only letters, digits, hyphens, and underscores.");
 export type SystemAgentId = z.infer<typeof SystemAgentIdSchema>;
 
+export const SYSTEM_AGENT_ID_ALIASES: Record<string, string> = {
+  lead_agent: "orchestrator",
+  upgrade_lead: "orchestrator",
+  seed_agent: "orchestrator",
+  research_subagent: "researcher",
+  research_agent: "researcher",
+  investigator: "researcher",
+  review_subagent: "reviewer",
+  checker: "reviewer",
+  critic_agent: "reviewer",
+  code_builder: "builder",
+  builder_lead: "orchestrator",
+  draft_architect: "builder",
+  quality_reviewer: "reviewer",
+};
+
+export function canonicalSystemAgentId(agentId: string): string {
+  return SYSTEM_AGENT_ID_ALIASES[agentId] ?? agentId;
+}
+
+export function legacySystemAgentIdsFor(agentId: string): string[] {
+  const canonical = canonicalSystemAgentId(agentId);
+  return Object.entries(SYSTEM_AGENT_ID_ALIASES)
+    .filter(([, target]) => target === canonical)
+    .map(([legacy]) => legacy);
+}
+
 export const AgentModeUsageSchema = z.object({
   modeId: z.string().min(1),
   modeLabel: z.string().min(1),

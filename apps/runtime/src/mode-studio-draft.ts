@@ -2,7 +2,6 @@ import { z } from "zod";
 import {
   CoordinationPattern,
   CustomAgentGeneratedDraft,
-  CustomAgentGeneratedDraftSchema,
   DEFAULT_WEB_TOOL_IDS,
   ModeStudioContextResult,
   ModeStudioDraftBundle,
@@ -247,21 +246,21 @@ export function modeStudioRolePlans(family: CoordinationPattern, text: string): 
     return [
       { profileId: "team_lead", label: "Team Lead", role: "Prioritize work and coordinate the agent roster.", style: plannerStyle, toolIntent: "minimal" },
       { profileId: "builder", label: "Builder", role: "Complete assigned implementation or production work.", style: builderStyle, toolIntent: "code" },
-      { profileId: "checker", label: "Checker", role: "Validate outputs, edge cases, and missing evidence.", style: reviewerStyle, toolIntent: "review" },
+      { profileId: "reviewer", label: "Reviewer", role: "Validate outputs, edge cases, and missing evidence.", style: reviewerStyle, toolIntent: "review" },
     ];
   }
   if (family === "message_bus") {
     return [
       { profileId: "router", label: "Router", role: "Classify requests and route them to the right handler.", style: "decisive router", toolIntent: "minimal" },
-      { profileId: "investigator", label: "Investigator", role: "Handle routed work and publish findings.", style: "evidence-first investigator", toolIntent: "research" },
+      { profileId: "researcher", label: "Researcher", role: "Handle routed work and publish findings.", style: "evidence-first researcher", toolIntent: "research" },
       { profileId: "responder", label: "Responder", role: "Synthesize routed findings into a final answer.", style: "clear responder", toolIntent: "review" },
     ];
   }
   if (family === "shared_state") {
     return [
-      { profileId: "seed_agent", label: "Seed Agent", role: "Seed the shared board with the first hypothesis and plan.", style: plannerStyle, toolIntent: "minimal" },
-      { profileId: "research_agent", label: "Research Agent", role: "Add new evidence and alternatives to shared state.", style: "curious researcher", toolIntent: "research" },
-      { profileId: "critic_agent", label: "Critic Agent", role: "Validate convergence and challenge weak assumptions.", style: reviewerStyle, toolIntent: "review" },
+      { profileId: "orchestrator", label: "Orchestrator", role: "Seed the shared board with the first hypothesis and plan.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: "researcher", label: "Researcher", role: "Add new evidence and alternatives to shared state.", style: "curious researcher", toolIntent: "research" },
+      { profileId: "reviewer", label: "Reviewer", role: "Validate convergence and challenge weak assumptions.", style: reviewerStyle, toolIntent: "review" },
     ];
   }
   return [
@@ -271,29 +270,7 @@ export function modeStudioRolePlans(family: CoordinationPattern, text: string): 
   ];
 }
 
-export function modeStudioAgentDraft(role: ModeStudioRolePlan, text: string, usedNames: Set<string>): CustomAgentGeneratedDraft {
-  const name = uniqueModeStudioName(`${role.profileId}-${modeStudioPurpose(text)}`, usedNames);
-  const toolIds = modeStudioToolIds(role.toolIntent, text);
-  return CustomAgentGeneratedDraftSchema.parse({
-    name,
-    description: `${role.label} for ${modeStudioPurpose(text)}.`,
-    model: undefined,
-    toolGroups: modeStudioToolGroups(toolIds),
-    toolIds,
-    skillIds: [],
-    soul: [
-      `You are ${role.label}, a ${role.style} in an Ora Mode Studio generated mode.`,
-      `Primary responsibility: ${role.role}`,
-      `User goal: ${modeStudioPurpose(text)}.`,
-      "Make assumptions explicit, keep work scoped to your role, and hand off concrete evidence or decisions to the next agent.",
-      role.toolIntent === "review"
-        ? "Prioritize risks, missing tests, unclear acceptance criteria, and contradictions before summary."
-        : "Prefer concise, actionable outputs that another agent can inspect or build on.",
-    ].join("\n\n"),
-  });
-}
-
-function modeStudioToolIds(intent: ModeStudioRolePlan["toolIntent"], text: string): string[] {
+export function modeStudioToolIds(intent: ModeStudioRolePlan["toolIntent"], text: string): string[] {
   const wantsWeb = /(web|search|research|source|sources|资料|搜索|来源|研究)/i.test(text);
   const wantsCode = /(code|repo|file|shell|test|build|代码|仓库|文件|测试|构建|实现)/i.test(text);
   const ids = new Set<string>();
@@ -310,14 +287,6 @@ function modeStudioToolIds(intent: ModeStudioRolePlan["toolIntent"], text: strin
     ids.add("file.grep");
   }
   return [...ids];
-}
-
-function modeStudioToolGroups(toolIds: string[]): string[] {
-  const groups = new Set<string>();
-  if (toolIds.some((toolId) => toolId.startsWith("web."))) groups.add("web");
-  if (toolIds.some((toolId) => toolId.startsWith("file."))) groups.add("files");
-  if (toolIds.includes("shell.execute")) groups.add("shell");
-  return [...groups];
 }
 
 export function prepareModeStudioDraft(
@@ -478,16 +447,14 @@ export function ownerForModeStudioTemplate(template: ModeSpec["nodes"][number]["
   const byId = new Set(roles.map((role) => role.profileId));
   if ((template === "verify" || template === "review" || template === "check" || template === "converge") && byId.has("verifier")) return "verifier";
   if ((template === "verify" || template === "review" || template === "check" || template === "converge") && byId.has("reviewer")) return "reviewer";
-  if ((template === "verify" || template === "review" || template === "check" || template === "converge") && byId.has("checker")) return "checker";
   if ((template === "research" || template === "handle") && byId.has("researcher")) return "researcher";
-  if ((template === "research" || template === "handle") && byId.has("research_agent")) return "research_agent";
   if ((template === "draft" || template === "build") && byId.has("generator")) return "generator";
   if ((template === "draft" || template === "build") && byId.has("builder")) return "builder";
   if ((template === "decompose" || template === "synthesize") && byId.has("orchestrator")) return "orchestrator";
   if ((template === "triage" || template === "handoff") && byId.has("team_lead")) return "team_lead";
   if ((template === "route" || template === "publish") && byId.has("router")) return "router";
   if ((template === "respond") && byId.has("responder")) return "responder";
-  if ((template === "seed") && byId.has("seed_agent")) return "seed_agent";
+  if ((template === "seed") && byId.has("orchestrator")) return "orchestrator";
   return roles[0]?.profileId;
 }
 
@@ -534,7 +501,7 @@ export function modeStudioGuidance(family: CoordinationPattern, text: string) {
     {
       id: "style-strict",
       label: "Make review stricter",
-      description: "Tighten reviewer/checker behavior around risks, missing tests, and contradictions.",
+      description: "Tighten reviewer behavior around risks, missing tests, and contradictions.",
       prompt: "让审查 agent 更严格，优先指出风险、缺失验证和不清晰的验收标准。",
     },
     {
@@ -596,18 +563,6 @@ export function modeStudioFamilyReason(family: CoordinationPattern): string {
     default:
       return "decomposition and delegated subagent work";
   }
-}
-
-function uniqueModeStudioName(seed: string, usedNames: Set<string>): string {
-  const base = slugifyModeStudio(seed) || "guided-agent";
-  let candidate = base.slice(0, 48).replace(/-+$/g, "") || "guided-agent";
-  let index = 2;
-  while (usedNames.has(candidate)) {
-    const suffix = `-${index++}`;
-    candidate = `${base.slice(0, Math.max(1, 48 - suffix.length)).replace(/-+$/g, "")}${suffix}`;
-  }
-  usedNames.add(candidate);
-  return candidate;
 }
 
 export function slugifyModeStudio(value: string): string {

@@ -3303,9 +3303,9 @@ describe("Ora runtime smoke path", () => {
     expect(state.modeSpec?.id).toBe(DEERFLOW_HARNESS_MODE_ID);
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.profiles.map((profile) => profile.id)).toEqual([
-      "lead_agent",
-      "research_subagent",
-      "review_subagent",
+      "orchestrator",
+      "researcher",
+      "reviewer",
     ]);
     expect(taskStartedPayloads).toEqual(expect.arrayContaining([
       expect.objectContaining({ taskId: "task:research", nodeId: "research" }),

@@ -5,7 +5,8 @@ import {
   CustomAgentDetail,
   CustomAgentSummary,
   ModeSpec,
-  SystemAgentOverride
+  SystemAgentOverride,
+  SYSTEM_AGENT_ID_ALIASES
 } from "@ora/shared";
 import { CustomAgentFileStore, SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { ModeSpecFileStore } from "./modes.js";
@@ -95,11 +96,15 @@ export function systemAgentOverlaysForMode(
 }
 
 export function systemAgentIds(modeStore: ModeSpecFileStore): Set<string> {
-  return new Set(
+  const ids = new Set(
     modeStore.list()
       .filter((mode) => mode.systemPreset)
       .flatMap((mode) => mode.profiles.map((profile) => profile.id)),
   );
+  for (const legacyId of Object.keys(SYSTEM_AGENT_ID_ALIASES)) {
+    ids.add(legacyId);
+  }
+  return ids;
 }
 
 export function buildAgentCatalog(params: {

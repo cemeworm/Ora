@@ -412,7 +412,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
   const bag: ExecutionBag = { prompt };
   const leadId = ownerForTemplate(nodes, "triage", "team_lead");
   const builderId = ownerForTemplate(nodes, "build", "builder");
-  const checkerId = ownerForTemplate(nodes, "check", "checker");
+  const reviewerId = ownerForTemplate(nodes, "check", "reviewer");
   let completedNodes = 0;
 
   for (const node of nodes) {
@@ -464,14 +464,14 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
           });
           bag.buildMessageId = context.emitAgentMessage({
             fromAgentId: agentId,
-            toAgentIds: [checkerId],
+            toAgentIds: [reviewerId],
             replyToId: typeof bag.triageMessageId === "string" ? bag.triageMessageId : undefined,
             threadId: "agent-teams:build",
             nodeId: node.id,
             planItemId: node.id,
             kind: "reply",
             status: "done",
-            content: agentMessageContent(`${mention(checkerId)} build is ready for validation:\n\n`, bag.build),
+            content: agentMessageContent(`${mention(reviewerId)} build is ready for validation:\n\n`, bag.build),
           }).id;
           context.remember({
             id: `${agentId}-memory`,
@@ -486,7 +486,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
       }
 
       if (node.template === "check") {
-        const agentId = node.ownerAgentId ?? "checker";
+        const agentId = node.ownerAgentId ?? reviewerId;
         context.claimWorker(agentId);
         try {
           bag.check = await context.callAgent({
@@ -503,8 +503,8 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
             riskLevel: node.riskLevel,
           });
           bag.checkMessageId = context.emitAgentMessage({
-            fromAgentId: agentId,
-            toAgentIds: [leadId],
+          fromAgentId: agentId,
+          toAgentIds: [leadId],
             replyToId: typeof bag.buildMessageId === "string" ? bag.buildMessageId : undefined,
             threadId: "agent-teams:build",
             nodeId: node.id,
@@ -542,14 +542,14 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
           });
         context.emitAgentMessage({
           fromAgentId: agentId,
-          toAgentIds: [builderId, checkerId],
+          toAgentIds: [builderId, reviewerId],
           replyToId: typeof bag.checkMessageId === "string" ? bag.checkMessageId : undefined,
           threadId: "agent-teams:build",
           nodeId: node.id,
           planItemId: node.id,
           kind: "handoff",
           status: "done",
-          content: agentMessageContent(`Team handoff recorded for ${mention(builderId)} and ${mention(checkerId)}:\n\n`, bag.handoff),
+          content: agentMessageContent(`Team handoff recorded for ${mention(builderId)} and ${mention(reviewerId)}:\n\n`, bag.handoff),
         });
         return bag.handoff;
       }
@@ -565,7 +565,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
       triage: bag.triage,
       workers: {
         builder: bag.build,
-        checker: bag.check,
+        reviewer: bag.check,
       },
     },
   };
@@ -581,7 +581,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
     correlationId: correlationId("bus"),
   };
   const routerId = ownerForTemplate(nodes, "route", ownerForTemplate(nodes, "publish", "router"));
-  const investigatorId = ownerForTemplate(nodes, "handle", "investigator");
+  const researcherId = ownerForTemplate(nodes, "handle", "researcher");
   const responderId = ownerForTemplate(nodes, "respond", "responder");
   let completedNodes = 0;
 
@@ -636,7 +636,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
         });
         bag.routeMessageId = context.emitAgentMessage({
           fromAgentId: agentId,
-          toAgentIds: [investigatorId],
+          toAgentIds: [researcherId],
           replyToId: typeof bag.publishMessageId === "string" ? bag.publishMessageId : undefined,
           threadId: asText(bag.correlationId),
           nodeId: node.id,
@@ -645,13 +645,13 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
           status: "done",
           topic: "task.findings",
           correlationId: asText(bag.correlationId),
-          content: agentMessageContent(`${mention(investigatorId)} routed task.findings to you:\n\n`, bag.routingPlan),
+          content: agentMessageContent(`${mention(researcherId)} routed task.findings to you:\n\n`, bag.routingPlan),
         }).id;
         return bag.routingPlan;
       }
 
       if (node.template === "handle") {
-        const agentId = node.ownerAgentId ?? investigatorId;
+        const agentId = node.ownerAgentId ?? researcherId;
         bag.findings = await context.callAgent({
           agentId,
           planItemId: node.id,
@@ -712,7 +712,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
         });
         context.emitAgentMessage({
           fromAgentId: agentId,
-          toAgentIds: [routerId, investigatorId],
+          toAgentIds: [routerId, researcherId],
           replyToId: typeof bag.findingsMessageId === "string" ? bag.findingsMessageId : undefined,
           threadId: asText(bag.correlationId),
           nodeId: node.id,
@@ -721,7 +721,7 @@ async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExec
           status: "done",
           topic: "task.response",
           correlationId: asText(bag.correlationId),
-          content: agentMessageContent(`Final response published on task.response for ${mention(routerId)} and ${mention(investigatorId)}:\n\n`, bag.response),
+          content: agentMessageContent(`Final response published on task.response for ${mention(routerId)} and ${mention(researcherId)}:\n\n`, bag.response),
         });
         return bag.response;
       }
@@ -747,15 +747,15 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: ExecutionBag = { prompt };
-  const seedAgentId = ownerForTemplate(nodes, "seed", "seed_agent");
-  const researchAgentId = ownerForTemplate(nodes, "research", "research_agent");
-  const criticAgentId = ownerForTemplate(nodes, "converge", "critic_agent");
+  const orchestratorId = ownerForTemplate(nodes, "seed", "orchestrator");
+  const researcherId = ownerForTemplate(nodes, "research", "researcher");
+  const reviewerId = ownerForTemplate(nodes, "converge", "reviewer");
   let completedNodes = 0;
 
   for (const node of nodes) {
       completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "seed") {
-        const agentId = node.ownerAgentId ?? seedAgentId;
+        const agentId = node.ownerAgentId ?? orchestratorId;
         bag.seed = await context.callAgent({
           agentId,
           planItemId: node.id,
@@ -777,19 +777,19 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
         });
         bag.seedMessageId = context.emitAgentMessage({
           fromAgentId: agentId,
-          toAgentIds: [researchAgentId],
+          toAgentIds: [researcherId],
           threadId: "shared-state:board",
           nodeId: node.id,
           planItemId: node.id,
           kind: "mention",
           status: "done",
-          content: agentMessageContent(`${mention(researchAgentId)} shared board seeded; add findings from this starting point:\n\n`, bag.seed),
+          content: agentMessageContent(`${mention(researcherId)} shared board seeded; add findings from this starting point:\n\n`, bag.seed),
         }).id;
         return bag.seed;
       }
 
       if (node.template === "research") {
-        const agentId = node.ownerAgentId ?? researchAgentId;
+        const agentId = node.ownerAgentId ?? researcherId;
         bag.research = await context.callAgent({
           agentId,
           planItemId: node.id,
@@ -817,20 +817,20 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
         });
         bag.researchMessageId = context.emitAgentMessage({
           fromAgentId: agentId,
-          toAgentIds: [criticAgentId],
+          toAgentIds: [reviewerId],
           replyToId: typeof bag.seedMessageId === "string" ? bag.seedMessageId : undefined,
           threadId: "shared-state:board",
           nodeId: node.id,
           planItemId: node.id,
           kind: "reply",
           status: "done",
-          content: agentMessageContent(`${mention(criticAgentId)} findings added to the board:\n\n`, bag.research),
+          content: agentMessageContent(`${mention(reviewerId)} findings added to the board:\n\n`, bag.research),
         }).id;
         return bag.research;
       }
 
       if (node.template === "converge") {
-        const agentId = node.ownerAgentId ?? criticAgentId;
+        const agentId = node.ownerAgentId ?? reviewerId;
         bag.convergence = await context.callAgent({
           agentId,
           planItemId: node.id,
@@ -858,14 +858,14 @@ async function executeSharedState(input: ModeExecutionInput): Promise<PatternExe
         });
         context.emitAgentMessage({
           fromAgentId: agentId,
-          toAgentIds: [seedAgentId, researchAgentId],
+          toAgentIds: [orchestratorId, researcherId],
           replyToId: typeof bag.researchMessageId === "string" ? bag.researchMessageId : undefined,
           threadId: "shared-state:board",
           nodeId: node.id,
           planItemId: node.id,
           kind: "reply",
           status: "done",
-          content: agentMessageContent(`Board convergence reviewed for ${mention(seedAgentId)} and ${mention(researchAgentId)}:\n\n`, bag.convergence),
+          content: agentMessageContent(`Board convergence reviewed for ${mention(orchestratorId)} and ${mention(researcherId)}:\n\n`, bag.convergence),
         });
         return bag.convergence;
       }

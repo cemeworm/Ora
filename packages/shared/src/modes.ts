@@ -418,7 +418,7 @@ const MODE_NODE_RUNTIME_TEMPLATE_LIBRARY: Record<
       display: { story: "{{owner}} packages the current state so the next stage knows what changed and what remains." },
       supportsPromptOverride: true,
       fallbackInstructions: "Summarize the handoff state and next action.",
-      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder:\n{{build}}\nChecker:\n{{check}}\nRecord the handoff and next action.",
+      fallbackPrompt: "Task: {{prompt}}\nBacklog:\n{{triage}}\nBuilder:\n{{build}}\nReviewer:\n{{check}}\nRecord the handoff and next action.",
     },
   },
   message_bus: {
@@ -487,13 +487,75 @@ function extractMustacheVariables(template: string | undefined): string[] {
   return [...variables];
 }
 
+const CANONICAL_AGENT_SOULS: Record<string, string> = {
+  generator: [
+    "You are Generator, Ora's candidate-output maker.",
+    "Turn the user's goal into a concrete draft that another agent can inspect. Prefer direct, complete outputs over commentary about your process.",
+    "Make only the assumptions needed to move the task forward, and leave reviewable seams: acceptance criteria, unresolved choices, and evidence gaps.",
+  ].join("\n"),
+  verifier: [
+    "You are Verifier, Ora's explicit acceptance gate.",
+    "Judge candidate work against the task rubric, not against vibes. Return a clear pass/fail decision with compact rationale and missing requirements.",
+    "Never rubber-stamp vague work. If the candidate is incomplete, say exactly what must change before acceptance.",
+  ].join("\n"),
+  orchestrator: [
+    "You are Orchestrator, Ora's scope owner and synthesis lead.",
+    "Frame the task, choose the smallest useful decomposition, assign responsibility, and keep handoffs inspectable.",
+    "Synthesize only after the needed evidence or checks exist. If coordination overhead would exceed task value, collapse the plan and answer directly.",
+  ].join("\n"),
+  researcher: [
+    "You are Researcher, Ora's evidence and context specialist.",
+    "Gather focused context that downstream agents can verify and use. Separate observed facts, inferences, uncertainty, and open questions.",
+    "Prefer small, high-signal findings over broad summaries. Hand off sources, paths, constraints, or missing evidence explicitly.",
+  ].join("\n"),
+  reviewer: [
+    "You are Reviewer, Ora's risk and completeness critic.",
+    "Inspect work for gaps, contradictions, regressions, missing tests, weak evidence, and unclear acceptance criteria before summarizing.",
+    "Lead with actionable findings. Approve only when the work is complete enough for the current mode's success criteria.",
+  ].join("\n"),
+  team_lead: [
+    "You are Team Lead, Ora's persistent-worker coordinator.",
+    "Turn work into a compact backlog with clear owners, dependencies, and handoff state. Keep worker memory useful and avoid duplicate assignments.",
+    "Close the loop by collecting results, deciding next action, and reporting what remains.",
+  ].join("\n"),
+  builder: [
+    "You are Builder, Ora's implementation agent.",
+    "Make scoped changes or produce the assigned artifact with minimal churn. Match local conventions and keep changed surfaces traceable to the request.",
+    "Report concrete outputs and verification evidence so Reviewer or Team Lead can inspect the result without guessing.",
+  ].join("\n"),
+  router: [
+    "You are Router, Ora's event-routing agent.",
+    "Classify incoming work, choose the right topic or handler, and preserve correlation context. Make routing decisions explicit.",
+    "Avoid doing the handler's job; publish enough context for the next agent to act.",
+  ].join("\n"),
+  responder: [
+    "You are Responder, Ora's final-response publisher.",
+    "Turn routed findings into a coherent final answer that respects the user's request and the mode's evidence.",
+    "Do not invent missing results. If the bus did not produce enough signal, say what is missing and what can still be concluded.",
+  ].join("\n"),
+  solo_agent: [
+    "You are Solo Agent, Ora's direct accountable worker.",
+    "Own the task end-to-end without unnecessary delegation. Think briefly, act with the available tools, and make the final answer useful on its own.",
+    "Keep scope tight and surface uncertainty when review would materially change confidence.",
+  ].join("\n"),
+  release_reviewer: [
+    "You are Release Reviewer, Ora's package and promotion safety gate.",
+    "Review build logs, package manifests, compatibility, activation risk, rollback readiness, and verification evidence before any promotion.",
+    "Treat promotion as blocked until the candidate is inspectable, reversible, and aligned with the requested change.",
+  ].join("\n"),
+};
+
+function canonicalAgentSoul(id: string, fallback: string): string {
+  return CANONICAL_AGENT_SOULS[id] ?? fallback;
+}
+
 const profile = (
   id: string,
   label: string,
   role: string,
   pattern: CoordinationPattern,
   namespaces: string[],
-  systemPrompt: string = role,
+  systemPrompt: string = canonicalAgentSoul(id, role),
 ): AgentProfile => ({
   id,
   label,
@@ -1003,11 +1065,11 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.generator_verifier,
     profiles: [
-      profile("generator", "Generator", "Produce the candidate answer.", "generator_verifier", [
+      profile("generator", "Generator", "Produce concrete candidate work for verifier review.", "generator_verifier", [
         "session",
         "project"
       ]),
-      profile("verifier", "Verifier", "Evaluate the answer against the rubric.", "generator_verifier", [
+      profile("verifier", "Verifier", "Evaluate candidate work against explicit acceptance criteria.", "generator_verifier", [
         "session",
         "project",
         "artifact"
@@ -1051,15 +1113,15 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
     profiles: [
-      profile("orchestrator", "Orchestrator", "Plan, dispatch, and synthesize results.", "orchestrator_subagent", [
+      profile("orchestrator", "Orchestrator", "Frame scope, coordinate stages, and synthesize results.", "orchestrator_subagent", [
         "session",
         "project"
       ]),
-      profile("researcher", "Research Subagent", "Gather focused context.", "orchestrator_subagent", [
+      profile("researcher", "Researcher", "Gather focused evidence and context for downstream inspection.", "orchestrator_subagent", [
         "session",
         "project"
       ]),
-      profile("reviewer", "Review Subagent", "Check completeness and risks.", "orchestrator_subagent", [
+      profile("reviewer", "Reviewer", "Check completeness, risks, evidence, and acceptance criteria.", "orchestrator_subagent", [
         "session",
         "artifact"
       ])
@@ -1106,16 +1168,16 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.agent_teams,
     profiles: [
-      profile("team_lead", "Team Lead", "Prioritize backlog and coordinate workers.", "agent_teams", [
+      profile("team_lead", "Team Lead", "Prioritize backlog and coordinate persistent workers.", "agent_teams", [
         "session",
         "project"
       ]),
-      profile("builder", "Builder", "Implement assigned work.", "agent_teams", [
+      profile("builder", "Builder", "Complete assigned implementation or production work.", "agent_teams", [
         "session",
         "project",
         "worker"
       ]),
-      profile("checker", "Checker", "Validate completed work.", "agent_teams", [
+      profile("reviewer", "Reviewer", "Validate completed work for quality, risks, and missing evidence.", "agent_teams", [
         "session",
         "project",
         "worker",
@@ -1127,18 +1189,18 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
         { id: "team_lead", label: "Team Lead", kind: "agent", agentId: "team_lead", status: "idle", metadata: {} },
         { id: "builder", label: "Builder", kind: "agent", agentId: "builder", status: "idle", metadata: {} },
-        { id: "checker", label: "Checker", kind: "agent", agentId: "checker", status: "idle", metadata: {} }
+        { id: "reviewer", label: "Reviewer", kind: "agent", agentId: "reviewer", status: "idle", metadata: {} }
       ],
       edges: [
         { id: "lead-builder", source: "team_lead", target: "builder", kind: "delegation", label: "assign", metadata: {} },
-        { id: "builder-checker", source: "builder", target: "checker", kind: "verification", label: "validate", metadata: {} },
-        { id: "checker-lead", source: "checker", target: "team_lead", kind: "control", label: "report", metadata: {} }
+        { id: "builder-reviewer", source: "builder", target: "reviewer", kind: "verification", label: "validate", metadata: {} },
+        { id: "reviewer-lead", source: "reviewer", target: "team_lead", kind: "control", label: "report", metadata: {} }
       ]
     },
     planTemplate: [
       { id: "triage", title: "Triage work into team backlog", ownerAgentId: "team_lead", dependencies: [] },
       { id: "build", title: "Complete assigned task", ownerAgentId: "builder", dependencies: ["triage"] },
-      { id: "check", title: "Validate output", ownerAgentId: "checker", dependencies: ["build"] },
+      { id: "check", title: "Validate output", ownerAgentId: "reviewer", dependencies: ["build"] },
       { id: "handoff", title: "Record handoff and next action", ownerAgentId: "team_lead", dependencies: ["check"] }
     ]
   },
@@ -1168,7 +1230,7 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
         "session",
         "project"
       ]),
-      profile("investigator", "Investigator", "Handle routed work items and publish findings.", "message_bus", [
+      profile("researcher", "Researcher", "Handle routed work items and publish evidence-backed findings.", "message_bus", [
         "session",
         "project",
         "artifact"
@@ -1183,20 +1245,20 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
         { id: "router", label: "Router", kind: "agent", agentId: "router", status: "idle", metadata: {} },
         { id: "triage_topic", label: "triage", kind: "capability", status: "idle", metadata: { role: "topic" } },
-        { id: "investigator", label: "Investigator", kind: "agent", agentId: "investigator", status: "idle", metadata: {} },
+        { id: "researcher", label: "Researcher", kind: "agent", agentId: "researcher", status: "idle", metadata: {} },
         { id: "responder", label: "Responder", kind: "agent", agentId: "responder", status: "idle", metadata: {} }
       ],
       edges: [
         { id: "run-router", source: "run", target: "router", kind: "control", label: "publish", metadata: {} },
         { id: "router-topic", source: "router", target: "triage_topic", kind: "artifact", label: "route", metadata: {} },
-        { id: "topic-investigator", source: "triage_topic", target: "investigator", kind: "delegation", label: "deliver", metadata: {} },
-        { id: "investigator-responder", source: "investigator", target: "responder", kind: "verification", label: "finding", metadata: {} }
+        { id: "topic-researcher", source: "triage_topic", target: "researcher", kind: "delegation", label: "deliver", metadata: {} },
+        { id: "researcher-responder", source: "researcher", target: "responder", kind: "verification", label: "finding", metadata: {} }
       ]
     },
     planTemplate: [
       { id: "publish", title: "Publish the initial event", ownerAgentId: "router", dependencies: [] },
       { id: "route", title: "Route events to subscribers", ownerAgentId: "router", dependencies: ["publish"] },
-      { id: "handle", title: "Handle subscribed work", ownerAgentId: "investigator", dependencies: ["route"] },
+      { id: "handle", title: "Handle subscribed work", ownerAgentId: "researcher", dependencies: ["route"] },
       { id: "respond", title: "Publish the final response", ownerAgentId: "responder", dependencies: ["handle"] }
     ]
   },
@@ -1223,16 +1285,16 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.shared_state,
     profiles: [
-      profile("seed_agent", "Seed Agent", "Create the initial shared-state hypothesis board.", "shared_state", [
+      profile("orchestrator", "Orchestrator", "Seed the shared board with scope, initial hypotheses, and decision criteria.", "shared_state", [
         "session",
         "project"
       ]),
-      profile("research_agent", "Research Agent", "Add new findings to the shared board.", "shared_state", [
+      profile("researcher", "Researcher", "Add evidence-backed findings to the shared board.", "shared_state", [
         "session",
         "project",
         "artifact"
       ]),
-      profile("critic_agent", "Critic Agent", "Validate findings and decide whether the board has converged.", "shared_state", [
+      profile("reviewer", "Reviewer", "Validate shared findings and decide whether the board has converged.", "shared_state", [
         "session",
         "project",
         "artifact"
@@ -1241,22 +1303,22 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     topology: {
       nodes: [
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "seed_agent", label: "Seed Agent", kind: "agent", agentId: "seed_agent", status: "idle", metadata: {} },
+        { id: "orchestrator", label: "Orchestrator", kind: "agent", agentId: "orchestrator", status: "idle", metadata: {} },
         { id: "shared_board", label: "Shared Board", kind: "capability", status: "idle", metadata: { role: "blackboard" } },
-        { id: "research_agent", label: "Research Agent", kind: "agent", agentId: "research_agent", status: "idle", metadata: {} },
-        { id: "critic_agent", label: "Critic Agent", kind: "agent", agentId: "critic_agent", status: "idle", metadata: {} }
+        { id: "researcher", label: "Researcher", kind: "agent", agentId: "researcher", status: "idle", metadata: {} },
+        { id: "reviewer", label: "Reviewer", kind: "agent", agentId: "reviewer", status: "idle", metadata: {} }
       ],
       edges: [
-        { id: "run-seed", source: "run", target: "seed_agent", kind: "control", label: "seed", metadata: {} },
-        { id: "seed-board", source: "seed_agent", target: "shared_board", kind: "memory", label: "write", metadata: {} },
-        { id: "research-board", source: "research_agent", target: "shared_board", kind: "memory", label: "contribute", metadata: {} },
-        { id: "critic-board", source: "critic_agent", target: "shared_board", kind: "verification", label: "review", metadata: {} }
+        { id: "run-orchestrator", source: "run", target: "orchestrator", kind: "control", label: "seed", metadata: {} },
+        { id: "orchestrator-board", source: "orchestrator", target: "shared_board", kind: "memory", label: "write", metadata: {} },
+        { id: "researcher-board", source: "researcher", target: "shared_board", kind: "memory", label: "contribute", metadata: {} },
+        { id: "reviewer-board", source: "reviewer", target: "shared_board", kind: "verification", label: "review", metadata: {} }
       ]
     },
     planTemplate: [
-      { id: "seed", title: "Seed the shared board", ownerAgentId: "seed_agent", dependencies: [] },
-      { id: "research", title: "Contribute findings to the shared board", ownerAgentId: "research_agent", dependencies: ["seed"] },
-      { id: "converge", title: "Review board convergence and finalize", ownerAgentId: "critic_agent", dependencies: ["research"] }
+      { id: "seed", title: "Seed the shared board", ownerAgentId: "orchestrator", dependencies: [] },
+      { id: "research", title: "Contribute findings to the shared board", ownerAgentId: "researcher", dependencies: ["seed"] },
+      { id: "converge", title: "Review board convergence and finalize", ownerAgentId: "reviewer", dependencies: ["research"] }
     ]
   }
 };
@@ -1510,7 +1572,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         template: "decompose",
         label: "Lead plan",
         title: "Lead plan",
-        ownerAgentId: "lead_agent",
+        ownerAgentId: "orchestrator",
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "decompose"),
         config: {},
@@ -1520,7 +1582,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         template: "research",
         label: "Research subagent",
         title: "Research subagent",
-        ownerAgentId: "research_subagent",
+        ownerAgentId: "researcher",
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "research"),
         config: { atoms: ["subagent_delegate"] },
@@ -1530,7 +1592,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         template: "review",
         label: "Review subagent",
         title: "Review subagent",
-        ownerAgentId: "review_subagent",
+        ownerAgentId: "reviewer",
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "review"),
         config: { atoms: ["subagent_delegate"] },
@@ -1540,7 +1602,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         template: "synthesize",
         label: "Lead synthesis",
         title: "Lead synthesis",
-        ownerAgentId: "lead_agent",
+        ownerAgentId: "orchestrator",
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "synthesize"),
         config: {},
@@ -1598,22 +1660,22 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
     completionPolicy: completionPolicyForPreset("persistent"),
     profiles: [
       profile(
-        "lead_agent",
-        "Lead Agent",
+        "orchestrator",
+        "Orchestrator",
         "Frame the task, coordinate delegated subagents, and synthesize the final answer.",
         "orchestrator_subagent",
         ["session", "project"],
       ),
       profile(
-        "research_subagent",
-        "Research Subagent",
+        "researcher",
+        "Researcher",
         "Gather focused context for the lead agent's plan.",
         "orchestrator_subagent",
         ["session", "project"],
       ),
       profile(
-        "review_subagent",
-        "Review Subagent",
+        "reviewer",
+        "Reviewer",
         "Check delegated findings for gaps and risks before synthesis.",
         "orchestrator_subagent",
         ["session", "artifact"],
@@ -1704,7 +1766,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         template: "triage",
         label: "Understand builder context",
         title: "Understand builder context",
-        ownerAgentId: "builder_lead",
+        ownerAgentId: "orchestrator",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "triage"),
         config: {},
@@ -1714,7 +1776,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         template: "build",
         label: "Draft mode bundle",
         title: "Draft mode bundle",
-        ownerAgentId: "draft_architect",
+        ownerAgentId: "builder",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "build"),
         config: {},
@@ -1724,7 +1786,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         template: "check",
         label: "Validate draft quality",
         title: "Validate draft quality",
-        ownerAgentId: "quality_reviewer",
+        ownerAgentId: "reviewer",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "check"),
         config: {},
@@ -1734,7 +1796,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         template: "handoff",
         label: "Return structured bundle",
         title: "Return structured bundle",
-        ownerAgentId: "builder_lead",
+        ownerAgentId: "orchestrator",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "handoff"),
         config: {},
@@ -1771,22 +1833,22 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
     completionPolicy: completionPolicyForPreset("decisive"),
     profiles: [
       profile(
-        "builder_lead",
-        "Builder Lead",
+        "orchestrator",
+        "Orchestrator",
         "Track the Mode Studio conversation, current draft, validation state, and requested refinement.",
         "agent_teams",
         ["session", "project"],
       ),
       profile(
-        "draft_architect",
-        "Draft Architect",
+        "builder",
+        "Builder",
         "Write the complete ModeSpec and generated agent roster with concrete stage prompts and capabilities.",
         "agent_teams",
         ["session", "artifact"],
       ),
       profile(
-        "quality_reviewer",
-        "Quality Reviewer",
+        "reviewer",
+        "Reviewer",
         "Check naming, schema validity, stage prompts, agent instructions, tools, and Apply readiness.",
         "agent_teams",
         ["session", "artifact"],
@@ -1814,7 +1876,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         template: "triage",
         label: "Plan task journal",
         title: "Plan task journal",
-        ownerAgentId: "upgrade_lead",
+        ownerAgentId: "orchestrator",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "triage"),
         prompt: "Create or update the task journal, clarify the requested Ora change, and define verification gates before edits.",
@@ -1825,7 +1887,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         template: "build",
         label: "Edit and build",
         title: "Edit and build",
-        ownerAgentId: "code_builder",
+        ownerAgentId: "builder",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "build"),
         prompt: "Make the smallest source changes, run focused checks, and build a candidate package slot with package.buildCandidate.",
@@ -1849,7 +1911,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         template: "handoff",
         label: "Promote or report",
         title: "Promote or report",
-        ownerAgentId: "upgrade_lead",
+        ownerAgentId: "orchestrator",
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "handoff"),
         prompt: "Promote the verified slot only after final approval, otherwise report the candidate status and next fix.",
@@ -1892,15 +1954,15 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
     completionPolicy: completionPolicyForPreset("persistent"),
     profiles: [
       profile(
-        "upgrade_lead",
-        "Upgrade Lead",
+        "orchestrator",
+        "Orchestrator",
         "Own task scope, approval gates, package promotion, and rollback readiness.",
         "agent_teams",
         ["session", "project"],
       ),
       profile(
-        "code_builder",
-        "Code Builder",
+        "builder",
+        "Builder",
         "Make scoped Ora source changes and build candidate package slots.",
         "agent_teams",
         ["session", "project"],

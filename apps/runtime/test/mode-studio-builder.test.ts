@@ -57,7 +57,9 @@ describe("Mode Studio guided builder", () => {
     expect(bundle.validation.valid).toBe(true);
     expect(bundle.modeDraft.systemPreset).toBe(false);
     expect(bundle.modeDraft.family).toBe("generator_verifier");
-    expect(bundle.agentDrafts.map((agent) => agent.name)).toHaveLength(2);
+    expect(bundle.agentDrafts).toEqual([]);
+    expect(bundle.modeDraft.profiles.map((profile) => profile.id)).toEqual(["generator", "verifier"]);
+    expect(bundle.modeDraft.profiles.every((profile) => !profile.customAgentId)).toBe(true);
     expect(bundle.guidance.assistantMessage).toContain("Apply");
     expect(bundle.guidance.assistantMessage).toContain("继续");
     expect(bundle.modeDraft.nodes.every((node) => {
@@ -99,9 +101,14 @@ describe("Mode Studio guided builder", () => {
 
     expect(bundle.modeDraft.family).toBe("agent_teams");
     expect(applied.mode.id).toBe(bundle.modeDraft.id);
-    expect(applied.agents.map((agent) => agent.name)).toEqual(bundle.agentDrafts.map((agent) => agent.name));
-    expect(store.getMode({ modeId: bundle.modeDraft.id }).profiles.every((profile) => profile.customAgentId)).toBe(true);
-    expect(store.listAgents().map((agent) => agent.name).sort()).toEqual(bundle.agentDrafts.map((agent) => agent.name).sort());
+    expect(applied.agents).toEqual([]);
+    expect(store.getMode({ modeId: bundle.modeDraft.id }).profiles.map((profile) => profile.id)).toEqual([
+      "team_lead",
+      "builder",
+      "reviewer",
+    ]);
+    expect(store.getMode({ modeId: bundle.modeDraft.id }).profiles.every((profile) => !profile.customAgentId)).toBe(true);
+    expect(store.listAgents()).toEqual([]);
   });
 
   it("returns proactive guidance instead of a full roster for vague prompts", () => {

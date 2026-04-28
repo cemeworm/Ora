@@ -6,9 +6,26 @@ describe("desktop runtime client agent catalog", () => {
     const client = createRuntimeClient();
     const catalog = await client.agentCatalog();
     const builder = catalog.systemAgents.find((agent) => agent.id === "builder");
+    const reviewer = catalog.systemAgents.find((agent) => agent.id === "reviewer");
 
+    expect(catalog.systemAgents.map((agent) => agent.id).sort()).toEqual([
+      "builder",
+      "generator",
+      "orchestrator",
+      "release_reviewer",
+      "researcher",
+      "responder",
+      "reviewer",
+      "router",
+      "solo_agent",
+      "team_lead",
+      "verifier",
+    ]);
     expect(builder).toBeDefined();
     expect(builder?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
+    expect(builder?.usages.some((usage) => usage.modeId === "ora_self_builder")).toBe(true);
+    expect(reviewer?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
+    expect(reviewer?.usages.some((usage) => usage.modeId === "deerflow_harness")).toBe(true);
     expect(await client.checkAgentName("builder")).toMatchObject({ available: false, name: "builder" });
     await expect(client.createAgent({
       name: "builder",

@@ -141,7 +141,7 @@ export function patternOutput(
           backlog: ["triage", "build", "check", "handoff"],
           workers: {
             builder: "completed assigned work",
-            checker: "validated output",
+            reviewer: "validated output",
           },
         },
       };
