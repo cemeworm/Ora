@@ -2,7 +2,6 @@ import path from "node:path";
 import { z } from "zod";
 import {
   ArtifactRef,
-  ArtifactRefSchema,
   CheckpointMeta,
   AgentCatalogResult,
   CustomAgentCheckNameResult,
@@ -13,10 +12,6 @@ import {
   CustomAgentSummary,
   CustomAgentUpdateParams,
   CustomAgentCreateParamsSchema,
-  DEFAULT_SKILL_TOOL_IDS,
-  DEFAULT_WEB_TOOL_IDS,
-  DEFAULT_RESOURCE_BUDGETS,
-  EvaluationFeedbackDraftCaseSchema,
   EvaluationFeedbackRecord,
   MODE_STUDIO_BUILDER_MODE_ID,
   ModeStudioApplyDraftParamsSchema,
@@ -43,48 +38,27 @@ import {
   OraEventEnvelope,
   OraEventEnvelopeSchema,
   PatternDefinition,
-  ProjectCreateParamsSchema,
   ProjectDetail,
-  ProjectDetailSchema,
-  ProjectFileReadParamsSchema,
   ProjectFileReadResult,
-  ProjectFilesParamsSchema,
   ProjectFilesResult,
-  ProjectGetParamsSchema,
-  ProjectListParamsSchema,
   ProjectSummary,
   ProjectSummarySchema,
   RunConfig,
   RunConfigSchema,
   RunEventStream,
-  RunEventStreamSchema,
   RunForkParamsSchema,
-  RunReplayParamsSchema,
   RunHandle,
-  RunHandleSchema,
   RunResumeParamsSchema,
-  RunTraceMetadata,
   RunTrail,
-  RunTrailMetrics,
   RunTrailParamsSchema,
   RunTrailSchema,
-  RunStreamParamsSchema,
   RunSummary,
-  RunSummarySchema,
-  RunsListParamsSchema,
-  SessionArchiveParamsSchema,
-  SessionCreateParamsSchema,
   SessionDetail,
-  SessionDetailSchema,
-  SessionGetParamsSchema,
-  SessionListParamsSchema,
   SessionSummary,
   SessionSummarySchema,
   SessionTranscriptMessage,
   SessionTranscriptMessageSchema,
   SessionTurn,
-  SessionTurnSchema,
-  SINGLE_AGENT_MODE_ID,
   SkillCheckNameResult,
   SkillCreateParams,
   SkillDetail,
@@ -98,8 +72,7 @@ import {
   SystemAgentOverrideUpdateParamsSchema,
   SystemAgentOverrideUpdateParams,
   UserTaskInput,
-  UserTaskInputSchema,
-  withDefaultWebToolIds
+  UserTaskInputSchema
 } from "@ora/shared";
 import { TodoService } from "./capabilities.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
@@ -119,7 +92,6 @@ import {
   systemAgentOverlaysForMode
 } from "./agent-catalog.js";
 import { FileLongTermMemoryStore, LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
-import type { LongTermMemoryUpdateTask } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { JsonFileRuntimePersistenceBackend } from "./persistence/json-file-backend.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
@@ -131,23 +103,16 @@ import type {
   StoredRun,
   StoredSession
 } from "./persistence/types.js";
-import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
-import {
-  getLangfuseRunTraceMetadata,
-  readLangfuseRunTrace
-} from "./telemetry/langfuse.js";
+import type { ModelMessage } from "./providers/index.js";
+import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
 import { LocalFeedbackLoopStore } from "./feedback-loop-store.js";
 import {
-  listProjectFilesForProject,
-  normalizeProjectRootPath,
-  projectWorkspaceContext,
-  readProjectFileForProject
+  projectWorkspaceContext
 } from "./project-workspace.js";
 import { OraRuntimeError } from "./runtime-errors.js";
 import { generateCustomAgentDraft } from "./agent-draft.js";
-import { parseJsonObject } from "./provider-json.js";
 import { modeCreateParamsFromSpec } from "./mode-studio-draft.js";
 import {
   buildModeStudioDraft,
@@ -182,7 +147,6 @@ import {
   resolveNonKernelResumeClarifications
 } from "./run-resume-mutation.js";
 import {
-  cancelledRunSnapshot,
   createRunningRunSnapshot,
   createStandaloneRunSnapshot
 } from "./run-snapshots.js";
@@ -210,6 +174,55 @@ import {
   defaultSessionTitle,
   generateSessionTitle
 } from "./session-title.js";
+import {
+  resolveModeSelection,
+  withMemoryPrompt,
+  type ModeSelectionDeps
+} from "./mode-selection.js";
+import {
+  processLongTermMemoryUpdate,
+  scheduleLongTermMemoryUpdate,
+  type MemoryUpdateDeps
+} from "./memory-updates.js";
+import {
+  migrateLegacyOraMvpProjectPlaceholder,
+  migrateLegacyRunsIntoSessions
+} from "./runtime-migrations.js";
+import {
+  cancelRun,
+  exportReport,
+  getRunState,
+  interruptRun,
+  listCheckpoints,
+  persistExternalSnapshot,
+  replayRun,
+  streamRun,
+  type RunStateOperationDeps
+} from "./run-state-operations.js";
+import {
+  archiveSession as archiveSessionOperation,
+  createProject as createProjectOperation,
+  createSession as createSessionOperation,
+  getProject as getProjectOperation,
+  getSession as getSessionOperation,
+  listProjectFiles as listProjectFilesOperation,
+  listProjects as listProjectsOperation,
+  listRuns as listRunsOperation,
+  listSessions as listSessionsOperation,
+  readProjectFile as readProjectFileOperation,
+  type ProjectSessionOperationDeps
+} from "./project-session-operations.js";
+import {
+  attachTraceMetadata,
+  buildRunTrailMetrics,
+  toRunHandle,
+  toRunSummary
+} from "./run-projections.js";
+import {
+  buildFeedbackSourceContext,
+  curateFeedbackDraft,
+  type FeedbackSourceContextDeps
+} from "./feedback-curation.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -221,24 +234,9 @@ const RunIdParamsSchema = z.object({
   runId: z.string().min(1)
 });
 
-const InterruptParamsSchema = RunIdParamsSchema.extend({
-  reason: z.string().optional()
-});
-
-const CancelParamsSchema = RunIdParamsSchema.extend({
-  reason: z.string().optional()
-});
-
 const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
-
-const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
-const AutoModeRouterResponseSchema = z.object({
-  modeId: z.string().min(1),
-  confidence: z.number().min(0).max(1),
-  reason: z.string().min(1),
-});
 
 export interface LocalRunStoreOptions {
   dataDir?: string;
@@ -291,14 +289,16 @@ export class LocalRunStore {
       new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
       this.clock,
     );
-    this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) => this.processLongTermMemoryUpdate(task));
+    this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) =>
+      processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
+    );
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
     this.sessions = new Map(loaded.sessions.map((session) => [session.sessionId, session]));
     this.runs = new Map(loaded.runs.map((run) => [run.runId, run]));
-    this.migrateLegacyRunsIntoSessions();
-    this.migrateLegacyOraMvpProjectPlaceholder();
+    migrateLegacyRunsIntoSessions(this.migrationState());
+    migrateLegacyOraMvpProjectPlaceholder(this.migrationState());
     for (const projectId of this.projects.keys()) {
       this.syncProjectSummary(projectId);
     }
@@ -419,8 +419,8 @@ export class LocalRunStore {
       createdAt: this.now(),
       appendEvent,
     });
-    this.cacheRun(this.attachTraceMetadata(snapshot), true);
-    return this.toRunHandle(snapshot);
+    this.cacheRun(attachTraceMetadata(snapshot), true);
+    return toRunHandle(snapshot);
   }
 
   modeStudioBuilderResult(params: unknown): ModeStudioBuilderResult {
@@ -485,119 +485,43 @@ export class LocalRunStore {
   }
 
   createProject(params: unknown = {}): ProjectSummary {
-    const parsed = ProjectCreateParamsSchema.parse(params ?? {});
-    const normalizedRootPath = normalizeProjectRootPath(parsed.rootPath);
-    const existing = [...this.projects.values()].find((project) => project.rootPath === normalizedRootPath);
-    if (existing) {
-      return ProjectSummarySchema.parse(existing);
-    }
-
-    const now = this.now();
-    const project = ProjectSummarySchema.parse({
-      projectId: this.nextProjectId(),
-      label: parsed.label?.trim() || path.basename(normalizedRootPath) || normalizedRootPath,
-      rootPath: normalizedRootPath,
-      sessionCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-    this.persistProject(project);
-    return project;
+    return createProjectOperation(params, this.projectSessionOperationDeps());
   }
 
   listProjects(params: unknown = {}): ProjectSummary[] {
-    const parsed = ProjectListParamsSchema.parse(params ?? {});
-    return [...this.projects.values()]
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId))
-      .slice(0, parsed.limit)
-      .map((project) => ProjectSummarySchema.parse(project));
+    return listProjectsOperation(params, this.projectSessionOperationDeps());
   }
 
   getProject(params: unknown): ProjectDetail {
-    const parsed = ProjectGetParamsSchema.parse(params);
-    const project = this.getProjectOrThrow(parsed.projectId);
-    return ProjectDetailSchema.parse({
-      project,
-      sessions: this.listSessions({ projectId: parsed.projectId }),
-    });
+    return getProjectOperation(params, this.projectSessionOperationDeps());
   }
 
   listProjectFiles(params: unknown): ProjectFilesResult {
-    const parsed = ProjectFilesParamsSchema.parse(params);
-    const project = this.getProjectOrThrow(parsed.projectId);
-    return listProjectFilesForProject(project);
+    return listProjectFilesOperation(params, this.projectSessionOperationDeps());
   }
 
   readProjectFile(params: unknown): ProjectFileReadResult {
-    const parsed = ProjectFileReadParamsSchema.parse(params);
-    const project = this.getProjectOrThrow(parsed.projectId);
-    return readProjectFileForProject(project, parsed.path);
+    return readProjectFileOperation(params, this.projectSessionOperationDeps());
   }
 
   createSession(params: unknown = {}): SessionSummary {
-    const parsed = SessionCreateParamsSchema.parse(params ?? {});
-    if (parsed.projectId) {
-      this.getProjectOrThrow(parsed.projectId);
-    }
-    const now = this.now();
-    const session = SessionSummarySchema.parse({
-      sessionId: this.nextSessionId(),
-      title: parsed.label?.trim() || DEFAULT_SESSION_TITLE,
-      projectId: parsed.projectId,
-      turnCount: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-    this.persistSession(session);
-    return session;
+    return createSessionOperation(params, this.projectSessionOperationDeps());
   }
 
   listSessions(params: unknown = {}): SessionSummary[] {
-    const parsed = SessionListParamsSchema.parse(params ?? {});
-    return [...this.sessions.values()]
-      .filter((session) => session.archivedAt === undefined)
-      .filter((session) => (parsed.projectId ? session.projectId === parsed.projectId : true))
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
-      .slice(0, parsed.limit)
-      .map((session) => SessionSummarySchema.parse(session));
+    return listSessionsOperation(params, this.projectSessionOperationDeps());
   }
 
   archiveSession(params: unknown): SessionSummary {
-    const parsed = SessionArchiveParamsSchema.parse(params);
-    const existing = this.getSessionOrThrow(parsed.sessionId);
-    const archivedAt = existing.archivedAt ?? this.now();
-    const session = SessionSummarySchema.parse({
-      ...existing,
-      archivedAt,
-      updatedAt: Math.max(existing.updatedAt, archivedAt),
-    });
-    this.persistSession(session);
-    return session;
+    return archiveSessionOperation(params, this.projectSessionOperationDeps());
   }
 
   getSession(params: unknown): SessionDetail {
-    const parsed = SessionGetParamsSchema.parse(params);
-    const session = this.getSessionOrThrow(parsed.sessionId);
-    const turns = this.runsForSession(parsed.sessionId).map((run) => this.toSessionTurn(this.attachTraceMetadata(run)));
-    const latestSnapshot = turns.length > 0
-      ? this.attachTraceMetadata(this.getRunOrThrow(turns.at(-1)!.runId))
-      : undefined;
-    return SessionDetailSchema.parse({
-      session,
-      turns,
-      transcript: this.sessionTranscript(parsed.sessionId),
-      latestSnapshot,
-    });
+    return getSessionOperation(params, this.projectSessionOperationDeps());
   }
 
   listRuns(params: unknown = {}): RunSummary[] {
-    const parsed = RunsListParamsSchema.parse(params ?? {});
-    return [...this.runs.values()]
-      .filter((run) => (parsed.status ? run.status === parsed.status : true))
-      .filter((run) => (parsed.sessionId ? run.sessionId === parsed.sessionId : true))
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId))
-      .slice(0, parsed.limit)
-      .map((run) => this.toRunSummary(run));
+    return listRunsOperation(params, this.projectSessionOperationDeps());
   }
 
   listAgents(): CustomAgentSummary[] {
@@ -714,8 +638,8 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = await this.resolveModeSelection(parsed.config, input, session);
-    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
+    const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
@@ -735,9 +659,9 @@ export class LocalRunStore {
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
       conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
     });
-    const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
+    const tracedSnapshot = attachTraceMetadata(sessionBoundSnapshot);
     await this.persistRunWithGeneratedTitle(tracedSnapshot);
-    return this.toRunHandle(tracedSnapshot);
+    return toRunHandle(tracedSnapshot);
   }
 
   async startStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
@@ -747,9 +671,9 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = await this.resolveModeSelection(parsed.config, input, session);
+    const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
@@ -801,7 +725,7 @@ export class LocalRunStore {
       streamProvider: true,
       onEvent: applyLiveEvent,
     }).then(async (snapshot) => {
-      const finalSnapshot = this.attachTraceMetadata(snapshot);
+      const finalSnapshot = attachTraceMetadata(snapshot);
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -812,12 +736,12 @@ export class LocalRunStore {
         error,
         failedAt: this.now(),
       });
-      liveSnapshot = this.attachTraceMetadata(failure.snapshot);
+      liveSnapshot = attachTraceMetadata(failure.snapshot);
       await this.persistRunWithGeneratedTitle(liveSnapshot);
       publishStream([failure.event], liveSnapshot);
     });
 
-    return this.toRunHandle(liveSnapshot);
+    return toRunHandle(liveSnapshot);
   }
 
   private approvedFileWriteResumeDeps(): ApprovedFileWriteResumeDeps {
@@ -825,7 +749,7 @@ export class LocalRunStore {
       skillRegistry: this.skillRegistry,
       now: () => this.now(),
       appendEvent: (snapshot, type, payload, extra) => this.appendEvent(snapshot, type, payload, extra),
-      attachTraceMetadata: (snapshot) => this.attachTraceMetadata(snapshot),
+      attachTraceMetadata: (snapshot) => attachTraceMetadata(snapshot),
       buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
     };
@@ -846,7 +770,7 @@ export class LocalRunStore {
         liveSnapshot: resumed,
         snapshot: resumed,
       });
-      return this.toRunHandle(resumed);
+      return toRunHandle(resumed);
     }
 
     const modeSpec = snapshot.modeSpec;
@@ -904,11 +828,11 @@ export class LocalRunStore {
           error,
           failedAt: this.now(),
         });
-        liveSnapshot = this.attachTraceMetadata(failure.snapshot);
+        liveSnapshot = attachTraceMetadata(failure.snapshot);
         await this.persistRunWithGeneratedTitle(liveSnapshot);
         publishStream([failure.event], liveSnapshot);
       });
-      return this.toRunHandle(liveSnapshot);
+      return toRunHandle(liveSnapshot);
     }
 
     const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
@@ -944,7 +868,7 @@ export class LocalRunStore {
       approvedActions,
       onEvent: applyLiveEvent,
     }).then(async (nextSnapshot) => {
-      const finalSnapshot = this.attachTraceMetadata(nextSnapshot);
+      const finalSnapshot = attachTraceMetadata(nextSnapshot);
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -955,12 +879,12 @@ export class LocalRunStore {
         error,
         failedAt: this.now(),
       });
-      liveSnapshot = this.attachTraceMetadata(failure.snapshot);
+      liveSnapshot = attachTraceMetadata(failure.snapshot);
       await this.persistRunWithGeneratedTitle(liveSnapshot);
       publishStream([failure.event], liveSnapshot);
     });
 
-    return this.toRunHandle(liveSnapshot);
+    return toRunHandle(liveSnapshot);
   }
 
   async startRunWithKernel(
@@ -973,9 +897,9 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = await this.resolveModeSelection(parsed.config, input, session);
+    const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const sessionBoundSnapshot = await executeTracedKernelRun({
@@ -995,9 +919,9 @@ export class LocalRunStore {
       forkedFrom,
       conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
     });
-    const tracedSnapshot = this.attachTraceMetadata(sessionBoundSnapshot);
+    const tracedSnapshot = attachTraceMetadata(sessionBoundSnapshot);
     await this.persistRunWithGeneratedTitle(tracedSnapshot);
-    return this.toRunHandle(tracedSnapshot);
+    return toRunHandle(tracedSnapshot);
   }
 
   async startRunWithSnapshot(
@@ -1022,9 +946,9 @@ export class LocalRunStore {
       ...parsed.input,
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
-    const resolved = await this.resolveModeSelection(parsed.config, input, session);
+    const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = this.withMemoryPrompt(resolved.fullConfig);
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
@@ -1045,7 +969,7 @@ export class LocalRunStore {
       return undefined;
     }
 
-    const sessionBoundSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse({
+    const sessionBoundSnapshot = attachTraceMetadata(StateSnapshotSchema.parse({
       ...snapshot,
       sessionId: session.sessionId,
       turnIndex,
@@ -1054,27 +978,15 @@ export class LocalRunStore {
       modeSpec: snapshot.modeSpec ?? modeSpec,
     }));
     await this.persistRunWithGeneratedTitle(sessionBoundSnapshot);
-    return this.toRunHandle(sessionBoundSnapshot);
+    return toRunHandle(sessionBoundSnapshot);
   }
 
   streamRun(params: unknown): RunEventStream {
-    const parsed = RunStreamParamsSchema.parse(params);
-    const snapshot = this.getRunOrThrow(parsed.runId);
-    const fromSeq = parsed.afterSeq === undefined ? 0 : parsed.afterSeq + 1;
-    return RunEventStreamSchema.parse({
-      runId: snapshot.runId,
-      fromSeq,
-      events: snapshot.events.filter((event) => event.seq >= fromSeq).sort((a, b) => a.seq - b.seq),
-      nextSeq: snapshot.events.length
-    });
+    return streamRun(params, this.runStateOperationDeps());
   }
 
   interruptRun(params: unknown): StateSnapshot {
-    const parsed = InterruptParamsSchema.parse(params);
-    const snapshot = this.getRunOrThrow(parsed.runId);
-    return this.transitionRun(snapshot, "interrupted", "run.interrupted", {
-      reason: parsed.reason ?? USER_INTERRUPTED_MESSAGE
-    });
+    return interruptRun(params, this.runStateOperationDeps(), USER_INTERRUPTED_MESSAGE);
   }
 
   async resumeRun(params: unknown): Promise<StateSnapshot> {
@@ -1129,7 +1041,7 @@ export class LocalRunStore {
         approvedActionIds,
         approvedActions,
       });
-      const tracedSnapshot = this.attachTraceMetadata(resumedSnapshot);
+      const tracedSnapshot = attachTraceMetadata(resumedSnapshot);
       await this.persistRunWithGeneratedTitle(tracedSnapshot);
       return tracedSnapshot;
     }
@@ -1171,21 +1083,15 @@ export class LocalRunStore {
   }
 
   cancelRun(params: unknown): StateSnapshot {
-    const parsed = CancelParamsSchema.parse(params);
-    const snapshot = this.getRunOrThrow(parsed.runId);
-    return this.transitionRun(snapshot, "cancelled", "run.cancelled", {
-      reason: parsed.reason ?? USER_CANCELLED_MESSAGE
-    });
+    return cancelRun(params, this.runStateOperationDeps(), USER_CANCELLED_MESSAGE);
   }
 
   getRunState(params: unknown): StateSnapshot {
-    return this.attachTraceMetadata(this.getRunOrThrow(this.requireRunId(params)));
+    return getRunState(params, this.runStateOperationDeps());
   }
 
   persistExternalSnapshot(snapshot: StateSnapshot): StateSnapshot {
-    const tracedSnapshot = this.attachTraceMetadata(StateSnapshotSchema.parse(snapshot));
-    this.persistRun(tracedSnapshot);
-    return tracedSnapshot;
+    return persistExternalSnapshot(snapshot, this.runStateOperationDeps());
   }
 
   async getRunTrail(params: unknown): Promise<RunTrail> {
@@ -1202,47 +1108,19 @@ export class LocalRunStore {
       ? mergeTrailObservations(localTrail.observations, langfuseTrail.observations)
       : localTrail.observations;
     return RunTrailSchema.parse({
-      run: this.toRunSummary(snapshot),
+      run: toRunSummary(snapshot),
       trace,
       observations,
-      liveMetrics: this.buildRunTrailMetrics(snapshot, trace, observations),
+      liveMetrics: buildRunTrailMetrics(snapshot, trace, observations),
     });
   }
 
   listCheckpoints(params: unknown): CheckpointMeta[] {
-    return this.getRunOrThrow(this.requireRunId(params)).checkpoints;
+    return listCheckpoints(params, this.runStateOperationDeps());
   }
 
   replayRun(params: unknown): RunEventStream {
-    const parsed = RunReplayParamsSchema.parse(params);
-    const snapshot = this.getRunOrThrow(parsed.runId);
-    const checkpoint = parsed.checkpointId
-      ? snapshot.checkpoints.find((candidate) => candidate.id === parsed.checkpointId)
-      : snapshot.checkpoints.at(-1);
-
-    if (!checkpoint) {
-      throw new OraRuntimeError("Checkpoint not found for replay.", -32004, {
-        runId: parsed.runId,
-        checkpointId: parsed.checkpointId
-      });
-    }
-
-    const replayableEvents = snapshot.events
-      .filter((event) => event.seq <= checkpoint.eventSeq)
-      .sort((a, b) => a.seq - b.seq);
-    const replayed = this.appendEvent(snapshot, "run.replayed", {
-      checkpointId: checkpoint.id,
-      replayedEventCount: replayableEvents.length,
-      events: replayableEvents
-    });
-    this.persistRun(replayed);
-
-    return RunEventStreamSchema.parse({
-      runId: snapshot.runId,
-      fromSeq: 0,
-      events: replayableEvents,
-      nextSeq: replayed.events.length
-    });
+    return replayRun(params, this.runStateOperationDeps());
   }
 
   async forkRun(params: unknown): Promise<RunHandle> {
@@ -1290,40 +1168,7 @@ export class LocalRunStore {
   }
 
   exportReport(params: unknown): ArtifactRef {
-    const snapshot = this.getRunOrThrow(this.requireRunId(params));
-    const reportIndex = snapshot.artifacts.filter((artifact) => artifact.kind === "report").length;
-    const payload = {
-      runId: snapshot.runId,
-      status: snapshot.status,
-      pattern: snapshot.pattern,
-      eventCount: snapshot.events.length,
-      checkpointCount: snapshot.checkpoints.length,
-      output: snapshot.output
-    };
-    const persistedRef = this.backend.saveArtifact({
-      ref: ArtifactRefSchema.parse({
-        id: `${snapshot.runId}:report-${reportIndex}`,
-        runId: snapshot.runId,
-        kind: "report",
-        label: reportIndex === 0 ? "Smoke run report" : `Smoke run report ${reportIndex + 1}`,
-        mimeType: "application/json",
-        createdAt: this.now(),
-        payload
-      }),
-      payload
-    });
-    const updated = this.appendEvent(
-      {
-        ...snapshot,
-        artifacts: [...snapshot.artifacts, persistedRef]
-      },
-      "artifact.exported",
-      {
-        artifact: persistedRef
-      }
-    );
-    this.persistRun(updated);
-    return persistedRef;
+    return exportReport(params, this.runStateOperationDeps());
   }
 
   importEvaluationDataset(params: unknown) {
@@ -1371,12 +1216,12 @@ export class LocalRunStore {
 
   async submitEvaluationFeedback(params: unknown): Promise<EvaluationFeedbackRecord> {
     const runId = this.requireRunId(params);
-    const snapshot = this.attachTraceMetadata(this.getRunOrThrow(runId));
-    const sourceContext = await this.buildFeedbackSourceContext(snapshot);
+    const snapshot = attachTraceMetadata(this.getRunOrThrow(runId));
+    const sourceContext = await buildFeedbackSourceContext(snapshot, this.feedbackSourceContextDeps());
     return this.evaluationStore.submitFeedback(
       params,
       sourceContext,
-      ({ feedbackId, feedbackText, sourceContext }) => this.curateFeedbackDraft(snapshot.config, feedbackId, feedbackText, sourceContext)
+      ({ feedbackId, feedbackText, sourceContext }) => curateFeedbackDraft(snapshot.config, feedbackId, feedbackText, sourceContext)
     );
   }
 
@@ -1432,199 +1277,44 @@ export class LocalRunStore {
     return this.feedbackLoopStore.updateRule(params);
   }
 
-  private async resolveModeSelection(
-    config?: Partial<RunConfig>,
-    input?: UserTaskInput,
-    session?: SessionSummary,
-  ): Promise<{
-    modeSpec: ModeSpec;
-    definition: PatternDefinition;
-    fullConfig: RunConfig;
-  }> {
-    const parsed = RunConfigSchema.parse(config ?? {});
-    const autoRoute = parsed.modeSelection === "auto" && input
-      ? await this.routeAutoMode(parsed, input, session)
-      : undefined;
-    const requestedModeId = autoRoute?.modeId
-      ?? (typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern);
-    const modeSpec = this.applySystemAgentOverridesToMode(this.modeStore.resolve(requestedModeId, parsed.pattern));
-    const definition = modeSpecToPatternDefinition(modeSpec);
-    const metadataApprovalMode = parsed.metadata.approvalMode;
-    const resolvedApprovalMode =
-      config?.approvalMode
-      ?? (metadataApprovalMode === "manual" || parsed.metadata.requireApproval === true
-        ? "manual"
-        : metadataApprovalMode === "auto" || metadataApprovalMode === "high_risk_only"
-          ? metadataApprovalMode
-          : modeSpec.capabilityFlags.approvalMode);
-    const skillIds = Array.isArray(config?.skillIds) ? config.skillIds : modeSpec.capabilityFlags.skillIds;
-    const modeDisablesDefaultWebTools = DEFAULT_WEB_TOOL_IDS.some((toolId) => !modeSpec.capabilityFlags.toolIds.includes(toolId));
-    const defaultWebToolsDisabled = parsed.metadata.disableDefaultWebTools === true || modeDisablesDefaultWebTools;
-    const configuredToolIds = Array.isArray(config?.toolIds)
-      ? (parsed.modeSelection === "auto"
-        ? [...modeSpec.capabilityFlags.toolIds, ...config.toolIds]
-        : config.toolIds)
-      : modeSpec.capabilityFlags.toolIds;
-    const explicitRunToolIds = Array.isArray(config?.toolIds);
-    const webDisabledToolIds = parsed.metadata.disableDefaultWebTools === true && !explicitRunToolIds
-      ? configuredToolIds.filter((toolId) => !DEFAULT_WEB_TOOL_IDS.includes(toolId as typeof DEFAULT_WEB_TOOL_IDS[number]))
-      : configuredToolIds;
-    const toolIds = defaultWebToolsDisabled
-      ? [...new Set([...webDisabledToolIds, ...DEFAULT_SKILL_TOOL_IDS])]
-      : withDefaultWebToolIds(configuredToolIds);
-    const skillWarnings = this.skillRegistry.warnings(skillIds);
-    const skillPromptOverlay = this.skillRegistry.promptSnippets(skillIds).join("\n\n");
-    const fullConfig = RunConfigSchema.parse({
-      ...parsed,
-      pattern: modeSpec.family,
-      modeId: modeSpec.id,
-      modeSelection: parsed.modeSelection,
-      budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
-      completionPolicy: parsed.completionPolicy ?? modeSpec.completionPolicy,
-      approvalMode: resolvedApprovalMode,
-      skillIds,
-      toolIds,
-      metadata: {
-        ...parsed.metadata,
-        modeId: modeSpec.id,
-        ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
-        ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
-        ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
-      },
-    });
+  private modeSelectionDeps(): ModeSelectionDeps {
     return {
-      modeSpec,
-      definition,
-      fullConfig,
+      modeStore: this.modeStore,
+      skillRegistry: this.skillRegistry,
+      longTermMemory: this.longTermMemory,
+      applySystemAgentOverridesToMode: (modeSpec) => this.applySystemAgentOverridesToMode(modeSpec),
+      buildConversationMessages: (sessionId, currentPrompt) =>
+        this.buildConversationMessages(sessionId, currentPrompt),
     };
   }
 
-  private async routeAutoMode(
-    config: RunConfig,
-    input: UserTaskInput,
-    session?: SessionSummary,
-  ): Promise<{ modeId: string; metadata: Record<string, unknown> }> {
-    const candidates = this.modeStore.list().map((mode) => ({
-      id: mode.id,
-      label: mode.label,
-      family: mode.family,
-      summary: mode.summary,
-      recommendedUse: mode.recommendedUse,
-      failureMode: mode.failureMode,
-      systemPreset: mode.systemPreset,
-    }));
-    const candidateIds = new Set(candidates.map((mode) => mode.id));
-    const fallbackModeId = candidateIds.has(SINGLE_AGENT_MODE_ID)
-      ? SINGLE_AGENT_MODE_ID
-      : candidates[0]?.id ?? config.pattern;
-    const fallback = (reason: string, detail?: unknown) => ({
-      modeId: fallbackModeId,
-      metadata: {
-        selectedModeId: fallbackModeId,
-        confidence: 0,
-        reason,
-        status: "fallback",
-        detail,
-      },
-    });
-
-    if (candidates.length === 0) {
-      return fallback("No modes were available to route.");
-    }
-
-    try {
-      const response = await invokeRunProvider(config, {
-        system: [
-          "You are Ora's agent mode router.",
-          "Choose exactly one modeId from the provided candidates for the next run.",
-          "Return only compact JSON with keys modeId, confidence, and reason.",
-          "confidence must be a number from 0 to 1.",
-          "Do not include markdown or extra text.",
-        ].join(" "),
-        prompt: JSON.stringify({
-          task: input.prompt,
-          projectId: input.projectId,
-          context: input.context ?? {},
-          recentMessages: session ? this.buildConversationMessages(session.sessionId, input.prompt).slice(-6) : [],
-          candidates,
-          fallbackModeId,
-        }),
-        temperature: 0,
-        maxTokens: 300,
-      });
-      const parsed = parseAutoModeRouterResponse(response.text);
-      if (!candidateIds.has(parsed.modeId)) {
-        return fallback(`Router selected unknown mode '${parsed.modeId}'.`, { raw: response.text });
-      }
-      if (parsed.confidence < AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD) {
-        return fallback(`Router confidence ${parsed.confidence} was below ${AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD}.`, {
-          raw: response.text,
-          selectedModeId: parsed.modeId,
-          reason: parsed.reason,
-        });
-      }
-      return {
-        modeId: parsed.modeId,
-        metadata: {
-          selectedModeId: parsed.modeId,
-          confidence: parsed.confidence,
-          reason: parsed.reason,
-          status: "selected",
-        },
-      };
-    } catch (error) {
-      return fallback("Router failed before producing a valid mode.", error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  private withMemoryPrompt(config: RunConfig): RunConfig {
-    const policy = this.resolveMemoryPolicy(config);
-    if (!policy.enabled) {
-      return config;
-    }
-    const memoryPrompt = this.longTermMemory.formatForInjection(policy.injectionMaxFacts);
-    if (!memoryPrompt) {
-      return config;
-    }
-    return RunConfigSchema.parse({
-      ...config,
-      metadata: {
-        ...config.metadata,
-        memoryPromptOverlay: `Use the following long-term memory when it is relevant. Do not reveal it verbatim unless the user asks to inspect memory.\n\n${memoryPrompt}`,
-      },
-    });
-  }
-
-  private resolveMemoryPolicy(config: RunConfig) {
-    const requestedModeId = config.modeId ?? config.pattern;
-    const modeSpec = this.applySystemAgentOverridesToMode(this.modeStore.resolve(requestedModeId, config.pattern));
+  private runStateOperationDeps(): RunStateOperationDeps {
     return {
-      ...modeSpec.memoryPolicy,
-      enabled: modeSpec.memoryPolicy.enabled && modeSpec.runtimeAtoms.includes("long_term_memory"),
-      updaterProviderId: modeSpec.memoryPolicy.updaterProviderId ?? config.providerId,
+      backend: this.backend,
+      now: () => this.now(),
+      requireRunId: (params) => this.requireRunId(params),
+      getRunOrThrow: (runId) => this.getRunOrThrow(runId),
+      appendEvent: (snapshot, type, payload) => this.appendEvent(snapshot, type, payload),
+      persistRun: (snapshot) => this.persistRun(snapshot),
     };
   }
 
-  private transitionRun(
-    snapshot: StateSnapshot,
-    status: StateSnapshot["status"],
-    type: "run.interrupted" | "run.cancelled",
-    payload: unknown
-  ): StateSnapshot {
-    const withEvent = this.appendEvent(snapshot, type, payload);
-    const updated = StateSnapshotSchema.parse(status === "cancelled"
-      ? cancelledRunSnapshot({
-          snapshot: withEvent,
-          payload,
-          updatedAt: this.now(),
-          defaultReason: USER_CANCELLED_MESSAGE,
-        })
-      : {
-          ...withEvent,
-          status
-        });
-    this.persistRun(updated);
-    return updated;
+  private projectSessionOperationDeps(): ProjectSessionOperationDeps {
+    return {
+      projects: this.projects,
+      sessions: this.sessions,
+      runs: this.runs,
+      now: () => this.now(),
+      nextProjectId: () => this.nextProjectId(),
+      nextSessionId: () => this.nextSessionId(),
+      persistProject: (project) => this.persistProject(project),
+      persistSession: (session) => this.persistSession(session),
+      getProjectOrThrow: (projectId) => this.getProjectOrThrow(projectId),
+      getSessionOrThrow: (sessionId) => this.getSessionOrThrow(sessionId),
+      getRunOrThrow: (runId) => this.getRunOrThrow(runId),
+      runsForSession: (sessionId) => this.runsForSession(sessionId),
+      sessionTranscript: (sessionId) => this.sessionTranscript(sessionId),
+    };
   }
 
   private appendEvent(
@@ -1685,104 +1375,9 @@ export class LocalRunStore {
     });
   }
 
-  private toRunHandle(snapshot: StateSnapshot): RunHandle {
-    return RunHandleSchema.parse({
-      runId: snapshot.runId,
-      sessionId: snapshot.sessionId,
-      turnIndex: snapshot.turnIndex,
-      status: snapshot.status,
-      pattern: snapshot.pattern,
-      modeId: snapshot.modeId,
-      startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt
-    });
-  }
-
-  private toRunSummary(snapshot: StateSnapshot): RunSummary {
-    return RunSummarySchema.parse({
-      runId: snapshot.runId,
-      sessionId: snapshot.sessionId,
-      turnIndex: snapshot.turnIndex,
-      status: snapshot.status,
-      pattern: snapshot.pattern,
-      modeId: snapshot.modeId,
-      prompt: snapshot.input.prompt,
-      startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
-      updatedAt: snapshot.updatedAt,
-      eventCount: snapshot.events.length,
-      checkpointCount: snapshot.checkpoints.length,
-      artifactCount: snapshot.artifacts.length
-    });
-  }
-
-  private toSessionTurn(snapshot: StateSnapshot): SessionTurn {
-    return SessionTurnSchema.parse({
-      runId: snapshot.runId,
-      sessionId: snapshot.sessionId,
-      turnIndex: snapshot.turnIndex,
-      status: snapshot.status,
-      pattern: snapshot.pattern,
-      modeId: snapshot.modeId,
-      providerId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : undefined,
-      modelRef: snapshot.config.modelRef,
-      prompt: snapshot.input.prompt,
-      startedAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
-      updatedAt: snapshot.updatedAt,
-      eventCount: snapshot.events.length,
-      checkpointCount: snapshot.checkpoints.length,
-      artifactCount: snapshot.artifacts.length,
-      trace: snapshot.trace,
-    });
-  }
-
-  private attachTraceMetadata(snapshot: StateSnapshot): StateSnapshot {
-    const trace = this.mergeTraceMetadata(snapshot.runId, snapshot.trace);
-    if (!trace) {
-      return snapshot;
-    }
-    return StateSnapshotSchema.parse({
-      ...snapshot,
-      trace,
-    });
-  }
-
-  private mergeTraceMetadata(runId: string, current?: RunTraceMetadata): RunTraceMetadata | undefined {
-    const registered = getLangfuseRunTraceMetadata(runId);
-    if (!registered) {
-      return current;
-    }
-    if (!current) {
-      return registered;
-    }
-    return {
-      ...current,
-      ...registered,
-      generationRefs: registered.generationRefs.length > 0 ? registered.generationRefs : current.generationRefs,
-    };
-  }
-
-  private buildRunTrailMetrics(snapshot: StateSnapshot, trace: RunTraceMetadata, observations: readonly { level?: string }[]): RunTrailMetrics {
-    const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt));
-    const topologyChangeCount = snapshot.events.filter((event) => event.type === "topology.updated").length;
-    const messageCount = snapshot.events.filter((event) => event.type === "message.delta").length;
-    const warningCount = observations.filter((observation) => observation.level === "WARNING").length;
-    const errorCount = observations.filter((observation) => observation.level === "ERROR").length;
-    const tracedCost = trace.generationRefs.reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0);
-    return {
-      runtimeMs,
-      eventCount: snapshot.events.length,
-      checkpointCount: snapshot.checkpoints.length,
-      topologyChangeCount,
-      messageCount,
-      activeAgentCount: snapshot.activeAgents.length,
-      warningCount,
-      errorCount,
-      estimatedCostUsd: Number((tracedCost > 0 ? tracedCost : snapshot.events.length * 0.0002).toFixed(4)),
-    };
-  }
-
   private persistRun(snapshot: StateSnapshot): void {
     this.cacheRun(snapshot, true);
-    this.scheduleLongTermMemoryUpdate(snapshot);
+    scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps());
   }
 
   private async persistRunWithGeneratedTitle(snapshot: StateSnapshot): Promise<void> {
@@ -1791,7 +1386,7 @@ export class LocalRunStore {
       snapshot.sessionId ? this.sessions.get(snapshot.sessionId)?.title : undefined,
     );
     this.cacheRun(snapshot, true, { titleOverride });
-    this.scheduleLongTermMemoryUpdate(snapshot);
+    scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps());
   }
 
   private cacheRun(
@@ -1816,53 +1411,17 @@ export class LocalRunStore {
     }
   }
 
-  private scheduleLongTermMemoryUpdate(snapshot: StateSnapshot): void {
-    if (snapshot.status === "queued" || snapshot.status === "running") {
-      return;
-    }
-    const policy = this.resolveMemoryPolicy(snapshot.config);
-    if (!policy.enabled) {
-      return;
-    }
-    const conversationMessages = this.buildConversationMessages(snapshot.sessionId ?? "", snapshot.input.prompt, snapshot.runId)
-      .filter((message): message is typeof message & { role: "system" | "developer" | "user" | "assistant" } => message.role !== "tool")
-      .map((message) => ({ role: message.role, content: message.content }));
-    this.longTermMemoryQueue.enqueue({
-      snapshot,
-      assistantText: assistantTextForRun(snapshot),
-      conversationMessages,
-      policy,
-      invokeModel: policy.updater === "provider"
-        ? async (request) => {
-            const response = await invokeRunProvider({
-              ...snapshot.config,
-              providerId: policy.updaterProviderId ?? snapshot.config.providerId,
-            }, request);
-            return response.text;
-          }
-        : undefined,
-    }, policy.debounceMs);
-  }
-
-  private async processLongTermMemoryUpdate(task: LongTermMemoryUpdateTask): Promise<void> {
-    const { factsAdded } = await this.longTermMemory.updateFromRunWithProvider(task);
-    const snapshot = this.runs.get(task.snapshot.runId) ?? task.snapshot;
-    const records = this.longTermMemory.createRunMemoryRecords(snapshot, factsAdded);
-    if (records.length === 0) {
-      return;
-    }
-
-    let updated = StateSnapshotSchema.parse({
-      ...snapshot,
-      memory: [...snapshot.memory, ...records],
-    });
-    for (const record of records) {
-      updated = this.appendEvent(updated, "memory.updated", {
-        record,
-        durability: "long_term",
-      });
-    }
-    this.cacheRun(updated, true);
+  private memoryUpdateDeps(): MemoryUpdateDeps {
+    return {
+      longTermMemory: this.longTermMemory,
+      longTermMemoryQueue: this.longTermMemoryQueue,
+      modeSelectionDeps: () => this.modeSelectionDeps(),
+      buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
+        this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
+      getCachedRun: (runId) => this.runs.get(runId),
+      appendEvent: (snapshot, type, payload, extra) => this.appendEvent(snapshot, type, payload, extra),
+      cacheRun: (snapshot, flush) => this.cacheRun(snapshot, flush),
+    };
   }
 
   private nextRunId(): string {
@@ -2043,115 +1602,11 @@ export class LocalRunStore {
     return messages;
   }
 
-  private async buildFeedbackSourceContext(snapshot: StateSnapshot): Promise<Record<string, unknown>> {
-    const trail = await this.getRunTrail({ runId: snapshot.runId }).catch(() => undefined);
-    const transcript = snapshot.sessionId
-      ? this.sessionTranscript(snapshot.sessionId).slice(-8).map((message) => ({
-          role: message.role,
-          content: message.content,
-          runId: message.runId,
-          turnIndex: message.turnIndex,
-        }))
-      : [];
+  private feedbackSourceContextDeps(): FeedbackSourceContextDeps {
     return {
-      runId: snapshot.runId,
-      sessionId: snapshot.sessionId,
-      turnIndex: snapshot.turnIndex,
-      userPrompt: snapshot.input.prompt,
-      assistantOutput: assistantTextForRun(snapshot),
-      transcript,
-      pattern: snapshot.pattern,
-      modeId: snapshot.modeId,
-      providerId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : undefined,
-      modelRef: typeof snapshot.config.modelRef === "string" ? snapshot.config.modelRef : undefined,
-      status: snapshot.status,
-      trail: trail
-        ? {
-            liveMetrics: trail.liveMetrics,
-            trace: {
-              enabled: trail.trace.enabled,
-              available: trail.trace.available,
-              traceId: trail.trace.traceId,
-              source: trail.trace.source,
-              generationCount: trail.trace.generationRefs.length,
-            },
-            observations: trail.observations.slice(0, 12).map((observation) => ({
-              id: observation.id,
-              type: observation.type,
-              name: observation.name,
-              level: observation.level,
-              statusMessage: observation.statusMessage,
-              model: observation.model,
-            })),
-          }
-        : undefined,
-      topology: {
-        nodes: snapshot.topology.nodes.map((node) => ({
-          id: node.id,
-          label: node.label,
-          kind: node.kind,
-          role: typeof node.metadata.role === "string" ? node.metadata.role : node.kind,
-          status: node.status,
-        })),
-        edges: snapshot.topology.edges.map((edge) => ({
-          source: edge.source,
-          target: edge.target,
-          label: edge.label,
-          kind: edge.kind,
-        })),
-      },
-      events: snapshot.events.slice(-20).map((event) => ({
-        type: event.type,
-        seq: event.seq,
-        nodeId: event.nodeId,
-        agentId: event.agentId,
-        payload: summarizeEventPayload(event.payload),
-      })),
+      getRunTrail: (params) => this.getRunTrail(params),
+      sessionTranscript: (sessionId) => this.sessionTranscript(sessionId),
     };
-  }
-
-  private async curateFeedbackDraft(
-    config: RunConfig,
-    feedbackId: string,
-    feedbackText: string,
-    sourceContext: Record<string, unknown>
-  ) {
-    const response = await invokeRunProvider(config, {
-      system: [
-        "You are Ora's independent evaluation dataset curator.",
-        "Convert natural-language user feedback about an assistant reply into one JSON evaluation draft.",
-        "Do not grade the original run. Produce a future-facing evaluation case.",
-        "Return only JSON with keys: case, curatorRationale.",
-        "The case must match Ora EvaluationCase: { id, input: { prompt, context }, expected, metadata }.",
-        "Put failureMode, severity, idealBehavior, mustAddress, shouldAvoid, rubric in expected.structured.",
-        "Use metadata.source='chat_feedback' and include feedbackId, sourceRunId, failureMode, severity, tags.",
-      ].join("\n"),
-      messages: [{
-        role: "user",
-        content: JSON.stringify({
-          feedbackId,
-          feedbackText,
-          sourceContext,
-        }, null, 2),
-      }],
-      temperature: 0,
-      maxTokens: 1400,
-      toolChoice: "none",
-    });
-    const parsed = parseJsonObject(response.text);
-    const draftSource = parsed.case
-      ? {
-          case: parsed.case,
-          curatorRationale: typeof parsed.curatorRationale === "string" ? parsed.curatorRationale : undefined,
-        }
-      : {
-          case: parsed,
-          curatorRationale: "Curator returned an EvaluationCase object.",
-        };
-    return EvaluationFeedbackDraftCaseSchema.parse({
-      ...draftSource,
-      curatorStatus: "generated",
-    });
   }
 
   private sessionTranscript(sessionId: string): SessionTranscriptMessage[] {
@@ -2200,83 +1655,14 @@ export class LocalRunStore {
     };
   }
 
-  private migrateLegacyRunsIntoSessions(): void {
-    let mutated = false;
-    for (const [runId, existing] of this.runs.entries()) {
-      if (existing.sessionId) {
-        continue;
-      }
-      const sessionId = `session-legacy-${runId}`;
-      const migrated = StateSnapshotSchema.parse({
-        ...existing,
-        sessionId,
-        turnIndex: 1,
-      });
-      this.runs.set(runId, migrated);
-      this.backend.saveRun(migrated);
-      if (!this.sessions.has(sessionId)) {
-        this.sessions.set(sessionId, SessionSummarySchema.parse({
-          sessionId,
-          title: defaultSessionTitle(migrated.input.prompt),
-          projectId: migrated.input.projectId,
-          status: migrated.status,
-          latestRunId: migrated.runId,
-          latestPattern: migrated.pattern,
-          latestProviderId: typeof migrated.config.providerId === "string" ? migrated.config.providerId : undefined,
-          latestModelRef: migrated.config.modelRef,
-          turnCount: 1,
-          createdAt: migrated.input.createdAt ?? migrated.updatedAt,
-          updatedAt: migrated.updatedAt,
-        }));
-      }
-      mutated = true;
-    }
-    if (mutated) {
-      for (const session of this.sessions.values()) {
-        this.backend.saveSession(session);
-      }
-      this.backend.saveManifest(this.manifest);
-    }
-  }
-
-  private migrateLegacyOraMvpProjectPlaceholder(): void {
-    if (this.projects.has("ora-mvp")) {
-      return;
-    }
-
-    let mutated = false;
-    for (const [sessionId, session] of this.sessions.entries()) {
-      if (session.projectId !== "ora-mvp") {
-        continue;
-      }
-      const nextSession = SessionSummarySchema.parse({
-        ...session,
-        projectId: undefined,
-      });
-      this.sessions.set(sessionId, nextSession);
-      this.backend.saveSession(nextSession);
-      mutated = true;
-    }
-
-    for (const [runId, run] of this.runs.entries()) {
-      if (run.input.projectId !== "ora-mvp") {
-        continue;
-      }
-      const nextRun = StateSnapshotSchema.parse({
-        ...run,
-        input: {
-          ...run.input,
-          projectId: undefined,
-        },
-      });
-      this.runs.set(runId, nextRun);
-      this.backend.saveRun(nextRun);
-      mutated = true;
-    }
-
-    if (mutated) {
-      this.backend.saveManifest(this.manifest);
-    }
+  private migrationState() {
+    return {
+      projects: this.projects,
+      sessions: this.sessions,
+      runs: this.runs,
+      backend: this.backend,
+      manifest: this.manifest,
+    };
   }
 
   private now(): number {
@@ -2285,33 +1671,6 @@ export class LocalRunStore {
 }
 
 export class InMemoryRunStore extends LocalRunStore {}
-
-function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRouterResponseSchema> {
-  const trimmed = text.trim();
-  const jsonText = trimmed.startsWith("{")
-    ? trimmed
-    : trimmed.match(/\{[\s\S]*\}/)?.[0] ?? trimmed;
-  return AutoModeRouterResponseSchema.parse(JSON.parse(jsonText));
-}
-
-function summarizeEventPayload(payload: unknown): unknown {
-  if (!payload || typeof payload !== "object") {
-    return payload;
-  }
-  const record = payload as Record<string, unknown>;
-  const summary: Record<string, unknown> = {};
-  for (const key of ["summary", "message", "content", "status", "label", "detail", "error"]) {
-    if (typeof record[key] === "string") {
-      summary[key] = String(record[key]).slice(0, 500);
-    }
-  }
-  for (const key of ["actionId", "toolId", "checkpointId", "artifactId"]) {
-    if (typeof record[key] === "string") {
-      summary[key] = record[key];
-    }
-  }
-  return Object.keys(summary).length > 0 ? summary : undefined;
-}
 
 export {
   defaultCustomAgentsDir,
