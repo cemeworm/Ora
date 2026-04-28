@@ -190,7 +190,7 @@ describe("desktop session view model", () => {
     expect(viewModel.actions[0]?.consequence).not.toContain("operator");
   });
 
-  it("does not show stored completion text while approval is pending", () => {
+  it("shows approval copy instead of stale progress while approval is pending", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-approval-transcript",
@@ -249,8 +249,8 @@ describe("desktop session view model", () => {
         payload: {
           kind: "chat_progress",
           source: "progress_narrator",
-          trigger: "approval.required",
-          summary: "我已经完成调研整理，正在等待你确认后再写入项目文档。",
+          trigger: "task.progress",
+          summary: "正在读取力拓2026年Q1生产报告等公开资料，下一步将多维度分析西芒杜项目的工程、融资和合作进展。",
         },
       }],
       artifacts: [],
@@ -292,7 +292,8 @@ describe("desktop session view model", () => {
     );
     const assistant = messages.find((message) => message.role === "assistant");
 
-    expect(assistant?.content).toBe("我已经完成调研整理，正在等待你确认后再写入项目文档。");
+    expect(assistant?.content).toBe("我已经准备好把调研结果写入项目文档，批准后会继续执行本地写入。");
+    expect(assistant?.content).not.toContain("正在读取力拓");
     expect(assistant?.content).not.toContain("文档已成功更新");
   });
 

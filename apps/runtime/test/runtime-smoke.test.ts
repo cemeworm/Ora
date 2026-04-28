@@ -2590,7 +2590,9 @@ describe("Ora runtime smoke path", () => {
       providerCalls += 1;
       const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role?: string; content?: string }> };
       const sawDegradedResult = body.messages?.some((message) =>
-        message.role === "user" && typeof message.content === "string" && message.content.includes("Workspace tool degraded for web.fetch")
+        (message.role === "user" || message.role === "tool")
+        && typeof message.content === "string"
+        && message.content.includes("Workspace tool degraded for web.fetch")
       );
       if (sawDegradedResult) {
         return new Response(JSON.stringify({
@@ -4168,6 +4170,137 @@ describe("Ora runtime smoke path", () => {
         delete process.env.STREAM_NATIVE_TOOL_KEY;
       } else {
         process.env.STREAM_NATIVE_TOOL_KEY = previousKey;
+      }
+    }
+  });
+
+  it("preserves native tool-call reasoning history when tool fallback recovery continues", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NATIVE_TOOL_FALLBACK_KEY;
+    process.env.NATIVE_TOOL_FALLBACK_KEY = "test";
+    let providerCalls = 0;
+    const providerRequestBodies: Array<{
+      messages?: Array<{
+        role: string;
+        reasoning_content?: string;
+        tool_call_id?: string;
+        tool_calls?: unknown[];
+        content?: string | null;
+      }>;
+    }> = [];
+
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/degraded") {
+        throw new Error("fetch failed");
+      }
+
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{
+          role: string;
+          reasoning_content?: string;
+          tool_call_id?: string;
+          tool_calls?: unknown[];
+          content?: string | null;
+        }>;
+      };
+      providerRequestBodies.push(body);
+
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              reasoning_content: "Need to fetch the source before answering.",
+              tool_calls: [{
+                id: "call-degraded",
+                type: "function",
+                function: {
+                  name: "web__fetch",
+                  arguments: "{\"url\":\"https://example.com/degraded\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Recovered from the degraded fetch using the fallback artifact." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch the source and continue even if it degrades." },
+          config: {
+            modeId: "single_agent",
+            providerId: "native-tool-fallback",
+            modelRef: "native-tool-fallback-model",
+            providerConfig: {
+              id: "native-tool-fallback",
+              label: "Native Tool Fallback",
+              type: "openai_compatible",
+              modelId: "native-tool-fallback-model",
+              baseUrl: "https://native-tool-fallback.test/v1",
+              apiKeyEnv: "NATIVE_TOOL_FALLBACK_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      const recoveryRequest = providerRequestBodies.find((body) =>
+        body.messages?.some((message) => message.role === "tool" && message.tool_call_id === "call-degraded")
+      );
+      expect(run.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(recoveryRequest?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          reasoning_content: "Need to fetch the source before answering.",
+          tool_calls: expect.arrayContaining([
+            expect.objectContaining({ id: "call-degraded" }),
+          ]),
+        }),
+        expect.objectContaining({
+          role: "tool",
+          tool_call_id: "call-degraded",
+          content: expect.stringContaining("Workspace tool degraded for web.fetch"),
+        }),
+      ]));
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-degraded",
+          toolId: "web.fetch",
+          source: "provider_native",
+          status: "failed",
+          error: "fetch failed",
+        }),
+      ]);
+      expect(state.output?.text).toContain("Recovered from the degraded fetch");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.NATIVE_TOOL_FALLBACK_KEY;
+      } else {
+        process.env.NATIVE_TOOL_FALLBACK_KEY = previousKey;
       }
     }
   });

@@ -1273,7 +1273,7 @@ function approvalPendingTextFromSnapshot(snapshot: OraStateSnapshot): string | u
     return undefined;
   }
 
-  return progressTextFromSnapshot(snapshot) ?? approvalRequestTextFromSnapshot(snapshot);
+  return approvalRequestTextFromSnapshot(snapshot) ?? approvalProgressTextFromSnapshot(snapshot);
 }
 
 function approvalRequestTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
@@ -1285,6 +1285,27 @@ function approvalRequestTextFromSnapshot(snapshot: OraStateSnapshot): string | u
   return typeof summary === "string" && summary.trim()
     ? summary.trim()
     : undefined;
+}
+
+function approvalProgressTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type !== "task.progress" || !isRecord(event.payload)) {
+      continue;
+    }
+    if (
+      event.payload.kind !== "chat_progress" ||
+      event.payload.source !== "progress_narrator" ||
+      event.payload.trigger !== "approval.required"
+    ) {
+      continue;
+    }
+    const summary = event.payload.summary;
+    if (typeof summary === "string" && summary.trim()) {
+      return summary.trim();
+    }
+  }
+  return undefined;
 }
 
 function outputTextFromSnapshot(

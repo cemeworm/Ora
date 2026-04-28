@@ -783,14 +783,34 @@ export async function runNodeRuntimeLoop(
           errorType: incident.errorType,
           error: incident.detail,
         };
-        messages = [
-          ...messages,
-          { role: "assistant", content: response.text },
-          {
-            role: "user",
-            content: `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`,
-          },
-        ];
+        const degradedToolContent = `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`;
+        messages =
+          toolCall.source === "provider_native" && toolCall.providerCallId
+            ? [
+                ...messages,
+                {
+                  role: "assistant",
+                  content: response.text,
+                  reasoningContent: response.reasoningContent,
+                  toolCalls: response.toolCalls?.filter(
+                    (call) => call.id === toolCall.providerCallId,
+                  ),
+                },
+                {
+                  role: "tool",
+                  toolCallId: toolCall.providerCallId,
+                  toolName: toolCall.tool,
+                  content: degradedToolContent,
+                },
+              ]
+            : [
+                ...messages,
+                { role: "assistant", content: response.text },
+                {
+                  role: "user",
+                  content: degradedToolContent,
+                },
+              ];
         emitNodeRuntimeState("repairing", {
           agentId: params.agentId,
           title: params.title,

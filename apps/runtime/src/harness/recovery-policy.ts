@@ -142,6 +142,8 @@ export function classifyRecoveryError(error: unknown, context: {
       errorType = "provider_quota";
     } else if (matchesAny(lowered, ["unknown provider", "api key", "authentication", "unauthorized", "forbidden", "access denied", "permission", "requires a baseurl"])) {
       errorType = "provider_auth";
+    } else if (matchesAny(lowered, ["invalid_request_error", "reasoning_content", "bad request"])) {
+      errorType = "model_output_invalid";
     } else if (matchesAny(lowered, ["busy", "overloaded", "rate limit", "429", "temporarily unavailable", "try again later"])) {
       errorType = "provider_busy";
     } else if (matchesAny(lowered, ["timeout", "connection", "408", "409", "425", "500", "502", "503", "504"])) {
