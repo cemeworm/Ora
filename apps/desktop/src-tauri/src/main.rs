@@ -17,6 +17,7 @@ fn main() {
             commands::sidecar::provider_secret_store,
             commands::sidecar::provider_secret_delete,
             commands::sidecar::open_external_url,
+            commands::sidecar::read_local_chat_file,
             commands::sidecar::runtime_json_rpc,
             commands::sidecar::runtime_start_run,
             commands::sidecar::runtime_stream_run,

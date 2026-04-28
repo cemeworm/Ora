@@ -51,7 +51,7 @@ export async function emitRuntimeProgressNarration(
         "Describe only what has happened, what is being worked on, and the likely next step.",
         "Do not claim the final answer is known. Do not output tool JSON. Do not mention internal event names, mode names, stage names, routing, subscribers, or sequence numbers.",
         "Prefer user-facing work verbs such as reading, searching, comparing, drafting, checking, and waiting for approval.",
-        "Return one natural sentence under 64 words.",
+        "Return one complete natural sentence under 64 words, ending with sentence-final punctuation such as ., !, ?, 。, ！, or ？.",
       ].join("\n"),
       messages: [
         {

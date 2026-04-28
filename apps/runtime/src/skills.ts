@@ -7,9 +7,14 @@ import {
   SkillDeleteParamsSchema,
   SkillDescriptorSchema,
   SkillDetailSchema,
+  SkillFileDeleteParamsSchema,
+  SkillFileGetParamsSchema,
+  SkillFileUpsertParamsSchema,
   SkillGetParamsSchema,
   SkillListParamsSchema,
   SkillNameSchema,
+  SkillPackageFileContentSchema,
+  SkillPackageFileDescriptorSchema,
   SkillSetEnabledParamsSchema,
   SkillUpdateParamsSchema,
   type CoordinationPattern,
@@ -18,8 +23,13 @@ import {
   type SkillDeleteParams,
   type SkillDescriptor,
   type SkillDetail,
+  type SkillFileDeleteParams,
+  type SkillFileGetParams,
+  type SkillFileUpsertParams,
   type SkillGetParams,
   type SkillListParams,
+  type SkillPackageFileContent,
+  type SkillPackageFileDescriptor,
   type SkillSetEnabledParams,
   type SkillUpdateParams,
 } from "@ora/shared";
@@ -38,6 +48,12 @@ interface PersistedSkillState {
 }
 
 const SKILL_FILE_NAME = "SKILL.md";
+
+interface SupportingSkillFile {
+  path: string;
+  content: string;
+  executable?: boolean;
+}
 
 export interface SkillFileStoreOptions {
   privateRootDir?: string;
@@ -111,7 +127,7 @@ export class SkillFileStore {
     const content = parsed.content ?? defaultSkillContent(name, parsed.description);
     validateSkillContent(name, content);
     const now = this.clock();
-    this.writePrivateSkill(name, content);
+    this.writeSkillPackage(this.privateSkillDir(name), content, parsed.files, true);
     this.updateState(name, { enabled: parsed.enabled, createdAt: now, deleted: false, updatedAt: now });
     return this.get({ name });
   }
@@ -130,23 +146,19 @@ export class SkillFileStore {
     }
 
     validateSkillContent(nextName, parsed.content);
-    if (existing.category === "public") {
-      this.writePublicSkill(nextName, parsed.content);
-      if (nextName !== name) {
-        fs.rmSync(this.publicSkillDir(name), { recursive: true, force: true });
-      }
-    } else {
-      this.writePrivateSkill(nextName, parsed.content);
-      if (nextName !== name) {
-        fs.rmSync(this.privateSkillDir(name), { recursive: true, force: true });
-        fs.rmSync(this.legacyCustomSkillDir(name), { recursive: true, force: true });
-      }
-    }
+    const targetDir = existing.category === "public"
+      ? this.publicSkillDir(nextName)
+      : this.privateSkillDir(nextName);
+    this.prepareEditablePackage(existing, name, nextName, targetDir);
+    this.writeSkillPackage(targetDir, parsed.content, parsed.files, parsed.files !== undefined);
     const now = this.clock();
     if (nextName !== name) {
       if (existing.category === "public") {
+        fs.rmSync(this.publicSkillDir(name), { recursive: true, force: true });
         this.updateState(name, { deleted: true, enabled: false, updatedAt: now });
       } else {
+        fs.rmSync(this.privateSkillDir(name), { recursive: true, force: true });
+        fs.rmSync(this.legacyCustomSkillDir(name), { recursive: true, force: true });
         this.removeState(name);
       }
       this.updateState(nextName, {
@@ -195,6 +207,72 @@ export class SkillFileStore {
     const name = normalizeSkillName(parsed.name);
     this.get({ name });
     this.updateState(name, { enabled: parsed.enabled, updatedAt: this.clock() });
+    return this.get({ name });
+  }
+
+  getFile(params: SkillFileGetParams | unknown): SkillPackageFileContent {
+    const parsed = SkillFileGetParamsSchema.parse(params);
+    const skill = this.get({ name: parsed.skillName });
+    const packageDir = this.requireSkillPackageDir(skill);
+    const relativePath = normalizePackageFilePath(parsed.path);
+    const target = path.join(packageDir, relativePath);
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+      throw new Error(`Skill file '${relativePath}' was not found in '${skill.name}'.`);
+    }
+
+    const content = fs.readFileSync(target).toString("utf8");
+    if (content.includes("\uFFFD")) {
+      throw new Error(`Skill file '${relativePath}' is not editable as UTF-8 text.`);
+    }
+
+    return SkillPackageFileContentSchema.parse({
+      skillName: skill.name,
+      content,
+      ...this.packageFileDescriptor(packageDir, relativePath),
+    });
+  }
+
+  upsertFile(params: SkillFileUpsertParams | unknown): SkillDetail {
+    const parsed = SkillFileUpsertParamsSchema.parse(params);
+    const name = normalizeSkillName(parsed.skillName);
+    const existing = this.get({ name });
+    if (!existing.editable) {
+      throw new Error(`Skill '${name}' cannot be edited.`);
+    }
+
+    const targetDir = existing.category === "public"
+      ? this.publicSkillDir(name)
+      : this.privateSkillDir(name);
+    this.prepareEditablePackage(existing, name, name, targetDir);
+    this.writeSupportingFile(targetDir, {
+      path: parsed.path,
+      content: parsed.content,
+      executable: parsed.executable,
+    });
+    this.updateState(name, { deleted: false, updatedAt: this.clock() });
+    return this.get({ name });
+  }
+
+  deleteFile(params: SkillFileDeleteParams | unknown): SkillDetail {
+    const parsed = SkillFileDeleteParamsSchema.parse(params);
+    const name = normalizeSkillName(parsed.skillName);
+    const existing = this.get({ name });
+    if (!existing.editable) {
+      throw new Error(`Skill '${name}' cannot be edited.`);
+    }
+
+    const targetDir = existing.category === "public"
+      ? this.publicSkillDir(name)
+      : this.privateSkillDir(name);
+    this.prepareEditablePackage(existing, name, name, targetDir);
+    const relativePath = normalizePackageFilePath(parsed.path);
+    const target = path.join(targetDir, relativePath);
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+      throw new Error(`Skill file '${relativePath}' was not found in '${existing.name}'.`);
+    }
+    fs.rmSync(target, { force: true });
+    this.removeEmptyDirectories(targetDir, targetDir);
+    this.updateState(name, { deleted: false, updatedAt: this.clock() });
     return this.get({ name });
   }
 
@@ -316,6 +394,7 @@ export class SkillFileStore {
           updatedAt: record.updatedAt ?? Math.floor(stat.mtimeMs),
           allowedPatterns: [],
           tags: [],
+          files: this.listPackageFiles(path.dirname(fullPath)),
           content,
         }));
       }
@@ -359,16 +438,139 @@ export class SkillFileStore {
     this.writeState(state);
   }
 
-  private writePrivateSkill(name: string, content: string) {
-    const target = this.privateSkillFile(name);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+  private writeSkillPackage(
+    packageDir: string,
+    content: string,
+    files: readonly SupportingSkillFile[] | undefined,
+    replaceSupportingFiles: boolean,
+  ) {
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, SKILL_FILE_NAME), content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    if (replaceSupportingFiles) {
+      this.removeSupportingFiles(packageDir);
+    }
+    if (files) {
+      for (const file of files) {
+        this.writeSupportingFile(packageDir, file);
+      }
+    }
   }
 
-  private writePublicSkill(name: string, content: string) {
-    const target = this.publicSkillFile(name);
+  private prepareEditablePackage(existing: SkillDetail, name: string, nextName: string, targetDir: string) {
+    const sourceDir = this.skillPackageDir(existing);
+    if (nextName !== name) {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+      if (sourceDir && fs.existsSync(sourceDir)) {
+        this.copyPackageFiles(sourceDir, targetDir);
+      }
+      return;
+    }
+
+    if (existing.category === "public" && !fs.existsSync(targetDir) && sourceDir && fs.existsSync(sourceDir)) {
+      this.copyPackageFiles(sourceDir, targetDir);
+    }
+  }
+
+  private skillPackageDir(skill: SkillDetail): string | undefined {
+    if (!skill.path) {
+      return undefined;
+    }
+    const skillFilePath = path.isAbsolute(skill.path)
+      ? skill.path
+      : path.resolve(process.cwd(), skill.path);
+    return path.dirname(skillFilePath);
+  }
+
+  private copyPackageFiles(sourceDir: string, targetDir: string) {
+    for (const file of this.walkPackageFiles(sourceDir, true)) {
+      const sourceFile = path.join(sourceDir, file.relativePath);
+      const targetFile = path.join(targetDir, file.relativePath);
+      fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+      fs.copyFileSync(sourceFile, targetFile);
+      fs.chmodSync(targetFile, fs.statSync(sourceFile).mode);
+    }
+  }
+
+  private removeSupportingFiles(packageDir: string) {
+    for (const file of this.walkPackageFiles(packageDir, false).reverse()) {
+      if (file.relativePath === SKILL_FILE_NAME) {
+        continue;
+      }
+      fs.rmSync(path.join(packageDir, file.relativePath), { force: true });
+    }
+    this.removeEmptyDirectories(packageDir, packageDir);
+  }
+
+  private removeEmptyDirectories(rootDir: string, currentDir: string) {
+    if (!fs.existsSync(currentDir)) {
+      return;
+    }
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        this.removeEmptyDirectories(rootDir, path.join(currentDir, entry.name));
+      }
+    }
+    if (currentDir !== rootDir && fs.readdirSync(currentDir).length === 0) {
+      fs.rmdirSync(currentDir);
+    }
+  }
+
+  private writeSupportingFile(packageDir: string, file: SupportingSkillFile) {
+    const relativePath = normalizePackageFilePath(file.path);
+    const target = path.join(packageDir, relativePath);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    fs.writeFileSync(target, file.content, "utf8");
+    if (file.executable) {
+      fs.chmodSync(target, 0o755);
+    }
+  }
+
+  private listPackageFiles(packageDir: string): SkillPackageFileDescriptor[] {
+    return this.walkPackageFiles(packageDir, false)
+      .filter((file) => file.relativePath !== SKILL_FILE_NAME)
+      .map((file) => this.packageFileDescriptor(packageDir, file.relativePath));
+  }
+
+  private packageFileDescriptor(packageDir: string, relativePath: string): SkillPackageFileDescriptor {
+    const fullPath = path.join(packageDir, relativePath);
+    const stat = fs.statSync(fullPath);
+    return SkillPackageFileDescriptorSchema.parse({
+      path: relativePath,
+      kind: classifyPackageFile(relativePath),
+      size: stat.size,
+      updatedAt: Math.floor(stat.mtimeMs),
+      executable: (stat.mode & 0o111) !== 0,
+    });
+  }
+
+  private walkPackageFiles(packageDir: string, includeSkillFile: boolean): { relativePath: string }[] {
+    if (!fs.existsSync(packageDir)) {
+      return [];
+    }
+    const files: { relativePath: string }[] = [];
+    const stack = [packageDir];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+        if (entry.name.startsWith(".")) {
+          continue;
+        }
+        const fullPath = path.join(current, entry.name);
+        const relativePath = path.relative(packageDir, fullPath).split(path.sep).join("/");
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+        if (!includeSkillFile && relativePath === SKILL_FILE_NAME) {
+          continue;
+        }
+        files.push({ relativePath });
+      }
+    }
+    return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
   }
 
   private findAnySkill(name: string): SkillDetail | undefined {
@@ -388,12 +590,12 @@ export class SkillFileStore {
     return path.join(this.legacyCustomRootDir, normalizeSkillName(name));
   }
 
-  private privateSkillFile(name: string): string {
-    return path.join(this.privateSkillDir(name), SKILL_FILE_NAME);
-  }
-
-  private publicSkillFile(name: string): string {
-    return path.join(this.publicSkillDir(name), SKILL_FILE_NAME);
+  private requireSkillPackageDir(skill: SkillDetail): string {
+    const packageDir = this.skillPackageDir(skill);
+    if (!packageDir || !fs.existsSync(packageDir)) {
+      throw new Error(`Skill '${skill.name}' does not have a local package directory.`);
+    }
+    return packageDir;
   }
 }
 
@@ -473,6 +675,42 @@ function defaultSkillContent(name: string, description: string): string {
     description.trim() || "Describe the workflow, rules, and examples for this skill.",
     "",
   ].join("\n");
+}
+
+function normalizePackageFilePath(filePath: string): string {
+  const normalized = filePath.trim().replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  if (
+    !normalized ||
+    path.isAbsolute(normalized) ||
+    parts.some((part) => !part || part === "." || part === ".." || part.startsWith("."))
+  ) {
+    throw new Error(`Skill package file path '${filePath}' must be a visible relative path inside the skill directory.`);
+  }
+  if (normalized === SKILL_FILE_NAME) {
+    throw new Error(`${SKILL_FILE_NAME} must be supplied as skill content, not as a supporting file.`);
+  }
+  return parts.join("/");
+}
+
+function classifyPackageFile(filePath: string): "script" | "agent" | "template" | "asset" | "reference" | "other" {
+  const [folder] = filePath.split("/");
+  if (folder === "scripts") {
+    return "script";
+  }
+  if (folder === "agents") {
+    return "agent";
+  }
+  if (folder === "templates") {
+    return "template";
+  }
+  if (folder === "assets") {
+    return "asset";
+  }
+  if (folder === "references" || folder === "docs") {
+    return "reference";
+  }
+  return "other";
 }
 
 function normalizeSkillName(name: string): string {

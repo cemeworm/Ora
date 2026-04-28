@@ -71,6 +71,31 @@ export const SkillCategorySchema = z.preprocess(
 );
 export type SkillCategory = z.infer<typeof SkillCategorySchema>;
 
+export const SkillNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Skill names must be lowercase hyphen-case.");
+export type SkillName = z.infer<typeof SkillNameSchema>;
+
+export const SkillPackageFileKindSchema = z.enum(["script", "agent", "template", "asset", "reference", "other"]);
+export type SkillPackageFileKind = z.infer<typeof SkillPackageFileKindSchema>;
+
+export const SkillPackageFileDescriptorSchema = z.object({
+  path: z.string().min(1),
+  kind: SkillPackageFileKindSchema.default("other"),
+  size: z.number().int().nonnegative().optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
+  executable: z.boolean().default(false),
+});
+export type SkillPackageFileDescriptor = z.infer<typeof SkillPackageFileDescriptorSchema>;
+
+export const SkillPackageFileContentSchema = SkillPackageFileDescriptorSchema.extend({
+  skillName: SkillNameSchema,
+  content: z.string(),
+});
+export type SkillPackageFileContent = z.infer<typeof SkillPackageFileContentSchema>;
+
 export const SkillDescriptorSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -85,6 +110,7 @@ export const SkillDescriptorSchema = z.object({
   updatedAt: z.number().int().nonnegative().optional(),
   allowedPatterns: z.array(CoordinationPatternSchema).default([]),
   tags: z.array(z.string().min(1)).default([]),
+  files: z.array(SkillPackageFileDescriptorSchema).optional(),
 });
 export type SkillDescriptor = z.infer<typeof SkillDescriptorSchema>;
 
@@ -92,13 +118,6 @@ export const SkillRegistrySchema = z.object({
   skills: z.array(SkillDescriptorSchema),
 });
 export type SkillRegistry = z.infer<typeof SkillRegistrySchema>;
-
-export const SkillNameSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Skill names must be lowercase hyphen-case.");
-export type SkillName = z.infer<typeof SkillNameSchema>;
 
 export const SkillDetailSchema = SkillDescriptorSchema.extend({
   content: z.string().min(1),
@@ -122,6 +141,11 @@ export const SkillCreateParamsSchema = z.object({
   name: SkillNameSchema,
   description: z.string().default(""),
   content: z.string().optional(),
+  files: z.array(z.object({
+    path: z.string().min(1),
+    content: z.string(),
+    executable: z.boolean().optional(),
+  })).optional(),
   enabled: z.boolean().default(true),
 });
 export type SkillCreateParams = z.infer<typeof SkillCreateParamsSchema>;
@@ -130,6 +154,11 @@ export const SkillUpdateParamsSchema = z.object({
   name: SkillNameSchema,
   nextName: SkillNameSchema.optional(),
   content: z.string().min(1),
+  files: z.array(z.object({
+    path: z.string().min(1),
+    content: z.string(),
+    executable: z.boolean().optional(),
+  })).optional(),
 });
 export type SkillUpdateParams = z.infer<typeof SkillUpdateParamsSchema>;
 
@@ -154,6 +183,23 @@ export const SkillSetEnabledParamsSchema = z.object({
   enabled: z.boolean(),
 });
 export type SkillSetEnabledParams = z.infer<typeof SkillSetEnabledParamsSchema>;
+
+export const SkillFileGetParamsSchema = z.object({
+  skillName: SkillNameSchema,
+  path: z.string().min(1),
+});
+export type SkillFileGetParams = z.infer<typeof SkillFileGetParamsSchema>;
+
+export const SkillFileUpsertParamsSchema = z.object({
+  skillName: SkillNameSchema,
+  path: z.string().min(1),
+  content: z.string(),
+  executable: z.boolean().optional(),
+});
+export type SkillFileUpsertParams = z.infer<typeof SkillFileUpsertParamsSchema>;
+
+export const SkillFileDeleteParamsSchema = SkillFileGetParamsSchema;
+export type SkillFileDeleteParams = z.infer<typeof SkillFileDeleteParamsSchema>;
 
 // ---------------------------------------------------------------------------
 // Custom Agent Schemas
@@ -390,11 +436,11 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "shell.execute", label: "Execute Command", description: "Run an approved command in the selected project folder.", category: "shell", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "web.fetch", label: "Fetch URL", description: "Fetch content from an HTTP or HTTPS URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "web.search", label: "Search Web", description: "Search the web for lightweight research results.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.list", label: "List Skills", description: "List installed Ora skills by name, description, category, and enabled state so an agent can discover relevant skills before answering.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.get", label: "Read Skill", description: "Read the full instructions for one installed Ora skill by name before applying that skill to the conversation.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.checkName", label: "Check Skill Name", description: "Check whether a private Ora skill name is available before installing or creating it.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.create", label: "Create Skill", description: "Create or install a private Ora skill from validated SKILL.md content.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "skills.update", label: "Update Skill", description: "Update an editable private Ora skill with validated SKILL.md content.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "skills.list", label: "List Skills", description: "List installed Ora skill packages by name, description, category, enabled state, and supporting file metadata so an agent can discover relevant skills before answering.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.get", label: "Read Skill", description: "Read the full SKILL.md instructions and package file metadata for one installed Ora skill before applying that skill to the conversation.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.checkName", label: "Check Skill Name", description: "Check whether an Ora skill name is available before installing or creating it.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.create", label: "Create Skill", description: "Create or install a private Ora skill package from validated SKILL.md content plus optional supporting files.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "skills.update", label: "Update Skill", description: "Update an editable Ora skill package with validated SKILL.md content while preserving or replacing supporting files.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "skills.setEnabled", label: "Enable Skill", description: "Enable or disable an installed Ora skill.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "mcp.listTools", label: "List MCP Tools", description: "List tools exposed by configured MCP servers.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "mcp.readResource", label: "Read MCP Resource", description: "Read a resource from a configured MCP server.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },

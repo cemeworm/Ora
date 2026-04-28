@@ -42,7 +42,8 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
-  const hasProcessSteps = processSteps.length > 0;
+  const showLiveProgressInProcess = Boolean(turn?.liveProgressText && content.trim() !== turn.liveProgressText.trim());
+  const hasProcessSteps = processSteps.length > 0 || showLiveProgressInProcess;
   const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
   const contentIsLiveProgress = Boolean(turn?.liveProgressText && content.trim() === turn.liveProgressText.trim());
   const hasVisibleAgentMessages = visibleAgentMessages(agentMessages, turn?.status).length > 0;
@@ -91,12 +92,17 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               onToggle={() => setProcessOpen((current) => !current)}
               title="运行进度"
               icon={<Clock3 size={14} />}
-              summary={processSummary(processSteps, turn?.status, isPlaceholder)}
-              collapsedPreview={latestProcessStep ? <ProcessStepItem step={latestProcessStep} /> : undefined}
+              summary={processSteps.length > 0 ? processSummary(processSteps, turn?.status, isPlaceholder) : undefined}
+              collapsedPreview={latestProcessStep
+                ? <ProcessStepItem step={latestProcessStep} />
+                : showLiveProgressInProcess && turn?.liveProgressText
+                  ? <LiveProgressItem text={turn.liveProgressText} />
+                  : undefined}
             >
               {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
               ))}
+              {showLiveProgressInProcess && turn?.liveProgressText ? <LiveProgressItem text={turn.liveProgressText} active={turn.status === "running"} /> : null}
             </CollapsibleCard>
           ) : null}
 
@@ -396,6 +402,23 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
           </TaskItemMeta>
         </div>
         <StepStatusIcon step={step} />
+      </div>
+    </TaskItem>
+  );
+}
+
+function LiveProgressItem({ text, active = false }: { text: string; active?: boolean }) {
+  return (
+    <TaskItem className="relative">
+      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-medium">当前状态</p>
+          <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{text}</p>
+        </div>
+        {active
+          ? <LoaderCircle size={14} className="mt-0.5 shrink-0 animate-spin text-muted-foreground" />
+          : <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />}
       </div>
     </TaskItem>
   );

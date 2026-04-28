@@ -2,6 +2,8 @@ import {
   ArrowUp,
   BrainCircuit,
   Bot,
+  Check,
+  FileText,
   LoaderCircle,
   Paperclip,
   Rocket,
@@ -10,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -18,8 +21,11 @@ import {
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import type { ModeCard } from "../types";
-import type { OraProviderConfig } from "../lib/runtimeClient";
+import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
+import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
 import type { ModeSelection } from "@ora/shared";
+
+type SkillDescriptor = OraSkillRegistry["skills"][number];
 
 interface ChatInputProps {
   sessionId: string;
@@ -31,11 +37,19 @@ interface ChatInputProps {
   selectedModeSelection: ModeSelection;
   activeProvider?: OraProviderConfig;
   providerOptions: OraProviderConfig[];
+  skillOptions: SkillDescriptor[];
+  selectedSkillIds: string[];
   selectedCustomAgentId?: string;
+  projectFileAttachments: ComposerProjectFileAttachment[];
+  localFileAttachments: ComposerLocalFileAttachment[];
   onModeChange: (modeId: string) => void;
   onModeSelectionChange: (selection: ModeSelection) => void;
   onProviderChange: (providerId: string) => void;
   onPromptChange: (prompt: string) => void;
+  onSelectedSkillIdsChange: (skillIds: string[]) => void;
+  onRemoveProjectFileAttachment: (path: string) => void;
+  onRemoveLocalFileAttachment: (path: string) => void;
+  onOpenLocalFiles: () => void;
   onClearSelectedCustomAgent?: () => void;
   onStartRun: () => void;
   onStopRun: () => void;
@@ -69,20 +83,67 @@ export function ChatInput({
   selectedModeSelection,
   activeProvider,
   providerOptions,
+  skillOptions,
+  selectedSkillIds,
   selectedCustomAgentId,
+  projectFileAttachments,
+  localFileAttachments,
   onModeChange,
   onModeSelectionChange,
   onProviderChange,
   onPromptChange,
+  onSelectedSkillIdsChange,
+  onRemoveProjectFileAttachment,
+  onRemoveLocalFileAttachment,
+  onOpenLocalFiles,
   onClearSelectedCustomAgent,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [openPicker, setOpenPicker] = useState<
-    "pattern" | "provider" | undefined
+    "pattern" | "provider" | "skills" | undefined
   >();
+  const [skillListExpanded, setSkillListExpanded] = useState(false);
   const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
+  const selectedSkillIdSet = useMemo(
+    () => new Set(selectedSkillIds),
+    [selectedSkillIds],
+  );
+  const selectedSkills = useMemo(
+    () =>
+      selectedSkillIds
+        .map((skillId) => skillOptions.find((skill) => skill.id === skillId || skill.name === skillId))
+        .filter((skill): skill is SkillDescriptor => Boolean(skill)),
+    [selectedSkillIds, skillOptions],
+  );
+  const slashQuery = composerPrompt.startsWith("/")
+    ? composerPrompt.slice(1).trim().toLowerCase()
+    : "";
+  const filteredSkillOptions = useMemo(() => {
+    return skillOptions
+      .filter((skill) => skill.enabled)
+      .filter((skill) => !selectedSkillIdSet.has(skill.id) && !selectedSkillIdSet.has(skill.name))
+      .filter((skill) => {
+        if (!slashQuery) return true;
+        return [skill.name, skill.description, skill.category]
+          .some((value) => value.toLowerCase().includes(slashQuery));
+      })
+      .sort((left, right) => {
+        if (left.category !== right.category) {
+          return left.category === "private" ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name);
+      });
+  }, [selectedSkillIdSet, skillOptions, slashQuery]);
+  const visibleSkillOptions = skillListExpanded
+    ? filteredSkillOptions
+    : filteredSkillOptions.slice(0, 12);
+  const hiddenSkillCount = filteredSkillOptions.length - visibleSkillOptions.length;
+  const showSkillPicker = openPicker === "skills"
+    && composerPrompt.startsWith("/")
+    && filteredSkillOptions.length > 0;
+  const hasTopChips = selectedSkills.length > 0 || projectFileAttachments.length > 0 || localFileAttachments.length > 0;
 
   useLayoutEffect(() => {
     const target = textareaRef.current;
@@ -103,6 +164,17 @@ export function ChatInput({
   }, [sessionId]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Escape" && openPicker === "skills") {
+      setOpenPicker(undefined);
+      return;
+    }
+    if (e.key === "Enter" && openPicker === "skills") {
+      e.preventDefault();
+      if (visibleSkillOptions[0]) {
+        selectSkill(visibleSkillOptions[0]);
+      }
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (isRunning) {
@@ -115,6 +187,40 @@ export function ChatInput({
     }
   }
 
+  function updatePrompt(nextPrompt: string) {
+    onPromptChange(nextPrompt);
+    const nextQuery = nextPrompt.startsWith("/") ? nextPrompt.slice(1).trim().toLowerCase() : "";
+    const hasMatches = nextPrompt.startsWith("/") && skillOptions
+      .filter((skill) => skill.enabled)
+      .filter((skill) => !selectedSkillIdSet.has(skill.id) && !selectedSkillIdSet.has(skill.name))
+      .some((skill) => {
+        if (!nextQuery) return true;
+        return [skill.name, skill.description, skill.category]
+          .some((value) => value.toLowerCase().includes(nextQuery));
+      });
+
+    if (hasMatches) {
+      setOpenPicker("skills");
+    } else if (openPicker === "skills") {
+      setOpenPicker(undefined);
+      setSkillListExpanded(false);
+    }
+  }
+
+  function selectSkill(skill: SkillDescriptor) {
+    const nextSkillIds = [...selectedSkillIds, skill.id];
+    onSelectedSkillIdsChange([...new Set(nextSkillIds)]);
+    onPromptChange(composerPrompt.startsWith("/") ? "" : composerPrompt);
+    setOpenPicker(undefined);
+    setSkillListExpanded(false);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  function removeSkill(skillId: string) {
+    onSelectedSkillIdsChange(selectedSkillIds.filter((id) => id !== skillId));
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
   const modeTriggerLabel =
     selectedModeSelection === "auto"
       ? "Auto"
@@ -123,17 +229,94 @@ export function ChatInput({
   return (
     <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
       <div className="pointer-events-auto relative w-full max-w-[88rem]">
+        {showSkillPicker && (
+          <div className="absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
+            {visibleSkillOptions.map((skill) => (
+              <button
+                key={skill.id}
+                type="button"
+                onClick={() => selectSkill(skill)}
+                className="w-full rounded-md px-3 py-2 text-left transition hover:bg-accent"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-medium">{skill.name}</span>
+                  <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {skill.category}
+                  </span>
+                </div>
+                <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                  {skill.description}
+                </div>
+              </button>
+            ))}
+            {hiddenSkillCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setSkillListExpanded(true)}
+                className="mt-1 w-full rounded-md bg-transparent px-3 py-2 text-left text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+              >
+                Show all {filteredSkillOptions.length} skills
+              </button>
+            )}
+          </div>
+        )}
         <div className="rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
-          <div className="relative min-h-[96px]">
+          <div className={cn("relative", hasTopChips ? "min-h-[148px]" : "min-h-[96px]")}>
+            {hasTopChips && (
+              <div className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1">
+                {selectedSkills.map((skill) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    onClick={() => removeSkill(skill.id)}
+                    className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 text-xs font-medium text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                    title={`Remove ${skill.name}`}
+                  >
+                    <Check size={12} />
+                    <span className="truncate">{skill.name}</span>
+                    <X size={11} className="text-violet-500" />
+                  </button>
+                ))}
+                {projectFileAttachments.map((file) => (
+                  <button
+                    key={`${file.projectId}:${file.path}`}
+                    type="button"
+                    onClick={() => onRemoveProjectFileAttachment(file.path)}
+                    className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                    title={`Remove ${file.path}`}
+                  >
+                    <FileText size={12} />
+                    <span className="truncate text-foreground">{file.name}</span>
+                    <X size={11} />
+                  </button>
+                ))}
+                {localFileAttachments.map((file) => (
+                  <button
+                    key={`local:${file.path}`}
+                    type="button"
+                    onClick={() => onRemoveLocalFileAttachment(file.path)}
+                    className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 text-xs font-medium text-muted-foreground shadow-[0_1px_2px_rgba(23,23,23,0.04)] transition hover:bg-accent hover:text-accent-foreground active:scale-95"
+                    title={`Remove ${file.path}`}
+                  >
+                    <FileText size={12} />
+                    <span className="truncate text-foreground">{file.name}</span>
+                    <X size={11} />
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               value={composerPrompt}
-              onChange={(e) => onPromptChange(e.target.value)}
+              onChange={(e) => updatePrompt(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={isRunning ? "" : "Message Ora"}
               disabled={!interactivity.canEditText}
               rows={2}
-              className="min-h-[96px] max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 pt-4 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
+              className={cn(
+                "max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
+                hasTopChips ? "min-h-[148px] pt-20" : "min-h-[96px] pt-4",
+              )}
               style={{ height: "auto", overflow: "hidden" }}
               onInput={(e) => {
                 resizeComposerTextarea(e.target as HTMLTextAreaElement);
@@ -145,7 +328,8 @@ export function ChatInput({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  title="Attachments"
+                  onClick={onOpenLocalFiles}
+                  title="载入本地文件"
                 >
                   <Paperclip size={14} />
                 </Button>

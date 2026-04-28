@@ -34,6 +34,18 @@ function freshStoreDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-skills-"));
 }
 
+function repoRoot(): string {
+  let current = process.cwd();
+  while (!fs.existsSync(path.join(current, "pnpm-workspace.yaml"))) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return process.cwd();
+    }
+    current = parent;
+  }
+  return current;
+}
+
 function skillContent(name: string, description = "Runtime test skill."): string {
   return [
     "---",
@@ -89,6 +101,17 @@ describe("managed skill runtime behavior", () => {
         name: "runtime-review",
         description: "Runtime review skill.",
         content: skillContent("runtime-review", "Runtime review skill."),
+        files: [
+          {
+            path: "scripts/review.sh",
+            content: "#!/usr/bin/env bash\necho review\n",
+            executable: true,
+          },
+          {
+            path: "agents/reviewer.yaml",
+            content: "name: reviewer\n",
+          },
+        ],
       },
     }) as { name: string; category: string; editable: boolean; enabled: boolean };
     expect(created).toMatchObject({
@@ -98,6 +121,8 @@ describe("managed skill runtime behavior", () => {
       enabled: true,
     });
     expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review", "scripts", "review.sh"))).toBe(true);
+    expect(fs.statSync(path.join(dataDir, "skills", "private", "runtime-review", "scripts", "review.sh")).mode & 0o111).not.toBe(0);
 
     const updated = handle({
       jsonrpc: "2.0",
@@ -109,6 +134,7 @@ describe("managed skill runtime behavior", () => {
       },
     }) as { description: string };
     expect(updated.description).toBe("Updated runtime review skill.");
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review", "scripts", "review.sh"))).toBe(true);
 
     const renamed = handle({
       jsonrpc: "2.0",
@@ -126,6 +152,7 @@ describe("managed skill runtime behavior", () => {
     });
     expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review", "SKILL.md"))).toBe(false);
     expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review-renamed", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "runtime-review-renamed", "scripts", "review.sh"))).toBe(true);
 
     const reloaded = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
     const loaded = reloaded({
@@ -133,8 +160,12 @@ describe("managed skill runtime behavior", () => {
       id: 3,
       method: "skills.get",
       params: { name: "runtime-review-renamed" },
-    }) as { description: string; enabled: boolean };
+    }) as { description: string; enabled: boolean; files: { path: string; kind: string; executable: boolean }[] };
     expect(loaded.description).toBe("Renamed runtime review skill.");
+    expect(loaded.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "scripts/review.sh", kind: "script", executable: true }),
+      expect.objectContaining({ path: "agents/reviewer.yaml", kind: "agent" }),
+    ]));
 
     const disabled = reloaded({
       jsonrpc: "2.0",
@@ -162,6 +193,157 @@ describe("managed skill runtime behavior", () => {
       method: "skills.checkName",
       params: { name: "runtime-review-renamed" },
     }) as { available: boolean }).available).toBe(true);
+  });
+
+  it("replaces private supporting files only when update payload supplies files", () => {
+    const dataDir = freshStoreDir();
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+    handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.create",
+      params: {
+        name: "package-review",
+        description: "Package review skill.",
+        content: skillContent("package-review", "Package review skill."),
+        files: [{ path: "scripts/old.sh", content: "echo old\n" }],
+      },
+    });
+
+    const updated = handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skills.update",
+      params: {
+        name: "package-review",
+        content: skillContent("package-review", "Package review skill updated."),
+        files: [{ path: "scripts/new.sh", content: "echo new\n" }],
+      },
+    }) as { files: { path: string }[] };
+
+    expect(updated.files.map((file) => file.path)).toEqual(["scripts/new.sh"]);
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "package-review", "scripts", "old.sh"))).toBe(false);
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "package-review", "scripts", "new.sh"))).toBe(true);
+  });
+
+  it("rejects supporting file paths outside the skill package", () => {
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
+
+    expect(() => handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.create",
+      params: {
+        name: "unsafe-package",
+        description: "Unsafe package skill.",
+        content: skillContent("unsafe-package", "Unsafe package skill."),
+        files: [{ path: "../outside.sh", content: "echo no\n" }],
+      },
+    })).toThrow("visible relative path");
+  });
+
+  it("reads, writes, and deletes private supporting files through single-file APIs", () => {
+    const dataDir = freshStoreDir();
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+    handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.create",
+      params: {
+        name: "file-editor",
+        description: "File editor skill.",
+        content: skillContent("file-editor", "File editor skill."),
+      },
+    });
+
+    const withFile = handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skills.file.upsert",
+      params: {
+        skillName: "file-editor",
+        path: "templates/result.md",
+        content: "hello package file\n",
+      },
+    }) as { files: { path: string; kind: string }[] };
+    expect(withFile.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "templates/result.md", kind: "template" }),
+    ]));
+
+    const loaded = handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skills.file.get",
+      params: { skillName: "file-editor", path: "templates/result.md" },
+    }) as { content: string; path: string; kind: string };
+    expect(loaded).toMatchObject({
+      path: "templates/result.md",
+      kind: "template",
+      content: "hello package file\n",
+    });
+
+    const deleted = handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "skills.file.delete",
+      params: { skillName: "file-editor", path: "templates/result.md" },
+    }) as { files: { path: string }[] };
+    expect(deleted.files.some((file) => file.path === "templates/result.md")).toBe(false);
+    expect(fs.existsSync(path.join(dataDir, "skills", "private", "file-editor", "templates", "result.md"))).toBe(false);
+  });
+
+  it("edits packaged public supporting files by creating a writable public copy", () => {
+    const dataDir = freshStoreDir();
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+    const seedPath = path.join(repoRoot(), "skills", "skill-creator", "scripts", "init_skill.py");
+    const seedBefore = fs.readFileSync(seedPath, "utf8");
+
+    const loaded = handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.file.get",
+      params: { skillName: "skill-creator", path: "scripts/init_skill.py" },
+    }) as { content: string; kind: string };
+    expect(loaded.kind).toBe("script");
+    expect(loaded.content).toBe(seedBefore);
+
+    const updated = handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skills.file.upsert",
+      params: {
+        skillName: "skill-creator",
+        path: "scripts/init_skill.py",
+        content: "# edited public copy\n",
+      },
+    }) as { files: { path: string }[] };
+    expect(updated.files.map((file) => file.path)).toContain("scripts/init_skill.py");
+    expect(fs.readFileSync(seedPath, "utf8")).toBe(seedBefore);
+    expect(fs.readFileSync(path.join(dataDir, "skills", "public", "skill-creator", "scripts", "init_skill.py"), "utf8")).toBe("# edited public copy\n");
+
+    const reloaded = handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skills.file.get",
+      params: { skillName: "skill-creator", path: "scripts/init_skill.py" },
+    }) as { content: string };
+    expect(reloaded.content).toBe("# edited public copy\n");
+  });
+
+  it("rejects entrypoint and hidden supporting file paths through single-file APIs", () => {
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
+    for (const filePath of ["SKILL.md", ".secret", "scripts/.secret", "../outside.sh"]) {
+      expect(() => handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "skills.file.upsert",
+        params: {
+          skillName: "skill-creator",
+          path: filePath,
+          content: "no\n",
+        },
+      })).toThrow();
+    }
   });
 
   it("updates, disables, and deletes initialized public skills without resurrecting package defaults", () => {
@@ -229,6 +411,39 @@ describe("managed skill runtime behavior", () => {
       method: "skills.checkName",
       params: { name: "long-task-protocol-custom" },
     }) as { available: boolean }).available).toBe(true);
+  });
+
+  it("copies packaged public supporting files into the editable public copy", () => {
+    const dataDir = freshStoreDir();
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir }));
+
+    const packaged = handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.get",
+      params: { name: "skill-creator" },
+    }) as { files: { path: string; kind: string }[] };
+    expect(packaged.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "scripts/init_skill.py", kind: "script" }),
+      expect.objectContaining({ path: "agents/analyzer.md", kind: "agent" }),
+    ]));
+
+    const updated = handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skills.update",
+      params: {
+        name: "skill-creator",
+        content: skillContent("skill-creator", "Edited skill creator."),
+      },
+    }) as { files: { path: string }[] };
+
+    expect(updated.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+      "scripts/init_skill.py",
+      "agents/analyzer.md",
+    ]));
+    expect(fs.existsSync(path.join(dataDir, "skills", "public", "skill-creator", "scripts", "init_skill.py"))).toBe(true);
+    expect(fs.existsSync(path.join(dataDir, "skills", "public", "skill-creator", "agents", "analyzer.md"))).toBe(true);
   });
 
   it("loads legacy custom skills as private skills", () => {

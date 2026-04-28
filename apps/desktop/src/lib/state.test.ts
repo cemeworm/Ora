@@ -38,6 +38,156 @@ describe("desktop workbench state", () => {
     expect(state.promptText).toBe("draft for b");
   });
 
+  it("keeps pending project file attachments scoped to the selected session", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+      selectedSessionId: "session-a",
+    };
+
+    state = workbenchReducer(state, {
+      type: "ADD_PROJECT_FILE_ATTACHMENT",
+      sessionId: "session-a",
+      file: {
+        projectId: "project-a",
+        path: "src/App.tsx",
+        name: "App.tsx",
+        mimeType: "text/typescript",
+        sizeBytes: 128,
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "ADD_PROJECT_FILE_ATTACHMENT",
+      sessionId: "session-a",
+      file: {
+        projectId: "project-a",
+        path: "src/App.tsx",
+        name: "App.tsx",
+        mimeType: "text/typescript",
+        sizeBytes: 128,
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "ADD_PROJECT_FILE_ATTACHMENT",
+      sessionId: "session-b",
+      file: {
+        projectId: "project-b",
+        path: "README.md",
+        name: "README.md",
+        mimeType: "text/markdown",
+        sizeBytes: 96,
+      },
+    });
+
+    expect(state.sessionProjectFileAttachments["session-a"]).toHaveLength(1);
+    expect(state.sessionProjectFileAttachments["session-b"]?.[0]?.path).toBe("README.md");
+
+    state = workbenchReducer(state, {
+      type: "REMOVE_PROJECT_FILE_ATTACHMENT",
+      sessionId: "session-a",
+      path: "src/App.tsx",
+    });
+
+    expect(state.sessionProjectFileAttachments["session-a"]).toBeUndefined();
+    expect(state.sessionProjectFileAttachments["session-b"]).toHaveLength(1);
+
+    state = workbenchReducer(state, {
+      type: "CLEAR_PROJECT_FILE_ATTACHMENTS",
+      sessionId: "session-b",
+    });
+
+    expect(state.sessionProjectFileAttachments["session-b"]).toBeUndefined();
+  });
+
+  it("keeps pending local file attachments scoped to the selected session", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+      selectedSessionId: "session-a",
+    };
+
+    state = workbenchReducer(state, {
+      type: "ADD_LOCAL_FILE_ATTACHMENT",
+      sessionId: "session-a",
+      file: {
+        path: "/tmp/notes.md",
+        name: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: 128,
+        content: "# Notes",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "ADD_LOCAL_FILE_ATTACHMENT",
+      sessionId: "session-a",
+      file: {
+        path: "/tmp/notes.md",
+        name: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: 128,
+        content: "# Notes",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "ADD_LOCAL_FILE_ATTACHMENT",
+      sessionId: "session-b",
+      file: {
+        path: "/tmp/spec.txt",
+        name: "spec.txt",
+        mimeType: "text/plain",
+        sizeBytes: 64,
+        content: "Spec",
+      },
+    });
+
+    expect(state.sessionLocalFileAttachments["session-a"]).toHaveLength(1);
+    expect(state.sessionLocalFileAttachments["session-b"]?.[0]?.path).toBe("/tmp/spec.txt");
+
+    state = workbenchReducer(state, {
+      type: "REMOVE_LOCAL_FILE_ATTACHMENT",
+      sessionId: "session-a",
+      path: "/tmp/notes.md",
+    });
+
+    expect(state.sessionLocalFileAttachments["session-a"]).toBeUndefined();
+    expect(state.sessionLocalFileAttachments["session-b"]).toHaveLength(1);
+
+    state = workbenchReducer(state, {
+      type: "CLEAR_LOCAL_FILE_ATTACHMENTS",
+      sessionId: "session-b",
+    });
+
+    expect(state.sessionLocalFileAttachments["session-b"]).toBeUndefined();
+  });
+
+  it("keeps selected composer skills scoped to the selected session", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+      selectedSessionId: "session-a",
+    };
+
+    state = workbenchReducer(state, { type: "SET_SELECTED_SKILL_IDS", skillIds: ["check"] });
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+
+    expect(state.selectedSkillIds).toEqual([]);
+
+    state = workbenchReducer(state, { type: "SET_SELECTED_SKILL_IDS", skillIds: ["frontend-design"] });
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+
+    expect(state.selectedSkillIds).toEqual(["check"]);
+
+    state = workbenchReducer(state, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-a",
+      prompt: "use this skill",
+      createdAt: Date.now(),
+    });
+
+    expect(state.selectedSkillIds).toEqual([]);
+    expect(state.sessionSkillIds["session-a"]).toBeUndefined();
+  });
+
   it("merges streamed approval action updates back into the active snapshot", () => {
     const createdAt = 1_714_000_000_000;
     const approvedActionId = "run-approval:action:solo_agent-tool-1";

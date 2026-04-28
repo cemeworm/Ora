@@ -35,6 +35,7 @@ const STATUS_REASON_UNAVAILABLE: &str =
 const DEFAULT_PATTERN: &str = "orchestrator_subagent";
 const PROJECT_WORKSPACE_MAX_FILES: usize = 20_000;
 const PROJECT_FILE_PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
+const LOCAL_CHAT_FILE_PREVIEW_MAX_BYTES: u64 = 256 * 1024;
 const PROJECT_WORKSPACE_SKIPPED_DIRS: [&str; 8] = [
     ".git",
     ".next",
@@ -351,6 +352,18 @@ pub struct ProviderSecretStatus {
     detail: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChatFileAttachment {
+    path: String,
+    name: String,
+    mime_type: String,
+    size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedCustomAgentConfig {
     name: String,
@@ -500,6 +513,56 @@ pub fn open_external_url(url: String) -> Result<(), String> {
         let _ = trimmed;
         Err("External URL opening is only implemented for macOS in this MVP.".to_string())
     }
+}
+
+#[tauri::command]
+pub fn read_local_chat_file(path: String) -> Result<LocalChatFileAttachment, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("File path is required.".to_string());
+    }
+
+    let path_buf = PathBuf::from(trimmed);
+    let metadata = fs::metadata(&path_buf)
+        .map_err(|error| format!("Unable to read selected file metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Selected path is not a file.".to_string());
+    }
+
+    let size_bytes = metadata.len();
+    let mut file = fs::File::open(&path_buf)
+        .map_err(|error| format!("Unable to open selected file: {error}"))?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(LOCAL_CHAT_FILE_PREVIEW_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Unable to read selected file: {error}"))?;
+    let truncated = bytes.len() as u64 > LOCAL_CHAT_FILE_PREVIEW_MAX_BYTES;
+    if truncated {
+        bytes.truncate(LOCAL_CHAT_FILE_PREVIEW_MAX_BYTES as usize);
+    }
+
+    let mime_type = mime_type_for_path(&path_buf);
+    let content = if local_file_preview_is_text(mime_type) {
+        Some(String::from_utf8_lossy(&bytes).to_string())
+    } else {
+        None
+    };
+    let name = path_buf
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(trimmed)
+        .to_string();
+
+    Ok(LocalChatFileAttachment {
+        path: trimmed.to_string(),
+        name,
+        mime_type: mime_type.to_string(),
+        size_bytes,
+        content,
+        truncated,
+    })
 }
 
 #[tauri::command]
@@ -4188,6 +4251,14 @@ fn mime_type_for_path(file_path: &Path) -> &'static str {
         "yaml" | "yml" => "text/yaml",
         _ => "application/octet-stream",
     }
+}
+
+fn local_file_preview_is_text(mime_type: &str) -> bool {
+    mime_type.starts_with("text/")
+        || matches!(
+            mime_type,
+            "application/json" | "image/svg+xml"
+        )
 }
 
 fn project_file_preview_kind(mime_type: &str) -> &'static str {

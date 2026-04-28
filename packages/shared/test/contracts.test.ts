@@ -127,6 +127,10 @@ import {
   SkillCheckNameResultSchema,
   SkillCreateParamsSchema,
   SkillDetailSchema,
+  SkillFileDeleteParamsSchema,
+  SkillFileGetParamsSchema,
+  SkillFileUpsertParamsSchema,
+  SkillPackageFileContentSchema,
   SkillSetEnabledParamsSchema,
   SkillUpdateParamsSchema,
   SystemAgentCatalogItemSchema,
@@ -775,6 +779,15 @@ describe("Ora shared contracts", () => {
         params: { name: "custom-review", enabled: true }
       }).method
     ).toBe("skills.setEnabled");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "skills.file.get",
+        params: { skillName: "custom-review", path: "scripts/run.sh" }
+      }).method
+    ).toBe("skills.file.get");
 
     expect(
       JsonRpcRequestSchema.parse({
@@ -1638,6 +1651,7 @@ describe("SkillRegistrySchema", () => {
     expect(parsed.skills[0]?.category).toBe("public");
     expect(parsed.skills[0]?.enabled).toBe(true);
     expect(parsed.skills[0]?.editable).toBe(false);
+    expect(parsed.skills[0]?.files ?? []).toEqual([]);
   });
 
   it("accepts managed skill detail and mutation params", () => {
@@ -1650,6 +1664,7 @@ describe("SkillRegistrySchema", () => {
       content: "---\nname: public-review\ndescription: Packaged default review rules.\n---\n\n# public-review"
     });
     expect(publicDetail.editable).toBe(true);
+    expect(publicDetail.files ?? []).toEqual([]);
 
     const detail = SkillDetailSchema.parse({
       id: "custom-review",
@@ -1664,10 +1679,29 @@ describe("SkillRegistrySchema", () => {
     expect(detail.name).toBe("custom-review");
     expect(detail.category).toBe("private");
     expect(SkillDetailSchema.parse({ ...detail, category: "custom" }).category).toBe("private");
+    expect(SkillCreateParamsSchema.parse({
+      name: "custom-review",
+      files: [{ path: "scripts/run.sh", content: "echo ok\n", executable: true }]
+    }).files[0]?.path).toBe("scripts/run.sh");
     expect(SkillCreateParamsSchema.parse({ name: "custom-review" }).enabled).toBe(true);
-    expect(SkillUpdateParamsSchema.parse({ name: "custom-review", nextName: "custom-review-v2", content: detail.content }).nextName).toBe("custom-review-v2");
+    expect(SkillUpdateParamsSchema.parse({
+      name: "custom-review",
+      nextName: "custom-review-v2",
+      content: detail.content,
+      files: [{ path: "agents/reviewer.yaml", content: "name: reviewer\n" }]
+    }).nextName).toBe("custom-review-v2");
     expect(SkillSetEnabledParamsSchema.parse({ name: "custom-review", enabled: true }).enabled).toBe(true);
     expect(SkillCheckNameResultSchema.parse({ name: "custom-review", available: false }).available).toBe(false);
+    expect(SkillFileGetParamsSchema.parse({ skillName: "custom-review", path: "scripts/run.sh" }).path).toBe("scripts/run.sh");
+    expect(SkillFileUpsertParamsSchema.parse({ skillName: "custom-review", path: "scripts/run.sh", content: "echo ok\n" }).content).toBe("echo ok\n");
+    expect(SkillFileDeleteParamsSchema.parse({ skillName: "custom-review", path: "scripts/run.sh" }).skillName).toBe("custom-review");
+    expect(SkillPackageFileContentSchema.parse({
+      skillName: "custom-review",
+      path: "scripts/run.sh",
+      kind: "script",
+      content: "echo ok\n",
+      executable: true
+    }).executable).toBe(true);
   });
 });
 
@@ -2073,6 +2107,9 @@ describe("Project thread contracts", () => {
     expect(RuntimeJsonRpcMethodSchema.parse("feedbackLoop.rules.update")).toBe("feedbackLoop.rules.update");
     expect(RuntimeJsonRpcMethodSchema.parse("modeStudio.generateDraft")).toBe("modeStudio.generateDraft");
     expect(RuntimeJsonRpcMethodSchema.parse("modeStudio.applyDraft")).toBe("modeStudio.applyDraft");
+    expect(RuntimeJsonRpcMethodSchema.parse("skills.file.get")).toBe("skills.file.get");
+    expect(RuntimeJsonRpcMethodSchema.parse("skills.file.upsert")).toBe("skills.file.upsert");
+    expect(RuntimeJsonRpcMethodSchema.parse("skills.file.delete")).toBe("skills.file.delete");
   });
 });
 

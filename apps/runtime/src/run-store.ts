@@ -62,6 +62,10 @@ import {
   SkillCheckNameResult,
   SkillCreateParams,
   SkillDetail,
+  SkillFileDeleteParams,
+  SkillFileGetParams,
+  SkillFileUpsertParams,
+  SkillPackageFileContent,
   SkillRegistry,
   SkillSetEnabledParams,
   SkillUpdateParams,
@@ -603,6 +607,10 @@ export class LocalRunStore {
     return this.skillRegistry.get(params);
   }
 
+  getSkillFile(params: SkillFileGetParams | unknown): SkillPackageFileContent {
+    return this.skillRegistry.getFile(params);
+  }
+
   getLongTermMemory() {
     return this.longTermMemory.get();
   }
@@ -623,8 +631,16 @@ export class LocalRunStore {
     return this.skillRegistry.update(params);
   }
 
+  upsertSkillFile(params: SkillFileUpsertParams | unknown): SkillDetail {
+    return this.skillRegistry.upsertFile(params);
+  }
+
   deleteSkill(params: unknown): { deleted: true; name: string } {
     return this.skillRegistry.delete(params);
+  }
+
+  deleteSkillFile(params: SkillFileDeleteParams | unknown): SkillDetail {
+    return this.skillRegistry.deleteFile(params);
   }
 
   checkSkillName(params: unknown): SkillCheckNameResult {

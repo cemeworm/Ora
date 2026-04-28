@@ -134,6 +134,27 @@ export interface RunNodeRuntimeLoopDeps {
   actionDeps: () => RuntimeActionDeps;
 }
 
+function emitRuntimeStatusProgress(
+  emit: RuntimeLoopEmit,
+  params: RunNodeRuntimeLoopParams,
+  trigger: string,
+  summary: string,
+  basedOnSeq: number,
+): void {
+  emit(
+    "task.progress",
+    {
+      kind: "chat_progress",
+      source: "runtime_status",
+      trigger,
+      title: params.title,
+      summary,
+      basedOnSeq,
+    },
+    { agentId: params.agentId, nodeId: params.nodeId },
+  );
+}
+
 export async function runNodeRuntimeLoop(
   params: RunNodeRuntimeLoopParams,
   deps: RunNodeRuntimeLoopDeps,
@@ -288,6 +309,15 @@ export async function runNodeRuntimeLoop(
     agentId: params.agentId,
     title: params.title,
   });
+  if (initialToolsAllowed) {
+    emitRuntimeStatusProgress(
+      emit,
+      params,
+      "running_model",
+      "正在努力",
+      events.length - 1,
+    );
+  }
   let response = await invokeProvider(
     config,
     {
@@ -560,6 +590,13 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration: iteration + 1,
       });
+      emitRuntimeStatusProgress(
+        emit,
+        params,
+        "running_model",
+        "正在努力",
+        events.length - 1,
+      );
       response = await invokeProvider(
         config,
         {

@@ -81,6 +81,7 @@ import type {
   SkillCheckNameResult as OraSkillCheckNameResult,
   SkillCreateParams as OraSkillCreateParams,
   SkillDetail as OraSkillDetail,
+  SkillPackageFileContent as OraSkillPackageFileContent,
   SkillRegistry as OraSkillRegistry,
   SkillSetEnabledParams as OraSkillSetEnabledParams,
   SkillUpdateParams as OraSkillUpdateParams,
@@ -179,6 +180,7 @@ export type {
   OraSkillCheckNameResult,
   OraSkillCreateParams,
   OraSkillDetail,
+  OraSkillPackageFileContent,
   OraStateSnapshot,
   OraSystemAgentOverride,
   OraSystemAgentOverrideUpdateParams,
@@ -512,14 +514,23 @@ export function createRuntimeClient() {
     async getSkill(name: string): Promise<OraSkillDetail> {
       return call<OraSkillDetail>("skills.get", { name });
     },
+    async getSkillFile(skillName: string, path: string): Promise<OraSkillPackageFileContent> {
+      return call<OraSkillPackageFileContent>("skills.file.get", { skillName, path });
+    },
     async createSkill(params: OraSkillCreateParams): Promise<OraSkillDetail> {
       return call<OraSkillDetail>("skills.create", params);
     },
     async updateSkill(params: OraSkillUpdateParams): Promise<OraSkillDetail> {
       return call<OraSkillDetail>("skills.update", params);
     },
+    async upsertSkillFile(params: { skillName: string; path: string; content: string; executable?: boolean }): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.file.upsert", params);
+    },
     async deleteSkill(name: string): Promise<{ deleted: true; name: string }> {
       return call<{ deleted: true; name: string }>("skills.delete", { name });
+    },
+    async deleteSkillFile(skillName: string, path: string): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.file.delete", { skillName, path });
     },
     async checkSkillName(name: string): Promise<OraSkillCheckNameResult> {
       return call<OraSkillCheckNameResult>("skills.checkName", { name });
@@ -927,6 +938,7 @@ class LocalJsonRpcRuntime {
   private customAgents = new Map<string, OraCustomAgentDetail>();
   private systemAgentOverrides = new Map<string, OraSystemAgentOverride>();
   private customSkills = new Map<string, OraSkillDetail>();
+  private skillFileContents = new Map<string, Map<string, { content: string; executable?: boolean }>>();
   private deletedSkills = new Set<string>();
   private skillEnabled = new Map<string, boolean>();
   private modes = new Map<string, OraModeSpec>();
@@ -1068,12 +1080,18 @@ class LocalJsonRpcRuntime {
         }
         return skill;
       }
+      case "skills.file.get":
+        return this.getSkillFile(params);
       case "skills.create":
         return this.createSkill(params);
       case "skills.update":
         return this.updateSkill(params);
+      case "skills.file.upsert":
+        return this.upsertSkillFile(params);
       case "skills.delete":
         return this.deleteSkill(params);
+      case "skills.file.delete":
+        return this.deleteSkillFile(params);
       case "skills.checkName":
         return this.checkSkillName(params);
       case "skills.setEnabled":
@@ -1948,8 +1966,82 @@ class LocalJsonRpcRuntime {
       category: "public",
       enabled: this.skillEnabled.get(publicSkill.id) ?? true,
       editable: true,
+      files: publicSkill.files ?? [],
       content: defaultMockSkillContent(publicSkill.name, publicSkill.promptSnippet ?? publicSkill.description),
     };
+  }
+
+  private getSkillFile(params: unknown): OraSkillPackageFileContent {
+    if (!isRecord(params)) {
+      throw new Error("Skill file params are required.");
+    }
+    const skillName = normalizeMockSkillName(params.skillName);
+    const filePath = normalizeMockSkillFilePath(params.path);
+    const skill = this.findSkill(skillName);
+    if (!skill) {
+      throw new Error(`Skill not found: ${skillName}`);
+    }
+    const stored = this.skillFileContents.get(skillName)?.get(filePath);
+    const descriptor = (skill.files ?? []).find((file) => file.path === filePath);
+    if (!stored && !descriptor) {
+      throw new Error(`Skill file '${filePath}' was not found in '${skillName}'.`);
+    }
+    const content = stored?.content ?? `# ${filePath}\n\nBrowser mock content for ${skillName}.\n`;
+    return {
+      skillName,
+      path: filePath,
+      kind: descriptor?.kind ?? classifyMockSkillFile(filePath),
+      size: content.length,
+      updatedAt: descriptor?.updatedAt ?? Date.now(),
+      executable: stored?.executable ?? descriptor?.executable ?? false,
+      content,
+    };
+  }
+
+  private upsertSkillFile(params: unknown): OraSkillDetail {
+    if (!isRecord(params) || typeof params.content !== "string") {
+      throw new Error("Skill file content is required.");
+    }
+    const skillName = normalizeMockSkillName(params.skillName);
+    const filePath = normalizeMockSkillFilePath(params.path);
+    const existing = this.findSkill(skillName);
+    if (!existing) {
+      throw new Error(`Skill not found: ${skillName}`);
+    }
+    const files = upsertMockSkillFileDescriptor(existing.files ?? [], filePath, params.content, params.executable === true);
+    const next = {
+      ...existing,
+      files,
+      updatedAt: Date.now(),
+    };
+    this.customSkills.set(skillName, next);
+    const contents = this.skillFileContents.get(skillName) ?? new Map<string, { content: string; executable?: boolean }>();
+    contents.set(filePath, { content: params.content, executable: params.executable === true });
+    this.skillFileContents.set(skillName, contents);
+    return next;
+  }
+
+  private deleteSkillFile(params: unknown): OraSkillDetail {
+    if (!isRecord(params)) {
+      throw new Error("Skill file params are required.");
+    }
+    const skillName = normalizeMockSkillName(params.skillName);
+    const filePath = normalizeMockSkillFilePath(params.path);
+    const existing = this.findSkill(skillName);
+    if (!existing) {
+      throw new Error(`Skill not found: ${skillName}`);
+    }
+    if (!(existing.files ?? []).some((file) => file.path === filePath)) {
+      throw new Error(`Skill file '${filePath}' was not found in '${skillName}'.`);
+    }
+    const next = {
+      ...existing,
+      files: (existing.files ?? []).filter((file) => file.path !== filePath),
+      updatedAt: Date.now(),
+    };
+    this.customSkills.set(skillName, next);
+    this.skillFileContents.get(skillName)?.delete(filePath);
+    return next;
   }
 
   private createSkill(params: unknown): OraSkillDetail {
@@ -1966,6 +2058,7 @@ class LocalJsonRpcRuntime {
       : defaultMockSkillContent(name, description);
     const metadata = parseMockSkillContent(name, content);
     const now = Date.now();
+    const files = readMockSkillFiles(name, params.files, now);
     const skill: OraSkillDetail = {
       id: name,
       name,
@@ -1979,9 +2072,13 @@ class LocalJsonRpcRuntime {
       updatedAt: now,
       allowedPatterns: [],
       tags: [],
+      files: files.descriptors,
       content,
     };
     this.customSkills.set(name, skill);
+    if (files.contents.size > 0) {
+      this.skillFileContents.set(name, files.contents);
+    }
     this.deletedSkills.delete(name);
     this.skillEnabled.set(name, skill.enabled);
     return skill;
@@ -2001,6 +2098,8 @@ class LocalJsonRpcRuntime {
       throw new Error(`Skill '${nextName}' already exists.`);
     }
     const metadata = parseMockSkillContent(nextName, params.content);
+    const existingFiles = existing.files ?? [];
+    const filePayload = Array.isArray(params.files) ? readMockSkillFiles(nextName, params.files, Date.now()) : undefined;
     const next: OraSkillDetail = {
       ...existing,
       id: nextName,
@@ -2008,6 +2107,7 @@ class LocalJsonRpcRuntime {
       description: metadata.description,
       promptSnippet: metadata.description,
       path: `.ora/skills/${existing.category}/${nextName}/SKILL.md`,
+      files: filePayload?.descriptors ?? existingFiles,
       content: params.content,
       updatedAt: Date.now(),
     };
@@ -2019,6 +2119,14 @@ class LocalJsonRpcRuntime {
       }
     }
     this.customSkills.set(nextName, next);
+    if (filePayload) {
+      this.skillFileContents.set(nextName, filePayload.contents);
+    } else if (nextName !== name && this.skillFileContents.has(name)) {
+      this.skillFileContents.set(nextName, this.skillFileContents.get(name)!);
+    }
+    if (nextName !== name) {
+      this.skillFileContents.delete(name);
+    }
     this.deletedSkills.delete(nextName);
     return next;
   }
@@ -2030,6 +2138,7 @@ class LocalJsonRpcRuntime {
       throw new Error(`Skill not found: ${name}`);
     }
     this.customSkills.delete(name);
+    this.skillFileContents.delete(name);
     this.skillEnabled.delete(name);
     if (existing.category === "public") {
       this.deletedSkills.add(name);
@@ -4200,6 +4309,76 @@ function normalizeMockSkillName(value: unknown): string {
     throw new Error("Skill names must be lowercase hyphen-case.");
   }
   return normalized;
+}
+
+function normalizeMockSkillFilePath(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Skill file path is required.");
+  }
+  const normalized = value.trim().replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  if (
+    normalized === "SKILL.md" ||
+    normalized.startsWith("/") ||
+    parts.some((part) => !part || part === "." || part === ".." || part.startsWith("."))
+  ) {
+    throw new Error(`Skill package file path '${value}' must be a visible relative path inside the skill directory.`);
+  }
+  return parts.join("/");
+}
+
+function classifyMockSkillFile(filePath: string): "script" | "agent" | "template" | "asset" | "reference" | "other" {
+  const [folder] = filePath.split("/");
+  if (folder === "scripts") return "script";
+  if (folder === "agents") return "agent";
+  if (folder === "templates") return "template";
+  if (folder === "assets") return "asset";
+  if (folder === "references" || folder === "docs") return "reference";
+  return "other";
+}
+
+function readMockSkillFiles(name: string, value: unknown, now: number) {
+  const descriptors: NonNullable<OraSkillDetail["files"]> = [];
+  const contents = new Map<string, { content: string; executable?: boolean }>();
+  if (!Array.isArray(value)) {
+    return { descriptors, contents };
+  }
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.content !== "string") {
+      throw new Error(`Skill '${name}' file content is required.`);
+    }
+    const filePath = normalizeMockSkillFilePath(item.path);
+    const executable = item.executable === true;
+    descriptors.push({
+      path: filePath,
+      kind: classifyMockSkillFile(filePath),
+      size: item.content.length,
+      updatedAt: now,
+      executable,
+    });
+    contents.set(filePath, { content: item.content, executable });
+  }
+  return {
+    descriptors: descriptors.sort((left, right) => left.path.localeCompare(right.path)),
+    contents,
+  };
+}
+
+function upsertMockSkillFileDescriptor(
+  files: NonNullable<OraSkillDetail["files"]>,
+  filePath: string,
+  content: string,
+  executable: boolean,
+): NonNullable<OraSkillDetail["files"]> {
+  const next = files.filter((file) => file.path !== filePath);
+  next.push({
+    path: filePath,
+    kind: classifyMockSkillFile(filePath),
+    size: content.length,
+    updatedAt: Date.now(),
+    executable,
+  });
+  return next.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function defaultMockSkillContent(name: string, description: string): string {

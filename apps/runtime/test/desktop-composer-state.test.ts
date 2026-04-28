@@ -165,6 +165,7 @@ describe("desktop composer pending-run behavior", () => {
       sessionId: "session-1",
       prompt: "hello",
       createdAt: 10,
+      progressText: "正在准备",
     });
   });
 
@@ -186,6 +187,25 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(cleared.pendingRun?.prompt).toBe("hello");
     expect(cleared.promptText).toBe("");
+  });
+
+  it("updates the pending run status while the runtime request is still starting", () => {
+    const pending = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: "session-1",
+    }, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId: "session-1",
+      prompt: "hello",
+      createdAt: 10,
+    });
+    const updated = workbenchReducer(pending, {
+      type: "SET_PENDING_RUN_PROGRESS",
+      sessionId: "session-1",
+      progressText: "正在选择合适的工作模式",
+    });
+
+    expect(updated.pendingRun?.progressText).toBe("正在选择合适的工作模式");
   });
 
   it("treats a pending submit as visible processing for the active session", () => {
@@ -396,7 +416,7 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
-    expect(messages[1]).toMatchObject({ role: "assistant", content: "", isPlaceholder: true });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "正在准备", isPlaceholder: true });
   });
 
   it("keeps the submitted user message visible when a run snapshot arrives before transcript hydration", () => {
@@ -826,7 +846,7 @@ describe("desktop composer pending-run behavior", () => {
     expect(messages.find((message) => message.role === "assistant")?.content).toBe("");
   });
 
-  it("uses agent-authored progress narration as the running assistant body", () => {
+  it("uses streamed assistant text as the running assistant body once deltas arrive", () => {
     const snapshot = {
       runId: "run-progress",
       turnIndex: 1,
@@ -850,7 +870,7 @@ describe("desktop composer pending-run behavior", () => {
           type: "message.delta",
           createdAt: 2,
           pattern: "orchestrator_subagent",
-          payload: { role: "assistant", content: "Draft answer that should stay hidden." },
+          payload: { role: "assistant", content: "Draft answer now visible." },
         },
         {
           id: "run-progress:evt-1",
@@ -879,9 +899,7 @@ describe("desktop composer pending-run behavior", () => {
 
     const messages = adaptChatMessages([], { "run-progress": snapshot });
 
-    expect(messages.find((message) => message.role === "assistant")?.content).toBe(
-      "Ora has finished reading the project context and is now shaping the response.",
-    );
+    expect(messages.find((message) => message.role === "assistant")?.content).toBe("Draft answer now visible.");
   });
 
   it("hides cached duplicate web.fetch events from chat turn steps", () => {

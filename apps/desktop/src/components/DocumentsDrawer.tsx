@@ -1,5 +1,5 @@
-import { BookOpenText, ChevronDown, ChevronRight, FileCode2, FileImage, FileText, Folder, FolderOpen, RefreshCw, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { BookOpenText, ChevronDown, ChevronRight, Copy, FileCode2, FileImage, FileText, Folder, FolderOpen, MessageSquarePlus, RefreshCw, X } from "lucide-react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import type { OraProjectFileEntry, OraProjectFilesResult, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -12,6 +12,8 @@ interface DocumentsDrawerProps {
   runtimeClient: RuntimeClient;
   onClose: () => void;
   onOpenFile: (path: string) => void;
+  onCopyPath: (absolutePath: string) => void;
+  onAddFileToChat: (file: OraProjectFileEntry) => void;
 }
 
 interface FileTreeNode {
@@ -22,11 +24,18 @@ interface FileTreeNode {
   file?: OraProjectFileEntry;
 }
 
-export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClose, onOpenFile }: DocumentsDrawerProps) {
+interface ContextMenuState {
+  x: number;
+  y: number;
+  node: FileTreeNode;
+}
+
+export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClose, onOpenFile, onCopyPath, onAddFileToChat }: DocumentsDrawerProps) {
   const [result, setResult] = useState<OraProjectFilesResult>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>();
 
   async function loadFiles() {
     setLoading(true);
@@ -42,8 +51,27 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
 
   useEffect(() => {
     setExpandedPaths(new Set());
+    setContextMenu(undefined);
     void loadFiles();
   }, [projectId, runtimeClient]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeMenu = () => setContextMenu(undefined);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    };
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu]);
 
   const visibleFiles = useMemo(() => result?.files.slice(0, MAX_VISIBLE_FILES) ?? [], [result]);
   const tree = useMemo(() => buildFileTree(visibleFiles), [visibleFiles]);
@@ -58,6 +86,24 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
       }
       return next;
     });
+  }
+
+  function openContextMenu(event: MouseEvent, node: FileTreeNode) {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY, node });
+  }
+
+  function copyContextPath(node: FileTreeNode) {
+    if (!result?.rootPath) return;
+    onCopyPath(toAbsoluteProjectPath(result.rootPath, node.path));
+    setContextMenu(undefined);
+  }
+
+  function addContextFile(node: FileTreeNode) {
+    if (!node.file) return;
+    onAddFileToChat(node.file);
+    setContextMenu(undefined);
   }
 
   return (
@@ -98,12 +144,40 @@ export function DocumentsDrawer({ projectId, projectLabel, runtimeClient, onClos
                   expandedPaths={expandedPaths}
                   onToggleDirectory={toggleDirectory}
                   onOpenFile={onOpenFile}
+                  onContextMenu={openContextMenu}
                 />
               ))}
             </div>
           </section>
         ) : null}
       </div>
+      {contextMenu && (
+        <div
+          className="fixed z-[70] min-w-44 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lift"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            onClick={() => copyContextPath(contextMenu.node)}
+            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition hover:bg-accent hover:text-accent-foreground active:scale-[0.99]"
+          >
+            <Copy size={14} className="shrink-0 text-muted-foreground" />
+            <span>复制绝对路径</span>
+          </button>
+          {contextMenu.node.kind === "file" && contextMenu.node.file ? (
+            <button
+              type="button"
+              onClick={() => addContextFile(contextMenu.node)}
+              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition hover:bg-accent hover:text-accent-foreground active:scale-[0.99]"
+            >
+              <MessageSquarePlus size={14} className="shrink-0 text-muted-foreground" />
+              <span>添加到聊天</span>
+            </button>
+          ) : null}
+        </div>
+      )}
     </aside>
   );
 }
@@ -123,12 +197,14 @@ function TreeNodeRow({
   expandedPaths,
   onToggleDirectory,
   onOpenFile,
+  onContextMenu,
 }: {
   node: FileTreeNode;
   depth: number;
   expandedPaths: Set<string>;
   onToggleDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onContextMenu: (event: MouseEvent, node: FileTreeNode) => void;
 }) {
   if (node.kind === "directory") {
     const expanded = expandedPaths.has(node.path);
@@ -137,6 +213,7 @@ function TreeNodeRow({
         <button
           type="button"
           onClick={() => onToggleDirectory(node.path)}
+          onContextMenu={(event) => onContextMenu(event, node)}
           className="flex min-h-[34px] w-full items-center gap-1.5 px-2 py-1.5 text-left transition hover:bg-accent hover:text-accent-foreground"
           style={{ paddingLeft: `${8 + depth * 16}px` }}
           title={node.path}
@@ -164,6 +241,7 @@ function TreeNodeRow({
                 expandedPaths={expandedPaths}
                 onToggleDirectory={onToggleDirectory}
                 onOpenFile={onOpenFile}
+                onContextMenu={onContextMenu}
               />
             ))}
           </div>
@@ -180,6 +258,7 @@ function TreeNodeRow({
     <button
       type="button"
       onClick={() => onOpenFile(file.path)}
+      onContextMenu={(event) => onContextMenu(event, node)}
       className="flex min-h-[36px] w-full items-center gap-2 px-2 py-1.5 text-left transition hover:bg-accent hover:text-accent-foreground"
       style={{ paddingLeft: `${30 + depth * 16}px` }}
       title={file.path}
@@ -191,6 +270,11 @@ function TreeNodeRow({
       </div>
     </button>
   );
+}
+
+function toAbsoluteProjectPath(rootPath: string, relativePath: string) {
+  const normalizedRoot = rootPath.endsWith("/") ? rootPath.slice(0, -1) : rootPath;
+  return relativePath ? `${normalizedRoot}/${relativePath}` : normalizedRoot;
 }
 
 function FileIcon({ mimeType }: { mimeType: string }) {

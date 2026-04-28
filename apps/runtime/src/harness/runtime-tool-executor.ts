@@ -267,7 +267,7 @@ export class RuntimeToolExecutor {
         ? "Use skills.list to discover enabled skills when a specialized workflow may help; use skills.get to read a relevant skill before applying it."
         : undefined,
       enabled.includes("skills.create")
-        ? "When installing multiple fetched SKILL.md files, prefer creating or updating the skill from validated content instead of spending a separate skills.checkName call for every file unless a name conflict is likely."
+        ? "When installing skill packages, pass SKILL.md as content and include optional package files with relative paths such as scripts/run.sh in args.files."
         : undefined,
       enabled.some(toolNeedsUserApprovalCopy)
         ? "For tools that can change local files, run commands, install skills, toggle skills, or call external MCP tools, include args.approvalRequest with user-facing copy in the current conversation language. Explain what you will do, what will change, why it is needed, and the risk in plain language. Do not expose internal tool ids, policy ids, action ids, or agent ids in that copy."
@@ -653,7 +653,7 @@ function exampleForTool(toolId: RuntimeToolId): string {
     case "skills.checkName":
       return "{\"tool\":\"skills.checkName\",\"args\":{\"name\":\"waza-think\"}}";
     case "skills.create":
-      return "{\"tool\":\"skills.create\",\"args\":{\"name\":\"waza-think\",\"description\":\"Think workflow\",\"content\":\"---\\nname: waza-think\\ndescription: Think workflow\\n---\\n...\",\"enabled\":true}}";
+      return "{\"tool\":\"skills.create\",\"args\":{\"name\":\"waza-think\",\"description\":\"Think workflow\",\"content\":\"---\\nname: waza-think\\ndescription: Think workflow\\n---\\n...\",\"files\":[{\"path\":\"scripts/run.sh\",\"content\":\"echo ok\\n\",\"executable\":true}],\"enabled\":true}}";
     case "skills.update":
       return "{\"tool\":\"skills.update\",\"args\":{\"name\":\"waza-think\",\"content\":\"---\\nname: waza-think\\ndescription: Think workflow\\n---\\n...\"}}";
     case "skills.setEnabled":

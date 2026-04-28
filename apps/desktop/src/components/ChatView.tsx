@@ -15,8 +15,10 @@ import type {
 } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
-import { useWorkbench } from "../lib/state";
+import { useWorkbench, type ComposerLocalFileAttachment } from "../lib/state";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
+
+const LOCAL_FILE_PREVIEW_MAX_BYTES = 256 * 1024;
 
 interface ChatViewProps {
   activeMode: ModeCard;
@@ -91,6 +93,31 @@ export function ChatView({
     providerOptions.find(
       (provider) => provider.id === state.selectedProviderId,
     );
+  const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
+  const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
+
+  async function openLocalFiles() {
+    try {
+      const files = await pickLocalChatFiles();
+      if (files.length === 0) return;
+      files.forEach((file) => {
+        dispatch({
+          type: "ADD_LOCAL_FILE_ATTACHMENT",
+          sessionId: selectedSession.id,
+          file,
+        });
+      });
+    } catch (error) {
+      dispatch({
+        type: "SET_COMMAND_FEEDBACK",
+        feedback:
+          error instanceof Error
+            ? error.message
+            : "File selection failed.",
+      });
+    }
+  }
+
   return (
     <div className="relative flex h-full min-h-0 w-full bg-transparent">
       <ChatHeader
@@ -132,13 +159,35 @@ export function ChatView({
           selectedModeSelection={state.selectedModeSelection}
           activeProvider={activeProvider}
           providerOptions={providerOptions}
+          skillOptions={state.skillRegistry?.skills ?? []}
+          selectedSkillIds={state.selectedSkillIds}
           selectedCustomAgentId={selectedCustomAgentId}
+          projectFileAttachments={projectFileAttachments}
+          localFileAttachments={localFileAttachments}
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}
           onProviderChange={(providerId) =>
             dispatch({ type: "SET_PROVIDER", providerId })
           }
           onPromptChange={onComposerPromptChange}
+          onSelectedSkillIdsChange={(skillIds) =>
+            dispatch({ type: "SET_SELECTED_SKILL_IDS", skillIds })
+          }
+          onRemoveProjectFileAttachment={(path) =>
+            dispatch({
+              type: "REMOVE_PROJECT_FILE_ATTACHMENT",
+              sessionId: selectedSession.id,
+              path,
+            })
+          }
+          onRemoveLocalFileAttachment={(path) =>
+            dispatch({
+              type: "REMOVE_LOCAL_FILE_ATTACHMENT",
+              sessionId: selectedSession.id,
+              path,
+            })
+          }
+          onOpenLocalFiles={() => void openLocalFiles()}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}
           onStopRun={onInterruptRun}
@@ -146,4 +195,105 @@ export function ChatView({
       </main>
     </div>
   );
+}
+
+async function pickLocalChatFiles(): Promise<ComposerLocalFileAttachment[]> {
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const [{ open }, { invoke }] = await Promise.all([
+      import("@tauri-apps/plugin-dialog"),
+      import("@tauri-apps/api/core"),
+    ]);
+    const selected = await open({
+      directory: false,
+      multiple: true,
+      title: "选择要载入聊天的文件",
+    });
+    const paths = (Array.isArray(selected) ? selected : selected ? [selected] : [])
+      .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
+    const files = await Promise.all(
+      paths.map((path) =>
+        invoke<ComposerLocalFileAttachment>("read_local_chat_file", { path }),
+      ),
+    );
+    return files;
+  }
+
+  return pickLocalChatFilesInBrowser();
+}
+
+function pickLocalChatFilesInBrowser(): Promise<ComposerLocalFileAttachment[]> {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      try {
+        const files = await Promise.all(
+          Array.from(input.files ?? []).map(readBrowserFileAttachment),
+        );
+        input.remove();
+        resolve(files);
+      } catch (error) {
+        input.remove();
+        reject(error);
+      }
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve([]);
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+async function readBrowserFileAttachment(file: File): Promise<ComposerLocalFileAttachment> {
+  const truncated = file.size > LOCAL_FILE_PREVIEW_MAX_BYTES;
+  const content = await file.slice(0, LOCAL_FILE_PREVIEW_MAX_BYTES).text().catch(() => undefined);
+  return {
+    path: file.name,
+    name: file.name,
+    mimeType: file.type || inferBrowserFileMimeType(file.name),
+    sizeBytes: file.size,
+    ...(content ? { content } : {}),
+    ...(truncated ? { truncated: true } : {}),
+  };
+}
+
+function inferBrowserFileMimeType(fileName: string): string {
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  switch (extension) {
+    case "css":
+      return "text/css";
+    case "csv":
+      return "text/csv";
+    case "html":
+    case "htm":
+      return "text/html";
+    case "js":
+    case "jsx":
+    case "mjs":
+    case "cjs":
+      return "text/javascript";
+    case "json":
+    case "jsonc":
+      return "application/json";
+    case "md":
+    case "mdx":
+      return "text/markdown";
+    case "rs":
+      return "text/rust";
+    case "ts":
+    case "tsx":
+      return "text/typescript";
+    case "txt":
+      return "text/plain";
+    case "yaml":
+    case "yml":
+      return "text/yaml";
+    default:
+      return "application/octet-stream";
+  }
 }

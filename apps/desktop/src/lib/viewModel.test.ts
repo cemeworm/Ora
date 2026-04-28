@@ -592,6 +592,98 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.processSteps).toEqual([]);
   });
 
+  it("shows deterministic runtime status until streamed assistant text arrives", () => {
+    const createdAt = 1_714_000_000_000;
+    const baseSnapshot = {
+      runId: "run-runtime-status",
+      sessionId: "session-runtime-status",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "安装 skills", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "auto",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-runtime-status-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-runtime-status:evt-0",
+        runId: "run-runtime-status",
+        seq: 0,
+        type: "task.progress",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          kind: "chat_progress",
+          source: "runtime_status",
+          trigger: "mode.selection",
+          summary: "已选择单智能体模式，我准备好了",
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const transcript = [{
+      id: "run-runtime-status:user",
+      sessionId: "session-runtime-status",
+      runId: "run-runtime-status",
+      turnIndex: 1,
+      role: "user" as const,
+      content: "安装 skills",
+      pattern: "orchestrator_subagent" as const,
+      modeId: SINGLE_AGENT_MODE_ID,
+      createdAt,
+    }];
+    const statusMessage = adaptChatMessages(transcript, { "run-runtime-status": baseSnapshot })
+      .find((message) => message.role === "assistant");
+    const deltaMessage = adaptChatMessages(transcript, {
+      "run-runtime-status": {
+        ...baseSnapshot,
+        events: [
+          ...baseSnapshot.events,
+          {
+            id: "run-runtime-status:evt-1",
+            runId: "run-runtime-status",
+            seq: 1,
+            type: "message.delta",
+            createdAt: createdAt + 1_000,
+            pattern: "orchestrator_subagent",
+            payload: { role: "assistant", content: "我会先读取这些 skill。" },
+          },
+        ],
+      } as unknown as OraStateSnapshot,
+    }).find((message) => message.role === "assistant");
+
+    expect(statusMessage?.content).toBe("已选择单智能体模式，我准备好了");
+    expect(deltaMessage?.content).toBe("我会先读取这些 skill。");
+  });
+
   it("keeps historical progress narration out of process steps after the run finishes", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

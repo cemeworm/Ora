@@ -1,13 +1,28 @@
-import { Eye, Pencil, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Eye, FileCode2, FileText, Pencil, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useWorkbench } from "../lib/state";
-import type { OraSkillDetail, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
+import type { OraSkillDetail, OraSkillPackageFileContent, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
+import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 
 type SkillMode = "gallery" | "create" | "edit";
 type CategoryFilter = "all" | "public" | "private";
 type EnabledFilter = "all" | "enabled" | "disabled";
+type SkillPackageFileEntry = NonNullable<OraSkillDetail["files"]>[number];
+
+interface FileDrawerState {
+  mode: "existing" | "new";
+  path: string;
+  draftPath: string;
+  content: string;
+  draftContent: string;
+  executable: boolean;
+  kind?: SkillPackageFileEntry["kind"];
+  loading: boolean;
+  busy: boolean;
+  error: string;
+}
 
 const EMPTY_DETAIL: OraSkillDetail = {
   id: "",
@@ -18,6 +33,7 @@ const EMPTY_DETAIL: OraSkillDetail = {
   editable: true,
   allowedPatterns: [],
   tags: [],
+  files: [],
   content: "",
 };
 
@@ -81,6 +97,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [fileDrawer, setFileDrawer] = useState<FileDrawerState | undefined>();
 
   const visibleSkills = useMemo(() => {
     return registry.skills.filter((skill) => {
@@ -124,6 +141,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
       setSelectedSkill(detail);
       setDraft(detail);
       setMode("gallery");
+      setFileDrawer(undefined);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load skill.");
     } finally {
@@ -140,6 +158,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
     setSelectedSkill(undefined);
     setMode("create");
     setError("");
+    setFileDrawer(undefined);
   }
 
   function startEdit() {
@@ -147,6 +166,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
     setDraft(selectedSkill);
     setMode("edit");
     setError("");
+    setFileDrawer(undefined);
   }
 
   function cancelDraft() {
@@ -221,6 +241,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
       await runtimeClient.deleteSkill(selectedSkill.name);
       setSelectedSkill(undefined);
       setDraft(EMPTY_DETAIL);
+      setFileDrawer(undefined);
       setMode("gallery");
       await loadSkills();
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Deleted skill ${selectedSkill.name}.` });
@@ -235,6 +256,124 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
     setQuery(nextQuery);
     setCategory(nextCategory);
     await loadSkills(nextQuery, nextCategory);
+  }
+
+  function startNewPackageFile() {
+    if (!selectedSkill) return;
+    setFileDrawer({
+      mode: "new",
+      path: "",
+      draftPath: "",
+      content: "",
+      draftContent: "",
+      executable: false,
+      loading: false,
+      busy: false,
+      error: "",
+    });
+  }
+
+  async function openPackageFile(file: SkillPackageFileEntry) {
+    if (!selectedSkill) return;
+    setFileDrawer({
+      mode: "existing",
+      path: file.path,
+      draftPath: file.path,
+      content: "",
+      draftContent: "",
+      executable: file.executable,
+      kind: file.kind,
+      loading: true,
+      busy: false,
+      error: "",
+    });
+    try {
+      const loaded = await runtimeClient.getSkillFile(selectedSkill.name, file.path);
+      setFileDrawer((current) => current?.path === file.path
+        ? fileContentToDrawer(loaded)
+        : current);
+    } catch (nextError) {
+      setFileDrawer((current) => current?.path === file.path
+        ? {
+          ...current,
+          loading: false,
+          error: nextError instanceof Error ? nextError.message : "Failed to load package file.",
+        }
+        : current);
+    }
+  }
+
+  function closePackageFile() {
+    if (fileDrawer && fileDrawerChanged(fileDrawer) && !window.confirm("Discard unsaved package file changes?")) {
+      return;
+    }
+    setFileDrawer(undefined);
+  }
+
+  async function savePackageFile() {
+    if (!selectedSkill || !fileDrawer) return;
+    const filePath = fileDrawer.draftPath.trim();
+    if (!filePath) {
+      setFileDrawer((current) => current ? { ...current, error: "File path is required." } : current);
+      return;
+    }
+    setFileDrawer((current) => current ? { ...current, busy: true, error: "" } : current);
+    try {
+      const detail = await runtimeClient.upsertSkillFile({
+        skillName: selectedSkill.name,
+        path: filePath,
+        content: fileDrawer.draftContent,
+        executable: fileDrawer.executable,
+      });
+      setSelectedSkill(detail);
+      setDraft((current) => current.name === detail.name ? detail : current);
+      setFileDrawer({
+        mode: "existing",
+        path: filePath,
+        draftPath: filePath,
+        content: fileDrawer.draftContent,
+        draftContent: fileDrawer.draftContent,
+        executable: fileDrawer.executable,
+        kind: detail.files?.find((file) => file.path === filePath)?.kind ?? fileDrawer.kind,
+        loading: false,
+        busy: false,
+        error: "",
+      });
+      await loadSkills(query, category, detail.name);
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${filePath} saved.` });
+    } catch (nextError) {
+      setFileDrawer((current) => current
+        ? {
+          ...current,
+          busy: false,
+          error: nextError instanceof Error ? nextError.message : "Failed to save package file.",
+        }
+        : current);
+    }
+  }
+
+  async function deletePackageFile() {
+    if (!selectedSkill || !fileDrawer || fileDrawer.mode !== "existing") return;
+    if (!window.confirm(`Delete package file '${fileDrawer.path}'?`)) {
+      return;
+    }
+    setFileDrawer((current) => current ? { ...current, busy: true, error: "" } : current);
+    try {
+      const detail = await runtimeClient.deleteSkillFile(selectedSkill.name, fileDrawer.path);
+      setSelectedSkill(detail);
+      setDraft((current) => current.name === detail.name ? detail : current);
+      setFileDrawer(undefined);
+      await loadSkills(query, category, detail.name);
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${fileDrawer.path} deleted.` });
+    } catch (nextError) {
+      setFileDrawer((current) => current
+        ? {
+          ...current,
+          busy: false,
+          error: nextError instanceof Error ? nextError.message : "Failed to delete package file.",
+        }
+        : current);
+    }
   }
 
   return (
@@ -346,13 +485,17 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
           </div>
         </aside>
 
-        <main className="min-h-0 overflow-y-auto px-6 py-6">
-          {mode === "create" || mode === "edit" ? (
+        <div className={cn(
+          "grid min-h-0 overflow-hidden",
+          fileDrawer ? "xl:grid-cols-[minmax(0,1fr)_minmax(360px,440px)]" : "grid-cols-1",
+        )}>
+          <main className="min-h-0 overflow-y-auto px-6 py-6">
+            {mode === "create" || mode === "edit" ? (
             <section className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold">{mode === "create" ? "Create private skill" : `Edit ${draft.name}`}</h3>
-                  <p className="mt-1 text-xs text-bench-700">Private skills are stored as `.ora/skills/private/&lt;name&gt;/SKILL.md`.</p>
+                  <p className="mt-1 text-xs text-bench-700">Private skills are stored as `.ora/skills/private/&lt;name&gt;/` packages.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -429,7 +572,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                 </label>
               </div>
             </section>
-          ) : selectedSkill ? (
+            ) : selectedSkill ? (
             <section className="space-y-4">
               <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
                 <div className="flex flex-wrap items-start justify-between gap-4">
@@ -474,20 +617,211 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                   </div>
                 </div>
               </div>
+              {(selectedSkill.files ?? []).length > 0 && (
+                <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold">Package files</h4>
+                    <button
+                      type="button"
+                      onClick={startNewPackageFile}
+                      className="inline-flex h-8 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition hover:bg-bench-50 active:scale-[0.98]"
+                    >
+                      <Plus size={13} />
+                      New file
+                    </button>
+                  </div>
+                  <div className="mt-3 grid gap-2">
+                    {(selectedSkill.files ?? []).map((file) => (
+                      <button
+                        key={file.path}
+                        type="button"
+                        onClick={() => void openPackageFile(file)}
+                        className={cn(
+                          "flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-xs transition hover:bg-white active:scale-[0.99]",
+                          fileDrawer?.path === file.path ? "border-bench-900 bg-white" : "border-bench-200 bg-bench-50",
+                        )}
+                      >
+                        <span className="min-w-0 truncate font-mono">{file.path}</span>
+                        <span className="shrink-0 font-semibold uppercase text-bench-700">{file.kind}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(selectedSkill.files ?? []).length === 0 && (
+                <div className="rounded-lg bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold">Package files</h4>
+                    <button
+                      type="button"
+                      onClick={startNewPackageFile}
+                      className="inline-flex h-8 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition hover:bg-bench-50 active:scale-[0.98]"
+                    >
+                      <Plus size={13} />
+                      New file
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-bench-700">No supporting files yet.</p>
+                </div>
+              )}
               <pre className="min-h-[420px] overflow-x-auto rounded-lg bg-white p-5 font-mono text-xs leading-5 shadow-pane ring-1 ring-inset ring-bench-200">
                 {selectedSkill.content}
               </pre>
             </section>
-          ) : (
+            ) : (
             <div className="flex h-full min-h-[420px] items-center justify-center">
               <div className="rounded-lg bg-white p-6 text-center shadow-pane ring-1 ring-inset ring-bench-200">
                 <p className="text-sm font-semibold">Select a skill to inspect its full `SKILL.md`.</p>
                 <p className="mt-2 text-xs text-bench-700">Public skills are initialized from the package; private skills are added later by you.</p>
               </div>
             </div>
+            )}
+          </main>
+          {fileDrawer && (
+            <div className="min-h-0 border-l border-border bg-card/40">
+              <SkillPackageFileDrawer
+                state={fileDrawer}
+                onClose={closePackageFile}
+                onSave={() => void savePackageFile()}
+                onDelete={() => void deletePackageFile()}
+                onDraftPathChange={(draftPath) => setFileDrawer((current) => current ? { ...current, draftPath } : current)}
+                onDraftContentChange={(draftContent) => setFileDrawer((current) => current ? { ...current, draftContent } : current)}
+                onExecutableChange={(executable) => setFileDrawer((current) => current ? { ...current, executable } : current)}
+              />
+            </div>
           )}
-        </main>
+        </div>
       </div>
     </div>
   );
+}
+
+function fileContentToDrawer(file: OraSkillPackageFileContent): FileDrawerState {
+  return {
+    mode: "existing",
+    path: file.path,
+    draftPath: file.path,
+    content: file.content,
+    draftContent: file.content,
+    executable: file.executable,
+    kind: file.kind,
+    loading: false,
+    busy: false,
+    error: "",
+  };
+}
+
+function fileDrawerChanged(state: FileDrawerState): boolean {
+  return state.path !== state.draftPath || state.content !== state.draftContent;
+}
+
+function SkillPackageFileDrawer({
+  state,
+  onClose,
+  onSave,
+  onDelete,
+  onDraftPathChange,
+  onDraftContentChange,
+  onExecutableChange,
+}: {
+  state: FileDrawerState;
+  onClose: () => void;
+  onSave: () => void;
+  onDelete: () => void;
+  onDraftPathChange: (value: string) => void;
+  onDraftContentChange: (value: string) => void;
+  onExecutableChange: (value: boolean) => void;
+}) {
+  const changed = fileDrawerChanged(state);
+  return (
+    <aside className="flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent">
+      <header className="flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
+        <div className="flex min-w-0 items-center gap-2">
+          <SkillPackageFileIcon kind={state.kind} path={state.draftPath || state.path} />
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-medium">Package file</h2>
+            <p data-i18n-skip="" className="truncate text-[11px] text-muted-foreground">
+              {state.draftPath || "New supporting file"}
+            </p>
+          </div>
+        </div>
+        <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close package file">
+          <X size={16} />
+        </Button>
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
+        {state.loading ? (
+          <div className="rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
+            Loading package file.
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            {state.error && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
+                {state.error}
+              </div>
+            )}
+
+            <label className="space-y-1.5">
+              <span className="text-[11px] font-semibold uppercase text-muted-foreground">Path</span>
+              <input
+                value={state.draftPath}
+                onChange={(event) => onDraftPathChange(event.target.value)}
+                readOnly={state.mode === "existing"}
+                placeholder="templates/result.md"
+                className="h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-xs outline-none transition focus:border-foreground/40 read-only:text-muted-foreground"
+              />
+            </label>
+
+            <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={state.executable}
+                onChange={(event) => onExecutableChange(event.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              Executable
+            </label>
+
+            <textarea
+              value={state.draftContent}
+              onChange={(event) => onDraftContentChange(event.target.value)}
+              spellCheck={false}
+              className="min-h-[420px] flex-1 resize-none rounded-md border border-border bg-background p-3 font-mono text-xs leading-5 text-bench-800 outline-none transition focus:border-foreground/40"
+            />
+
+            <div className="flex shrink-0 items-center justify-between gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onDelete}
+                disabled={state.mode === "new" || state.busy}
+              >
+                <Trash2 size={14} />
+                Delete
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={state.busy}>
+                  Cancel
+                </Button>
+                <Button type="button" size="sm" onClick={onSave} disabled={state.busy || !state.draftPath.trim() || !changed}>
+                  <Save size={14} />
+                  Save
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function SkillPackageFileIcon({ kind, path }: { kind?: SkillPackageFileEntry["kind"]; path: string }) {
+  if (kind === "script" || /\.(ts|tsx|js|jsx|py|sh|bash|json|ya?ml)$/i.test(path)) {
+    return <FileCode2 size={16} className="text-muted-foreground" />;
+  }
+  return <FileText size={16} className="text-muted-foreground" />;
 }

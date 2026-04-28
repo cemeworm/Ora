@@ -138,6 +138,31 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("已完成资料收集。");
   });
 
+  it("keeps live runtime status in the progress area after assistant text starts", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      liveProgressText: "正在努力",
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="我会先读取这些 skill。" turn={turn} />,
+    );
+
+    expect(html).toContain("运行进度");
+    expect(html).toContain("当前状态");
+    expect(html).toContain("正在努力");
+    expect(html).toContain("我会先读取这些 skill。");
+  });
+
   it("hides recovery artifacts from the assistant content stream", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",

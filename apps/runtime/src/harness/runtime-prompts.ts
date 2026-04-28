@@ -92,6 +92,10 @@ export function summarizeNarratorProgressPayload(eventType: string, payload: unk
   return Object.keys(summary).length > 0 ? summary : undefined;
 }
 
+const PROGRESS_NARRATION_MAX_CHARS = 240;
+const SENTENCE_FINAL_PUNCTUATION = new Set([".", "!", "?", "。", "！", "？"]);
+const CLOSING_PUNCTUATION = new Set(["\"", "'", "`", "”", "’", "）", ")", "]", "】", "》"]);
+
 export function normalizeProgressNarration(text: string): string | undefined {
   const summary = text
     .replace(/```[\s\S]*?```/g, "")
@@ -101,7 +105,39 @@ export function normalizeProgressNarration(text: string): string | undefined {
   if (!summary || summary.startsWith("{") || summary.includes("\"tool\"")) {
     return undefined;
   }
-  return summary.length > 240 ? `${summary.slice(0, 237).trimEnd()}...` : summary;
+  if (summary.length <= PROGRESS_NARRATION_MAX_CHARS) {
+    return endsWithSentenceFinalPunctuation(summary) ? summary : undefined;
+  }
+  const completePrefix = completeSentencePrefix(summary, PROGRESS_NARRATION_MAX_CHARS);
+  return completePrefix && endsWithSentenceFinalPunctuation(completePrefix)
+    ? completePrefix
+    : undefined;
+}
+
+function completeSentencePrefix(text: string, maxChars: number): string | undefined {
+  let endIndex = -1;
+  const limit = Math.min(text.length, maxChars);
+  for (let index = 0; index < limit; index += 1) {
+    if (!SENTENCE_FINAL_PUNCTUATION.has(text[index])) {
+      continue;
+    }
+    endIndex = index + 1;
+    while (endIndex < limit && CLOSING_PUNCTUATION.has(text[endIndex])) {
+      endIndex += 1;
+    }
+  }
+  if (endIndex <= 0) {
+    return undefined;
+  }
+  return text.slice(0, endIndex).trim();
+}
+
+function endsWithSentenceFinalPunctuation(text: string): boolean {
+  let index = text.length - 1;
+  while (index >= 0 && CLOSING_PUNCTUATION.has(text[index])) {
+    index -= 1;
+  }
+  return index >= 0 && SENTENCE_FINAL_PUNCTUATION.has(text[index]);
 }
 
 export function workspaceSystemPrompt(workspace: unknown): string | undefined {
@@ -143,4 +179,152 @@ export function workspaceSystemPrompt(workspace: unknown): string | undefined {
     samplePaths.length > 0 ? `- Sample paths:\n${samplePaths.map((item) => `  - ${item}`).join("\n")}` : undefined,
     "Use this workspace context when answering questions about the local project folder. If the question asks for information not present in the context, say the project index is available but file contents or commands still need a runtime tool.",
   ].filter(Boolean).join("\n");
+}
+
+export function attachedProjectFilesSystemPrompt(attachedFiles: unknown): string | undefined {
+  if (!Array.isArray(attachedFiles)) {
+    return undefined;
+  }
+
+  const files = attachedFiles
+    .map(readAttachedProjectFile)
+    .filter((file): file is AttachedProjectFilePromptEntry => Boolean(file))
+    .slice(0, 20);
+  if (files.length === 0) {
+    return undefined;
+  }
+
+  return [
+    "<attached_project_files>",
+    "The user attached these project files to this message:",
+    "",
+    ...files.flatMap((file) => [
+      `- ${file.name} (${file.mimeType}, ${file.sizeBytes} bytes)`,
+      `  Path: ${file.path}`,
+    ]),
+    "",
+    "Use the `file.read` tool with the shown project-relative paths before answering questions about file contents.",
+    "These files are already inside the selected Ora project workspace; do not ask the user to upload them again.",
+    "</attached_project_files>",
+  ].join("\n");
+}
+
+export function attachedLocalFilesSystemPrompt(attachedFiles: unknown): string | undefined {
+  if (!Array.isArray(attachedFiles)) {
+    return undefined;
+  }
+
+  const files = attachedFiles
+    .map(readAttachedLocalFile)
+    .filter((file): file is AttachedLocalFilePromptEntry => Boolean(file))
+    .slice(0, 20);
+  if (files.length === 0) {
+    return undefined;
+  }
+
+  return [
+    "<attached_local_files>",
+    "The user attached these local files to this message:",
+    "",
+    ...files.flatMap((file) => {
+      const lines = [
+        `- ${file.name} (${file.mimeType}, ${file.sizeBytes} bytes)`,
+        `  Path: ${file.path}`,
+      ];
+      if (file.content) {
+        lines.push("  Content:");
+        lines.push("  ```");
+        lines.push(indentAttachedFileContent(file.content));
+        lines.push("  ```");
+        if (file.truncated) {
+          lines.push("  Note: content was truncated by the desktop attachment preview limit.");
+        }
+      } else {
+        lines.push("  Content preview unavailable; ask the user for a text version if exact contents are required.");
+      }
+      return lines;
+    }),
+    "",
+    "Use the embedded content above when answering questions about these files.",
+    "</attached_local_files>",
+  ].join("\n");
+}
+
+interface AttachedProjectFilePromptEntry {
+  path: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+interface AttachedLocalFilePromptEntry extends AttachedProjectFilePromptEntry {
+  content?: string;
+  truncated: boolean;
+}
+
+function readAttachedProjectFile(value: unknown): AttachedProjectFilePromptEntry | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const path = typeof record.path === "string" ? record.path.trim() : "";
+  if (
+    !path ||
+    path.startsWith("/") ||
+    path.split("/").includes("..") ||
+    typeof record.name !== "string" ||
+    !record.name.trim() ||
+    typeof record.mimeType !== "string" ||
+    !record.mimeType.trim() ||
+    typeof record.sizeBytes !== "number" ||
+    !Number.isFinite(record.sizeBytes) ||
+    record.sizeBytes < 0
+  ) {
+    return undefined;
+  }
+  return {
+    path,
+    name: record.name.trim(),
+    mimeType: record.mimeType.trim(),
+    sizeBytes: Math.floor(record.sizeBytes),
+  };
+}
+
+function readAttachedLocalFile(value: unknown): AttachedLocalFilePromptEntry | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const path = typeof record.path === "string" ? record.path.trim() : "";
+  if (
+    !path ||
+    typeof record.name !== "string" ||
+    !record.name.trim() ||
+    typeof record.mimeType !== "string" ||
+    !record.mimeType.trim() ||
+    typeof record.sizeBytes !== "number" ||
+    !Number.isFinite(record.sizeBytes) ||
+    record.sizeBytes < 0
+  ) {
+    return undefined;
+  }
+  const content = typeof record.content === "string" && record.content.trim()
+    ? record.content
+    : undefined;
+  return {
+    path,
+    name: record.name.trim(),
+    mimeType: record.mimeType.trim(),
+    sizeBytes: Math.floor(record.sizeBytes),
+    content,
+    truncated: record.truncated === true,
+  };
+}
+
+function indentAttachedFileContent(content: string): string {
+  return content
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
 }

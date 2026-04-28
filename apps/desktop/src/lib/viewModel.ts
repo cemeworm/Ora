@@ -67,6 +67,7 @@ export interface PendingRunPreview {
   sessionId: string;
   prompt: string;
   createdAt: number;
+  progressText?: string;
 }
 
 export function buildWorkbenchViewModel(
@@ -1154,7 +1155,7 @@ export function adaptPendingRunMessages(
     {
       id: `${pendingRun.sessionId}:pending:assistant`,
       role: "assistant",
-      content: placeholderAssistantCopy(),
+      content: pendingRun.progressText?.trim() || "正在准备",
       timestamp: formatClock(pendingRun.createdAt),
       isPlaceholder: true,
     },
@@ -1192,6 +1193,10 @@ function assistantTextFromSnapshot(
   if (approvalText) {
     return approvalText;
   }
+  const streamingText = streamingAssistantTextFromSnapshot(snapshot);
+  if (streamingText) {
+    return streamingText;
+  }
   if (
     snapshot.status === "queued" ||
     snapshot.status === "running"
@@ -1209,6 +1214,26 @@ function assistantTextFromSnapshot(
     return undefined;
   }
 
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type !== "message.delta" || !isRecord(event.payload)) {
+      continue;
+    }
+    if (isInternalVerifierDelta(snapshot, event)) {
+      continue;
+    }
+    const content = event.payload.content;
+    if (typeof content === "string" && content.trim()) {
+      return content;
+    }
+  }
+  return undefined;
+}
+
+function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
+  if (snapshot.pattern === "generator_verifier") {
+    return undefined;
+  }
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
     const event = snapshot.events[index];
     if (event?.type !== "message.delta" || !isRecord(event.payload)) {
@@ -1253,7 +1278,7 @@ function progressTextFromSnapshot(
     }
     if (
       event.payload.kind !== "chat_progress" ||
-      event.payload.source !== "progress_narrator"
+      !isVisibleChatProgressSource(event.payload.source)
     ) {
       continue;
     }
@@ -1296,7 +1321,7 @@ function approvalProgressTextFromSnapshot(snapshot: OraStateSnapshot): string | 
     }
     if (
       event.payload.kind !== "chat_progress" ||
-      event.payload.source !== "progress_narrator" ||
+      !isVisibleChatProgressSource(event.payload.source) ||
       event.payload.trigger !== "approval.required"
     ) {
       continue;
@@ -1537,10 +1562,14 @@ function isChatProgressEvent(event: OraEventEnvelope): boolean {
   return (
     isRecord(event.payload) &&
     event.payload.kind === "chat_progress" &&
-    event.payload.source === "progress_narrator" &&
+    isVisibleChatProgressSource(event.payload.source) &&
     typeof event.payload.summary === "string" &&
     event.payload.summary.trim().length > 0
   );
+}
+
+function isVisibleChatProgressSource(source: unknown): boolean {
+  return source === "progress_narrator" || source === "runtime_status";
 }
 
 function processStepLabel(event: OraEventEnvelope): string {

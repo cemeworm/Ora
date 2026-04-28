@@ -11,7 +11,11 @@ import {
   type SkillCheckNameResult,
   type SkillCreateParams,
   type SkillDeleteParams,
+  type SkillFileDeleteParams,
+  type SkillFileGetParams,
+  type SkillFileUpsertParams,
   type SkillGetParams,
+  type SkillPackageFileContent,
   type SkillRegistry,
   type SkillListParams,
   type SkillSetEnabledParams,
@@ -94,6 +98,10 @@ export class RuntimeSkillRegistry {
     return this.store.get(params);
   }
 
+  getFile(params: SkillFileGetParams | unknown): SkillPackageFileContent {
+    return this.store.getFile(params);
+  }
+
   create(params: SkillCreateParams | unknown): SkillDetail {
     return this.store.create(params);
   }
@@ -102,8 +110,16 @@ export class RuntimeSkillRegistry {
     return this.store.update(params);
   }
 
+  upsertFile(params: SkillFileUpsertParams | unknown): SkillDetail {
+    return this.store.upsertFile(params);
+  }
+
   delete(params: SkillDeleteParams | unknown): { deleted: true; name: string } {
     return this.store.delete(params);
+  }
+
+  deleteFile(params: SkillFileDeleteParams | unknown): SkillDetail {
+    return this.store.deleteFile(params);
   }
 
   checkName(params: unknown): SkillCheckNameResult {

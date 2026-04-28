@@ -282,7 +282,8 @@ describe("Ora runtime smoke path", () => {
       event.type === "task.progress" &&
       typeof event.payload === "object" &&
       event.payload !== null &&
-      (event.payload as Record<string, unknown>).kind === "chat_progress"
+      (event.payload as Record<string, unknown>).kind === "chat_progress" &&
+      (event.payload as Record<string, unknown>).source === "progress_narrator"
     );
 
     expect(progressEvents.length).toBeGreaterThan(0);

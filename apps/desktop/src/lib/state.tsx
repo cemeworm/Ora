@@ -7,6 +7,7 @@ import type {
   OraPackageStoreSnapshot,
   OraActionRecord,
   OraPatternDefinition,
+  OraProjectFileEntry,
   OraProviderConfig,
   OraProviderRegistry,
   OraProviderSecretStatus,
@@ -20,6 +21,29 @@ import type {
   OraToolRegistry,
   RuntimeHealth,
 } from "./runtimeClient";
+
+export type ComposerProjectFileAttachment = Pick<
+  OraProjectFileEntry,
+  "path" | "name" | "mimeType" | "sizeBytes"
+> & {
+  projectId: string;
+};
+
+export interface ComposerLocalFileAttachment {
+  path: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  content?: string;
+  truncated?: boolean;
+}
+
+export interface PendingRunState {
+  sessionId: string;
+  prompt: string;
+  createdAt: number;
+  progressText?: string;
+}
 
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
@@ -50,7 +74,11 @@ export interface WorkbenchState {
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
   sessionPromptTexts: Record<string, string>;
-  pendingRun: { sessionId: string; prompt: string; createdAt: number } | undefined;
+  selectedSkillIds: string[];
+  sessionSkillIds: Record<string, string[]>;
+  sessionProjectFileAttachments: Record<string, ComposerProjectFileAttachment[]>;
+  sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
+  pendingRun: PendingRunState | undefined;
   isLoading: boolean;
   busyCommand: string | undefined;
   commandFeedback: string;
@@ -116,8 +144,16 @@ export type WorkbenchAction =
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
   | { type: "SET_PROMPT"; text: string }
+  | { type: "SET_SELECTED_SKILL_IDS"; skillIds: string[] }
+  | { type: "ADD_PROJECT_FILE_ATTACHMENT"; sessionId: string; file: ComposerProjectFileAttachment }
+  | { type: "REMOVE_PROJECT_FILE_ATTACHMENT"; sessionId: string; path: string }
+  | { type: "CLEAR_PROJECT_FILE_ATTACHMENTS"; sessionId: string }
+  | { type: "ADD_LOCAL_FILE_ATTACHMENT"; sessionId: string; file: ComposerLocalFileAttachment }
+  | { type: "REMOVE_LOCAL_FILE_ATTACHMENT"; sessionId: string; path: string }
+  | { type: "CLEAR_LOCAL_FILE_ATTACHMENTS"; sessionId: string }
   | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
   | { type: "BEGIN_RUN_REQUEST"; sessionId: string; prompt: string; createdAt: number }
+  | { type: "SET_PENDING_RUN_PROGRESS"; sessionId: string; progressText: string }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_BUSY_COMMAND"; command: string | undefined }
   | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
@@ -169,6 +205,10 @@ export const initialWorkbenchState: WorkbenchState = {
   },
   promptText: "",
   sessionPromptTexts: {},
+  selectedSkillIds: [],
+  sessionSkillIds: {},
+  sessionProjectFileAttachments: {},
+  sessionLocalFileAttachments: {},
   pendingRun: undefined,
   isLoading: false,
   busyCommand: undefined,
@@ -217,6 +257,10 @@ function sessionPromptText(state: WorkbenchState, sessionId: string | undefined)
   return sessionId ? (state.sessionPromptTexts[sessionId] ?? "") : "";
 }
 
+function sessionSkillIds(state: WorkbenchState, sessionId: string | undefined): string[] {
+  return sessionId ? (state.sessionSkillIds[sessionId] ?? []) : [];
+}
+
 function setSessionPromptText(state: WorkbenchState, text: string): Record<string, string> {
   if (!state.selectedSessionId) {
     return state.sessionPromptTexts;
@@ -233,6 +277,103 @@ function setSessionPromptText(state: WorkbenchState, text: string): Record<strin
 
 function clearSessionPromptText(state: WorkbenchState, sessionId: string): Record<string, string> {
   const { [sessionId]: _cleared, ...rest } = state.sessionPromptTexts;
+  return rest;
+}
+
+function setSessionSkillIds(state: WorkbenchState, skillIds: string[]): Record<string, string[]> {
+  if (!state.selectedSessionId) {
+    return state.sessionSkillIds;
+  }
+  if (skillIds.length === 0) {
+    const { [state.selectedSessionId]: _cleared, ...rest } = state.sessionSkillIds;
+    return rest;
+  }
+  return {
+    ...state.sessionSkillIds,
+    [state.selectedSessionId]: skillIds,
+  };
+}
+
+function clearSessionSkillIds(state: WorkbenchState, sessionId: string): Record<string, string[]> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionSkillIds;
+  return rest;
+}
+
+function addProjectFileAttachment(
+  state: WorkbenchState,
+  sessionId: string,
+  file: ComposerProjectFileAttachment,
+): Record<string, ComposerProjectFileAttachment[]> {
+  const current = state.sessionProjectFileAttachments[sessionId] ?? [];
+  if (current.some((item) => item.projectId === file.projectId && item.path === file.path)) {
+    return state.sessionProjectFileAttachments;
+  }
+  return {
+    ...state.sessionProjectFileAttachments,
+    [sessionId]: [...current, file],
+  };
+}
+
+function removeProjectFileAttachment(
+  state: WorkbenchState,
+  sessionId: string,
+  path: string,
+): Record<string, ComposerProjectFileAttachment[]> {
+  const nextFiles = (state.sessionProjectFileAttachments[sessionId] ?? []).filter((file) => file.path !== path);
+  if (nextFiles.length === 0) {
+    const { [sessionId]: _cleared, ...rest } = state.sessionProjectFileAttachments;
+    return rest;
+  }
+  return {
+    ...state.sessionProjectFileAttachments,
+    [sessionId]: nextFiles,
+  };
+}
+
+function clearProjectFileAttachments(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, ComposerProjectFileAttachment[]> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionProjectFileAttachments;
+  return rest;
+}
+
+function addLocalFileAttachment(
+  state: WorkbenchState,
+  sessionId: string,
+  file: ComposerLocalFileAttachment,
+): Record<string, ComposerLocalFileAttachment[]> {
+  const current = state.sessionLocalFileAttachments[sessionId] ?? [];
+  if (current.some((item) => item.path === file.path)) {
+    return state.sessionLocalFileAttachments;
+  }
+  return {
+    ...state.sessionLocalFileAttachments,
+    [sessionId]: [...current, file],
+  };
+}
+
+function removeLocalFileAttachment(
+  state: WorkbenchState,
+  sessionId: string,
+  path: string,
+): Record<string, ComposerLocalFileAttachment[]> {
+  const nextFiles = (state.sessionLocalFileAttachments[sessionId] ?? []).filter((file) => file.path !== path);
+  if (nextFiles.length === 0) {
+    const { [sessionId]: _cleared, ...rest } = state.sessionLocalFileAttachments;
+    return rest;
+  }
+  return {
+    ...state.sessionLocalFileAttachments,
+    [sessionId]: nextFiles,
+  };
+}
+
+function clearLocalFileAttachments(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, ComposerLocalFileAttachment[]> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionLocalFileAttachments;
   return rest;
 }
 
@@ -537,6 +678,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         modes: [],
         promptText: "",
         sessionPromptTexts: {},
+        selectedSkillIds: [],
+        sessionSkillIds: {},
+        sessionProjectFileAttachments: {},
+        sessionLocalFileAttachments: {},
         pendingRun: undefined,
         isLoading: true,
         busyCommand: undefined,
@@ -596,6 +741,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
         selectedBeatId: snapshot?.events.at(-1)?.id,
         promptText: sessionPromptText(state, action.detail.session.sessionId),
+        selectedSkillIds: sessionSkillIds(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
         pendingRun: undefined,
         isLoading: false,
@@ -618,7 +764,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         ...state,
         sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
         sessionPromptTexts: clearSessionPromptText(state, action.sessionId),
+        sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
+        sessionProjectFileAttachments: clearProjectFileAttachments(state, action.sessionId),
+        sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
         promptText: state.selectedSessionId === action.sessionId ? "" : state.promptText,
+        selectedSkillIds: state.selectedSessionId === action.sessionId ? [] : state.selectedSkillIds,
         projects: archivedSession?.projectId
           ? state.projects.map((project) =>
             project.projectId === archivedSession.projectId
@@ -812,6 +962,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId: snapshot?.config.providerId ?? session?.latestProviderId ?? state.selectedProviderId,
         promptText: sessionPromptText(state, action.sessionId),
+        selectedSkillIds: sessionSkillIds(state, action.sessionId),
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
@@ -883,12 +1034,59 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionPromptTexts: setSessionPromptText(state, action.text),
       };
 
+    case "SET_SELECTED_SKILL_IDS":
+      return {
+        ...state,
+        selectedSkillIds: action.skillIds,
+        sessionSkillIds: setSessionSkillIds(state, action.skillIds),
+      };
+
+    case "ADD_PROJECT_FILE_ATTACHMENT":
+      return {
+        ...state,
+        sessionProjectFileAttachments: addProjectFileAttachment(state, action.sessionId, action.file),
+        commandFeedback: `Added ${action.file.path} to chat.`,
+      };
+
+    case "REMOVE_PROJECT_FILE_ATTACHMENT":
+      return {
+        ...state,
+        sessionProjectFileAttachments: removeProjectFileAttachment(state, action.sessionId, action.path),
+      };
+
+    case "CLEAR_PROJECT_FILE_ATTACHMENTS":
+      return {
+        ...state,
+        sessionProjectFileAttachments: clearProjectFileAttachments(state, action.sessionId),
+      };
+
+    case "ADD_LOCAL_FILE_ATTACHMENT":
+      return {
+        ...state,
+        sessionLocalFileAttachments: addLocalFileAttachment(state, action.sessionId, action.file),
+        commandFeedback: `Added ${action.file.name} to chat.`,
+      };
+
+    case "REMOVE_LOCAL_FILE_ATTACHMENT":
+      return {
+        ...state,
+        sessionLocalFileAttachments: removeLocalFileAttachment(state, action.sessionId, action.path),
+      };
+
+    case "CLEAR_LOCAL_FILE_ATTACHMENTS":
+      return {
+        ...state,
+        sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
+      };
+
     case "CLEAR_PROMPT_IF_MATCH":
-      return state.promptText === action.text && state.selectedSessionId
+      return state.promptText === action.text
         ? {
             ...state,
             promptText: "",
-            sessionPromptTexts: clearSessionPromptText(state, state.selectedSessionId),
+            sessionPromptTexts: state.selectedSessionId
+              ? clearSessionPromptText(state, state.selectedSessionId)
+              : state.sessionPromptTexts,
           }
         : state;
 
@@ -899,8 +1097,23 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           sessionId: action.sessionId,
           prompt: action.prompt,
           createdAt: action.createdAt,
+          progressText: "正在准备",
         },
+        selectedSkillIds: [],
+        sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         isLoading: true,
+      };
+
+    case "SET_PENDING_RUN_PROGRESS":
+      if (!state.pendingRun || state.pendingRun.sessionId !== action.sessionId) {
+        return state;
+      }
+      return {
+        ...state,
+        pendingRun: {
+          ...state.pendingRun,
+          progressText: action.progressText,
+        },
       };
 
     case "SET_LOADING":

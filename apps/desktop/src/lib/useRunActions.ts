@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
-import { useWorkbench } from "./state";
+import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
@@ -22,6 +22,38 @@ function modeDisablesDefaultWebTools(modeToolIds: readonly string[] | undefined)
   }
   const ids = new Set(modeToolIds ?? []);
   return DEFAULT_WEB_TOOL_IDS.some((toolId) => !ids.has(toolId));
+}
+
+export function buildDesktopRunContext(
+  projectFileAttachments: readonly ComposerProjectFileAttachment[] = [],
+  localFileAttachments: readonly ComposerLocalFileAttachment[] = [],
+): Record<string, unknown> {
+  return {
+    source: "desktop-workbench",
+    ...(projectFileAttachments.length > 0
+      ? {
+          attachedProjectFiles: projectFileAttachments.map((file) => ({
+            projectId: file.projectId,
+            path: file.path,
+            name: file.name,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes,
+          })),
+        }
+      : {}),
+    ...(localFileAttachments.length > 0
+      ? {
+          attachedLocalFiles: localFileAttachments.map((file) => ({
+            path: file.path,
+            name: file.name,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes,
+            ...(typeof file.content === "string" ? { content: file.content } : {}),
+            ...(file.truncated ? { truncated: true } : {}),
+          })),
+        }
+      : {}),
+  };
 }
 
 export function buildPendingClarificationResumePatch(
@@ -301,6 +333,8 @@ export function useRunActions() {
     if (!state.selectedSessionId || !state.promptText.trim()) return;
     const sessionId = state.selectedSessionId;
     const submittedPrompt = state.promptText;
+    const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
+    const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
     const clarificationPatch = state.activeSnapshot?.runId === state.selectedTurnRunId
       ? buildPendingClarificationResumePatch(state.activeSnapshot, submittedPrompt)
       : undefined;
@@ -312,8 +346,21 @@ export function useRunActions() {
         createdAt: Date.now(),
       });
       dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
+      if (!clarificationPatch && submittedProjectFileAttachments.length > 0) {
+        dispatch({ type: "CLEAR_PROJECT_FILE_ATTACHMENTS", sessionId });
+      }
+      if (!clarificationPatch && submittedLocalFileAttachments.length > 0) {
+        dispatch({ type: "CLEAR_LOCAL_FILE_ATTACHMENTS", sessionId });
+      }
     });
     await waitForPendingRunPaint();
+    if (!clarificationPatch && selectedRunModeSelection === "auto") {
+      dispatch({
+        type: "SET_PENDING_RUN_PROGRESS",
+        sessionId,
+        progressText: "正在选择合适的工作模式",
+      });
+    }
     if (clarificationPatch && state.selectedTurnRunId) {
       try {
         const snapshot = await runtimeClient.resumeRun(
@@ -335,12 +382,16 @@ export function useRunActions() {
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
     const searchConfig = buildRunSearchConfig();
+    const selectedRunSkillIds = [...new Set([
+      ...(selectedMode?.capabilityFlags.skillIds ?? []),
+      ...state.selectedSkillIds,
+    ])];
     try {
       const handle = await runtimeClient.startStreamingRun(
         {
           prompt: submittedPrompt,
           projectId,
-          context: { source: "desktop-workbench" },
+          context: buildDesktopRunContext(submittedProjectFileAttachments, submittedLocalFileAttachments),
         },
         {
           pattern: selectedRunPattern,
@@ -350,6 +401,7 @@ export function useRunActions() {
           providerConfig: provider,
           customAgentId: state.selectedCustomAgentId,
           modelRef: provider?.modelId ?? "local/smoke-model",
+          ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
           toolIds: toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId),
           searchProvider: searchConfig.searchProvider,
           metadata: {
@@ -358,6 +410,7 @@ export function useRunActions() {
             progressNarration: true,
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             ...searchConfig.metadata,
+            ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
           },
         },

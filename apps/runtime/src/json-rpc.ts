@@ -96,12 +96,18 @@ export function createRuntimeMethodHandler(
         return SkillRegistrySchema.parse(store.listSkills(request.params));
       case "skills.get":
         return store.getSkill(request.params);
+      case "skills.file.get":
+        return store.getSkillFile(request.params);
       case "skills.create":
         return store.createSkill(request.params);
       case "skills.update":
         return store.updateSkill(request.params);
+      case "skills.file.upsert":
+        return store.upsertSkillFile(request.params);
       case "skills.delete":
         return store.deleteSkill(request.params);
+      case "skills.file.delete":
+        return store.deleteSkillFile(request.params);
       case "skills.checkName":
         return store.checkSkillName(request.params);
       case "skills.setEnabled":

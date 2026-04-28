@@ -81,6 +81,8 @@ import {
 } from "./runtime-clarifications.js";
 import { buildAgentPromptContext, userClarificationContextPrompt } from "./prompt-context.js";
 import {
+  attachedLocalFilesSystemPrompt,
+  attachedProjectFilesSystemPrompt,
   checkpointLabelForStatus,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
@@ -134,6 +136,13 @@ function sleep(ms: number): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function selectedModeProgressText(modeSpec: ModeSpec, checkingRequest: boolean): string {
+  const label = modeSpec.id === "single_agent" ? "单智能体模式" : `${modeSpec.label} 模式`;
+  return checkingRequest
+    ? `已选择${label}，我准备好了`
+    : `已选择${label}，正在准备执行`;
 }
 
 export async function executeRuntimeKernel(
@@ -624,7 +633,11 @@ export async function executeRuntimeKernel(
       ?? options.customAgentOverlay;
   };
 
-  const workspaceContext = workspaceSystemPrompt(input.context?.projectWorkspace);
+  const workspaceContext = [
+    workspaceSystemPrompt(input.context?.projectWorkspace),
+    attachedProjectFilesSystemPrompt(input.context?.attachedProjectFiles),
+    attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
+  ].filter(Boolean).join("\n\n") || undefined;
   const clarificationContext = userClarificationContextPrompt(input.context);
   const memoryContext =
     typeof config.metadata.memoryPromptOverlay === "string"
@@ -1206,6 +1219,24 @@ export async function executeRuntimeKernel(
 
   try {
     const intentClarificationAnswer = clarificationAnswer(INTENT_CLARIFICATION_KEY, INTENT_CLARIFICATION_ID);
+    const shouldRunClarificationPreflight =
+      modeSpec.runtimeAtoms.includes("clarification_interrupt") &&
+      config.metadata.clarificationPreflight === true &&
+      intentClarificationAnswer === undefined;
+    if (config.modeSelection === "auto" || config.metadata.autoModeRouter) {
+      emit(
+        "task.progress",
+        {
+          kind: "chat_progress",
+          source: "runtime_status",
+          trigger: "mode.selection",
+          title: "Prepare run",
+          summary: selectedModeProgressText(modeSpec, shouldRunClarificationPreflight),
+          basedOnSeq: events.at(-1)?.seq ?? -1,
+        },
+        { nodeId: "run" },
+      );
+    }
     if (
       modeSpec.runtimeAtoms.includes("clarification_interrupt") &&
       config.metadata.clarificationPreflight === true &&
@@ -1225,9 +1256,7 @@ export async function executeRuntimeKernel(
         { nodeId: INTENT_CLARIFICATION_NODE_ID },
       );
     }
-    const intentClarificationQuestion = modeSpec.runtimeAtoms.includes("clarification_interrupt") &&
-        config.metadata.clarificationPreflight === true &&
-        intentClarificationAnswer === undefined
+    const intentClarificationQuestion = shouldRunClarificationPreflight
       ? await requestIntentClarificationQuestion(input.prompt, config)
       : undefined;
     if (intentClarificationQuestion) {
