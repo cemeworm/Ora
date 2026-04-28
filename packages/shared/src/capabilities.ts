@@ -326,6 +326,7 @@ export const SystemAgentIdSchema = z
 export type SystemAgentId = z.infer<typeof SystemAgentIdSchema>;
 
 export const SYSTEM_AGENT_ID_ALIASES: Record<string, string> = {
+  solo_agent: "ora",
   lead_agent: "orchestrator",
   upgrade_lead: "orchestrator",
   seed_agent: "orchestrator",

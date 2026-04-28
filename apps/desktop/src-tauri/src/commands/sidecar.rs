@@ -971,14 +971,15 @@ impl RuntimeFacade {
 
     fn agents_update_system_override(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
         let params = params.ok_or_else(|| runtime_error(-32602, "Missing system agent override payload", None))?;
-        let agent_id = params
+        let requested_agent_id = params
             .get("agentId")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?
             .to_string();
+        let agent_id = canonical_system_agent_id(&requested_agent_id);
         if !builtin_agent_ids().contains(&agent_id) {
-            return Err(runtime_error(-32602, "System agent does not exist", Some(json!({ "agentId": agent_id }))));
+            return Err(runtime_error(-32602, "System agent does not exist", Some(json!({ "agentId": requested_agent_id }))));
         }
         let now = now_ms();
         let existing = read_system_agent_override(&agent_id)?.unwrap_or_else(|| json!({}));
@@ -1002,16 +1003,23 @@ impl RuntimeFacade {
     }
 
     fn agents_reset_system_override(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
-        let agent_id = params
+        let requested_agent_id = params
             .and_then(|value| value.get("agentId"))
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?
             .to_string();
+        let agent_id = canonical_system_agent_id(&requested_agent_id);
         let path = system_agent_override_path(&agent_id)?;
         if path.exists() {
             fs::remove_file(path).map_err(|error| {
                 runtime_error(-32060, "Unable to reset system agent override", Some(json!({ "agentId": agent_id, "error": error.to_string() })))
+            })?;
+        }
+        let legacy_path = system_agent_override_path(&requested_agent_id)?;
+        if legacy_path.exists() {
+            fs::remove_file(legacy_path).map_err(|error| {
+                runtime_error(-32060, "Unable to reset legacy system agent override", Some(json!({ "agentId": requested_agent_id, "error": error.to_string() })))
             })?;
         }
         Ok(json!({ "reset": true, "agentId": agent_id }))
@@ -2992,11 +3000,11 @@ fn custom_agent_dir(name: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
 }
 
 fn system_agent_override_path(agent_id: &str) -> Result<PathBuf, RuntimeJsonRpcError> {
-    Ok(ensure_system_agent_overrides_root()?.join(format!("{agent_id}.json")))
+    Ok(ensure_system_agent_overrides_root()?.join(format!("{}.json", canonical_system_agent_id(agent_id))))
 }
 
 fn read_system_agent_override(agent_id: &str) -> Result<Option<Value>, RuntimeJsonRpcError> {
-    let path = system_agent_override_path(agent_id)?;
+    let path = system_agent_override_path(&agent_id)?;
     if !path.is_file() {
         return Ok(None);
     }
@@ -3031,11 +3039,11 @@ fn read_system_agent_overrides() -> Result<HashMap<String, Value>, RuntimeJsonRp
 }
 
 fn write_system_agent_override(value: &Value) -> Result<(), RuntimeJsonRpcError> {
-    let agent_id = value
+    let agent_id = canonical_system_agent_id(value
         .get("agentId")
         .and_then(Value::as_str)
-        .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?;
-    let path = system_agent_override_path(agent_id)?;
+        .ok_or_else(|| runtime_error(-32602, "System agent id is required", None))?);
+    let path = system_agent_override_path(&agent_id)?;
     let raw = serde_json::to_string_pretty(value).map_err(|error| {
         runtime_error(-32060, "Unable to serialize system agent override", Some(json!({ "agentId": agent_id, "error": error.to_string() })))
     })?;
@@ -3045,14 +3053,27 @@ fn write_system_agent_override(value: &Value) -> Result<(), RuntimeJsonRpcError>
 }
 
 fn builtin_agent_ids() -> Vec<String> {
-    patterns_list()
+    let mut ids = patterns_list()
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
         .flat_map(|mode| mode.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default())
         .filter_map(|profile| profile.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect()
+        .collect::<Vec<String>>();
+    for id in ["ora", "solo_agent"] {
+        if !ids.contains(&id.to_string()) {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
+fn canonical_system_agent_id(agent_id: &str) -> String {
+    match agent_id {
+        "solo_agent" => "ora".to_string(),
+        value => value.to_string(),
+    }
 }
 
 fn custom_agent_config_path(agent_dir: &Path) -> PathBuf {

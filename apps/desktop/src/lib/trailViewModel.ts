@@ -348,8 +348,9 @@ export function collectTrailFindings(
       suggestedTab: "overview",
     });
   }
-  const activeContinuation = snapshot.continuation.frames.find((frame) =>
-    frame.id === snapshot.continuation.activeFrameId
+  const continuation = snapshot.continuation ?? { frames: [] };
+  const activeContinuation = continuation.frames.find((frame) =>
+    frame.id === continuation.activeFrameId
   );
   if (activeContinuation) {
     push({

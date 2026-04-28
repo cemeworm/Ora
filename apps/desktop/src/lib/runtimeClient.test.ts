@@ -6,27 +6,31 @@ describe("desktop runtime client agent catalog", () => {
     const client = createRuntimeClient();
     const catalog = await client.agentCatalog();
     const builder = catalog.systemAgents.find((agent) => agent.id === "builder");
+    const ora = catalog.systemAgents.find((agent) => agent.id === "ora");
     const reviewer = catalog.systemAgents.find((agent) => agent.id === "reviewer");
 
     expect(catalog.systemAgents.map((agent) => agent.id).sort()).toEqual([
       "builder",
       "generator",
+      "ora",
       "orchestrator",
       "release_reviewer",
       "researcher",
       "responder",
       "reviewer",
       "router",
-      "solo_agent",
       "team_lead",
       "verifier",
     ]);
     expect(builder).toBeDefined();
+    expect(ora?.usages.some((usage) => usage.modeId === "global_entry")).toBe(true);
+    expect(ora?.usages.some((usage) => usage.modeId === "single_agent")).toBe(true);
     expect(builder?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
     expect(builder?.usages.some((usage) => usage.modeId === "ora_self_builder")).toBe(true);
     expect(reviewer?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
     expect(reviewer?.usages.some((usage) => usage.modeId === "deerflow_harness")).toBe(true);
     expect(await client.checkAgentName("builder")).toMatchObject({ available: false, name: "builder" });
+    expect(await client.checkAgentName("ora")).toMatchObject({ available: false, name: "ora" });
     await expect(client.createAgent({
       name: "builder",
       description: "Collides with a built-in role.",

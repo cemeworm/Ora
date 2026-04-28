@@ -1,7 +1,7 @@
 # TASK-20260428-2207-ora-root-agent-orchestration
 
 **Created:** 2026-04-28 22:07 Asia/Shanghai
-**Status:** Planned
+**Status:** Done
 
 ---
 
@@ -571,6 +571,7 @@ Final assistant response to user
 - `/Users/quintenchen/developer/ora/apps/runtime/src/harness/runtime-progress.ts`
 - `/Users/quintenchen/developer/ora/apps/runtime/src/harness/runtime-clarifications.ts`
 - `/Users/quintenchen/developer/ora/apps/runtime/src/harness/runtime-kernel.ts`
+- `/Users/quintenchen/developer/ora/apps/runtime/src/harness/runtime-root-agent.ts`
 - `/Users/quintenchen/developer/ora/apps/runtime/src/harness/runtime-pattern-context.ts`
 - `/Users/quintenchen/developer/ora/apps/runtime/src/patterns/execution-context.ts`
 - `/Users/quintenchen/developer/ora/apps/runtime/src/patterns/driver-registry.ts`
@@ -582,6 +583,7 @@ Final assistant response to user
 - `/Users/quintenchen/developer/ora/apps/desktop/src/lib/runtimeClient.ts`
 - `/Users/quintenchen/developer/ora/apps/desktop/src/lib/viewModel.ts`
 - `/Users/quintenchen/developer/ora/apps/desktop/src/lib/trailViewModel.ts`
+- `/Users/quintenchen/developer/ora/apps/desktop/src-tauri/src/commands/sidecar.rs`
 - `/Users/quintenchen/developer/ora/apps/desktop/src/components/AgentsView.tsx`
 - `/Users/quintenchen/developer/ora/apps/desktop/src/components/AssistantTurnCard.tsx`
 
@@ -591,18 +593,18 @@ Final assistant response to user
 - The exact synthetic usage labels for `ora` may need minor Chinese/English UI copy alignment in desktop, but the runtime meaning is fixed.
 
 ## Task Checklist
-- [ ] Phase 0: inspect dirty diffs and create SAVEPOINT.
-- [ ] Phase 1: add `ora` as first-class system agent.
-- [ ] Phase 2: add root-agent prompt/context helper.
-- [ ] Phase 3: move Auto Router authorship under `ora`.
-- [ ] Phase 4: move clarification ownership under `ora`.
-- [ ] Phase 5: add root-agent runtime envelope and handoff messages.
-- [ ] Phase 6: add user-visible Ora active observer messages.
-- [ ] Phase 7: add `ora` finalizer and output preservation.
-- [ ] Phase 8: verify desktop/Trails/Agents page surfaces.
-- [ ] Phase 9: preserve evaluation observations and add regression coverage.
-- [ ] Run focused verification and update this journal.
-- [ ] Extract retrospective before marking Done.
+- [x] Phase 0: inspect dirty diffs and create SAVEPOINT.
+- [x] Phase 1: add `ora` as first-class system agent.
+- [x] Phase 2: add root-agent prompt/context helper.
+- [x] Phase 3: move Auto Router authorship under `ora`.
+- [x] Phase 4: move clarification ownership under `ora`.
+- [x] Phase 5: add root-agent runtime envelope and handoff messages.
+- [x] Phase 6: add user-visible Ora active observer messages.
+- [x] Phase 7: add `ora` finalizer and output preservation.
+- [x] Phase 8: verify desktop/Trails/Agents page surfaces.
+- [x] Phase 9: preserve evaluation observations and add regression coverage.
+- [x] Run focused verification and update this journal.
+- [x] Extract retrospective before marking Done.
 
 ## Checkpoints
 
@@ -614,7 +616,7 @@ Final assistant response to user
   - `ora` shows synthetic global usages.
   - `agents.updateSystemOverride` and reset work for `ora`.
   - creating custom agent `ora` is rejected.
-- Status: Not started.
+- Status: Passed.
 
 ### Checkpoint 2: Entry decision
 - Requirement: Auto Mode Router is initiated by `ora` and preserves existing routing behavior.
@@ -623,7 +625,7 @@ Final assistant response to user
   - Auto selected metadata includes `entryAgentId: "ora"`.
   - fallback metadata includes `entryAgentId: "ora"`.
   - old `runtime.autoModeRouter.*` observation paths still work.
-- Status: Not started.
+- Status: Passed.
 
 ### Checkpoint 3: Clarification ownership
 - Requirement: user clarification is asked by `ora`, not by a hidden guard node.
@@ -632,7 +634,7 @@ Final assistant response to user
   - pending clarification is attributed to `ora`.
   - `clarification.required` event carries `ora` context.
   - resume answer continues the same run without repeating the question.
-- Status: Not started.
+- Status: Passed.
 
 ### Checkpoint 4: Runtime handoff evidence
 - Requirement: every delegated mode has structured evidence that `ora` handed work to the optional Mode Lead or first worker, observed progress, and received the result back.
@@ -643,7 +645,7 @@ Final assistant response to user
   - `single_agent` is `run -> ora` and has no handoff.
   - `agentMessages` include Ora handoff for delegated modes.
   - return-to-`ora` message is recorded before final output.
-- Status: Not started.
+- Status: Passed.
 
 ### Checkpoint 5: Ora active observer
 - Requirement: Ora posts bounded user-visible observations during delegated mode execution.
@@ -654,7 +656,7 @@ Final assistant response to user
   - observations are recorded in Trails/runtime state.
   - observations do not claim final conclusions before Mode Lead / worker flow returns.
   - `single_agent` emits no fake observer handoff.
-- Status: Not started.
+- Status: Passed.
 
 ### Checkpoint 6: Final user answer
 - Requirement: successful runs answer the user through `ora`, while retaining original mode output for inspection.
@@ -663,7 +665,7 @@ Final assistant response to user
   - `snapshot.output.text` is final `ora` answer.
   - `snapshot.output.modeOutput` contains original mode output.
   - finalizer failure falls back safely.
-- Status: Not started.
+- Status: Passed.
 
 ### Checkpoint 7: Desktop product surface
 - Requirement: Agents, Trails, topology, and assistant turns represent `Ora` coherently.
@@ -673,7 +675,7 @@ Final assistant response to user
   - Trails graph shows `Ora` as parent entry.
   - active observations render as lightweight Ora-authored interim messages.
   - assistant turn agent timeline labels `Ora` correctly.
-- Status: Not started.
+- Status: Passed.
 
 ## Verification Plan
 
@@ -765,7 +767,17 @@ Final assistant response to user
   - Mitigation: support old and new keys during resume transition.
 
 ## Retrospective
-- Not started. Fill before marking Done.
+- Pitfall: Runtime and desktop fallback catalogs had separate built-in-agent discovery paths.
+  Evidence: Runtime catalog changes alone were not enough; `apps/desktop/src/lib/runtimeClient.ts` and `apps/desktop/src-tauri/src/commands/sidecar.rs` also needed root/alias awareness.
+  Status: candidate_for_skill
+  Writeback target: agent/catalog changes should include runtime store, browser fallback, and sidecar fallback surfaces in future built-in-agent tasks.
+- Pitfall: Repo-wide TODO scan is too noisy for Ora because it scans historical task journals, generated sidecar bundles, runtime DB binaries, and Rust target artifacts.
+  Evidence: `todo_scan.sh` emitted large unrelated historical/generated/binary TODO output; a touched-file fallback scan returned no blocking source TODOs.
+  Status: local_only
+- Pitfall: Finalizer output wrapping can break existing consumers if original mode output fields disappear from the top-level output.
+  Evidence: focused runtime tests initially failed until finalizer output preserved mode fields at top level and also stored `modeOutput`.
+  Status: candidate_for_skill
+  Writeback target: root/finalizer wrappers should preserve legacy top-level output fields unless schemas explicitly migrate.
 
 ## Progress Log
 - 2026-04-28 22:07 CST - Created detailed plan task for root `ora` agent orchestration. No runtime code changed.
@@ -776,26 +788,30 @@ Final assistant response to user
   Next: inspect dirty diffs in overlapping runtime files; create SAVEPOINT; implement Phase 1 system-agent identity and remove future-facing `solo_agent` exposure in the Single Agent path.
 - 2026-04-28 22:45 CST - Added the latest plan: complex modes may keep optional professional Mode Leads, while Ora remains active after handoff by posting short user-visible observations at stage boundaries. Updated flow, data contracts, mode inventory, phases, checkpoints, verification scenarios, risks, and compressed state. No runtime code changed.
   Next: inspect dirty diffs in overlapping runtime files; create SAVEPOINT; implement Phase 1 system-agent identity, Mode Lead mapping, and observer state shape.
+- 2026-04-28 22:52 CST - SAVEPOINT before implementation. Re-read task, project AGENTS.md, long-task protocol, package scripts, and current git status. Current worktree is clean at implementation start despite the task's creation-time dirty-state warning; continue to preserve any new user changes encountered. Assumptions: implement the planned v1 root-agent envelope surgically; keep ModeSpec schema stable; use existing provider/model configuration for all Ora calls; keep `single_agent` selectable but map future-facing identity to `ora`.
+  Next: inspect relevant shared/runtime files; add `ora` constants/catalog/reserved-id aliasing; implement root-entry metadata and runtime envelope with focused tests.
+- 2026-04-28 23:14 CST - Implemented root `ora` v1 end-to-end. Added shared root constants, `solo_agent -> ora` compatibility alias, global/system catalog entries, root prompt/profile helper, Auto Router `entryAgentId`/`oraEntry` metadata, clarification attribution to `ora`, runtime topology envelope, handoff/return `agentMessages`, bounded Ora observer messages, delegated-mode finalizer with `modeOutput` preservation, Single Agent as Ora-only, desktop/browser/sidecar fallback catalog support, and focused regression updates. Verification passed except the repo-wide TODO helper remains noisy by design; touched-file TODO fallback passed.
+  Next: none; task is ready for closeout.
 
 ## Compressed State (<= 20 lines)
 - Objective: Make `ora` the true root agent for all user conversations, Auto Router, clarification, mode handoff, and final response.
-- Status: Planned only; no implementation yet.
+- Status: Done; root `ora` implementation and verification completed.
 - Key decisions: `ora` is the user-facing root agent; a root-entry controller calls `ora` first for every run; `single_agent` means Ora-only direct execution (`run -> ora`); complex modes may keep optional professional Mode Leads; Ora posts bounded user-visible observations during delegated runs; Ora owns final output.
 - Active task file: `/Users/quintenchen/developer/ora/tasks/TASK-20260428-2207-ora-root-agent-orchestration.md`.
-- Current repo state: dirty worktree exists; do not revert unrelated changes.
-- Next actions (top 3; exact file/function): inspect dirty diffs in overlapping files; add `ORA_ROOT_AGENT_ID` and catalog item; define Mode Lead mapping + Ora observer message shape before runtime edits.
-- Blockers/Risks: coordination with current continuation-runtime edits; finalizer and observer latency/cost; clarification key compatibility; `solo_agent` override/profile/topology compatibility needs alias or migration to `ora`; observations need strict noise guards.
-- Verification status: Not started.
+- Current repo state: clean at implementation start, but continue to treat creation-time dirty-state warning as a guardrail and never revert unrelated changes.
+- Next actions (top 3; exact file/function): none.
+- Blockers/Risks: finalizer adds one provider call for delegated modes; observer copy is intentionally compact v1; repo-wide TODO helper remains noisy and should be paired with touched-file scans.
+- Verification status: Passed focused shared/runtime/desktop tests, typechecks, Rust cargo check, full runtime Vitest, diff check, and touched-file TODO fallback.
 
 ## Verification
 
 ### Evidence Requirements
 Must provide the following evidence before DONE:
-- [ ] Code Verification output.
-- [ ] Functional Verification output.
-- [ ] TODO scan output.
-- [ ] Checkpoint evidence.
-- [ ] Retrospective evidence.
+- [x] Code Verification output.
+- [x] Functional Verification output.
+- [x] TODO scan output.
+- [x] Checkpoint evidence.
+- [x] Retrospective evidence.
 
 ### Environment
 - Environment: `/Users/quintenchen/developer/ora`, zsh, 2026-04-28 Asia/Shanghai.
@@ -813,3 +829,33 @@ Must provide the following evidence before DONE:
   - Passed after impact-inventory update.
 - `rg -n "emitProgressNarration|task.progress|chat_progress|agent.message|message.delta|run.done|activeAgents|AgentConversationTimeline|status" apps/runtime/src/harness apps/runtime/src/patterns apps/desktop/src/lib/viewModel.ts apps/desktop/src/components/AssistantTurnCard.tsx`
   - Confirmed existing progress and agent-message channels; new Ora observations should be structured agent-authored messages, not generic progress narration.
+- `pnpm --filter @ora/shared build`
+  - Passed.
+- `pnpm --filter @ora/shared typecheck`
+  - Passed.
+- `pnpm --filter @ora/shared test -- contracts.test.ts`
+  - Passed: 1 file, 84 tests.
+- `pnpm --filter @ora/runtime typecheck`
+  - Passed.
+- `pnpm vitest run` from `apps/runtime`
+  - Passed: 16 files, 240 tests.
+- `pnpm --filter @ora/desktop typecheck`
+  - Passed.
+- `pnpm vitest run src/lib/runtimeClient.test.ts src/lib/viewModel.test.ts` from `apps/desktop`
+  - Passed: 2 files, 12 tests.
+- `cargo check` from `apps/desktop/src-tauri`
+  - Passed.
+- `git diff --check`
+  - Passed.
+- `bash /Users/quintenchen/.codex/skills/long-task-protocol/scripts/todo_scan.sh`
+  - Exited 0 but emitted unrelated historical task-journal, generated sidecar, runtime DB, and Rust target TODO/binary noise across the repo, so it is not useful as local blocking evidence for this task.
+- `rg --pcre2 -n "TODO(?!\\(FOLLOWUP\\))|FIXME|XXX|\\[ \\]" <touched source/test files>`
+  - Exit code 1 with no matches; no blocking TODO/FIXME/XXX or unchecked boxes in touched source/test files.
+
+### Functional Evidence
+- Manual `single_agent` now uses profile/owner `ora`, topology `run -> ora`, and output agent id `ora`.
+- Auto Router metadata preserves `autoModeRouter.selectedModeId/status/confidence/reason` and adds `entryAgentId: "ora"` plus `metadata.oraEntry`.
+- Clarification preflight keeps stable `intent_guard` key/id for resume compatibility while pending clarification/event attribution uses `nodeId: "ora"` / label `Ora`.
+- Delegated modes inject `run -> ora -> Mode Lead/first worker`, emit Ora handoff, bounded Ora `status` observations, and return-to-Ora messages.
+- Delegated finalizer writes final user text to `output.text`, preserves original mode output under `output.modeOutput`, and preserves legacy top-level mode output fields for compatibility.
+- Agents catalog/browser fallback/sidecar fallback show manageable `Ora`; `solo_agent` remains a legacy alias/reserved id and no longer appears as a first-class built-in.

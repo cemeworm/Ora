@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentCatalogResultSchema, CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset } from "@ora/shared";
+import { AgentCatalogResultSchema, CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset, ORA_ROOT_AGENT_ID } from "@ora/shared";
 
 const capturedSystems: string[] = [];
 const providerResponses: string[] = [];
@@ -147,12 +147,27 @@ describe("custom agent runtime behavior", () => {
 
     const catalog = AgentCatalogResultSchema.parse(store.agentCatalog());
     const builder = catalog.systemAgents.find((agent) => agent.id === "builder");
+    const ora = catalog.systemAgents.find((agent) => agent.id === ORA_ROOT_AGENT_ID);
 
     expect(builder).toBeDefined();
     expect(builder?.source).toBe("system");
     expect(builder?.modelRef).toBeUndefined();
     expect(builder?.usages.some((usage) => usage.modeId === "agent_teams")).toBe(true);
+    expect(ora).toBeDefined();
+    expect(ora?.usages.map((usage) => usage.modeId)).toEqual(expect.arrayContaining([
+      "global_entry",
+      "auto_mode_router",
+      "clarification",
+      "final_response",
+      "single_agent",
+    ]));
+    expect(store.checkAgentName({ name: "ora" }).available).toBe(false);
     expect(store.checkAgentName({ name: "builder" }).available).toBe(false);
+    expect(() => store.createAgent({
+      name: "ora",
+      description: "Should collide",
+      soul: "Nope.",
+    })).toThrow(/built-in system agent/);
     expect(() => store.createAgent({
       name: "builder",
       description: "Should collide",
@@ -227,21 +242,22 @@ describe("custom agent runtime behavior", () => {
         soul: "Answer as the overridden solo captain.",
       },
     });
-    const soloOverrideDir = path.join(dir, "agent-overrides", "solo_agent");
-    expect(fs.existsSync(path.join(soloOverrideDir, "config.yaml"))).toBe(true);
-    expect(fs.existsSync(path.join(soloOverrideDir, "SOUL.md"))).toBe(true);
+    const oraOverrideDir = path.join(dir, "agent-overrides", "ora");
+    expect(fs.existsSync(path.join(oraOverrideDir, "config.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(oraOverrideDir, "SOUL.md"))).toBe(true);
     expect(fs.existsSync(path.join(dir, "agent-overrides", "solo_agent.json"))).toBe(false);
-    expect(fs.readFileSync(path.join(soloOverrideDir, "SOUL.md"), "utf8")).toContain("overridden solo captain");
+    expect(fs.readFileSync(path.join(oraOverrideDir, "SOUL.md"), "utf8")).toContain("overridden solo captain");
 
     const catalog = AgentCatalogResultSchema.parse(await handle({
       jsonrpc: "2.0",
       id: 2,
       method: "agents.catalog",
     }));
-    const solo = catalog.systemAgents.find((agent) => agent.id === "solo_agent");
-    expect(solo?.label).toBe("Solo Captain");
-    expect(solo?.modelRef).toBe("explicit-system-model");
-    expect(solo?.overridden).toBe(true);
+    const ora = catalog.systemAgents.find((agent) => agent.id === "ora");
+    expect(ora?.label).toBe("Solo Captain");
+    expect(ora?.modelRef).toBe("explicit-system-model");
+    expect(ora?.overridden).toBe(true);
+    expect(catalog.systemAgents.some((agent) => agent.id === "solo_agent")).toBe(false);
 
     await handle({
       jsonrpc: "2.0",
@@ -256,7 +272,7 @@ describe("custom agent runtime behavior", () => {
       },
     });
 
-    const system = capturedSystems.find((value) => value.includes("System Agent Override: solo_agent")) ?? "";
+    const system = capturedSystems.find((value) => value.includes("System Agent Override: ora")) ?? "";
     expect(system).toContain("Answer as the overridden solo captain.");
     expect(system).toContain("file.read");
     expect(system).not.toContain("web.search");
@@ -272,8 +288,8 @@ describe("custom agent runtime behavior", () => {
       id: 5,
       method: "agents.catalog",
     }));
-    expect(resetCatalog.systemAgents.find((agent) => agent.id === "solo_agent")?.overridden).toBe(false);
-    expect(fs.existsSync(soloOverrideDir)).toBe(false);
+    expect(resetCatalog.systemAgents.find((agent) => agent.id === "ora")?.overridden).toBe(false);
+    expect(fs.existsSync(oraOverrideDir)).toBe(false);
   });
 
   it("propagates the selected custom agent persona with legacy graph metadata ignored", async () => {
@@ -345,7 +361,7 @@ describe("custom agent runtime behavior", () => {
       },
       profiles: preset.profiles.map((profile) => ({
         ...profile,
-        customAgentId: profile.id === "solo_agent" ? "focused-builder" : profile.customAgentId,
+        customAgentId: profile.id === ORA_ROOT_AGENT_ID ? "focused-builder" : profile.customAgentId,
       })),
     };
     const { systemPreset: _systemPreset, createdAt: _createdAt, updatedAt: _updatedAt, ...payload } = mode;

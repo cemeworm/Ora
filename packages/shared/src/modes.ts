@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
-import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -590,11 +590,11 @@ const CANONICAL_AGENT_SOULS: Record<string, string> = {
     "Boundary: do not invent missing results, hide failed stages, or present unverified bus messages as settled conclusions.",
     "Output: answer in the user's requested style, cite the evidence or missing signal, state residual risk, and make the next useful action clear.",
   ].join("\n"),
-  solo_agent: [
-    "You are Solo Agent, Ora's direct accountable worker.",
-    "Responsibility: own straightforward work end-to-end with the available tools and produce a useful final answer without extra delegation.",
-    "Boundary: do not simulate a team, over-plan simple requests, or proceed through missing input that materially changes correctness.",
-    "Output: keep scope tight, complete the requested task, include essential verification or reasoning, and surface uncertainty when review would matter.",
+  [ORA_ROOT_AGENT_ID]: [
+    "You are Ora, the root conversation agent for Ora.",
+    "Responsibility: receive the user's message first, decide whether clarification or routing is needed, hand work to mode agents when useful, observe delegated progress, and author the final user-facing answer.",
+    "Boundary: do not pretend mode-internal work is your private reasoning, do not hide material uncertainty, and do not delegate simple single-agent work to a fake teammate.",
+    "Output: keep the user's goal central, make handoffs and final answers concrete, include essential verification or evidence, and surface residual risk when it matters.",
   ].join("\n"),
   release_reviewer: [
     "You are Release Reviewer, Ora's package and promotion safety gate.",
@@ -1785,7 +1785,7 @@ function createSingleAgentModeSpec(): ModeSpec {
         template: "synthesize",
         label: "Respond",
         title: "Respond",
-        ownerAgentId: "solo_agent",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "Complete the user request directly and make the final answer the only assistant body.",
         config: {},
@@ -1819,9 +1819,9 @@ function createSingleAgentModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("balanced"),
     profiles: [
       profile(
-        "solo_agent",
-        "Solo Agent",
-        "Own the task end-to-end without delegating to additional workers.",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
+        "Own the user conversation end-to-end, including direct single-agent work, without delegating to additional workers.",
         "orchestrator_subagent",
         ["session", "project"],
       ),

@@ -96,7 +96,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
@@ -2341,6 +2341,7 @@ class LocalJsonRpcRuntime {
 
   private systemAgentIds(): Set<string> {
     return new Set([
+      ORA_ROOT_AGENT_ID,
       ...MVP_MODES.flatMap((mode) => mode.profiles.map((profile) => profile.id)),
       ...Object.keys(SYSTEM_AGENT_ID_ALIASES),
     ]);
@@ -2709,6 +2710,8 @@ class LocalJsonRpcRuntime {
       customUsages.set(normalized, current);
     };
 
+    systemProfiles.set(ORA_ROOT_AGENT_ID, this.rootAgentCatalogItem());
+
     for (const mode of MVP_MODES.filter((candidate) => candidate.visibility !== "internal")) {
       const effectiveMode = this.applySystemAgentOverridesToMode(mode);
       for (const profile of mode.profiles) {
@@ -2772,6 +2775,39 @@ class LocalJsonRpcRuntime {
           usages: customUsages.get(agent.name) ?? [],
         }))
         .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name)),
+    };
+  }
+
+  private rootAgentCatalogItem(): OraAgentCatalogResult["systemAgents"][number] {
+    const override = this.systemAgentOverrideFor(ORA_ROOT_AGENT_ID);
+    const role = "Root conversation agent, Auto Mode Router initiator, clarification owner, handoff parent, observer, and final responder.";
+    const modelRef = explicitSystemAgentModelRef(override?.modelRef);
+    const usage = (modeId: string, modeLabel: string) => ({
+      modeId,
+      modeLabel,
+      systemPreset: true,
+      profileId: ORA_ROOT_AGENT_ID,
+      profileLabel: ORA_ROOT_AGENT_LABEL,
+    });
+    return {
+      source: "system",
+      id: ORA_ROOT_AGENT_ID,
+      label: override?.label ?? ORA_ROOT_AGENT_LABEL,
+      role: override?.role ?? role,
+      ...(modelRef ? { modelRef } : {}),
+      toolPolicyId: "root.default_policy",
+      toolIds: override?.toolIds ?? [...DEFAULT_AGENT_MODE_TOOL_IDS],
+      skillIds: override?.skillIds ?? [],
+      memoryNamespaces: ["session", "project"],
+      soul: override?.soul ?? "",
+      overridden: override !== undefined,
+      ...(override ? { override } : {}),
+      usages: [
+        usage("global_entry", "Global Entry"),
+        usage("auto_mode_router", "Auto Mode Router"),
+        usage("clarification", "Clarification"),
+        usage("final_response", "Final Response"),
+      ],
     };
   }
 

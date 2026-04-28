@@ -1,5 +1,6 @@
 import {
   ModeSpec,
+  ORA_ROOT_AGENT_ID,
   PatternDefinition,
   RunConfig,
   StateSnapshot,
@@ -7,6 +8,7 @@ import {
   UserTaskInput
 } from "@ora/shared";
 import { AgentProfileRegistry, PlanService, TodoService } from "./capabilities.js";
+import { injectRootAgentTopology, rootAgentProfile } from "./harness/runtime-root-agent.js";
 
 interface BaseSnapshotParams {
   runId: string;
@@ -21,6 +23,14 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
   const startedAt = params.input.createdAt ?? params.clock();
   const planService = new PlanService(params.runId, params.definition);
   const todoService = new TodoService(params.runId, params.clock, planService.list());
+  const topology = injectRootAgentTopology({
+    nodes: params.definition.topology.nodes.map((node) => ({
+      ...node,
+      status: node.kind === "run" ? "running" as const : node.status,
+    })),
+    edges: params.definition.topology.edges,
+  }, params.modeSpec);
+  const profiles = withRootProfile(new AgentProfileRegistry(params.definition).list(params.config.profileIds));
   return StateSnapshotSchema.parse({
     runId: params.runId,
     status: "running",
@@ -29,14 +39,8 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
     modeId: params.modeSpec.id,
     input: params.input,
     config: params.config,
-    topology: {
-      nodes: params.definition.topology.nodes.map((node) => ({
-        ...node,
-        status: node.kind === "run" ? "running" : node.status,
-      })),
-      edges: params.definition.topology.edges,
-    },
-    profiles: new AgentProfileRegistry(params.definition).list(params.config.profileIds),
+    topology,
+    profiles,
     memory: [],
     plan: planService.list(),
     todos: todoService.list(),
@@ -80,6 +84,14 @@ export function createRunningRunSnapshot(params: BaseSnapshotParams & {
   const pattern = params.config.pattern;
   const planService = new PlanService(params.runId, params.definition);
   const todoService = new TodoService(params.runId, params.clock, planService.list());
+  const topology = injectRootAgentTopology({
+    nodes: params.definition.topology.nodes.map((node) => ({
+      ...node,
+      status: node.kind === "run" ? "running" as const : node.status,
+    })),
+    edges: params.definition.topology.edges,
+  }, params.modeSpec);
+  const profiles = withRootProfile(new AgentProfileRegistry(params.definition).list(params.config.profileIds));
   const queueMode = params.definition.coordinationKind === "bus"
     ? "event_bus"
     : params.definition.coordinationKind === "shared_state"
@@ -98,14 +110,8 @@ export function createRunningRunSnapshot(params: BaseSnapshotParams & {
     modeId: params.modeSpec.id,
     input: params.input,
     config: params.config,
-    topology: {
-      nodes: params.definition.topology.nodes.map((node) => ({
-        ...node,
-        status: node.kind === "run" ? "running" : node.status,
-      })),
-      edges: params.definition.topology.edges,
-    },
-    profiles: new AgentProfileRegistry(params.definition).list(params.config.profileIds),
+    topology,
+    profiles,
     memory: [],
     plan: planService.list(),
     todos: todoService.list(),
@@ -139,6 +145,12 @@ export function createRunningRunSnapshot(params: BaseSnapshotParams & {
     modeSpec: params.modeSpec,
     updatedAt: startedAt,
   });
+}
+
+function withRootProfile(profiles: ReturnType<AgentProfileRegistry["list"]>) {
+  return profiles.some((profile) => profile.id === ORA_ROOT_AGENT_ID)
+    ? profiles
+    : [rootAgentProfile(), ...profiles];
 }
 
 export function cancelledRunSnapshot(params: {

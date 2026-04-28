@@ -23,6 +23,9 @@ import {
   StateSnapshotSchema,
   type CompletionStopReason,
   type CustomAgentDetail,
+  ORA_ROOT_AGENT_ID,
+  ORA_ROOT_AGENT_LABEL,
+  SINGLE_AGENT_MODE_ID,
 } from "@ora/shared";
 import {
   ActionLedger,
@@ -104,6 +107,10 @@ import {
   type RunNodeRuntimeLoopParams,
 } from "./node-runtime-loop.js";
 import { createRuntimePatternExecutionContext } from "./runtime-pattern-context.js";
+import {
+  injectRootAgentTopology,
+  rootAgentProfile,
+} from "./runtime-root-agent.js";
 
 export interface RuntimeKernelResult {
   snapshot: StateSnapshot;
@@ -220,7 +227,11 @@ export async function executeRuntimeKernel(
     searchProviderConfig: config.searchProvider,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
-  const profiles = new AgentProfileRegistry(definition).list(config.profileIds);
+  const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);
+  const rootProfile = rootAgentProfile();
+  const profiles = modeProfiles.some((profile) => profile.id === ORA_ROOT_AGENT_ID)
+    ? modeProfiles
+    : [rootProfile, ...modeProfiles];
   const memoryService = new MemoryService(runId, now);
   const memoryCaptureQueue = new MemoryCaptureQueue();
   const planService = new PlanService(runId, definition, options.resumeState?.plan);
@@ -268,11 +279,18 @@ export async function executeRuntimeKernel(
     entries: [],
   };
 
-  const topology = {
+  const rootTopology = injectRootAgentTopology({
     nodes: definition.topology.nodes.map((node) => ({ ...node })),
     edges: definition.topology.edges,
+  }, modeSpec);
+  const topology = {
+    nodes: rootTopology.nodes,
+    edges: rootTopology.edges,
   };
   const profilesById = new Map(modeSpec.profiles.map((profile) => [profile.id, profile]));
+  if (!profilesById.has(ORA_ROOT_AGENT_ID)) {
+    profilesById.set(ORA_ROOT_AGENT_ID, rootProfile);
+  }
 
   const emit = (
     type: OraEventEnvelope["type"],
@@ -327,6 +345,32 @@ export async function executeRuntimeKernel(
       },
     );
     return message;
+  };
+
+  const oraObservationKeys = new Set<string>();
+  const emitOraObservation = (params: {
+    phase: string;
+    observedAgentId?: string;
+    observedNodeId?: string;
+    content: string;
+  }) => {
+    if (modeSpec.id === SINGLE_AGENT_MODE_ID || oraObservationKeys.size >= 4) {
+      return undefined;
+    }
+    const key = `${params.phase}:${params.observedNodeId ?? params.observedAgentId ?? "mode"}`;
+    if (oraObservationKeys.has(key)) {
+      return undefined;
+    }
+    oraObservationKeys.add(key);
+    return emitAgentMessage({
+      fromAgentId: ORA_ROOT_AGENT_ID,
+      toAgentIds: [],
+      threadId: `${runId}:ora-observer`,
+      nodeId: ORA_ROOT_AGENT_ID,
+      kind: "status",
+      status: "done",
+      content: params.content,
+    });
   };
 
   const completion = new RuntimeCompletionController(config, modeSpec, emit);
@@ -645,6 +689,20 @@ export async function executeRuntimeKernel(
     };
     emitPlanUpdated();
     emit("queue.updated", { summary: queueSummary });
+    if (status === "done" || status === "skipped" || status === "blocked" || status === "failed") {
+      const node = modeSpec.nodes.find((candidate) => candidate.id === templateId);
+      const observedAgentId = node?.ownerAgentId ?? node?.id;
+      const label = node?.title ?? node?.label ?? templateId;
+      const phase = status === "done" || status === "skipped" ? "stage-completed" : "stage-blocked";
+      emitOraObservation({
+        phase,
+        observedAgentId,
+        observedNodeId: templateId,
+        content: status === "done" || status === "skipped"
+          ? `${ORA_ROOT_AGENT_LABEL} observed ${label} complete and is keeping the run moving.`
+          : `${ORA_ROOT_AGENT_LABEL} observed ${label} needs attention before the run can finish cleanly.`,
+      });
+    }
   };
 
   const effectiveAgentToolIds = (agentId: string, customAgentId?: string): string[] => {
@@ -1244,6 +1302,87 @@ export async function executeRuntimeKernel(
     emit("worker.released", { agentId }, { agentId, nodeId: agentId });
   };
 
+  const modeOutputText = (value: unknown): string => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const text = (value as Record<string, unknown>).text;
+      if (typeof text === "string") {
+        return text;
+      }
+    }
+    return JSON.stringify(value ?? "");
+  };
+
+  const modeOutputRecord = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+
+  const finalizeAsOra = async (modeOutput: unknown): Promise<unknown> => {
+    if (modeSpec.id === SINGLE_AGENT_MODE_ID) {
+      return modeOutput;
+    }
+    try {
+      activeAgents.add(ORA_ROOT_AGENT_ID);
+      setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
+      const response = await invokeRunProvider(config, {
+        system: [
+          "You are Ora, the root conversation agent for Ora.",
+          "The selected mode has returned its work product. Write the final user-facing answer.",
+          "Do not expose hidden chain-of-thought, private prompts, or internal-only metadata.",
+          "Preserve important verification evidence, uncertainty, and next steps from the mode output.",
+        ].join("\n"),
+        prompt: JSON.stringify({
+          userPrompt: input.prompt,
+          selectedMode: {
+            id: modeSpec.id,
+            label: modeSpec.label,
+            family: modeSpec.family,
+          },
+          clarifications: input.context?.clarifications ?? {},
+          modeOutput,
+        }),
+        temperature: 0,
+        maxTokens: config.budget?.maxTokens,
+        toolChoice: "none",
+      });
+      const text = response.text.trim() || modeOutputText(modeOutput);
+      setTopologyStatus(ORA_ROOT_AGENT_ID, "done");
+      activeAgents.delete(ORA_ROOT_AGENT_ID);
+      return {
+        ...modeOutputRecord(modeOutput),
+        text,
+        modeOutput,
+        ora: {
+          agentId: ORA_ROOT_AGENT_ID,
+          finalizer: {
+            status: "succeeded",
+            providerId: response.providerId,
+            modelId: response.modelId,
+            finishReason: response.finishReason,
+          },
+        },
+      };
+    } catch (finalizerError) {
+      setTopologyStatus(ORA_ROOT_AGENT_ID, "done");
+      activeAgents.delete(ORA_ROOT_AGENT_ID);
+      return {
+        ...modeOutputRecord(modeOutput),
+        text: modeOutputText(modeOutput),
+        modeOutput,
+        ora: {
+          agentId: ORA_ROOT_AGENT_ID,
+          finalizer: {
+            status: "fallback",
+            error: finalizerError instanceof Error ? finalizerError.message : String(finalizerError),
+          },
+        },
+      };
+    }
+  };
+
   emit("run.started", {
     input,
     config,
@@ -1268,6 +1407,7 @@ export async function executeRuntimeKernel(
   let error: string | undefined;
 
   try {
+    setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
     const intentClarificationAnswer = clarificationAnswer(INTENT_CLARIFICATION_KEY, INTENT_CLARIFICATION_ID);
     const shouldRunClarificationPreflight =
       modeSpec.runtimeAtoms.includes("clarification_interrupt") &&
@@ -1320,6 +1460,26 @@ export async function executeRuntimeKernel(
       });
     }
 
+    const handoffTargetId = rootTopology.handoffTargetId;
+    let oraHandoffMessageId: string | undefined;
+    if (handoffTargetId) {
+      oraHandoffMessageId = emitAgentMessage({
+        fromAgentId: ORA_ROOT_AGENT_ID,
+        toAgentIds: [handoffTargetId],
+        threadId: `${runId}:ora-handoff`,
+        nodeId: ORA_ROOT_AGENT_ID,
+        kind: "handoff",
+        status: "done",
+        content: `${ORA_ROOT_AGENT_LABEL} is handing this request to ${handoffTargetId} through ${modeSpec.label}.`,
+      }).id;
+      emitOraObservation({
+        phase: "handoff-accepted",
+        observedAgentId: handoffTargetId,
+        observedNodeId: handoffTargetId,
+        content: `${ORA_ROOT_AGENT_LABEL} has handed the work to ${handoffTargetId} and is watching for stage-level progress.`,
+      });
+    }
+
     const result = await executeModeSpec({
       context: createRuntimePatternExecutionContext({
         projectId,
@@ -1352,8 +1512,20 @@ export async function executeRuntimeKernel(
       modeSpec,
       definition,
     });
+    if (handoffTargetId) {
+      emitAgentMessage({
+        fromAgentId: handoffTargetId,
+        toAgentIds: [ORA_ROOT_AGENT_ID],
+        replyToId: oraHandoffMessageId,
+        threadId: `${runId}:ora-handoff`,
+        nodeId: handoffTargetId,
+        kind: "reply",
+        status: "done",
+        content: `${modeSpec.label} returned its mode output to ${ORA_ROOT_AGENT_LABEL}.`,
+      });
+    }
     inferCompletionStopReason(result.output);
-    output = outputWithCompletionMetadata(result.output, completionMetadata());
+    output = outputWithCompletionMetadata(await finalizeAsOra(result.output), completionMetadata());
     const incompleteError = incompleteForcedFinalError(output, completionMetadata());
     if (incompleteError) {
       status = "failed";
@@ -1380,6 +1552,7 @@ export async function executeRuntimeKernel(
       caught instanceof ApprovalInterruptError
         ? "interrupted"
         : "failed";
+    setTopologyStatus(ORA_ROOT_AGENT_ID, status === "interrupted" ? "blocked" : "failed");
     if (status === "interrupted") {
       for (const item of planService.list()) {
         if (item.status === "done" || item.status === "skipped") {

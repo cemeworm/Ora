@@ -4,9 +4,13 @@ import {
   CustomAgentCatalogItemSchema,
   CustomAgentDetail,
   CustomAgentSummary,
+  DEFAULT_AGENT_MODE_TOOL_IDS,
   ModeSpec,
+  ORA_ROOT_AGENT_ID,
+  ORA_ROOT_AGENT_LABEL,
   SystemAgentOverride,
-  SYSTEM_AGENT_ID_ALIASES
+  SYSTEM_AGENT_ID_ALIASES,
+  SystemAgentCatalogItem
 } from "@ora/shared";
 import { CustomAgentFileStore, SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { ModeSpecFileStore } from "./modes.js";
@@ -101,6 +105,7 @@ export function systemAgentIds(modeStore: ModeSpecFileStore): Set<string> {
       .filter((mode) => mode.systemPreset)
       .flatMap((mode) => mode.profiles.map((profile) => profile.id)),
   );
+  ids.add(ORA_ROOT_AGENT_ID);
   for (const legacyId of Object.keys(SYSTEM_AGENT_ID_ALIASES)) {
     ids.add(legacyId);
   }
@@ -144,6 +149,8 @@ export function buildAgentCatalog(params: {
     }
     customUsages.set(normalized, current);
   };
+
+  systemProfiles.set(ORA_ROOT_AGENT_ID, rootAgentCatalogItem(systemAgentOverrideStore));
 
   for (const mode of rawModes.filter((candidate) => candidate.systemPreset)) {
     const effectiveMode = effectiveModeById.get(mode.id) ?? mode;
@@ -215,4 +222,39 @@ export function buildAgentCatalog(params: {
 
 function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
   return modelRef === "local/smoke-model" ? undefined : modelRef;
+}
+
+function rootAgentCatalogItem(systemAgentOverrideStore: SystemAgentOverrideFileStore): SystemAgentCatalogItem {
+  const override = systemAgentOverrideStore.get(ORA_ROOT_AGENT_ID);
+  const role = "Root conversation agent, Auto Mode Router initiator, clarification owner, handoff parent, observer, and final responder.";
+  return {
+    source: "system",
+    id: ORA_ROOT_AGENT_ID,
+    label: override?.label ?? ORA_ROOT_AGENT_LABEL,
+    role: override?.role ?? role,
+    ...(explicitSystemAgentModelRef(override?.modelRef) ? { modelRef: explicitSystemAgentModelRef(override?.modelRef) } : {}),
+    toolPolicyId: "root.default_policy",
+    toolIds: override?.toolIds ?? [...DEFAULT_AGENT_MODE_TOOL_IDS],
+    skillIds: override?.skillIds ?? [],
+    memoryNamespaces: ["session", "project"],
+    soul: override?.soul ?? "",
+    overridden: override !== undefined,
+    ...(override ? { override } : {}),
+    usages: [
+      rootAgentUsage("global_entry", "Global Entry"),
+      rootAgentUsage("auto_mode_router", "Auto Mode Router"),
+      rootAgentUsage("clarification", "Clarification"),
+      rootAgentUsage("final_response", "Final Response"),
+    ],
+  };
+}
+
+function rootAgentUsage(modeId: string, modeLabel: string) {
+  return {
+    modeId,
+    modeLabel,
+    systemPreset: true,
+    profileId: ORA_ROOT_AGENT_ID,
+    profileLabel: ORA_ROOT_AGENT_LABEL,
+  };
 }

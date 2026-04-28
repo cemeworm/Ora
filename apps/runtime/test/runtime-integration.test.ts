@@ -25,6 +25,7 @@ import {
   MemoryRecordSchema,
   PlanItemSchema,
   PolicyDecisionSchema,
+  ORA_ROOT_AGENT_ID,
   SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema
 } from "@ora/shared";
@@ -514,7 +515,7 @@ describe("LocalRunStore", () => {
     expect(publishedInput?.content.endsWith("...")).toBe(false);
   });
 
-  it("does not emit content-area agent messages for orchestrator subagent runs", async () => {
+  it("emits root Ora handoff and observer messages for orchestrator subagent runs", async () => {
     const handle = createRuntimeMethodHandler(createStore());
     const result = await handle({
       jsonrpc: "2.0",
@@ -533,7 +534,21 @@ describe("LocalRunStore", () => {
       params: { runId: result.runId }
     }));
 
-    expect(state.agentMessages).toEqual([]);
+    expect(state.agentMessages[0]).toMatchObject({
+      fromAgentId: ORA_ROOT_AGENT_ID,
+      toAgentIds: ["orchestrator"],
+      kind: "handoff",
+    });
+    expect(state.agentMessages.some((message) =>
+      message.fromAgentId === ORA_ROOT_AGENT_ID &&
+      message.kind === "status" &&
+      message.content.includes("observed")
+    )).toBe(true);
+    expect(state.agentMessages.some((message) =>
+      message.fromAgentId === "orchestrator" &&
+      message.toAgentIds.includes(ORA_ROOT_AGENT_ID) &&
+      message.kind === "reply"
+    )).toBe(true);
   });
 
   it("injects custom agent persona overlays from mode node bindings", async () => {

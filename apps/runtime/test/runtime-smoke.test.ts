@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
+import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
 import { summarizeNarratorProgressPayload } from "../src/harness/runtime-prompts.js";
@@ -160,7 +160,7 @@ describe("Ora runtime smoke path", () => {
       expect(blocked.pendingClarifications).toHaveLength(1);
       expect(blocked.pendingClarifications[0]).toMatchObject({
         key: "intent_guard",
-        nodeId: "intent_guard",
+        nodeId: ORA_ROOT_AGENT_ID,
       });
       expect(blocked.pendingClarifications[0]?.question).toContain("角色是清算通道方、收单机构还是跨境商户");
       expect(blocked.pendingClarifications[0]?.question).toContain("月交易额、日单量、商户数、牌照/地区范围");
@@ -438,7 +438,7 @@ describe("Ora runtime smoke path", () => {
     expect(state.events.map((event) => event.seq)).toEqual([...Array(state.events.length).keys()]);
     expect(state.checkpoints).toHaveLength(1);
     expect(state.topology.nodes.length).toBeGreaterThan(1);
-    expect(state.profiles.map((profile) => profile.id)).toEqual(["generator", "verifier"]);
+    expect(state.profiles.map((profile) => profile.id)).toEqual([ORA_ROOT_AGENT_ID, "generator", "verifier"]);
     expect(state.actions.length).toBeGreaterThanOrEqual(2);
     expect(state.actions.every((action) => action.status === "succeeded")).toBe(true);
     expect(state.policyDecisions).toEqual([]);
@@ -3803,6 +3803,7 @@ describe("Ora runtime smoke path", () => {
     expect(state.modeSpec?.id).toBe(DEERFLOW_HARNESS_MODE_ID);
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.profiles.map((profile) => profile.id)).toEqual([
+      ORA_ROOT_AGENT_ID,
       "orchestrator",
       "researcher",
       "reviewer",
@@ -3847,12 +3848,12 @@ describe("Ora runtime smoke path", () => {
 
     expect(state.modeId).toBe("single_agent");
     expect(state.pattern).toBe("orchestrator_subagent");
-    expect(state.profiles.map((profile) => profile.id)).toEqual(["solo_agent"]);
+    expect(state.profiles.map((profile) => profile.id)).toEqual([ORA_ROOT_AGENT_ID]);
     expect(state.memory.some((record) => record.namespace.join(":").startsWith("session:local-project:single_agent"))).toBe(true);
     expect(state.output).toMatchObject({
       modeId: "single_agent",
       agent: {
-        id: "solo_agent"
+        id: ORA_ROOT_AGENT_ID
       }
     });
   });

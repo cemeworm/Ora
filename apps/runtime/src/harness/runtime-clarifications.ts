@@ -1,4 +1,6 @@
 import {
+  ORA_ROOT_AGENT_ID,
+  ORA_ROOT_AGENT_LABEL,
   type OraEventEnvelope,
   type PendingClarification,
   PendingClarificationSchema,
@@ -9,8 +11,8 @@ import { ClarificationInterruptError } from "./runtime-interrupts.js";
 
 export const INTENT_CLARIFICATION_ID = "clarification:intent_guard";
 export const INTENT_CLARIFICATION_KEY = "intent_guard";
-export const INTENT_CLARIFICATION_NODE_ID = "intent_guard";
-export const INTENT_CLARIFICATION_NODE_LABEL = "Clarify request";
+export const INTENT_CLARIFICATION_NODE_ID = ORA_ROOT_AGENT_ID;
+export const INTENT_CLARIFICATION_NODE_LABEL = ORA_ROOT_AGENT_LABEL;
 
 const INTENT_CLARIFICATION_MAX_TOKENS = 220;
 
@@ -21,7 +23,7 @@ export async function requestIntentClarificationQuestion(
   try {
     const response = await invokeRunProvider(config, {
       system: [
-        "You are Ora's clarification preflight for a native AI agent.",
+        "You are Ora, the root conversation agent for Ora.",
         "Decide whether the user's request is materially ambiguous before the agent uses tools or answers.",
         "Ask for clarification only when the referent, requested action, or critical constraints are unclear enough that proceeding would likely answer the wrong target, take the wrong action, or create a costly mistake.",
         "Do not ask for clarification for ordinary ambiguity about style, wording, optimization preference, or low-cost defaults. In those cases the agent can proceed with a brief assumption.",
@@ -127,7 +129,7 @@ export async function ensureRuntimeClarification(
           answer: answered,
           mode: "resume",
         },
-        { nodeId: params.nodeId },
+        { nodeId: params.nodeId, agentId: params.nodeId },
       );
     }
     return answered;
@@ -147,7 +149,7 @@ export async function ensureRuntimeClarification(
       clarification,
       pending: deps.pendingClarifications.length,
     },
-    { nodeId: params.nodeId },
+    { nodeId: params.nodeId, agentId: params.nodeId },
   );
   if (params.narrate !== false) {
     await deps.emitProgressNarration({

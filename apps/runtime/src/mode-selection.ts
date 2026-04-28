@@ -8,6 +8,7 @@ import {
   ModeSpec,
   PatternDefinition,
   ProviderConfig,
+  ORA_ROOT_AGENT_ID,
   RunConfig,
   RunConfigSchema,
   SessionSummary,
@@ -103,11 +104,19 @@ export async function resolveModeSelection(
     approvalMode: resolvedApprovalMode,
     skillIds,
     toolIds,
-    metadata: {
-      ...parsed.metadata,
-      modeId: modeSpec.id,
-      effectiveStrategy,
-      ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
+      metadata: {
+        ...parsed.metadata,
+        modeId: modeSpec.id,
+        oraEntry: {
+          agentId: ORA_ROOT_AGENT_ID,
+          decision: parsed.modeSelection === "auto" ? "route" : "proceed",
+          status: autoRoute?.metadata.status ?? "proceed",
+          selectedModeId: modeSpec.id,
+          reason: autoRoute?.metadata.reason ?? "Manual mode selection proceeds with the requested mode.",
+          ...(autoRoute?.metadata.handoffSummary ? { handoffSummary: autoRoute.metadata.handoffSummary } : {}),
+        },
+        effectiveStrategy,
+        ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
       ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
       ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
     },
@@ -237,11 +246,13 @@ async function routeAutoMode(
     : candidates[0]?.id ?? config.pattern;
   const fallback = (reason: string, detail?: unknown) => ({
     modeId: fallbackModeId,
-    metadata: {
+      metadata: {
+      entryAgentId: ORA_ROOT_AGENT_ID,
       selectedModeId: fallbackModeId,
       confidence: 0,
       reason,
       status: "fallback",
+      handoffSummary: reason,
       detail,
     },
   });
@@ -253,7 +264,7 @@ async function routeAutoMode(
   try {
     const response = await invokeRunProvider(config, {
       system: [
-        "You are Ora's agent mode router.",
+        "You are Ora, Ora's root conversation agent and agent mode router.",
         "Choose exactly one modeId from the provided candidates for the next run.",
         "Return only compact JSON with keys modeId, confidence, and reason.",
         "confidence must be a number from 0 to 1.",
@@ -291,6 +302,8 @@ async function routeAutoMode(
         confidence: parsed.confidence,
         reason: parsed.reason,
         status: "selected",
+        entryAgentId: ORA_ROOT_AGENT_ID,
+        handoffSummary: parsed.reason,
       },
     };
   } catch (error) {

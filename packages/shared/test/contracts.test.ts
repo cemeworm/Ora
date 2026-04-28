@@ -260,13 +260,13 @@ describe("Ora shared contracts", () => {
     expect([...systemProfiles.keys()].sort()).toEqual([
       "builder",
       "generator",
+      "ora",
       "orchestrator",
       "release_reviewer",
       "researcher",
       "responder",
       "reviewer",
       "router",
-      "solo_agent",
       "team_lead",
       "verifier",
     ]);
