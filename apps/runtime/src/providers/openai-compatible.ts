@@ -42,6 +42,7 @@ function createResponsesPayload(config: ProviderConfig, request: Parameters<Mode
     {
       model: config.modelId,
       input: buildResponsesInput(request),
+      ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
     },
     "max_output_tokens",
     request.maxTokens ?? config.maxTokens
@@ -97,6 +98,7 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     {
       model: config.modelId,
       messages: chatMessages,
+      ...(request.reasoningEffort ? { reasoning_effort: request.reasoningEffort } : {}),
     },
     "max_tokens",
     request.maxTokens ?? config.maxTokens

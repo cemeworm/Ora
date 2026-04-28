@@ -49,6 +49,7 @@ export interface WorkbenchState {
   selectedCustomAgentId: string | undefined;
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
+  sessionPromptTexts: Record<string, string>;
   pendingRun: { sessionId: string; prompt: string; createdAt: number } | undefined;
   isLoading: boolean;
   busyCommand: string | undefined;
@@ -60,7 +61,6 @@ export interface WorkbenchState {
   detailDrawer: "trails" | "documents" | undefined;
   artifactPanelOpen: boolean;
   selectedArtifactId: string | undefined;
-  inputMode: "flash" | "thinking" | "pro" | "ultra";
   language: AppLanguage;
 }
 
@@ -131,7 +131,6 @@ export type WorkbenchAction =
   | { type: "TOGGLE_ARTIFACT_PANEL" }
   | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
   | { type: "CLOSE_ARTIFACT_PANEL" }
-  | { type: "SET_INPUT_MODE"; mode: WorkbenchState["inputMode"] }
   | { type: "SET_LANGUAGE"; language: AppLanguage };
 
 const initialSelectedPattern = CoordinationPatternSchema.options[0] as CoordinationPattern;
@@ -169,6 +168,7 @@ export const initialWorkbenchState: WorkbenchState = {
     detail: "Connecting to the Ora runtime bridge.",
   },
   promptText: "",
+  sessionPromptTexts: {},
   pendingRun: undefined,
   isLoading: false,
   busyCommand: undefined,
@@ -180,7 +180,6 @@ export const initialWorkbenchState: WorkbenchState = {
   detailDrawer: undefined,
   artifactPanelOpen: false,
   selectedArtifactId: undefined,
-  inputMode: "pro",
   language: readStoredLanguage(),
 };
 
@@ -212,6 +211,29 @@ function cacheSessionDetail(cache: Record<string, OraSessionDetail>, detail: Ora
     ...cache,
     [detail.session.sessionId]: detail,
   };
+}
+
+function sessionPromptText(state: WorkbenchState, sessionId: string | undefined): string {
+  return sessionId ? (state.sessionPromptTexts[sessionId] ?? "") : "";
+}
+
+function setSessionPromptText(state: WorkbenchState, text: string): Record<string, string> {
+  if (!state.selectedSessionId) {
+    return state.sessionPromptTexts;
+  }
+  if (!text) {
+    const { [state.selectedSessionId]: _cleared, ...rest } = state.sessionPromptTexts;
+    return rest;
+  }
+  return {
+    ...state.sessionPromptTexts,
+    [state.selectedSessionId]: text,
+  };
+}
+
+function clearSessionPromptText(state: WorkbenchState, sessionId: string): Record<string, string> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionPromptTexts;
+  return rest;
 }
 
 function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraModeSpec | undefined {
@@ -514,6 +536,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionDetailsById: {},
         modes: [],
         promptText: "",
+        sessionPromptTexts: {},
         pendingRun: undefined,
         isLoading: true,
         busyCommand: undefined,
@@ -572,6 +595,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedProviderId: snapshot?.config.providerId ?? state.selectedProviderId,
         selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
         selectedBeatId: snapshot?.events.at(-1)?.id,
+        promptText: sessionPromptText(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
         pendingRun: undefined,
         isLoading: false,
@@ -593,6 +617,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return {
         ...state,
         sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
+        sessionPromptTexts: clearSessionPromptText(state, action.sessionId),
+        promptText: state.selectedSessionId === action.sessionId ? "" : state.promptText,
         projects: archivedSession?.projectId
           ? state.projects.map((project) =>
             project.projectId === archivedSession.projectId
@@ -785,6 +811,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedModeId: snapshot?.modeId ?? session?.latestModeId ?? state.selectedModeId,
         selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId: snapshot?.config.providerId ?? session?.latestProviderId ?? state.selectedProviderId,
+        promptText: sessionPromptText(state, action.sessionId),
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
@@ -850,10 +877,20 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return { ...state, selectedNodeId: action.nodeId };
 
     case "SET_PROMPT":
-      return { ...state, promptText: action.text };
+      return {
+        ...state,
+        promptText: action.text,
+        sessionPromptTexts: setSessionPromptText(state, action.text),
+      };
 
     case "CLEAR_PROMPT_IF_MATCH":
-      return state.promptText === action.text ? { ...state, promptText: "" } : state;
+      return state.promptText === action.text && state.selectedSessionId
+        ? {
+            ...state,
+            promptText: "",
+            sessionPromptTexts: clearSessionPromptText(state, state.selectedSessionId),
+          }
+        : state;
 
     case "BEGIN_RUN_REQUEST":
       return {
@@ -904,9 +941,6 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "CLOSE_ARTIFACT_PANEL":
       return { ...state, artifactPanelOpen: false };
-
-    case "SET_INPUT_MODE":
-      return { ...state, inputMode: action.mode };
 
     case "SET_LANGUAGE":
       if (typeof window !== "undefined") {

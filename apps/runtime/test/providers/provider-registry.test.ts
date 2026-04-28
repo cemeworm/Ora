@@ -247,6 +247,40 @@ describe("provider adapters", () => {
     expect(response.finishReason).toBe("tool_calls");
   });
 
+  it("applies OpenAI-compatible reasoning effort when requested", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        reasoning_effort?: string;
+      };
+      expect(body.reasoning_effort).toBe("high");
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Reasoned answer." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "reasoning-openai",
+        type: "openai_compatible",
+        label: "Reasoning OpenAI",
+        modelId: "reasoning-model",
+        baseUrl: "https://reasoning.test/v1",
+        apiKeyEnv: "REASONING_KEY",
+        capabilities: ["chat", "reasoning"],
+        headers: {},
+      },
+      { env: { REASONING_KEY: "test" }, fetchImpl },
+    );
+
+    const response = await provider({
+      prompt: "Think deeply.",
+      reasoningEffort: "high",
+    });
+
+    expect(response.text).toBe("Reasoned answer.");
+  });
+
   it("passes reasoning_content back with OpenAI-compatible chat tool call history", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {

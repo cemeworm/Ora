@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAgentLanes,
+  buildEffectiveStrategySummary,
   buildSemanticTimeline,
   buildToolLedger,
   buildTrailDebugSummary,
@@ -176,6 +177,41 @@ describe("trail debugger view model", () => {
       argsPreview: "{\"name\":\"think\"}",
       resultPreview: "interrupted",
     });
+  });
+
+  it("summarizes degraded effective runtime strategy", () => {
+    const snapshot = baseSnapshot({
+      config: {
+        ...baseSnapshot().config,
+        effectiveStrategy: {
+          sourceModeId: "agent_teams",
+          sourceModeSelection: "manual",
+          thinking: "deep",
+          reasoningEffort: "high",
+          budgetProfile: "deep",
+          budget: { maxTokens: 24000, maxToolCalls: 64, maxRuntimeMs: 600000, maxCostUsd: 5 },
+          planning: "explicit",
+          planningEnabled: true,
+          delegation: "preferred",
+          delegationEnabled: true,
+          providerThinkingEnabled: false,
+          providerPolicyStatus: "degraded",
+          notes: ["Provider 'local-smoke' does not advertise reasoning support."],
+        },
+      },
+    });
+
+    expect(buildEffectiveStrategySummary(snapshot)).toMatchObject({
+      title: "Deep thinking",
+      statusLabel: "Degraded",
+      statusTone: "warning",
+    });
+    expect(collectTrailFindings(snapshot, undefined, undefined, [])).toContainEqual(
+      expect.objectContaining({
+        id: "strategy.provider-degraded",
+        severity: "warning",
+      }),
+    );
   });
 });
 

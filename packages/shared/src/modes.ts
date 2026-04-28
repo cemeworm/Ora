@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
-import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
-import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ResourceBudget } from "./primitives.js";
+import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
 
@@ -201,6 +201,7 @@ export const ModeSpecSchema = z.object({
   profiles: z.array(AgentProfileSchema).min(1),
   runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
   completionPolicy: ModeCompletionPolicySchema.default(COMPLETION_POLICY_PRESETS.balanced),
+  runtimePolicy: ModeRuntimePolicySchema.default(DEFAULT_MODE_RUNTIME_POLICY),
   recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
   memoryPolicy: ModeMemoryPolicySchema.default({}),
   createdAt: z.number().int().nonnegative(),
@@ -287,6 +288,53 @@ const SINGLE_AGENT_RESOURCE_BUDGET: ResourceBudget = {
   ...DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
   maxToolCalls: 64
 };
+
+export const MODE_RUNTIME_POLICY_PRESETS = {
+  fast: ModeRuntimePolicySchema.parse({
+    thinking: "off",
+    reasoningEffort: "none",
+    budgetProfile: "fast",
+    planning: "none",
+    delegation: "none",
+    providerThinking: "disabled",
+  }),
+  balanced: ModeRuntimePolicySchema.parse({
+    thinking: "standard",
+    reasoningEffort: "medium",
+    budgetProfile: "balanced",
+    planning: "light",
+    delegation: "none",
+    providerThinking: "auto",
+  }),
+  verifier: ModeRuntimePolicySchema.parse({
+    thinking: "standard",
+    reasoningEffort: "high",
+    budgetProfile: "balanced",
+    planning: "explicit",
+    delegation: "none",
+    providerThinking: "auto",
+  }),
+  delegated: ModeRuntimePolicySchema.parse({
+    thinking: "deep",
+    reasoningEffort: "high",
+    budgetProfile: "deep",
+    planning: "explicit",
+    delegation: "allowed",
+    providerThinking: "required",
+  }),
+  team: ModeRuntimePolicySchema.parse({
+    thinking: "deep",
+    reasoningEffort: "high",
+    budgetProfile: "deep",
+    planning: "explicit",
+    delegation: "preferred",
+    providerThinking: "required",
+  }),
+} satisfies Record<string, ModeRuntimePolicy>;
+
+export function runtimePolicyForPreset(preset: keyof typeof MODE_RUNTIME_POLICY_PRESETS): ModeRuntimePolicy {
+  return { ...MODE_RUNTIME_POLICY_PRESETS[preset] };
+}
 
 const MODE_FAMILY_RULES: Record<
   CoordinationPattern,
@@ -1340,6 +1388,27 @@ export function getPatternDefinition(pattern: CoordinationPattern): PatternDefin
   return MVP_PATTERN_DEFINITIONS[pattern];
 }
 
+function defaultRuntimePolicyForFamily(family: CoordinationPattern): ModeRuntimePolicy {
+  switch (family) {
+    case "generator_verifier":
+      return runtimePolicyForPreset("verifier");
+    case "agent_teams":
+      return runtimePolicyForPreset("team");
+    case "message_bus":
+    case "shared_state":
+      return {
+        ...runtimePolicyForPreset("balanced"),
+        planning: "explicit",
+      };
+    case "orchestrator_subagent":
+    default:
+      return {
+        ...runtimePolicyForPreset("balanced"),
+        delegation: "allowed",
+      };
+  }
+}
+
 function planEdgesFromTemplate(
   pattern: CoordinationPattern,
   planTemplate: PatternDefinition["planTemplate"],
@@ -1561,6 +1630,7 @@ export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpe
     defaultBudget: definition.defaultBudget,
     profiles: definition.profiles,
     completionPolicy: completionPolicyForPreset("balanced"),
+    runtimePolicy: defaultRuntimePolicyForFamily(pattern),
     createdAt: now,
     updatedAt: now,
   }));
@@ -1669,6 +1739,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
     },
     defaultBudget: SINGLE_AGENT_RESOURCE_BUDGET,
     completionPolicy: completionPolicyForPreset("persistent"),
+    runtimePolicy: runtimePolicyForPreset("delegated"),
     profiles: [
       profile(
         "orchestrator",
@@ -1745,6 +1816,7 @@ function createSingleAgentModeSpec(): ModeSpec {
     },
     defaultBudget: SINGLE_AGENT_RESOURCE_BUDGET,
     completionPolicy: completionPolicyForPreset("decisive"),
+    runtimePolicy: runtimePolicyForPreset("balanced"),
     profiles: [
       profile(
         "solo_agent",
@@ -1842,6 +1914,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
     },
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.agent_teams,
     completionPolicy: completionPolicyForPreset("decisive"),
+    runtimePolicy: runtimePolicyForPreset("team"),
     profiles: [
       profile(
         "orchestrator",
@@ -1963,6 +2036,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
       maxRuntimeMs: 900000,
     },
     completionPolicy: completionPolicyForPreset("persistent"),
+    runtimePolicy: runtimePolicyForPreset("team"),
     profiles: [
       profile(
         "orchestrator",

@@ -146,10 +146,28 @@ describe("provider presets", () => {
       "deepseek-v4-flash",
     ]);
   });
+
+  it("hides the local smoke provider from the user-facing catalog", () => {
+    const catalog = buildProviderCatalog([
+      {
+        id: "local-smoke",
+        type: "local_smoke",
+        label: "Smoke",
+        modelId: "smoke-model",
+        enabled: true,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      },
+    ]);
+
+    expect(catalog.some((entry) => entry.providers.some((provider) => provider.id === "local-smoke"))).toBe(false);
+    expect(catalog.some((entry) => entry.preset.id === "local-smoke")).toBe(false);
+  });
 });
 
 describe("provider options", () => {
-  it("filters disabled providers from normal run options while keeping local smoke", () => {
+  it("filters local smoke from normal run options", () => {
     const providers: OraProviderConfig[] = [
       {
         id: "disabled-openai",
@@ -192,7 +210,23 @@ describe("provider options", () => {
 
     expect(runnableProviderOptions(providers, statuses).map((provider) => provider.id)).toEqual([
       "enabled-openai",
-      "local-smoke",
     ]);
+  });
+
+  it("does not fall back to local smoke when no keyed providers are runnable", () => {
+    const providers: OraProviderConfig[] = [
+      {
+        id: "local-smoke",
+        type: "local_smoke",
+        label: "Smoke",
+        modelId: "smoke-model",
+        enabled: true,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      },
+    ];
+
+    expect(runnableProviderOptions(providers, [])).toEqual([]);
   });
 });

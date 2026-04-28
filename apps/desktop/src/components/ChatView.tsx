@@ -1,4 +1,3 @@
-import { Sparkles } from "lucide-react";
 import type { ModeSelection } from "@ora/shared";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
@@ -17,7 +16,6 @@ import type {
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
 import { useWorkbench } from "../lib/state";
-import { cn } from "../lib/utils";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 
 interface ChatViewProps {
@@ -92,9 +90,7 @@ export function ChatView({
   const activeProvider =
     providerOptions.find(
       (provider) => provider.id === state.selectedProviderId,
-    ) ??
-    allProviders.find((provider) => provider.id === state.selectedProviderId) ??
-    providerOptions[0];
+    );
   return (
     <div className="relative flex h-full min-h-0 w-full bg-transparent">
       <ChatHeader
@@ -108,12 +104,7 @@ export function ChatView({
         {showWelcome && (
           <div className="pointer-events-none absolute left-0 right-0 top-[calc(50%-160px)] z-10 flex justify-center px-6">
             <div className="flex w-full max-w-container-md flex-col items-center gap-2 text-center">
-              <div
-                className={cn(
-                  "flex items-center gap-2 text-2xl font-bold",
-                  state.inputMode === "ultra" && "golden-text",
-                )}
-              >
+              <div className="flex items-center gap-2 text-2xl font-bold">
                 <span>{getWelcomeGreeting(new Date(), state.language)}</span>
               </div>
             </div>
@@ -132,6 +123,7 @@ export function ChatView({
           />
         </div>
         <ChatInput
+          sessionId={selectedSession.id}
           composerPrompt={composerPrompt}
           isLoading={isLoading}
           isRunning={isRunning}
@@ -141,10 +133,6 @@ export function ChatView({
           activeProvider={activeProvider}
           providerOptions={providerOptions}
           selectedCustomAgentId={selectedCustomAgentId}
-          inputMode={state.inputMode}
-          onInputModeChange={(mode) =>
-            dispatch({ type: "SET_INPUT_MODE", mode })
-          }
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}
           onProviderChange={(providerId) =>

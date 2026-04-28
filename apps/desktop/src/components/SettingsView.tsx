@@ -196,7 +196,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const [memoryError, setMemoryError] = useState<string | undefined>();
 
   const providers = state.providerRegistry?.providers ?? [];
-  const selectedProvider = providers.find((provider) => provider.id === state.selectedProviderId) ?? providers[0];
+  const selectedProvider = providers.find((provider) => provider.id === state.selectedProviderId);
   const providerCatalog = useMemo(() => buildProviderCatalog(providers), [providers]);
   const activePreset = useMemo(() => findPresetById(providerDraft.presetId), [providerDraft.presetId]);
   const selectedCatalogEntry = useMemo(
@@ -248,7 +248,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   }, [memoryRecords, state.activeSnapshot?.profiles]);
 
   useEffect(() => {
-    if (!selectedProvider) {
+    if (!selectedProvider || selectedProvider.type === "local_smoke") {
       return;
     }
     const entry = providerCatalog.find((candidate) => candidate.providers.some((provider) => provider.id === selectedProvider.id));

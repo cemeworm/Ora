@@ -6,6 +6,8 @@ import {
   ActionRecordSchema,
   ArtifactRefSchema,
   EvaluationBaselineSchema,
+  EvaluationBlueprintCompileResultSchema,
+  EvaluationBlueprintSchema,
   EvaluationDatasetDetailSchema,
   EvaluationExportResultSchema,
   EvaluationFeedbackRecordSchema,
@@ -968,6 +970,183 @@ describe("LocalRunStore", () => {
     expect(exportResult.content).toContain("case_id,config_id,overall_score");
   });
 
+  it("persists evaluation history in sqlite runtime storage", async () => {
+    const dbPath = path.join(tempDir, "runtime.db");
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
+    const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "evaluation.datasets.import",
+      params: {
+        name: "SQLite Eval Dataset",
+        sourceFileName: "sqlite.json",
+        sourceFormat: "json",
+        content: JSON.stringify([{ id: "case-1", prompt: "SQLite persistence prompt" }]),
+      }
+    }));
+
+    const detail = EvaluationRunDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.runs.start",
+      params: {
+        datasetId: dataset.dataset.id,
+        profileId: "outcome",
+        repetitions: 1,
+        concurrency: 1,
+        configs: [{
+          id: "orchestrator",
+          label: "Orchestrator",
+          runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" },
+        }],
+        metadata: {},
+      }
+    }));
+
+    expect(fs.existsSync(path.join(tempDir, "evaluation-store"))).toBe(false);
+
+    const reloaded = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
+    const runs = EvaluationRunSchema.array().parse(await reloaded({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.runs.list",
+      params: { datasetId: dataset.dataset.id },
+    }));
+    expect(runs.map((run) => run.id)).toContain(detail.run.id);
+
+    const reloadedDetail = EvaluationRunDetailSchema.parse(await reloaded({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "evaluation.runs.get",
+      params: { evaluationRunId: detail.run.id },
+    }));
+    expect(reloadedDetail.attempts).toHaveLength(1);
+    expect(reloadedDetail.dataset.id).toBe(dataset.dataset.id);
+  });
+
+  it("migrates legacy file-backed evaluation history into sqlite storage", async () => {
+    const legacyHandle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: tempDir, clock }));
+    const dataset = EvaluationDatasetDetailSchema.parse(await legacyHandle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "evaluation.datasets.import",
+      params: {
+        name: "Legacy Eval Dataset",
+        sourceFileName: "legacy.json",
+        sourceFormat: "json",
+        content: JSON.stringify([{ id: "case-1", prompt: "Legacy persistence prompt" }]),
+      }
+    }));
+    const detail = EvaluationRunDetailSchema.parse(await legacyHandle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.runs.start",
+      params: {
+        datasetId: dataset.dataset.id,
+        profileId: "outcome",
+        repetitions: 1,
+        concurrency: 1,
+        configs: [{
+          id: "orchestrator",
+          label: "Orchestrator",
+          runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" },
+        }],
+        metadata: {},
+      }
+    }));
+    expect(fs.existsSync(path.join(tempDir, "evaluation-store"))).toBe(true);
+
+    const dbPath = path.join(tempDir, "runtime.db");
+    const sqliteHandle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
+    const migratedRuns = EvaluationRunSchema.array().parse(await sqliteHandle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.runs.list",
+      params: { datasetId: dataset.dataset.id },
+    }));
+    expect(migratedRuns.map((run) => run.id)).toContain(detail.run.id);
+
+    fs.rmSync(path.join(tempDir, "evaluation-store"), { recursive: true, force: true });
+    const reloaded = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
+    const reloadedDetail = EvaluationRunDetailSchema.parse(await reloaded({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "evaluation.runs.get",
+      params: { evaluationRunId: detail.run.id },
+    }));
+    expect(reloadedDetail.dataset.id).toBe(dataset.dataset.id);
+  });
+
+  it("stores and compiles evaluation blueprints through the runtime contract", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "evaluation.datasets.import",
+      params: {
+        name: "Blueprint Dataset",
+        sourceFileName: "blueprint.json",
+        sourceFormat: "json",
+        content: JSON.stringify([{ id: "case-1", prompt: "Route this planning task." }]),
+      },
+    }));
+
+    const draft = EvaluationBlueprintSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.blueprints.generateDraft",
+      params: {
+        goal: "评估 Auto Mode Router 是否还能选择匹配本轮意图的 mode。",
+        datasetId: dataset.dataset.id,
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+      },
+    }));
+    expect(draft.recipe).toBe("auto_router_quality");
+    expect(draft.datasetPlan.datasetId).toBe(dataset.dataset.id);
+
+    const updated = EvaluationBlueprintSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.blueprints.update",
+      params: {
+        blueprintId: draft.id,
+        updates: {
+          status: "ready",
+          title: "Router Blueprint Ready",
+        },
+      },
+    }));
+    expect(updated.status).toBe("ready");
+
+    const listed = EvaluationBlueprintSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "evaluation.blueprints.list",
+      params: { recipe: "auto_router_quality" },
+    }));
+    expect(listed.map((blueprint) => blueprint.id)).toContain(draft.id);
+
+    const fetched = EvaluationBlueprintSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "evaluation.blueprints.get",
+      params: { blueprintId: draft.id },
+    }));
+    expect(fetched.title).toBe("Router Blueprint Ready");
+
+    const compiled = EvaluationBlueprintCompileResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "evaluation.blueprints.compile",
+      params: { blueprintId: draft.id },
+    }));
+    expect(compiled.spec.metadata.blueprintId).toBe(draft.id);
+    expect(compiled.spec.objective?.target).toBe("runtime.mode_selection");
+    expect(compiled.spec.configs[0]?.runConfig.modeSelection).toBe("auto");
+    expect(compiled.spec.configs[0]?.runConfig.metadata?.evaluationRouterOnly).toBe(true);
+  });
+
   it("scores auto mode routing with objective metrics and router-only execution", async () => {
     const handle = createRuntimeMethodHandler(createStore());
     const previousFetch = globalThis.fetch;
@@ -1027,6 +1206,24 @@ describe("LocalRunStore", () => {
                     path: "runtime.autoModeRouter.confidence",
                     value: 0.55,
                   },
+                  {
+                    type: "equals",
+                    path: "runtime.effectiveStrategy.thinking",
+                    value: "deep",
+                    failureTag: "wrong_runtime_strategy",
+                  },
+                  {
+                    type: "equals",
+                    path: "runtime.effectiveStrategy.planning",
+                    value: "explicit",
+                    failureTag: "wrong_runtime_strategy",
+                  },
+                  {
+                    type: "equals",
+                    path: "runtime.effectiveStrategy.providerPolicyStatus",
+                    value: "degraded",
+                    failureTag: "wrong_provider_policy",
+                  },
                 ],
                 preferred: {
                   path: "runtime.modeId",
@@ -1051,10 +1248,15 @@ describe("LocalRunStore", () => {
         params: {
           datasetId: dataset.dataset.id,
           objective: {
-            kind: "classification",
-            target: "runtime.mode_selection",
-            metrics: ["acceptable_match", "exact_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
-            displayColumns: ["runtime.modeId", "runtime.autoModeRouter.confidence"],
+              kind: "classification",
+              target: "runtime.mode_selection",
+              metrics: ["acceptable_match", "exact_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
+            displayColumns: [
+              "runtime.modeId",
+              "runtime.autoModeRouter.confidence",
+              "runtime.effectiveStrategy.thinking",
+              "runtime.effectiveStrategy.providerPolicyStatus",
+            ],
           },
           repetitions: 1,
           concurrency: 1,
@@ -1091,6 +1293,11 @@ describe("LocalRunStore", () => {
       expect(detail.attempts[0]?.score.failureTags).toEqual([]);
       expect(detail.attempts[0]?.observations.runtime).toMatchObject({
         modeId: DEERFLOW_HARNESS_MODE_ID,
+        effectiveStrategy: {
+          thinking: "deep",
+          planning: "explicit",
+          providerPolicyStatus: "degraded",
+        },
       });
       expect(detail.run.caseResults[0]?.metricScores.find((metric) => metric.metricId === "exact_match")?.score).toBe(1);
       expect(detail.run.scorecard.passRate).toBe(1);
@@ -1116,6 +1323,7 @@ describe("LocalRunStore", () => {
       }));
       expect(exportResult.content).toContain("metric_scores_json");
       expect(exportResult.content).toContain("observations_json");
+      expect(exportResult.content).toContain("providerPolicyStatus");
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

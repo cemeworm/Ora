@@ -188,6 +188,18 @@ export function createRuntimeMethodHandler(
         return store.listEvaluationDatasets(request.params);
       case "evaluation.datasets.get":
         return store.getEvaluationDataset(request.params);
+      case "evaluation.blueprints.create":
+        return store.createEvaluationBlueprint(request.params);
+      case "evaluation.blueprints.update":
+        return store.updateEvaluationBlueprint(request.params);
+      case "evaluation.blueprints.list":
+        return store.listEvaluationBlueprints(request.params);
+      case "evaluation.blueprints.get":
+        return store.getEvaluationBlueprint(request.params);
+      case "evaluation.blueprints.compile":
+        return store.compileEvaluationBlueprint(request.params);
+      case "evaluation.blueprints.generateDraft":
+        return store.generateEvaluationBlueprintDraft(request.params);
       case "evaluation.runs.start":
         return store.startEvaluationRun(request.params, async ({ input, config }) => {
           const handle = await store.startRun({ input, config });

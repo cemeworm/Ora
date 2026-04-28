@@ -223,6 +223,7 @@ import {
   curateFeedbackDraft,
   type FeedbackSourceContextDeps
 } from "./feedback-curation.js";
+import { generateEvaluationBlueprintDraftWithProvider } from "./evaluation-blueprint-draft.js";
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -283,7 +284,10 @@ export class LocalRunStore {
       publicRootDir: defaultPublicSkillsDir(dataDir),
       clock: this.clock,
     });
-    this.evaluationStore = new LocalEvaluationStore(defaultEvaluationStoreDir(dataDir), this.clock);
+    this.evaluationStore = new LocalEvaluationStore(
+      this.persistenceType === "sqlite" ? dataDir : defaultEvaluationStoreDir(dataDir),
+      this.clock,
+    );
     this.feedbackLoopStore = new LocalFeedbackLoopStore(defaultFeedbackLoopStoreDir(dataDir), this.clock);
     this.longTermMemory = new LongTermMemoryManager(
       new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
@@ -1216,6 +1220,30 @@ export class LocalRunStore {
 
   getEvaluationDataset(params: unknown) {
     return this.evaluationStore.getDataset(params);
+  }
+
+  createEvaluationBlueprint(params: unknown) {
+    return this.evaluationStore.createBlueprint(params);
+  }
+
+  updateEvaluationBlueprint(params: unknown) {
+    return this.evaluationStore.updateBlueprint(params);
+  }
+
+  listEvaluationBlueprints(params: unknown = {}) {
+    return this.evaluationStore.listBlueprints(params);
+  }
+
+  getEvaluationBlueprint(params: unknown) {
+    return this.evaluationStore.getBlueprint(params);
+  }
+
+  compileEvaluationBlueprint(params: unknown) {
+    return this.evaluationStore.compileBlueprint(params);
+  }
+
+  generateEvaluationBlueprintDraft(params: unknown) {
+    return this.evaluationStore.generateBlueprintDraft(params, generateEvaluationBlueprintDraftWithProvider);
   }
 
   async startEvaluationRun(

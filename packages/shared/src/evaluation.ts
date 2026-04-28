@@ -204,6 +204,187 @@ export const EvaluationSpecSchema = z.object({
 });
 export type EvaluationSpec = z.infer<typeof EvaluationSpecSchema>;
 
+export const EvaluationRecipeIdSchema = z.enum([
+  "mode_comparison",
+  "auto_router_quality",
+  "tool_trajectory",
+  "agent_coordination",
+  "rag_quality",
+  "safety_policy",
+  "custom_spec",
+]);
+export type EvaluationRecipeId = z.infer<typeof EvaluationRecipeIdSchema>;
+
+export const EvaluationSubjectSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("mode_matrix"),
+    modeIds: z.array(z.string().min(1)).default([]),
+  }),
+  z.object({
+    kind: z.literal("auto_router"),
+    fallbackModeId: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("provider_matrix"),
+    providerIds: z.array(z.string().min(1)).default([]),
+    modeId: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("workflow"),
+    modeId: z.string().min(1),
+    workflowVersion: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("tool_planner"),
+    modeId: z.string().min(1).optional(),
+    toolIds: z.array(z.string().min(1)).default([]),
+  }),
+  z.object({
+    kind: z.literal("prompt_or_policy"),
+    modeId: z.string().min(1),
+    policyRef: z.string().min(1).optional(),
+  }),
+]);
+export type EvaluationSubject = z.infer<typeof EvaluationSubjectSchema>;
+
+export const EvaluationDatasetSourceKindSchema = z.enum([
+  "file_import",
+  "feedback_inbox",
+  "trails",
+  "manual",
+  "synthetic",
+  "existing_dataset",
+]);
+export type EvaluationDatasetSourceKind = z.infer<typeof EvaluationDatasetSourceKindSchema>;
+
+export const EvaluationDatasetPlanSchema = z.object({
+  datasetId: z.string().min(1).optional(),
+  sources: z.array(EvaluationDatasetSourceKindSchema).default(["existing_dataset"]),
+  caseRequirements: z.array(z.string().min(1)).default([]),
+  linkedDatasetIds: z.array(z.string().min(1)).default([]),
+  notes: z.string().min(1).optional(),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type EvaluationDatasetPlan = z.infer<typeof EvaluationDatasetPlanSchema>;
+
+export const EvaluationEvaluatorPlanSchema = z.object({
+  metrics: z.array(EvaluationMetricIdSchema).default([]),
+  assertions: z.array(EvaluationAssertionSchema).default([]),
+  judgeRubric: z.string().min(1).optional(),
+  notes: z.string().min(1).optional(),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type EvaluationEvaluatorPlan = z.infer<typeof EvaluationEvaluatorPlanSchema>;
+
+export const EvaluationRunPlanSchema = z.object({
+  profileId: EvaluationProfileKindSchema.default("outcome"),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  providerConfig: z.unknown().optional(),
+  repetitions: z.number().int().positive().max(10).default(1),
+  concurrency: z.number().int().positive().max(32).default(1),
+  baselineId: z.string().min(1).optional(),
+  routerOnly: z.boolean().default(false),
+  gateThreshold: z.number().min(0).max(1).optional(),
+  exportFormats: z.array(z.enum(["json", "csv"])).default(["json"]),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type EvaluationRunPlan = z.infer<typeof EvaluationRunPlanSchema>;
+
+export const EvaluationReviewPlanSchema = z.object({
+  emphasis: z.array(z.string().min(1)).default([]),
+  failureTags: z.array(z.string().min(1)).default([]),
+  includeTraceLinks: z.boolean().default(true),
+  recommendedActions: z.array(z.string().min(1)).default([]),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type EvaluationReviewPlan = z.infer<typeof EvaluationReviewPlanSchema>;
+
+export const EvaluationBlueprintStatusSchema = z.enum(["draft", "ready", "archived"]);
+export type EvaluationBlueprintStatus = z.infer<typeof EvaluationBlueprintStatusSchema>;
+
+export const EvaluationBlueprintSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  goal: z.string().min(1),
+  recipe: EvaluationRecipeIdSchema,
+  target: EvaluationTargetSchema,
+  subject: EvaluationSubjectSchema,
+  datasetPlan: EvaluationDatasetPlanSchema,
+  evaluatorPlan: EvaluationEvaluatorPlanSchema,
+  runPlan: EvaluationRunPlanSchema,
+  reviewPlan: EvaluationReviewPlanSchema,
+  status: EvaluationBlueprintStatusSchema.default("draft"),
+  assumptions: z.array(z.string().min(1)).default([]),
+  missingInformation: z.array(z.string().min(1)).default([]),
+  linkedRunIds: z.array(z.string().min(1)).default([]),
+  schemaVersion: z.literal(1).default(1),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type EvaluationBlueprint = z.infer<typeof EvaluationBlueprintSchema>;
+
+export const EvaluationBlueprintCreateParamsSchema = EvaluationBlueprintSchema.omit({
+  id: true,
+  schemaVersion: true,
+  createdAt: true,
+  updatedAt: true,
+}).partial({
+  status: true,
+  assumptions: true,
+  missingInformation: true,
+  linkedRunIds: true,
+});
+export type EvaluationBlueprintCreateParams = z.infer<typeof EvaluationBlueprintCreateParamsSchema>;
+
+export const EvaluationBlueprintUpdateParamsSchema = z.object({
+  blueprintId: z.string().min(1),
+  updates: EvaluationBlueprintCreateParamsSchema.partial(),
+});
+export type EvaluationBlueprintUpdateParams = z.infer<typeof EvaluationBlueprintUpdateParamsSchema>;
+
+export const EvaluationBlueprintListParamsSchema = z.object({
+  recipe: EvaluationRecipeIdSchema.optional(),
+  status: EvaluationBlueprintStatusSchema.optional(),
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type EvaluationBlueprintListParams = z.infer<typeof EvaluationBlueprintListParamsSchema>;
+
+export const EvaluationBlueprintGetParamsSchema = z.object({
+  blueprintId: z.string().min(1),
+});
+export type EvaluationBlueprintGetParams = z.infer<typeof EvaluationBlueprintGetParamsSchema>;
+
+export const EvaluationBlueprintCompileParamsSchema = z.object({
+  blueprintId: z.string().min(1).optional(),
+  blueprint: EvaluationBlueprintSchema.optional(),
+  datasetId: z.string().min(1).optional(),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  modeIds: z.array(z.string().min(1)).optional(),
+}).refine(
+  (value) => value.blueprintId !== undefined || value.blueprint !== undefined,
+  { message: "Blueprint compile requires blueprintId or blueprint." }
+);
+export type EvaluationBlueprintCompileParams = z.infer<typeof EvaluationBlueprintCompileParamsSchema>;
+
+export const EvaluationBlueprintCompileResultSchema = z.object({
+  blueprint: EvaluationBlueprintSchema,
+  spec: EvaluationSpecSchema,
+  warnings: z.array(z.string().min(1)).default([]),
+  assumptions: z.array(z.string().min(1)).default([]),
+});
+export type EvaluationBlueprintCompileResult = z.infer<typeof EvaluationBlueprintCompileResultSchema>;
+
+export const EvaluationBlueprintGenerateDraftParamsSchema = z.object({
+  goal: z.string().min(1),
+  recipe: EvaluationRecipeIdSchema.optional(),
+  datasetId: z.string().min(1).optional(),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+});
+export type EvaluationBlueprintGenerateDraftParams = z.infer<typeof EvaluationBlueprintGenerateDraftParamsSchema>;
+
 export const EvaluationAttemptStatusSchema = z.enum([
   "queued",
   "running",

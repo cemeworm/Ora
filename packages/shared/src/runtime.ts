@@ -3,7 +3,7 @@ import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PolicyDe
 import { SearchProviderConfigSchema } from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
 import { ModeSpecSchema } from "./modes.js";
-import { AgentProfileSchema, CoordinationKindSchema, CoordinationPatternSchema, ModeCompletionPolicySchema, ModeIdSchema, ResourceBudgetSchema, RunStatusSchema } from "./primitives.js";
+import { AgentProfileSchema, CoordinationKindSchema, CoordinationPatternSchema, ModeBudgetProfileSchema, ModeCompletionPolicySchema, ModeDelegationSchema, ModeIdSchema, ModePlanningSchema, ModeReasoningEffortSchema, ModeThinkingSchema, ResourceBudgetSchema, RunStatusSchema } from "./primitives.js";
 import { ProviderConfigSchema } from "./providers.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 
@@ -19,6 +19,26 @@ export type UserTaskInput = z.infer<typeof UserTaskInputSchema>;
 export const ModeSelectionSchema = z.enum(["manual", "auto"]);
 export type ModeSelection = z.infer<typeof ModeSelectionSchema>;
 
+export const ProviderPolicyStatusSchema = z.enum(["applied", "unsupported", "degraded"]);
+export type ProviderPolicyStatus = z.infer<typeof ProviderPolicyStatusSchema>;
+
+export const EffectiveRunStrategySchema = z.object({
+  sourceModeId: ModeIdSchema,
+  sourceModeSelection: ModeSelectionSchema,
+  thinking: ModeThinkingSchema,
+  reasoningEffort: ModeReasoningEffortSchema.optional(),
+  budgetProfile: ModeBudgetProfileSchema,
+  budget: ResourceBudgetSchema,
+  planning: ModePlanningSchema,
+  planningEnabled: z.boolean(),
+  delegation: ModeDelegationSchema,
+  delegationEnabled: z.boolean(),
+  providerThinkingEnabled: z.boolean(),
+  providerPolicyStatus: ProviderPolicyStatusSchema,
+  notes: z.array(z.string().min(1)).default([]),
+});
+export type EffectiveRunStrategy = z.infer<typeof EffectiveRunStrategySchema>;
+
 export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
   modeId: ModeIdSchema.optional(),
@@ -30,6 +50,7 @@ export const RunConfigSchema = z.object({
   modelRef: z.string().min(1).default("local/smoke-model"),
   budget: ResourceBudgetSchema.optional(),
   completionPolicy: ModeCompletionPolicySchema.optional(),
+  effectiveStrategy: EffectiveRunStrategySchema.optional(),
   skillIds: z.array(z.string().min(1)).default([]),
   toolIds: z.array(z.string().min(1)).default([]),
   searchProvider: SearchProviderConfigSchema.optional(),

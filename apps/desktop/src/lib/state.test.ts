@@ -1,9 +1,43 @@
 import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID } from "@ora/shared";
-import { mergeRunStreamSnapshot } from "./state";
-import type { OraRunEventStream, OraStateSnapshot } from "./runtimeClient";
+import { initialWorkbenchState, mergeRunStreamSnapshot, workbenchReducer } from "./state";
+import type { WorkbenchState } from "./state";
+import type { OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
+
+function sessionSummary(sessionId: string): OraSessionSummary {
+  return {
+    sessionId,
+    title: sessionId,
+    turnCount: 0,
+    createdAt: 1_714_000_000_000,
+    updatedAt: 1_714_000_000_000,
+  };
+}
 
 describe("desktop workbench state", () => {
+  it("keeps unsent composer text scoped to the selected session", () => {
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [sessionSummary("session-a"), sessionSummary("session-b")],
+      selectedSessionId: "session-a",
+    };
+
+    state = workbenchReducer(state, { type: "SET_PROMPT", text: "draft for a" });
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+
+    expect(state.promptText).toBe("");
+
+    state = workbenchReducer(state, { type: "SET_PROMPT", text: "draft for b" });
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+
+    expect(state.promptText).toBe("draft for a");
+
+    state = workbenchReducer(state, { type: "CLEAR_PROMPT_IF_MATCH", text: "draft for a" });
+    state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+
+    expect(state.promptText).toBe("draft for b");
+  });
+
   it("merges streamed approval action updates back into the active snapshot", () => {
     const createdAt = 1_714_000_000_000;
     const approvedActionId = "run-approval:action:solo_agent-tool-1";

@@ -3,8 +3,11 @@ import {
   DEFAULT_RESOURCE_BUDGETS,
   DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
+  DEFAULT_PROVIDERS,
+  EffectiveRunStrategySchema,
   ModeSpec,
   PatternDefinition,
+  ProviderConfig,
   RunConfig,
   RunConfigSchema,
   SessionSummary,
@@ -82,19 +85,28 @@ export async function resolveModeSelection(
     : withDefaultWebToolIds(configuredToolIds);
   const skillWarnings = deps.skillRegistry.warnings(skillIds);
   const skillPromptOverlay = deps.skillRegistry.promptSnippets(skillIds).join("\n\n");
+  const budget = parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family];
+  const effectiveStrategy = resolveEffectiveRunStrategy(modeSpec, {
+    ...parsed,
+    modeSelection: parsed.modeSelection,
+    budget,
+    toolIds,
+  });
   const fullConfig = RunConfigSchema.parse({
     ...parsed,
     pattern: modeSpec.family,
     modeId: modeSpec.id,
     modeSelection: parsed.modeSelection,
-    budget: parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family],
+    budget,
     completionPolicy: parsed.completionPolicy ?? modeSpec.completionPolicy,
+    effectiveStrategy,
     approvalMode: resolvedApprovalMode,
     skillIds,
     toolIds,
     metadata: {
       ...parsed.metadata,
       modeId: modeSpec.id,
+      effectiveStrategy,
       ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
       ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
       ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
@@ -105,6 +117,73 @@ export async function resolveModeSelection(
     definition,
     fullConfig,
   };
+}
+
+export function resolveEffectiveRunStrategy(
+  modeSpec: ModeSpec,
+  config: Pick<RunConfig, "modeSelection" | "budget" | "providerConfig" | "providerId" | "modelRef" | "toolIds">,
+) {
+  const policy = modeSpec.runtimePolicy;
+  const budget = config.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family];
+  const notes: string[] = [];
+  const providerConfig = resolveProviderConfig(config);
+  const providerSupportsReasoning = providerConfig?.capabilities.includes("reasoning") ?? false;
+  const providerThinkingDesired = policy.thinking !== "off" && policy.providerThinking !== "disabled";
+  const providerThinkingEnabled = providerThinkingDesired && providerSupportsReasoning;
+  const providerPolicyStatus = !providerThinkingDesired
+    ? "applied"
+    : providerSupportsReasoning
+      ? "applied"
+      : policy.providerThinking === "required"
+        ? "degraded"
+        : "unsupported";
+
+  if (providerThinkingDesired && !providerSupportsReasoning) {
+    notes.push(providerConfig
+      ? `Provider '${providerConfig.id}' does not advertise reasoning support.`
+      : "No provider capability record was available for reasoning support.");
+  }
+
+  const modeToolIds = new Set(config.toolIds ?? modeSpec.capabilityFlags.toolIds);
+  const delegationSupported =
+    modeSpec.capabilityFlags.supportsPersistentWorkers
+    || modeSpec.runtimeAtoms.includes("subagent_delegate")
+    || modeToolIds.has("model.handoff")
+    || modeSpec.nodes.some((node) => Array.isArray(node.config.atoms) && node.config.atoms.includes("subagent_delegate"));
+  const delegationEnabled = policy.delegation !== "none" && delegationSupported;
+
+  if (policy.delegation !== "none" && !delegationSupported) {
+    notes.push("Mode policy allows delegation, but this mode has no delegation runtime capability enabled.");
+  }
+
+  return EffectiveRunStrategySchema.parse({
+    sourceModeId: modeSpec.id,
+    sourceModeSelection: config.modeSelection,
+    thinking: policy.thinking,
+    reasoningEffort: policy.thinking === "off" ? "none" : policy.reasoningEffort,
+    budgetProfile: policy.budgetProfile,
+    budget,
+    planning: policy.planning,
+    planningEnabled: policy.planning !== "none",
+    delegation: policy.delegation,
+    delegationEnabled,
+    providerThinkingEnabled,
+    providerPolicyStatus,
+    notes,
+  });
+}
+
+function resolveProviderConfig(
+  config: Pick<RunConfig, "providerConfig" | "providerId" | "modelRef">,
+): ProviderConfig | undefined {
+  if (config.providerConfig) {
+    return config.providerConfig;
+  }
+  return DEFAULT_PROVIDERS.find((provider) =>
+    provider.id === config.providerId ||
+    provider.id === config.modelRef ||
+    provider.modelId === config.modelRef
+  );
 }
 
 export function withMemoryPrompt(config: RunConfig, deps: ModeSelectionDeps): RunConfig {

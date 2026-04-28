@@ -1,7 +1,7 @@
 # TASK-20260428-1926-agent-driven-evaluation-studio
 
 **Created:** 2026-04-28 19:26 CST
-**Status:** Planned
+**Status:** Done
 **Source of Truth:** This file is the only authoritative plan for the Agent-driven Evaluation Studio work.
 
 ---
@@ -85,6 +85,23 @@ The platform should not force every evaluation into "select Agent modes". Agent 
 - Hosted multi-user annotation operations beyond current local/runtime-backed storage.
 - Replacing Trails; Evaluation should link into Trails for trace detail instead of duplicating full trace UI.
 - Building a new external observability backend.
+
+## Active Files
+
+- packages/shared/src/evaluation.ts
+- packages/shared/src/rpc.ts
+- packages/shared/test/contracts.test.ts
+- apps/runtime/src/evaluation-store.ts
+- apps/runtime/src/evaluation-blueprint-draft.ts
+- apps/runtime/src/run-store.ts
+- apps/runtime/src/json-rpc.ts
+- apps/runtime/src/cli.ts
+- apps/runtime/src/mode-selection.ts
+- apps/runtime/test/runtime-integration.test.ts
+- apps/desktop/src/lib/runtimeClient.ts
+- apps/desktop/src/lib/runtimeClient.test.ts
+- apps/desktop/src/components/EvaluationView.tsx
+- tasks/TASK-20260428-1926-agent-driven-evaluation-studio.md
 
 ## Current State
 
@@ -832,18 +849,22 @@ Pass criteria:
 - TODO(FOLLOWUP): Decide whether arbitrary custom scorers are postponed entirely or allowed only through checked-in trusted scorer ids.
 - TODO(FOLLOWUP): Decide how much of Eval Agent drafting should be available when only `local-smoke` provider is runnable.
 
+## Completed Phase Checklist
+
+- [x] Phase 1: Add shared blueprint schemas and runtime blueprint methods.
+- [x] Phase 1: Add deterministic blueprint compiler.
+- [x] Phase 1: Mirror blueprint methods in desktop browser fallback.
+- [x] Phase 2: Refactor EvaluationView into recipe/goal-driven Studio shell.
+- [x] Phase 2: Preserve current Agent Mode Comparison as a recipe.
+- [x] Phase 2: Add Auto Router Quality recipe.
+- [x] Phase 3: Add provider-backed Eval Agent draft generation.
+- [x] Phase 4: Add dataset coverage and case builder workflow.
+- [x] Phase 5: Add recipe-specific review and Failure Analyst output.
+- [x] Phase 6: Add CLI/CI blueprint rerun support.
+
 ## TODO
 
-- [ ] Phase 1: Add shared blueprint schemas and runtime blueprint methods.
-- [ ] Phase 1: Add deterministic blueprint compiler.
-- [ ] Phase 1: Mirror blueprint methods in desktop browser fallback.
-- [ ] Phase 2: Refactor EvaluationView into recipe/goal-driven Studio shell.
-- [ ] Phase 2: Preserve current Agent Mode Comparison as a recipe.
-- [ ] Phase 2: Add Auto Router Quality recipe.
-- [ ] Phase 3: Add provider-backed Eval Agent draft generation.
-- [ ] Phase 4: Add dataset coverage and case builder workflow.
-- [ ] Phase 5: Add recipe-specific review and Failure Analyst output.
-- [ ] Phase 6: Add CLI/CI blueprint rerun support.
+- None.
 
 ## Comparison
 
@@ -867,7 +888,27 @@ Ora should keep the existing runtime-owned evaluation backbone, but raise the de
 
 ## Retrospective
 
-- No implementation pitfalls yet; this task is currently a planning source of truth.
+- Status: local_only. Browser fallback parity must be implemented in the same pass as real JSON-RPC methods; otherwise desktop typecheck can pass against types while local smoke still lacks behavior.
+- Status: local_only. `todo_scan.sh` defaults to its own repo root, so Ora closeout must pass `--task /Users/quintenchen/developer/ora/tasks/...` explicitly.
+- Status: local_only. Provider-backed draft generation should keep deterministic fallback because local-smoke or missing credentials can return non-blueprint text while the Studio still needs to remain testable.
+
+## Progress Log
+
+### 2026-04-28 19:31 CST
+
+- Started implementation from this task file after confirming current Evaluation seams.
+- Relevant prior project memory: Evaluation should stay runtime-owned, desktop should be a thin consumer, and browser fallback must mirror new JSON-RPC domains.
+- Current git state before edits: `main...origin/main [ahead 6]` with unrelated untracked `tasks/TASK-20260428-1929-mode-derived-thinking-policy.md`; leave it untouched.
+- Initial edit scope: `packages/shared/src/evaluation.ts`, `packages/shared/src/rpc.ts`, `apps/runtime/src/evaluation-store.ts`, `apps/runtime/src/json-rpc.ts`, `apps/desktop/src/lib/runtimeClient.ts`, `apps/desktop/src/components/EvaluationView.tsx`, and focused tests.
+- Next: add blueprint schemas/store/compiler, mirror runtime client + fallback methods, then refactor EvaluationView to run mode comparison and Auto Router through compiled blueprints.
+
+### 2026-04-28 19:52 CST
+
+- Implemented EvaluationBlueprint schemas, runtime persistence, JSON-RPC lifecycle methods, deterministic compile, provider-backed draft generation with deterministic fallback, CLI blueprint compile/run, desktop runtime client parity, browser fallback parity, and focused contract/runtime/desktop tests.
+- Refactored EvaluationView into an Evaluation Studio shell with natural-language goal, recipe cards, blueprint preview, Auto Router Quality recipe, spec preview, draft case builder, router-specific readout, and preserved Mode Comparison as a recipe.
+- Functional browser smoke at `http://127.0.0.1:1421/`: opened Evaluation, selected Auto Router Quality, generated blueprint, generated draft cases, approved them into a dataset, previewed compiled spec, and ran a router-only evaluation. DOM evidence included `runtime.mode_selection`, `modeSelection:auto`, `evaluationRouterOnly`, and `Auto Router Readout`.
+- Verification commands passed; only residual warning is the existing desktop Vite chunk-size warning.
+- Next: none for this task; remaining open issues are explicitly marked TODO(FOLLOWUP).
 
 ## Verification
 
@@ -875,7 +916,7 @@ Ora should keep the existing runtime-owned evaluation backbone, but raise the de
 
 - [x] Task file created.
 - [x] Complete product and implementation plan recorded.
-- [ ] Implementation verification pending future phases.
+- [x] Implementation verification completed for all phases.
 
 ### Environment
 
@@ -887,15 +928,34 @@ Ora should keep the existing runtime-owned evaluation backbone, but raise the de
   - Output: `20260428-1926 2026-04-28 19:26 CST`
 - `ls tasks | tail -30`
   - Output: confirmed current task naming pattern and latest task files.
+- `pnpm --filter @ora/shared test -- contracts.test.ts`
+  - Output: `Test Files 1 passed (1); Tests 81 passed (81)`.
+- `pnpm --filter @ora/shared build`
+  - Output: passed with no TypeScript errors.
+- `pnpm --filter @ora/runtime test -- runtime-integration.test.ts`
+  - Output: `Test Files 14 passed (14); Tests 219 passed (219)`.
+- `pnpm --filter @ora/runtime build`
+  - Output: passed with no TypeScript errors.
+- `pnpm --filter @ora/desktop test -- runtimeClient.test.ts`
+  - Output: `Test Files 9 passed (9); Tests 41 passed (41)`.
+- `pnpm --filter @ora/desktop typecheck`
+  - Output: passed with no TypeScript errors.
+- `pnpm --filter @ora/desktop build`
+  - Output: built successfully; Vite reported the pre-existing chunk-size warning for chunks over 500 kB.
+- `bash /Users/quintenchen/developer/quantfox/.codex/skills/long-task-protocol/scripts/todo_scan.sh --task /Users/quintenchen/developer/ora/tasks/TASK-20260428-1926-agent-driven-evaluation-studio.md`
+  - Output: `Blocking TODO matches: none`; `Blocking task-journal TODO entries: none`; `Result: PASS`.
+- Browser smoke via in-app browser at `http://127.0.0.1:1421/`
+  - Output: Auto Router recipe rendered without Agent mode selection; generated blueprint; generated/approved draft cases; spec preview included `runtime.mode_selection`, `modeSelection:auto`, and `evaluationRouterOnly`; completed run showed `Auto Router Readout`, fallback count, router attempts, and selected-mode distribution.
 
 ## Compressed State (<= 20 lines)
 
 - Objective: Design Agent-driven Evaluation Studio as the successor to mode-matrix-only Evaluation UI.
 - Source of truth: `tasks/TASK-20260428-1926-agent-driven-evaluation-studio.md`.
-- Current status: Planned; no implementation started.
+- Current status: Done; implementation completed 2026-04-28 19:52 CST.
 - Core decision: introduce durable `EvaluationBlueprint` above executable `EvaluationSpec`.
 - Product shape: natural-language goal -> Eval Agent draft blueprint -> user review -> compile spec -> run -> failure analysis.
 - First acceptance recipe: Auto Router Quality, no Agent mode selection required.
 - Runtime direction: shared schemas + runtime blueprint store + deterministic compiler + browser fallback parity.
 - Desktop direction: recipe/goal-driven Evaluation Studio shell while preserving Mode Comparison.
-- Next actions: implement Phase 1 schemas/store/compiler, then Phase 2 UI shell and Auto Router recipe.
+- Implemented: blueprint schemas/store/compiler, JSON-RPC/browser fallback parity, provider-backed draft path with fallback, case builder, failure readout, CLI blueprint compile/run, and focused verification.
+- Next actions: none; TODO(FOLLOWUP) open issues remain for project scoping, trusted scorer policy, and local-smoke drafting policy.

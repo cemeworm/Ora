@@ -1184,6 +1184,7 @@ export async function executeRuntimeKernel(
   emit("run.started", {
     input,
     config,
+    effectiveStrategy: config.effectiveStrategy,
     skills: skills.skills,
     tools: tools.tools,
   });

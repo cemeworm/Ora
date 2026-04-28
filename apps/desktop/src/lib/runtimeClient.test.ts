@@ -64,4 +64,37 @@ describe("desktop runtime client agent catalog", () => {
     const resetCatalog = await client.agentCatalog();
     expect(resetCatalog.systemAgents.find((agent) => agent.id === "builder")?.overridden).toBe(false);
   });
+
+  it("mirrors evaluation blueprint lifecycle and compile in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const dataset = await client.importEvaluationDataset({
+      name: "Router Dataset",
+      sourceFileName: "router.json",
+      sourceFormat: "json",
+      content: JSON.stringify([{ id: "case-1", prompt: "Choose the right mode." }]),
+    });
+    const draft = await client.generateEvaluationBlueprintDraft({
+      goal: "评估 Auto Mode Router 是否能选对 mode。",
+      recipe: "auto_router_quality",
+      datasetId: dataset.dataset.id,
+      providerId: "local-smoke",
+      modelRef: "local/smoke-model",
+    });
+    expect(draft.recipe).toBe("auto_router_quality");
+
+    const updated = await client.updateEvaluationBlueprint({
+      blueprintId: draft.id,
+      updates: { status: "ready", title: "Ready Router Blueprint" },
+    });
+    expect(updated.status).toBe("ready");
+
+    const listed = await client.listEvaluationBlueprints({ recipe: "auto_router_quality" });
+    expect(listed.map((blueprint) => blueprint.id)).toContain(draft.id);
+    await expect(client.getEvaluationBlueprint(draft.id)).resolves.toMatchObject({ title: "Ready Router Blueprint" });
+
+    const compiled = await client.compileEvaluationBlueprint({ blueprintId: draft.id });
+    expect(compiled.spec.objective?.target).toBe("runtime.mode_selection");
+    expect(compiled.spec.configs[0]?.runConfig.modeSelection).toBe("auto");
+    expect(compiled.spec.configs[0]?.runConfig.metadata?.evaluationRouterOnly).toBe(true);
+  });
 });

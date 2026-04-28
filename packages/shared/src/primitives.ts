@@ -63,6 +63,36 @@ export const ModeCompletionPolicySchema = z.object({
 });
 export type ModeCompletionPolicy = z.infer<typeof ModeCompletionPolicySchema>;
 
+export const ModeThinkingSchema = z.enum(["off", "standard", "deep"]);
+export type ModeThinking = z.infer<typeof ModeThinkingSchema>;
+
+export const ModeReasoningEffortSchema = z.enum(["none", "low", "medium", "high"]);
+export type ModeReasoningEffort = z.infer<typeof ModeReasoningEffortSchema>;
+
+export const ModeBudgetProfileSchema = z.enum(["fast", "balanced", "deep"]);
+export type ModeBudgetProfile = z.infer<typeof ModeBudgetProfileSchema>;
+
+export const ModePlanningSchema = z.enum(["none", "light", "explicit"]);
+export type ModePlanning = z.infer<typeof ModePlanningSchema>;
+
+export const ModeDelegationSchema = z.enum(["none", "allowed", "preferred"]);
+export type ModeDelegation = z.infer<typeof ModeDelegationSchema>;
+
+export const ModeProviderThinkingSchema = z.enum(["disabled", "auto", "required"]);
+export type ModeProviderThinking = z.infer<typeof ModeProviderThinkingSchema>;
+
+export const ModeRuntimePolicySchema = z.object({
+  thinking: ModeThinkingSchema.default("standard"),
+  reasoningEffort: ModeReasoningEffortSchema.default("medium"),
+  budgetProfile: ModeBudgetProfileSchema.default("balanced"),
+  planning: ModePlanningSchema.default("light"),
+  delegation: ModeDelegationSchema.default("none"),
+  providerThinking: ModeProviderThinkingSchema.default("auto"),
+});
+export type ModeRuntimePolicy = z.infer<typeof ModeRuntimePolicySchema>;
+
+export const DEFAULT_MODE_RUNTIME_POLICY: ModeRuntimePolicy = ModeRuntimePolicySchema.parse({});
+
 export const COMPLETION_POLICY_PRESETS: Record<CompletionPolicyPreset, ModeCompletionPolicy> = {
   decisive: ModeCompletionPolicySchema.parse({
     preset: "decisive",

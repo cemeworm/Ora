@@ -24,6 +24,7 @@ export function createOpenAIProvider(
       {
         model: config.modelId,
         input: buildResponsesInput(request),
+        ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
       },
       "max_output_tokens",
       request.maxTokens ?? config.maxTokens
@@ -87,6 +88,7 @@ export function createOpenAIProvider(
         model: config.modelId,
         input: buildResponsesInput(request),
         stream: true,
+        ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
       },
       "max_output_tokens",
       request.maxTokens ?? config.maxTokens

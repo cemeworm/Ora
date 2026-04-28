@@ -12,6 +12,7 @@ import {
   Network,
   Radar,
   Route,
+  SlidersHorizontal,
   Wrench,
 } from "lucide-react";
 import { DockCard } from "./DockCard";
@@ -30,6 +31,7 @@ import type {
 import { getSharedRuntimeClient, type OraRunTrail, type OraStateSnapshot } from "../lib/runtimeClient";
 import {
   buildAgentLanes,
+  buildEffectiveStrategySummary,
   buildPendingApprovalItems,
   buildSemanticTimeline,
   buildToolLedger,
@@ -140,6 +142,7 @@ export function TrailsTabs({
   const agentLanes = useMemo(() => buildAgentLanes(activeSnapshot, agents, trail, findings), [activeSnapshot, agents, trail, findings]);
   const toolLedger = useMemo(() => buildToolLedger(activeSnapshot), [activeSnapshot]);
   const pendingApprovals = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
+  const effectiveStrategy = useMemo(() => buildEffectiveStrategySummary(activeSnapshot), [activeSnapshot]);
   const pendingClarifications = snapshotPendingClarifications(activeSnapshot);
   const visibleFindings = severityFilter === "all" ? findings : findings.filter((finding) => finding.severity === severityFilter);
   const visibleTimeline = timelineItems.filter((item) => eventKindFilter === "all" || item.kind === eventKindFilter);
@@ -214,6 +217,7 @@ export function TrailsTabs({
             onResumeRun={onResumeRun}
             pendingApprovals={pendingApprovals}
             pendingClarifications={pendingClarifications}
+            effectiveStrategy={effectiveStrategy}
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
             selectedSession={selectedSession}
@@ -296,6 +300,7 @@ function TrailOverview({
   findings,
   pendingApprovals,
   pendingClarifications,
+  effectiveStrategy,
   selectedCheckpoint,
   selectedNode,
   selectedSession,
@@ -315,6 +320,7 @@ function TrailOverview({
   findings: TrailFinding[];
   pendingApprovals: ReturnType<typeof buildPendingApprovalItems>;
   pendingClarifications: OraStateSnapshot["pendingClarifications"];
+  effectiveStrategy: ReturnType<typeof buildEffectiveStrategySummary>;
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
   selectedSession: SessionRun;
@@ -356,6 +362,21 @@ function TrailOverview({
           </div>
         )}
       </DockCard>
+
+      {effectiveStrategy && (
+        <DockCard title="Runtime Strategy" icon={<SlidersHorizontal size={16} />}>
+          <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-bench-900">{effectiveStrategy.title}</span>
+              <StatusChip tone={effectiveStrategy.statusTone}>{effectiveStrategy.statusLabel}</StatusChip>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-bench-700">{effectiveStrategy.detail}</p>
+            {effectiveStrategy.notes.length > 0 && (
+              <p className="mt-2 text-xs leading-5 text-amber-900">{effectiveStrategy.notes.join(" ")}</p>
+            )}
+          </div>
+        </DockCard>
+      )}
 
       <DockCard title="Blocking Gates" icon={<CircleAlert size={16} />}>
         {pendingApprovals.length === 0 && pendingClarifications.length === 0 ? (

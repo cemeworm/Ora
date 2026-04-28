@@ -1133,6 +1133,10 @@ function ModeInspector({
 
       {activeSection === "safety" && (
         <>
+          <RuntimeStrategyPolicyPanel
+            draft={draft}
+            onPatchDraft={onPatchDraft}
+          />
           <CompletionPolicyPanel
             draft={draft}
             onPatchDraft={onPatchDraft}
@@ -1862,6 +1866,157 @@ function WorkspaceToolsPanel({
   );
 }
 
+function RuntimeStrategyPolicyPanel({
+  draft,
+  onPatchDraft,
+}: {
+  draft: OraModeSpec;
+  onPatchDraft: (updater: (current: OraModeSpec) => OraModeSpec) => void;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Runtime strategy</p>
+          <h4 className="mt-1 text-sm font-semibold">Derived thinking policy</h4>
+        </div>
+        <span className="rounded-full bg-bench-100 px-2.5 py-1 text-[11px] font-semibold text-bench-700">
+          {draft.runtimePolicy.budgetProfile}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-1 text-xs text-bench-700">
+          <span>Thinking depth</span>
+          <Select
+            aria-label="Thinking depth"
+            value={draft.runtimePolicy.thinking}
+            onChange={(event) => onPatchDraft((current) => ({
+              ...current,
+              runtimePolicy: {
+                ...current.runtimePolicy,
+                thinking: event.target.value as OraModeSpec["runtimePolicy"]["thinking"],
+                reasoningEffort: event.target.value === "off" ? "none" : current.runtimePolicy.reasoningEffort,
+                providerThinking: event.target.value === "off" ? "disabled" : current.runtimePolicy.providerThinking,
+              },
+            }))}
+            className="h-9 bg-white text-sm"
+          >
+            <option value="off">Off</option>
+            <option value="standard">Standard</option>
+            <option value="deep">Deep</option>
+          </Select>
+        </label>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Reasoning effort</span>
+            <Select
+              aria-label="Reasoning effort"
+              value={draft.runtimePolicy.reasoningEffort}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                runtimePolicy: {
+                  ...current.runtimePolicy,
+                  reasoningEffort: event.target.value as OraModeSpec["runtimePolicy"]["reasoningEffort"],
+                },
+              }))}
+              className="h-9 bg-white text-sm"
+            >
+              <option value="none">None</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </Select>
+          </label>
+
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Budget profile</span>
+            <Select
+              aria-label="Budget profile"
+              value={draft.runtimePolicy.budgetProfile}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                runtimePolicy: {
+                  ...current.runtimePolicy,
+                  budgetProfile: event.target.value as OraModeSpec["runtimePolicy"]["budgetProfile"],
+                },
+              }))}
+              className="h-9 bg-white text-sm"
+            >
+              <option value="fast">Fast</option>
+              <option value="balanced">Balanced</option>
+              <option value="deep">Deep</option>
+            </Select>
+          </label>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Planning</span>
+            <Select
+              aria-label="Planning"
+              value={draft.runtimePolicy.planning}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                runtimePolicy: {
+                  ...current.runtimePolicy,
+                  planning: event.target.value as OraModeSpec["runtimePolicy"]["planning"],
+                },
+              }))}
+              className="h-9 bg-white text-sm"
+            >
+              <option value="none">None</option>
+              <option value="light">Light</option>
+              <option value="explicit">Explicit</option>
+            </Select>
+          </label>
+
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Delegation</span>
+            <Select
+              aria-label="Delegation"
+              value={draft.runtimePolicy.delegation}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                runtimePolicy: {
+                  ...current.runtimePolicy,
+                  delegation: event.target.value as OraModeSpec["runtimePolicy"]["delegation"],
+                },
+              }))}
+              className="h-9 bg-white text-sm"
+            >
+              <option value="none">None</option>
+              <option value="allowed">Allowed</option>
+              <option value="preferred">Preferred</option>
+            </Select>
+          </label>
+
+          <label className="grid gap-1 text-xs text-bench-700">
+            <span>Provider thinking</span>
+            <Select
+              aria-label="Provider thinking"
+              value={draft.runtimePolicy.providerThinking}
+              onChange={(event) => onPatchDraft((current) => ({
+                ...current,
+                runtimePolicy: {
+                  ...current.runtimePolicy,
+                  providerThinking: event.target.value as OraModeSpec["runtimePolicy"]["providerThinking"],
+                },
+              }))}
+              className="h-9 bg-white text-sm"
+            >
+              <option value="disabled">Disabled</option>
+              <option value="auto">Auto</option>
+              <option value="required">Required</option>
+            </Select>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CompletionPolicyPanel({
   draft,
   onPatchDraft,
@@ -2420,6 +2575,9 @@ function ModeSummaryCards({
           <p>{translateCopy(language, "Stop policy:")} {formatStopPolicy(language, mode.stopPolicy)}</p>
           <p>
             {translateCopy(language, "Completion:")} {formatEnumLabel(language, mode.completionPolicy.preset)} · {mode.defaultBudget.maxToolCalls} {translateCopy(language, "tools")} · {translateCopy(language, "duplicate tolerance")} {mode.completionPolicy.maxRepeatedToolCalls}
+          </p>
+          <p>
+            Strategy: {formatEnumLabel(language, mode.runtimePolicy.thinking)} · {formatEnumLabel(language, mode.runtimePolicy.reasoningEffort)} reasoning · {formatEnumLabel(language, mode.runtimePolicy.planning)} planning · {formatEnumLabel(language, mode.runtimePolicy.delegation)} delegation
           </p>
         </div>
       </div>
@@ -3139,7 +3297,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, completionPolicy, recoveryPolicy, memoryPolicy } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy } = spec;
   return {
     id,
     family,
@@ -3158,6 +3316,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     profiles,
     runtimeAtoms,
     completionPolicy,
+    runtimePolicy,
     recoveryPolicy,
     memoryPolicy,
   };

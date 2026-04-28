@@ -1,4 +1,4 @@
-import type { ProviderConfig, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@ora/shared";
+import type { ModeReasoningEffort, ProviderConfig, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@ora/shared";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -34,6 +34,7 @@ export interface ModelRequest {
   system?: string;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: Exclude<ModeReasoningEffort, "none">;
   tools?: readonly ModelToolDefinition[];
   toolChoice?: ModelToolChoice;
   signal?: AbortSignal;

@@ -142,12 +142,28 @@ export function configuredProviderId(config: RunConfig): string | undefined {
   return typeof providerId === "string" ? providerId : config.modelRef;
 }
 
+function applyEffectiveStrategy(config: RunConfig, request: ModelRequest): ModelRequest {
+  const effort = config.effectiveStrategy?.reasoningEffort;
+  if (
+    request.reasoningEffort ||
+    !config.effectiveStrategy?.providerThinkingEnabled ||
+    effort === undefined ||
+    effort === "none"
+  ) {
+    return request;
+  }
+  return {
+    ...request,
+    reasoningEffort: effort,
+  };
+}
+
 export async function invokeRunProvider(
   config: RunConfig,
   request: ModelRequest,
   options: ProviderRegistryOptions = {}
 ) {
-  return createProviderRegistryForRun(config, options).invoke(configuredProviderId(config), request);
+  return createProviderRegistryForRun(config, options).invoke(configuredProviderId(config), applyEffectiveStrategy(config, request));
 }
 
 export async function invokeRunProviderStream(
@@ -156,7 +172,7 @@ export async function invokeRunProviderStream(
   callbacks?: ModelStreamCallbacks,
   options: ProviderRegistryOptions = {}
 ) {
-  return createProviderRegistryForRun(config, options).invokeStream(configuredProviderId(config), request, callbacks);
+  return createProviderRegistryForRun(config, options).invokeStream(configuredProviderId(config), applyEffectiveStrategy(config, request), callbacks);
 }
 
 export async function verifyProviderConfig(

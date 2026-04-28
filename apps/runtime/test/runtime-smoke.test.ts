@@ -37,6 +37,59 @@ describe("Ora runtime smoke path", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
   });
 
+  it("derives effective runtime strategy from selected modes", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+
+    async function routerOnlyState(modeId: string) {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: `start:${modeId}`,
+        method: "runs.start",
+        params: {
+          input: { prompt: `Run ${modeId}.` },
+          config: {
+            modeId,
+            providerId: "local-smoke",
+            metadata: { evaluationRouterOnly: true },
+          },
+        },
+      }) as { runId: string };
+      return StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: `state:${modeId}`,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+    }
+
+    const single = await routerOnlyState(SINGLE_AGENT_MODE_ID);
+    const deerflow = await routerOnlyState(DEERFLOW_HARNESS_MODE_ID);
+    const teams = await routerOnlyState("agent_teams");
+
+    expect(single.config.effectiveStrategy).toMatchObject({
+      sourceModeId: SINGLE_AGENT_MODE_ID,
+      thinking: "standard",
+      planning: "light",
+      delegationEnabled: false,
+      providerPolicyStatus: "unsupported",
+    });
+    expect(deerflow.config.effectiveStrategy).toMatchObject({
+      sourceModeId: DEERFLOW_HARNESS_MODE_ID,
+      thinking: "deep",
+      planning: "explicit",
+      delegation: "allowed",
+      providerPolicyStatus: "degraded",
+    });
+    expect(teams.config.effectiveStrategy).toMatchObject({
+      sourceModeId: "agent_teams",
+      thinking: "deep",
+      delegation: "preferred",
+      delegationEnabled: true,
+      providerPolicyStatus: "degraded",
+    });
+    expect(deerflow.config.metadata.effectiveStrategy).toEqual(deerflow.config.effectiveStrategy);
+  });
+
   it("asks for clarification before researching materially ambiguous high-consequence requests", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;

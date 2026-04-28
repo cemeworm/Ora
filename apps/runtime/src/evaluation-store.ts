@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import Database from "better-sqlite3";
 import {
   EvaluationAttempt,
   EvaluationAttemptSchema,
@@ -7,6 +8,16 @@ import {
   EvaluationBaseline,
   EvaluationBaselineListParamsSchema,
   EvaluationBaselineSchema,
+  EvaluationBlueprint,
+  EvaluationBlueprintCompileParamsSchema,
+  EvaluationBlueprintCompileResult,
+  EvaluationBlueprintCompileResultSchema,
+  EvaluationBlueprintCreateParamsSchema,
+  EvaluationBlueprintGenerateDraftParamsSchema,
+  EvaluationBlueprintGetParamsSchema,
+  EvaluationBlueprintListParamsSchema,
+  EvaluationBlueprintSchema,
+  EvaluationBlueprintUpdateParamsSchema,
   EvaluationCase,
   EvaluationCaseSchema,
   EvaluationCaseResult,
@@ -43,6 +54,7 @@ import {
   EvaluationObjectiveSchema,
   EvaluationObservation,
   EvaluationProfileKind,
+  EvaluationRecipeId,
   EvaluationPromoteBaselineParamsSchema,
   EvaluationRun,
   EvaluationRunDetail,
@@ -76,6 +88,7 @@ const EvaluationManifestSchema = z.object({
   nextEvaluationRunNumber: z.number().int().positive().default(1),
   nextBaselineNumber: z.number().int().positive().default(1),
   nextFeedbackNumber: z.number().int().positive().default(1),
+  nextBlueprintNumber: z.number().int().positive().default(1),
 });
 
 const PersistedEvaluationRunSchema = z.object({
@@ -92,31 +105,109 @@ type FeedbackCurator = (params: {
   feedbackText: string;
   sourceContext: Record<string, unknown>;
 }) => Promise<EvaluationFeedbackDraftCase>;
+type BlueprintDrafter = (params: {
+  id: string;
+  now: number;
+  goal: string;
+  recipe: EvaluationRecipeId;
+  datasetId?: string;
+  providerId?: string;
+  modelRef?: string;
+}) => Promise<EvaluationBlueprint>;
 
 const FEEDBACK_DATASET_ID = "feedback-chat";
 
+const CREATE_EVALUATION_MANIFEST_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_manifest (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data TEXT NOT NULL
+);
+`;
+
+const CREATE_EVALUATION_DATASETS_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_datasets (
+  id TEXT PRIMARY KEY,
+  updatedAt INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+`;
+
+const CREATE_EVALUATION_RUNS_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_runs (
+  id TEXT PRIMARY KEY,
+  datasetId TEXT NOT NULL,
+  profileId TEXT NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+`;
+
+const CREATE_EVALUATION_BASELINES_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_baselines (
+  id TEXT PRIMARY KEY,
+  datasetId TEXT NOT NULL,
+  profileId TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+`;
+
+const CREATE_EVALUATION_FEEDBACK_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_feedback (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+`;
+
+const CREATE_EVALUATION_BLUEPRINTS_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_blueprints (
+  id TEXT PRIMARY KEY,
+  recipe TEXT NOT NULL,
+  status TEXT NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+`;
+
 export class LocalEvaluationStore {
+  private readonly storage: "sqlite" | "file";
+  private readonly db?: Database.Database;
   private readonly manifestPath: string;
   private readonly datasetsDir: string;
   private readonly runsDir: string;
   private readonly baselinesDir: string;
   private readonly feedbackDir: string;
+  private readonly blueprintsDir: string;
   private readonly clock: () => number;
   private manifest: EvaluationManifest;
   private datasets = new Map<string, EvaluationDatasetDetail>();
   private runs = new Map<string, PersistedEvaluationRun>();
   private baselines = new Map<string, EvaluationBaseline>();
   private feedback = new Map<string, EvaluationFeedbackRecord>();
+  private blueprints = new Map<string, EvaluationBlueprint>();
 
   constructor(private readonly baseDir: string, clock: () => number = Date.now) {
     this.clock = clock;
+    this.storage = baseDir.endsWith(".db") ? "sqlite" : "file";
     this.manifestPath = path.join(baseDir, "manifest.json");
     this.datasetsDir = path.join(baseDir, "datasets");
     this.runsDir = path.join(baseDir, "runs");
     this.baselinesDir = path.join(baseDir, "baselines");
     this.feedbackDir = path.join(baseDir, "feedback");
-    this.ensureDirs();
-    this.manifest = this.readJsonFile(this.manifestPath, EvaluationManifestSchema, EvaluationManifestSchema.parse({}));
+    this.blueprintsDir = path.join(baseDir, "blueprints");
+    if (this.storage === "sqlite") {
+      fs.mkdirSync(path.dirname(baseDir), { recursive: true });
+      this.db = new Database(baseDir);
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("busy_timeout = 5000");
+      this.ensureSqliteSchema();
+      this.manifest = this.readSqliteManifest();
+    } else {
+      this.ensureDirs();
+      this.manifest = this.readJsonFile(this.manifestPath, EvaluationManifestSchema, EvaluationManifestSchema.parse({}));
+    }
     const originalManifest = JSON.stringify(this.manifest);
     this.loadAll();
     if (JSON.stringify(this.manifest) !== originalManifest) {
@@ -170,6 +261,98 @@ export class LocalEvaluationStore {
       throw new Error(`Evaluation dataset not found: ${parsed.datasetId}`);
     }
     return EvaluationDatasetDetailSchema.parse(dataset);
+  }
+
+  createBlueprint(params: unknown): EvaluationBlueprint {
+    const parsed = EvaluationBlueprintCreateParamsSchema.parse(params);
+    const now = this.now();
+    const blueprint = EvaluationBlueprintSchema.parse({
+      ...parsed,
+      id: this.nextBlueprintId(),
+      schemaVersion: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.blueprints.set(blueprint.id, blueprint);
+    this.saveBlueprint(blueprint);
+    return blueprint;
+  }
+
+  updateBlueprint(params: unknown): EvaluationBlueprint {
+    const parsed = EvaluationBlueprintUpdateParamsSchema.parse(params);
+    const current = this.getBlueprint({ blueprintId: parsed.blueprintId });
+    const next = EvaluationBlueprintSchema.parse({
+      ...current,
+      ...parsed.updates,
+      id: current.id,
+      schemaVersion: 1,
+      createdAt: current.createdAt,
+      updatedAt: this.now(),
+    });
+    this.blueprints.set(next.id, next);
+    this.saveBlueprint(next);
+    return next;
+  }
+
+  listBlueprints(params: unknown = {}): EvaluationBlueprint[] {
+    const parsed = EvaluationBlueprintListParamsSchema.parse(params);
+    return [...this.blueprints.values()]
+      .filter((blueprint) => parsed.recipe ? blueprint.recipe === parsed.recipe : true)
+      .filter((blueprint) => parsed.status ? blueprint.status === parsed.status : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+      .slice(0, parsed.limit)
+      .map((blueprint) => EvaluationBlueprintSchema.parse(blueprint));
+  }
+
+  getBlueprint(params: unknown): EvaluationBlueprint {
+    const parsed = EvaluationBlueprintGetParamsSchema.parse(params);
+    const blueprint = this.blueprints.get(parsed.blueprintId);
+    if (!blueprint) {
+      throw new Error(`Evaluation blueprint not found: ${parsed.blueprintId}`);
+    }
+    return EvaluationBlueprintSchema.parse(blueprint);
+  }
+
+  compileBlueprint(params: unknown): EvaluationBlueprintCompileResult {
+    const parsed = EvaluationBlueprintCompileParamsSchema.parse(params);
+    const blueprint = parsed.blueprint ?? this.getBlueprint({ blueprintId: parsed.blueprintId });
+    const result = compileEvaluationBlueprint(blueprint, {
+      datasetId: parsed.datasetId,
+      providerId: parsed.providerId,
+      modelRef: parsed.modelRef,
+      modeIds: parsed.modeIds,
+    });
+    return EvaluationBlueprintCompileResultSchema.parse(result);
+  }
+
+  async generateBlueprintDraft(params: unknown, draftWithProvider?: BlueprintDrafter): Promise<EvaluationBlueprint> {
+    const parsed = EvaluationBlueprintGenerateDraftParamsSchema.parse(params);
+    const draftInput = {
+      goal: parsed.goal,
+      recipe: parsed.recipe ?? inferRecipeFromGoal(parsed.goal),
+      datasetId: parsed.datasetId,
+      providerId: parsed.providerId,
+      modelRef: parsed.modelRef,
+      now: this.now(),
+      id: this.nextBlueprintId(),
+    };
+    let draft = draftEvaluationBlueprint(draftInput);
+    if (draftWithProvider) {
+      try {
+        draft = EvaluationBlueprintSchema.parse(await draftWithProvider(draftInput));
+      } catch (error) {
+        draft = EvaluationBlueprintSchema.parse({
+          ...draft,
+          assumptions: [
+            ...draft.assumptions,
+            `Provider draft unavailable; deterministic fallback used: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+        });
+      }
+    }
+    this.blueprints.set(draft.id, draft);
+    this.saveBlueprint(draft);
+    return draft;
   }
 
   listBaselines(params: unknown = {}): EvaluationBaseline[] {
@@ -534,6 +717,10 @@ export class LocalEvaluationStore {
   }
 
   private loadAll() {
+    if (this.storage === "sqlite") {
+      this.loadAllFromSqlite();
+      return;
+    }
     for (const name of fs.readdirSync(this.datasetsDir).filter((entry) => entry.endsWith(".json"))) {
       const detail = this.readJsonFile(path.join(this.datasetsDir, name), EvaluationDatasetDetailSchema);
       this.datasets.set(detail.dataset.id, detail);
@@ -550,12 +737,17 @@ export class LocalEvaluationStore {
       const record = this.readJsonFile(path.join(this.feedbackDir, name), EvaluationFeedbackRecordSchema);
       this.feedback.set(record.id, record);
     }
+    for (const name of fs.readdirSync(this.blueprintsDir).filter((entry) => entry.endsWith(".json"))) {
+      const blueprint = this.readJsonFile(path.join(this.blueprintsDir, name), EvaluationBlueprintSchema);
+      this.blueprints.set(blueprint.id, blueprint);
+    }
     this.manifest = EvaluationManifestSchema.parse({
       ...this.manifest,
       nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
       nextEvaluationRunNumber: Math.max(this.manifest.nextEvaluationRunNumber, nextCounter([...this.runs.keys()], /^eval-run-(\d+)$/)),
       nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
       nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
+      nextBlueprintNumber: Math.max(this.manifest.nextBlueprintNumber, nextCounter([...this.blueprints.keys()], /^blueprint-(\d+)$/)),
     });
   }
 
@@ -564,6 +756,112 @@ export class LocalEvaluationStore {
     fs.mkdirSync(this.runsDir, { recursive: true });
     fs.mkdirSync(this.baselinesDir, { recursive: true });
     fs.mkdirSync(this.feedbackDir, { recursive: true });
+    fs.mkdirSync(this.blueprintsDir, { recursive: true });
+  }
+
+  private ensureSqliteSchema() {
+    const db = this.requireDb();
+    db.exec(CREATE_EVALUATION_MANIFEST_TABLE);
+    db.exec(CREATE_EVALUATION_DATASETS_TABLE);
+    db.exec(CREATE_EVALUATION_RUNS_TABLE);
+    db.exec(CREATE_EVALUATION_BASELINES_TABLE);
+    db.exec(CREATE_EVALUATION_FEEDBACK_TABLE);
+    db.exec(CREATE_EVALUATION_BLUEPRINTS_TABLE);
+  }
+
+  private loadAllFromSqlite() {
+    const db = this.requireDb();
+    const datasetRows = db.prepare("SELECT data FROM evaluation_datasets").all() as { data: string }[];
+    for (const row of datasetRows) {
+      const detail = EvaluationDatasetDetailSchema.parse(JSON.parse(row.data));
+      this.datasets.set(detail.dataset.id, detail);
+    }
+    const runRows = db.prepare("SELECT data FROM evaluation_runs").all() as { data: string }[];
+    for (const row of runRows) {
+      const run = PersistedEvaluationRunSchema.parse(JSON.parse(row.data));
+      this.runs.set(run.detail.run.id, run);
+    }
+    const baselineRows = db.prepare("SELECT data FROM evaluation_baselines").all() as { data: string }[];
+    for (const row of baselineRows) {
+      const baseline = EvaluationBaselineSchema.parse(JSON.parse(row.data));
+      this.baselines.set(baseline.id, baseline);
+    }
+    const feedbackRows = db.prepare("SELECT data FROM evaluation_feedback").all() as { data: string }[];
+    for (const row of feedbackRows) {
+      const record = EvaluationFeedbackRecordSchema.parse(JSON.parse(row.data));
+      this.feedback.set(record.id, record);
+    }
+    const blueprintRows = db.prepare("SELECT data FROM evaluation_blueprints").all() as { data: string }[];
+    for (const row of blueprintRows) {
+      const blueprint = EvaluationBlueprintSchema.parse(JSON.parse(row.data));
+      this.blueprints.set(blueprint.id, blueprint);
+    }
+    this.manifest = EvaluationManifestSchema.parse({
+      ...this.manifest,
+      nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
+      nextEvaluationRunNumber: Math.max(this.manifest.nextEvaluationRunNumber, nextCounter([...this.runs.keys()], /^eval-run-(\d+)$/)),
+      nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
+      nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
+      nextBlueprintNumber: Math.max(this.manifest.nextBlueprintNumber, nextCounter([...this.blueprints.keys()], /^blueprint-(\d+)$/)),
+    });
+    this.migrateLegacyFileStoreIntoSqlite();
+  }
+
+  private migrateLegacyFileStoreIntoSqlite() {
+    const legacyDir = path.join(path.dirname(this.baseDir), "evaluation-store");
+    if (!fs.existsSync(legacyDir)) {
+      return;
+    }
+
+    const loadLegacy = <T>(subdir: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): T[] => {
+      const dir = path.join(legacyDir, subdir);
+      if (!fs.existsSync(dir)) {
+        return [];
+      }
+      return fs.readdirSync(dir)
+        .filter((entry) => entry.endsWith(".json"))
+        .map((entry) => this.readJsonFile(path.join(dir, entry), schema));
+    };
+
+    for (const detail of loadLegacy("datasets", EvaluationDatasetDetailSchema)) {
+      if (!this.datasets.has(detail.dataset.id)) {
+        this.datasets.set(detail.dataset.id, detail);
+        this.saveDataset(detail);
+      }
+    }
+    for (const run of loadLegacy("runs", PersistedEvaluationRunSchema)) {
+      if (!this.runs.has(run.detail.run.id)) {
+        this.runs.set(run.detail.run.id, run);
+        this.saveRun(run.detail.run.id);
+      }
+    }
+    for (const baseline of loadLegacy("baselines", EvaluationBaselineSchema)) {
+      if (!this.baselines.has(baseline.id)) {
+        this.baselines.set(baseline.id, baseline);
+        this.saveBaseline(baseline);
+      }
+    }
+    for (const record of loadLegacy("feedback", EvaluationFeedbackRecordSchema)) {
+      if (!this.feedback.has(record.id)) {
+        this.feedback.set(record.id, record);
+        this.saveFeedback(record);
+      }
+    }
+    for (const blueprint of loadLegacy("blueprints", EvaluationBlueprintSchema)) {
+      if (!this.blueprints.has(blueprint.id)) {
+        this.blueprints.set(blueprint.id, blueprint);
+        this.saveBlueprint(blueprint);
+      }
+    }
+    this.manifest = EvaluationManifestSchema.parse({
+      ...this.manifest,
+      nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
+      nextEvaluationRunNumber: Math.max(this.manifest.nextEvaluationRunNumber, nextCounter([...this.runs.keys()], /^eval-run-(\d+)$/)),
+      nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
+      nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
+      nextBlueprintNumber: Math.max(this.manifest.nextBlueprintNumber, nextCounter([...this.blueprints.keys()], /^blueprint-(\d+)$/)),
+    });
+    this.saveManifest();
   }
 
   private nextDatasetId() {
@@ -594,26 +892,89 @@ export class LocalEvaluationStore {
     return id;
   }
 
+  private nextBlueprintId() {
+    const id = `blueprint-${String(this.manifest.nextBlueprintNumber).padStart(4, "0")}`;
+    this.manifest.nextBlueprintNumber += 1;
+    this.saveManifest();
+    return id;
+  }
+
   private saveManifest() {
+    if (this.storage === "sqlite") {
+      this.writeSqliteManifest(EvaluationManifestSchema.parse(this.manifest));
+      return;
+    }
     this.writeJsonFile(this.manifestPath, EvaluationManifestSchema.parse(this.manifest));
   }
 
   private saveDataset(detail: EvaluationDatasetDetail) {
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare(
+        "INSERT INTO evaluation_datasets (id, updatedAt, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET updatedAt = excluded.updatedAt, data = excluded.data"
+      ).run(detail.dataset.id, detail.dataset.updatedAt, JSON.stringify(EvaluationDatasetDetailSchema.parse(detail)));
+      return;
+    }
     this.writeJsonFile(path.join(this.datasetsDir, `${encodeURIComponent(detail.dataset.id)}.json`), detail);
   }
 
   private saveRun(evaluationRunId: string) {
     const run = this.runs.get(evaluationRunId);
     if (!run) return;
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare(
+        "INSERT INTO evaluation_runs (id, datasetId, profileId, updatedAt, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET datasetId = excluded.datasetId, profileId = excluded.profileId, updatedAt = excluded.updatedAt, data = excluded.data"
+      ).run(
+        evaluationRunId,
+        run.detail.run.spec.datasetId,
+        run.detail.run.spec.profileId,
+        run.detail.run.updatedAt,
+        JSON.stringify(PersistedEvaluationRunSchema.parse(run)),
+      );
+      return;
+    }
     this.writeJsonFile(path.join(this.runsDir, `${encodeURIComponent(evaluationRunId)}.json`), PersistedEvaluationRunSchema.parse(run));
   }
 
   private saveBaseline(baseline: EvaluationBaseline) {
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare(
+        "INSERT INTO evaluation_baselines (id, datasetId, profileId, createdAt, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET datasetId = excluded.datasetId, profileId = excluded.profileId, createdAt = excluded.createdAt, data = excluded.data"
+      ).run(
+        baseline.id,
+        baseline.datasetId,
+        baseline.profileId,
+        baseline.createdAt,
+        JSON.stringify(EvaluationBaselineSchema.parse(baseline)),
+      );
+      return;
+    }
     this.writeJsonFile(path.join(this.baselinesDir, `${encodeURIComponent(baseline.id)}.json`), baseline);
   }
 
   private saveFeedback(record: EvaluationFeedbackRecord) {
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare(
+        "INSERT INTO evaluation_feedback (id, status, updatedAt, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, updatedAt = excluded.updatedAt, data = excluded.data"
+      ).run(record.id, record.status, record.updatedAt, JSON.stringify(EvaluationFeedbackRecordSchema.parse(record)));
+      return;
+    }
     this.writeJsonFile(path.join(this.feedbackDir, `${encodeURIComponent(record.id)}.json`), record);
+  }
+
+  private saveBlueprint(blueprint: EvaluationBlueprint) {
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare(
+        "INSERT INTO evaluation_blueprints (id, recipe, status, updatedAt, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET recipe = excluded.recipe, status = excluded.status, updatedAt = excluded.updatedAt, data = excluded.data"
+      ).run(
+        blueprint.id,
+        blueprint.recipe,
+        blueprint.status,
+        blueprint.updatedAt,
+        JSON.stringify(EvaluationBlueprintSchema.parse(blueprint)),
+      );
+      return;
+    }
+    this.writeJsonFile(path.join(this.blueprintsDir, `${encodeURIComponent(blueprint.id)}.json`), blueprint);
   }
 
   private async curateFeedbackDraft(
@@ -694,6 +1055,29 @@ export class LocalEvaluationStore {
     fs.renameSync(tempPath, filePath);
   }
 
+  private readSqliteManifest(): EvaluationManifest {
+    const row = this.requireDb().prepare("SELECT data FROM evaluation_manifest WHERE id = 1").get() as { data: string } | undefined;
+    if (!row) {
+      const manifest = EvaluationManifestSchema.parse({});
+      this.writeSqliteManifest(manifest);
+      return manifest;
+    }
+    return EvaluationManifestSchema.parse(JSON.parse(row.data));
+  }
+
+  private writeSqliteManifest(manifest: EvaluationManifest) {
+    this.requireDb().prepare(
+      "INSERT INTO evaluation_manifest (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data"
+    ).run(JSON.stringify(EvaluationManifestSchema.parse(manifest)));
+  }
+
+  private requireDb(): Database.Database {
+    if (!this.db) {
+      throw new Error("Evaluation SQLite database is not initialized.");
+    }
+    return this.db;
+  }
+
   private now() {
     return this.clock();
   }
@@ -705,6 +1089,238 @@ function inferDatasetFormat(fileName?: string) {
   if (lowered.endsWith(".csv")) return "csv";
   if (lowered.endsWith(".json")) return "json";
   return "inline";
+}
+
+function compileEvaluationBlueprint(
+  blueprint: EvaluationBlueprint,
+  overrides: {
+    datasetId?: string;
+    providerId?: string;
+    modelRef?: string;
+    modeIds?: string[];
+  } = {}
+): EvaluationBlueprintCompileResult {
+  const datasetId = overrides.datasetId ?? blueprint.datasetPlan.datasetId ?? blueprint.datasetPlan.linkedDatasetIds[0];
+  if (!datasetId) {
+    throw new Error(`Evaluation blueprint ${blueprint.id} is missing a dataset.`);
+  }
+
+  const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "local-smoke";
+  const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "local/smoke-model";
+  const baseMetadata = {
+    blueprintId: blueprint.id,
+    blueprintRecipe: blueprint.recipe,
+    blueprintTitle: blueprint.title,
+  };
+
+  if (blueprint.recipe === "auto_router_quality") {
+    const spec = EvaluationSpecSchema.parse({
+      datasetId,
+      profileId: blueprint.runPlan.profileId,
+      objective: {
+        kind: "classification",
+        target: "runtime.mode_selection",
+        metrics: blueprint.evaluatorPlan.metrics.length > 0
+          ? blueprint.evaluatorPlan.metrics
+          : ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
+        assertions: blueprint.evaluatorPlan.assertions,
+        displayColumns: [
+          "runtime.modeId",
+          "runtime.autoModeRouter.status",
+          "runtime.autoModeRouter.confidence",
+          "runtime.autoModeRouter.reason",
+        ],
+        metadata: { blueprintId: blueprint.id },
+      },
+      configs: [{
+        id: `auto-router-${providerId}`,
+        label: `Auto Router · ${providerId}`,
+        runConfig: {
+          pattern: "orchestrator_subagent",
+          modeSelection: "auto",
+          providerId,
+          modelRef,
+          providerConfig: blueprint.runPlan.providerConfig,
+          metadata: {
+            ...baseMetadata,
+            providerId,
+            evaluationRouterOnly: true,
+          },
+        },
+      }],
+      repetitions: blueprint.runPlan.repetitions,
+      concurrency: blueprint.runPlan.concurrency,
+      baselineId: blueprint.runPlan.baselineId,
+      metadata: {
+        ...baseMetadata,
+        gateThreshold: blueprint.runPlan.gateThreshold,
+      },
+    });
+    return EvaluationBlueprintCompileResultSchema.parse({
+      blueprint,
+      spec,
+      warnings: [],
+      assumptions: blueprint.assumptions,
+    });
+  }
+
+  if (blueprint.recipe === "mode_comparison") {
+    const subjectModeIds = blueprint.subject.kind === "mode_matrix" ? blueprint.subject.modeIds : [];
+    const modeIds = overrides.modeIds ?? subjectModeIds;
+    if (modeIds.length === 0) {
+      throw new Error(`Evaluation blueprint ${blueprint.id} needs at least one Agent mode.`);
+    }
+    const spec = EvaluationSpecSchema.parse({
+      datasetId,
+      profileId: blueprint.runPlan.profileId,
+      objective: blueprint.target === "run.output"
+        ? undefined
+        : {
+            kind: "outcome",
+            target: blueprint.target,
+            metrics: blueprint.evaluatorPlan.metrics,
+            assertions: blueprint.evaluatorPlan.assertions,
+            displayColumns: [],
+            metadata: { blueprintId: blueprint.id },
+          },
+      configs: modeIds.map((modeId) => ({
+        id: `${modeId}-${providerId}`,
+        label: `${modeId.replace(/_/g, " ")} · ${providerId}`,
+        runConfig: {
+          pattern: modeId,
+          providerId,
+          modelRef,
+          providerConfig: blueprint.runPlan.providerConfig,
+          metadata: baseMetadata,
+        },
+      })),
+      repetitions: blueprint.runPlan.repetitions,
+      concurrency: blueprint.runPlan.concurrency,
+      baselineId: blueprint.runPlan.baselineId,
+      metadata: baseMetadata,
+    });
+    return EvaluationBlueprintCompileResultSchema.parse({
+      blueprint,
+      spec,
+      warnings: [],
+      assumptions: blueprint.assumptions,
+    });
+  }
+
+  throw new Error(`Evaluation recipe is not executable in v1: ${blueprint.recipe}`);
+}
+
+function inferRecipeFromGoal(goal: string): EvaluationRecipeId {
+  const lowered = goal.toLowerCase();
+  if (lowered.includes("router") || lowered.includes("路由") || lowered.includes("mode selection") || lowered.includes("auto mode")) {
+    return "auto_router_quality";
+  }
+  return "mode_comparison";
+}
+
+function draftEvaluationBlueprint(params: {
+  goal: string;
+  recipe: EvaluationRecipeId;
+  datasetId?: string;
+  providerId?: string;
+  modelRef?: string;
+  now: number;
+  id: string;
+}): EvaluationBlueprint {
+  if (params.recipe === "auto_router_quality") {
+    return EvaluationBlueprintSchema.parse({
+      id: params.id,
+      title: "Auto Router Quality",
+      goal: params.goal.trim(),
+      recipe: "auto_router_quality",
+      target: "runtime.mode_selection",
+      subject: { kind: "auto_router" },
+      datasetPlan: {
+        datasetId: params.datasetId,
+        sources: params.datasetId ? ["existing_dataset"] : ["file_import", "synthetic"],
+        caseRequirements: [
+          "single-turn easy route cases",
+          "mode-specific core intent cases",
+          "ambiguous fallback cases",
+          "multi-turn context shift cases",
+          "explicit negative instruction cases",
+          "acceptable alternative mode cases",
+        ],
+        linkedDatasetIds: params.datasetId ? [params.datasetId] : [],
+      },
+      evaluatorPlan: {
+        metrics: ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
+        assertions: [],
+        notes: "Score selected mode, acceptable alternatives, fallback behavior, and confidence calibration.",
+      },
+      runPlan: {
+        profileId: "outcome",
+        providerId: params.providerId ?? "local-smoke",
+        modelRef: params.modelRef ?? "local/smoke-model",
+        repetitions: 1,
+        concurrency: 1,
+        routerOnly: true,
+        exportFormats: ["json", "csv"],
+      },
+      reviewPlan: {
+        emphasis: ["selected mode distribution", "fallback count", "confidence distribution", "case-level router reasons"],
+        failureTags: ["wrong_mode", "unexpected_fallback", "low_confidence"],
+        includeTraceLinks: true,
+        recommendedActions: ["add failed cases to dataset", "promote stable run as baseline"],
+      },
+      status: "draft",
+      assumptions: [
+        "Router-only execution should stop after mode selection.",
+        "Cases should include expected mode or acceptable alternatives in structured expected data.",
+      ],
+      missingInformation: params.datasetId ? [] : ["Select or import an Auto Router dataset before running."],
+      linkedRunIds: [],
+      schemaVersion: 1,
+      createdAt: params.now,
+      updatedAt: params.now,
+    });
+  }
+
+  return EvaluationBlueprintSchema.parse({
+    id: params.id,
+    title: "Agent Mode Comparison",
+    goal: params.goal.trim(),
+    recipe: "mode_comparison",
+    target: "run.output",
+    subject: { kind: "mode_matrix", modeIds: ["orchestrator_subagent", "agent_teams"] },
+    datasetPlan: {
+      datasetId: params.datasetId,
+      sources: params.datasetId ? ["existing_dataset"] : ["file_import", "feedback_inbox"],
+      caseRequirements: ["representative task completion cases", "known regressions", "edge cases with expected output"],
+      linkedDatasetIds: params.datasetId ? [params.datasetId] : [],
+    },
+    evaluatorPlan: {
+      metrics: ["text_similarity", "assertion_pass_rate", "latency_score", "cost_score"],
+      assertions: [],
+    },
+    runPlan: {
+      profileId: "outcome",
+      providerId: params.providerId ?? "local-smoke",
+      modelRef: params.modelRef ?? "local/smoke-model",
+      repetitions: 1,
+      concurrency: 1,
+      routerOnly: false,
+      exportFormats: ["json", "csv"],
+    },
+    reviewPlan: {
+      emphasis: ["scorecard", "config comparison", "failure tags", "trace links"],
+      failureTags: ["output_mismatch", "process_issue", "regression"],
+      includeTraceLinks: true,
+      recommendedActions: ["inspect low-score cases", "promote best stable config as baseline"],
+    },
+    status: "draft",
+    assumptions: ["Agent modes are represented by the existing coordination pattern ids in v1."],
+    missingInformation: params.datasetId ? [] : ["Select or import a dataset before running."],
+    linkedRunIds: [],
+    schemaVersion: 1,
+    createdAt: params.now,
+    updatedAt: params.now,
+  });
 }
 
 function deriveDatasetName(fileName: string | undefined, sourceFormat: EvaluationDatasetSourceFormat) {
@@ -1105,6 +1721,7 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
   const autoModeRouter = snapshot.config.metadata.autoModeRouter && typeof snapshot.config.metadata.autoModeRouter === "object"
     ? snapshot.config.metadata.autoModeRouter as Record<string, unknown>
     : {};
+  const effectiveStrategy = snapshot.config.effectiveStrategy;
   return {
     run: {
       status: snapshot.status,
@@ -1121,6 +1738,7 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
         confidence: numberValue(autoModeRouter.confidence),
         reason: stringValue(autoModeRouter.reason),
       },
+      ...(effectiveStrategy ? { effectiveStrategy } : {}),
     },
     trace: {
       eventTypes: snapshot.events.map((event) => event.type),

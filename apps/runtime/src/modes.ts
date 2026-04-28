@@ -145,6 +145,9 @@ export class ModeSpecFileStore {
       defaultBudget: { ...source.defaultBudget },
       profiles: source.profiles.map((profile) => ({ ...profile })),
       completionPolicy: { ...source.completionPolicy },
+      runtimePolicy: { ...source.runtimePolicy },
+      recoveryPolicy: { ...source.recoveryPolicy },
+      memoryPolicy: { ...source.memoryPolicy },
     });
   }
 

@@ -13,6 +13,12 @@ import type {
   CustomAgentSummary as OraCustomAgentSummary,
   CustomAgentUpdateParams as OraCustomAgentUpdateParams,
   EvaluationBaseline as OraEvaluationBaseline,
+  EvaluationBlueprint as OraEvaluationBlueprint,
+  EvaluationBlueprintCompileResult as OraEvaluationBlueprintCompileResult,
+  EvaluationBlueprintCreateParams as OraEvaluationBlueprintCreateParams,
+  EvaluationBlueprintGenerateDraftParams as OraEvaluationBlueprintGenerateDraftParams,
+  EvaluationBlueprintListParams as OraEvaluationBlueprintListParams,
+  EvaluationBlueprintUpdateParams as OraEvaluationBlueprintUpdateParams,
   EvaluationCaseResult as OraEvaluationCaseResult,
   EvaluationDataset as OraEvaluationDataset,
   EvaluationDatasetDetail as OraEvaluationDatasetDetail,
@@ -109,6 +115,12 @@ export type {
   OraCustomAgentSummary,
   OraCustomAgentUpdateParams,
   OraEvaluationBaseline,
+  OraEvaluationBlueprint,
+  OraEvaluationBlueprintCompileResult,
+  OraEvaluationBlueprintCreateParams,
+  OraEvaluationBlueprintGenerateDraftParams,
+  OraEvaluationBlueprintListParams,
+  OraEvaluationBlueprintUpdateParams,
   OraEvaluationCaseResult,
   OraEvaluationDataset,
   OraEvaluationDatasetDetail,
@@ -386,6 +398,24 @@ export function createRuntimeClient() {
     },
     async getEvaluationDataset(datasetId: string): Promise<OraEvaluationDatasetDetail> {
       return call<OraEvaluationDatasetDetail>("evaluation.datasets.get", { datasetId });
+    },
+    async createEvaluationBlueprint(params: OraEvaluationBlueprintCreateParams): Promise<OraEvaluationBlueprint> {
+      return call<OraEvaluationBlueprint>("evaluation.blueprints.create", params);
+    },
+    async updateEvaluationBlueprint(params: OraEvaluationBlueprintUpdateParams): Promise<OraEvaluationBlueprint> {
+      return call<OraEvaluationBlueprint>("evaluation.blueprints.update", params);
+    },
+    async listEvaluationBlueprints(params: OraEvaluationBlueprintListParams = {}): Promise<OraEvaluationBlueprint[]> {
+      return call<OraEvaluationBlueprint[]>("evaluation.blueprints.list", params);
+    },
+    async getEvaluationBlueprint(blueprintId: string): Promise<OraEvaluationBlueprint> {
+      return call<OraEvaluationBlueprint>("evaluation.blueprints.get", { blueprintId });
+    },
+    async compileEvaluationBlueprint(params: { blueprintId?: string; blueprint?: OraEvaluationBlueprint; datasetId?: string; providerId?: string; modelRef?: string; modeIds?: string[] }): Promise<OraEvaluationBlueprintCompileResult> {
+      return call<OraEvaluationBlueprintCompileResult>("evaluation.blueprints.compile", params);
+    },
+    async generateEvaluationBlueprintDraft(params: OraEvaluationBlueprintGenerateDraftParams): Promise<OraEvaluationBlueprint> {
+      return call<OraEvaluationBlueprint>("evaluation.blueprints.generateDraft", params);
     },
     async startEvaluationRun(spec: OraEvaluationSpec): Promise<OraEvaluationRunDetail> {
       return call<OraEvaluationRunDetail>("evaluation.runs.start", spec);
@@ -912,6 +942,7 @@ class LocalJsonRpcRuntime {
   private evaluationRuns = new Map<string, OraEvaluationRunDetail>();
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
   private evaluationFeedback = new Map<string, OraEvaluationFeedbackRecord>();
+  private evaluationBlueprints = new Map<string, OraEvaluationBlueprint>();
   private feedbackLoopApplied = new Map<string, string>();
   private feedbackLoopDismissed = new Set<string>();
   private feedbackLoopRules = new Map<string, OraFeedbackLoopCalibrationRule>();
@@ -922,6 +953,7 @@ class LocalJsonRpcRuntime {
   private nextEvaluationRunNumber = 1;
   private nextEvaluationBaselineNumber = 1;
   private nextEvaluationFeedbackNumber = 1;
+  private nextEvaluationBlueprintNumber = 1;
 
   async handle(request: JsonRpcRequest): Promise<JsonRpcResponse> {
     try {
@@ -1154,6 +1186,28 @@ class LocalJsonRpcRuntime {
         if (!detail) throw new Error(`Evaluation dataset not found: ${datasetId}`);
         return detail;
       }
+      case "evaluation.blueprints.create":
+        return this.createEvaluationBlueprint(params);
+      case "evaluation.blueprints.update":
+        return this.updateEvaluationBlueprint(params);
+      case "evaluation.blueprints.list": {
+        const parsed = params as OraEvaluationBlueprintListParams | undefined;
+        return [...this.evaluationBlueprints.values()]
+          .filter((blueprint) => parsed?.recipe ? blueprint.recipe === parsed.recipe : true)
+          .filter((blueprint) => parsed?.status ? blueprint.status === parsed.status : true)
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+          .slice(0, parsed?.limit);
+      }
+      case "evaluation.blueprints.get": {
+        const blueprintId = typeof params === "object" && params !== null && "blueprintId" in params ? String((params as { blueprintId: unknown }).blueprintId) : "";
+        const blueprint = this.evaluationBlueprints.get(blueprintId);
+        if (!blueprint) throw new Error(`Evaluation blueprint not found: ${blueprintId}`);
+        return blueprint;
+      }
+      case "evaluation.blueprints.compile":
+        return this.compileEvaluationBlueprint(params);
+      case "evaluation.blueprints.generateDraft":
+        return this.generateEvaluationBlueprintDraft(params);
       case "evaluation.runs.start":
         return this.startEvaluationRun(params);
       case "evaluation.runs.list":
@@ -2918,6 +2972,62 @@ class LocalJsonRpcRuntime {
     return detail;
   }
 
+  private createEvaluationBlueprint(params: unknown): OraEvaluationBlueprint {
+    const parsed = params as OraEvaluationBlueprintCreateParams;
+    const now = Date.now();
+    const blueprint: OraEvaluationBlueprint = {
+      ...parsed,
+      id: `blueprint-${String(this.nextEvaluationBlueprintNumber++).padStart(4, "0")}`,
+      status: parsed.status ?? "draft",
+      assumptions: parsed.assumptions ?? [],
+      missingInformation: parsed.missingInformation ?? [],
+      linkedRunIds: parsed.linkedRunIds ?? [],
+      schemaVersion: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.evaluationBlueprints.set(blueprint.id, blueprint);
+    return blueprint;
+  }
+
+  private updateEvaluationBlueprint(params: unknown): OraEvaluationBlueprint {
+    const parsed = params as OraEvaluationBlueprintUpdateParams;
+    const current = this.evaluationBlueprints.get(parsed.blueprintId);
+    if (!current) throw new Error(`Evaluation blueprint not found: ${parsed.blueprintId}`);
+    const next: OraEvaluationBlueprint = {
+      ...current,
+      ...parsed.updates,
+      id: current.id,
+      schemaVersion: 1,
+      createdAt: current.createdAt,
+      updatedAt: Date.now(),
+    };
+    this.evaluationBlueprints.set(next.id, next);
+    return next;
+  }
+
+  private compileEvaluationBlueprint(params: unknown): OraEvaluationBlueprintCompileResult {
+    const parsed = params as { blueprintId?: string; blueprint?: OraEvaluationBlueprint; datasetId?: string; providerId?: string; modelRef?: string; modeIds?: string[] };
+    const blueprint = parsed.blueprint ?? (parsed.blueprintId ? this.evaluationBlueprints.get(parsed.blueprintId) : undefined);
+    if (!blueprint) throw new Error(`Evaluation blueprint not found: ${parsed.blueprintId ?? ""}`);
+    return compileMockEvaluationBlueprint(blueprint, parsed);
+  }
+
+  private generateEvaluationBlueprintDraft(params: unknown): OraEvaluationBlueprint {
+    const parsed = params as OraEvaluationBlueprintGenerateDraftParams;
+    const blueprint = draftMockEvaluationBlueprint({
+      id: `blueprint-${String(this.nextEvaluationBlueprintNumber++).padStart(4, "0")}`,
+      now: Date.now(),
+      goal: parsed.goal,
+      recipe: parsed.recipe,
+      datasetId: parsed.datasetId,
+      providerId: parsed.providerId,
+      modelRef: parsed.modelRef,
+    });
+    this.evaluationBlueprints.set(blueprint.id, blueprint);
+    return blueprint;
+  }
+
   private startEvaluationRun(params: unknown): OraEvaluationRunDetail {
     const spec = params as OraEvaluationSpec;
     const dataset = this.evaluationDatasets.get(spec.datasetId);
@@ -4127,6 +4237,213 @@ function parseMockSkillContent(expectedName: string, content: string): { descrip
     throw new Error("Skill frontmatter description is required.");
   }
   return { description };
+}
+
+function compileMockEvaluationBlueprint(
+  blueprint: OraEvaluationBlueprint,
+  overrides: { datasetId?: string; providerId?: string; modelRef?: string; modeIds?: string[] } = {},
+): OraEvaluationBlueprintCompileResult {
+  const datasetId = overrides.datasetId ?? blueprint.datasetPlan.datasetId ?? blueprint.datasetPlan.linkedDatasetIds[0];
+  if (!datasetId) throw new Error(`Evaluation blueprint ${blueprint.id} is missing a dataset.`);
+  const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "local-smoke";
+  const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "local/smoke-model";
+  const baseMetadata = {
+    blueprintId: blueprint.id,
+    blueprintRecipe: blueprint.recipe,
+    blueprintTitle: blueprint.title,
+  };
+  if (blueprint.recipe === "auto_router_quality") {
+    return {
+      blueprint,
+      spec: {
+        datasetId,
+        profileId: blueprint.runPlan.profileId,
+        objective: {
+          kind: "classification",
+          target: "runtime.mode_selection",
+          metrics: blueprint.evaluatorPlan.metrics.length > 0
+            ? blueprint.evaluatorPlan.metrics
+            : ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
+          assertions: blueprint.evaluatorPlan.assertions,
+          displayColumns: [
+            "runtime.modeId",
+            "runtime.autoModeRouter.status",
+            "runtime.autoModeRouter.confidence",
+            "runtime.autoModeRouter.reason",
+          ],
+          metadata: { blueprintId: blueprint.id },
+        },
+        configs: [{
+          id: `auto-router-${providerId}`,
+          label: `Auto Router · ${providerId}`,
+          runConfig: {
+            pattern: "orchestrator_subagent",
+            modeSelection: "auto",
+            providerId,
+            modelRef,
+            providerConfig: blueprint.runPlan.providerConfig as OraProviderConfig | undefined,
+            metadata: {
+              ...baseMetadata,
+              providerId,
+              evaluationRouterOnly: true,
+            },
+          },
+        }],
+        repetitions: blueprint.runPlan.repetitions,
+        concurrency: blueprint.runPlan.concurrency,
+        baselineId: blueprint.runPlan.baselineId,
+        metadata: baseMetadata,
+      },
+      warnings: [],
+      assumptions: blueprint.assumptions,
+    };
+  }
+  const subjectModeIds = blueprint.subject.kind === "mode_matrix" ? blueprint.subject.modeIds : [];
+  const modeIds = overrides.modeIds ?? subjectModeIds;
+  if (modeIds.length === 0) throw new Error(`Evaluation blueprint ${blueprint.id} needs at least one Agent mode.`);
+  return {
+    blueprint,
+    spec: {
+      datasetId,
+      profileId: blueprint.runPlan.profileId,
+      objective: blueprint.target === "run.output"
+        ? undefined
+        : {
+            kind: "outcome",
+            target: blueprint.target,
+            metrics: blueprint.evaluatorPlan.metrics,
+            assertions: blueprint.evaluatorPlan.assertions,
+            displayColumns: [],
+            metadata: { blueprintId: blueprint.id },
+          },
+      configs: modeIds.map((modeId) => ({
+        id: `${modeId}-${providerId}`,
+        label: `${modeId.replace(/_/g, " ")} · ${providerId}`,
+        runConfig: {
+          pattern: modeId as CoordinationPattern,
+          providerId,
+          modelRef,
+          providerConfig: blueprint.runPlan.providerConfig as OraProviderConfig | undefined,
+          metadata: baseMetadata,
+        },
+      })),
+      repetitions: blueprint.runPlan.repetitions,
+      concurrency: blueprint.runPlan.concurrency,
+      baselineId: blueprint.runPlan.baselineId,
+      metadata: baseMetadata,
+    },
+    warnings: [],
+    assumptions: blueprint.assumptions,
+  };
+}
+
+function draftMockEvaluationBlueprint(params: {
+  id: string;
+  now: number;
+  goal: string;
+  recipe?: OraEvaluationBlueprint["recipe"];
+  datasetId?: string;
+  providerId?: string;
+  modelRef?: string;
+}): OraEvaluationBlueprint {
+  const recipe = params.recipe ?? inferMockRecipeFromGoal(params.goal);
+  if (recipe === "auto_router_quality") {
+    return {
+      id: params.id,
+      title: "Auto Router Quality",
+      goal: params.goal.trim(),
+      recipe,
+      target: "runtime.mode_selection",
+      subject: { kind: "auto_router" },
+      datasetPlan: {
+        datasetId: params.datasetId,
+        sources: params.datasetId ? ["existing_dataset"] : ["file_import", "synthetic"],
+        caseRequirements: ["single-turn easy cases", "mode-specific cases", "ambiguous fallback cases", "multi-turn context shift cases"],
+        linkedDatasetIds: params.datasetId ? [params.datasetId] : [],
+        metadata: {},
+      },
+      evaluatorPlan: {
+        metrics: ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
+        assertions: [],
+        metadata: {},
+      },
+      runPlan: {
+        profileId: "outcome",
+        providerId: params.providerId ?? "local-smoke",
+        modelRef: params.modelRef ?? "local/smoke-model",
+        repetitions: 1,
+        concurrency: 1,
+        routerOnly: true,
+        exportFormats: ["json", "csv"],
+        metadata: {},
+      },
+      reviewPlan: {
+        emphasis: ["selected mode distribution", "fallback count", "confidence distribution", "case-level reasons"],
+        failureTags: ["wrong_mode", "unexpected_fallback", "low_confidence"],
+        includeTraceLinks: true,
+        recommendedActions: ["add failed cases", "promote baseline"],
+        metadata: {},
+      },
+      status: "draft",
+      assumptions: ["Router-only execution stops after mode selection."],
+      missingInformation: params.datasetId ? [] : ["Select or import a router dataset."],
+      linkedRunIds: [],
+      schemaVersion: 1,
+      createdAt: params.now,
+      updatedAt: params.now,
+    };
+  }
+  return {
+    id: params.id,
+    title: "Agent Mode Comparison",
+    goal: params.goal.trim(),
+    recipe: "mode_comparison",
+    target: "run.output",
+    subject: { kind: "mode_matrix", modeIds: ["orchestrator_subagent", "agent_teams"] },
+    datasetPlan: {
+      datasetId: params.datasetId,
+      sources: params.datasetId ? ["existing_dataset"] : ["file_import", "feedback_inbox"],
+      caseRequirements: ["representative cases", "known regressions", "edge cases"],
+      linkedDatasetIds: params.datasetId ? [params.datasetId] : [],
+      metadata: {},
+    },
+    evaluatorPlan: {
+      metrics: ["text_similarity", "assertion_pass_rate", "latency_score", "cost_score"],
+      assertions: [],
+      metadata: {},
+    },
+    runPlan: {
+      profileId: "outcome",
+      providerId: params.providerId ?? "local-smoke",
+      modelRef: params.modelRef ?? "local/smoke-model",
+      repetitions: 1,
+      concurrency: 1,
+      routerOnly: false,
+      exportFormats: ["json", "csv"],
+      metadata: {},
+    },
+    reviewPlan: {
+      emphasis: ["scorecard", "config comparison", "failure tags", "trace links"],
+      failureTags: ["output_mismatch", "process_issue", "regression"],
+      includeTraceLinks: true,
+      recommendedActions: ["inspect low-score cases", "promote best stable config"],
+      metadata: {},
+    },
+    status: "draft",
+    assumptions: ["Mode ids map to current coordination pattern ids in the browser fallback."],
+    missingInformation: params.datasetId ? [] : ["Select or import a dataset."],
+    linkedRunIds: [],
+    schemaVersion: 1,
+    createdAt: params.now,
+    updatedAt: params.now,
+  };
+}
+
+function inferMockRecipeFromGoal(goal: string): OraEvaluationBlueprint["recipe"] {
+  const lowered = goal.toLowerCase();
+  return lowered.includes("router") || lowered.includes("路由") || lowered.includes("auto mode") || lowered.includes("mode selection")
+    ? "auto_router_quality"
+    : "mode_comparison";
 }
 
 function inferMockDatasetFormat(sourceFileName?: string): "json" | "jsonl" | "csv" | "inline" {

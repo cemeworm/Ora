@@ -99,6 +99,14 @@ export interface PendingApprovalItem {
   eventId?: string;
 }
 
+export interface EffectiveStrategySummary {
+  title: string;
+  detail: string;
+  statusLabel: string;
+  statusTone: "success" | "warning" | "neutral";
+  notes: string[];
+}
+
 export function buildTrailDebugSummary(
   snapshot: OraStateSnapshot,
   trail: OraRunTrail | undefined,
@@ -274,6 +282,16 @@ export function collectTrailFindings(
       suggestedTab: "flow",
     });
   }
+  if (snapshot.config.effectiveStrategy?.providerPolicyStatus === "degraded") {
+    push({
+      id: "strategy.provider-degraded",
+      severity: "warning",
+      title: "Provider thinking degraded",
+      message: snapshot.config.effectiveStrategy.notes[0] ?? "The selected provider could not honor this mode's requested reasoning policy.",
+      targetType: "run",
+      suggestedTab: "overview",
+    });
+  }
   for (const call of snapshot.toolCalls ?? []) {
     if (call.status === "failed") {
       push({
@@ -438,6 +456,38 @@ export function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingAp
       eventId: event?.id,
     };
   });
+}
+
+export function buildEffectiveStrategySummary(snapshot: OraStateSnapshot): EffectiveStrategySummary | undefined {
+  const strategy = snapshot.config.effectiveStrategy;
+  if (!strategy) {
+    return undefined;
+  }
+  const statusTone = strategy.providerPolicyStatus === "degraded"
+    ? "warning"
+    : strategy.providerPolicyStatus === "applied"
+      ? "success"
+      : "neutral";
+  const statusLabel = strategy.providerPolicyStatus === "applied"
+    ? "Applied"
+    : strategy.providerPolicyStatus === "degraded"
+      ? "Degraded"
+      : "Unsupported";
+  return {
+    title: `${sentenceCase(strategy.thinking)} thinking`,
+    detail: [
+      `${sentenceCase(strategy.sourceModeSelection)} mode ${strategy.sourceModeId}`,
+      `${sentenceCase(strategy.reasoningEffort ?? "none")} reasoning`,
+      `${sentenceCase(strategy.planning)} planning`,
+      strategy.delegationEnabled
+        ? `${sentenceCase(strategy.delegation)} delegation`
+        : "No delegation",
+      `${strategy.budget.maxToolCalls} tools`,
+    ].join(" · "),
+    statusLabel,
+    statusTone,
+    notes: strategy.notes,
+  };
 }
 
 export function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
@@ -694,6 +744,11 @@ function previewValue(value: unknown, maxLength = 180): string | undefined {
     return undefined;
   }
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function sentenceCase(value: string) {
+  const text = value.replace(/_/g, " ");
+  return text.slice(0, 1).toUpperCase() + text.slice(1);
 }
 
 function latestFailureDetail(snapshot: OraStateSnapshot): string | undefined {

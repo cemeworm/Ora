@@ -9,6 +9,10 @@ import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, is
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
 describe("desktop composer pending-run behavior", () => {
+  it("keeps thinking depth out of desktop composer state", () => {
+    expect(initialWorkbenchState).not.toHaveProperty("inputMode");
+  });
+
   it("defaults fresh desktop mode selection to single agent", () => {
     const next = workbenchReducer(initialWorkbenchState, {
       type: "BOOTSTRAP",

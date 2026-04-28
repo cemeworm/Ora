@@ -22,6 +22,8 @@ async function main() {
     "  ora-runtime --smoke",
     "  ora-runtime eval import --file <path> [--name <dataset-name>]",
     "  ora-runtime eval run --spec <path-to-spec.json>",
+    "  ora-runtime eval run --blueprint <path-or-id> [--dataset-id <dataset-id>]",
+    "  ora-runtime eval compile-blueprint --blueprint <path-or-id> [--dataset-id <dataset-id>] [--output <path>]",
     "  ora-runtime eval list [--dataset-id <dataset-id>]",
     "  ora-runtime eval export --run <evaluation-run-id> [--format json|csv] [--output <path>]",
     "  ora-runtime eval promote-baseline --run <evaluation-run-id> --config <config-id> [--name <baseline-name>]",
@@ -139,8 +141,9 @@ async function runEvalCommand(args: string[]) {
       return;
     }
     case "run": {
-      const specPath = requiredFlag(flags, "--spec");
-      const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+      const spec = flags["--blueprint"]
+        ? await compileBlueprintForCli(handle, flags)
+        : JSON.parse(fs.readFileSync(requiredFlag(flags, "--spec"), "utf8"));
       const result = await handle({
         jsonrpc: "2.0",
         id: 1,
@@ -148,6 +151,18 @@ async function runEvalCommand(args: string[]) {
         params: spec,
       });
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    case "compile-blueprint": {
+      const spec = await compileBlueprintForCli(handle, flags);
+      const outputPath = flags["--output"];
+      const content = `${JSON.stringify(spec, null, 2)}\n`;
+      if (outputPath) {
+        fs.writeFileSync(outputPath, content, "utf8");
+        process.stdout.write(`${outputPath}\n`);
+      } else {
+        process.stdout.write(content);
+      }
       return;
     }
     case "list": {
@@ -203,6 +218,30 @@ async function runEvalCommand(args: string[]) {
     default:
       throw new Error(`Unknown eval subcommand: ${subcommand ?? "<missing>"}`);
   }
+}
+
+async function compileBlueprintForCli(
+  handle: ReturnType<typeof createRuntimeMethodHandler>,
+  flags: Record<string, string>
+) {
+  const blueprintRef = requiredFlag(flags, "--blueprint");
+  const blueprint = fs.existsSync(blueprintRef)
+    ? JSON.parse(fs.readFileSync(blueprintRef, "utf8"))
+    : undefined;
+  const result = await handle({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "evaluation.blueprints.compile",
+    params: {
+      blueprint,
+      blueprintId: blueprint ? undefined : blueprintRef,
+      datasetId: flags["--dataset-id"],
+      providerId: flags["--provider-id"],
+      modelRef: flags["--model-ref"],
+      modeIds: flags["--mode-ids"] ? splitList(flags["--mode-ids"]) : undefined,
+    },
+  }) as { spec: unknown };
+  return result.spec;
 }
 
 function parseFlags(args: string[]) {

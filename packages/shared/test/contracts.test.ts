@@ -21,6 +21,10 @@ import {
   DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
   EvaluationBaselineSchema,
+  EvaluationBlueprintCompileResultSchema,
+  EvaluationBlueprintCreateParamsSchema,
+  EvaluationBlueprintGenerateDraftParamsSchema,
+  EvaluationBlueprintSchema,
   EvaluationDatasetDetailSchema,
   EvaluationDatasetSchema,
   EvaluationExportResultSchema,
@@ -35,6 +39,7 @@ import {
   EvaluationMetricScoreSchema,
   EvaluationObjectiveSchema,
   EvaluationObservationSchema,
+  EffectiveRunStrategySchema,
   FeedbackLoopActionApplyParamsSchema,
   FeedbackLoopActionPreviewParamsSchema,
   FeedbackLoopActionResultSchema,
@@ -180,6 +185,8 @@ describe("Ora shared contracts", () => {
       expect(mode.nodes.every((node) => node.position)).toBe(true);
       expect(Array.isArray(mode.runtimeAtoms)).toBe(true);
       expect(["decisive", "balanced", "persistent"]).toContain(mode.completionPolicy.preset);
+      expect(["off", "standard", "deep"]).toContain(mode.runtimePolicy.thinking);
+      expect(["fast", "balanced", "deep"]).toContain(mode.runtimePolicy.budgetProfile);
       if (mode.visibility !== "internal") {
         expect(mode.capabilityFlags.toolIds).toEqual(DEFAULT_AGENT_MODE_TOOL_IDS);
         for (const toolId of DEFAULT_SKILL_TOOL_IDS) {
@@ -197,6 +204,12 @@ describe("Ora shared contracts", () => {
     expect(deerflowHarness.systemPreset).toBe(true);
     expect(deerflowHarness.family).toBe("orchestrator_subagent");
     expect(deerflowHarness.completionPolicy.preset).toBe("persistent");
+    expect(deerflowHarness.runtimePolicy).toMatchObject({
+      thinking: "deep",
+      planning: "explicit",
+      delegation: "allowed",
+      providerThinking: "required",
+    });
     expect(deerflowHarness.capabilityFlags.toolIds).toContain("model.handoff");
     expect(deerflowHarness.nodes.filter((node) => Array.isArray(node.config.atoms) && node.config.atoms.includes("subagent_delegate")).map((node) => node.id)).toEqual([
       "research",
@@ -205,6 +218,28 @@ describe("Ora shared contracts", () => {
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
+  });
+
+  it("validates effective run strategy records", () => {
+    const singleAgent = MVP_MODES.find((mode) => mode.id === "single_agent")!;
+    const strategy = EffectiveRunStrategySchema.parse({
+      sourceModeId: singleAgent.id,
+      sourceModeSelection: "manual",
+      thinking: singleAgent.runtimePolicy.thinking,
+      reasoningEffort: singleAgent.runtimePolicy.reasoningEffort,
+      budgetProfile: singleAgent.runtimePolicy.budgetProfile,
+      budget: singleAgent.defaultBudget,
+      planning: singleAgent.runtimePolicy.planning,
+      planningEnabled: true,
+      delegation: singleAgent.runtimePolicy.delegation,
+      delegationEnabled: false,
+      providerThinkingEnabled: false,
+      providerPolicyStatus: "unsupported",
+      notes: ["Local smoke provider does not support reasoning."],
+    });
+
+    expect(strategy.sourceModeId).toBe("single_agent");
+    expect(strategy.budget.maxToolCalls).toBe(singleAgent.defaultBudget.maxToolCalls);
   });
 
   it("keeps canonical built-in agents on concrete responsibility contracts", () => {
@@ -272,6 +307,14 @@ describe("Ora shared contracts", () => {
     const parsed = ModeSpecSchema.parse(legacy);
 
     expect(parsed.completionPolicy).toEqual(completionPolicyForPreset("balanced"));
+  });
+
+  it("accepts legacy mode specs without a runtime policy", () => {
+    const { runtimePolicy: _runtimePolicy, ...legacy } = MVP_MODES[1]!;
+    const parsed = ModeSpecSchema.parse(legacy);
+
+    expect(parsed.runtimePolicy.thinking).toBe("standard");
+    expect(parsed.runtimePolicy.budgetProfile).toBe("balanced");
   });
 
   it("validates recovery policy tool and skip constraints", () => {
@@ -1189,6 +1232,63 @@ describe("Ora shared contracts", () => {
     });
     expect(objectiveSpec.profileId).toBe("outcome");
     expect(objectiveSpec.objective?.metrics).toContain("acceptable_match");
+
+    const blueprint = EvaluationBlueprintSchema.parse({
+      id: "blueprint-0001",
+      title: "Auto Router Quality",
+      goal: "评估 Auto Mode Router 在多轮上下文后是否还能选对 mode。",
+      recipe: "auto_router_quality",
+      target: "runtime.mode_selection",
+      subject: { kind: "auto_router" },
+      datasetPlan: {
+        datasetId: dataset.id,
+        sources: ["existing_dataset"],
+        caseRequirements: ["multi-turn context shift cases"],
+        linkedDatasetIds: [dataset.id],
+      },
+      evaluatorPlan: {
+        metrics: ["exact_match", "acceptable_match", "confidence_calibration"],
+        assertions: [],
+      },
+      runPlan: {
+        profileId: "outcome",
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        repetitions: 1,
+        concurrency: 1,
+        routerOnly: true,
+      },
+      reviewPlan: {
+        emphasis: ["confusion matrix", "fallback count"],
+        failureTags: ["wrong_mode"],
+      },
+      status: "draft",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(blueprint.subject.kind).toBe("auto_router");
+    expect(EvaluationBlueprintCreateParamsSchema.parse({
+      title: blueprint.title,
+      goal: blueprint.goal,
+      recipe: blueprint.recipe,
+      target: blueprint.target,
+      subject: blueprint.subject,
+      datasetPlan: blueprint.datasetPlan,
+      evaluatorPlan: blueprint.evaluatorPlan,
+      runPlan: blueprint.runPlan,
+      reviewPlan: blueprint.reviewPlan,
+    }).recipe).toBe("auto_router_quality");
+    expect(EvaluationBlueprintGenerateDraftParamsSchema.parse({
+      goal: blueprint.goal,
+      datasetId: dataset.id,
+    }).datasetId).toBe(dataset.id);
+    const compileResult = EvaluationBlueprintCompileResultSchema.parse({
+      blueprint,
+      spec: objectiveSpec,
+      warnings: [],
+      assumptions: ["Router-only execution stops after mode selection."],
+    });
+    expect(compileResult.spec.objective?.target).toBe("runtime.mode_selection");
 
     const metricScore = EvaluationMetricScoreSchema.parse({
       metricId: "acceptable_match",

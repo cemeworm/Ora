@@ -594,6 +594,7 @@ export function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     profiles,
     runtimeAtoms,
     completionPolicy,
+    runtimePolicy,
     recoveryPolicy,
     memoryPolicy,
   } = spec;
@@ -615,6 +616,7 @@ export function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     profiles,
     runtimeAtoms,
     completionPolicy,
+    runtimePolicy,
     recoveryPolicy,
     memoryPolicy,
   };

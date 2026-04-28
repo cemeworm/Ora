@@ -388,10 +388,19 @@ function providerMatchesPreset(provider: OraProviderConfig, preset: ProviderPres
   return false;
 }
 
+function isUserVisibleProvider(provider: OraProviderConfig) {
+  return provider.type !== "local_smoke";
+}
+
+function isUserVisiblePreset(preset: ProviderPreset) {
+  return preset.type !== "local_smoke";
+}
+
 export function buildProviderCatalog(providers: readonly OraProviderConfig[]): ProviderCatalogEntry[] {
   const usedProviderIds = new Set<string>();
-  const entries: ProviderCatalogEntry[] = PROVIDER_PRESETS.map((preset) => {
-    const matchingProviders = providers.filter((candidate) => !usedProviderIds.has(candidate.id) && providerMatchesPreset(candidate, preset));
+  const visibleProviders = providers.filter(isUserVisibleProvider);
+  const entries: ProviderCatalogEntry[] = PROVIDER_PRESETS.filter(isUserVisiblePreset).map((preset) => {
+    const matchingProviders = visibleProviders.filter((candidate) => !usedProviderIds.has(candidate.id) && providerMatchesPreset(candidate, preset));
     if (matchingProviders.length > 0) {
       for (const provider of matchingProviders) {
         usedProviderIds.add(provider.id);
@@ -423,7 +432,7 @@ export function buildProviderCatalog(providers: readonly OraProviderConfig[]): P
   });
 
   const customProviderGroups = new Map<string, OraProviderConfig[]>();
-  for (const provider of providers.filter((candidate) => !usedProviderIds.has(candidate.id))) {
+  for (const provider of visibleProviders.filter((candidate) => !usedProviderIds.has(candidate.id))) {
     const baseId = getModelProviderBaseId(provider.id);
     customProviderGroups.set(baseId, [...(customProviderGroups.get(baseId) ?? []), provider]);
   }

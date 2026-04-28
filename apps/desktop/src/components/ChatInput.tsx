@@ -2,25 +2,27 @@ import {
   ArrowUp,
   BrainCircuit,
   Bot,
-  GraduationCap,
   LoaderCircle,
-  Lightbulb,
   Paperclip,
   Rocket,
   Square,
   X,
-  Zap,
 } from "lucide-react";
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import type { ModeCard } from "../types";
 import type { OraProviderConfig } from "../lib/runtimeClient";
 import type { ModeSelection } from "@ora/shared";
 
-type InputMode = "flash" | "thinking" | "pro" | "ultra";
-
 interface ChatInputProps {
+  sessionId: string;
   composerPrompt: string;
   isLoading: boolean;
   isRunning: boolean;
@@ -30,8 +32,6 @@ interface ChatInputProps {
   activeProvider?: OraProviderConfig;
   providerOptions: OraProviderConfig[];
   selectedCustomAgentId?: string;
-  inputMode: InputMode;
-  onInputModeChange: (mode: InputMode) => void;
   onModeChange: (modeId: string) => void;
   onModeSelectionChange: (selection: ModeSelection) => void;
   onProviderChange: (providerId: string) => void;
@@ -40,17 +40,6 @@ interface ChatInputProps {
   onStartRun: () => void;
   onStopRun: () => void;
 }
-
-const inputModeOptions: Array<{
-  mode: InputMode;
-  label: string;
-  icon: typeof Zap;
-}> = [
-  { mode: "flash", label: "Flash", icon: Zap },
-  { mode: "thinking", label: "Thinking", icon: Lightbulb },
-  { mode: "pro", label: "Pro", icon: GraduationCap },
-  { mode: "ultra", label: "Ultra", icon: Rocket },
-];
 
 export function getComposerInteractivity({
   composerPrompt,
@@ -65,7 +54,13 @@ export function getComposerInteractivity({
   };
 }
 
+function resizeComposerTextarea(target: HTMLTextAreaElement) {
+  target.style.height = "auto";
+  target.style.height = `${Math.min(target.scrollHeight, 220)}px`;
+}
+
 export function ChatInput({
+  sessionId,
   composerPrompt,
   isLoading,
   isRunning,
@@ -75,8 +70,6 @@ export function ChatInput({
   activeProvider,
   providerOptions,
   selectedCustomAgentId,
-  inputMode,
-  onInputModeChange,
   onModeChange,
   onModeSelectionChange,
   onProviderChange,
@@ -87,9 +80,27 @@ export function ChatInput({
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [openPicker, setOpenPicker] = useState<
-    "pattern" | "provider" | "mode" | undefined
+    "pattern" | "provider" | undefined
   >();
   const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
+
+  useLayoutEffect(() => {
+    const target = textareaRef.current;
+    if (!target) return;
+    resizeComposerTextarea(target);
+    if (!composerPrompt) {
+      target.scrollLeft = 0;
+      target.scrollTop = 0;
+    }
+  }, [composerPrompt]);
+
+  useLayoutEffect(() => {
+    const target = textareaRef.current;
+    if (!target) return;
+    resizeComposerTextarea(target);
+    target.scrollLeft = 0;
+    target.scrollTop = 0;
+  }, [sessionId]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -104,10 +115,6 @@ export function ChatInput({
     }
   }
 
-  const selectedMode =
-    inputModeOptions.find((option) => option.mode === inputMode) ??
-    inputModeOptions[2];
-  const SelectedIcon = selectedMode.icon;
   const modeTriggerLabel =
     selectedModeSelection === "auto"
       ? "Auto"
@@ -129,9 +136,7 @@ export function ChatInput({
               className="min-h-[96px] max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 pt-4 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
               style={{ height: "auto", overflow: "hidden" }}
               onInput={(e) => {
-                const target = e.target as HTMLTextAreaElement;
-                target.style.height = "auto";
-                target.style.height = `${Math.min(target.scrollHeight, 220)}px`;
+                resizeComposerTextarea(e.target as HTMLTextAreaElement);
               }}
             />
             <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
@@ -279,55 +284,6 @@ export function ChatInput({
                       <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
                         {mode.summary}
                       </div>
-                    </button>
-                  ))}
-                </Picker>
-                <Picker
-                  open={openPicker === "mode"}
-                  onOpenChange={(open) =>
-                    setOpenPicker(open ? "mode" : undefined)
-                  }
-                  trigger={
-                    <>
-                      <SelectedIcon
-                        size={13}
-                        className={cn(
-                          inputMode === "ultra" && "text-[#dabb5e]",
-                        )}
-                      />
-                      <span className="hidden xl:inline">思考程度</span>
-                      <span
-                        className={cn(
-                          "text-foreground",
-                          inputMode === "ultra" && "golden-text",
-                        )}
-                      >
-                        {selectedMode.label}
-                      </span>
-                    </>
-                  }
-                >
-                  {inputModeOptions.map(({ mode, label, icon: Icon }) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => {
-                        onInputModeChange(mode);
-                        setOpenPicker(undefined);
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs transition hover:bg-accent",
-                        inputMode === mode &&
-                          "bg-accent text-accent-foreground",
-                      )}
-                    >
-                      <Icon
-                        size={13}
-                        className={cn(mode === "ultra" && "text-[#dabb5e]")}
-                      />
-                      <span className={cn(mode === "ultra" && "golden-text")}>
-                        {label}
-                      </span>
                     </button>
                   ))}
                 </Picker>
