@@ -1293,6 +1293,10 @@ export class LocalRunStore {
     return this.evaluationStore.generateBlueprintDraft(params, generateEvaluationBlueprintDraftWithProvider);
   }
 
+  planEvaluationBlueprintTurn(params: unknown) {
+    return this.evaluationStore.planBlueprintTurn(params);
+  }
+
   async startEvaluationRun(
     params: unknown,
     createRun: (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>
@@ -1337,6 +1341,14 @@ export class LocalRunStore {
 
   listEvaluationFeedback(params: unknown = {}) {
     return this.evaluationStore.listFeedback(params);
+  }
+
+  listEvaluationAnnotations(params: unknown = {}) {
+    return this.evaluationStore.listAnnotations(params);
+  }
+
+  submitEvaluationAnnotation(params: unknown) {
+    return this.evaluationStore.submitAnnotation(params);
   }
 
   getEvaluationFeedback(params: unknown) {

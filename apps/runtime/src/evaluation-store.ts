@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
+  EvaluationAnnotationListParamsSchema,
+  EvaluationAnnotationSubmitParamsSchema,
+  EvaluationAnnotationTask,
+  EvaluationAnnotationTaskSchema,
   EvaluationAttempt,
   EvaluationAttemptSchema,
   EvaluationAssertion,
@@ -16,6 +20,9 @@ import {
   EvaluationBlueprintGenerateDraftParamsSchema,
   EvaluationBlueprintGetParamsSchema,
   EvaluationBlueprintListParamsSchema,
+  EvaluationBlueprintPlanTurnParamsSchema,
+  EvaluationBlueprintPlanTurnResult,
+  EvaluationBlueprintPlanTurnResultSchema,
   EvaluationBlueprintSchema,
   EvaluationBlueprintUpdateParamsSchema,
   EvaluationCase,
@@ -33,6 +40,9 @@ import {
   EvaluationDatasetListParamsSchema,
   EvaluationDatasetSchema,
   EvaluationExpected,
+  EvaluationEvaluatorResult,
+  EvaluationEvaluatorResultSchema,
+  EvaluationEvaluatorSpec,
   EvaluationExportParamsSchema,
   EvaluationExportResult,
   EvaluationExportResultSchema,
@@ -76,11 +86,14 @@ import {
   EvaluationStreamEvent,
   EvaluationStreamEventSchema,
   RunConfig,
+  RunConfigSchema,
   RunHandle,
   StateSnapshot,
   UserTaskInput,
 } from "@ora/shared";
 import { z } from "zod";
+import { parseJsonObject } from "./provider-json.js";
+import { invokeRunProvider } from "./providers/index.js";
 
 const EvaluationManifestSchema = z.object({
   schemaVersion: z.literal(1).default(1),
@@ -89,6 +102,7 @@ const EvaluationManifestSchema = z.object({
   nextBaselineNumber: z.number().int().positive().default(1),
   nextFeedbackNumber: z.number().int().positive().default(1),
   nextBlueprintNumber: z.number().int().positive().default(1),
+  nextAnnotationNumber: z.number().int().positive().default(1),
 });
 
 const PersistedEvaluationRunSchema = z.object({
@@ -171,6 +185,16 @@ CREATE TABLE IF NOT EXISTS evaluation_blueprints (
 );
 `;
 
+const CREATE_EVALUATION_ANNOTATIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS evaluation_annotations (
+  id TEXT PRIMARY KEY,
+  evaluationRunId TEXT NOT NULL,
+  status TEXT NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+`;
+
 export class LocalEvaluationStore {
   private readonly storage: "sqlite" | "file";
   private readonly db?: Database.Database;
@@ -180,6 +204,7 @@ export class LocalEvaluationStore {
   private readonly baselinesDir: string;
   private readonly feedbackDir: string;
   private readonly blueprintsDir: string;
+  private readonly annotationsDir: string;
   private readonly clock: () => number;
   private manifest: EvaluationManifest;
   private datasets = new Map<string, EvaluationDatasetDetail>();
@@ -187,6 +212,7 @@ export class LocalEvaluationStore {
   private baselines = new Map<string, EvaluationBaseline>();
   private feedback = new Map<string, EvaluationFeedbackRecord>();
   private blueprints = new Map<string, EvaluationBlueprint>();
+  private annotations = new Map<string, EvaluationAnnotationTask>();
 
   constructor(private readonly baseDir: string, clock: () => number = Date.now) {
     this.clock = clock;
@@ -197,6 +223,7 @@ export class LocalEvaluationStore {
     this.baselinesDir = path.join(baseDir, "baselines");
     this.feedbackDir = path.join(baseDir, "feedback");
     this.blueprintsDir = path.join(baseDir, "blueprints");
+    this.annotationsDir = path.join(baseDir, "annotations");
     if (this.storage === "sqlite") {
       fs.mkdirSync(path.dirname(baseDir), { recursive: true });
       this.db = new Database(baseDir);
@@ -355,6 +382,96 @@ export class LocalEvaluationStore {
     return draft;
   }
 
+  async planBlueprintTurn(params: unknown): Promise<EvaluationBlueprintPlanTurnResult> {
+    const parsed = EvaluationBlueprintPlanTurnParamsSchema.parse(params);
+    const now = this.now();
+    const current = parsed.blueprintId ? this.getBlueprint({ blueprintId: parsed.blueprintId }) : undefined;
+    const base = current ?? draftEvaluationBlueprint({
+      goal: parsed.message,
+      recipe: inferRecipeFromGoal(parsed.message),
+      providerId: parsed.providerId,
+      modelRef: parsed.modelRef,
+      now,
+      id: this.nextBlueprintId(),
+    });
+    const userMessage = {
+      id: `${base.id}:planner:user:${now}`,
+      role: "user" as const,
+      content: parsed.message.trim(),
+      createdAt: now,
+    };
+    const planned = await this.planBlueprintWithProvider(base, parsed.message, parsed.providerId, parsed.modelRef)
+      .catch((error) => deterministicPlanBlueprintTurn(base, parsed.message, error instanceof Error ? error.message : String(error)));
+    const assistantMessage = {
+      id: `${base.id}:planner:assistant:${this.now()}`,
+      role: "assistant" as const,
+      content: summarizeBlueprintPlan(planned),
+      createdAt: this.now(),
+    };
+    const transcript = [
+      ...plannerMessagesFromBlueprint(base),
+      userMessage,
+      assistantMessage,
+    ];
+    const blueprint = EvaluationBlueprintSchema.parse({
+      ...planned,
+      id: base.id,
+      updatedAt: this.now(),
+      runPlan: {
+        ...planned.runPlan,
+        providerId: parsed.providerId ?? planned.runPlan.providerId,
+        modelRef: parsed.modelRef ?? planned.runPlan.modelRef,
+      },
+      evaluatorPlan: normalizeEvaluatorPlan(planned.evaluatorPlan),
+      metadata: undefined,
+      reviewPlan: {
+        ...planned.reviewPlan,
+        metadata: {
+          ...(planned.reviewPlan.metadata ?? {}),
+          plannerMessages: transcript,
+        },
+      },
+    });
+    this.blueprints.set(blueprint.id, blueprint);
+    this.saveBlueprint(blueprint);
+    return EvaluationBlueprintPlanTurnResultSchema.parse({
+      blueprint,
+      messages: transcript,
+      assistantMessage,
+    });
+  }
+
+  listAnnotations(params: unknown = {}): EvaluationAnnotationTask[] {
+    const parsed = EvaluationAnnotationListParamsSchema.parse(params);
+    return [...this.annotations.values()]
+      .filter((task) => parsed.status ? task.status === parsed.status : true)
+      .filter((task) => parsed.runId ? task.evaluationRunId === parsed.runId : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+      .slice(0, parsed.limit)
+      .map((task) => EvaluationAnnotationTaskSchema.parse(task));
+  }
+
+  submitAnnotation(params: unknown): EvaluationAnnotationTask {
+    const parsed = EvaluationAnnotationSubmitParamsSchema.parse(params);
+    const current = this.annotations.get(parsed.taskId);
+    if (!current) {
+      throw new Error(`Evaluation annotation not found: ${parsed.taskId}`);
+    }
+    const next = EvaluationAnnotationTaskSchema.parse({
+      ...current,
+      status: "submitted",
+      score: parsed.score,
+      comment: parsed.comment?.trim(),
+      correctedOutput: parsed.correctedOutput,
+      updatedAt: this.now(),
+      submittedAt: this.now(),
+    });
+    this.annotations.set(next.id, next);
+    this.saveAnnotation(next);
+    this.applyAnnotationToRun(next);
+    return next;
+  }
+
   listBaselines(params: unknown = {}): EvaluationBaseline[] {
     const parsed = EvaluationBaselineListParamsSchema.parse(params);
     return [...this.baselines.values()]
@@ -456,7 +573,7 @@ export class LocalEvaluationStore {
             },
           });
           const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? attemptStartedAt));
-          const assessment = scoreEvaluationAttempt(spec, evaluationCase, snapshot, runtimeMs);
+          const assessment = await this.scoreEvaluationAttempt(spec, evaluationCase, config, snapshot, runtimeMs);
           const attempt = EvaluationAttemptSchema.parse({
             id: `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`,
             evaluationRunId,
@@ -469,6 +586,7 @@ export class LocalEvaluationStore {
             error: snapshot.error,
             score: assessment.score,
             metricScores: assessment.metricScores,
+            evaluatorResults: assessment.evaluatorResults,
             observations: assessment.observations,
             runtimeMs,
             costUsd: estimateCostUsd(snapshot),
@@ -476,6 +594,25 @@ export class LocalEvaluationStore {
             updatedAt: snapshot.updatedAt,
           });
           attempts.push(attempt);
+          for (const task of assessment.annotationTasks) {
+            const annotation = EvaluationAnnotationTaskSchema.parse({
+              ...task,
+              id: this.nextAnnotationId(),
+              evaluationRunId,
+              attemptId: attempt.id,
+              caseId: evaluationCase.id,
+              configId: config.id,
+              input: evaluationCase.input,
+              output: attempt.output,
+              expected: evaluationCase.expected,
+              status: "pending",
+              createdAt: this.now(),
+              updatedAt: this.now(),
+            });
+            this.annotations.set(annotation.id, annotation);
+            this.saveAnnotation(annotation);
+            appendEvent("evaluation.annotation.created", { annotationTaskId: annotation.id, attemptId: attempt.id });
+          }
           appendEvent("evaluation.attempt.completed", {
             attemptId: attempt.id,
             caseId: attempt.caseId,
@@ -521,6 +658,177 @@ export class LocalEvaluationStore {
     this.runs.set(evaluationRunId, { detail, events });
     this.saveRun(evaluationRunId);
     return detail;
+  }
+
+  private async planBlueprintWithProvider(
+    base: EvaluationBlueprint,
+    message: string,
+    providerId?: string,
+    modelRef?: string,
+  ): Promise<EvaluationBlueprint> {
+    const config = RunConfigSchema.parse({
+      pattern: "orchestrator_subagent",
+      providerId: providerId ?? base.runPlan.providerId,
+      modelRef: modelRef ?? base.runPlan.modelRef,
+      providerConfig: base.runPlan.providerConfig,
+    });
+    const response = await invokeRunProvider(config, {
+      system: [
+        "You are Ora's Evaluation Planner agent.",
+        "Update the supplied EvaluationBlueprint from the user's latest planning message.",
+        "Return only one complete EvaluationBlueprint JSON object.",
+        "Do not start a run. Prefer evaluatorPlan.evaluators with heuristic, llm_judge, and human_annotation where useful.",
+        "Keep schemaVersion 1 and preserve the blueprint id and createdAt.",
+      ].join("\n"),
+      messages: [{
+        role: "user",
+        content: JSON.stringify({ blueprint: base, message }, null, 2),
+      }],
+      temperature: 0,
+      maxTokens: 2200,
+      toolChoice: "none",
+    });
+    const parsed = parseJsonObject(response.text);
+    return EvaluationBlueprintSchema.parse({
+      ...parsed,
+      id: base.id,
+      schemaVersion: 1,
+      createdAt: base.createdAt,
+      updatedAt: this.now(),
+    });
+  }
+
+  private async scoreEvaluationAttempt(
+    spec: EvaluationSpec,
+    evaluationCase: EvaluationCase,
+    config: EvaluationConfig,
+    snapshot: StateSnapshot,
+    runtimeMs: number
+  ): Promise<{
+    score: EvaluationScore;
+    metricScores: EvaluationMetricScore[];
+    evaluatorResults: EvaluationEvaluatorResult[];
+    observations: EvaluationObservation;
+    output?: unknown;
+    annotationTasks: Array<Partial<EvaluationAnnotationTask>>;
+  }> {
+    const base = scoreEvaluationAttempt(spec, evaluationCase, snapshot, runtimeMs);
+    const evaluators = evaluatorsForSpec(spec);
+    if (evaluators.length === 0) {
+      return { ...base, evaluatorResults: [], annotationTasks: [] };
+    }
+    const evaluatorResults: EvaluationEvaluatorResult[] = [];
+    const metricScores: EvaluationMetricScore[] = [];
+    const annotationTasks: Array<Partial<EvaluationAnnotationTask>> = [];
+    for (const evaluator of evaluators) {
+      if (evaluator.kind === "heuristic") {
+        const objective = EvaluationObjectiveSchema.parse({
+          ...(spec.objective ?? objectiveForProfile(spec.profileId, evaluationCase)),
+          metrics: evaluator.metrics,
+          assertions: evaluator.assertions,
+        });
+        const scores = scoreObjectiveMetrics(objective, evaluationCase, base.observations);
+        metricScores.push(...scores);
+        const aggregate = aggregateMetricScores(scores, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error));
+        evaluatorResults.push(EvaluationEvaluatorResultSchema.parse({
+          evaluatorId: evaluator.id,
+          evaluatorKind: evaluator.kind,
+          score: aggregate.overallScore,
+          passed: aggregate.overallScore >= 0.75,
+          rationale: aggregate.judgeRationale,
+          failureTags: aggregate.failureTags,
+          details: { metricScores: scores },
+        }));
+        continue;
+      }
+      if (evaluator.kind === "llm_judge") {
+        const result = await this.runLlmJudgeEvaluator(evaluator, spec, config, evaluationCase, base.observations, base.output ?? snapshot.output);
+        evaluatorResults.push(result);
+        continue;
+      }
+      annotationTasks.push({
+        evaluatorId: evaluator.id,
+        instructions: evaluator.instructions,
+        scoreType: evaluator.scoreType,
+        categories: evaluator.categories,
+      });
+      evaluatorResults.push(EvaluationEvaluatorResultSchema.parse({
+        evaluatorId: evaluator.id,
+        evaluatorKind: evaluator.kind,
+        status: "pending",
+        rationale: "Waiting for human annotation.",
+      }));
+    }
+    const scoredResults = evaluatorResults.filter((result) => result.status === "scored" && typeof result.score === "number");
+    const mergedScore = scoredResults.length > 0
+      ? scoreFromEvaluatorResults(scoredResults, spec.profileId, snapshot.status === "failed" || Boolean(snapshot.error))
+      : base.score;
+    return {
+      ...base,
+      score: mergedScore,
+      metricScores: metricScores.length > 0 ? metricScores : base.metricScores,
+      evaluatorResults,
+      annotationTasks,
+    };
+  }
+
+  private async runLlmJudgeEvaluator(
+    evaluator: EvaluationEvaluatorSpec & { kind: "llm_judge" },
+    spec: EvaluationSpec,
+    config: EvaluationConfig,
+    evaluationCase: EvaluationCase,
+    observations: EvaluationObservation,
+    output: unknown,
+  ): Promise<EvaluationEvaluatorResult> {
+    try {
+      const judgeConfig = RunConfigSchema.parse({
+        ...config.runConfig,
+        providerId: evaluator.providerId ?? spec.metadata.judgeProviderId ?? config.runConfig.providerId,
+        modelRef: evaluator.modelRef ?? spec.metadata.judgeModelRef ?? config.runConfig.modelRef,
+      });
+      const response = await invokeRunProvider(judgeConfig, {
+        system: [
+          "You are an LLM evaluation judge.",
+          "Return only JSON with shape: {\"score\":0..1,\"pass\":boolean,\"rationale\":\"...\",\"failureTags\":[\"...\"]}.",
+          "Use the rubric and evidence. Do not rewrite the answer.",
+        ].join("\n"),
+        messages: [{
+          role: "user",
+          content: JSON.stringify({
+            rubric: evaluator.rubric,
+            passThreshold: evaluator.passThreshold,
+            case: evaluationCase,
+            output,
+            observations,
+          }, null, 2),
+        }],
+        temperature: 0,
+        maxTokens: 800,
+        toolChoice: "none",
+      });
+      const parsed = parseJsonObject(response.text) as Record<string, unknown>;
+      const score = typeof parsed.score === "number" ? parsed.score : 0;
+      const passed = typeof parsed.pass === "boolean" ? parsed.pass : score >= evaluator.passThreshold;
+      return EvaluationEvaluatorResultSchema.parse({
+        evaluatorId: evaluator.id,
+        evaluatorKind: evaluator.kind,
+        score: Math.max(0, Math.min(1, score)),
+        passed,
+        rationale: typeof parsed.rationale === "string" ? parsed.rationale : "LLM judge returned a score.",
+        failureTags: Array.isArray(parsed.failureTags) ? parsed.failureTags.filter((tag): tag is string => typeof tag === "string") : [],
+        details: { providerId: judgeConfig.providerId, modelRef: judgeConfig.modelRef },
+      });
+    } catch (error) {
+      return EvaluationEvaluatorResultSchema.parse({
+        evaluatorId: evaluator.id,
+        evaluatorKind: evaluator.kind,
+        status: "failed",
+        score: 0,
+        passed: false,
+        rationale: `LLM judge failed: ${error instanceof Error ? error.message : String(error)}`,
+        failureTags: ["judge_failed"],
+      });
+    }
   }
 
   promoteBaseline(params: unknown): EvaluationBaseline {
@@ -572,7 +880,7 @@ export class LocalEvaluationStore {
     }
 
     const rows = [
-      "case_id,config_id,overall_score,outcome_score,process_score,efficiency_score,safety_score,failure_tags,trace_run_ids,metric_scores_json,observations_json",
+      "case_id,config_id,overall_score,outcome_score,process_score,efficiency_score,safety_score,failure_tags,trace_run_ids,metric_scores_json,evaluator_results_json,annotation_status,observations_json",
       ...run.run.caseResults.map((result) => [
         csvCell(result.caseId),
         csvCell(result.configId),
@@ -584,6 +892,8 @@ export class LocalEvaluationStore {
         csvCell(result.averageScore.failureTags.join("|")),
         csvCell(result.traceRunIds.join("|")),
         csvCell(JSON.stringify(result.metricScores)),
+        csvCell(JSON.stringify(result.evaluatorResults)),
+        csvCell(annotationStatusForResult(result.evaluatorResults)),
         csvCell(JSON.stringify(result.observations)),
       ].join(",")),
     ];
@@ -716,6 +1026,69 @@ export class LocalEvaluationStore {
     return next;
   }
 
+  private applyAnnotationToRun(annotation: EvaluationAnnotationTask) {
+    const persisted = this.runs.get(annotation.evaluationRunId);
+    if (!persisted) return;
+    const normalizedScore = normalizedAnnotationScore(annotation.score);
+    const evaluatorResult = EvaluationEvaluatorResultSchema.parse({
+      evaluatorId: annotation.evaluatorId,
+      evaluatorKind: "human_annotation",
+      score: normalizedScore,
+      passed: annotation.score?.passed ?? normalizedScore >= 0.75,
+      rationale: annotation.comment ?? "Human annotation submitted.",
+      failureTags: annotation.score?.failureTags ?? [],
+      status: "scored",
+      details: {
+        annotationTaskId: annotation.id,
+        rawScore: annotation.score?.value,
+        correctedOutput: annotation.correctedOutput,
+      },
+    });
+    const updateEvaluatorResults = (results: EvaluationEvaluatorResult[]) => [
+      ...results.filter((result) => result.evaluatorId !== annotation.evaluatorId),
+      evaluatorResult,
+    ];
+    const attempts = persisted.detail.attempts.map((attempt) => {
+      if (attempt.id !== annotation.attemptId) return attempt;
+      const evaluatorResults = updateEvaluatorResults(attempt.evaluatorResults);
+      return EvaluationAttemptSchema.parse({
+        ...attempt,
+        evaluatorResults,
+        score: scoreFromEvaluatorResults(evaluatorResults.filter((result) => typeof result.score === "number"), persisted.detail.run.spec.profileId, attempt.status === "failed"),
+        updatedAt: this.now(),
+      });
+    });
+    const caseResults = persisted.detail.run.caseResults.map((result) => {
+      if (result.caseId !== annotation.caseId || result.configId !== annotation.configId) return result;
+      const evaluatorResults = updateEvaluatorResults(result.evaluatorResults);
+      return EvaluationCaseResultSchema.parse({
+        ...result,
+        evaluatorResults,
+        averageScore: scoreFromEvaluatorResults(evaluatorResults.filter((candidate) => typeof candidate.score === "number"), persisted.detail.run.spec.profileId, false),
+      });
+    });
+    const scorecard = buildScorecard(persisted.detail.configs, attempts, caseResults);
+    persisted.detail = EvaluationRunDetailSchema.parse({
+      ...persisted.detail,
+      attempts,
+      run: {
+        ...persisted.detail.run,
+        caseResults,
+        scorecard,
+        updatedAt: this.now(),
+      },
+    });
+    persisted.events.push(EvaluationStreamEventSchema.parse({
+      id: `${annotation.evaluationRunId}:evt-${persisted.events.length}`,
+      evaluationRunId: annotation.evaluationRunId,
+      seq: persisted.events.length,
+      type: "evaluation.annotation.submitted",
+      createdAt: this.now(),
+      payload: { annotationTaskId: annotation.id, attemptId: annotation.attemptId },
+    }));
+    this.saveRun(annotation.evaluationRunId);
+  }
+
   private loadAll() {
     if (this.storage === "sqlite") {
       this.loadAllFromSqlite();
@@ -741,6 +1114,10 @@ export class LocalEvaluationStore {
       const blueprint = this.readJsonFile(path.join(this.blueprintsDir, name), EvaluationBlueprintSchema);
       this.blueprints.set(blueprint.id, blueprint);
     }
+    for (const name of fs.readdirSync(this.annotationsDir).filter((entry) => entry.endsWith(".json"))) {
+      const annotation = this.readJsonFile(path.join(this.annotationsDir, name), EvaluationAnnotationTaskSchema);
+      this.annotations.set(annotation.id, annotation);
+    }
     this.manifest = EvaluationManifestSchema.parse({
       ...this.manifest,
       nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
@@ -748,6 +1125,7 @@ export class LocalEvaluationStore {
       nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
       nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
       nextBlueprintNumber: Math.max(this.manifest.nextBlueprintNumber, nextCounter([...this.blueprints.keys()], /^blueprint-(\d+)$/)),
+      nextAnnotationNumber: Math.max(this.manifest.nextAnnotationNumber, nextCounter([...this.annotations.keys()], /^annotation-(\d+)$/)),
     });
   }
 
@@ -757,6 +1135,7 @@ export class LocalEvaluationStore {
     fs.mkdirSync(this.baselinesDir, { recursive: true });
     fs.mkdirSync(this.feedbackDir, { recursive: true });
     fs.mkdirSync(this.blueprintsDir, { recursive: true });
+    fs.mkdirSync(this.annotationsDir, { recursive: true });
   }
 
   private ensureSqliteSchema() {
@@ -767,6 +1146,7 @@ export class LocalEvaluationStore {
     db.exec(CREATE_EVALUATION_BASELINES_TABLE);
     db.exec(CREATE_EVALUATION_FEEDBACK_TABLE);
     db.exec(CREATE_EVALUATION_BLUEPRINTS_TABLE);
+    db.exec(CREATE_EVALUATION_ANNOTATIONS_TABLE);
   }
 
   private loadAllFromSqlite() {
@@ -796,6 +1176,11 @@ export class LocalEvaluationStore {
       const blueprint = EvaluationBlueprintSchema.parse(JSON.parse(row.data));
       this.blueprints.set(blueprint.id, blueprint);
     }
+    const annotationRows = db.prepare("SELECT data FROM evaluation_annotations").all() as { data: string }[];
+    for (const row of annotationRows) {
+      const annotation = EvaluationAnnotationTaskSchema.parse(JSON.parse(row.data));
+      this.annotations.set(annotation.id, annotation);
+    }
     this.manifest = EvaluationManifestSchema.parse({
       ...this.manifest,
       nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
@@ -803,6 +1188,7 @@ export class LocalEvaluationStore {
       nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
       nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
       nextBlueprintNumber: Math.max(this.manifest.nextBlueprintNumber, nextCounter([...this.blueprints.keys()], /^blueprint-(\d+)$/)),
+      nextAnnotationNumber: Math.max(this.manifest.nextAnnotationNumber, nextCounter([...this.annotations.keys()], /^annotation-(\d+)$/)),
     });
     this.migrateLegacyFileStoreIntoSqlite();
   }
@@ -853,6 +1239,12 @@ export class LocalEvaluationStore {
         this.saveBlueprint(blueprint);
       }
     }
+    for (const annotation of loadLegacy("annotations", EvaluationAnnotationTaskSchema)) {
+      if (!this.annotations.has(annotation.id)) {
+        this.annotations.set(annotation.id, annotation);
+        this.saveAnnotation(annotation);
+      }
+    }
     this.manifest = EvaluationManifestSchema.parse({
       ...this.manifest,
       nextDatasetNumber: Math.max(this.manifest.nextDatasetNumber, nextCounter([...this.datasets.keys()], /^dataset-(\d+)$/)),
@@ -860,6 +1252,7 @@ export class LocalEvaluationStore {
       nextBaselineNumber: Math.max(this.manifest.nextBaselineNumber, nextCounter([...this.baselines.keys()], /^baseline-(\d+)$/)),
       nextFeedbackNumber: Math.max(this.manifest.nextFeedbackNumber, nextCounter([...this.feedback.keys()], /^feedback-(\d+)$/)),
       nextBlueprintNumber: Math.max(this.manifest.nextBlueprintNumber, nextCounter([...this.blueprints.keys()], /^blueprint-(\d+)$/)),
+      nextAnnotationNumber: Math.max(this.manifest.nextAnnotationNumber, nextCounter([...this.annotations.keys()], /^annotation-(\d+)$/)),
     });
     this.saveManifest();
   }
@@ -895,6 +1288,13 @@ export class LocalEvaluationStore {
   private nextBlueprintId() {
     const id = `blueprint-${String(this.manifest.nextBlueprintNumber).padStart(4, "0")}`;
     this.manifest.nextBlueprintNumber += 1;
+    this.saveManifest();
+    return id;
+  }
+
+  private nextAnnotationId() {
+    const id = `annotation-${String(this.manifest.nextAnnotationNumber).padStart(4, "0")}`;
+    this.manifest.nextAnnotationNumber += 1;
     this.saveManifest();
     return id;
   }
@@ -975,6 +1375,22 @@ export class LocalEvaluationStore {
       return;
     }
     this.writeJsonFile(path.join(this.blueprintsDir, `${encodeURIComponent(blueprint.id)}.json`), blueprint);
+  }
+
+  private saveAnnotation(annotation: EvaluationAnnotationTask) {
+    if (this.storage === "sqlite") {
+      this.requireDb().prepare(
+        "INSERT INTO evaluation_annotations (id, evaluationRunId, status, updatedAt, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET evaluationRunId = excluded.evaluationRunId, status = excluded.status, updatedAt = excluded.updatedAt, data = excluded.data"
+      ).run(
+        annotation.id,
+        annotation.evaluationRunId,
+        annotation.status,
+        annotation.updatedAt,
+        JSON.stringify(EvaluationAnnotationTaskSchema.parse(annotation)),
+      );
+      return;
+    }
+    this.writeJsonFile(path.join(this.annotationsDir, `${encodeURIComponent(annotation.id)}.json`), annotation);
   }
 
   private async curateFeedbackDraft(
@@ -1091,6 +1507,165 @@ function inferDatasetFormat(fileName?: string) {
   return "inline";
 }
 
+function normalizeEvaluatorPlan(plan: EvaluationBlueprint["evaluatorPlan"]): EvaluationBlueprint["evaluatorPlan"] {
+  const evaluators = plan.evaluators.length > 0
+    ? plan.evaluators
+    : [{
+        id: "heuristic",
+        kind: "heuristic" as const,
+        label: "Heuristic Rules",
+        metrics: plan.metrics,
+        assertions: plan.assertions,
+        weight: 1,
+        metadata: {},
+      }];
+  return {
+    ...plan,
+    evaluators,
+  };
+}
+
+function plannerMessagesFromBlueprint(blueprint: EvaluationBlueprint) {
+  const raw = blueprint.reviewPlan.metadata.plannerMessages;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((message): message is { id: string; role: "user" | "assistant"; content: string; createdAt: number } => (
+    message &&
+    typeof message === "object" &&
+    typeof (message as Record<string, unknown>).id === "string" &&
+    ((message as Record<string, unknown>).role === "user" || (message as Record<string, unknown>).role === "assistant") &&
+    typeof (message as Record<string, unknown>).content === "string" &&
+    typeof (message as Record<string, unknown>).createdAt === "number"
+  ));
+}
+
+function deterministicPlanBlueprintTurn(base: EvaluationBlueprint, message: string, providerError?: string): EvaluationBlueprint {
+  const lowered = message.toLowerCase();
+  const wantsHuman = lowered.includes("人工") || lowered.includes("human") || lowered.includes("annotat") || lowered.includes("标注");
+  const wantsJudge = lowered.includes("llm") || lowered.includes("judge") || lowered.includes("rubric") || lowered.includes("裁判");
+  const wantsRouter = lowered.includes("router") || lowered.includes("路由") || lowered.includes("auto mode");
+  const recipe = wantsRouter ? "auto_router_quality" : base.recipe;
+  const target = wantsRouter ? "runtime.mode_selection" : base.target;
+  const evaluators: EvaluationEvaluatorSpec[] = [
+    {
+      id: "heuristic",
+      kind: "heuristic",
+      label: "Heuristic Rules",
+      metrics: recipe === "auto_router_quality"
+        ? ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"]
+        : base.evaluatorPlan.metrics.length > 0 ? base.evaluatorPlan.metrics : ["text_similarity", "assertion_pass_rate", "latency_score", "cost_score"],
+      assertions: base.evaluatorPlan.assertions,
+      weight: 1,
+      metadata: {},
+    },
+    ...(wantsJudge ? [{
+      id: "llm-judge",
+      kind: "llm_judge" as const,
+      label: "LLM Judge",
+      rubric: base.evaluatorPlan.judgeRubric ?? "Score whether the output satisfies the evaluation goal, expected result, and case-specific constraints.",
+      providerId: base.runPlan.providerId,
+      modelRef: base.runPlan.modelRef,
+      passThreshold: 0.75,
+      weight: 1,
+      metadata: {},
+    }] : []),
+    ...(wantsHuman ? [{
+      id: "human-review",
+      kind: "human_annotation" as const,
+      label: "Human Annotation",
+      instructions: "Review the case output against the goal and expected result. Mark whether it should pass and add a short comment.",
+      scoreType: "numeric" as const,
+      weight: 1,
+      categories: [],
+      metadata: {},
+    }] : []),
+  ];
+  return EvaluationBlueprintSchema.parse({
+    ...base,
+    goal: message.trim(),
+    recipe,
+    target,
+    evaluatorPlan: {
+      ...base.evaluatorPlan,
+      evaluators,
+      judgeRubric: wantsJudge ? "Score 0-1. Pass requires satisfying the goal and avoiding the listed failure modes." : base.evaluatorPlan.judgeRubric,
+      notes: "Planner updated this blueprint from the latest conversation turn.",
+    },
+    subject: wantsRouter ? { kind: "auto_router" } : base.subject,
+    datasetPlan: {
+      ...base.datasetPlan,
+      sources: base.datasetPlan.datasetId ? ["existing_dataset"] : [...new Set([...base.datasetPlan.sources, "feedback_inbox", "manual"])],
+    },
+    assumptions: [
+      ...base.assumptions,
+      ...(providerError ? [`Planner provider unavailable; deterministic fallback used: ${providerError}`] : []),
+    ],
+  });
+}
+
+function summarizeBlueprintPlan(blueprint: EvaluationBlueprint) {
+  const evaluators = normalizeEvaluatorPlan(blueprint.evaluatorPlan).evaluators.map((evaluator) => evaluator.kind).join(", ");
+  const missing = blueprint.missingInformation.length > 0 ? ` Missing: ${blueprint.missingInformation.join("; ")}` : "";
+  return `I drafted ${blueprint.title}: ${blueprint.recipe} targeting ${blueprint.target}. Evaluators: ${evaluators}.${missing}`;
+}
+
+function evaluatorsForSpec(spec: EvaluationSpec): EvaluationEvaluatorSpec[] {
+  const explicit = spec.objective?.evaluators ?? [];
+  if (explicit.length > 0) return explicit;
+  if (!spec.objective) return [];
+  return [{
+    id: "heuristic",
+    kind: "heuristic",
+    label: "Heuristic Rules",
+    metrics: spec.objective.metrics,
+    assertions: spec.objective.assertions,
+    weight: 1,
+    metadata: {},
+  }];
+}
+
+function scoreFromEvaluatorResults(results: EvaluationEvaluatorResult[], profileId: EvaluationProfileKind, runtimeFailed: boolean): EvaluationScore {
+  const scored = results.filter((result) => typeof result.score === "number");
+  if (scored.length === 0) {
+    return aggregateMetricScores([], profileId, runtimeFailed);
+  }
+  const outcomeScore = roundScore(average(scored.map((result) => result.score ?? 0)));
+  const failureTags = [...new Set(scored.flatMap((result) => result.failureTags))];
+  const safetyScore = runtimeFailed ? 0.2 : failureTags.some((tag) => tag.includes("safety")) ? 0.55 : 0.92;
+  const weights = profileWeights(profileId);
+  return EvaluationScoreSchema.parse({
+    outcomeScore,
+    processScore: outcomeScore,
+    efficiencyScore: runtimeFailed ? 0.25 : 0.9,
+    safetyScore,
+    overallScore: roundScore(
+      outcomeScore * weights.outcome +
+      outcomeScore * weights.process +
+      (runtimeFailed ? 0.25 : 0.9) * weights.efficiency +
+      safetyScore * weights.safety
+    ),
+    judgeRationale: scored.map((result) => `${result.evaluatorId}: ${result.rationale ?? "scored"}`).join(" "),
+    failureTags,
+  });
+}
+
+function normalizedAnnotationScore(score: EvaluationAnnotationTask["score"]): number {
+  if (!score) return 0;
+  if (typeof score.normalizedScore === "number") return score.normalizedScore;
+  if (typeof score.value === "boolean") return score.value ? 1 : 0;
+  if (typeof score.value === "number") return score.value;
+  return score.passed ? 1 : 0;
+}
+
+function annotationStatusForResult(results: EvaluationEvaluatorResult[]) {
+  if (results.some((result) => result.evaluatorKind === "human_annotation" && result.status === "pending")) {
+    return "pending";
+  }
+  if (results.some((result) => result.evaluatorKind === "human_annotation" && result.status === "scored")) {
+    return "submitted";
+  }
+  return "";
+}
+
 function compileEvaluationBlueprint(
   blueprint: EvaluationBlueprint,
   overrides: {
@@ -1107,6 +1682,7 @@ function compileEvaluationBlueprint(
 
   const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "local-smoke";
   const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "local/smoke-model";
+  const evaluatorPlan = normalizeEvaluatorPlan(blueprint.evaluatorPlan);
   const baseMetadata = {
     blueprintId: blueprint.id,
     blueprintRecipe: blueprint.recipe,
@@ -1120,10 +1696,11 @@ function compileEvaluationBlueprint(
       objective: {
         kind: "classification",
         target: "runtime.mode_selection",
-        metrics: blueprint.evaluatorPlan.metrics.length > 0
-          ? blueprint.evaluatorPlan.metrics
+        metrics: evaluatorPlan.metrics.length > 0
+          ? evaluatorPlan.metrics
           : ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
-        assertions: blueprint.evaluatorPlan.assertions,
+        assertions: evaluatorPlan.assertions,
+        evaluators: evaluatorPlan.evaluators,
         displayColumns: [
           "runtime.modeId",
           "runtime.autoModeRouter.status",
@@ -1173,16 +1750,6 @@ function compileEvaluationBlueprint(
     const spec = EvaluationSpecSchema.parse({
       datasetId,
       profileId: blueprint.runPlan.profileId,
-      objective: blueprint.target === "run.output"
-        ? undefined
-        : {
-            kind: "outcome",
-            target: blueprint.target,
-            metrics: blueprint.evaluatorPlan.metrics,
-            assertions: blueprint.evaluatorPlan.assertions,
-            displayColumns: [],
-            metadata: { blueprintId: blueprint.id },
-          },
       configs: modeIds.map((modeId) => ({
         id: `${modeId}-${providerId}`,
         label: `${modeId.replace(/_/g, " ")} · ${providerId}`,
@@ -1197,6 +1764,17 @@ function compileEvaluationBlueprint(
       repetitions: blueprint.runPlan.repetitions,
       concurrency: blueprint.runPlan.concurrency,
       baselineId: blueprint.runPlan.baselineId,
+      objective: blueprint.target === "run.output"
+        ? {
+            kind: "outcome",
+            target: "run.output",
+            metrics: evaluatorPlan.metrics,
+            assertions: evaluatorPlan.assertions,
+            evaluators: evaluatorPlan.evaluators,
+            displayColumns: [],
+            metadata: { blueprintId: blueprint.id },
+          }
+        : undefined,
       metadata: baseMetadata,
     });
     return EvaluationBlueprintCompileResultSchema.parse({
@@ -1541,6 +2119,7 @@ function buildCaseResults(
         attemptIds: matchingAttempts.map((attempt) => attempt.id),
         averageScore,
         metricScores: averageMetricScoresFromAttempts(matchingAttempts),
+        evaluatorResults: aggregateEvaluatorResultsFromAttempts(matchingAttempts),
         latestOutput: matchingAttempts.at(-1)?.output,
         observations: matchingAttempts.at(-1)?.observations ?? {},
         expected: evaluationCase.expected,
@@ -1609,6 +2188,7 @@ function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt
     averageRuntimeMs,
     averageCostUsd,
     regressionCount: caseResults.filter((result) => result.comparisonToBaseline?.regressed).length,
+    pendingAnnotationCount: attempts.reduce((count, attempt) => count + attempt.evaluatorResults.filter((result) => result.evaluatorKind === "human_annotation" && result.status === "pending").length, 0),
     configSummaries,
     slices,
   });
@@ -1674,6 +2254,38 @@ function averageMetricScoresFromAttempts(attempts: EvaluationAttempt[]): Evaluat
       passRate: roundScore(average(metrics.map((metric) => metric.passed ? 1 : 0))),
     },
   }));
+}
+
+function aggregateEvaluatorResultsFromAttempts(attempts: EvaluationAttempt[]): EvaluationEvaluatorResult[] {
+  const byEvaluator = new Map<string, EvaluationEvaluatorResult[]>();
+  for (const attempt of attempts) {
+    for (const result of attempt.evaluatorResults) {
+      const current = byEvaluator.get(result.evaluatorId) ?? [];
+      current.push(result);
+      byEvaluator.set(result.evaluatorId, current);
+    }
+  }
+  return [...byEvaluator.entries()].map(([evaluatorId, results]) => {
+    const latest = results.at(-1)!;
+    const scored = results.filter((result) => typeof result.score === "number");
+    if (scored.length === 0) {
+      return EvaluationEvaluatorResultSchema.parse({
+        ...latest,
+        status: latest.status,
+        evaluatorId,
+      });
+    }
+    return EvaluationEvaluatorResultSchema.parse({
+      evaluatorId,
+      evaluatorKind: latest.evaluatorKind,
+      score: roundScore(average(scored.map((result) => result.score ?? 0))),
+      passed: average(scored.map((result) => result.passed ? 1 : 0)) >= 0.75,
+      rationale: latest.rationale ?? "Aggregated evaluator results.",
+      failureTags: [...new Set(results.flatMap((result) => result.failureTags))],
+      status: results.some((result) => result.status === "pending") ? "pending" : "scored",
+      details: { attemptCount: results.length },
+    });
+  });
 }
 
 function scoreEvaluationAttempt(

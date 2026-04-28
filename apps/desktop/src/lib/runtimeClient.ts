@@ -13,11 +13,13 @@ import type {
   CustomAgentSummary as OraCustomAgentSummary,
   CustomAgentUpdateParams as OraCustomAgentUpdateParams,
   EvaluationBaseline as OraEvaluationBaseline,
+  EvaluationAnnotationTask as OraEvaluationAnnotationTask,
   EvaluationBlueprint as OraEvaluationBlueprint,
   EvaluationBlueprintCompileResult as OraEvaluationBlueprintCompileResult,
   EvaluationBlueprintCreateParams as OraEvaluationBlueprintCreateParams,
   EvaluationBlueprintGenerateDraftParams as OraEvaluationBlueprintGenerateDraftParams,
   EvaluationBlueprintListParams as OraEvaluationBlueprintListParams,
+  EvaluationBlueprintPlanTurnResult as OraEvaluationBlueprintPlanTurnResult,
   EvaluationBlueprintUpdateParams as OraEvaluationBlueprintUpdateParams,
   EvaluationCaseResult as OraEvaluationCaseResult,
   EvaluationDataset as OraEvaluationDataset,
@@ -116,11 +118,13 @@ export type {
   OraCustomAgentSummary,
   OraCustomAgentUpdateParams,
   OraEvaluationBaseline,
+  OraEvaluationAnnotationTask,
   OraEvaluationBlueprint,
   OraEvaluationBlueprintCompileResult,
   OraEvaluationBlueprintCreateParams,
   OraEvaluationBlueprintGenerateDraftParams,
   OraEvaluationBlueprintListParams,
+  OraEvaluationBlueprintPlanTurnResult,
   OraEvaluationBlueprintUpdateParams,
   OraEvaluationCaseResult,
   OraEvaluationDataset,
@@ -419,6 +423,9 @@ export function createRuntimeClient() {
     async generateEvaluationBlueprintDraft(params: OraEvaluationBlueprintGenerateDraftParams): Promise<OraEvaluationBlueprint> {
       return call<OraEvaluationBlueprint>("evaluation.blueprints.generateDraft", params);
     },
+    async planEvaluationBlueprintTurn(params: { blueprintId?: string; message: string; providerId?: string; modelRef?: string }): Promise<OraEvaluationBlueprintPlanTurnResult> {
+      return call<OraEvaluationBlueprintPlanTurnResult>("evaluation.blueprints.planTurn", params);
+    },
     async startEvaluationRun(spec: OraEvaluationSpec): Promise<OraEvaluationRunDetail> {
       return call<OraEvaluationRunDetail>("evaluation.runs.start", spec);
     },
@@ -468,6 +475,17 @@ export function createRuntimeClient() {
     },
     async rejectEvaluationFeedback(feedbackId: string, reason?: string): Promise<OraEvaluationFeedbackRecord> {
       return call<OraEvaluationFeedbackRecord>("evaluation.feedback.reject", { feedbackId, reason });
+    },
+    async listEvaluationAnnotations(params: { status?: "pending" | "submitted"; runId?: string; limit?: number } = {}): Promise<OraEvaluationAnnotationTask[]> {
+      return call<OraEvaluationAnnotationTask[]>("evaluation.annotations.list", params);
+    },
+    async submitEvaluationAnnotation(params: {
+      taskId: string;
+      score: { value: boolean | number | string; normalizedScore?: number; passed?: boolean; failureTags?: string[] };
+      comment?: string;
+      correctedOutput?: unknown;
+    }): Promise<OraEvaluationAnnotationTask> {
+      return call<OraEvaluationAnnotationTask>("evaluation.annotations.submit", params);
     },
     async listProjectSignals(params: { projectId?: string; source?: string; severity?: string; limit?: number } = {}): Promise<OraProjectSignal[]> {
       return call<OraProjectSignal[]>("feedbackLoop.signals.list", params);
@@ -955,6 +973,7 @@ class LocalJsonRpcRuntime {
   private evaluationBaselines = new Map<string, OraEvaluationBaseline>();
   private evaluationFeedback = new Map<string, OraEvaluationFeedbackRecord>();
   private evaluationBlueprints = new Map<string, OraEvaluationBlueprint>();
+  private evaluationAnnotations = new Map<string, OraEvaluationAnnotationTask>();
   private feedbackLoopApplied = new Map<string, string>();
   private feedbackLoopDismissed = new Set<string>();
   private feedbackLoopRules = new Map<string, OraFeedbackLoopCalibrationRule>();
@@ -966,6 +985,7 @@ class LocalJsonRpcRuntime {
   private nextEvaluationBaselineNumber = 1;
   private nextEvaluationFeedbackNumber = 1;
   private nextEvaluationBlueprintNumber = 1;
+  private nextEvaluationAnnotationNumber = 1;
 
   async handle(request: JsonRpcRequest): Promise<JsonRpcResponse> {
     try {
@@ -1226,6 +1246,8 @@ class LocalJsonRpcRuntime {
         return this.compileEvaluationBlueprint(params);
       case "evaluation.blueprints.generateDraft":
         return this.generateEvaluationBlueprintDraft(params);
+      case "evaluation.blueprints.planTurn":
+        return this.planEvaluationBlueprintTurn(params);
       case "evaluation.runs.start":
         return this.startEvaluationRun(params);
       case "evaluation.runs.list":
@@ -1277,6 +1299,16 @@ class LocalJsonRpcRuntime {
         return this.acceptEvaluationFeedback(params);
       case "evaluation.feedback.reject":
         return this.rejectEvaluationFeedback(params);
+      case "evaluation.annotations.list": {
+        const parsed = params as { status?: "pending" | "submitted"; runId?: string; limit?: number } | undefined;
+        return [...this.evaluationAnnotations.values()]
+          .filter((task) => parsed?.status ? task.status === parsed.status : true)
+          .filter((task) => parsed?.runId ? task.evaluationRunId === parsed.runId : true)
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+          .slice(0, parsed?.limit);
+      }
+      case "evaluation.annotations.submit":
+        return this.submitEvaluationAnnotation(params);
       case "feedbackLoop.signals.list":
         return this.listProjectSignals(params);
       case "feedbackLoop.insights.list":
@@ -3173,6 +3205,80 @@ class LocalJsonRpcRuntime {
     return blueprint;
   }
 
+  private planEvaluationBlueprintTurn(params: unknown): OraEvaluationBlueprintPlanTurnResult {
+    const parsed = params as { blueprintId?: string; message?: string; providerId?: string; modelRef?: string };
+    const now = Date.now();
+    const current = parsed.blueprintId ? this.evaluationBlueprints.get(parsed.blueprintId) : undefined;
+    const blueprint = current ?? draftMockEvaluationBlueprint({
+      id: `blueprint-${String(this.nextEvaluationBlueprintNumber++).padStart(4, "0")}`,
+      now,
+      goal: parsed.message || "Plan a new evaluation.",
+      recipe: inferMockRecipeFromGoal(parsed.message || ""),
+      providerId: parsed.providerId,
+      modelRef: parsed.modelRef,
+    });
+    const wantsJudge = /judge|rubric|llm|裁判/i.test(parsed.message || "");
+    const wantsHuman = /human|annotation|人工|标注/i.test(parsed.message || "");
+    const next: OraEvaluationBlueprint = {
+      ...blueprint,
+      goal: parsed.message?.trim() || blueprint.goal,
+      evaluatorPlan: {
+        ...blueprint.evaluatorPlan,
+        evaluators: [
+          {
+            id: "heuristic",
+            kind: "heuristic",
+            label: "Heuristic Rules",
+            metrics: blueprint.evaluatorPlan.metrics,
+            assertions: blueprint.evaluatorPlan.assertions,
+            weight: 1,
+            metadata: {},
+          },
+          ...(wantsJudge ? [{
+            id: "llm-judge",
+            kind: "llm_judge" as const,
+            label: "LLM Judge",
+            rubric: "Score whether the output satisfies the evaluation goal and case expectations.",
+            providerId: parsed.providerId,
+            modelRef: parsed.modelRef,
+            passThreshold: 0.75,
+            weight: 1,
+            metadata: {},
+          }] : []),
+          ...(wantsHuman ? [{
+            id: "human-review",
+            kind: "human_annotation" as const,
+            label: "Human Annotation",
+            instructions: "Review the output and mark whether this case should pass.",
+            scoreType: "numeric" as const,
+            categories: [],
+            weight: 1,
+            metadata: {},
+          }] : []),
+        ],
+      },
+      reviewPlan: {
+        ...blueprint.reviewPlan,
+        metadata: {
+          ...blueprint.reviewPlan.metadata,
+          plannerMessages: [
+            ...((Array.isArray(blueprint.reviewPlan.metadata.plannerMessages) ? blueprint.reviewPlan.metadata.plannerMessages : []) as unknown[]),
+            { id: `${blueprint.id}:planner:user:${now}`, role: "user", content: parsed.message || "", createdAt: now },
+            { id: `${blueprint.id}:planner:assistant:${now + 1}`, role: "assistant", content: "I drafted the evaluation plan and evaluator mix.", createdAt: now + 1 },
+          ],
+        },
+      },
+      updatedAt: now,
+    };
+    this.evaluationBlueprints.set(next.id, next);
+    const assistantMessage = { id: `${next.id}:planner:assistant:${now + 1}`, role: "assistant" as const, content: "I drafted the evaluation plan and evaluator mix.", createdAt: now + 1 };
+    return {
+      blueprint: next,
+      messages: (next.reviewPlan.metadata.plannerMessages as OraEvaluationBlueprintPlanTurnResult["messages"]) ?? [assistantMessage],
+      assistantMessage,
+    };
+  }
+
   private startEvaluationRun(params: unknown): OraEvaluationRunDetail {
     const spec = params as OraEvaluationSpec;
     const dataset = this.evaluationDatasets.get(spec.datasetId);
@@ -3204,12 +3310,44 @@ class LocalJsonRpcRuntime {
             error: snapshot.error,
             score: scoreMockEvaluationCase(spec.profileId, evaluationCase, snapshot),
             metricScores: [],
+            evaluatorResults: (spec.objective?.evaluators ?? []).map((evaluator) => ({
+              evaluatorId: evaluator.id,
+              evaluatorKind: evaluator.kind,
+              status: evaluator.kind === "human_annotation" ? "pending" : "scored",
+              score: evaluator.kind === "human_annotation" ? undefined : 0.82,
+              passed: evaluator.kind === "human_annotation" ? undefined : true,
+              rationale: evaluator.kind === "human_annotation" ? "Waiting for human annotation." : "Mock evaluator passed.",
+              failureTags: [],
+              details: {},
+            })),
             observations: buildMockEvaluationObservations(snapshot),
             runtimeMs: Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt)),
             costUsd: Number((snapshot.events.length * 0.0002).toFixed(4)),
             startedAt: snapshot.events[0]?.createdAt ?? startedAt,
             updatedAt: snapshot.updatedAt,
           });
+          for (const evaluator of spec.objective?.evaluators ?? []) {
+            if (evaluator.kind !== "human_annotation") continue;
+            const attemptId = `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`;
+            const task: OraEvaluationAnnotationTask = {
+              id: `annotation-${String(this.nextEvaluationAnnotationNumber++).padStart(4, "0")}`,
+              evaluationRunId,
+              attemptId,
+              caseId: evaluationCase.id,
+              configId: config.id,
+              evaluatorId: evaluator.id,
+              instructions: evaluator.instructions,
+              scoreType: evaluator.scoreType,
+              categories: evaluator.categories,
+              status: "pending",
+              input: evaluationCase.input,
+              output: snapshot.output,
+              expected: evaluationCase.expected,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            this.evaluationAnnotations.set(task.id, task);
+          }
         }
       }
     }
@@ -3237,6 +3375,33 @@ class LocalJsonRpcRuntime {
     };
     this.evaluationRuns.set(evaluationRunId, detail);
     return detail;
+  }
+
+  private submitEvaluationAnnotation(params: unknown): OraEvaluationAnnotationTask {
+    const parsed = params as {
+      taskId?: string;
+      score?: { value: boolean | number | string; normalizedScore?: number; passed?: boolean; failureTags?: string[] };
+      comment?: string;
+      correctedOutput?: unknown;
+    };
+    const current = this.evaluationAnnotations.get(parsed.taskId ?? "");
+    if (!current) throw new Error(`Evaluation annotation not found: ${parsed.taskId ?? ""}`);
+    const next: OraEvaluationAnnotationTask = {
+      ...current,
+      status: "submitted",
+      score: {
+        value: parsed.score?.value ?? 0,
+        normalizedScore: parsed.score?.normalizedScore,
+        passed: parsed.score?.passed,
+        failureTags: parsed.score?.failureTags ?? [],
+      },
+      comment: parsed.comment,
+      correctedOutput: parsed.correctedOutput,
+      updatedAt: Date.now(),
+      submittedAt: Date.now(),
+    };
+    this.evaluationAnnotations.set(next.id, next);
+    return next;
   }
 
   private promoteEvaluationBaseline(params: unknown): OraEvaluationBaseline {
@@ -4465,6 +4630,17 @@ function compileMockEvaluationBlueprint(
   if (!datasetId) throw new Error(`Evaluation blueprint ${blueprint.id} is missing a dataset.`);
   const providerId = overrides.providerId ?? blueprint.runPlan.providerId ?? "local-smoke";
   const modelRef = overrides.modelRef ?? blueprint.runPlan.modelRef ?? "local/smoke-model";
+  const evaluators = blueprint.evaluatorPlan.evaluators.length > 0
+    ? blueprint.evaluatorPlan.evaluators
+    : [{
+        id: "heuristic",
+        kind: "heuristic" as const,
+        label: "Heuristic Rules",
+        metrics: blueprint.evaluatorPlan.metrics,
+        assertions: blueprint.evaluatorPlan.assertions,
+        weight: 1,
+        metadata: {},
+      }];
   const baseMetadata = {
     blueprintId: blueprint.id,
     blueprintRecipe: blueprint.recipe,
@@ -4483,6 +4659,7 @@ function compileMockEvaluationBlueprint(
             ? blueprint.evaluatorPlan.metrics
             : ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
           assertions: blueprint.evaluatorPlan.assertions,
+          evaluators,
           displayColumns: [
             "runtime.modeId",
             "runtime.autoModeRouter.status",
@@ -4524,16 +4701,15 @@ function compileMockEvaluationBlueprint(
     spec: {
       datasetId,
       profileId: blueprint.runPlan.profileId,
-      objective: blueprint.target === "run.output"
-        ? undefined
-        : {
-            kind: "outcome",
-            target: blueprint.target,
-            metrics: blueprint.evaluatorPlan.metrics,
-            assertions: blueprint.evaluatorPlan.assertions,
-            displayColumns: [],
-            metadata: { blueprintId: blueprint.id },
-          },
+      objective: {
+        kind: "outcome",
+        target: blueprint.target,
+        metrics: blueprint.evaluatorPlan.metrics,
+        assertions: blueprint.evaluatorPlan.assertions,
+        evaluators,
+        displayColumns: [],
+        metadata: { blueprintId: blueprint.id },
+      },
       configs: modeIds.map((modeId) => ({
         id: `${modeId}-${providerId}`,
         label: `${modeId.replace(/_/g, " ")} · ${providerId}`,
@@ -4583,6 +4759,7 @@ function draftMockEvaluationBlueprint(params: {
       evaluatorPlan: {
         metrics: ["exact_match", "acceptable_match", "assertion_pass_rate", "fallback_rate", "confidence_calibration"],
         assertions: [],
+        evaluators: [],
         metadata: {},
       },
       runPlan: {
@@ -4628,6 +4805,7 @@ function draftMockEvaluationBlueprint(params: {
     evaluatorPlan: {
       metrics: ["text_similarity", "assertion_pass_rate", "latency_score", "cost_score"],
       assertions: [],
+      evaluators: [],
       metadata: {},
     },
     runPlan: {
@@ -4874,9 +5052,6 @@ function buildMockAgentMessages(
   baseTime: number,
   prompt: string,
 ): OraStateSnapshot["agentMessages"] {
-  if (pattern === "orchestrator_subagent") {
-    return [];
-  }
   const owner = (templateId: string, fallback: string) =>
     definition.planTemplate.find((item) => item.id === templateId)?.ownerAgentId ?? fallback;
   const message = (
@@ -4892,6 +5067,32 @@ function buildMockAgentMessages(
     artifactIds: [],
     ...params,
   });
+
+  if (pattern === "orchestrator_subagent") {
+    const orchestrator = owner("decompose", "orchestrator");
+    const researcher = owner("research", "researcher");
+    const reviewer = owner("review", "reviewer");
+    return [
+      message(0, {
+        fromAgentId: ORA_ROOT_AGENT_ID,
+        toAgentIds: [orchestrator],
+        threadId: `${runId}:ora-handoff`,
+        nodeId: ORA_ROOT_AGENT_ID,
+        kind: "handoff",
+        content: `${ORA_ROOT_AGENT_LABEL} is handing this request to ${orchestrator}.`,
+      }),
+      message(1, {
+        fromAgentId: orchestrator,
+        toAgentIds: [researcher, reviewer],
+        replyToId: `${runId}:agent-message:0`,
+        threadId: `${runId}:ora-handoff`,
+        nodeId: "decompose",
+        planItemId: "decompose",
+        kind: "reply",
+        content: `@${researcher} and @${reviewer} subagent work is coordinated for: ${prompt}`,
+      }),
+    ];
+  }
 
   if (pattern === "generator_verifier") {
     const generator = owner("draft", "generator");
@@ -5096,6 +5297,7 @@ function buildMockCaseResults(
         attemptIds: matchingAttempts.map((attempt) => attempt.id),
         averageScore: average,
         metricScores: [],
+        evaluatorResults: matchingAttempts.at(-1)?.evaluatorResults ?? [],
         latestOutput: matchingAttempts.at(-1)?.output,
         observations: matchingAttempts.at(-1)?.observations ?? {},
         expected: evaluationCase.expected,
@@ -5123,6 +5325,7 @@ function buildMockScorecard(configs: OraEvaluationSpec["configs"], attempts: Ora
     averageRuntimeMs: Math.round(average(attempts.map((attempt) => attempt.runtimeMs))),
     averageCostUsd: Number(average(attempts.map((attempt) => attempt.costUsd)).toFixed(4)),
     regressionCount: caseResults.filter((result) => result.comparisonToBaseline?.regressed).length,
+    pendingAnnotationCount: attempts.reduce((count, attempt) => count + attempt.evaluatorResults.filter((result) => result.evaluatorKind === "human_annotation" && result.status === "pending").length, 0),
     configSummaries: configs.map((config) => {
       const configAttempts = attempts.filter((attempt) => attempt.configId === config.id);
       const configCaseResults = caseResults.filter((result) => result.configId === config.id);

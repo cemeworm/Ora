@@ -1,11 +1,24 @@
-import { BarChart3, Check, Download, FileUp, FlaskConical, GitCompareArrows, Loader2, MessageSquareWarning, Trophy, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Bot,
+  Check,
+  ClipboardCheck,
+  Download,
+  FileUp,
+  FlaskConical,
+  GitCompareArrows,
+  History,
+  Loader2,
+  MessageSquare,
+  Sparkles,
+  UserCheck,
+} from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useWorkbench } from "../lib/state";
 import type {
+  OraEvaluationAnnotationTask,
   OraEvaluationBaseline,
   OraEvaluationBlueprint,
   OraEvaluationBlueprintCompileResult,
-  OraEvaluationCaseResult,
   OraEvaluationDataset,
   OraEvaluationDatasetDetail,
   OraEvaluationFeedbackRecord,
@@ -14,25 +27,28 @@ import type {
   OraEvaluationSpec,
   RuntimeClient,
 } from "../lib/runtimeClient";
-import type { RuntimeBridgeStatus } from "../types";
 import { runnableProviderOptions } from "../lib/providerOptions";
 import { cn } from "../lib/utils";
-import { ChoiceCard } from "./ui/choice-card";
+import type { RuntimeBridgeStatus } from "../types";
 import { Field } from "./ui/field";
-import { Input } from "./ui/input";
 import { Select } from "./ui/select";
 import { Textarea } from "./ui/textarea";
 
-type EvaluationTab = "overview" | "regression" | "lab" | "feedback";
-type EvaluationStep = "samples" | "target" | "run" | "review";
-type EvaluationRecipe = "mode_comparison" | "auto_router_quality";
-type DraftEvaluationCase = OraEvaluationDatasetDetail["cases"][number];
+type Selection =
+  | { kind: "new" }
+  | { kind: "blueprint"; id: string }
+  | { kind: "run"; id: string }
+  | { kind: "annotation"; id: string };
 
-const PROFILE_OPTIONS: Array<{ id: "outcome" | "orchestration" | "task_completion"; label: string; description: string }> = [
-  { id: "outcome", label: "结果质量", description: "重点看最终回答是否满足用户目标。" },
-  { id: "orchestration", label: "协作过程", description: "重点看工具调用、交接、澄清和执行轨迹。" },
-  { id: "task_completion", label: "任务完成", description: "重点看环境任务是否被完整完成。" },
+type EvalProfile = "outcome" | "orchestration" | "task_completion";
+
+const PROFILE_OPTIONS: Array<{ id: EvalProfile; label: string }> = [
+  { id: "outcome", label: "结果质量" },
+  { id: "orchestration", label: "协作过程" },
+  { id: "task_completion", label: "任务完成" },
 ];
+
+const MODE_OPTIONS = ["orchestrator_subagent", "agent_teams", "generator_verifier"];
 
 export function EvaluationView({
   runtimeClient,
@@ -43,66 +59,53 @@ export function EvaluationView({
 }) {
   const { state } = useWorkbench();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [tab, setTab] = useState<EvaluationTab>("regression");
-  const [activeStep, setActiveStep] = useState<EvaluationStep>("samples");
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [selection, setSelection] = useState<Selection>({ kind: "new" });
   const [datasets, setDatasets] = useState<OraEvaluationDataset[]>([]);
+  const [blueprints, setBlueprints] = useState<OraEvaluationBlueprint[]>([]);
   const [runs, setRuns] = useState<OraEvaluationRun[]>([]);
   const [baselines, setBaselines] = useState<OraEvaluationBaseline[]>([]);
-  const [feedbackRecords, setFeedbackRecords] = useState<OraEvaluationFeedbackRecord[]>([]);
-  const [blueprints, setBlueprints] = useState<OraEvaluationBlueprint[]>([]);
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
-  const [selectedRunId, setSelectedRunId] = useState<string>("");
-  const [selectedCaseKey, setSelectedCaseKey] = useState<string>("");
-  const [selectedProfileId, setSelectedProfileId] = useState<"outcome" | "orchestration" | "task_completion">("outcome");
-  const [selectedPatterns, setSelectedPatterns] = useState<string[]>(["orchestrator_subagent", "agent_teams"]);
-  const [selectedRecipe, setSelectedRecipe] = useState<EvaluationRecipe>("mode_comparison");
-  const [evaluationGoal, setEvaluationGoal] = useState("评估当前 Agent modes 在同一数据集上的任务完成质量。");
-  const [activeBlueprint, setActiveBlueprint] = useState<OraEvaluationBlueprint | undefined>();
-  const [compiledBlueprint, setCompiledBlueprint] = useState<OraEvaluationBlueprintCompileResult | undefined>();
-  const [draftCases, setDraftCases] = useState<DraftEvaluationCase[]>([]);
-  const [repetitions, setRepetitions] = useState(1);
-  const [baselineId, setBaselineId] = useState<string>("");
-  const [modelRef, setModelRef] = useState("local/smoke-model");
-  const [runDetail, setRunDetail] = useState<OraEvaluationRunDetail | undefined>();
+  const [feedback, setFeedback] = useState<OraEvaluationFeedbackRecord[]>([]);
+  const [annotations, setAnnotations] = useState<OraEvaluationAnnotationTask[]>([]);
   const [datasetDetail, setDatasetDetail] = useState<OraEvaluationDatasetDetail | undefined>();
-  const [busy, setBusy] = useState<string>("");
-  const [error, setError] = useState<string>("");
+  const [runDetail, setRunDetail] = useState<OraEvaluationRunDetail | undefined>();
+  const [compiled, setCompiled] = useState<OraEvaluationBlueprintCompileResult | undefined>();
+  const [plannerInput, setPlannerInput] = useState("评估当前 agent modes 在真实任务和失败反馈上的完成质量，包含启发式规则、LLM judge 和必要的人工标注。");
+  const [selectedDatasetId, setSelectedDatasetId] = useState("");
+  const [selectedProfileId, setSelectedProfileId] = useState<EvalProfile>("outcome");
+  const [selectedModes, setSelectedModes] = useState<string[]>(["orchestrator_subagent", "agent_teams"]);
+  const [modelRef, setModelRef] = useState("local/smoke-model");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
 
   const providerOptions = runnableProviderOptions(state.providerRegistry?.providers ?? [], state.providerSecretStatuses);
   const activeProvider = providerOptions.find((provider) => provider.id === state.selectedProviderId) ?? providerOptions[0];
+  const selectedBlueprint = selection.kind === "blueprint" ? blueprints.find((blueprint) => blueprint.id === selection.id) : undefined;
+  const selectedAnnotation = selection.kind === "annotation" ? annotations.find((task) => task.id === selection.id) : undefined;
+  const pendingAnnotations = annotations.filter((task) => task.status === "pending");
+  const pendingFeedback = feedback.filter((record) => record.status === "pending" || record.status === "failed");
+  const readyBlueprints = blueprints.filter((blueprint) => blueprint.status === "ready");
+  const draftBlueprints = blueprints.filter((blueprint) => blueprint.status === "draft");
 
-  async function refreshIndex() {
-    const [nextDatasetsResult, nextRunsResult, nextBaselinesResult, nextFeedbackResult, nextBlueprintsResult] = await Promise.all([
+  async function refresh() {
+    const [nextDatasets, nextRuns, nextBaselines, nextFeedback, nextBlueprints, nextAnnotations] = await Promise.all([
       runtimeClient.listEvaluationDatasets(),
       runtimeClient.listEvaluationRuns(),
       runtimeClient.listEvaluationBaselines(),
       runtimeClient.listEvaluationFeedback({ limit: 200 }),
       runtimeClient.listEvaluationBlueprints({ limit: 200 }),
+      runtimeClient.listEvaluationAnnotations({ limit: 200 }),
     ]);
-    const nextDatasets = Array.isArray(nextDatasetsResult) ? nextDatasetsResult : [];
-    const nextRuns = Array.isArray(nextRunsResult) ? nextRunsResult : [];
-    const nextBaselines = Array.isArray(nextBaselinesResult) ? nextBaselinesResult : [];
-    const nextFeedback = Array.isArray(nextFeedbackResult) ? nextFeedbackResult : [];
-    const nextBlueprints = Array.isArray(nextBlueprintsResult) ? nextBlueprintsResult : [];
-    if (!Array.isArray(nextDatasetsResult) || !Array.isArray(nextRunsResult) || !Array.isArray(nextBaselinesResult) || !Array.isArray(nextFeedbackResult) || !Array.isArray(nextBlueprintsResult)) {
-      setError("Evaluation index returned an invalid response.");
-    }
     setDatasets(nextDatasets);
     setRuns(nextRuns);
     setBaselines(nextBaselines);
-    setFeedbackRecords(nextFeedback);
+    setFeedback(nextFeedback);
     setBlueprints(nextBlueprints);
-    if (!selectedDatasetId && nextDatasets[0]) {
-      setSelectedDatasetId(nextDatasets[0].id);
-    }
-    if (!selectedRunId && nextRuns[0]) {
-      setSelectedRunId(nextRuns[0].id);
-    }
+    setAnnotations(nextAnnotations);
+    if (!selectedDatasetId && nextDatasets[0]) setSelectedDatasetId(nextDatasets[0].id);
   }
 
   useEffect(() => {
-    void refreshIndex().catch((nextError) => setError(nextError instanceof Error ? nextError.message : "Failed to load evaluation index."));
+    void refresh().catch((nextError) => setError(errorText(nextError, "Failed to load evaluation workspace.")));
   }, []);
 
   useEffect(() => {
@@ -112,70 +115,43 @@ export function EvaluationView({
     }
     void runtimeClient.getEvaluationDataset(selectedDatasetId)
       .then(setDatasetDetail)
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : "Failed to load evaluation dataset."));
+      .catch((nextError) => setError(errorText(nextError, "Failed to load dataset.")));
   }, [runtimeClient, selectedDatasetId]);
 
   useEffect(() => {
-    if (!selectedRunId) {
+    if (selection.kind !== "run") {
       setRunDetail(undefined);
       return;
     }
-    void runtimeClient.getEvaluationRun(selectedRunId)
-      .then((detail) => {
-        setRunDetail(detail);
-        if (!selectedCaseKey && detail.run.caseResults[0]) {
-          setSelectedCaseKey(`${detail.run.caseResults[0].caseId}:${detail.run.caseResults[0].configId}`);
-        }
-      })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : "Failed to load evaluation run."));
-  }, [runtimeClient, selectedRunId]);
+    void runtimeClient.getEvaluationRun(selection.id)
+      .then(setRunDetail)
+      .catch((nextError) => setError(errorText(nextError, "Failed to load evaluation run.")));
+  }, [runtimeClient, selection]);
 
   useEffect(() => {
-    setCompiledBlueprint(undefined);
-  }, [selectedDatasetId, selectedRecipe, selectedPatterns, selectedProfileId, modelRef, repetitions, baselineId, activeProvider?.id]);
+    setCompiled(undefined);
+  }, [selectedDatasetId, selectedBlueprint?.id, selectedModes, modelRef, activeProvider?.id]);
 
-  const runBaselines = useMemo(() => baselines.filter((baseline) => !selectedDatasetId || baseline.datasetId === selectedDatasetId), [baselines, selectedDatasetId]);
-  const caseDetails = useMemo(() => {
-    if (!runDetail) return [];
-    const grouped = new Map<string, { caseId: string; results: OraEvaluationCaseResult[] }>();
-    for (const result of runDetail.run.caseResults) {
-      const entry = grouped.get(result.caseId) ?? { caseId: result.caseId, results: [] };
-      entry.results.push(result);
-      grouped.set(result.caseId, entry);
+  async function handlePlannerTurn(blueprintId?: string) {
+    if (!plannerInput.trim()) return;
+    setBusy("planner");
+    setError("");
+    try {
+      const result = await runtimeClient.planEvaluationBlueprintTurn({
+        blueprintId,
+        message: plannerInput,
+        providerId: activeProvider?.id ?? "local-smoke",
+        modelRef,
+      });
+      await refresh();
+      setSelection({ kind: "blueprint", id: result.blueprint.id });
+      setPlannerInput("");
+    } catch (nextError) {
+      setError(errorText(nextError, "Failed to plan evaluation."));
+    } finally {
+      setBusy("");
     }
-    return [...grouped.values()];
-  }, [runDetail]);
-  const selectedCase = useMemo(() => {
-    const [caseId] = selectedCaseKey.split(":");
-    return caseDetails.find((entry) => entry.caseId === caseId);
-  }, [caseDetails, selectedCaseKey]);
-  const selectedDataset = datasetDetail?.dataset ?? datasets.find((dataset) => dataset.id === selectedDatasetId);
-  const pendingFeedback = useMemo(() => feedbackRecords.filter((record) => record.status === "pending" || record.status === "failed"), [feedbackRecords]);
-  const selectedDatasetRuns = useMemo(() => runs.filter((run) => !selectedDatasetId || run.spec.datasetId === selectedDatasetId), [runs, selectedDatasetId]);
-  const selectedRecipeLabel = selectedRecipe === "auto_router_quality" ? "Auto Router Quality" : "Agent Mode Comparison";
-  const selectedRecipeComplete = selectedRecipe === "mode_comparison" ? selectedPatterns.length > 0 : true;
-  const bestConfig = useMemo(() => {
-    if (!runDetail?.run.scorecard.configSummaries.length) return undefined;
-    return [...runDetail.run.scorecard.configSummaries].sort((left, right) => right.overallScore - left.overallScore)[0];
-  }, [runDetail]);
-  const topFailureTags = useMemo(() => {
-    if (!runDetail) return [];
-    const counts = new Map<string, number>();
-    for (const summary of runDetail.run.scorecard.configSummaries) {
-      for (const [tag, count] of Object.entries(summary.failureTagCounts)) {
-        counts.set(tag, (counts.get(tag) ?? 0) + count);
-      }
-    }
-    return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 4);
-  }, [runDetail]);
-  const canRunEvaluation = Boolean(selectedDatasetId && selectedRecipeComplete && busy.length === 0);
-  const nextAction = !selectedDatasetId
-    ? "先准备样本"
-    : !selectedRecipeComplete
-      ? "选择评测对象"
-    : runDetail
-        ? "复盘这次结果"
-        : "运行这组评测";
+  }
 
   async function handleImportDataset(file: File) {
     setBusy("import");
@@ -184,205 +160,53 @@ export function EvaluationView({
       const detail = await runtimeClient.importEvaluationDataset({
         name: file.name.replace(/\.[^.]+$/, ""),
         sourceFileName: file.name,
-        content: await file.text(),
         sourceFormat: inferSourceFormat(file.name),
+        content: await file.text(),
       });
-      await refreshIndex();
       setSelectedDatasetId(detail.dataset.id);
-      setActiveStep("target");
+      await refresh();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to import dataset.");
+      setError(errorText(nextError, "Failed to import dataset."));
     } finally {
       setBusy("");
     }
   }
 
-  async function ensureBlueprint() {
-    if (activeBlueprint?.recipe === selectedRecipe) {
-      return activeBlueprint;
-    }
-    const draft = await runtimeClient.generateEvaluationBlueprintDraft({
-      goal: evaluationGoal.trim() || selectedRecipeLabel,
-      recipe: selectedRecipe,
-      datasetId: selectedDatasetId || undefined,
+  async function compileBlueprint(blueprint: OraEvaluationBlueprint) {
+    const result = await runtimeClient.compileEvaluationBlueprint({
+      blueprintId: blueprint.id,
+      datasetId: selectedDatasetId || blueprint.datasetPlan.datasetId,
       providerId: activeProvider?.id ?? "local-smoke",
       modelRef,
+      modeIds: blueprint.recipe === "mode_comparison" ? selectedModes : undefined,
     });
-    setActiveBlueprint(draft);
-    await refreshIndex();
-    return draft;
+    setCompiled(result);
+    return result;
   }
 
-  async function handleGenerateBlueprint() {
-    setBusy("blueprint");
-    setError("");
-    try {
-      const draft = await runtimeClient.generateEvaluationBlueprintDraft({
-        goal: evaluationGoal.trim() || selectedRecipeLabel,
-        recipe: selectedRecipe,
-        datasetId: selectedDatasetId || undefined,
-        providerId: activeProvider?.id ?? "local-smoke",
-        modelRef,
-      });
-      setActiveBlueprint(draft);
-      setCompiledBlueprint(undefined);
-      setDraftCases([]);
-      await refreshIndex();
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to generate evaluation blueprint.");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function handleCompileBlueprint() {
-    if (!selectedDatasetId || !selectedRecipeComplete) return undefined;
-    setBusy("compile");
-    setError("");
-    try {
-      const blueprint = await ensureBlueprint();
-      const compiled = await runtimeClient.compileEvaluationBlueprint({
-        blueprintId: blueprint.id,
-        datasetId: selectedDatasetId,
-        providerId: activeProvider?.id ?? "local-smoke",
-        modelRef,
-        modeIds: selectedRecipe === "mode_comparison" ? selectedPatterns : undefined,
-      });
-      setCompiledBlueprint(compiled);
-      return compiled;
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to compile evaluation blueprint.");
-      return undefined;
-    } finally {
-      setBusy("");
-    }
-  }
-
-  function handleGenerateDraftCases() {
-    if (!activeBlueprint) return;
-    const requirements = activeBlueprint.datasetPlan.caseRequirements.length > 0
-      ? activeBlueprint.datasetPlan.caseRequirements
-      : ["representative evaluation case"];
-    const nextCases: DraftEvaluationCase[] = requirements.map((requirement, index) => ({
-      id: `${activeBlueprint.recipe}-draft-${index + 1}`,
-      input: {
-        prompt: activeBlueprint.recipe === "auto_router_quality"
-          ? `请根据当前意图选择最匹配的 mode。覆盖要求：${requirement}`
-          : `完成这个任务并满足评测目标：${requirement}`,
-        context: {
-          evaluationBlueprintId: activeBlueprint.id,
-          requirement,
-        },
-      },
-      expected: activeBlueprint.recipe === "auto_router_quality"
-        ? {
-            structured: {
-              assertions: [{
-                type: "exists",
-                path: "runtime.modeId",
-                failureTag: "missing_route",
-              }],
-              notes: "请在审核草案时补充 expected selected mode 或 acceptable alternatives。",
-            },
-          }
-        : {
-            text: "请在审核草案时补充期望输出或结构化断言。",
-          },
-      metadata: {
-        source: "blueprint_draft",
-        blueprintId: activeBlueprint.id,
-        recipe: activeBlueprint.recipe,
-        requirement,
-        status: "draft",
-        tags: [activeBlueprint.recipe, "draft"],
-      },
-    }));
-    setDraftCases(nextCases);
-  }
-
-  async function handleApproveDraftCases() {
-    if (!activeBlueprint || draftCases.length === 0) return;
-    setBusy("draft-cases");
-    setError("");
-    try {
-      const detail = await runtimeClient.importEvaluationDataset({
-        name: `${activeBlueprint.title} Draft Cases`,
-        description: `Draft cases generated from ${activeBlueprint.id}.`,
-        sourceFileName: `${activeBlueprint.id}-draft-cases.json`,
-        sourceFormat: "json",
-        content: JSON.stringify(draftCases, null, 2),
-        tags: [activeBlueprint.recipe, "blueprint_draft"],
-      });
-      setSelectedDatasetId(detail.dataset.id);
-      setDraftCases([]);
-      await runtimeClient.updateEvaluationBlueprint({
-        blueprintId: activeBlueprint.id,
-        updates: {
-          datasetPlan: {
-            ...activeBlueprint.datasetPlan,
-            datasetId: detail.dataset.id,
-            linkedDatasetIds: [...new Set([...activeBlueprint.datasetPlan.linkedDatasetIds, detail.dataset.id])],
-          },
-          status: "ready",
-        },
-      });
-      const refreshed = await runtimeClient.getEvaluationBlueprint(activeBlueprint.id);
-      setActiveBlueprint(refreshed);
-      await refreshIndex();
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to approve draft cases.");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function handleRunEvaluation() {
-    if (!selectedDatasetId || !selectedRecipeComplete) return;
+  async function handleRunBlueprint(blueprint: OraEvaluationBlueprint) {
     setBusy("run");
     setError("");
     try {
-      const blueprint = await ensureBlueprint();
-      const compiled = await runtimeClient.compileEvaluationBlueprint({
-        blueprintId: blueprint.id,
-        datasetId: selectedDatasetId,
-        providerId: activeProvider?.id ?? "local-smoke",
-        modelRef,
-        modeIds: selectedRecipe === "mode_comparison" ? selectedPatterns : undefined,
-      });
+      const result = compiled ?? await compileBlueprint(blueprint);
       const spec: OraEvaluationSpec = {
-        ...compiled.spec,
+        ...result.spec,
         profileId: selectedProfileId,
-        repetitions,
         concurrency: 1,
-        baselineId: baselineId || undefined,
       };
-      setCompiledBlueprint({ ...compiled, spec });
       const detail = await runtimeClient.startEvaluationRun(spec);
-      await refreshIndex();
-      setSelectedRunId(detail.run.id);
+      await runtimeClient.updateEvaluationBlueprint({
+        blueprintId: blueprint.id,
+        updates: {
+          status: "ready",
+          linkedRunIds: [...new Set([...blueprint.linkedRunIds, detail.run.id])],
+        },
+      });
+      await refresh();
       setRunDetail(detail);
-      setActiveStep("review");
-      setTab("overview");
-      if (detail.run.caseResults[0]) {
-        setSelectedCaseKey(`${detail.run.caseResults[0].caseId}:${detail.run.caseResults[0].configId}`);
-      }
+      setSelection({ kind: "run", id: detail.run.id });
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to start evaluation run.");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function handlePromoteBaseline(configId: string) {
-    if (!runDetail) return;
-    setBusy(`baseline:${configId}`);
-    setError("");
-    try {
-      const baseline = await runtimeClient.promoteEvaluationBaseline(runDetail.run.id, configId);
-      await refreshIndex();
-      setBaselineId(baseline.id);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to promote baseline.");
+      setError(errorText(nextError, "Failed to run evaluation."));
     } finally {
       setBusy("");
     }
@@ -401,35 +225,24 @@ export function EvaluationView({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to export evaluation run.");
+      setError(errorText(nextError, "Failed to export evaluation run."));
     } finally {
       setBusy("");
     }
   }
 
-  async function handleAcceptFeedback(feedbackId: string) {
-    setBusy(`feedback-accept:${feedbackId}`);
+  async function handleSubmitAnnotation(task: OraEvaluationAnnotationTask, passed: boolean) {
+    setBusy(`annotation:${task.id}`);
     setError("");
     try {
-      const record = await runtimeClient.acceptEvaluationFeedback(feedbackId);
-      await refreshIndex();
-      setSelectedDatasetId(record.datasetId ?? "feedback-chat");
-      setActiveStep("target");
+      await runtimeClient.submitEvaluationAnnotation({
+        taskId: task.id,
+        score: { value: passed, normalizedScore: passed ? 1 : 0, passed, failureTags: passed ? [] : ["human_rejected"] },
+        comment: passed ? "Accepted during local review." : "Rejected during local review.",
+      });
+      await refresh();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to accept feedback.");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function handleRejectFeedback(feedbackId: string) {
-    setBusy(`feedback-reject:${feedbackId}`);
-    setError("");
-    try {
-      await runtimeClient.rejectEvaluationFeedback(feedbackId);
-      await refreshIndex();
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to reject feedback.");
+      setError(errorText(nextError, "Failed to submit annotation."));
     } finally {
       setBusy("");
     }
@@ -442,35 +255,16 @@ export function EvaluationView({
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Evaluation</p>
             <h2 className="mt-1 text-xl font-semibold text-bench-900">Evaluation Studio</h2>
-            <p className="mt-1 text-sm leading-6 text-bench-700">从自然语言目标生成可审查 blueprint，再编译为可运行的评测 spec。</p>
+            <p className="mt-1 text-sm leading-6 text-bench-700">历史任务、planner 对话、evaluator 和复盘结果集中在一个工作台。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50 active:scale-[0.98]"
-            >
+            <button className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50" onClick={() => fileInputRef.current?.click()}>
               <FileUp size={16} />
               导入数据集
             </button>
-            <button
-              onClick={() => {
-                if (!selectedDatasetId) {
-                  setActiveStep("samples");
-                  fileInputRef.current?.click();
-                } else if (!selectedRecipeComplete) {
-                  setActiveStep("target");
-                } else if (runDetail) {
-                  setActiveStep("review");
-                } else {
-                  setActiveStep("run");
-                  void handleRunEvaluation();
-                }
-              }}
-              disabled={busy.length > 0}
-              className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.98]"
-            >
-              {busy === "run" ? <Loader2 size={16} className="animate-spin" /> : <FlaskConical size={16} />}
-              {nextAction}
+            <button className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition active:scale-[0.98]" onClick={() => setSelection({ kind: "new" })}>
+              <Sparkles size={16} />
+              新建评测
             </button>
             <input
               ref={fileInputRef}
@@ -487,1171 +281,535 @@ export function EvaluationView({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 lg:overflow-hidden">
-        <div className="grid gap-2 md:grid-cols-4">
-          <WorkflowStepButton
-            active={activeStep === "samples"}
-            complete={Boolean(selectedDatasetId)}
-            index="1"
-            title="准备样本"
-            description={selectedDataset ? `${selectedDataset.caseCount} cases ready` : "导入数据或审核反馈"}
-            onClick={() => setActiveStep("samples")}
-          />
-          <WorkflowStepButton
-            active={activeStep === "target"}
-            complete={selectedRecipeComplete}
-            index="2"
-            title="设计蓝图"
-            description={`${selectedRecipeLabel} · ${PROFILE_OPTIONS.find((profile) => profile.id === selectedProfileId)?.label}`}
-            onClick={() => setActiveStep("target")}
-          />
-          <WorkflowStepButton
-            active={activeStep === "run"}
-            complete={Boolean(runDetail)}
-            index="3"
-            title="运行评测"
-            description={selectedDatasetId ? "配置就绪后执行" : "等待样本"}
-            onClick={() => setActiveStep("run")}
-          />
-          <WorkflowStepButton
-            active={activeStep === "review"}
-            complete={Boolean(runDetail)}
-            index="4"
-            title="复盘沉淀"
-            description={runDetail ? `${formatPercent(runDetail.run.scorecard.overallScore)} overall` : "查看结论和失败样本"}
-            onClick={() => setActiveStep("review")}
-          />
-        </div>
+      <div className="grid min-h-0 flex-1 gap-2 overflow-hidden p-2 lg:grid-cols-[18rem_minmax(0,1fr)_20rem]">
+        <HistorySidebar
+          selection={selection}
+          drafts={draftBlueprints}
+          ready={readyBlueprints}
+          runs={runs}
+          annotations={pendingAnnotations}
+          feedbackCount={pendingFeedback.length}
+          onSelect={setSelection}
+        />
 
-        <div className="grid min-h-0 flex-1 gap-2 lg:grid-cols-[minmax(0,1fr)_21rem] lg:overflow-hidden">
-          <section className="min-h-[34rem] min-w-0 overflow-hidden rounded-[20px] border border-black/[0.035] bg-sidebar shadow-[0_1px_1px_rgba(23,23,23,0.04),0_8px_18px_rgba(23,23,23,0.024)]">
-            <div className="flex h-full min-h-0 flex-col overflow-y-auto px-5 py-5">
-              {activeStep === "samples" && (
-                <div className="space-y-5">
-                  <div className="grid gap-3 xl:grid-cols-[1fr_1.25fr]">
-                    <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Step 1</p>
-                          <h3 className="mt-2 text-lg font-semibold">准备可复盘的样本</h3>
-                          <p className="mt-2 text-sm leading-6 text-bench-700">样本可以来自文件，也可以来自聊天里的自然语言反馈。先把问题沉淀成 case，再去跑模式对比。</p>
-                        </div>
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-bench-900 px-3 text-xs font-semibold text-white transition active:scale-[0.98]"
-                        >
-                          <FileUp size={14} />
-                          导入
-                        </button>
-                      </div>
-                      <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                        <QuickStat label="数据集" value={String(datasets.length)} />
-                        <QuickStat label="待审反馈" value={String(pendingFeedback.length)} />
-                        <QuickStat label="已运行" value={String(runs.length)} />
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Feedback Inbox</p>
-                          <h3 className="mt-2 text-lg font-semibold">先处理聊天反馈</h3>
-                        </div>
-                        {pendingFeedback.length > 0 ? (
-                          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">{pendingFeedback.length} pending</span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">clean</span>
-                        )}
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-bench-700">接受后的反馈会进入 `feedback-chat` 数据集，下一步可以直接用于回归评测。</p>
-                      <div className="mt-4">
-                        <FeedbackInbox
-                          records={feedbackRecords}
-                          busy={busy}
-                          compact
-                          onAccept={(feedbackId) => void handleAcceptFeedback(feedbackId)}
-                          onReject={(feedbackId) => void handleRejectFeedback(feedbackId)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <Section title="可用数据集" description="选择一个数据集作为这次评测的样本来源。">
-                    {datasets.length === 0 ? (
-                      <EmptyState title="还没有数据集" description="导入 JSON / JSONL / CSV，或先从聊天反馈接受一个 case，Ora 会生成 feedback-chat 数据集。" />
-                    ) : (
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        {datasets.map((dataset) => (
-                          <DatasetCard
-                            key={dataset.id}
-                            dataset={dataset}
-                            active={dataset.id === selectedDatasetId}
-                            runCount={runs.filter((run) => run.spec.datasetId === dataset.id).length}
-                            onClick={() => {
-                              setSelectedDatasetId(dataset.id);
-                              setActiveStep("target");
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </Section>
-                </div>
-              )}
-
-              {activeStep === "target" && (
-                <div className="space-y-5">
-                  <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Step 2</p>
-                    <h3 className="mt-2 text-lg font-semibold">把评测意图设计成 Blueprint</h3>
-                    <p className="mt-2 text-sm leading-6 text-bench-700">先描述目标并选择 recipe，Ora 会生成可审查的 blueprint，再编译成 EvaluationSpec。</p>
-                  </div>
-
-                  <div className="grid gap-4 xl:grid-cols-[19rem_1fr]">
-                    <div className="space-y-4 rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                      <Field label="自然语言目标">
-                        <Textarea
-                          aria-label="Evaluation goal"
-                          value={evaluationGoal}
-                          onChange={(event) => setEvaluationGoal(event.target.value)}
-                          className="min-h-[7rem] resize-none bg-white"
-                        />
-                      </Field>
-                      <Field label="样本集">
-                        <Select aria-label="Dataset" value={selectedDatasetId} onChange={(event) => setSelectedDatasetId(event.target.value)}>
-                          <option value="">选择数据集</option>
-                          {datasets.map((dataset) => (
-                            <option key={dataset.id} value={dataset.id}>{dataset.name}</option>
-                          ))}
-                        </Select>
-                      </Field>
-                      {selectedDataset ? (
-                        <div className="rounded-md bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">
-                          <div className="text-sm font-semibold">{selectedDataset.name}</div>
-                          <div className="mt-1 text-xs text-bench-700">{selectedDataset.caseCount} cases · {selectedDataset.sourceFormat.toUpperCase()}</div>
-                          {datasetDetail && datasetDetail.metadataKeys.length > 0 ? (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {datasetDetail.metadataKeys.map((key) => (
-                                <span key={key} className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">{key}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      <Field label="评测目标" hint={PROFILE_OPTIONS.find((profile) => profile.id === selectedProfileId)?.description}>
-                        <Select aria-label="Profile" value={selectedProfileId} onChange={(event) => setSelectedProfileId(event.target.value as typeof selectedProfileId)}>
-                          {PROFILE_OPTIONS.map((profile) => (
-                            <option key={profile.id} value={profile.id}>{profile.label}</option>
-                          ))}
-                        </Select>
-                      </Field>
-                      <button
-                        type="button"
-                        onClick={() => void handleGenerateBlueprint()}
-                        disabled={busy === "blueprint"}
-                        className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        {busy === "blueprint" ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
-                        生成 Blueprint
-                      </button>
-                    </div>
-
-                    <div className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <RecipeCard
-                          title="Agent Mode Comparison"
-                          description="保留现有模式矩阵，对同一数据集比较多个 Agent modes。"
-                          active={selectedRecipe === "mode_comparison"}
-                          onClick={() => {
-                            setSelectedRecipe("mode_comparison");
-                            setEvaluationGoal("评估当前 Agent modes 在同一数据集上的任务完成质量。");
-                          }}
-                        />
-                        <RecipeCard
-                          title="Auto Router Quality"
-                          description="评估 Auto Mode Router 的 mode selection，不要求选择 Agent modes。"
-                          active={selectedRecipe === "auto_router_quality"}
-                          onClick={() => {
-                            setSelectedRecipe("auto_router_quality");
-                            setEvaluationGoal("评估 Auto Mode Router 在多轮上下文之后是否还能选择匹配本轮意图的 mode。");
-                          }}
-                        />
-                      </div>
-
-                      {selectedRecipe === "mode_comparison" ? (
-                        <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <h3 className="text-sm font-semibold">Agent modes</h3>
-                              <p className="mt-1 text-xs leading-5 text-bench-700">选择一个或多个模式，Ora 会为每个模式生成一组评测配置。</p>
-                            </div>
-                            <span className="rounded-full bg-bench-50 px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">{selectedPatterns.length} selected</span>
-                          </div>
-                          <div className="mt-4 grid gap-2 md:grid-cols-2">
-                            {state.patterns.map((pattern) => (
-                              <ChoiceCard
-                                key={pattern.id}
-                                title={pattern.label}
-                                description={pattern.summary}
-                                checked={selectedPatterns.includes(pattern.id)}
-                                onChange={(event) => setSelectedPatterns((current) => event.target.checked ? [...current, pattern.id] : current.filter((item) => item !== pattern.id))}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <h3 className="text-sm font-semibold">Auto Router Quality</h3>
-                              <p className="mt-1 text-xs leading-5 text-bench-700">目标是 `runtime.mode_selection`，运行时会锁定 router-only，不再要求选择 Agent modes。</p>
-                            </div>
-                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">router-only</span>
-                          </div>
-                          <div className="mt-4 grid gap-2 md:grid-cols-3">
-                            <QuickStat label="Target" value="runtime.mode_selection" />
-                            <QuickStat label="Config" value="modeSelection:auto" />
-                            <QuickStat label="Metrics" value="exact / acceptable / confidence" />
-                          </div>
-                        </div>
-                      )}
-
-                      {activeBlueprint ? (
-                        <>
-                          <BlueprintSummary blueprint={activeBlueprint} />
-                          <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                              <div>
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Case Builder</p>
-                                <h3 className="mt-2 text-sm font-semibold">从 coverage requirements 生成草案样本</h3>
-                                <p className="mt-1 text-xs leading-5 text-bench-700">先预览 draft cases，批准后才导入为普通 Evaluation dataset。</p>
-                              </div>
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={handleGenerateDraftCases}
-                                  className="inline-flex h-9 items-center gap-1.5 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition active:scale-[0.98]"
-                                >
-                                  生成草案
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleApproveDraftCases()}
-                                  disabled={draftCases.length === 0 || busy === "draft-cases"}
-                                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-bench-900 px-3 text-xs font-semibold text-white transition disabled:opacity-50 active:scale-[0.98]"
-                                >
-                                  {busy === "draft-cases" ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                                  批准为数据集
-                                </button>
-                              </div>
-                            </div>
-                            {draftCases.length > 0 ? <DraftCasesPreview cases={draftCases} /> : null}
-                          </div>
-                        </>
-                      ) : null}
-                      {compiledBlueprint ? (
-                        <SpecPreview spec={compiledBlueprint.spec} />
-                      ) : null}
-                      </div>
-                    </div>
-
-                  <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                    <button
-                      type="button"
-                      onClick={() => setShowAdvanced((current) => !current)}
-                      className="flex w-full items-center justify-between text-left text-sm font-semibold"
-                    >
-                      高级设置
-                      <span className="text-xs text-bench-700">{showAdvanced ? "收起" : "展开"}</span>
-                    </button>
-                    {showAdvanced ? (
-                      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                        <Field label="Provider" hint="v1 使用 Settings 中选中的提供方。">
-                          <Select aria-label="Provider" value={activeProvider?.id ?? ""} disabled>
-                            {providerOptions.map((provider) => (
-                              <option key={provider.id} value={provider.id}>{provider.label}</option>
-                            ))}
-                          </Select>
-                        </Field>
-                        <Field label="Baseline">
-                          <Select aria-label="Baseline" value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>
-                            <option value="">No baseline</option>
-                            {runBaselines.map((baseline) => (
-                              <option key={baseline.id} value={baseline.id}>{baseline.name}</option>
-                            ))}
-                          </Select>
-                        </Field>
-                        <Field label="Model ref">
-                          <Input aria-label="Model ref" value={modelRef} onChange={(event) => setModelRef(event.target.value)} className="font-mono" />
-                        </Field>
-                        <Field label="Repetitions">
-                          <Input
-                            aria-label="Repetitions"
-                            type="number"
-                            min={1}
-                            max={5}
-                            value={repetitions}
-                            onChange={(event) => setRepetitions(Math.max(1, Math.min(5, Number(event.target.value) || 1)))}
-                          />
-                        </Field>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <button onClick={() => void handleCompileBlueprint()} disabled={!canRunEvaluation || busy === "compile"} className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.98]">
-                      {busy === "compile" ? <Loader2 size={16} className="animate-spin" /> : <FlaskConical size={16} />}
-                      预览 Spec
-                    </button>
-                    <button onClick={() => setActiveStep("run")} className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition active:scale-[0.98]">
-                      下一步：运行评测
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {activeStep === "run" && (
-                <div className="space-y-5">
-                  <div className="rounded-xl bg-white p-5 ring-1 ring-inset ring-bench-200">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Step 3</p>
-                    <h3 className="mt-2 text-lg font-semibold">运行这组评测</h3>
-                    <p className="mt-2 text-sm leading-6 text-bench-700">确认样本和 blueprint 后，Ora 会编译成 EvaluationSpec，并复用现有 runs.start 路径执行每个 case。</p>
-                    <div className="mt-4 grid gap-3 md:grid-cols-4">
-                      <QuickStat label="样本" value={selectedDataset ? String(selectedDataset.caseCount) : "0"} />
-                      <QuickStat label="Recipe" value={selectedRecipeLabel} />
-                      <QuickStat label="重复" value={String(repetitions)} />
-                      <QuickStat label="Provider" value={activeProvider?.label ?? "Smoke"} />
-                    </div>
-                    <div className="mt-5 flex flex-wrap items-center gap-2">
-                      <button
-                        onClick={() => void handleRunEvaluation()}
-                        disabled={!canRunEvaluation}
-                        className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        {busy === "run" ? <Loader2 size={16} className="animate-spin" /> : <FlaskConical size={16} />}
-                        编译并运行
-                      </button>
-                      <button
-                        onClick={() => void handleCompileBlueprint()}
-                        disabled={!canRunEvaluation || busy === "compile"}
-                        className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        {busy === "compile" ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                        预览 Spec
-                      </button>
-                      {!selectedDatasetId ? <p className="text-sm text-red-700">请先选择或导入数据集。</p> : null}
-                      {!selectedRecipeComplete ? <p className="text-sm text-red-700">Mode Comparison 需要至少选择一个 Agent mode。</p> : null}
-                    </div>
-                    {compiledBlueprint ? <SpecPreview spec={compiledBlueprint.spec} /> : null}
-                  </div>
-
-                  <Section title="最近运行" description="可以直接打开历史运行继续复盘。">
-                    {selectedDatasetRuns.length === 0 ? (
-                      <EmptyState title="还没有运行记录" description="运行完成后会自动进入复盘页。" />
-                    ) : (
-                      <div className="grid gap-2 md:grid-cols-2">
-                        {selectedDatasetRuns.slice(0, 6).map((run) => (
-                          <button
-                            key={run.id}
-                            onClick={() => {
-                              setSelectedRunId(run.id);
-                              setActiveStep("review");
-                              setTab("overview");
-                            }}
-                            className={cn(
-                              "rounded-xl bg-white p-4 text-left ring-1 ring-inset transition hover:bg-bench-50 active:scale-[0.99]",
-                              run.id === selectedRunId ? "ring-bench-400" : "ring-bench-200",
-                            )}
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="font-mono text-xs font-semibold text-bench-700">{run.id}</span>
-                              <span className="rounded-full bg-bench-50 px-2 py-0.5 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">{run.status}</span>
-                            </div>
-                            <div className="mt-3 text-sm font-semibold">{formatPercent(run.scorecard.overallScore)} overall</div>
-                            <div className="mt-1 text-xs text-bench-700">{run.totalAttempts} attempts · {run.spec.configs.length} configs</div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </Section>
-                </div>
-              )}
-
-              {activeStep === "review" && (
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Step 4</p>
-                      <h3 className="mt-1 text-lg font-semibold">复盘沉淀</h3>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Select aria-label="Evaluation run" value={selectedRunId} onChange={(event) => setSelectedRunId(event.target.value)} wrapperClassName="min-w-[14rem]">
-                        <option value="">选择评测运行</option>
-                        {runs.map((run) => (
-                          <option key={run.id} value={run.id}>{run.id} · {run.spec.profileId}</option>
-                        ))}
-                      </Select>
-                      <button onClick={() => void handleExport("json")} disabled={!runDetail || busy.startsWith("export")} className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">
-                        <Download size={15} />
-                        JSON
-                      </button>
-                      <button onClick={() => void handleExport("csv")} disabled={!runDetail || busy.startsWith("export")} className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">
-                        <Download size={15} />
-                        CSV
-                      </button>
-                    </div>
-                  </div>
-
-                  {tab === "feedback" ? (
-                    <div>
-                      <div className="mb-4 flex flex-wrap items-center gap-2">
-                        <TabButton active={false} label="Overview" icon={Trophy} onClick={() => setTab("overview")} />
-                        <TabButton active={false} label="Regression" icon={GitCompareArrows} onClick={() => setTab("regression")} />
-                        <TabButton active={false} label="Lab" icon={BarChart3} onClick={() => setTab("lab")} />
-                        <TabButton active label="Feedback" icon={MessageSquareWarning} onClick={() => setTab("feedback")} />
-                      </div>
-                      <FeedbackInbox
-                        records={feedbackRecords}
-                        busy={busy}
-                        onAccept={(feedbackId) => void handleAcceptFeedback(feedbackId)}
-                        onReject={(feedbackId) => void handleRejectFeedback(feedbackId)}
-                      />
-                    </div>
-                  ) : runDetail ? (
-                    <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
-                      <EvaluationResultPanel
-                        runDetail={runDetail}
-                        tab={tab}
-                        bestConfig={bestConfig}
-                        topFailureTags={topFailureTags}
-                        selectedCaseKey={selectedCaseKey}
-                        busy={busy}
-                        onTabChange={setTab}
-                        onPromoteBaseline={(configId) => void handlePromoteBaseline(configId)}
-                        onSelectCase={(result) => setSelectedCaseKey(`${result.caseId}:${result.configId}`)}
-                      />
-                      <CaseDetailPanel datasetDetail={datasetDetail} selectedCase={selectedCase} />
-                    </div>
-                  ) : (
-                    <EmptyState title="还没有可复盘的评测" description="先完成一次运行，或者从右上角选择历史评测运行。" />
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-
-          <aside className="min-h-0 overflow-hidden rounded-[20px] border border-black/[0.035] bg-sidebar p-4 shadow-[0_1px_1px_rgba(23,23,23,0.04)]">
-            <div className="flex h-full min-h-0 flex-col overflow-y-auto">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Current state</p>
-              <h3 className="mt-1 text-base font-semibold">下一步：{nextAction}</h3>
-              <div className="mt-4 grid gap-2">
-                <QuickStat label="当前数据集" value={selectedDataset?.name ?? "未选择"} />
-                <QuickStat label="当前 Recipe" value={selectedRecipeLabel} />
-                <QuickStat label="Blueprints" value={String(blueprints.length)} />
-                <QuickStat label="待审反馈" value={String(pendingFeedback.length)} />
-                <QuickStat label="最近运行" value={runs[0]?.id ?? "无"} />
-                <QuickStat label="Provider" value={activeProvider?.label ?? bridgeStatus.mode} />
-              </div>
-              {runDetail ? (
-                <div className="mt-4 rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Latest insight</p>
-                  <div className="mt-2 text-2xl font-semibold">{formatPercent(runDetail.run.scorecard.overallScore)}</div>
-                  <p className="mt-2 text-sm leading-6 text-bench-700">
-                    {bestConfig ? `${bestConfig.label} 当前最高，${runDetail.run.scorecard.regressionCount} 个退化样本需要复盘。` : "运行已完成，可以进入结果页复盘。"}
-                  </p>
-                </div>
-              ) : null}
-              {error ? <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div> : null}
-            </div>
-          </aside>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WorkflowStepButton({
-  active,
-  complete,
-  index,
-  title,
-  description,
-  onClick,
-}: {
-  active: boolean;
-  complete: boolean;
-  index: string;
-  title: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex min-h-[5rem] items-start gap-3 rounded-[14px] bg-sidebar px-4 py-3 text-left ring-1 ring-inset transition hover:bg-bench-50 active:scale-[0.99]",
-        active ? "ring-bench-400 shadow-[0_1px_3px_rgba(23,23,23,0.08)]" : "ring-bench-200",
-      )}
-    >
-      <span className={cn(
-        "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ring-1 ring-inset",
-        complete ? "bg-bench-900 text-white ring-bench-900" : "bg-white text-bench-700 ring-bench-200",
-      )}>
-        {complete ? <Check size={14} /> : index}
-      </span>
-      <span className="min-w-0">
-        <span className="block text-sm font-semibold text-bench-900">{title}</span>
-        <span className="mt-1 block text-xs leading-5 text-bench-700">{description}</span>
-      </span>
-    </button>
-  );
-}
-
-function QuickStat({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0 rounded-lg bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold text-bench-900">{value}</div>
-    </div>
-  );
-}
-
-function DatasetCard({
-  dataset,
-  active,
-  runCount,
-  onClick,
-}: {
-  dataset: OraEvaluationDataset;
-  active: boolean;
-  runCount: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "rounded-xl bg-white p-4 text-left ring-1 ring-inset transition hover:bg-bench-50 active:scale-[0.99]",
-        active ? "ring-bench-400 shadow-[0_1px_3px_rgba(23,23,23,0.08)]" : "ring-bench-200",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{dataset.name}</div>
-          <div className="mt-1 text-xs text-bench-700">{dataset.caseCount} cases · {dataset.sourceFormat.toUpperCase()}</div>
-        </div>
-        <span className={cn(
-          "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-          active ? "bg-bench-900 text-white ring-bench-900" : "bg-bench-50 text-bench-700 ring-bench-200",
-        )}>
-          {active ? "selected" : "ready"}
-        </span>
-      </div>
-      <div className="mt-3 text-xs text-bench-700">{runCount} evaluation runs</div>
-    </button>
-  );
-}
-
-function RecipeCard({
-  title,
-  description,
-  active,
-  onClick,
-}: {
-  title: string;
-  description: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "min-h-[8rem] rounded-xl bg-white p-4 text-left ring-1 ring-inset transition hover:bg-bench-50 active:scale-[0.99]",
-        active ? "ring-bench-400 shadow-[0_1px_3px_rgba(23,23,23,0.08)]" : "ring-bench-200",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold text-bench-900">{title}</div>
-          <p className="mt-2 text-xs leading-5 text-bench-700">{description}</p>
-        </div>
-        <span className={cn(
-          "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-          active ? "bg-bench-900 text-white ring-bench-900" : "bg-bench-50 text-bench-700 ring-bench-200",
-        )}>
-          {active ? "active" : "recipe"}
-        </span>
-      </div>
-    </button>
-  );
-}
-
-function BlueprintSummary({ blueprint }: { blueprint: OraEvaluationBlueprint }) {
-  return (
-    <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Blueprint</p>
-          <h3 className="mt-2 text-sm font-semibold">{blueprint.title}</h3>
-          <p className="mt-1 text-xs leading-5 text-bench-700">{blueprint.goal}</p>
-        </div>
-        <span className="rounded-full bg-bench-50 px-2.5 py-1 text-xs font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">{blueprint.status}</span>
-      </div>
-      <div className="mt-4 grid gap-2 md:grid-cols-3">
-        <QuickStat label="Target" value={blueprint.target} />
-        <QuickStat label="Subject" value={blueprint.subject.kind} />
-        <QuickStat label="Cases needed" value={String(blueprint.datasetPlan.caseRequirements.length)} />
-      </div>
-      {blueprint.assumptions.length > 0 ? (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {blueprint.assumptions.slice(0, 3).map((assumption) => (
-            <span key={assumption} className="rounded-full bg-bench-50 px-2 py-1 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">{assumption}</span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SpecPreview({ spec }: { spec: OraEvaluationSpec }) {
-  return (
-    <div className="mt-4 rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Compiled Spec</p>
-          <h3 className="mt-2 text-sm font-semibold">{spec.configs.length} config{spec.configs.length === 1 ? "" : "s"} · {spec.objective?.target ?? "run.output"}</h3>
-        </div>
-        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">ready</span>
-      </div>
-      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-bench-50 p-3 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
-        {JSON.stringify(spec, null, 2)}
-      </pre>
-    </div>
-  );
-}
-
-function DraftCasesPreview({ cases }: { cases: DraftEvaluationCase[] }) {
-  return (
-    <div className="mt-4 grid gap-2">
-      {cases.slice(0, 6).map((evaluationCase) => (
-        <div key={evaluationCase.id} className="rounded-lg bg-bench-50 p-3 ring-1 ring-inset ring-bench-200">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-mono text-xs font-semibold text-bench-700">{evaluationCase.id}</span>
-            <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
-              {String(evaluationCase.metadata.requirement ?? "draft")}
-            </span>
+        <main className="min-h-0 overflow-hidden rounded-[20px] border border-black/[0.035] bg-sidebar shadow-[0_1px_1px_rgba(23,23,23,0.04),0_8px_18px_rgba(23,23,23,0.024)]">
+          <div className="h-full min-h-0 overflow-y-auto p-5">
+            {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+            {selection.kind === "new" && (
+              <PlannerPanel
+                title="和 Evaluation Planner 规划这次评测"
+                plannerInput={plannerInput}
+                busy={busy}
+                onPlannerInput={setPlannerInput}
+                onSubmit={() => void handlePlannerTurn()}
+              />
+            )}
+            {selectedBlueprint && (
+              <BlueprintDetail
+                blueprint={selectedBlueprint}
+                datasets={datasets}
+                datasetDetail={datasetDetail}
+                selectedDatasetId={selectedDatasetId}
+                selectedProfileId={selectedProfileId}
+                selectedModes={selectedModes}
+                modelRef={modelRef}
+                compiled={compiled}
+                busy={busy}
+                onDatasetChange={setSelectedDatasetId}
+                onProfileChange={setSelectedProfileId}
+                onModelRefChange={setModelRef}
+                onModeToggle={(modeId) => setSelectedModes((current) => current.includes(modeId) ? current.filter((id) => id !== modeId) : [...current, modeId])}
+                onPlannerInput={setPlannerInput}
+                plannerInput={plannerInput}
+                onPlan={() => void handlePlannerTurn(selectedBlueprint.id)}
+                onCompile={() => void compileBlueprint(selectedBlueprint).catch((nextError) => setError(errorText(nextError, "Failed to compile blueprint.")))}
+                onRun={() => void handleRunBlueprint(selectedBlueprint)}
+              />
+            )}
+            {selection.kind === "run" && runDetail && (
+              <RunDetail detail={runDetail} busy={busy} onExport={handleExport} />
+            )}
+            {selection.kind === "annotation" && selectedAnnotation && (
+              <AnnotationDetail task={selectedAnnotation} busy={busy} onSubmit={handleSubmitAnnotation} />
+            )}
           </div>
-          <p className="mt-2 text-xs leading-5 text-bench-700">{evaluationCase.input.prompt}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
+        </main>
 
-function EmptyState({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="rounded-xl bg-white px-4 py-6 text-sm ring-1 ring-inset ring-bench-200">
-      <div className="font-semibold text-bench-900">{title}</div>
-      <p className="mt-2 leading-6 text-bench-700">{description}</p>
-    </div>
-  );
-}
-
-function EvaluationResultPanel({
-  runDetail,
-  tab,
-  bestConfig,
-  topFailureTags,
-  selectedCaseKey,
-  busy,
-  onTabChange,
-  onPromoteBaseline,
-  onSelectCase,
-}: {
-  runDetail: OraEvaluationRunDetail;
-  tab: EvaluationTab;
-  bestConfig?: OraEvaluationRunDetail["run"]["scorecard"]["configSummaries"][number];
-  topFailureTags: Array<[string, number]>;
-  selectedCaseKey: string;
-  busy: string;
-  onTabChange: (tab: EvaluationTab) => void;
-  onPromoteBaseline: (configId: string) => void;
-  onSelectCase: (result: OraEvaluationCaseResult) => void;
-}) {
-  const isRouterRun = runDetail.run.spec.objective?.target === "runtime.mode_selection";
-  const routerAttempts = isRouterRun ? runDetail.attempts : [];
-  const fallbackCount = routerAttempts.filter((attempt) => String((attempt.observations.runtime as { autoModeRouter?: { status?: unknown } } | undefined)?.autoModeRouter?.status ?? "") === "fallback").length;
-  const selectedModes = routerAttempts.reduce<Record<string, number>>((acc, attempt) => {
-    const modeId = String((attempt.observations.runtime as { modeId?: unknown } | undefined)?.modeId ?? "unknown");
-    acc[modeId] = (acc[modeId] ?? 0) + 1;
-    return acc;
-  }, {});
-  return (
-    <div className="min-w-0 overflow-y-auto pr-1">
-      <div className="flex flex-wrap items-center gap-2">
-        <TabButton active={tab === "overview"} label="Overview" icon={Trophy} onClick={() => onTabChange("overview")} />
-        <TabButton active={tab === "regression"} label="Regression" icon={GitCompareArrows} onClick={() => onTabChange("regression")} />
-        <TabButton active={tab === "lab"} label="Lab" icon={BarChart3} onClick={() => onTabChange("lab")} />
-        <TabButton active={tab === "feedback"} label="Feedback" icon={MessageSquareWarning} onClick={() => onTabChange("feedback")} />
+        <ContextPanel
+          bridgeStatus={bridgeStatus}
+          selection={selection}
+          datasets={datasets}
+          blueprints={blueprints}
+          runs={runs}
+          baselines={baselines}
+          annotations={annotations}
+          activeProvider={activeProvider?.label ?? activeProvider?.id ?? "local-smoke"}
+        />
       </div>
-
-      <div className="mt-4 grid gap-3 md:grid-cols-5">
-        <SummaryCard label="Overall score" value={formatPercent(runDetail.run.scorecard.overallScore)} accent="Score" />
-        <SummaryCard label="Pass rate" value={formatPercent(runDetail.run.scorecard.passRate)} accent="Pass" />
-        <SummaryCard label="Regressions" value={String(runDetail.run.scorecard.regressionCount)} accent="Diff" />
-        <SummaryCard label="Avg runtime" value={`${runDetail.run.scorecard.averageRuntimeMs} ms`} accent="Latency" />
-        <SummaryCard label="Avg cost" value={`$${runDetail.run.scorecard.averageCostUsd.toFixed(4)}`} accent="Cost" />
-      </div>
-
-      {isRouterRun ? (
-        <Section title="Auto Router Readout" description="Route correctness, fallback behavior, confidence, and selected-mode distribution from runtime observations.">
-          <div className="grid gap-3 md:grid-cols-3">
-            <SummaryCard label="Fallback attempts" value={String(fallbackCount)} accent="Fallback" />
-            <SummaryCard label="Router attempts" value={String(routerAttempts.length)} accent="Router" />
-            <SummaryCard label="Objective" value="mode selection" accent="Target" />
-          </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {Object.entries(selectedModes).map(([modeId, count]) => (
-              <span key={modeId} className="rounded-full bg-bench-50 px-2 py-1 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">{modeId} · {count}</span>
-            ))}
-          </div>
-        </Section>
-      ) : null}
-
-      {tab === "overview" ? (
-        <>
-          <Section title="本次结论" description="先看哪一组表现最好，再决定是否提升 baseline 或继续看失败样本。">
-            <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-              <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Recommended readout</div>
-                <h4 className="mt-2 text-base font-semibold">{bestConfig ? bestConfig.label : "No winning config yet"}</h4>
-                <p className="mt-2 text-sm leading-6 text-bench-700">
-                  {bestConfig
-                    ? `${formatPercent(bestConfig.overallScore)} overall, ${formatPercent(bestConfig.passRate)} pass rate. Use this as the baseline only if the case-level failures look acceptable.`
-                    : "Run details did not include config summaries."}
-                </p>
-                {bestConfig ? (
-                  <button
-                    onClick={() => onPromoteBaseline(bestConfig.configId)}
-                    disabled={busy === `baseline:${bestConfig.configId}`}
-                    className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition disabled:opacity-50 active:scale-[0.98]"
-                  >
-                    {busy === `baseline:${bestConfig.configId}` ? <Loader2 size={13} className="animate-spin" /> : <Trophy size={13} />}
-                    Promote baseline
-                  </button>
-                ) : null}
-              </div>
-              <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Failure themes</div>
-                {topFailureTags.length === 0 ? (
-                  <p className="mt-2 text-sm leading-6 text-bench-700">No failure tags were reported.</p>
-                ) : (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {topFailureTags.map(([tag, count]) => (
-                      <span key={tag} className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-200">{tag} · {count}</span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </Section>
-          <Section title="Case Browser" description="从失败或低分样本开始看，右侧会展示预期、judge 理由和 trace id。">
-            <CaseTable results={runDetail.run.caseResults} selectedCaseKey={selectedCaseKey} onSelect={onSelectCase} />
-          </Section>
-        </>
-      ) : null}
-
-      {tab === "regression" ? (
-        <>
-          <Section title="Config Comparison" description="Compare score, pass rate, cost, and regressions across the current config matrix.">
-            <ConfigComparisonTable runDetail={runDetail} busy={busy} onPromoteBaseline={onPromoteBaseline} />
-          </Section>
-          <Section title="Regressions" description="Cases that scored below the selected baseline under the current run.">
-            <CaseTable
-              results={runDetail.run.caseResults.filter((result) => result.comparisonToBaseline?.regressed)}
-              selectedCaseKey={selectedCaseKey}
-              onSelect={onSelectCase}
-            />
-          </Section>
-        </>
-      ) : null}
-
-      {tab === "lab" ? (
-        <>
-          <Section title="Experiment Matrix" description="Leaderboard-style comparison across the current eval configs.">
-            <div className="grid gap-3 md:grid-cols-3">
-              {[...runDetail.run.scorecard.configSummaries]
-                .sort((left, right) => right.overallScore - left.overallScore)
-                .map((summary) => (
-                  <div key={summary.configId} className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                    <div className="text-sm font-semibold">{summary.label}</div>
-                    <div className="mt-2 text-2xl font-semibold">{formatPercent(summary.overallScore)}</div>
-                    <div className="mt-2 text-xs leading-5 text-bench-700">
-                      Pass {formatPercent(summary.passRate)} · {summary.caseCount} cases · {summary.averageRuntimeMs} ms
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </Section>
-          <Section title="Slice Analysis" description="Break scores down by tags, difficulty, and task type metadata.">
-            <SliceAnalysisTable runDetail={runDetail} />
-          </Section>
-          <Section title="Failure Clusters" description="Group the current run's attempts by failure tag to highlight dominant error modes.">
-            <div className="grid gap-3 md:grid-cols-3">
-              {runDetail.run.scorecard.configSummaries.flatMap((summary) =>
-                Object.entries(summary.failureTagCounts).map(([tag, count]) => (
-                  <div key={`${summary.configId}:${tag}`} className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                    <div className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">{summary.label}</div>
-                    <div className="mt-2 text-lg font-semibold">{tag}</div>
-                    <div className="mt-1 text-sm text-bench-700">{count} attempts flagged</div>
-                  </div>
-                ))
-              )}
-            </div>
-          </Section>
-        </>
-      ) : null}
     </div>
   );
 }
 
-function ConfigComparisonTable({
-  runDetail,
-  busy,
-  onPromoteBaseline,
+function HistorySidebar({
+  selection,
+  drafts,
+  ready,
+  runs,
+  annotations,
+  feedbackCount,
+  onSelect,
 }: {
-  runDetail: OraEvaluationRunDetail;
-  busy: string;
-  onPromoteBaseline: (configId: string) => void;
+  selection: Selection;
+  drafts: OraEvaluationBlueprint[];
+  ready: OraEvaluationBlueprint[];
+  runs: OraEvaluationRun[];
+  annotations: OraEvaluationAnnotationTask[];
+  feedbackCount: number;
+  onSelect: (selection: Selection) => void;
 }) {
   return (
-    <div className="overflow-x-auto rounded-xl bg-white ring-1 ring-inset ring-bench-200">
-      <table className="min-w-full text-sm">
-        <thead className="bg-bench-50 text-left text-xs uppercase tracking-[0.08em] text-bench-700">
-          <tr>
-            <th className="px-4 py-3">Config</th>
-            <th className="px-4 py-3">Overall</th>
-            <th className="px-4 py-3">Pass</th>
-            <th className="px-4 py-3">Runtime</th>
-            <th className="px-4 py-3">Cost</th>
-            <th className="px-4 py-3">Regressions</th>
-            <th className="px-4 py-3 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runDetail.run.scorecard.configSummaries.map((summary) => (
-            <tr key={summary.configId} className="border-t border-bench-100">
-              <td className="px-4 py-3 font-medium">{summary.label}</td>
-              <td className="px-4 py-3">{formatPercent(summary.overallScore)}</td>
-              <td className="px-4 py-3">{formatPercent(summary.passRate)}</td>
-              <td className="px-4 py-3">{summary.averageRuntimeMs} ms</td>
-              <td className="px-4 py-3">${summary.averageCostUsd.toFixed(4)}</td>
-              <td className="px-4 py-3">{summary.regressionCount}</td>
-              <td className="px-4 py-3 text-right">
-                <button
-                  onClick={() => onPromoteBaseline(summary.configId)}
-                  disabled={busy === `baseline:${summary.configId}`}
-                  className="inline-flex h-8 items-center gap-1 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition disabled:opacity-50"
-                >
-                  {busy === `baseline:${summary.configId}` ? <Loader2 size={12} className="animate-spin" /> : <Trophy size={12} />}
-                  Promote baseline
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function SliceAnalysisTable({ runDetail }: { runDetail: OraEvaluationRunDetail }) {
-  return (
-    <div className="overflow-x-auto rounded-xl bg-white ring-1 ring-inset ring-bench-200">
-      <table className="min-w-full text-sm">
-        <thead className="bg-bench-50 text-left text-xs uppercase tracking-[0.08em] text-bench-700">
-          <tr>
-            <th className="px-4 py-3">Dimension</th>
-            <th className="px-4 py-3">Value</th>
-            <th className="px-4 py-3">Config</th>
-            <th className="px-4 py-3">Cases</th>
-            <th className="px-4 py-3">Overall</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runDetail.run.scorecard.slices.map((slice) => (
-            <tr key={`${slice.dimension}:${slice.value}:${slice.configId}`} className="border-t border-bench-100">
-              <td className="px-4 py-3 font-medium">{slice.dimension}</td>
-              <td className="px-4 py-3">{slice.value}</td>
-              <td className="px-4 py-3">{slice.configId}</td>
-              <td className="px-4 py-3">{slice.caseCount}</td>
-              <td className="px-4 py-3">{formatPercent(slice.overallScore)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function CaseDetailPanel({
-  datasetDetail,
-  selectedCase,
-}: {
-  datasetDetail?: OraEvaluationDatasetDetail;
-  selectedCase?: { caseId: string; results: OraEvaluationCaseResult[] };
-}) {
-  const sourceCase = selectedCase ? datasetDetail?.cases.find((item) => item.id === selectedCase.caseId) : undefined;
-  return (
-    <aside className="min-h-0 overflow-y-auto rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-      <h3 className="text-sm font-semibold">Case Detail</h3>
-      {!selectedCase ? (
-        <p className="mt-2 text-sm leading-6 text-bench-700">Select a case row to inspect why it passed or failed.</p>
-      ) : (
-        <div className="mt-4 space-y-4 text-sm">
-          <div className="rounded-lg bg-bench-50 p-3 ring-1 ring-inset ring-bench-200">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">User task</div>
-            <p className="mt-2 whitespace-pre-wrap leading-6 text-bench-900">{sourceCase?.input.prompt ?? selectedCase.caseId}</p>
+    <aside className="min-h-0 overflow-hidden rounded-[20px] border border-black/[0.035] bg-sidebar shadow-[0_1px_1px_rgba(23,23,23,0.04)]">
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="border-b border-bench-200/70 p-4">
+          <button
+            onClick={() => onSelect({ kind: "new" })}
+            className={cn("flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-semibold transition", selection.kind === "new" ? "bg-bench-900 text-white" : "bg-white text-bench-900 ring-1 ring-inset ring-bench-200 hover:bg-bench-50")}
+          >
+            <Sparkles size={15} />
+            新建评测
+          </button>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <MiniStat label="反馈" value={feedbackCount} />
+            <MiniStat label="待标注" value={annotations.length} />
           </div>
-          <div className="rounded-lg bg-bench-50 p-3 ring-1 ring-inset ring-bench-200">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-bench-700">Expected</div>
-            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-bench-700">
-              {JSON.stringify(sourceCase?.expected ?? null, null, 2)}
-            </pre>
-          </div>
-          {selectedCase.results.map((result) => (
-            <div key={`${result.caseId}:${result.configId}`} className="rounded-lg bg-bench-50 p-3 ring-1 ring-inset ring-bench-200">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold">{result.configId}</div>
-                  <div className="mt-1 text-xs text-bench-700">{formatPercent(result.averageScore.overallScore)} overall</div>
-                </div>
-                <div className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
-                  {result.traceRunIds.length} trace{result.traceRunIds.length === 1 ? "" : "s"}
-                </div>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-bench-700">
-                <Metric label="Outcome" value={formatPercent(result.averageScore.outcomeScore)} />
-                <Metric label="Process" value={formatPercent(result.averageScore.processScore)} />
-                <Metric label="Efficiency" value={formatPercent(result.averageScore.efficiencyScore)} />
-                <Metric label="Safety" value={formatPercent(result.averageScore.safetyScore)} />
-              </div>
-              <p className="mt-3 text-xs leading-5 text-bench-700">{result.averageScore.judgeRationale}</p>
-              {result.traceRunIds.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {result.traceRunIds.map((runId) => (
-                    <span key={runId} className="rounded-full bg-white px-2 py-1 font-mono text-[11px] text-bench-700 ring-1 ring-inset ring-bench-200">{runId}</span>
-                  ))}
-                </div>
-              ) : null}
-              {result.averageScore.failureTags.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {result.averageScore.failureTags.map((tag) => (
-                    <span key={tag} className="rounded-full bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-200">{tag}</span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ))}
         </div>
-      )}
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <HistoryGroup title="Draft Plans" items={drafts} empty="没有草稿">
+            {(blueprint) => (
+              <HistoryButton
+                key={blueprint.id}
+                active={selection.kind === "blueprint" && selection.id === blueprint.id}
+                icon={<MessageSquare size={14} />}
+                title={blueprint.title}
+                meta={`${blueprint.recipe} · ${evaluatorKinds(blueprint).join(", ")}`}
+                onClick={() => onSelect({ kind: "blueprint", id: blueprint.id })}
+              />
+            )}
+          </HistoryGroup>
+          <HistoryGroup title="Ready to Run" items={ready} empty="没有 ready blueprint">
+            {(blueprint) => (
+              <HistoryButton
+                key={blueprint.id}
+                active={selection.kind === "blueprint" && selection.id === blueprint.id}
+                icon={<ClipboardCheck size={14} />}
+                title={blueprint.title}
+                meta={`${blueprint.datasetPlan.datasetId ?? "no dataset"} · ${blueprint.linkedRunIds.length} runs`}
+                onClick={() => onSelect({ kind: "blueprint", id: blueprint.id })}
+              />
+            )}
+          </HistoryGroup>
+          <HistoryGroup title="Runs" items={runs} empty="还没有运行记录">
+            {(run) => (
+              <HistoryButton
+                key={run.id}
+                active={selection.kind === "run" && selection.id === run.id}
+                icon={<FlaskConical size={14} />}
+                title={run.id}
+                meta={`${percent(run.scorecard.overallScore)} · ${run.scorecard.pendingAnnotationCount} pending`}
+                onClick={() => onSelect({ kind: "run", id: run.id })}
+              />
+            )}
+          </HistoryGroup>
+          <HistoryGroup title="Needs Review" items={annotations} empty="没有待人工标注">
+            {(task) => (
+              <HistoryButton
+                key={task.id}
+                active={selection.kind === "annotation" && selection.id === task.id}
+                icon={<UserCheck size={14} />}
+                title={task.caseId}
+                meta={`${task.evaluatorId} · ${task.scoreType}`}
+                onClick={() => onSelect({ kind: "annotation", id: task.id })}
+              />
+            )}
+          </HistoryGroup>
+        </div>
+      </div>
     </aside>
   );
 }
 
-function FeedbackInbox({
-  records,
+function PlannerPanel({
+  title,
+  plannerInput,
   busy,
-  compact = false,
-  onAccept,
-  onReject,
+  onPlannerInput,
+  onSubmit,
 }: {
-  records: OraEvaluationFeedbackRecord[];
+  title: string;
+  plannerInput: string;
   busy: string;
-  compact?: boolean;
-  onAccept: (feedbackId: string) => void;
-  onReject: (feedbackId: string) => void;
+  onPlannerInput: (value: string) => void;
+  onSubmit: () => void;
 }) {
-  const pending = records.filter((record) => record.status === "pending" || record.status === "failed");
-  const reviewed = records.filter((record) => record.status === "accepted" || record.status === "rejected");
-  const visibleRecords = compact ? pending.slice(0, 3) : [...pending, ...reviewed];
   return (
-    <div className={cn("min-h-0 flex-1 overflow-y-auto", compact ? "" : "px-5 py-5")}>
-      {!compact ? <div className="grid gap-3 md:grid-cols-4">
-        <SummaryCard label="Pending drafts" value={String(pending.length)} accent="Inbox" />
-        <SummaryCard label="Accepted cases" value={String(records.filter((record) => record.status === "accepted").length)} accent="Dataset" />
-        <SummaryCard label="Rejected drafts" value={String(records.filter((record) => record.status === "rejected").length)} accent="Archive" />
-        <SummaryCard label="Curator fallback" value={String(records.filter((record) => record.draft.curatorStatus !== "generated").length)} accent="Quality" />
-      </div> : null}
-
-      <Section title="Feedback Inbox" description="Review natural-language chat feedback after Ora converts it into a structured evaluation draft.">
-        {records.length === 0 ? (
-          <div className="rounded-xl bg-white px-4 py-6 text-sm text-bench-700 ring-1 ring-inset ring-bench-200">
-            No feedback has been submitted from chat yet.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {visibleRecords.map((record) => (
-              <div key={record.id} className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-semibold text-bench-700">{record.id}</span>
-                      <span className={cn(
-                        "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                        record.status === "accepted"
-                          ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                          : record.status === "rejected"
-                            ? "bg-red-50 text-red-700 ring-red-200"
-                            : record.status === "failed"
-                              ? "bg-amber-50 text-amber-700 ring-amber-200"
-                              : "bg-bench-50 text-bench-700 ring-bench-200",
-                      )}>
-                        {record.status}
-                      </span>
-                      <span className="rounded-full bg-bench-50 px-2 py-0.5 text-[11px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
-                        {record.draft.curatorStatus}
-                      </span>
-                    </div>
-                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-bench-900">{record.feedbackText}</p>
-                  </div>
-                  {(record.status === "pending" || record.status === "failed") ? (
-                    <div className="flex shrink-0 gap-2">
-                      <button
-                        onClick={() => onReject(record.id)}
-                        disabled={busy === `feedback-reject:${record.id}`}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-bench-200 bg-white px-3 text-xs font-semibold transition disabled:opacity-50"
-                      >
-                        {busy === `feedback-reject:${record.id}` ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
-                        Reject
-                      </button>
-                      <button
-                        onClick={() => onAccept(record.id)}
-                        disabled={busy === `feedback-accept:${record.id}`}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-bench-900 px-3 text-xs font-semibold text-white transition disabled:opacity-50"
-                      >
-                        {busy === `feedback-accept:${record.id}` ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                        Accept
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-md bg-bench-50 p-3 ring-1 ring-inset ring-bench-200">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Draft Case</div>
-                    <div className="mt-2 text-sm font-semibold">{record.draft.case.id}</div>
-                    <p className="mt-1 line-clamp-3 text-xs leading-5 text-bench-700">{record.draft.case.input.prompt}</p>
-                  </div>
-                  <div className="rounded-md bg-bench-50 p-3 ring-1 ring-inset ring-bench-200">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Structured Expected</div>
-                    <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-5 text-bench-700">
-                      {JSON.stringify(record.draft.case.expected?.structured ?? record.draft.case.expected ?? {}, null, 2)}
-                    </pre>
-                  </div>
-                </div>
-                {record.draft.curatorRationale ? <p className="mt-3 text-xs leading-5 text-bench-700">{record.draft.curatorRationale}</p> : null}
-              </div>
-            ))}
-          </div>
-        )}
-      </Section>
-    </div>
-  );
-}
-
-function TabButton({ active, label, icon: Icon, onClick }: { active: boolean; label: string; icon: typeof BarChart3; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition",
-        active ? "bg-bench-900 text-white" : "bg-white text-bench-700 ring-1 ring-inset ring-bench-200 hover:bg-bench-50",
-      )}
-    >
-      <Icon size={16} />
-      {label}
-    </button>
-  );
-}
-
-function SummaryCard({ label, value, accent }: { label: string; value: string; accent: string }) {
-  return (
-    <div className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">{accent}</div>
-      <div className="mt-3 text-2xl font-semibold">{value}</div>
-      <div className="mt-1 text-xs text-bench-700">{label}</div>
-    </div>
-  );
-}
-
-function Section({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-  return (
-    <section className="mt-6">
-      <div className="mb-3">
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="mt-1 text-xs leading-5 text-bench-700">{description}</p>
+    <section className="space-y-4">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Planner Agent</p>
+        <h3 className="mt-2 text-lg font-semibold text-bench-950">{title}</h3>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-bench-700">第一步先说清楚要评什么。Planner 会把目标拆成样本来源、heuristic、LLM judge、人工标注和复盘方式。</p>
       </div>
+      <Textarea
+        value={plannerInput}
+        onChange={(event) => onPlannerInput(event.target.value)}
+        className="min-h-[9rem] resize-none bg-white text-sm"
+        placeholder="例如：评估 Auto Router 是否能在多轮上下文里选择正确 mode，需要 LLM judge 和人工复核低置信度 case。"
+      />
+      <button
+        onClick={onSubmit}
+        disabled={busy === "planner" || !plannerInput.trim()}
+        className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {busy === "planner" ? <Loader2 size={16} className="animate-spin" /> : <Bot size={16} />}
+        让 Planner 生成 blueprint
+      </button>
+    </section>
+  );
+}
+
+function BlueprintDetail({
+  blueprint,
+  datasets,
+  datasetDetail,
+  selectedDatasetId,
+  selectedProfileId,
+  selectedModes,
+  modelRef,
+  compiled,
+  busy,
+  plannerInput,
+  onDatasetChange,
+  onProfileChange,
+  onModelRefChange,
+  onModeToggle,
+  onPlannerInput,
+  onPlan,
+  onCompile,
+  onRun,
+}: {
+  blueprint: OraEvaluationBlueprint;
+  datasets: OraEvaluationDataset[];
+  datasetDetail?: OraEvaluationDatasetDetail;
+  selectedDatasetId: string;
+  selectedProfileId: EvalProfile;
+  selectedModes: string[];
+  modelRef: string;
+  compiled?: OraEvaluationBlueprintCompileResult;
+  busy: string;
+  plannerInput: string;
+  onDatasetChange: (value: string) => void;
+  onProfileChange: (value: EvalProfile) => void;
+  onModelRefChange: (value: string) => void;
+  onModeToggle: (modeId: string) => void;
+  onPlannerInput: (value: string) => void;
+  onPlan: () => void;
+  onCompile: () => void;
+  onRun: () => void;
+}) {
+  const messages = plannerMessages(blueprint);
+  const canRun = Boolean(selectedDatasetId || blueprint.datasetPlan.datasetId);
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Blueprint</p>
+          <h3 className="mt-2 text-xl font-semibold text-bench-950">{blueprint.title}</h3>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-bench-700">{blueprint.goal}</p>
+        </div>
+        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-bench-800 ring-1 ring-inset ring-bench-200">{blueprint.status}</span>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="space-y-3">
+          <Panel title="Planner Transcript" icon={<MessageSquare size={15} />}>
+            <div className="space-y-2">
+              {messages.length === 0 ? (
+                <EmptyState title="还没有 planner 对话" description="继续输入评测目标，Planner 会更新这个 blueprint。" />
+              ) : messages.map((message) => (
+                <div key={message.id} className={cn("rounded-md px-3 py-2 text-sm leading-6 ring-1 ring-inset", message.role === "user" ? "bg-bench-900 text-white ring-bench-900" : "bg-white text-bench-800 ring-bench-200")}>
+                  <div className="text-[11px] font-semibold uppercase opacity-70">{message.role}</div>
+                  {message.content}
+                </div>
+              ))}
+              <Textarea value={plannerInput} onChange={(event) => onPlannerInput(event.target.value)} className="min-h-[6rem] resize-none bg-white text-sm" placeholder="继续告诉 Planner 要调整的 evaluator、样本或运行对象。" />
+              <button onClick={onPlan} disabled={busy === "planner" || !plannerInput.trim()} className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white disabled:opacity-50">
+                {busy === "planner" ? <Loader2 size={15} className="animate-spin" /> : <Bot size={15} />}
+                更新计划
+              </button>
+            </div>
+          </Panel>
+
+          <Panel title="Evaluator Mix" icon={<GitCompareArrows size={15} />}>
+            <div className="grid gap-2 md:grid-cols-3">
+              {evaluatorSpecs(blueprint).map((evaluator) => (
+                <div key={evaluator.id} className="rounded-md bg-white p-3 ring-1 ring-inset ring-bench-200">
+                  <div className="text-sm font-semibold text-bench-900">{evaluator.label}</div>
+                  <div className="mt-1 text-xs font-semibold uppercase text-bench-600">{evaluator.kind}</div>
+                  <p className="mt-2 line-clamp-3 text-xs leading-5 text-bench-700">
+                    {evaluator.kind === "heuristic" ? `${evaluator.metrics.length} metrics · ${evaluator.assertions.length} assertions` : evaluator.kind === "llm_judge" ? evaluator.rubric : evaluator.instructions}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+
+        <Panel title="Run Setup" icon={<FlaskConical size={15} />}>
+          <div className="space-y-3">
+            <Field label="数据集">
+              <Select value={selectedDatasetId} onChange={(event) => onDatasetChange(event.target.value)}>
+                <option value="">选择数据集</option>
+                {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.caseCount}</option>)}
+              </Select>
+            </Field>
+            <Field label="评测 Profile">
+              <Select value={selectedProfileId} onChange={(event) => onProfileChange(event.target.value as EvalProfile)}>
+                {PROFILE_OPTIONS.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+              </Select>
+            </Field>
+            <Field label="Model Ref">
+              <input value={modelRef} onChange={(event) => onModelRefChange(event.target.value)} className="h-10 w-full rounded-md border border-bench-200 bg-white px-3 text-sm outline-none focus:border-bench-400" />
+            </Field>
+            {blueprint.recipe === "mode_comparison" && (
+              <div>
+                <div className="mb-2 text-xs font-semibold text-bench-700">Modes</div>
+                <div className="flex flex-wrap gap-2">
+                  {MODE_OPTIONS.map((modeId) => (
+                    <button key={modeId} onClick={() => onModeToggle(modeId)} className={cn("rounded-md px-2.5 py-1.5 text-xs font-semibold ring-1 ring-inset", selectedModes.includes(modeId) ? "bg-bench-900 text-white ring-bench-900" : "bg-white text-bench-800 ring-bench-200")}>{modeId}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <MiniStat label="Cases" value={datasetDetail?.dataset.caseCount ?? 0} />
+              <MiniStat label="Missing" value={blueprint.missingInformation.length} />
+            </div>
+            <button onClick={onCompile} disabled={!canRun || busy.length > 0} className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-bench-200 bg-white text-sm font-semibold disabled:opacity-50">
+              <ClipboardCheck size={15} />
+              预览 spec
+            </button>
+            <button onClick={onRun} disabled={!canRun || busy === "run"} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-bench-900 text-sm font-semibold text-white disabled:opacity-50">
+              {busy === "run" ? <Loader2 size={15} className="animate-spin" /> : <FlaskConical size={15} />}
+              运行评测
+            </button>
+          </div>
+        </Panel>
+      </div>
+
+      {compiled && (
+        <Panel title="Spec Preview" icon={<ClipboardCheck size={15} />}>
+          <pre className="max-h-80 overflow-auto rounded-md bg-bench-950 p-3 text-xs leading-5 text-white">{JSON.stringify(compiled.spec, null, 2)}</pre>
+        </Panel>
+      )}
+    </section>
+  );
+}
+
+function RunDetail({ detail, busy, onExport }: { detail: OraEvaluationRunDetail; busy: string; onExport: (format: "json" | "csv") => void }) {
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Evaluation Run</p>
+          <h3 className="mt-2 text-xl font-semibold text-bench-950">{detail.run.id}</h3>
+          <p className="mt-2 text-sm text-bench-700">{detail.dataset.name} · {detail.run.totalAttempts} attempts</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => onExport("json")} disabled={busy === "export:json"} className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold"><Download size={15} />JSON</button>
+          <button onClick={() => onExport("csv")} disabled={busy === "export:csv"} className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold"><Download size={15} />CSV</button>
+        </div>
+      </div>
+      <div className="grid gap-2 md:grid-cols-4">
+        <QuickStat label="Overall" value={percent(detail.run.scorecard.overallScore)} />
+        <QuickStat label="Pass rate" value={percent(detail.run.scorecard.passRate)} />
+        <QuickStat label="Regressions" value={String(detail.run.scorecard.regressionCount)} />
+        <QuickStat label="Pending human" value={String(detail.run.scorecard.pendingAnnotationCount)} />
+      </div>
+      <Panel title="Config Scorecard" icon={<GitCompareArrows size={15} />}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[42rem] text-left text-sm">
+            <thead className="text-xs uppercase text-bench-600">
+              <tr><th className="py-2">Config</th><th>Score</th><th>Pass</th><th>Runtime</th><th>Failures</th></tr>
+            </thead>
+            <tbody>
+              {detail.run.scorecard.configSummaries.map((summary) => (
+                <tr key={summary.configId} className="border-t border-bench-200/70">
+                  <td className="py-2 font-semibold">{summary.label}</td>
+                  <td>{percent(summary.overallScore)}</td>
+                  <td>{percent(summary.passRate)}</td>
+                  <td>{summary.averageRuntimeMs}ms</td>
+                  <td className="text-xs text-bench-700">{Object.keys(summary.failureTagCounts).join(", ") || "none"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+      <Panel title="Case Results" icon={<History size={15} />}>
+        <div className="space-y-2">
+          {detail.run.caseResults.map((result) => (
+            <div key={`${result.caseId}:${result.configId}`} className="rounded-md bg-white p-3 ring-1 ring-inset ring-bench-200">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-semibold">{result.caseId} · {result.configId}</div>
+                <span className="text-sm font-semibold">{percent(result.averageScore.overallScore)}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {result.evaluatorResults.map((evaluator) => (
+                  <span key={evaluator.evaluatorId} className={cn("rounded-full px-2 py-1 text-[11px] font-semibold", evaluator.status === "pending" ? "bg-amber-50 text-amber-700" : evaluator.passed === false ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700")}>{evaluator.evaluatorKind}: {evaluator.status}</span>
+                ))}
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-bench-700">{result.averageScore.judgeRationale}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </section>
+  );
+}
+
+function AnnotationDetail({ task, busy, onSubmit }: { task: OraEvaluationAnnotationTask; busy: string; onSubmit: (task: OraEvaluationAnnotationTask, passed: boolean) => void }) {
+  return (
+    <section className="space-y-4">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">Human Annotation</p>
+        <h3 className="mt-2 text-xl font-semibold text-bench-950">{task.caseId}</h3>
+        <p className="mt-2 text-sm leading-6 text-bench-700">{task.instructions}</p>
+      </div>
+      <Panel title="Case Evidence" icon={<UserCheck size={15} />}>
+        <div className="grid gap-3 xl:grid-cols-2">
+          <pre className="max-h-80 overflow-auto rounded-md bg-white p-3 text-xs leading-5 ring-1 ring-inset ring-bench-200">{JSON.stringify({ input: task.input, expected: task.expected }, null, 2)}</pre>
+          <pre className="max-h-80 overflow-auto rounded-md bg-white p-3 text-xs leading-5 ring-1 ring-inset ring-bench-200">{JSON.stringify(task.output, null, 2)}</pre>
+        </div>
+      </Panel>
+      {task.status === "pending" ? (
+        <div className="flex gap-2">
+          <button disabled={busy === `annotation:${task.id}`} onClick={() => onSubmit(task, true)} className="inline-flex h-10 items-center gap-2 rounded-md bg-emerald-700 px-4 text-sm font-semibold text-white"><Check size={15} />通过</button>
+          <button disabled={busy === `annotation:${task.id}`} onClick={() => onSubmit(task, false)} className="inline-flex h-10 items-center gap-2 rounded-md bg-red-700 px-4 text-sm font-semibold text-white">不通过</button>
+        </div>
+      ) : (
+        <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">Annotation submitted.</div>
+      )}
+    </section>
+  );
+}
+
+function ContextPanel({
+  bridgeStatus,
+  selection,
+  datasets,
+  blueprints,
+  runs,
+  baselines,
+  annotations,
+  activeProvider,
+}: {
+  bridgeStatus: RuntimeBridgeStatus;
+  selection: Selection;
+  datasets: OraEvaluationDataset[];
+  blueprints: OraEvaluationBlueprint[];
+  runs: OraEvaluationRun[];
+  baselines: OraEvaluationBaseline[];
+  annotations: OraEvaluationAnnotationTask[];
+  activeProvider: string;
+}) {
+  return (
+    <aside className="min-h-0 overflow-hidden rounded-[20px] border border-black/[0.035] bg-sidebar shadow-[0_1px_1px_rgba(23,23,23,0.04)]">
+      <div className="h-full overflow-y-auto p-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Current State</p>
+        <h3 className="mt-2 text-lg font-semibold text-bench-950">{selection.kind === "new" ? "规划新评测" : selection.kind}</h3>
+        <div className="mt-4 space-y-2">
+          <QuickStat label="Runtime" value={bridgeStatus.ok ? "ready" : bridgeStatus.mode} />
+          <QuickStat label="Provider" value={activeProvider} />
+          <QuickStat label="Datasets" value={String(datasets.length)} />
+          <QuickStat label="Blueprints" value={String(blueprints.length)} />
+          <QuickStat label="Runs" value={String(runs.length)} />
+          <QuickStat label="Baselines" value={String(baselines.length)} />
+          <QuickStat label="Pending human" value={String(annotations.filter((task) => task.status === "pending").length)} />
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Panel({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+  return (
+    <section className="rounded-xl bg-white p-4 ring-1 ring-inset ring-bench-200">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-bench-900">{icon}{title}</div>
       {children}
     </section>
   );
 }
 
-function CaseTable({
-  results,
-  selectedCaseKey,
-  onSelect,
-}: {
-  results: OraEvaluationCaseResult[];
-  selectedCaseKey: string;
-  onSelect: (result: OraEvaluationCaseResult) => void;
-}) {
-  if (results.length === 0) {
-    return <div className="rounded-xl bg-white px-4 py-6 text-sm text-bench-700 ring-1 ring-inset ring-bench-200">No cases matched this view.</div>;
-  }
+function HistoryGroup<T>({ title, items, empty, children }: { title: string; items: T[]; empty: string; children: (item: T) => ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-xl bg-white ring-1 ring-inset ring-bench-200">
-      <table className="min-w-full text-sm">
-        <thead className="bg-bench-50 text-left text-xs uppercase tracking-[0.08em] text-bench-700">
-          <tr>
-            <th className="px-4 py-3">Case</th>
-            <th className="px-4 py-3">Config</th>
-            <th className="px-4 py-3">Overall</th>
-            <th className="px-4 py-3">Judge</th>
-            <th className="px-4 py-3">Trace</th>
-          </tr>
-        </thead>
-        <tbody>
-          {results.map((result) => {
-            const active = selectedCaseKey === `${result.caseId}:${result.configId}`;
-            return (
-              <tr
-                key={`${result.caseId}:${result.configId}`}
-                onClick={() => onSelect(result)}
-                className={cn("cursor-pointer border-t border-bench-100 transition hover:bg-bench-50", active && "bg-bench-50")}
-              >
-                <td className="px-4 py-3 font-medium">{result.caseId}</td>
-                <td className="px-4 py-3">{result.configId}</td>
-                <td className="px-4 py-3">{formatPercent(result.averageScore.overallScore)}</td>
-                <td className="px-4 py-3 text-xs text-bench-700">{result.averageScore.judgeRationale}</td>
-                <td className="px-4 py-3 font-mono text-xs text-bench-700">{result.traceRunIds.join(", ") || "n/a"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="mb-4">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-600">{title}</div>
+      <div className="space-y-1.5">
+        {items.length === 0 ? <div className="rounded-md px-2 py-2 text-xs text-bench-600">{empty}</div> : items.map(children)}
+      </div>
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function HistoryButton({ active, icon, title, meta, onClick }: { active: boolean; icon: ReactNode; title: string; meta: string; onClick: () => void }) {
   return (
-    <div className="rounded-md bg-bench-50 px-2.5 py-2 ring-1 ring-inset ring-bench-200">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-bench-700">{label}</div>
-      <div className="mt-1 text-sm font-semibold text-bench-900">{value}</div>
-    </div>
+    <button onClick={onClick} className={cn("w-full rounded-md px-2.5 py-2 text-left transition", active ? "bg-bench-900 text-white" : "text-bench-800 hover:bg-white")}>
+      <div className="flex items-center gap-2 text-sm font-semibold">{icon}<span className="truncate">{title}</span></div>
+      <div className={cn("mt-1 truncate text-xs", active ? "text-white/70" : "text-bench-600")}>{meta}</div>
+    </button>
   );
+}
+
+function MiniStat({ label, value }: { label: string; value: number | string }) {
+  return <div className="rounded-md bg-white px-2 py-1.5 ring-1 ring-inset ring-bench-200"><div className="text-[10px] font-semibold uppercase text-bench-600">{label}</div><div className="mt-1 font-semibold">{value}</div></div>;
+}
+
+function QuickStat({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-md bg-white p-3 ring-1 ring-inset ring-bench-200"><div className="text-[11px] font-semibold uppercase text-bench-600">{label}</div><div className="mt-1 break-words text-sm font-semibold text-bench-900">{value}</div></div>;
+}
+
+function EmptyState({ title, description }: { title: string; description: string }) {
+  return <div className="rounded-md border border-dashed border-bench-200 bg-bench-50/60 px-3 py-4"><div className="text-sm font-semibold">{title}</div><p className="mt-1 text-sm leading-6 text-bench-700">{description}</p></div>;
+}
+
+function plannerMessages(blueprint: OraEvaluationBlueprint) {
+  const raw = blueprint.reviewPlan.metadata.plannerMessages;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((message): message is { id: string; role: "user" | "assistant"; content: string; createdAt: number } => {
+    if (!message || typeof message !== "object") return false;
+    const record = message as Record<string, unknown>;
+    return typeof record.id === "string" && (record.role === "user" || record.role === "assistant") && typeof record.content === "string" && typeof record.createdAt === "number";
+  });
+}
+
+function evaluatorSpecs(blueprint: OraEvaluationBlueprint) {
+  if (blueprint.evaluatorPlan.evaluators.length > 0) return blueprint.evaluatorPlan.evaluators;
+  return [{
+    id: "heuristic",
+    kind: "heuristic" as const,
+    label: "Heuristic Rules",
+    metrics: blueprint.evaluatorPlan.metrics,
+    assertions: blueprint.evaluatorPlan.assertions,
+    weight: 1,
+    metadata: {},
+  }];
+}
+
+function evaluatorKinds(blueprint: OraEvaluationBlueprint) {
+  return [...new Set(evaluatorSpecs(blueprint).map((evaluator) => evaluator.kind))];
+}
+
+function percent(value: number) {
+  return `${Math.round(value * 100)}%`;
 }
 
 function inferSourceFormat(fileName: string): "json" | "jsonl" | "csv" | "inline" {
@@ -1662,6 +820,6 @@ function inferSourceFormat(fileName: string): "json" | "jsonl" | "csv" | "inline
   return "inline";
 }
 
-function formatPercent(value: number) {
-  return `${Math.round(value * 100)}%`;
+function errorText(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
 }

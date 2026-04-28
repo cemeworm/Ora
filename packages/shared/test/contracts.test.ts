@@ -20,10 +20,15 @@ import {
   DEFAULT_WEB_TOOL_IDS,
   DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
+  EvaluationAnnotationListParamsSchema,
+  EvaluationAnnotationSubmitParamsSchema,
+  EvaluationAnnotationTaskSchema,
   EvaluationBaselineSchema,
   EvaluationBlueprintCompileResultSchema,
   EvaluationBlueprintCreateParamsSchema,
   EvaluationBlueprintGenerateDraftParamsSchema,
+  EvaluationBlueprintPlanTurnParamsSchema,
+  EvaluationBlueprintPlanTurnResultSchema,
   EvaluationBlueprintSchema,
   EvaluationDatasetDetailSchema,
   EvaluationDatasetSchema,
@@ -39,6 +44,8 @@ import {
   EvaluationMetricScoreSchema,
   EvaluationObjectiveSchema,
   EvaluationObservationSchema,
+  EvaluationEvaluatorResultSchema,
+  EvaluationEvaluatorSpecSchema,
   EffectiveRunStrategySchema,
   FeedbackLoopActionApplyParamsSchema,
   FeedbackLoopActionPreviewParamsSchema,
@@ -1369,6 +1376,82 @@ describe("Ora shared contracts", () => {
         },
       },
     }).runtime).toBeDefined();
+  });
+
+  it("validates evaluator specs, planner turns, and annotation tasks", () => {
+    const evaluator = EvaluationEvaluatorSpecSchema.parse({
+      id: "llm-judge",
+      kind: "llm_judge",
+      label: "LLM Judge",
+      rubric: "Score whether the answer satisfies the case expectations.",
+    });
+    expect(evaluator.kind).toBe("llm_judge");
+
+    const objective = EvaluationObjectiveSchema.parse({
+      kind: "outcome",
+      target: "run.output",
+      evaluators: [
+        { id: "heuristic", kind: "heuristic", label: "Rules", metrics: ["assertion_pass_rate"], assertions: [] },
+        evaluator,
+        { id: "human", kind: "human_annotation", label: "Human", instructions: "Review the answer.", scoreType: "boolean" },
+      ],
+    });
+    expect(objective.evaluators).toHaveLength(3);
+
+    const result = EvaluationEvaluatorResultSchema.parse({
+      evaluatorId: "llm-judge",
+      evaluatorKind: "llm_judge",
+      score: 0.9,
+      passed: true,
+      rationale: "Meets the rubric.",
+    });
+    expect(result.status).toBe("scored");
+
+    const planTurn = EvaluationBlueprintPlanTurnParamsSchema.parse({
+      message: "Plan an eval with LLM judge and human annotation.",
+    });
+    expect(planTurn.message).toContain("LLM judge");
+
+    const annotation = EvaluationAnnotationTaskSchema.parse({
+      id: "annotation-0001",
+      evaluationRunId: "eval-run-0001",
+      attemptId: "attempt-0001",
+      caseId: "case-0001",
+      configId: "config-0001",
+      evaluatorId: "human",
+      instructions: "Review the answer.",
+      scoreType: "boolean",
+      input: { prompt: "Say hello." },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(annotation.status).toBe("pending");
+    expect(EvaluationAnnotationListParamsSchema.parse({ status: "pending", limit: 10 }).status).toBe("pending");
+    expect(EvaluationAnnotationSubmitParamsSchema.parse({
+      taskId: annotation.id,
+      score: { value: true, normalizedScore: 1, passed: true },
+    }).score.passed).toBe(true);
+
+    const blueprint = EvaluationBlueprintSchema.parse({
+      id: "blueprint-annotation",
+      title: "Annotation Blueprint",
+      goal: "Test planner output.",
+      recipe: "mode_comparison",
+      target: "run.output",
+      subject: { kind: "mode_matrix", modeIds: ["orchestrator_subagent"] },
+      datasetPlan: { sources: ["manual"], caseRequirements: [] },
+      evaluatorPlan: { metrics: [], assertions: [], evaluators: objective.evaluators },
+      runPlan: { profileId: "outcome", repetitions: 1, concurrency: 1 },
+      reviewPlan: { emphasis: [], failureTags: [] },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const turnResult = EvaluationBlueprintPlanTurnResultSchema.parse({
+      blueprint,
+      messages: [{ id: "m1", role: "assistant", content: "Planned.", createdAt: 1 }],
+      assistantMessage: { id: "m1", role: "assistant", content: "Planned.", createdAt: 1 },
+    });
+    expect(turnResult.blueprint.evaluatorPlan.evaluators).toHaveLength(3);
   });
 
   it("validates evaluation feedback inbox contracts", () => {

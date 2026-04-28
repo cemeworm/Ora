@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
@@ -501,6 +501,148 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Builder"]);
     expect(assistant?.turn?.agentMessages[0]?.content).toContain("Full team lead assignment with the ending preserved.");
     expect(assistant?.turn?.agentMessages[0]?.content.endsWith("...")).toBe(false);
+  });
+
+  it("keeps orchestrator subagent handoff messages in assistant turns", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-orchestrator-subagent",
+      sessionId: "session-orchestrator-subagent",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "researcher", "reviewer"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { progressNarration: true },
+        deterministicSeed: "view-model-orchestrator-subagent-agent-message-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: ORA_ROOT_AGENT_ID,
+          label: ORA_ROOT_AGENT_LABEL,
+          role: "Root conversation agent.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "root.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "orchestrator",
+          label: "Orchestrator",
+          role: "Coordinate stages.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-orchestrator-subagent:evt-0",
+        runId: "run-orchestrator-subagent",
+        seq: 0,
+        type: "task.progress",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          kind: "chat_progress",
+          source: "progress_narrator",
+          trigger: "task.progress",
+          summary: "正在协调子智能体。",
+        },
+      }],
+      agentMessages: [
+        {
+          id: "run-orchestrator-subagent:agent-message:0",
+          runId: "run-orchestrator-subagent",
+          createdAt,
+          fromAgentId: ORA_ROOT_AGENT_ID,
+          toAgentIds: ["orchestrator"],
+          threadId: "run-orchestrator-subagent:ora-handoff",
+          nodeId: ORA_ROOT_AGENT_ID,
+          kind: "handoff",
+          status: "done",
+          content: `${ORA_ROOT_AGENT_LABEL} is handing this request to orchestrator.`,
+          artifactIds: [],
+        },
+        {
+          id: "run-orchestrator-subagent:agent-message:1",
+          runId: "run-orchestrator-subagent",
+          createdAt: createdAt + 1,
+          fromAgentId: ORA_ROOT_AGENT_ID,
+          toAgentIds: [],
+          threadId: "run-orchestrator-subagent:ora-observer",
+          nodeId: ORA_ROOT_AGENT_ID,
+          kind: "status",
+          status: "done",
+          content: `${ORA_ROOT_AGENT_LABEL} observed the handoff.`,
+          artifactIds: [],
+        },
+        {
+          id: "run-orchestrator-subagent:agent-message:2",
+          runId: "run-orchestrator-subagent",
+          createdAt: createdAt + 2,
+          fromAgentId: "orchestrator",
+          toAgentIds: [ORA_ROOT_AGENT_ID],
+          replyToId: "run-orchestrator-subagent:agent-message:0",
+          threadId: "run-orchestrator-subagent:ora-handoff",
+          nodeId: "orchestrator",
+          kind: "reply",
+          status: "done",
+          content: "Orchestrator returned its mode output to Ora.",
+          artifactIds: [],
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-orchestrator-subagent:user",
+        sessionId: "session-orchestrator-subagent",
+        runId: "run-orchestrator-subagent",
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-orchestrator-subagent": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.agentMessages).toHaveLength(3);
+    expect(assistant?.turn?.agentMessages.map((message) => message.kind)).toEqual(["handoff", "status", "reply"]);
+    expect(assistant?.turn?.agentMessages[0]?.fromAgentLabel).toBe(ORA_ROOT_AGENT_LABEL);
+    expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Orchestrator"]);
+    expect(assistant?.turn?.agentMessages[2]?.fromAgentLabel).toBe("Orchestrator");
+    expect(assistant?.turn?.agentMessages[2]?.toAgentLabels).toEqual([ORA_ROOT_AGENT_LABEL]);
   });
 
   it("shows progress narration as assistant content without process steps", () => {

@@ -206,6 +206,8 @@ export function createRuntimeMethodHandler(
         return store.compileEvaluationBlueprint(request.params);
       case "evaluation.blueprints.generateDraft":
         return store.generateEvaluationBlueprintDraft(request.params);
+      case "evaluation.blueprints.planTurn":
+        return store.planEvaluationBlueprintTurn(request.params);
       case "evaluation.runs.start":
         return store.startEvaluationRun(request.params, async ({ input, config }) => {
           const handle = await store.startRun({ input, config });
@@ -235,6 +237,10 @@ export function createRuntimeMethodHandler(
         return store.acceptEvaluationFeedback(request.params);
       case "evaluation.feedback.reject":
         return store.rejectEvaluationFeedback(request.params);
+      case "evaluation.annotations.list":
+        return store.listEvaluationAnnotations(request.params);
+      case "evaluation.annotations.submit":
+        return store.submitEvaluationAnnotation(request.params);
       case "feedbackLoop.signals.list":
         return store.listProjectSignals(request.params);
       case "feedbackLoop.insights.list":

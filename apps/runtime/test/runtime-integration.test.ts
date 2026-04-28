@@ -7,6 +7,7 @@ import {
   ArtifactRefSchema,
   EvaluationBaselineSchema,
   EvaluationBlueprintCompileResultSchema,
+  EvaluationBlueprintPlanTurnResultSchema,
   EvaluationBlueprintSchema,
   EvaluationDatasetDetailSchema,
   EvaluationExportResultSchema,
@@ -1347,6 +1348,192 @@ describe("LocalRunStore", () => {
     expect(compiled.spec.objective?.target).toBe("runtime.mode_selection");
     expect(compiled.spec.configs[0]?.runConfig.modeSelection).toBe("auto");
     expect(compiled.spec.configs[0]?.runConfig.metadata?.evaluationRouterOnly).toBe(true);
+  });
+
+  it("plans evaluation blueprints through a planner turn", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const planned = EvaluationBlueprintPlanTurnResultSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "evaluation.blueprints.planTurn",
+      params: {
+        message: "评估 agent 输出质量，需要 LLM judge 和人工标注低置信度样本。",
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+      },
+    }));
+    expect(planned.blueprint.evaluatorPlan.evaluators.map((evaluator) => evaluator.kind)).toContain("llm_judge");
+    expect(planned.blueprint.evaluatorPlan.evaluators.map((evaluator) => evaluator.kind)).toContain("human_annotation");
+
+    const listed = EvaluationBlueprintSchema.array().parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.blueprints.list",
+      params: {},
+    }));
+    expect(listed.map((blueprint) => blueprint.id)).toContain(planned.blueprint.id);
+  });
+
+  it("creates and submits human annotation tasks for evaluation runs", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "evaluation.datasets.import",
+      params: {
+        name: "Human Annotation Dataset",
+        sourceFileName: "human.json",
+        sourceFormat: "json",
+        content: JSON.stringify([{ id: "case-1", prompt: "Write a concise answer.", expected: "A concise answer." }]),
+      },
+    }));
+
+    const detail = EvaluationRunDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "evaluation.runs.start",
+      params: {
+        datasetId: dataset.dataset.id,
+        objective: {
+          kind: "outcome",
+          target: "run.output",
+          evaluators: [{
+            id: "human-review",
+            kind: "human_annotation",
+            label: "Human Review",
+            instructions: "Review whether the answer should pass.",
+            scoreType: "boolean",
+          }],
+        },
+        configs: [{
+          id: "local",
+          label: "Local",
+          runConfig: {
+            pattern: "orchestrator_subagent",
+            providerId: "local-smoke",
+            modelRef: "local/smoke-model",
+          },
+        }],
+      },
+    }));
+    expect(detail.run.scorecard.pendingAnnotationCount).toBe(1);
+
+    const annotations = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "evaluation.annotations.list",
+      params: { status: "pending" },
+    }) as Array<{ id: string; status: string }>;
+    expect(annotations).toHaveLength(1);
+
+    const submitted = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "evaluation.annotations.submit",
+      params: {
+        taskId: annotations[0]!.id,
+        score: { value: true, normalizedScore: 1, passed: true },
+        comment: "Looks correct.",
+      },
+    }) as { status: string };
+    expect(submitted.status).toBe("submitted");
+
+    const refreshed = EvaluationRunDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "evaluation.runs.get",
+      params: { evaluationRunId: detail.run.id },
+    }));
+    expect(refreshed.run.scorecard.pendingAnnotationCount).toBe(0);
+    expect(refreshed.run.caseResults[0]?.evaluatorResults[0]?.status).toBe("scored");
+  });
+
+  it("scores LLM judge evaluators with structured provider output", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.LLM_JUDGE_EVAL_KEY;
+    process.env.LLM_JUDGE_EVAL_KEY = "test";
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const systemText = body.messages
+        ?.filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n") ?? "";
+      const content = systemText.includes("LLM evaluation judge")
+        ? JSON.stringify({ score: 0.92, pass: true, rationale: "Meets the rubric.", failureTags: [] })
+        : "Candidate answer with required evidence.";
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const dataset = EvaluationDatasetDetailSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "evaluation.datasets.import",
+        params: {
+          name: "LLM Judge Dataset",
+          sourceFileName: "judge.json",
+          sourceFormat: "json",
+          content: JSON.stringify([{ id: "case-1", prompt: "Answer with evidence.", expected: "Candidate answer with required evidence." }]),
+        },
+      }));
+      const detail = EvaluationRunDetailSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "evaluation.runs.start",
+        params: {
+          datasetId: dataset.dataset.id,
+          objective: {
+            kind: "outcome",
+            target: "run.output",
+            evaluators: [{
+              id: "llm-judge",
+              kind: "llm_judge",
+              label: "LLM Judge",
+              rubric: "Pass if the answer includes required evidence.",
+              passThreshold: 0.75,
+            }],
+          },
+          configs: [{
+            id: "judge-provider",
+            label: "Judge Provider",
+            runConfig: {
+              pattern: "orchestrator_subagent",
+              providerId: "llm-judge-eval",
+              modelRef: "llm-judge-eval-model",
+              providerConfig: {
+                id: "llm-judge-eval",
+                label: "LLM Judge Eval",
+                type: "openai_compatible",
+                modelId: "llm-judge-eval-model",
+                baseUrl: "https://llm-judge-eval.test/v1",
+                apiKeyEnv: "LLM_JUDGE_EVAL_KEY",
+                capabilities: ["chat"],
+                headers: {},
+              },
+            },
+          }],
+        },
+      }));
+      expect(detail.attempts[0]?.evaluatorResults[0]).toMatchObject({
+        evaluatorId: "llm-judge",
+        evaluatorKind: "llm_judge",
+        score: 0.92,
+        passed: true,
+      });
+      expect(detail.run.caseResults[0]?.evaluatorResults[0]?.rationale).toBe("Meets the rubric.");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.LLM_JUDGE_EVAL_KEY;
+      } else {
+        process.env.LLM_JUDGE_EVAL_KEY = previousKey;
+      }
+    }
   });
 
   it("scores auto mode routing with objective metrics and router-only execution", async () => {

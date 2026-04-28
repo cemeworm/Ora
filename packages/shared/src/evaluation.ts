@@ -94,10 +94,65 @@ export const EvaluationObjectiveSchema = z.object({
   target: EvaluationTargetSchema,
   metrics: z.array(EvaluationMetricIdSchema).default([]),
   assertions: z.array(EvaluationAssertionSchema).default([]),
+  evaluators: z.array(z.lazy(() => EvaluationEvaluatorSpecSchema)).default([]),
   displayColumns: z.array(z.string().min(1)).default([]),
   metadata: z.record(z.unknown()).default({}),
 });
 export type EvaluationObjective = z.infer<typeof EvaluationObjectiveSchema>;
+
+export const EvaluationEvaluatorKindSchema = z.enum([
+  "heuristic",
+  "llm_judge",
+  "human_annotation",
+]);
+export type EvaluationEvaluatorKind = z.infer<typeof EvaluationEvaluatorKindSchema>;
+
+const EvaluationEvaluatorBaseSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  weight: z.number().positive().default(1),
+  metadata: z.record(z.unknown()).default({}),
+});
+
+export const EvaluationHeuristicEvaluatorSchema = EvaluationEvaluatorBaseSchema.extend({
+  kind: z.literal("heuristic"),
+  metrics: z.array(EvaluationMetricIdSchema).default([]),
+  assertions: z.array(EvaluationAssertionSchema).default([]),
+});
+
+export const EvaluationLlmJudgeEvaluatorSchema = EvaluationEvaluatorBaseSchema.extend({
+  kind: z.literal("llm_judge"),
+  rubric: z.string().min(1),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  passThreshold: z.number().min(0).max(1).default(0.75),
+});
+
+export const EvaluationHumanAnnotationEvaluatorSchema = EvaluationEvaluatorBaseSchema.extend({
+  kind: z.literal("human_annotation"),
+  instructions: z.string().min(1),
+  scoreType: z.enum(["boolean", "numeric", "categorical", "text"]).default("numeric"),
+  categories: z.array(z.string().min(1)).default([]),
+});
+
+export const EvaluationEvaluatorSpecSchema = z.discriminatedUnion("kind", [
+  EvaluationHeuristicEvaluatorSchema,
+  EvaluationLlmJudgeEvaluatorSchema,
+  EvaluationHumanAnnotationEvaluatorSchema,
+]);
+export type EvaluationEvaluatorSpec = z.infer<typeof EvaluationEvaluatorSpecSchema>;
+
+export const EvaluationEvaluatorResultSchema = z.object({
+  evaluatorId: z.string().min(1),
+  evaluatorKind: EvaluationEvaluatorKindSchema,
+  score: z.number().min(0).max(1).optional(),
+  passed: z.boolean().optional(),
+  rationale: z.string().min(1).optional(),
+  failureTags: z.array(z.string().min(1)).default([]),
+  status: z.enum(["scored", "pending", "failed"]).default("scored"),
+  details: z.record(z.unknown()).default({}),
+});
+export type EvaluationEvaluatorResult = z.infer<typeof EvaluationEvaluatorResultSchema>;
 
 export const EvaluationMetricScoreSchema = z.object({
   metricId: EvaluationMetricIdSchema,
@@ -270,6 +325,7 @@ export type EvaluationDatasetPlan = z.infer<typeof EvaluationDatasetPlanSchema>;
 export const EvaluationEvaluatorPlanSchema = z.object({
   metrics: z.array(EvaluationMetricIdSchema).default([]),
   assertions: z.array(EvaluationAssertionSchema).default([]),
+  evaluators: z.array(EvaluationEvaluatorSpecSchema).default([]),
   judgeRubric: z.string().min(1).optional(),
   notes: z.string().min(1).optional(),
   metadata: z.record(z.unknown()).default({}),
@@ -416,6 +472,7 @@ export const EvaluationAttemptSchema = z.object({
   error: z.string().optional(),
   score: EvaluationScoreSchema,
   metricScores: z.array(EvaluationMetricScoreSchema).default([]),
+  evaluatorResults: z.array(EvaluationEvaluatorResultSchema).default([]),
   observations: EvaluationObservationSchema.default({}),
   runtimeMs: z.number().int().nonnegative().default(0),
   costUsd: z.number().nonnegative().default(0),
@@ -439,6 +496,7 @@ export const EvaluationCaseResultSchema = z.object({
   attemptIds: z.array(z.string().min(1)).min(1),
   averageScore: EvaluationScoreSchema,
   metricScores: z.array(EvaluationMetricScoreSchema).default([]),
+  evaluatorResults: z.array(EvaluationEvaluatorResultSchema).default([]),
   latestOutput: z.unknown().optional(),
   observations: EvaluationObservationSchema.default({}),
   expected: EvaluationExpectedSchema.optional(),
@@ -476,6 +534,7 @@ export const EvaluationScorecardSchema = z.object({
   averageRuntimeMs: z.number().int().nonnegative(),
   averageCostUsd: z.number().nonnegative(),
   regressionCount: z.number().int().nonnegative(),
+  pendingAnnotationCount: z.number().int().nonnegative().default(0),
   configSummaries: z.array(EvaluationConfigSummarySchema),
   slices: z.array(EvaluationSliceSummarySchema).default([]),
 });
@@ -534,6 +593,8 @@ export const EvaluationStreamEventSchema = z.object({
     "evaluation.attempt.completed",
     "evaluation.run.completed",
     "evaluation.baseline.promoted",
+    "evaluation.annotation.created",
+    "evaluation.annotation.submitted",
   ]),
   createdAt: z.number().int().nonnegative(),
   payload: z.unknown(),
@@ -685,3 +746,78 @@ export const EvaluationFeedbackRejectParamsSchema = z.object({
   reason: z.string().min(1).optional(),
 });
 export type EvaluationFeedbackRejectParams = z.infer<typeof EvaluationFeedbackRejectParamsSchema>;
+
+export const EvaluationPlannerRoleSchema = z.enum(["user", "assistant"]);
+export type EvaluationPlannerRole = z.infer<typeof EvaluationPlannerRoleSchema>;
+
+export const EvaluationPlannerMessageSchema = z.object({
+  id: z.string().min(1),
+  role: EvaluationPlannerRoleSchema,
+  content: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+});
+export type EvaluationPlannerMessage = z.infer<typeof EvaluationPlannerMessageSchema>;
+
+export const EvaluationBlueprintPlanTurnParamsSchema = z.object({
+  blueprintId: z.string().min(1).optional(),
+  message: z.string().min(1),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+});
+export type EvaluationBlueprintPlanTurnParams = z.infer<typeof EvaluationBlueprintPlanTurnParamsSchema>;
+
+export const EvaluationBlueprintPlanTurnResultSchema = z.object({
+  blueprint: EvaluationBlueprintSchema,
+  messages: z.array(EvaluationPlannerMessageSchema),
+  assistantMessage: EvaluationPlannerMessageSchema,
+});
+export type EvaluationBlueprintPlanTurnResult = z.infer<typeof EvaluationBlueprintPlanTurnResultSchema>;
+
+export const EvaluationAnnotationStatusSchema = z.enum(["pending", "submitted"]);
+export type EvaluationAnnotationStatus = z.infer<typeof EvaluationAnnotationStatusSchema>;
+
+export const EvaluationAnnotationScoreSchema = z.object({
+  value: z.union([z.boolean(), z.number().min(0).max(1), z.string().min(1)]),
+  normalizedScore: z.number().min(0).max(1).optional(),
+  passed: z.boolean().optional(),
+  failureTags: z.array(z.string().min(1)).default([]),
+});
+export type EvaluationAnnotationScore = z.infer<typeof EvaluationAnnotationScoreSchema>;
+
+export const EvaluationAnnotationTaskSchema = z.object({
+  id: z.string().min(1),
+  evaluationRunId: z.string().min(1),
+  attemptId: z.string().min(1),
+  caseId: z.string().min(1),
+  configId: z.string().min(1),
+  evaluatorId: z.string().min(1),
+  instructions: z.string().min(1),
+  scoreType: z.enum(["boolean", "numeric", "categorical", "text"]),
+  categories: z.array(z.string().min(1)).default([]),
+  status: EvaluationAnnotationStatusSchema.default("pending"),
+  input: EvaluationCaseInputSchema,
+  output: z.unknown().optional(),
+  expected: EvaluationExpectedSchema.optional(),
+  score: EvaluationAnnotationScoreSchema.optional(),
+  comment: z.string().min(1).optional(),
+  correctedOutput: z.unknown().optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  submittedAt: z.number().int().nonnegative().optional(),
+});
+export type EvaluationAnnotationTask = z.infer<typeof EvaluationAnnotationTaskSchema>;
+
+export const EvaluationAnnotationListParamsSchema = z.object({
+  status: EvaluationAnnotationStatusSchema.optional(),
+  runId: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type EvaluationAnnotationListParams = z.infer<typeof EvaluationAnnotationListParamsSchema>;
+
+export const EvaluationAnnotationSubmitParamsSchema = z.object({
+  taskId: z.string().min(1),
+  score: EvaluationAnnotationScoreSchema,
+  comment: z.string().min(1).optional(),
+  correctedOutput: z.unknown().optional(),
+});
+export type EvaluationAnnotationSubmitParams = z.infer<typeof EvaluationAnnotationSubmitParamsSchema>;

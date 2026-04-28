@@ -1403,9 +1403,6 @@ function buildAssistantTurnAttachment(
 }
 
 function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {
-  if (snapshot.pattern === "orchestrator_subagent") {
-    return [];
-  }
   const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
   const deltaCursorByAgent = new Map<string, number>();
   const deltasByAgent = agentMessageDeltasByAgent(snapshot);

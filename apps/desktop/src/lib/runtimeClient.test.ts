@@ -101,4 +101,37 @@ describe("desktop runtime client agent catalog", () => {
     expect(compiled.spec.configs[0]?.runConfig.modeSelection).toBe("auto");
     expect(compiled.spec.configs[0]?.runConfig.metadata?.evaluationRouterOnly).toBe(true);
   });
+
+  it("mirrors evaluation planner turns and annotation queue in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const dataset = await client.importEvaluationDataset({
+      name: "Planner Dataset",
+      sourceFileName: "planner.json",
+      sourceFormat: "json",
+      content: JSON.stringify([{ id: "case-1", prompt: "Answer briefly.", expected: "Brief answer." }]),
+    });
+    const planned = await client.planEvaluationBlueprintTurn({
+      message: "评估输出质量，需要 LLM judge 和人工标注。",
+      providerId: "local-smoke",
+      modelRef: "local/smoke-model",
+    });
+    expect(planned.blueprint.evaluatorPlan.evaluators.map((evaluator) => evaluator.kind)).toContain("human_annotation");
+
+    const compiled = await client.compileEvaluationBlueprint({
+      blueprintId: planned.blueprint.id,
+      datasetId: dataset.dataset.id,
+      modeIds: ["orchestrator_subagent"],
+    });
+    const detail = await client.startEvaluationRun(compiled.spec);
+    expect(detail.run.scorecard.pendingAnnotationCount).toBe(1);
+
+    const pending = await client.listEvaluationAnnotations({ status: "pending" });
+    expect(pending).toHaveLength(1);
+    const submitted = await client.submitEvaluationAnnotation({
+      taskId: pending[0]!.id,
+      score: { value: true, normalizedScore: 1, passed: true },
+      comment: "Looks good.",
+    });
+    expect(submitted.status).toBe("submitted");
+  });
 });
