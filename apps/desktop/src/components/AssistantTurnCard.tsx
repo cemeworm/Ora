@@ -2,10 +2,12 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   AtSign,
+  Check,
   CheckCircle2,
   ChevronDown,
   Circle,
   Clock3,
+  Copy,
   FileImage,
   FileText,
   GitBranch,
@@ -49,9 +51,11 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [copied, setCopied] = useState(false);
   const liveProgressText = turn?.liveProgressText?.trim();
   const liveProgressIsPlaceholder = liveProgressText ? isPlaceholderLiveProgressText(liveProgressText) : false;
-  const showLiveProgressInProcess = Boolean(liveProgressText && !liveProgressIsPlaceholder && content.trim() !== liveProgressText);
+  const canShowLiveProgress = turn?.status === "running" || turn?.status === "approval_required";
+  const showLiveProgressInProcess = Boolean(canShowLiveProgress && liveProgressText && !liveProgressIsPlaceholder && content.trim() !== liveProgressText);
   const hasProcessSteps = processSteps.length > 0 || showLiveProgressInProcess;
   const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
   const contentIsLiveProgress = Boolean(liveProgressText && content.trim() === liveProgressText);
@@ -59,7 +63,9 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const hasVisibleAgentMessages = visibleAgentMessages(collaborationMessages, turn?.status).length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
+  const canCopyContent = Boolean(!isPlaceholder && turn?.status !== "running" && content.trim());
   const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
+  const canShowActions = canCopyContent || canSubmitFeedback;
 
   useEffect(() => {
     if (!isPlaceholder && (turn?.status !== "running" || (content.trim() && !contentIsLiveProgress))) {
@@ -81,6 +87,37 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
       setFeedbackError(error instanceof Error ? error.message : "Feedback submission failed.");
     } finally {
       setFeedbackSubmitting(false);
+    }
+  }
+
+  async function handleCopyContent() {
+    if (!content.trim()) {
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copiedWithFallback = document.execCommand("copy");
+        document.body.removeChild(textarea);
+
+        if (!copiedWithFallback) {
+          return;
+        }
+      }
+
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
     }
   }
 
@@ -154,16 +191,30 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             </CollapsibleCard>
           ) : null}
 
-          {canSubmitFeedback ? (
-            <div className="flex">
-              <button
-                type="button"
-                onClick={() => setFeedbackOpen(true)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-accent/35 hover:text-foreground"
-              >
-                <MessageSquareWarning size={13} />
-                Feedback
-              </button>
+          {canShowActions ? (
+            <div className="flex items-center gap-1">
+              {canCopyContent ? (
+                <button
+                  type="button"
+                  onClick={() => void handleCopyContent()}
+                  title={copied ? "已复制" : "复制"}
+                  aria-label={copied ? "已复制" : "复制消息"}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              ) : null}
+              {canSubmitFeedback ? (
+                <button
+                  type="button"
+                  onClick={() => setFeedbackOpen(true)}
+                  title="Feedback"
+                  aria-label="Feedback"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
+                >
+                  <MessageSquareWarning size={14} />
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>

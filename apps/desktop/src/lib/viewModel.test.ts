@@ -99,6 +99,154 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("Cancelled by caller.");
   });
 
+  it("renders approval denial instead of stale resume progress after cancelled approvals", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-approval-denied",
+      sessionId: "session-approval-denied",
+      turnIndex: 1,
+      status: "cancelled",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "更新项目文档", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-approval-denied-test",
+        skillIds: [],
+        toolIds: ["file.write"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [{
+        id: "run-approval-denied:action:solo_agent-tool-1",
+        runId: "run-approval-denied",
+        type: "file.write",
+        riskLevel: "high",
+        status: "denied",
+        input: { path: "10-Wiki/项目/西芒杜项目.md" },
+        approvalRequest: {
+          title: "需要你确认写入文件",
+          summary: "我已经准备好把调研结果写入项目文档，批准后会继续执行本地写入。",
+          whatWillChange: "会更新 10-Wiki/项目/西芒杜项目.md。",
+          whyNeeded: "这是完成文档更新所需的本地文件写入步骤。",
+          riskNote: "写入文件会改变你的项目内容。",
+          confirmLabel: "批准并继续",
+        },
+        artifactIds: [],
+        error: "已拒绝",
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-approval-denied:evt-0",
+          runId: "run-approval-denied",
+          seq: 0,
+          type: "task.progress",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "run.resumed",
+            summary: "已恢复",
+          },
+        },
+        {
+          id: "run-approval-denied:evt-1",
+          runId: "run-approval-denied",
+          seq: 1,
+          type: "node.updated",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            nodeId: "solo_agent",
+            state: "interrupted",
+            detail: "Manual approval required for action run-approval-denied:action:solo_agent-tool-1.",
+          },
+        },
+        {
+          id: "run-approval-denied:evt-2",
+          runId: "run-approval-denied",
+          seq: 2,
+          type: "run.cancelled",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: { reason: "已拒绝" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      error: "已拒绝",
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [
+        {
+          id: "run-approval-denied:user",
+          sessionId: "session-approval-denied",
+          runId: "run-approval-denied",
+          turnIndex: 1,
+          role: "user",
+          content: "更新项目文档",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt,
+        },
+        {
+          id: "run-approval-denied:assistant",
+          sessionId: "session-approval-denied",
+          runId: "run-approval-denied",
+          turnIndex: 1,
+          role: "assistant",
+          content: "文档已成功更新！以下是我完成的调研与更新总结：",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: createdAt + 1_000,
+        },
+      ],
+      { "run-approval-denied": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    const processSteps = assistant?.turn?.processSteps ?? [];
+
+    expect(assistant?.turn?.status).toBe("failed");
+    expect(assistant?.turn?.liveProgressText).toBeUndefined();
+    expect(processSteps.map((step) => step.label)).toEqual([
+      "Waiting for approval",
+      "审批不通过",
+    ]);
+    expect(processSteps.at(-1)).toMatchObject({
+      eventType: "approval.denied",
+      detail: "已停止继续执行。",
+      status: "blocked",
+      tone: "warning",
+    });
+    expect(processSteps.some((step) => step.label === "Recovered")).toBe(false);
+    expect(assistant?.content).toBe("审批不通过，已停止继续执行。");
+    expect(assistant?.content).not.toContain("已恢复");
+    expect(assistant?.content).not.toContain("文档已成功更新");
+  });
+
   it("derives file-change artifacts and diff metadata for assistant turns", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
@@ -1166,6 +1314,7 @@ describe("desktop session view model", () => {
     const processSteps = assistant?.turn?.processSteps ?? [];
 
     expect(processSteps).toHaveLength(1);
+    expect(processSteps[0]?.label).toBe("Waiting for approval");
     expect(processSteps[0]?.detail).toBe("Waiting for your approval before continuing.");
     expect(processSteps[0]?.detail).not.toContain("Manual approval required");
     expect(processSteps[0]?.detail).not.toContain("run-approval-node:action:tool-1");

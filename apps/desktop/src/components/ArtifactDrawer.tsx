@@ -55,6 +55,14 @@ function ArtifactKindIcon({ artifact }: { artifact?: ArtifactRecord }) {
 function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
   const fileChange = fileChangePayload(artifact.payload);
   if (fileChange) {
+    if (isMarkdownArtifact(artifact)) {
+      return (
+        <section className="flex min-h-0 flex-1 p-4">
+          <MarkdownContent content={fileChange.afterContent} className="min-h-0 flex-1 overflow-auto pr-1 text-sm leading-6 text-foreground" />
+        </section>
+      );
+    }
+
     return (
       <section className="flex min-h-0 flex-1 p-3">
         <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">

@@ -44,6 +44,9 @@ import type {
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
 
 const APPROVAL_INTERRUPT_MESSAGE = "Waiting for your approval before continuing.";
+const APPROVAL_DENIED_MESSAGE = "审批不通过，已停止继续执行。";
+const APPROVAL_DENIED_STEP_LABEL = "审批不通过";
+const APPROVAL_DENIED_STEP_DETAIL = "已停止继续执行。";
 
 export interface WorkbenchViewModel {
   patternCards: PatternCard[];
@@ -1181,7 +1184,7 @@ function assistantTextFromSnapshot(
   snapshot: OraStateSnapshot,
 ): string | undefined {
   if (snapshot.status === "cancelled") {
-    return undefined;
+    return cancelledTextFromSnapshot(snapshot);
   }
   const outputText = outputTextFromSnapshot(snapshot);
   if (outputText) {
@@ -1276,6 +1279,14 @@ function clarificationTextFromSnapshot(snapshot: OraStateSnapshot): string | und
 function progressTextFromSnapshot(
   snapshot: OraStateSnapshot,
 ): string | undefined {
+  if (
+    snapshot.status === "cancelled" ||
+    snapshot.status === "failed" ||
+    snapshot.status === "succeeded"
+  ) {
+    return undefined;
+  }
+
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
     const event = snapshot.events[index];
     if (event?.type !== "task.progress" || !isRecord(event.payload)) {
@@ -1482,7 +1493,7 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
     (event) => hasWorkEvent || !isLifecycleProcessEvent(event),
   );
 
-  return visibleEvents
+  const steps: TurnProcessStep[] = visibleEvents
     .map((event, index) => ({
       id: event.id,
       eventType: event.type,
@@ -1501,6 +1512,21 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
       agentId: event.agentId,
       contextLabel: processContextLabel(event),
     }));
+
+  if (hasDeniedApproval(snapshot)) {
+    const deniedAt = latestEventTime(snapshot, "run.cancelled") ?? snapshot.updatedAt;
+    steps.push({
+      id: `${snapshot.runId}:approval-denied`,
+      eventType: "approval.denied",
+      label: APPROVAL_DENIED_STEP_LABEL,
+      detail: APPROVAL_DENIED_STEP_DETAIL,
+      timestamp: formatElapsed(snapshot.events[0]?.createdAt ?? deniedAt, deniedAt),
+      status: "blocked",
+      tone: "warning",
+    });
+  }
+
+  return steps;
 }
 
 function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
@@ -1583,6 +1609,22 @@ function isPlaceholderProgressText(text: string): boolean {
 }
 
 function processStepLabel(event: OraEventEnvelope): string {
+  if (event.type === "node.updated" && isRecord(event.payload)) {
+    switch (event.payload.state) {
+      case "interrupted":
+        return isApprovalInterruptDetail(stringValue(event.payload.detail) ?? "")
+          ? "Waiting for approval"
+          : "Interrupted";
+      case "repairing":
+        return "Recovered";
+      case "degraded":
+        return "Continued with limited context";
+      case "failed":
+        return "Failed";
+      default:
+        return "Processing state changed";
+    }
+  }
   if (
     (event.type === "tool.called" || event.type === "tool.repaired") &&
     isRecord(event.payload)
@@ -1603,9 +1645,6 @@ function processStepLabel(event: OraEventEnvelope): string {
   }
   if (event.type === "action.updated") {
     return "Action failed";
-  }
-  if (event.type === "node.updated") {
-    return "Recovered";
   }
   return beatLabel(event);
 }
@@ -2276,13 +2315,39 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
     case "queued":
       return progressTextFromSnapshot(snapshot) ?? "";
     case "cancelled":
-      return safeCancelledCopy(snapshot.error);
+      return cancelledTextFromSnapshot(snapshot);
     case "failed":
     case "interrupted":
       return snapshot.error ?? "";
     case "succeeded":
       return "";
   }
+}
+
+function cancelledTextFromSnapshot(snapshot: OraStateSnapshot): string {
+  if (hasDeniedApproval(snapshot)) {
+    return APPROVAL_DENIED_MESSAGE;
+  }
+  return safeCancelledCopy(snapshot.error);
+}
+
+function hasDeniedApproval(snapshot: OraStateSnapshot): boolean {
+  return snapshot.actions.some(
+    (action) => action.status === "denied" && action.approvalRequest,
+  );
+}
+
+function latestEventTime(
+  snapshot: OraStateSnapshot,
+  eventType: OraEventEnvelope["type"],
+): number | undefined {
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type === eventType) {
+      return event.createdAt;
+    }
+  }
+  return undefined;
 }
 
 function safeCancelledCopy(error: string | undefined): string {
