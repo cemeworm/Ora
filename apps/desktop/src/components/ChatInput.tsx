@@ -20,10 +20,11 @@ import {
 } from "react";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import type { ModeCard } from "../types";
+import type { ActionRecord, ModeCard } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
 import type { ModeSelection } from "@ora/shared";
+import { ApprovalRequestCard } from "./ApprovalRequestCard";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -42,6 +43,10 @@ interface ChatInputProps {
   selectedCustomAgentId?: string;
   projectFileAttachments: ComposerProjectFileAttachment[];
   localFileAttachments: ComposerLocalFileAttachment[];
+  approvalActions?: ActionRecord[];
+  approvalDisabled?: boolean;
+  onApprove?: () => void;
+  onCancelApproval?: () => void;
   onModeChange: (modeId: string) => void;
   onModeSelectionChange: (selection: ModeSelection) => void;
   onProviderChange: (providerId: string) => void;
@@ -88,6 +93,10 @@ export function ChatInput({
   selectedCustomAgentId,
   projectFileAttachments,
   localFileAttachments,
+  approvalActions = [],
+  approvalDisabled,
+  onApprove,
+  onCancelApproval,
   onModeChange,
   onModeSelectionChange,
   onProviderChange,
@@ -144,6 +153,7 @@ export function ChatInput({
     && composerPrompt.startsWith("/")
     && filteredSkillOptions.length > 0;
   const hasTopChips = selectedSkills.length > 0 || projectFileAttachments.length > 0 || localFileAttachments.length > 0;
+  const showApprovalTray = approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
 
   useLayoutEffect(() => {
     const target = textareaRef.current;
@@ -260,6 +270,16 @@ export function ChatInput({
             )}
           </div>
         )}
+        {showApprovalTray ? (
+          <div className="mb-2">
+            <ApprovalRequestCard
+              actions={approvalActions}
+              onResume={onApprove!}
+              onCancel={onCancelApproval!}
+              disabled={approvalDisabled}
+            />
+          </div>
+        ) : null}
         <div className="rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
           <div className={cn("relative", hasTopChips ? "min-h-[148px]" : "min-h-[96px]")}>
             {hasTopChips && (

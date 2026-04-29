@@ -95,6 +95,7 @@ export function ChatView({
     );
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
+  const pendingApprovalActions = actionRecords.filter((action) => action.state === "approval_required");
 
   async function openLocalFiles() {
     try {
@@ -141,12 +142,9 @@ export function ChatView({
           <ChatMessages
             chatMessages={chatMessages}
             actionRecords={actionRecords}
-            isApprovalRequired={isApprovalRequired}
-            onResumeRun={onResumeRun}
-            onCancelRun={onCancelRun}
+            hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
-            busyCommand={busyCommand}
           />
         </div>
         <ChatInput
@@ -164,6 +162,10 @@ export function ChatView({
           selectedCustomAgentId={selectedCustomAgentId}
           projectFileAttachments={projectFileAttachments}
           localFileAttachments={localFileAttachments}
+          approvalActions={isApprovalRequired ? pendingApprovalActions : []}
+          approvalDisabled={busyCommand !== undefined}
+          onApprove={onResumeRun}
+          onCancelApproval={onCancelRun}
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}
           onProviderChange={(providerId) =>

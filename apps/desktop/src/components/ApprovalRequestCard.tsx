@@ -1,6 +1,5 @@
 import { AlertTriangle, ShieldCheck, XCircle } from "lucide-react";
 import type { ActionRecord } from "../types";
-import { Message, MessageContent } from "./ai-elements/message";
 
 interface ApprovalRequestCardProps {
   actions: ActionRecord[];
@@ -16,48 +15,60 @@ export function ApprovalRequestCard({ actions, onResume, onCancel, disabled }: A
 
   const primaryRequest = approvalCopy(actions[0]!);
   const isSingleAction = actions.length === 1;
-
   return (
-    <Message from="assistant" className="w-full">
-      <div className="flex max-w-full gap-3">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-200 bg-amber-50 text-amber-700 shadow-xs">
-          <AlertTriangle size={14} />
-        </div>
-        <div className="min-w-0 flex-1 space-y-3">
-          <MessageContent className="w-full gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="font-medium text-foreground">{isSingleAction ? primaryRequest.title : "Your confirmation is needed"}</p>
+    <div
+      role="status"
+      aria-live="polite"
+      className="rounded-2xl border border-amber-200 bg-amber-50/80 px-3 py-2.5 text-amber-950 shadow-[0_1px_2px_rgba(120,53,15,0.08)]"
+    >
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-amber-200 bg-amber-100 text-amber-700">
+            <AlertTriangle size={15} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <p className="truncate text-sm font-medium text-foreground">
+                {isSingleAction ? primaryRequest.title : "Your confirmation is needed"}
+              </p>
+              <span className="shrink-0 rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                Waiting for approval
+              </span>
+              {!isSingleAction ? (
+                <span className="shrink-0 rounded-full border border-amber-200 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  More actions pending
+                </span>
+              ) : null}
             </div>
-            <p className="text-sm leading-6 text-muted-foreground">
+            <p className="mt-0.5 truncate text-sm leading-5 text-muted-foreground">
               {isSingleAction
                 ? primaryRequest.summary
-                : "I need your confirmation for the actions below before I continue."}
+                : "I need your confirmation for these actions before I continue."}
             </p>
-          </MessageContent>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={onResume}
-              disabled={disabled}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-signal-amber px-4 py-2 text-sm font-semibold text-bench-900 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <ShieldCheck size={15} />
-              Approve and continue
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={disabled}
-              className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted/60 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <XCircle size={15} />
-              Cancel run
-            </button>
           </div>
         </div>
+        <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
+          <button
+            type="button"
+            onClick={onResume}
+            disabled={disabled}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-signal-amber px-3 text-xs font-semibold text-bench-900 transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <ShieldCheck size={14} />
+            {primaryRequest.confirmLabel ?? "Approve and continue"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={disabled}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-amber-200 bg-background/70 px-3 text-xs font-semibold text-foreground transition hover:bg-background active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <XCircle size={14} />
+            Cancel run
+          </button>
+        </div>
       </div>
-    </Message>
+    </div>
   );
 }
 
