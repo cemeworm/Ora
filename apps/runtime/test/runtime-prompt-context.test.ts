@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
-import type { AgentProfile } from "@ora/shared";
+import type { AgentProfile, SkillDescriptor } from "@ora/shared";
 import { buildAgentPromptContext, userClarificationContextPrompt } from "../src/harness/prompt-context.js";
+
+const availableSkills: SkillDescriptor[] = [
+  {
+    id: "deep-research",
+    name: "deep-research",
+    description: "Follow the source-backed deep research workflow.",
+    path: "skills/deep-research/SKILL.md",
+    category: "public",
+    enabled: true,
+    editable: true,
+    allowedPatterns: [],
+    tags: [],
+  },
+  {
+    id: "disabled-review",
+    name: "disabled-review",
+    description: "Disabled review workflow.",
+    path: "skills/disabled-review/SKILL.md",
+    category: "private",
+    enabled: false,
+    editable: true,
+    allowedPatterns: [],
+    tags: [],
+  },
+];
 
 const profile: AgentProfile = {
   id: "researcher",
@@ -31,6 +56,7 @@ describe("buildAgentPromptContext", () => {
       workspaceContext: "Ora project workspace context:\n- Root path: /repo",
       clarificationContext: "Resolved clarification:\n- Use staging.",
       memoryContext: "Use long-term memory when relevant.",
+      availableSkills,
       toolProtocol: "Workspace tool protocol:\nAvailable tools:\n- web.search",
       skillSnippets: ["Skill instructions here."],
       toolIds: ["web.search", "mcp.listTools", "mcp.call"],
@@ -45,6 +71,7 @@ describe("buildAgentPromptContext", () => {
       "workspace_context",
       "clarification_context",
       "memory_context",
+      "available_skills",
       "tool_protocol",
       "skills",
       "mcp_deferred_tools",
@@ -55,6 +82,11 @@ describe("buildAgentPromptContext", () => {
     expect(context.system).toContain("Role:\nGather focused evidence and return concise findings.");
     expect(context.system).toContain("Preferred model hint: openai/gpt-5.2");
     expect(context.system).toContain("Memory namespaces: session, project");
+    expect(context.system).toContain("<available_skills>");
+    expect(context.system).toContain("<name>deep-research</name>");
+    expect(context.system).toContain("<location>skills/deep-research/SKILL.md</location>");
+    expect(context.system).toContain("inspect that skill before answering or acting");
+    expect(context.system).not.toContain("disabled-review");
     expect(context.system).toContain("Use mcp.listTools or mcp.readResource");
   });
 
@@ -62,6 +94,7 @@ describe("buildAgentPromptContext", () => {
     const context = buildAgentPromptContext({
       agentId: "solo_agent",
       stageSystem: "You are the solo agent.",
+      availableSkills: [availableSkills[1]!],
       toolIds: ["file.read"],
       skillSnippets: ["  "],
     });

@@ -89,7 +89,8 @@ describe("RuntimeToolExecutor", () => {
     expect(prompt).toContain("- web.fetch:");
     expect(prompt).toContain("- skills.list:");
     expect(prompt).toContain("- skills.get:");
-    expect(prompt).toContain("Use skills.list to discover enabled skills");
+    expect(prompt).toContain("Skill-first rule");
+    expect(prompt).toContain("Use skills.get");
   });
 
   it("extracts XML-wrapped tool calls from provider text", () => {

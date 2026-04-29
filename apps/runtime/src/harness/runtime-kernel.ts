@@ -763,6 +763,7 @@ export async function executeRuntimeKernel(
     const toolIds = effectiveAgentToolIds(params.agentId, params.customAgentId);
     const skillIds = effectiveAgentSkillIds(params.agentId, params.customAgentId);
     const toolPrompt = runtimeToolExecutor.systemPrompt(toolIds);
+    const availableSkills = skillRegistry.list({ enabledOnly: true });
     const snippets = skillRegistry.promptSnippets(skillIds);
     return buildAgentPromptContext({
       agentId: params.agentId,
@@ -774,6 +775,7 @@ export async function executeRuntimeKernel(
       workspaceContext,
       clarificationContext,
       memoryContext,
+      availableSkills,
       toolProtocol: toolPrompt,
       skillSnippets: snippets,
       toolIds,

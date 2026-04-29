@@ -268,7 +268,7 @@ export class RuntimeToolExecutor {
       rootPath ? "Workspace file and shell tools are rooted inside the selected project folder." : "Workspace file and shell tools are unavailable unless a project folder is selected.",
       "If the user asks what tools you can use, answer from this available-tools list and the selected workspace context; do not claim you have no local tools when tools are listed here.",
       enabled.some((toolId) => toolId.startsWith("skills."))
-        ? "Use skills.list to discover enabled skills when a specialized workflow may help; use skills.get to read a relevant skill before applying it."
+        ? "Skill-first rule: when the user's request matches an available skill, inspect that skill before answering or acting. Use skills.get to read the full instructions for a matching skill when they are not already present in the prompt; use skills.list only when you need to rediscover enabled skills. Do not use skills for unrelated or trivial requests."
         : undefined,
       enabled.includes("skills.create")
         ? "When installing skill packages, pass SKILL.md as content and include optional package files with relative paths such as scripts/run.sh in args.files."

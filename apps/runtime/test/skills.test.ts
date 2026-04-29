@@ -470,6 +470,53 @@ describe("managed skill runtime behavior", () => {
     expect(fs.existsSync(legacyDir)).toBe(false);
   });
 
+  it("exposes enabled skills in zero-config provider system prompts", async () => {
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
+    await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.create",
+      params: {
+        name: "runtime-review",
+        description: "Runtime review skill.",
+        content: skillContent("runtime-review", "Runtime review skill."),
+      },
+    });
+    await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skills.create",
+      params: {
+        name: "runtime-disabled-review",
+        description: "Disabled runtime review skill.",
+        content: skillContent("runtime-disabled-review", "Disabled runtime review skill."),
+      },
+    });
+    await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skills.setEnabled",
+      params: { name: "runtime-disabled-review", enabled: false },
+    });
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Use whichever workflow fits." },
+        config: { pattern: "generator_verifier" },
+      },
+    });
+
+    expect(capturedSystems.some((system) => system.includes("<available_skills>"))).toBe(true);
+    expect(capturedSystems.some((system) => system.includes("<name>runtime-review</name>"))).toBe(true);
+    expect(capturedSystems.some((system) => system.includes("<description>Runtime review skill.</description>"))).toBe(true);
+    expect(capturedSystems.some((system) => system.includes("Runtime skill injection marker"))).toBe(false);
+    expect(capturedSystems.some((system) => system.includes("runtime-disabled-review"))).toBe(false);
+    expect(capturedSystems.some((system) => system.includes("Skill-first rule"))).toBe(true);
+  });
+
   it("injects only enabled selected skills into provider system prompts", async () => {
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
     await handle({

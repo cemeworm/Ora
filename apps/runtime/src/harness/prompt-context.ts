@@ -1,4 +1,4 @@
-import type { AgentProfile, UserTaskInput } from "@ora/shared";
+import type { AgentProfile, SkillDescriptor, UserTaskInput } from "@ora/shared";
 
 export type AgentPromptSectionId =
   | "custom_persona"
@@ -9,6 +9,7 @@ export type AgentPromptSectionId =
   | "workspace_context"
   | "clarification_context"
   | "memory_context"
+  | "available_skills"
   | "tool_protocol"
   | "skills"
   | "mcp_deferred_tools";
@@ -29,6 +30,7 @@ export interface AgentPromptContextInput {
   workspaceContext?: string;
   clarificationContext?: string;
   memoryContext?: string;
+  availableSkills?: readonly SkillDescriptor[];
   toolProtocol?: string;
   skillSnippets?: string[];
   toolIds?: readonly string[];
@@ -49,6 +51,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     promptSection("workspace_context", "Workspace Context", input.workspaceContext),
     promptSection("clarification_context", "Clarification Context", input.clarificationContext),
     promptSection("memory_context", "Memory Context", input.memoryContext),
+    promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
     promptSection("tool_protocol", "Tool Protocol", input.toolProtocol),
     ...skillSections(input.skillSnippets),
     promptSection("mcp_deferred_tools", "MCP / Deferred Tools", mcpDeferredToolsSection(input.toolIds)),
@@ -111,6 +114,30 @@ function profileSection(
   ].filter(Boolean).join("\n");
 }
 
+function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined): string | undefined {
+  const entries = (skills ?? [])
+    .filter((skill) => skill.enabled)
+    .map((skill) => [
+      "  <skill>",
+      `    <name>${escapeXml(skill.name)}</name>`,
+      `    <description>${escapeXml(skill.description)}</description>`,
+      `    <location>${escapeXml(skill.path ?? skill.category)}</location>`,
+      "  </skill>",
+    ].join("\n"));
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  return [
+    "<skill_system>",
+    "  <usage_rule>When a user request matches an available skill, inspect that skill before answering or acting. If the full instructions are not already present in Skill Instructions, use skills.get with the skill name before applying it. Load supporting files only when needed.</usage_rule>",
+    "  <available_skills>",
+    entries.join("\n"),
+    "  </available_skills>",
+    "</skill_system>",
+  ].join("\n");
+}
+
 function skillSections(snippets: string[] | undefined): AgentPromptSection[] {
   if (!snippets || snippets.length === 0) {
     return [];
@@ -123,6 +150,13 @@ function skillSections(snippets: string[] | undefined): AgentPromptSection[] {
       title: "Skill Instructions",
       content: snippet,
     }));
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function mcpDeferredToolsSection(toolIds: readonly string[] | undefined): string | undefined {
