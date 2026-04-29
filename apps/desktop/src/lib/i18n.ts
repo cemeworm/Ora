@@ -50,9 +50,9 @@ const ZH_COPY: Record<string, string> = {
   "Loading agents...": "正在加载智能体...",
   "Loading skills...": "正在加载技能...",
   "Loading mode studio...": "正在加载模式工作室...",
-  "Ora hit a render error.": "Ora 渲染时遇到错误。",
+  "Ora hit a render error.": "Ora出现了一点问题",
   "The workbench could not render this session.": "工作台无法渲染这个会话。",
-  "Reload workbench": "重新加载工作台",
+  "Reload workbench": "重新加载",
   "Runtime error": "运行时错误",
   "Runtime bridge failed to initialize.": "运行时桥接初始化失败。",
   "Resize trails panel": "调整轨迹面板宽度",
@@ -393,10 +393,7 @@ const ZH_COPY: Record<string, string> = {
   Disable: "停用",
   "Create private skill": "创建私有技能",
   "Create skill": "创建技能",
-  "Select a skill to inspect its full `SKILL.md`.":
-    "选择一个技能以查看完整的 `SKILL.md`。",
-  "Public skills are initialized from the package; private skills are added later by you.":
-    "Public 技能来自初始化内置包；Private 技能是你后续新增的。",
+  "Select a skill to view full information.": "选择一个技能查看完整信息",
   "Private skills are stored as `.ora/skills/private/&lt;name&gt;/SKILL.md`.":
     "私有技能保存在 `.ora/skills/private/&lt;name&gt;/SKILL.md`。",
   "What this skill helps the agent do.": "这个技能帮助智能体完成什么。",
