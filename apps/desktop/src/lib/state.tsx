@@ -229,12 +229,12 @@ function replaceSessionSummary(sessions: OraSessionSummary[], session: OraSessio
 
 function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStateSnapshot, selectedRunId?: string) {
   if (snapshot) {
-    return snapshot;
+    return mergeStateSnapshot(undefined, snapshot);
   }
   if (selectedRunId && detail.latestSnapshot?.runId === selectedRunId) {
-    return detail.latestSnapshot;
+    return mergeStateSnapshot(undefined, detail.latestSnapshot);
   }
-  return detail.latestSnapshot;
+  return mergeStateSnapshot(undefined, detail.latestSnapshot);
 }
 
 function emptySessionDetail(session: OraSessionSummary): OraSessionDetail {
@@ -387,9 +387,124 @@ function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraM
   return modes.find((mode) => mode.id === SINGLE_AGENT_MODE_ID) ?? modes[0];
 }
 
+function mergeByKey<T>(
+  existing: readonly T[] | undefined,
+  incoming: readonly T[] | undefined,
+  keyForItem: (item: T) => string | number | undefined,
+): T[] {
+  const unkeyed: T[] = [];
+  const itemByKey = new Map<string | number, T>();
+  for (const item of existing ?? []) {
+    const key = keyForItem(item);
+    if (key === undefined) {
+      unkeyed.push(item);
+      continue;
+    }
+    itemByKey.set(key, item);
+  }
+  for (const item of incoming ?? []) {
+    const key = keyForItem(item);
+    if (key === undefined) {
+      unkeyed.push(item);
+      continue;
+    }
+    itemByKey.set(key, item);
+  }
+  return [...unkeyed, ...itemByKey.values()];
+}
+
+function mergeById<T extends { id: string }>(existing: readonly T[] | undefined, incoming: readonly T[] | undefined): T[] {
+  return mergeByKey(existing, incoming, (item) => item.id);
+}
+
+function mergeEvents(
+  existing: OraStateSnapshot["events"],
+  incoming: OraStateSnapshot["events"],
+): OraStateSnapshot["events"] {
+  return mergeByKey(existing, incoming, (event) => event.seq)
+    .sort((left, right) => left.seq - right.seq);
+}
+
+function mergeAgentMessages(
+  ...sources: Array<OraStateSnapshot["agentMessages"] | undefined>
+): OraStateSnapshot["agentMessages"] {
+  const messageById = new Map<string, OraStateSnapshot["agentMessages"][number]>();
+  for (const source of sources) {
+    for (const message of source ?? []) {
+      messageById.set(message.id, message);
+    }
+  }
+  return [...messageById.values()]
+    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+function agentMessagesFromEvents(events: OraStateSnapshot["events"]): OraStateSnapshot["agentMessages"] {
+  const messages: OraStateSnapshot["agentMessages"] = [];
+  for (const event of events) {
+    if (event.type !== "agent.message" || !isRecord(event.payload) || !isRecord(event.payload.message)) {
+      continue;
+    }
+    const message = readAgentConversationMessage(event.payload.message);
+    if (message) {
+      messages.push(message);
+    }
+  }
+  return messages;
+}
+
+function normalizeStateSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
+  return {
+    ...snapshot,
+    agentMessages: mergeAgentMessages(snapshot.agentMessages, agentMessagesFromEvents(snapshot.events)),
+  };
+}
+
+export function mergeStateSnapshot(
+  existing: OraStateSnapshot | undefined,
+  incoming: OraStateSnapshot | undefined,
+): OraStateSnapshot | undefined {
+  if (!incoming) {
+    return existing ? normalizeStateSnapshot(existing) : existing;
+  }
+  const normalizedIncoming = normalizeStateSnapshot(incoming);
+  if (!existing || existing.runId !== normalizedIncoming.runId) {
+    return normalizedIncoming;
+  }
+  const normalizedExisting = normalizeStateSnapshot(existing);
+  if (normalizedExisting.sessionId && normalizedIncoming.sessionId && normalizedExisting.sessionId !== normalizedIncoming.sessionId) {
+    return normalizedIncoming;
+  }
+
+  const events = mergeEvents(normalizedExisting.events, normalizedIncoming.events);
+  return {
+    ...normalizedExisting,
+    ...normalizedIncoming,
+    sessionId: normalizedIncoming.sessionId ?? normalizedExisting.sessionId,
+    coordinationKind: normalizedIncoming.coordinationKind ?? normalizedExisting.coordinationKind,
+    modeId: normalizedIncoming.modeId ?? normalizedExisting.modeId,
+    profiles: mergeById(normalizedExisting.profiles, normalizedIncoming.profiles),
+    memory: mergeById(normalizedExisting.memory, normalizedIncoming.memory),
+    plan: mergeById(normalizedExisting.plan, normalizedIncoming.plan),
+    todos: mergeById(normalizedExisting.todos, normalizedIncoming.todos),
+    actions: mergeById(normalizedExisting.actions, normalizedIncoming.actions),
+    toolCalls: mergeById(normalizedExisting.toolCalls, normalizedIncoming.toolCalls),
+    toolResults: mergeByKey(normalizedExisting.toolResults, normalizedIncoming.toolResults, (result) => result.key),
+    policyDecisions: mergeById(normalizedExisting.policyDecisions, normalizedIncoming.policyDecisions),
+    checkpoints: mergeById(normalizedExisting.checkpoints, normalizedIncoming.checkpoints),
+    events,
+    agentMessages: mergeAgentMessages(normalizedExisting.agentMessages, normalizedIncoming.agentMessages, agentMessagesFromEvents(events)),
+    artifacts: mergeById(normalizedExisting.artifacts, normalizedIncoming.artifacts),
+    trace: normalizedIncoming.trace ?? normalizedExisting.trace,
+    modeSpec: normalizedIncoming.modeSpec ?? normalizedExisting.modeSpec,
+    output: normalizedIncoming.output ?? normalizedExisting.output,
+    error: normalizedIncoming.error ?? normalizedExisting.error,
+    updatedAt: Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt),
+  };
+}
+
 export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
   if (stream.snapshot) {
-    return stream.snapshot;
+    return mergeStateSnapshot(snapshot, stream.snapshot);
   }
   if (!snapshot || snapshot.runId !== stream.runId) {
     return snapshot;
@@ -1011,22 +1126,34 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
     }
 
-    case "SELECT_TURN":
+    case "SELECT_TURN": {
+      const snapshot = mergeStateSnapshot(undefined, action.snapshot);
       return {
         ...state,
         selectedTurnRunId: action.runId,
-        activeSnapshot: action.snapshot ?? state.activeSnapshot,
-        selectedPattern: action.snapshot?.pattern ?? state.selectedPattern,
-        selectedModeId: action.snapshot?.modeId ?? state.selectedModeId,
-        selectedModeSelection: action.snapshot?.config.modeSelection ?? state.selectedModeSelection,
-        selectedNodeId: action.snapshot?.topology.nodes[1]?.id ?? action.snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
-        selectedBeatId: action.snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
-        pendingRun: action.snapshot ? undefined : state.pendingRun,
+        activeSnapshot: snapshot ?? state.activeSnapshot,
+        selectedPattern: snapshot?.pattern ?? state.selectedPattern,
+        selectedModeId: snapshot?.modeId ?? state.selectedModeId,
+        selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
+        selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
+        selectedBeatId: snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
+        pendingRun: snapshot ? undefined : state.pendingRun,
       };
+    }
 
     case "APPLY_RUN_STREAM": {
-      const activeSnapshot = mergeRunStreamSnapshot(state.activeSnapshot, action.stream);
-      const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, activeSnapshot);
+      const streamSessionId = action.stream.snapshot?.sessionId;
+      const activeSessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId ?? state.activeSnapshot?.sessionId;
+      const streamMatchesActiveSession = !streamSessionId || !activeSessionId || streamSessionId === activeSessionId;
+      const streamReferencesActiveRun = state.activeSnapshot?.runId === action.stream.runId ||
+        state.selectedTurnRunId === action.stream.runId ||
+        (state.activeSessionDetail?.turns.some((turn) => turn.runId === action.stream.runId) ?? false);
+      const streamBelongsToActiveTurn = streamMatchesActiveSession && streamReferencesActiveRun;
+      const activeSnapshot = streamBelongsToActiveTurn
+        ? mergeRunStreamSnapshot(state.activeSnapshot, action.stream)
+        : state.activeSnapshot;
+      const streamSnapshot = streamBelongsToActiveTurn ? activeSnapshot : action.stream.snapshot;
+      const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, streamSnapshot);
       return {
         ...state,
         sessions,
@@ -1035,14 +1162,14 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
           : state.sessionDetailsById,
         activeSnapshot,
-        selectedTurnRunId: state.selectedTurnRunId ?? action.stream.runId,
-        selectedBeatId: action.stream.events.at(-1)?.id ?? state.selectedBeatId,
-        pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, activeSnapshot) ? undefined : state.pendingRun,
-        selectedModeSelection: activeSnapshot?.config.modeSelection ?? state.selectedModeSelection,
-        isLoading: action.stream.status === "running" || action.stream.status === "queued",
-        commandFeedback: action.stream.status === "succeeded"
+        selectedTurnRunId: state.selectedTurnRunId ?? (streamBelongsToActiveTurn ? action.stream.runId : undefined),
+        selectedBeatId: streamBelongsToActiveTurn ? action.stream.events.at(-1)?.id ?? state.selectedBeatId : state.selectedBeatId,
+        pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? undefined : state.pendingRun,
+        selectedModeSelection: streamBelongsToActiveTurn ? activeSnapshot?.config.modeSelection ?? state.selectedModeSelection : state.selectedModeSelection,
+        isLoading: streamBelongsToActiveTurn ? action.stream.status === "running" || action.stream.status === "queued" : state.isLoading,
+        commandFeedback: streamBelongsToActiveTurn && action.stream.status === "succeeded"
           ? "Run completed."
-          : action.stream.status === "failed"
+          : streamBelongsToActiveTurn && action.stream.status === "failed"
             ? "Run failed."
             : state.commandFeedback,
       };

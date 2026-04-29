@@ -1,9 +1,11 @@
 import {
+  AgentConversationMessageSchema,
   OraEventEnvelope,
   RunEventStream,
   RunEventStreamSchema,
   StateSnapshot,
-  StateSnapshotSchema
+  StateSnapshotSchema,
+  type AgentConversationMessage
 } from "@ora/shared";
 import { createFailedRunEvent, statusForRunEvent } from "./run-orchestration.js";
 
@@ -37,8 +39,34 @@ export function applyStreamingRunEvent(
     ...liveSnapshot,
     status: statusForRunEvent(event.type, liveSnapshot.status),
     events: [...liveSnapshot.events, event],
+    agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
   });
+}
+
+function mergeStreamingAgentMessage(
+  agentMessages: readonly AgentConversationMessage[],
+  event: OraEventEnvelope,
+): AgentConversationMessage[] {
+  const message = agentMessageFromEvent(event);
+  if (!message) {
+    return [...agentMessages];
+  }
+  const messageById = new Map(agentMessages.map((entry) => [entry.id, entry]));
+  messageById.set(message.id, message);
+  return [...messageById.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+function agentMessageFromEvent(event: OraEventEnvelope): AgentConversationMessage | undefined {
+  if (event.type !== "agent.message" || !isRecord(event.payload) || !isRecord(event.payload.message)) {
+    return undefined;
+  }
+  const parsed = AgentConversationMessageSchema.safeParse(event.payload.message);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {

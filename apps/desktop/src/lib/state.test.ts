@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID } from "@ora/shared";
-import { initialWorkbenchState, mergeRunStreamSnapshot, workbenchReducer } from "./state";
+import { initialWorkbenchState, mergeRunStreamSnapshot, mergeStateSnapshot, workbenchReducer } from "./state";
 import type { WorkbenchState } from "./state";
 import type { OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
@@ -12,6 +12,111 @@ function sessionSummary(sessionId: string): OraSessionSummary {
     createdAt: 1_714_000_000_000,
     updatedAt: 1_714_000_000_000,
   };
+}
+
+function testSnapshot(params: {
+  runId?: string;
+  sessionId?: string;
+  updatedAt?: number;
+  agentMessages?: OraStateSnapshot["agentMessages"];
+  events?: OraStateSnapshot["events"];
+} = {}): OraStateSnapshot {
+  const runId = params.runId ?? "run-debate";
+  const sessionId = params.sessionId ?? "session-debate";
+  const updatedAt = params.updatedAt ?? 1_714_000_000_000;
+  return {
+    runId,
+    sessionId,
+    turnIndex: 1,
+    status: "running",
+    pattern: "orchestrator_subagent",
+    modeId: "debate",
+    input: { prompt: "Debate this.", createdAt: updatedAt, context: {} },
+    config: {
+      modeId: "debate",
+      pattern: "orchestrator_subagent",
+      modeSelection: "manual",
+      profileIds: ["debate_agent"],
+      providerId: "local-smoke",
+      modelRef: "local/smoke-model",
+      approvalMode: "high_risk_only",
+      patternOptions: {},
+      metadata: {},
+      deterministicSeed: "state-debate-session-switch-test",
+      skillIds: [],
+      toolIds: [],
+    },
+    topology: { nodes: [], edges: [] },
+    profiles: [],
+    memory: [],
+    plan: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    conversation: [],
+    toolResults: [],
+    policyDecisions: [],
+    checkpoints: [],
+    events: params.events ?? [],
+    agentMessages: params.agentMessages ?? [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 0, topics: [] },
+    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    pendingClarifications: [],
+    pendingApprovals: [],
+    updatedAt,
+  } as unknown as OraStateSnapshot;
+}
+
+function debateTranscriptMessage(params: {
+  id: string;
+  sequence: number;
+  stance: "affirmative" | "negative" | "moderator" | "neutral";
+  speakerLabel: string;
+  content: string;
+  createdAt?: number;
+  runId?: string;
+}): OraStateSnapshot["agentMessages"][number] {
+  return {
+    id: params.id,
+    runId: params.runId ?? "run-debate",
+    createdAt: params.createdAt ?? 1_714_000_000_000 + params.sequence,
+    fromAgentId: "debate_agent",
+    toAgentIds: [],
+    threadId: "debate",
+    kind: "reply",
+    status: "done",
+    content: params.content,
+    artifactIds: [],
+    transcript: {
+      kind: "stage_transcript",
+      groupId: "debate",
+      groupLabel: "结构化辩论",
+      stageId: params.id,
+      stageLabel: `阶段 ${params.sequence + 1}`,
+      sequence: params.sequence,
+      speakerLabel: params.speakerLabel,
+      stance: params.stance,
+      status: "done",
+    },
+  };
+}
+
+function agentMessageEvent(message: OraStateSnapshot["agentMessages"][number], seq: number): OraStateSnapshot["events"][number] {
+  return {
+    id: `${message.runId}:evt-${seq}`,
+    runId: message.runId,
+    seq,
+    type: "agent.message",
+    createdAt: message.createdAt,
+    pattern: "orchestrator_subagent",
+    agentId: message.fromAgentId,
+    nodeId: message.nodeId ?? message.fromAgentId,
+    payload: { message },
+  } as unknown as OraStateSnapshot["events"][number];
 }
 
 describe("desktop workbench state", () => {
@@ -278,6 +383,235 @@ describe("desktop workbench state", () => {
       status: "approval_required",
       input: { name: "waza-design" },
     });
+  });
+
+  it("preserves accumulated debate transcript messages when a narrower snapshot arrives", () => {
+    const opening = debateTranscriptMessage({
+      id: "run-debate:agent-message:0",
+      sequence: 0,
+      stance: "affirmative",
+      speakerLabel: "正方主辩",
+      content: "Opening argument.",
+    });
+    const response = debateTranscriptMessage({
+      id: "run-debate:agent-message:1",
+      sequence: 1,
+      stance: "negative",
+      speakerLabel: "反方主辩",
+      content: "Opening response.",
+    });
+    const existing = testSnapshot({
+      agentMessages: [opening],
+      updatedAt: 1_714_000_000_001,
+    });
+    const incoming = testSnapshot({
+      agentMessages: [response],
+      updatedAt: 1_714_000_000_002,
+    });
+
+    const merged = mergeStateSnapshot(existing, incoming);
+
+    expect(merged?.agentMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["正方主辩", "反方主辩"]);
+    expect(merged?.agentMessages.map((message) => message.content)).toEqual(["Opening argument.", "Opening response."]);
+  });
+
+  it("recovers debate transcript messages from snapshot agent.message events", () => {
+    const messages = [
+      debateTranscriptMessage({
+        id: "run-debate:agent-message:0",
+        sequence: 0,
+        stance: "affirmative",
+        speakerLabel: "正方主辩",
+        content: "Opening argument.",
+      }),
+      debateTranscriptMessage({
+        id: "run-debate:agent-message:1",
+        sequence: 1,
+        stance: "negative",
+        speakerLabel: "反方主辩",
+        content: "Opening response.",
+      }),
+    ];
+    const incoming = testSnapshot({
+      agentMessages: [],
+      events: messages.map(agentMessageEvent),
+    });
+
+    const merged = mergeStateSnapshot(undefined, incoming);
+
+    expect(merged?.agentMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["正方主辩", "反方主辩"]);
+  });
+
+  it("merges existing debate messages with later messages recovered from events", () => {
+    const existingMessages = [0, 1].map((sequence) => debateTranscriptMessage({
+      id: `run-debate:agent-message:${sequence}`,
+      sequence,
+      stance: sequence === 0 ? "affirmative" : "negative",
+      speakerLabel: sequence === 0 ? "正方主辩" : "反方主辩",
+      content: `Existing stage ${sequence}`,
+    }));
+    const incomingMessages = [2, 3, 4].map((sequence) => debateTranscriptMessage({
+      id: `run-debate:agent-message:${sequence}`,
+      sequence,
+      stance: sequence % 2 === 0 ? "affirmative" : "negative",
+      speakerLabel: sequence % 2 === 0 ? "正方副辩" : "反方副辩",
+      content: `Incoming stage ${sequence}`,
+    }));
+    const existing = testSnapshot({ agentMessages: existingMessages, updatedAt: 1_714_000_000_001 });
+    const incoming = testSnapshot({ agentMessages: [], events: incomingMessages.map(agentMessageEvent), updatedAt: 1_714_000_000_002 });
+
+    const merged = mergeStateSnapshot(existing, incoming);
+
+    expect(merged?.agentMessages.map((message) => message.transcript?.sequence)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("hydrates active snapshots with agent messages recovered from events", () => {
+    const message = debateTranscriptMessage({
+      id: "run-debate:agent-message:0",
+      sequence: 0,
+      stance: "affirmative",
+      speakerLabel: "正方主辩",
+      content: "Opening argument.",
+    });
+    const snapshot = testSnapshot({ agentMessages: [], events: [agentMessageEvent(message, 0)] });
+
+    const state = workbenchReducer(initialWorkbenchState, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [sessionSummary("session-debate")],
+      detail: {
+        session: sessionSummary("session-debate"),
+        turns: [{ runId: "run-debate" } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+    });
+
+    expect(state.activeSnapshot?.agentMessages).toHaveLength(1);
+    expect(state.activeSnapshot?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
+  });
+
+  it("does not merge same-run snapshots from different sessions", () => {
+    const existing = testSnapshot({
+      runId: "run-shared-id",
+      sessionId: "session-a",
+      agentMessages: [debateTranscriptMessage({
+        id: "run-debate:agent-message:0",
+        sequence: 0,
+        stance: "affirmative",
+        speakerLabel: "正方主辩",
+        content: "Session A argument.",
+      })],
+    });
+    const incoming = testSnapshot({
+      runId: "run-shared-id",
+      sessionId: "session-b",
+      agentMessages: [],
+      updatedAt: 1_714_000_000_002,
+    });
+
+    const merged = mergeStateSnapshot(existing, incoming);
+
+    expect(merged?.sessionId).toBe("session-b");
+    expect(merged?.agentMessages).toHaveLength(0);
+  });
+
+  it("merges stream snapshots without dropping previous debate transcript stages", () => {
+    const opening = debateTranscriptMessage({
+      id: "run-debate:agent-message:0",
+      sequence: 0,
+      stance: "affirmative",
+      speakerLabel: "正方主辩",
+      content: "Opening argument.",
+    });
+    const response = debateTranscriptMessage({
+      id: "run-debate:agent-message:1",
+      sequence: 1,
+      stance: "negative",
+      speakerLabel: "反方主辩",
+      content: "Opening response.",
+    });
+    const snapshot = testSnapshot({ agentMessages: [opening] });
+    const stream = {
+      runId: "run-debate",
+      status: "running",
+      fromSeq: 1,
+      nextSeq: 2,
+      events: [],
+      snapshot: testSnapshot({ agentMessages: [response], updatedAt: 1_714_000_000_002 }),
+    } as unknown as OraRunEventStream;
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.agentMessages.map((message) => message.transcript?.sequence)).toEqual([0, 1]);
+  });
+
+  it("does not replace the active snapshot when a same-run stream reports another session", () => {
+    const activeSnapshot = testSnapshot({ runId: "run-active", sessionId: "session-active" });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-active",
+      selectedTurnRunId: "run-active",
+      activeSnapshot,
+      activeSessionDetail: {
+        session: sessionSummary("session-active"),
+        turns: [{ runId: "run-active" } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: activeSnapshot,
+      },
+    };
+    const stream = {
+      runId: "run-active",
+      status: "running",
+      fromSeq: 0,
+      nextSeq: 0,
+      events: [],
+      snapshot: testSnapshot({ runId: "run-active", sessionId: "session-other", updatedAt: 1_714_000_000_002 }),
+    } as unknown as OraRunEventStream;
+
+    const nextState = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream });
+
+    expect(nextState.activeSnapshot?.sessionId).toBe("session-active");
+    expect(nextState.selectedTurnRunId).toBe("run-active");
+  });
+
+  it("does not replace the active snapshot with an unrelated stream snapshot", () => {
+    const activeSnapshot = testSnapshot({
+      runId: "run-active",
+      sessionId: "session-active",
+      agentMessages: [debateTranscriptMessage({
+        id: "run-debate:agent-message:0",
+        sequence: 0,
+        stance: "affirmative",
+        speakerLabel: "正方主辩",
+        content: "Opening argument.",
+      })],
+    });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-active",
+      selectedTurnRunId: "run-active",
+      activeSnapshot,
+      activeSessionDetail: {
+        session: sessionSummary("session-active"),
+        turns: [{ runId: "run-active" } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: activeSnapshot,
+      },
+    };
+    const stream = {
+      runId: "run-background",
+      status: "running",
+      fromSeq: 0,
+      nextSeq: 0,
+      events: [],
+      snapshot: testSnapshot({ runId: "run-background", sessionId: "session-background" }),
+    } as unknown as OraRunEventStream;
+
+    const nextState = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream });
+
+    expect(nextState.activeSnapshot?.runId).toBe("run-active");
+    expect(nextState.selectedTurnRunId).toBe("run-active");
   });
 
   it("merges streamed agent messages into the active snapshot", () => {

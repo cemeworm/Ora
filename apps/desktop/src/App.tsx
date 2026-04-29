@@ -21,6 +21,7 @@ import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
 import {
   mergeRunStreamSnapshot,
+  mergeStateSnapshot,
   useWorkbench,
   WorkbenchProvider,
 } from "./lib/state";
@@ -153,10 +154,6 @@ class WorkbenchErrorBoundary extends Component<
             <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-pane">
               <p className="text-sm font-semibold text-foreground">
                 Ora hit a render error.
-              </p>
-              <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
-                {this.state.error.message ||
-                  "The workbench could not render this session."}
               </p>
               <button
                 type="button"
@@ -422,10 +419,19 @@ function WorkbenchInner() {
 
     setTurnSnapshots((current) => {
       const existing = current[snapshot.runId];
-      if (existing === snapshot || existing?.updatedAt === snapshot.updatedAt) {
+      const merged = mergeStateSnapshot(existing, snapshot);
+      if (!merged) {
         return current;
       }
-      return { ...current, [snapshot.runId]: snapshot };
+      if (
+        existing &&
+        existing.updatedAt === merged.updatedAt &&
+        existing.events.length === merged.events.length &&
+        existing.agentMessages.length === merged.agentMessages.length
+      ) {
+        return current;
+      }
+      return { ...current, [snapshot.runId]: merged };
     });
   }, [state.activeSnapshot]);
 
@@ -447,10 +453,19 @@ function WorkbenchInner() {
           const snapshot = await runtimeClient.getRunState(runId);
           if (cancelled) return;
           setTurnSnapshots((current) => {
-            if (current[snapshot.runId]?.updatedAt === snapshot.updatedAt) {
+            const existing = current[snapshot.runId];
+            const merged = mergeStateSnapshot(existing, snapshot);
+            if (!merged) {
               return current;
             }
-            return { ...current, [snapshot.runId]: snapshot };
+            if (
+              existing?.updatedAt === merged.updatedAt &&
+              existing.events.length === merged.events.length &&
+              existing.agentMessages.length === merged.agentMessages.length
+            ) {
+              return current;
+            }
+            return { ...current, [snapshot.runId]: merged };
           });
         } catch {
           // Missing historical snapshots should not block switching sessions.
@@ -471,7 +486,8 @@ function WorkbenchInner() {
     const activeRunIds = new Set(detail.turns.map((turn) => turn.runId));
     const scopedSnapshots: Record<string, OraStateSnapshot> = {};
     for (const [runId, snapshot] of Object.entries(turnSnapshots)) {
-      if (activeRunIds.has(runId) || snapshot.sessionId === activeSessionId) {
+      const snapshotMatchesSession = !snapshot.sessionId || snapshot.sessionId === activeSessionId;
+      if ((activeRunIds.has(runId) && snapshotMatchesSession) || snapshot.sessionId === activeSessionId) {
         scopedSnapshots[runId] = snapshot;
       }
     }

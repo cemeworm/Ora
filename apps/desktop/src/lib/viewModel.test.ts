@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { mergeStateSnapshot } from "./state";
 import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
@@ -766,6 +767,22 @@ describe("desktop session view model", () => {
       updatedAt: createdAt + 3,
     } as unknown as OraStateSnapshot;
 
+    const eventOnlySnapshot = mergeStateSnapshot(undefined, {
+      ...snapshot,
+      agentMessages: [],
+      events: snapshot.agentMessages.map((message, index) => ({
+        id: `run-debate:evt-${index}`,
+        runId: "run-debate",
+        seq: index,
+        type: "agent.message",
+        createdAt: message.createdAt,
+        pattern: "orchestrator_subagent",
+        agentId: message.fromAgentId,
+        nodeId: message.nodeId ?? message.fromAgentId,
+        payload: { message },
+      })),
+    } as unknown as OraStateSnapshot);
+
     const messages = adaptChatMessages(
       [{
         id: "run-debate:user",
@@ -778,7 +795,7 @@ describe("desktop session view model", () => {
         modeId: DEBATE_MODE_ID,
         createdAt,
       }],
-      { "run-debate": snapshot },
+      { "run-debate": eventOnlySnapshot },
     );
     const assistant = messages.find((message) => message.role === "assistant");
 
