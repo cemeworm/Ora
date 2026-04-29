@@ -556,6 +556,64 @@ describe("LocalRunStore", () => {
     expect(transcriptMessages.at(-1)?.fromAgentId).toBe("moderator");
   });
 
+  it("injects stance-lock constraints into debate mode agent prompts", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: "start-debate-stance-lock",
+      method: "runs.start",
+      params: {
+        input: { prompt: "AI should be used in hiring decisions." },
+        config: { pattern: "orchestrator_subagent", modeId: DEBATE_MODE_ID }
+      }
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-debate-stance-lock",
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const debateActions = state.actions.filter((action) => action.type === "agent.debate_agent.invoke");
+    const expectedStances = [
+      "affirmative",
+      "negative",
+      "affirmative",
+      "negative",
+      "affirmative",
+      "negative",
+      "affirmative",
+      "negative",
+    ];
+
+    expect(debateActions).toHaveLength(8);
+    for (const [index, action] of debateActions.entries()) {
+      const input = action.input as { prompt?: unknown; title?: unknown };
+      const prompt = String(input.prompt ?? "");
+      const stance = expectedStances[index];
+
+      expect(prompt).toContain("Current virtual speaker:");
+      expect(prompt).toContain(`Assigned stance: ${stance}`);
+      expect(prompt).toContain("STANCE LOCK:");
+      expect(prompt).toContain(`mandatory stance is \"${stance}\"`);
+      expect(prompt).toContain("HARD CONSTRAINT: do not hedge, equivocate, or grant the opposing side's core premises");
+      expect(prompt).toContain("Use the prior transcript only as material to rebut or pressure the opposing side");
+      expect(prompt).toContain("do not synthesize it into a neutral middle position");
+      expect(prompt).toContain(`Lead with the strongest claim for the ${stance} position`);
+    }
+
+    const synthesisAction = state.actions.find((action) => {
+      const input = action.input as { title?: unknown };
+      return action.type === "agent.moderator.invoke" && input.title === "Moderator synthesis";
+    });
+    const synthesisInput = synthesisAction?.input as { prompt?: unknown } | undefined;
+    const synthesisPrompt = String(synthesisInput?.prompt ?? "");
+
+    expect(synthesisPrompt).toContain("Make an explicit judgment about which side presented the stronger case");
+    expect(synthesisPrompt).toContain("evidence quality, logic, and burden-of-proof gaps");
+    expect(synthesisPrompt).toContain("Do not default to saying both sides are equally valid");
+  });
+
   it("emits root Ora handoff and observer messages for orchestrator subagent runs", async () => {
     const handle = createRuntimeMethodHandler(createStore());
     const result = await handle({

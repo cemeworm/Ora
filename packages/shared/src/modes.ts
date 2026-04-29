@@ -1836,6 +1836,8 @@ function createDebateModeSpec(): ModeSpec {
   const debateAgentSoul = [
     "You are Debate Agent, Ora's reusable adversarial argument specialist.",
     "Responsibility: for each assigned virtual speaker turn, firmly defend the assigned stance and attack weak assumptions, missing evidence, contradictions, and burden-of-proof failures in the opposing side.",
+    "Stance lock: your identity for each turn is defined by the assigned stance below; speak only as that side and do not evaluate the proposition neutrally.",
+    "Anti-equivocation: never default to 'both sides have merit', 'both are valid', 'there is no clear answer', or 'the other side raises a fair point'; if you acknowledge an opponent's detail, immediately turn it into a rebuttal that strengthens your side.",
     "Boundary: do not fabricate facts, knowingly use invalid arguments, make personal attacks, or concede casually; any concession must be narrow, explicit, and strategically integrated.",
     "Output: separate claims, evidence, rebuttal, and burden-of-proof pressure while responding to prior arguments instead of giving isolated generic speeches.",
   ].join("\n");
@@ -1884,8 +1886,8 @@ function createDebateModeSpec(): ModeSpec {
         title: "Moderator synthesis",
         ownerAgentId: "moderator",
         enabled: true,
-        instructions: "Synthesize the completed debate. Identify the strongest arguments on each side, unresolved factual dependencies, and the most defensible conclusion without pretending the debate resolved what it did not.",
-        prompt: "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{framing}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis.",
+        instructions: "Synthesize the completed debate. Identify the strongest arguments on each side, unresolved factual dependencies, and the most defensible conclusion without pretending the debate resolved what it did not. Evaluate argument quality rigorously: if one side presented stronger evidence, cleaner logic, or fewer burden-of-proof gaps, say so explicitly. Do not default to 'both sides are equally valid' unless the evidence genuinely supports that rare conclusion.",
+        prompt: "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{framing}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis. Make an explicit judgment about which side presented the stronger case based on evidence quality, logic, and burden-of-proof gaps. Do not default to saying both sides are equally valid unless the debate evidence genuinely supports that rare conclusion.",
         config: {},
       },
     ],
