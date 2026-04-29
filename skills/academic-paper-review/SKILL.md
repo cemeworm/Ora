@@ -9,6 +9,8 @@ description: Use this skill when the user requests to review, analyze, critique,
 
 This skill produces structured, peer-review-quality analyses of academic papers and research publications. It follows established academic review standards used by top-tier venues (NeurIPS, ICML, ACL, Nature, IEEE) to provide rigorous, constructive, and balanced assessments.
 
+When the paper source is a PDF or arXiv PDF URL, first use the `pdf-reader` workflow or `document.extract` if available. Do not treat `web.fetch` output from a PDF URL as readable paper text; PDF binary/compressed streams are not reliable source content.
+
 The review covers **summary, strengths, weaknesses, methodology assessment, contribution evaluation, literature positioning, and actionable recommendations** — all grounded in evidence from the paper itself.
 
 ## Core Capabilities

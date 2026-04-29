@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PDFParse } from "pdf-parse";
 import { ActionApprovalRequestCopySchema } from "@ora/shared";
 import type { ActionApprovalRequestCopy, ActionRiskLevel, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
 import type { PackageManager } from "../package-manager.js";
@@ -19,6 +20,7 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "shell.execute",
   "web.fetch",
   "web.search",
+  "document.extract",
   "skills.list",
   "skills.get",
   "skills.checkName",
@@ -103,6 +105,8 @@ const FILE_SEARCH_MAX_MATCHES = 200;
 const FILE_SEARCH_MAX_BYTES = 128_000;
 const FILE_WRITE_MAX_BYTES = 512_000;
 const WEB_MAX_BYTES = 128_000;
+const DOCUMENT_EXTRACT_MAX_BYTES = 128_000;
+const DOCUMENT_SOURCE_MAX_BYTES = 25_000_000;
 const SHELL_MAX_OUTPUT_BYTES = 96_000;
 const SHELL_TIMEOUT_MS = 60_000;
 const SHELL_READ_ONLY_COMMANDS = new Set(["cat", "find", "ls", "pwd", "rg", "wc"]);
@@ -338,6 +342,8 @@ export class RuntimeToolExecutor {
         return { output: await fetchUrl(this.fetchImpl, call.args) };
       case "web.search":
         return { output: await searchWithProvider(this.searchProvider, call.args) };
+      case "document.extract":
+        return { output: await extractDocument(workspaceRootPath(this.workspace), this.fetchImpl, call.args) };
       case "skills.list":
         return { output: listRuntimeSkills(this.skillRegistry, call.args) };
       case "skills.get":
@@ -646,6 +652,8 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"web.fetch\",\"args\":{\"url\":\"https://example.com\"}}";
     case "web.search":
       return "{\"tool\":\"web.search\",\"args\":{\"query\":\"Model Context Protocol docs\"}}";
+    case "document.extract":
+      return "{\"tool\":\"document.extract\",\"args\":{\"path\":\"docs/paper.pdf\",\"format\":\"text\"}}";
     case "skills.list":
       return "{\"tool\":\"skills.list\",\"args\":{\"query\":\"frontend design\"}}";
     case "skills.get":
@@ -1091,15 +1099,134 @@ function assertWorkspaceShellArgsStayLocal(argv: readonly string[]) {
 async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>) {
   const url = parseHttpUrl(args.url, "web.fetch");
   const response = await fetchImpl(url);
+  const contentType = response.headers.get("content-type") ?? undefined;
+  if (isPdfContentType(contentType) || isPdfUrl(url)) {
+    return {
+      url,
+      status: response.status,
+      ok: response.ok,
+      contentType,
+      text: "This URL points to a PDF document. Use document.extract with the URL to extract readable text instead of web.fetch.",
+      truncated: false,
+    };
+  }
   const text = truncateText(await response.text(), readPositiveInt(args.maxBytes, WEB_MAX_BYTES, WEB_MAX_BYTES));
   return {
     url,
     status: response.status,
     ok: response.ok,
-    contentType: response.headers.get("content-type") ?? undefined,
+    contentType,
     text: text.content,
     truncated: text.truncated,
   };
+}
+
+async function extractDocument(rootPath: string | undefined, fetchImpl: typeof fetch, args: Record<string, unknown>) {
+  const pathArg = typeof args.path === "string" && args.path.trim() ? args.path.trim() : undefined;
+  const urlArg = typeof args.url === "string" && args.url.trim() ? args.url.trim() : undefined;
+  if ((pathArg ? 1 : 0) + (urlArg ? 1 : 0) !== 1) {
+    throw new Error("document.extract requires exactly one of path or url.");
+  }
+
+  const format = args.format === "markdown" ? "markdown" : "text";
+  const maxBytes = readPositiveInt(args.maxBytes, DOCUMENT_EXTRACT_MAX_BYTES, DOCUMENT_EXTRACT_MAX_BYTES);
+  let source: string;
+  let contentType: string | undefined;
+  let data: Buffer;
+
+  if (pathArg) {
+    if (!rootPath) {
+      throw new Error("A selected project folder is required for local document extraction.");
+    }
+    const absolutePath = resolveWorkspacePath(path.resolve(rootPath), pathArg);
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) {
+      throw new Error("document.extract target must be a file.");
+    }
+    if (stat.size > DOCUMENT_SOURCE_MAX_BYTES) {
+      throw new Error(`document.extract source is too large (${stat.size} bytes).`);
+    }
+    source = relativeWorkspacePath(path.resolve(rootPath), absolutePath);
+    contentType = isPdfPath(absolutePath) ? "application/pdf" : undefined;
+    data = fs.readFileSync(absolutePath);
+  } else {
+    const url = parseHttpUrl(urlArg, "document.extract");
+    const response = await fetchImpl(url);
+    contentType = response.headers.get("content-type") ?? undefined;
+    if (!response.ok) {
+      throw new Error(`document.extract failed to fetch URL (${response.status}).`);
+    }
+    if (!isPdfContentType(contentType) && !isPdfUrl(url)) {
+      throw new Error("document.extract currently supports PDF URLs only.");
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > DOCUMENT_SOURCE_MAX_BYTES) {
+      throw new Error(`document.extract source is too large (${arrayBuffer.byteLength} bytes).`);
+    }
+    source = url;
+    data = Buffer.from(arrayBuffer);
+  }
+
+  if (!looksLikePdf(data)) {
+    throw new Error("document.extract currently supports PDF files only.");
+  }
+
+  const extracted = await extractPdfText(data, { format, maxBytes });
+  return {
+    source,
+    mimeType: contentType ?? "application/pdf",
+    pageCount: extracted.pageCount,
+    text: extracted.text,
+    truncated: extracted.truncated,
+  };
+}
+
+async function extractPdfText(data: Buffer, options: { format: "text" | "markdown"; maxBytes: number }) {
+  const parser = new PDFParse({ data: new Uint8Array(data) });
+  try {
+    const result = await parser.getText();
+    const rawText = result.text.trim();
+    if (!rawText) {
+      throw new Error("PDF has no extractable text layer. OCR is not supported yet.");
+    }
+    const content = options.format === "markdown" ? normalizePdfTextAsMarkdown(rawText) : rawText;
+    const text = truncateText(content, options.maxBytes);
+    return {
+      pageCount: result.total,
+      text: text.content,
+      truncated: text.truncated,
+    };
+  } finally {
+    await parser.destroy();
+  }
+}
+
+function normalizePdfTextAsMarkdown(text: string): string {
+  return text
+    .split(/\n{3,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function isPdfContentType(contentType: string | undefined): boolean {
+  return typeof contentType === "string" && contentType.toLowerCase().split(";", 1)[0]?.trim() === "application/pdf";
+}
+
+function isPdfUrl(url: string): boolean {
+  try {
+    return isPdfPath(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isPdfPath(filePath: string): boolean {
+  return path.extname(filePath).toLowerCase() === ".pdf";
+}
+
+function looksLikePdf(data: Buffer): boolean {
+  return data.subarray(0, 5).toString("ascii") === "%PDF-";
 }
 
 async function searchWithProvider(searchProvider: SearchProvider, args: Record<string, unknown>) {

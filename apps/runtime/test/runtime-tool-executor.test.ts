@@ -37,6 +37,32 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
+function createSimplePdf(text: string): Buffer {
+  const escapedText = text.replace(/([\\()])/g, "\\$1");
+  const stream = `BT /F1 24 Tf 50 100 Td (${escapedText}) Tj ET`;
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+    `4 0 obj\n<< /Length ${Buffer.byteLength(stream, "utf8")} >>\nstream\n${stream}\nendstream\nendobj\n`,
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (const object of objects) {
+    offsets.push(Buffer.byteLength(pdf, "utf8"));
+    pdf += object;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, "utf8");
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (const offset of offsets) {
+    pdf += `${offset.toString().padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, "utf8");
+}
+
 afterEach(() => {
   for (const cleanupPath of cleanupPaths.splice(0)) {
     fs.rmSync(cleanupPath, { recursive: true, force: true });
@@ -266,6 +292,83 @@ describe("RuntimeToolExecutor", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("guides agents away from using web.fetch on PDF URLs", async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/pdf" });
+      response.end(createSimplePdf("Hello PDF from web fetch"));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected local server address.");
+      }
+      const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+      const result = await executor.execute({
+        tool: "web.fetch",
+        args: { url: `http://127.0.0.1:${address.port}/paper.pdf` },
+      }) as { contentType?: string; text: string; truncated: boolean };
+
+      expect(result.contentType).toBe("application/pdf");
+      expect(result.text).toContain("Use document.extract");
+      expect(result.text).not.toContain("%PDF");
+      expect(result.truncated).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("extracts text from local PDF files with document.extract", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "paper.pdf"), createSimplePdf("Hello PDF from Ora"));
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const result = await executor.execute({
+      tool: "document.extract",
+      args: { path: "paper.pdf", format: "text" },
+    }) as { source: string; mimeType: string; pageCount?: number; text: string; truncated: boolean };
+
+    expect(result.source).toBe("paper.pdf");
+    expect(result.mimeType).toBe("application/pdf");
+    expect(result.pageCount).toBe(1);
+    expect(result.text).toContain("Hello PDF from Ora");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("extracts text from PDF URLs with document.extract", async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/pdf" });
+      response.end(createSimplePdf("Hello PDF URL"));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected local server address.");
+      }
+      const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+      const result = await executor.execute({
+        tool: "document.extract",
+        args: { url: `http://127.0.0.1:${address.port}/paper.pdf`, format: "markdown" },
+      }) as { text: string; pageCount?: number };
+
+      expect(result.text).toContain("Hello PDF URL");
+      expect(result.pageCount).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("rejects non-PDF files for document.extract", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    await expect(executor.execute({
+      tool: "document.extract",
+      args: { path: "README.md" },
+    })).rejects.toThrow("document.extract currently supports PDF files only");
   });
 
   it("normalizes stable web.search provider responses", async () => {
