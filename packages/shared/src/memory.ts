@@ -43,7 +43,9 @@ export const LongTermMemoryFactSchema = z.object({
   category: LongTermMemoryFactCategorySchema.default("context"),
   confidence: z.number().min(0).max(1).default(0.5),
   createdAt: z.string().min(1),
+  updatedAt: z.string().min(1).optional(),
   source: z.string().min(1).default("unknown"),
+  sourceRunId: z.string().min(1).optional(),
   sourceError: z.string().min(1).optional()
 });
 export type LongTermMemoryFact = z.infer<typeof LongTermMemoryFactSchema>;
@@ -64,3 +66,65 @@ export const LongTermMemoryProfileSchema = z.object({
   facts: z.array(LongTermMemoryFactSchema).default([])
 });
 export type LongTermMemoryProfile = z.infer<typeof LongTermMemoryProfileSchema>;
+
+export const ActiveMemoryScopeSchema = z.object({
+  user: z.boolean().optional(),
+  projectId: z.string().min(1).optional(),
+  sessionId: z.string().min(1).optional(),
+  profileId: z.string().min(1).optional(),
+  agentId: z.string().min(1).optional()
+});
+export type ActiveMemoryScope = z.infer<typeof ActiveMemoryScopeSchema>;
+
+export const ActiveMemoryFreshnessSchema = z.enum(["fresh", "aging", "stale", "unknown"]);
+export type ActiveMemoryFreshness = z.infer<typeof ActiveMemoryFreshnessSchema>;
+
+export const ActiveMemoryCandidateSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["fact", "section"]),
+  scope: ActiveMemoryScopeSchema.default({}),
+  category: z.string().min(1),
+  content: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  sourceRunId: z.string().min(1).optional(),
+  createdAt: z.string().min(1).optional(),
+  updatedAt: z.string().min(1).optional(),
+  freshness: ActiveMemoryFreshnessSchema,
+  score: z.number().min(0),
+  scoreReasons: z.array(z.string().min(1)).default([])
+});
+export type ActiveMemoryCandidate = z.infer<typeof ActiveMemoryCandidateSchema>;
+
+export const ActiveMemoryAdmissionDecisionSchema = z.object({
+  status: z.enum(["USE", "NONE"]),
+  mode: z.enum(["deterministic", "provider", "provider_fallback"]),
+  reason: z.string().min(1),
+  candidateIds: z.array(z.string().min(1)).default([]),
+  selectedIds: z.array(z.string().min(1)).default([]),
+  rejectedIds: z.array(z.string().min(1)).default([]),
+  budget: z.object({
+    maxCandidates: z.number().int().positive(),
+    maxChars: z.number().int().positive(),
+    renderedChars: z.number().int().nonnegative()
+  }),
+  warnings: z.array(z.string().min(1)).default([])
+});
+export type ActiveMemoryAdmissionDecision = z.infer<typeof ActiveMemoryAdmissionDecisionSchema>;
+
+export const ActiveMemoryCardSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["fact", "section"]),
+  category: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  sourceRunId: z.string().min(1).optional(),
+  freshness: ActiveMemoryFreshnessSchema,
+  content: z.string().min(1)
+});
+export type ActiveMemoryCard = z.infer<typeof ActiveMemoryCardSchema>;
+
+export const ActiveMemoryContextSchema = z.object({
+  decision: ActiveMemoryAdmissionDecisionSchema,
+  cards: z.array(ActiveMemoryCardSchema).default([]),
+  rendered: z.string().default("")
+});
+export type ActiveMemoryContext = z.infer<typeof ActiveMemoryContextSchema>;

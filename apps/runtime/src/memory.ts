@@ -506,7 +506,9 @@ function createFact(params: {
     category: params.category,
     confidence: params.confidence,
     createdAt: params.now,
+    updatedAt: params.now,
     source: params.source,
+    sourceRunId: params.source,
     ...(params.sourceError ? { sourceError: params.sourceError.slice(0, 240) } : {}),
   };
 }

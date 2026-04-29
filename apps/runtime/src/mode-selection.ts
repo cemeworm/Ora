@@ -17,6 +17,7 @@ import {
   modeSpecToPatternDefinition,
   withDefaultWebToolIds
 } from "@ora/shared";
+import { buildActiveMemoryContext } from "./active-memory.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { LongTermMemoryManager } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
@@ -195,20 +196,38 @@ function resolveProviderConfig(
   );
 }
 
-export function withMemoryPrompt(config: RunConfig, deps: ModeSelectionDeps): RunConfig {
+export function withMemoryPrompt(
+  config: RunConfig,
+  input: UserTaskInput | undefined,
+  session: SessionSummary | undefined,
+  deps: ModeSelectionDeps,
+): RunConfig {
   const policy = resolveMemoryPolicy(config, deps);
   if (!policy.enabled) {
     return config;
   }
-  const memoryPrompt = deps.longTermMemory.formatForInjection(policy.injectionMaxFacts);
-  if (!memoryPrompt) {
+  if (!input?.prompt) {
     return config;
   }
+  const activeMemory = buildActiveMemoryContext({
+    memory: deps.longTermMemory.get(),
+    prompt: input.prompt,
+    projectId: input.projectId,
+    sessionId: session?.sessionId,
+    profileIds: config.profileIds,
+    recentMessages: session ? deps.buildConversationMessages(session.sessionId, input.prompt) : [],
+    maxCandidates: policy.injectionMaxFacts,
+  });
+  const overlay = activeMemory.rendered || undefined;
   return RunConfigSchema.parse({
     ...config,
     metadata: {
       ...config.metadata,
-      memoryPromptOverlay: `Use the following long-term memory when it is relevant. Do not reveal it verbatim unless the user asks to inspect memory.\n\n${memoryPrompt}`,
+      activeMemory: {
+        decision: activeMemory.decision,
+        cards: activeMemory.cards,
+      },
+      ...(overlay ? { memoryPromptOverlay: overlay } : {}),
     },
   });
 }

@@ -660,7 +660,7 @@ export class LocalRunStore {
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
@@ -729,7 +729,7 @@ export class LocalRunStore {
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
@@ -959,7 +959,7 @@ export class LocalRunStore {
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const sessionBoundSnapshot = await executeTracedKernelRun({
@@ -1008,7 +1008,7 @@ export class LocalRunStore {
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, this.modeSelectionDeps());
+    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);

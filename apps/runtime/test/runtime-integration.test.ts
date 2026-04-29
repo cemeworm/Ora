@@ -698,8 +698,35 @@ describe("LocalRunStore", () => {
       params: { runId: second.runId }
     }));
 
-    expect(String(secondState.config.metadata.memoryPromptOverlay)).toContain("Long-term Facts");
+    expect(String(secondState.config.metadata.memoryPromptOverlay)).toContain("<ora_active_memory>");
     expect(String(secondState.config.metadata.memoryPromptOverlay)).toContain("长期画像");
+    const activeMemory = secondState.config.metadata.activeMemory as {
+      decision?: { status?: string; selectedIds?: string[] };
+    };
+    expect(activeMemory.decision?.status).toBe("USE");
+    expect(activeMemory.decision?.selectedIds?.length).toBeGreaterThan(0);
+
+    const third = await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Summarize tool approval risk levels." },
+        config: { pattern: "generator_verifier" }
+      }
+    }) as { runId: string };
+    const thirdState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "runs.state",
+      params: { runId: third.runId }
+    }));
+    const unrelatedActiveMemory = thirdState.config.metadata.activeMemory as {
+      decision?: { status?: string; selectedIds?: string[]; reason?: string };
+    };
+    expect(thirdState.config.metadata.memoryPromptOverlay).toBeUndefined();
+    expect(unrelatedActiveMemory.decision?.status).toBe("NONE");
+    expect(unrelatedActiveMemory.decision?.selectedIds).toEqual([]);
   });
 
   it("returns an Ora-native local trail when Langfuse tracing is off", async () => {

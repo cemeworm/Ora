@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Clock3,
+  Database,
   ExternalLink,
   GitBranch,
   ListFilter,
@@ -31,6 +32,7 @@ import type {
 import { getSharedRuntimeClient, type OraRunTrail, type OraStateSnapshot } from "../lib/runtimeClient";
 import {
   buildAgentLanes,
+  buildActiveMemorySummary,
   buildEffectiveStrategySummary,
   buildPendingApprovalItems,
   buildSemanticTimeline,
@@ -143,6 +145,7 @@ export function TrailsTabs({
   const toolLedger = useMemo(() => buildToolLedger(activeSnapshot), [activeSnapshot]);
   const pendingApprovals = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
   const effectiveStrategy = useMemo(() => buildEffectiveStrategySummary(activeSnapshot), [activeSnapshot]);
+  const activeMemorySummary = useMemo(() => buildActiveMemorySummary(activeSnapshot), [activeSnapshot]);
   const pendingClarifications = snapshotPendingClarifications(activeSnapshot);
   const visibleFindings = severityFilter === "all" ? findings : findings.filter((finding) => finding.severity === severityFilter);
   const visibleTimeline = timelineItems.filter((item) => eventKindFilter === "all" || item.kind === eventKindFilter);
@@ -205,6 +208,7 @@ export function TrailsTabs({
         {selectedTab === "overview" && (
           <TrailOverview
             activeSnapshot={activeSnapshot}
+            activeMemorySummary={activeMemorySummary}
             artifacts={artifacts}
             busyCommand={busyCommand}
             checkpoints={checkpoints}
@@ -293,6 +297,7 @@ export function TrailsTabs({
 
 function TrailOverview({
   activeSnapshot,
+  activeMemorySummary,
   artifacts,
   busyCommand,
   checkpoints,
@@ -313,6 +318,7 @@ function TrailOverview({
   onResumeRun,
 }: {
   activeSnapshot: OraStateSnapshot;
+  activeMemorySummary?: ReturnType<typeof buildActiveMemorySummary>;
   artifacts: ArtifactRecord[];
   busyCommand?: string;
   checkpoints: CheckpointRecord[];
@@ -373,6 +379,27 @@ function TrailOverview({
             <p className="mt-1 text-xs leading-5 text-bench-700">{effectiveStrategy.detail}</p>
             {effectiveStrategy.notes.length > 0 && (
               <p className="mt-2 text-xs leading-5 text-amber-900">{effectiveStrategy.notes.join(" ")}</p>
+            )}
+          </div>
+        </DockCard>
+      )}
+
+      {activeMemorySummary && (
+        <DockCard title="Active Memory" icon={<Database size={16} />}>
+          <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-bench-900">{activeMemorySummary.mode}</span>
+              <StatusChip tone={activeMemorySummary.statusTone}>{activeMemorySummary.statusLabel}</StatusChip>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-bench-700">{activeMemorySummary.reason}</p>
+            <p className="mt-2 text-[11px] text-bench-700">
+              {activeMemorySummary.selectedIds.length} selected · {activeMemorySummary.rejectedCount} rejected · {activeMemorySummary.candidateCount} candidates · {activeMemorySummary.renderedChars} chars
+            </p>
+            {activeMemorySummary.selectedIds.length > 0 && (
+              <p className="mt-2 truncate font-mono text-[11px] text-bench-700">{activeMemorySummary.selectedIds.join(", ")}</p>
+            )}
+            {activeMemorySummary.warnings.length > 0 && (
+              <p className="mt-2 text-xs leading-5 text-amber-900">{activeMemorySummary.warnings.join(" ")}</p>
             )}
           </div>
         </DockCard>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAgentLanes,
+  buildActiveMemorySummary,
   buildEffectiveStrategySummary,
   buildSemanticTimeline,
   buildToolLedger,
@@ -242,6 +243,39 @@ describe("trail debugger view model", () => {
         severity: "warning",
       }),
     );
+  });
+
+  it("summarizes active-memory run metadata", () => {
+    const snapshot = baseSnapshot({
+      config: {
+        ...baseSnapshot().config,
+        metadata: {
+          activeMemory: {
+            decision: {
+              status: "USE",
+              mode: "deterministic",
+              reason: "Selected one relevant memory card.",
+              candidateIds: ["fact_1", "fact_2"],
+              selectedIds: ["fact_1"],
+              rejectedIds: ["fact_2"],
+              budget: { maxCandidates: 12, maxChars: 1800, renderedChars: 320 },
+              warnings: [],
+            },
+            cards: [{ id: "fact_1" }],
+          },
+        },
+      },
+    });
+
+    expect(buildActiveMemorySummary(snapshot)).toMatchObject({
+      statusLabel: "USE",
+      statusTone: "success",
+      mode: "deterministic",
+      candidateCount: 2,
+      selectedIds: ["fact_1"],
+      rejectedCount: 1,
+      renderedChars: 320,
+    });
   });
 });
 

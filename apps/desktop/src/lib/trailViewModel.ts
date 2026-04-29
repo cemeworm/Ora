@@ -107,6 +107,18 @@ export interface EffectiveStrategySummary {
   notes: string[];
 }
 
+export interface ActiveMemorySummary {
+  statusLabel: "USE" | "NONE";
+  statusTone: "success" | "warning" | "neutral";
+  mode: string;
+  reason: string;
+  candidateCount: number;
+  selectedIds: string[];
+  rejectedCount: number;
+  renderedChars: number;
+  warnings: string[];
+}
+
 export function buildTrailDebugSummary(
   snapshot: OraStateSnapshot,
   trail: OraRunTrail | undefined,
@@ -504,6 +516,38 @@ export function buildEffectiveStrategySummary(snapshot: OraStateSnapshot): Effec
   };
 }
 
+export function buildActiveMemorySummary(snapshot: OraStateSnapshot): ActiveMemorySummary | undefined {
+  const activeMemory = isRecord(snapshot.config.metadata.activeMemory)
+    ? snapshot.config.metadata.activeMemory
+    : undefined;
+  const decision = activeMemory && isRecord(activeMemory.decision)
+    ? activeMemory.decision
+    : undefined;
+  if (!decision) {
+    return undefined;
+  }
+
+  const status = decision.status === "USE" ? "USE" : "NONE";
+  const candidateIds = stringArray(decision.candidateIds);
+  const selectedIds = stringArray(decision.selectedIds);
+  const rejectedIds = stringArray(decision.rejectedIds);
+  const budget = isRecord(decision.budget) ? decision.budget : {};
+  const renderedChars = typeof budget.renderedChars === "number" ? budget.renderedChars : 0;
+  const warnings = stringArray(decision.warnings);
+
+  return {
+    statusLabel: status,
+    statusTone: warnings.length > 0 ? "warning" : status === "USE" ? "success" : "neutral",
+    mode: typeof decision.mode === "string" ? decision.mode : "unknown",
+    reason: typeof decision.reason === "string" ? decision.reason : "No active-memory reason was recorded.",
+    candidateCount: candidateIds.length,
+    selectedIds,
+    rejectedCount: rejectedIds.length,
+    renderedChars,
+    warnings,
+  };
+}
+
 export function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
   return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
 }
@@ -892,4 +936,8 @@ function fallbackApprovalReason(riskLevel?: "low" | "medium" | "high") {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
