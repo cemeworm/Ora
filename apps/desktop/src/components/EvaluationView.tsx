@@ -30,6 +30,7 @@ import type {
 import { runnableProviderOptions } from "../lib/providerOptions";
 import { cn } from "../lib/utils";
 import type { RuntimeBridgeStatus } from "../types";
+import { PageHeader } from "./PageHeader";
 import { Field } from "./ui/field";
 import { Select } from "./ui/select";
 import { Textarea } from "./ui/textarea";
@@ -250,14 +251,10 @@ export function EvaluationView({
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col bg-transparent">
-      <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Evaluation</p>
-            <h2 className="mt-1 text-xl font-semibold text-bench-900">Evaluation Studio</h2>
-            <p className="mt-1 text-sm leading-6 text-bench-700">历史任务、planner 对话、evaluator 和复盘结果集中在一个工作台。</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        title="评测"
+        actions={(
+          <>
             <button className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50" onClick={() => fileInputRef.current?.click()}>
               <FileUp size={16} />
               导入数据集
@@ -277,9 +274,9 @@ export function EvaluationView({
                 event.currentTarget.value = "";
               }}
             />
-          </div>
-        </div>
-      </div>
+          </>
+        )}
+      />
 
       <div className="grid min-h-0 flex-1 gap-2 overflow-hidden p-2 lg:grid-cols-[18rem_minmax(0,1fr)_20rem]">
         <HistorySidebar

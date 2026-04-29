@@ -50,6 +50,7 @@ import { translateCopy, type AppLanguage } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
 import type { OraCustomAgentSummary, OraModeCreateParams, OraModeSpec, OraModeStudioDraftBundle, OraModeValidationResult, OraRunHandle, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
+import { PageHeader } from "./PageHeader";
 import { Checkbox } from "./ui/checkbox";
 import { Select } from "./ui/select";
 
@@ -608,42 +609,40 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 bg-transparent">
-      <aside className="flex w-[21rem] shrink-0 flex-col border-r border-border bg-sidebar/92">
-        <div className="border-b border-border px-5 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Modes</p>
-              <h2 className="text-lg font-semibold">Mode Studio</h2>
-            </div>
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col bg-transparent">
+      <PageHeader
+        title="模式"
+        actions={(
+          <>
             <button
               onClick={() => void refreshModes()}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50"
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50"
             >
-              <RefreshCcw size={14} className={cn(busy === "refresh" && "animate-spin")} />
+              <RefreshCcw size={16} className={cn(busy === "refresh" && "animate-spin")} />
             </button>
-          </div>
-          <div className="mt-3 flex gap-2">
             <button
               onClick={startBuilderFlow}
-              className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white transition hover:bg-bench-800"
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-bench-900 px-4 text-sm font-semibold text-white transition hover:bg-bench-800"
             >
-              <Plus size={14} />
+              <Plus size={16} />
               New mode
             </button>
             {selectedMode && (
               <button
                 onClick={() => void clonePreset(selectedMode)}
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-bench-200 bg-white px-3 text-sm font-semibold transition hover:bg-bench-50"
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-bench-200 bg-white px-4 text-sm font-semibold transition hover:bg-bench-50"
               >
-                <Copy size={14} />
+                <Copy size={16} />
                 Clone preset
               </button>
             )}
-          </div>
-        </div>
+          </>
+        )}
+      />
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+      <div className="flex min-h-0 min-w-0 flex-1 bg-transparent">
+        <aside className="flex w-[21rem] shrink-0 flex-col border-r border-border bg-sidebar/92">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           <div className="space-y-2">
             {modes.map((mode) => (
               <div
@@ -690,8 +689,8 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
         </div>
       </aside>
 
-      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-6">
-        <div className="min-w-0 space-y-5">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-6">
+          <div className="min-w-0 space-y-5">
           {draft ? renderEditorToolbar() : null}
 
           {error && (
@@ -875,8 +874,9 @@ export function ModesView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
           ) : editorMode === "create" ? (
             renderBuilderPanel()
           ) : null}
-        </div>
-      </main>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

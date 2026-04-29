@@ -5,6 +5,7 @@ import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern
 import { useWorkbench } from "../lib/state";
 import type { OraAgentCatalogResult, OraCustomAgentGenerateDraftResult, OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
+import { PageHeader } from "./PageHeader";
 
 type AgentEditorMode = "gallery" | "create" | "edit" | "edit-system" | "team";
 type AgentGalleryTab = "built-in" | "custom";
@@ -386,22 +387,20 @@ export function AgentsView({
 
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-transparent">
-      <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            {mode !== "gallery" && (
-              <button
-                onClick={() => resetEditor()}
-                className="rounded-md border border-bench-200 bg-white p-2 text-bench-700 shadow-sm transition hover:text-bench-900 active:scale-95"
-              >
-                <ArrowLeft size={16} />
-              </button>
-            )}
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Agents</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        title="智能体"
+        leading={mode !== "gallery"
+          ? (
+            <button
+              onClick={() => resetEditor()}
+              className="rounded-md border border-bench-200 bg-white p-2 text-bench-700 shadow-sm transition hover:text-bench-900 active:scale-95"
+            >
+              <ArrowLeft size={16} />
+            </button>
+          )
+          : undefined}
+        actions={(
+          <>
             <button
               onClick={() => void loadAgents()}
               disabled={busy.length > 0}
@@ -418,9 +417,9 @@ export function AgentsView({
               <Plus size={16} />
               New agent
             </button>
-          </div>
-        </div>
-      </div>
+          </>
+        )}
+      />
 
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="w-full space-y-6">

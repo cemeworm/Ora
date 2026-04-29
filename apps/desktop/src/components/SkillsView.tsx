@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useWorkbench } from "../lib/state";
 import type { OraSkillDetail, OraSkillPackageFileContent, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
+import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 
@@ -378,14 +379,10 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
 
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-transparent">
-      <div className="border-b border-border bg-sidebar/92 px-6 py-4 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">Skills</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        title="技能"
+        actions={(
+          <>
             <button
               onClick={() => void loadSkills()}
               disabled={busy.length > 0}
@@ -402,9 +399,9 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
               <Plus size={16} />
               New skill
             </button>
-          </div>
-        </div>
-      </div>
+          </>
+        )}
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border bg-white/55 p-4 lg:border-b-0 lg:border-r">
@@ -671,8 +668,7 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
             ) : (
             <div className="flex h-full min-h-[420px] items-center justify-center">
               <div className="rounded-lg bg-white p-6 text-center shadow-pane ring-1 ring-inset ring-bench-200">
-                <p className="text-sm font-semibold">Select a skill to inspect its full `SKILL.md`.</p>
-                <p className="mt-2 text-xs text-bench-700">Public skills are initialized from the package; private skills are added later by you.</p>
+                <p className="text-sm font-semibold">Select a skill to view full information.</p>
               </div>
             </div>
             )}
