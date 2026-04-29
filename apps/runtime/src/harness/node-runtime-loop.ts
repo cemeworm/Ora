@@ -309,15 +309,6 @@ export async function runNodeRuntimeLoop(
     agentId: params.agentId,
     title: params.title,
   });
-  if (initialToolsAllowed) {
-    emitRuntimeStatusProgress(
-      emit,
-      params,
-      "running_model",
-      "正在努力",
-      events.length - 1,
-    );
-  }
   let response = await invokeProvider(
     config,
     {
@@ -590,13 +581,6 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration: iteration + 1,
       });
-      emitRuntimeStatusProgress(
-        emit,
-        params,
-        "running_model",
-        "正在努力",
-        events.length - 1,
-      );
       response = await invokeProvider(
         config,
         {

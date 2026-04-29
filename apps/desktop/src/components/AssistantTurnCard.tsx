@@ -34,6 +34,10 @@ interface AssistantTurnCardProps {
 
 const QUOTED_MESSAGE_PREVIEW_LIMIT = 128;
 
+function isPlaceholderLiveProgressText(text: string): boolean {
+  return text === "正在努力";
+}
+
 export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
   const agentMessages = turn?.agentMessages ?? [];
@@ -45,10 +49,12 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
-  const showLiveProgressInProcess = Boolean(turn?.liveProgressText && content.trim() !== turn.liveProgressText.trim());
+  const liveProgressText = turn?.liveProgressText?.trim();
+  const liveProgressIsPlaceholder = liveProgressText ? isPlaceholderLiveProgressText(liveProgressText) : false;
+  const showLiveProgressInProcess = Boolean(liveProgressText && !liveProgressIsPlaceholder && content.trim() !== liveProgressText);
   const hasProcessSteps = processSteps.length > 0 || showLiveProgressInProcess;
   const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
-  const contentIsLiveProgress = Boolean(turn?.liveProgressText && content.trim() === turn.liveProgressText.trim());
+  const contentIsLiveProgress = Boolean(liveProgressText && content.trim() === liveProgressText);
   const hasStageTranscript = stageTranscriptMessages.length > 0;
   const hasVisibleAgentMessages = visibleAgentMessages(collaborationMessages, turn?.status).length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
@@ -99,14 +105,14 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               summary={processSteps.length > 0 ? processSummary(processSteps, turn?.status, isPlaceholder) : undefined}
               collapsedPreview={latestProcessStep
                 ? <ProcessStepItem step={latestProcessStep} />
-                : showLiveProgressInProcess && turn?.liveProgressText
-                  ? <LiveProgressItem text={turn.liveProgressText} />
+                : showLiveProgressInProcess && liveProgressText
+                  ? <LiveProgressItem text={liveProgressText} />
                   : undefined}
             >
               {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
               ))}
-              {showLiveProgressInProcess && turn?.liveProgressText ? <LiveProgressItem text={turn.liveProgressText} active={turn.status === "running"} /> : null}
+              {showLiveProgressInProcess && liveProgressText ? <LiveProgressItem text={liveProgressText} active={turn?.status === "running"} /> : null}
             </CollapsibleCard>
           ) : null}
 

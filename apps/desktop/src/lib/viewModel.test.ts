@@ -956,9 +956,25 @@ describe("desktop session view model", () => {
         ],
       } as unknown as OraStateSnapshot,
     }).find((message) => message.role === "assistant");
+    const placeholderMessage = adaptChatMessages(transcript, {
+      "run-runtime-status": {
+        ...baseSnapshot,
+        events: [{
+          ...baseSnapshot.events[0],
+          payload: {
+            kind: "chat_progress",
+            source: "runtime_status",
+            trigger: "running_model",
+            summary: "正在努力",
+          },
+        }],
+      } as unknown as OraStateSnapshot,
+    }).find((message) => message.role === "assistant");
 
     expect(statusMessage?.content).toBe("已选择单智能体模式，我准备好了");
     expect(deltaMessage?.content).toBe("我会先读取这些 skill。");
+    expect(placeholderMessage?.content).toBe("");
+    expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
   });
 
   it("keeps historical progress narration out of process steps after the run finishes", () => {

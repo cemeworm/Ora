@@ -1287,7 +1287,10 @@ function progressTextFromSnapshot(
     }
     const summary = event.payload.summary;
     if (typeof summary === "string" && summary.trim()) {
-      return summary.trim();
+      const text = summary.trim();
+      if (!isPlaceholderProgressText(text)) {
+        return text;
+      }
     }
   }
   return undefined;
@@ -1571,6 +1574,10 @@ function isChatProgressEvent(event: OraEventEnvelope): boolean {
 
 function isVisibleChatProgressSource(source: unknown): boolean {
   return source === "progress_narrator" || source === "runtime_status";
+}
+
+function isPlaceholderProgressText(text: string): boolean {
+  return text === "正在努力";
 }
 
 function processStepLabel(event: OraEventEnvelope): string {
