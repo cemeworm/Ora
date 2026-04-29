@@ -111,6 +111,10 @@ const ZH_COPY: Record<string, string> = {
   "Confirm this matches your expectations before continuing.":
     "请确认这符合你的预期后再继续。",
   "Pending approval": "待审批",
+  "Waiting for approval": "等待确认",
+  "More actions pending": "还有更多待确认操作",
+  "I need your confirmation for these actions before I continue.":
+    "继续前，我需要你确认这些操作。",
   "Review the blocked stage": "检查被阻塞的阶段",
   "Review the blocked stages": "检查被阻塞的阶段",
   "The runtime paused in the conversation flow and is waiting for your decision before continuing.":
@@ -279,6 +283,7 @@ const ZH_COPY: Record<string, string> = {
   "The run did not finish. Open Trails for the latest details.":
     "本轮没有完成。可打开轨迹查看最新详情。",
   "Continued with limited context.": "已使用有限上下文继续。",
+  "Waiting for your approval before continuing.": "需要你确认后，我才能继续。",
   "Paused after processing was interrupted.": "处理被中断后已暂停。",
   "Processing step failed.": "处理步骤失败。",
   "Processing state changed.": "处理状态已变化。",

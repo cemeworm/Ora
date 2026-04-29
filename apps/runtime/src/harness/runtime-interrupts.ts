@@ -9,7 +9,7 @@ export class ClarificationInterruptError extends Error {
 
 export class ApprovalInterruptError extends Error {
   constructor(public readonly actionId: string) {
-    super(`Manual approval required for action ${actionId}.`);
+    super("Waiting for your approval before continuing.");
   }
 }
 

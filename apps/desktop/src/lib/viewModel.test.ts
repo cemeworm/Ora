@@ -1092,6 +1092,85 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.processSteps).toEqual([]);
   });
 
+  it("shows user-facing copy for approval interruption process steps", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-approval-node",
+      sessionId: "session-approval-node",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "更新项目文档", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-approval-node-test",
+        skillIds: [],
+        toolIds: ["file.write"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-approval-node:evt-0",
+        runId: "run-approval-node",
+        seq: 0,
+        type: "node.updated",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          nodeId: "solo_agent",
+          state: "interrupted",
+          detail: "Manual approval required for action run-approval-node:action:tool-1.",
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-approval-node:user",
+        sessionId: "session-approval-node",
+        runId: "run-approval-node",
+        turnIndex: 1,
+        role: "user",
+        content: "更新项目文档",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-approval-node": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const processSteps = assistant?.turn?.processSteps ?? [];
+
+    expect(processSteps).toHaveLength(1);
+    expect(processSteps[0]?.detail).toBe("Waiting for your approval before continuing.");
+    expect(processSteps[0]?.detail).not.toContain("Manual approval required");
+    expect(processSteps[0]?.detail).not.toContain("run-approval-node:action:tool-1");
+  });
+
   it("marks superseded progress narration complete while the run is still active", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

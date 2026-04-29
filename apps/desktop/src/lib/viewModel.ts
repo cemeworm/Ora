@@ -43,6 +43,8 @@ import type {
 } from "./runtimeClient";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
 
+const APPROVAL_INTERRUPT_MESSAGE = "Waiting for your approval before continuing.";
+
 export interface WorkbenchViewModel {
   patternCards: PatternCard[];
   modeCards: ModeCard[];
@@ -1703,6 +1705,9 @@ function processStepDetail(event: OraEventEnvelope): string {
       case "degraded":
         return `Continued with limited context${detail}.`;
       case "interrupted":
+        if (isApprovalInterruptDetail(detail.trim())) {
+          return APPROVAL_INTERRUPT_MESSAGE;
+        }
         return `Paused after processing was interrupted${detail}.`;
       case "failed":
         return `Processing step failed${detail}.`;
@@ -1711,6 +1716,13 @@ function processStepDetail(event: OraEventEnvelope): string {
     }
   }
   return detail;
+}
+
+function isApprovalInterruptDetail(detail: string): boolean {
+  return (
+    detail === APPROVAL_INTERRUPT_MESSAGE ||
+    /^Manual approval required for action .+\.$/.test(detail)
+  );
 }
 
 function isWorkProcessEvent(event: OraEventEnvelope): boolean {
