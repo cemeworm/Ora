@@ -4,6 +4,7 @@ import type {
   ModeSpec,
   OraEventEnvelope,
   OraToolCallEnvelope,
+  type PendingClarificationOption,
   RunConfig,
 } from "@ora/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
@@ -35,6 +36,15 @@ import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
 
 const TOOL_REPAIR_CONTENT =
   "Tool call was interrupted before a result was produced. Continue from available context or choose another action.";
+
+interface DynamicClarificationRequest {
+  id: string;
+  key: string;
+  nodeId: string;
+  nodeLabel: string;
+  question: string;
+  options: PendingClarificationOption[];
+}
 
 export type NodeRuntimeLoopState =
   | "pending"
@@ -105,6 +115,15 @@ export interface RunNodeRuntimeLoopDeps {
     call: RuntimeToolCall,
     reason: CompletionStopReason,
   ) => void;
+  clarificationAnswer: (key: string, id: string) => unknown;
+  ensureClarification: (params: {
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+    options?: PendingClarificationOption[];
+  }) => Promise<unknown>;
   coerceNoToolResponse: (
     response: ModelResponse,
     reason: CompletionStopReason,
@@ -155,6 +174,65 @@ function emitRuntimeStatusProgress(
   );
 }
 
+function dynamicClarificationRequest(
+  call: RuntimeToolAttempt,
+  params: RunNodeRuntimeLoopParams,
+  eventCount: number,
+): DynamicClarificationRequest {
+  const question = stringToolArg(call.args, "question");
+  if (!question) {
+    throw new Error("user.clarify requires a non-empty question.");
+  }
+  const fallbackKey = `dynamic_${params.agentId}_${eventCount}`;
+  const key = sanitizeClarificationKey(stringToolArg(call.args, "key") ?? fallbackKey);
+  return {
+    id: `clarification:${params.agentId}:${eventCount}`,
+    key,
+    nodeId: params.nodeId,
+    nodeLabel: params.title,
+    question,
+    options: parseClarificationOptions(call.args.options),
+  };
+}
+
+function stringToolArg(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function sanitizeClarificationKey(key: string): string {
+  const sanitized = key.trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").replace(/^_+|_+$/g, "");
+  return (sanitized || "clarification").slice(0, 120);
+}
+
+function parseClarificationOptions(value: unknown): PendingClarificationOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.slice(0, 6).flatMap((item, index): PendingClarificationOption[] => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return [];
+    }
+    const record = item as Record<string, unknown>;
+    const label = typeof record.label === "string" && record.label.trim()
+      ? record.label.trim()
+      : undefined;
+    if (!label) {
+      return [];
+    }
+    const id = typeof record.id === "string" && record.id.trim()
+      ? record.id.trim()
+      : `option_${index + 1}`;
+    const value = typeof record.value === "string" && record.value.trim()
+      ? record.value.trim()
+      : undefined;
+    const description = typeof record.description === "string" && record.description.trim()
+      ? record.description.trim()
+      : undefined;
+    return [{ id, label, ...(value ? { value } : {}), ...(description ? { description } : {}) }];
+  });
+}
+
 export async function runNodeRuntimeLoop(
   params: RunNodeRuntimeLoopParams,
   deps: RunNodeRuntimeLoopDeps,
@@ -173,6 +251,8 @@ export async function runNodeRuntimeLoop(
     emitProgressNarration,
     emitRecoveryDecision,
     emitRejectedFinalToolIntent,
+    clarificationAnswer,
+    ensureClarification,
     coerceNoToolResponse,
     runForcedFinalProviderCall,
     publishRecoveryArtifact,
@@ -478,14 +558,51 @@ export async function runNodeRuntimeLoop(
     });
 
     try {
-      const cacheKey = cacheKeyForRuntimeTool(toolCall);
+      const clarificationRequest = toolCall.tool === "user.clarify"
+        ? dynamicClarificationRequest(toolCall, params, events.length)
+        : undefined;
+      const existingClarificationAnswer = clarificationRequest
+        ? clarificationAnswer(clarificationRequest.key, clarificationRequest.id)
+        : undefined;
+      if (clarificationRequest && existingClarificationAnswer === undefined) {
+        recordRuntimeToolActionSucceeded({
+          action,
+          context: { agentId: params.agentId, nodeId: params.agentId },
+          deps: actionDeps(),
+          toolCall,
+          output: {
+            status: "clarification_requested",
+            clarification: clarificationRequest,
+          },
+          toolCallRecord,
+          now,
+        });
+        emitNodeRuntimeState("interrupted", {
+          agentId: params.agentId,
+          title: params.title,
+          actionId: action.id,
+          toolId: toolCall.tool,
+          detail: clarificationRequest.question,
+          iteration,
+        });
+        await ensureClarification(clarificationRequest);
+      }
+      const cacheKey = clarificationRequest ? undefined : cacheKeyForRuntimeTool(toolCall);
       const cacheHit =
         cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
-      const execution = cacheHit
-        ? { output: runtimeToolResultCache.get(cacheKey) }
-        : await runtimeToolExecutor.executeWithMetadata(toolCall, {
-            allowRisky: approvedForRiskyExecution,
-          });
+      const execution = clarificationRequest
+        ? {
+            output: {
+              status: "clarification_answered",
+              question: clarificationRequest.question,
+              answer: await ensureClarification(clarificationRequest),
+            },
+          }
+        : cacheHit
+          ? { output: runtimeToolResultCache.get(cacheKey) }
+          : await runtimeToolExecutor.executeWithMetadata(toolCall, {
+              allowRisky: approvedForRiskyExecution,
+            });
       const output = execution.output;
       if (cacheKey && !cacheHit) {
         runtimeToolResultCache.set(cacheKey, output);
@@ -593,6 +710,9 @@ export async function runNodeRuntimeLoop(
         streamCallbacks,
       );
     } catch (error) {
+      if (error instanceof ClarificationInterruptError) {
+        throw error;
+      }
       const detail = error instanceof Error ? error.message : String(error);
       recordRuntimeToolActionFailed({
         action,

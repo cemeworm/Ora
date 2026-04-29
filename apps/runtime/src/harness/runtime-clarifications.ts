@@ -3,6 +3,7 @@ import {
   ORA_ROOT_AGENT_LABEL,
   type OraEventEnvelope,
   type PendingClarification,
+  type PendingClarificationOption,
   PendingClarificationSchema,
   type RunConfig,
 } from "@ora/shared";
@@ -98,6 +99,7 @@ export async function ensureRuntimeClarification(
     nodeId: string;
     nodeLabel: string;
     question: string;
+    options?: PendingClarificationOption[];
     narrate?: boolean;
   },
   deps: {
@@ -140,6 +142,7 @@ export async function ensureRuntimeClarification(
     nodeLabel: params.nodeLabel,
     key: params.key,
     question: params.question,
+    options: params.options ?? [],
     requestedAt: deps.now(),
   });
   deps.pendingClarifications.push(clarification);

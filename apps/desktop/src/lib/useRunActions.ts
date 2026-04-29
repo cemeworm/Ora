@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
-import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment } from "./state";
+import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
@@ -72,6 +72,10 @@ export function buildPendingClarificationResumePatch(
   };
 }
 
+export function clarificationOptionAnswer(option: { label: string; value?: string }): string {
+  return option.value?.trim() || option.label.trim();
+}
+
 export function waitForPendingRunPaint(): Promise<void> {
   if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
     return Promise.resolve();
@@ -82,6 +86,35 @@ export function waitForPendingRunPaint(): Promise<void> {
       window.setTimeout(resolve, 0);
     });
   });
+}
+
+export function isDisposableEmptySession(state: WorkbenchState, sessionId: string | undefined): boolean {
+  if (!sessionId || state.pendingRun?.sessionId === sessionId) {
+    return false;
+  }
+
+  const session = state.activeSessionDetail?.session.sessionId === sessionId
+    ? state.activeSessionDetail.session
+    : state.sessionDetailsById[sessionId]?.session
+      ?? state.sessions.find((candidate) => candidate.sessionId === sessionId);
+  if (!session || session.archivedAt !== undefined || session.status || session.turnCount !== 0) {
+    return false;
+  }
+
+  if ((state.sessionPromptTexts[sessionId] ?? "").trim()) {
+    return false;
+  }
+  if ((state.sessionSkillIds[sessionId]?.length ?? 0) > 0) {
+    return false;
+  }
+  if ((state.sessionProjectFileAttachments[sessionId]?.length ?? 0) > 0) {
+    return false;
+  }
+  if ((state.sessionLocalFileAttachments[sessionId]?.length ?? 0) > 0) {
+    return false;
+  }
+
+  return true;
 }
 
 async function pickProjectDirectory(): Promise<string | null> {
@@ -161,7 +194,27 @@ export function useRunActions() {
     return { projects, sessions, detail };
   }
 
+  async function archiveDisposableEmptySession(sessionId: string) {
+    try {
+      await runtimeClient.archiveSession(sessionId);
+      const [projects, sessions] = await Promise.all([
+        runtimeClient.listProjects(),
+        runtimeClient.listSessions(),
+      ]);
+      dispatch({ type: "SET_COLLECTIONS", projects, sessions });
+    } catch {
+      // Empty-session cleanup is opportunistic and should never block navigation.
+    }
+  }
+
+  function cleanupPreviousSessionIfDisposable(previousSessionId: string | undefined, nextSessionId: string) {
+    if (previousSessionId && previousSessionId !== nextSessionId && isDisposableEmptySession(state, previousSessionId)) {
+      void archiveDisposableEmptySession(previousSessionId);
+    }
+  }
+
   async function selectSession(sessionId: string) {
+    const previousSessionId = state.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     dispatch({ type: "SELECT_SESSION", sessionId });
@@ -170,6 +223,7 @@ export function useRunActions() {
         refreshCollections: false,
         shouldApply: () => sessionRequestRef.current === requestId,
       });
+      cleanupPreviousSessionIfDisposable(previousSessionId, sessionId);
     } catch (error) {
       if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session load failed." });
@@ -211,6 +265,7 @@ export function useRunActions() {
   }
 
   async function createSession() {
+    const previousSessionId = state.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     try {
@@ -220,6 +275,7 @@ export function useRunActions() {
       await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.", {
         shouldApply: () => sessionRequestRef.current === requestId,
       });
+      cleanupPreviousSessionIfDisposable(previousSessionId, created.sessionId);
     } catch (error) {
       if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session creation failed." });
@@ -228,6 +284,7 @@ export function useRunActions() {
   }
 
   async function createProjectSession(projectId: string) {
+    const previousSessionId = state.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
     try {
@@ -237,6 +294,7 @@ export function useRunActions() {
       await hydrateSession(created.sessionId, undefined, "Created a new project session.", {
         shouldApply: () => sessionRequestRef.current === requestId,
       });
+      cleanupPreviousSessionIfDisposable(previousSessionId, created.sessionId);
     } catch (error) {
       if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Project session creation failed." });
@@ -327,6 +385,35 @@ export function useRunActions() {
     const sessionId = snapshot?.sessionId ?? state.selectedSessionId;
     if (!sessionId) return;
     await hydrateSession(sessionId, snapshot, feedback);
+  }
+
+  async function submitClarificationOption(answer: string) {
+    if (!state.selectedSessionId || !state.selectedTurnRunId) return;
+    const clarificationPatch = buildPendingClarificationResumePatch(state.activeSnapshot, answer);
+    if (!clarificationPatch) return;
+    flushSync(() => {
+      dispatch({
+        type: "BEGIN_RUN_REQUEST",
+        sessionId: state.selectedSessionId!,
+        prompt: answer,
+        createdAt: Date.now(),
+      });
+    });
+    await waitForPendingRunPaint();
+    try {
+      const snapshot = await runtimeClient.resumeRun(
+        state.selectedTurnRunId,
+        USER_RESUMED_MESSAGE,
+        clarificationPatch,
+      );
+      await refreshCurrentSession(snapshot, `Clarification submitted for ${snapshot.runId}.`);
+    } catch (error) {
+      dispatch({
+        type: "SET_BRIDGE_STATUS",
+        status: { mode: "error", ok: false, label: "Resume failed", detail: error instanceof Error ? error.message : "Unable to resume run." },
+      });
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
   }
 
   async function startRun() {
@@ -666,6 +753,7 @@ export function useRunActions() {
       selectSession,
       selectTurn,
       startRun,
+      submitClarificationOption,
       interruptRun,
       resumeRun,
       cancelRun,

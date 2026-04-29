@@ -762,6 +762,7 @@ function WorkbenchInner() {
               dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })
             }
             onSubmitFeedback={handleSubmitFeedback}
+            onSubmitClarificationOption={(answer) => void actions.submitClarificationOption(answer)}
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
             onSelectModeSelection={(selection) =>
               dispatch({ type: "SET_MODE_SELECTION", selection })

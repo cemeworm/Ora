@@ -18,6 +18,7 @@ import {
   type MemoryKind,
   type OraToolCallEnvelope,
   type PendingClarification,
+  type PendingClarificationOption,
   RecoveryArtifactSchema,
   OraEventEnvelopeSchema,
   StateSnapshotSchema,
@@ -801,6 +802,8 @@ export async function executeRuntimeKernel(
       emitProgressNarration,
       emitRecoveryDecision,
       emitRejectedFinalToolIntent,
+      clarificationAnswer,
+      ensureClarification,
       coerceNoToolResponse,
       runForcedFinalProviderCall,
       publishRecoveryArtifact,
@@ -1167,6 +1170,7 @@ export async function executeRuntimeKernel(
     nodeId: string;
     nodeLabel: string;
     question: string;
+    options?: PendingClarificationOption[];
     narrate?: boolean;
   }) => {
     return ensureRuntimeClarification(params, {

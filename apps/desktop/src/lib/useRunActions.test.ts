@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildDesktopRunContext } from "./useRunActions";
+import { initialWorkbenchState, type WorkbenchState } from "./state";
+import { buildDesktopRunContext, isDisposableEmptySession } from "./useRunActions";
+import type { OraSessionSummary } from "./runtimeClient";
 
 describe("desktop run actions", () => {
   it("includes attached project files in run context", () => {
@@ -52,5 +54,70 @@ describe("desktop run actions", () => {
         },
       ],
     });
+  });
+
+  function sessionSummary(sessionId: string, overrides: Partial<OraSessionSummary> = {}): OraSessionSummary {
+    return {
+      sessionId,
+      title: "New Chat",
+      turnCount: 0,
+      createdAt: 1_714_000_000_000,
+      updatedAt: 1_714_000_000_000,
+      ...overrides,
+    };
+  }
+
+  function stateWithSession(overrides: Partial<WorkbenchState> = {}, session: Partial<OraSessionSummary> = {}): WorkbenchState {
+    const baseSession = sessionSummary("session-empty", session);
+    return {
+      ...initialWorkbenchState,
+      selectedSessionId: baseSession.sessionId,
+      sessions: [baseSession],
+      ...overrides,
+    };
+  }
+
+  it("allows cleanup for a truly empty session", () => {
+    const state = stateWithSession();
+
+    expect(isDisposableEmptySession(state, "session-empty")).toBe(true);
+  });
+
+  it("preserves sessions that already have turns", () => {
+    const state = stateWithSession({}, { turnCount: 1 });
+
+    expect(isDisposableEmptySession(state, "session-empty")).toBe(false);
+  });
+
+  it("preserves empty sessions with local draft state", () => {
+    const state = stateWithSession({
+      sessionPromptTexts: { "session-empty": "draft prompt" },
+    });
+
+    expect(isDisposableEmptySession(state, "session-empty")).toBe(false);
+  });
+
+  it("preserves empty sessions with attachments, selected skills, pending runs, or runtime status", () => {
+    expect(isDisposableEmptySession(stateWithSession({
+      sessionProjectFileAttachments: {
+        "session-empty": [{ projectId: "project-1", path: "README.md", name: "README.md", mimeType: "text/markdown", sizeBytes: 42 }],
+      },
+    }), "session-empty")).toBe(false);
+
+    expect(isDisposableEmptySession(stateWithSession({
+      sessionLocalFileAttachments: {
+        "session-empty": [{ path: "/tmp/note.txt", name: "note.txt", mimeType: "text/plain", sizeBytes: 12 }],
+      },
+    }), "session-empty")).toBe(false);
+
+    expect(isDisposableEmptySession(stateWithSession({
+      sessionSkillIds: { "session-empty": ["skill-1"] },
+    }), "session-empty")).toBe(false);
+
+    expect(isDisposableEmptySession(stateWithSession({
+      pendingRun: { sessionId: "session-empty", prompt: "Run this", createdAt: 1_714_000_000_001 },
+    }), "session-empty")).toBe(false);
+
+    expect(isDisposableEmptySession(stateWithSession({}, { status: "running" }), "session-empty")).toBe(false);
   });
 });

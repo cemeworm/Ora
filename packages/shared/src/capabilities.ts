@@ -438,6 +438,47 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "web.fetch", label: "Fetch URL", description: "Fetch content from an HTTP or HTTPS URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "web.search", label: "Search Web", description: "Search the web for lightweight research results.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "document.extract", label: "Extract Document Text", description: "Extract readable text from supported documents such as PDF files or PDF URLs.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  {
+    id: "user.clarify",
+    label: "Ask User Clarification",
+    description: "Ask the user a focused clarification question during execution, with optional suggested answers. Use only when missing information materially affects the next action or final answer.",
+    category: "internal",
+    riskLevel: "safe",
+    parameters: {
+      type: "object",
+      properties: {
+        key: {
+          type: "string",
+          description: "Stable short key for the missing variable being clarified.",
+        },
+        question: {
+          type: "string",
+          description: "One concise user-facing clarification question in the user's language.",
+        },
+        options: {
+          type: "array",
+          maxItems: 6,
+          description: "Optional suggested answers the user can choose instead of typing freely.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Stable option id." },
+              label: { type: "string", description: "Short user-facing option label." },
+              value: { type: "string", description: "Answer value to resume with; defaults to label when omitted." },
+              description: { type: "string", description: "Optional detail shown with the option." },
+            },
+            required: ["id", "label"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["question"],
+      additionalProperties: false,
+    },
+    requiresApproval: false,
+    implemented: true,
+    allowedForProfiles: [],
+  },
   { id: "skills.list", label: "List Skills", description: "List installed Ora skill packages by name, description, category, enabled state, and supporting file metadata so an agent can discover relevant skills before answering.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "skills.get", label: "Read Skill", description: "Read the full SKILL.md instructions and package file metadata for one installed Ora skill before applying that skill to the conversation.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "skills.checkName", label: "Check Skill Name", description: "Check whether an Ora skill name is available before installing or creating it.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },

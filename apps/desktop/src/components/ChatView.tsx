@@ -51,6 +51,7 @@ interface ChatViewProps {
     message: ChatMessage,
     feedbackText: string,
   ) => Promise<void>;
+  onSubmitClarificationOption: (answer: string) => void;
   onSelectMode: (modeId: string) => void;
   onSelectModeSelection: (selection: ModeSelection) => void;
   onSelectNode: (id: string) => void;
@@ -80,6 +81,7 @@ export function ChatView({
   onExportReport,
   onOpenArtifact,
   onSubmitFeedback,
+  onSubmitClarificationOption,
   onToggleDetailDrawer,
   detailDrawer,
   onSelectMode,
@@ -145,6 +147,7 @@ export function ChatView({
             hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
+            onSubmitClarificationOption={onSubmitClarificationOption}
           />
         </div>
         <ChatInput

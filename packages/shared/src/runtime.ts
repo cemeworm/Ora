@@ -637,12 +637,21 @@ export const BusStatsSchema = z.object({
 });
 export type BusStats = z.infer<typeof BusStatsSchema>;
 
+export const PendingClarificationOptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  value: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+});
+export type PendingClarificationOption = z.infer<typeof PendingClarificationOptionSchema>;
+
 export const PendingClarificationSchema = z.object({
   id: z.string().min(1),
   nodeId: z.string().min(1),
   nodeLabel: z.string().min(1),
   key: z.string().min(1),
   question: z.string().min(1),
+  options: z.array(PendingClarificationOptionSchema).max(6).default([]),
   requestedAt: z.number().int().nonnegative(),
 });
 export type PendingClarification = z.infer<typeof PendingClarificationSchema>;

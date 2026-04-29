@@ -278,6 +278,13 @@ export interface RuntimeBridgeStatus {
 
 export type AppView = "chat" | "agents" | "skills" | "modes" | "evaluation";
 
+export interface ClarificationOption {
+  id: string;
+  label: string;
+  value?: string;
+  description?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -285,5 +292,6 @@ export interface ChatMessage {
   timestamp: string;
   metadata?: { eventType?: string; agentId?: string; beatId?: string; runId?: string; turnIndex?: number; pattern?: CoordinationPattern };
   turn?: AssistantTurnAttachment;
+  clarificationOptions?: ClarificationOption[];
   isPlaceholder?: boolean;
 }

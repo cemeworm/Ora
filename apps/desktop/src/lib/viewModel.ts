@@ -5,6 +5,7 @@ import type {
   AssistantTurnAttachment,
   ArtifactRecord,
   ChatMessage,
+  ClarificationOption,
   CheckpointRecord,
   CoordinationPattern,
   MemoryRecord,
@@ -1136,6 +1137,9 @@ export function adaptChatMessages(
             pattern: turn.pattern,
           },
           turn: assistantTurn,
+          clarificationOptions: turn.snapshot
+            ? clarificationOptionsFromSnapshot(turn.snapshot)
+            : undefined,
           isPlaceholder:
             !turn.assistant &&
             (!assistantTurn || assistantTurn.status === "running"),
@@ -1274,6 +1278,49 @@ function clarificationTextFromSnapshot(snapshot: OraStateSnapshot): string | und
     }
   }
   return undefined;
+}
+
+function clarificationOptionsFromSnapshot(snapshot: OraStateSnapshot): ClarificationOption[] | undefined {
+  const directOptions = snapshotPendingClarifications(snapshot)[0]?.options;
+  const normalizedDirect = normalizeClarificationOptions(directOptions);
+  if (normalizedDirect.length > 0) {
+    return normalizedDirect;
+  }
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
+    if (event?.type !== "clarification.required" || !isRecord(event.payload) || !isRecord(event.payload.clarification)) {
+      continue;
+    }
+    const normalized = normalizeClarificationOptions(event.payload.clarification.options);
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function normalizeClarificationOptions(value: unknown): ClarificationOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item): ClarificationOption[] => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : undefined;
+    const label = typeof item.label === "string" && item.label.trim() ? item.label.trim() : undefined;
+    if (!id || !label) {
+      return [];
+    }
+    const option: ClarificationOption = { id, label };
+    if (typeof item.value === "string" && item.value.trim()) {
+      option.value = item.value.trim();
+    }
+    if (typeof item.description === "string" && item.description.trim()) {
+      option.description = item.description.trim();
+    }
+    return [option];
+  });
 }
 
 function progressTextFromSnapshot(

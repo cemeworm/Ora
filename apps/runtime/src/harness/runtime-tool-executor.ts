@@ -21,6 +21,7 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "web.fetch",
   "web.search",
   "document.extract",
+  "user.clarify",
   "skills.list",
   "skills.get",
   "skills.checkName",
@@ -344,6 +345,8 @@ export class RuntimeToolExecutor {
         return { output: await searchWithProvider(this.searchProvider, call.args) };
       case "document.extract":
         return { output: await extractDocument(workspaceRootPath(this.workspace), this.fetchImpl, call.args) };
+      case "user.clarify":
+        throw new Error("user.clarify must be handled by the runtime loop as a clarification interrupt.");
       case "skills.list":
         return { output: listRuntimeSkills(this.skillRegistry, call.args) };
       case "skills.get":
@@ -654,6 +657,8 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"web.search\",\"args\":{\"query\":\"Model Context Protocol docs\"}}";
     case "document.extract":
       return "{\"tool\":\"document.extract\",\"args\":{\"path\":\"docs/paper.pdf\",\"format\":\"text\"}}";
+    case "user.clarify":
+      return "{\"tool\":\"user.clarify\",\"args\":{\"key\":\"target_environment\",\"question\":\"你希望我在哪个环境执行这一步？\",\"options\":[{\"id\":\"staging\",\"label\":\"预发环境\",\"value\":\"staging\"},{\"id\":\"production\",\"label\":\"生产环境\",\"value\":\"production\"}]}}";
     case "skills.list":
       return "{\"tool\":\"skills.list\",\"args\":{\"query\":\"frontend design\"}}";
     case "skills.get":

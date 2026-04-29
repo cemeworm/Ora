@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,11 +49,12 @@ run(
     "--target=node22",
     `--outfile=${bundledRuntimePath}`,
     "--external:better-sqlite3",
+    "--external:pdf-parse",
   ],
   repoRoot
 );
 
-for (const packageName of ["better-sqlite3", "bindings", "file-uri-to-path"]) {
+for (const packageName of runtimePackageNames()) {
   copyRuntimePackage(packageName);
 }
 
@@ -61,6 +63,8 @@ copyLangfuseBundle();
 if (!existsSync(bundledRuntimePath)) {
   throw new Error(`Missing packaged sidecar bundle at ${bundledRuntimePath}`);
 }
+
+verifyPackagedSidecar();
 
 function resolveEsbuildBinary() {
   const pnpmDir = path.join(repoRoot, "node_modules", ".pnpm");
@@ -75,9 +79,34 @@ function resolveEsbuildBinary() {
   return esbuildPackage;
 }
 
+function runtimePackageNames() {
+  return [
+    "better-sqlite3",
+    "bindings",
+    "file-uri-to-path",
+    "pdf-parse",
+    "pdfjs-dist",
+    "@napi-rs/canvas",
+    nativeCanvasPackageName(),
+  ].filter(Boolean);
+}
+
+function nativeCanvasPackageName() {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "darwin" && arch === "arm64") return "@napi-rs/canvas-darwin-arm64";
+  if (platform === "darwin" && arch === "x64") return "@napi-rs/canvas-darwin-x64";
+  if (platform === "linux" && arch === "x64") return "@napi-rs/canvas-linux-x64-gnu";
+  if (platform === "linux" && arch === "arm64") return "@napi-rs/canvas-linux-arm64-gnu";
+  if (platform === "win32" && arch === "x64") return "@napi-rs/canvas-win32-x64-msvc";
+  if (platform === "win32" && arch === "arm64") return "@napi-rs/canvas-win32-arm64-msvc";
+  return undefined;
+}
+
 function copyRuntimePackage(packageName) {
   const packageSource = realpathSync(resolveInstalledPackageDir(packageName));
   const packageDestination = path.join(stageNodeModulesDir, packageName);
+  mkdirSync(path.dirname(packageDestination), { recursive: true });
   cpSync(packageSource, packageDestination, {
     recursive: true,
     force: true
@@ -107,6 +136,30 @@ function resolveInstalledPackageDir(packageName) {
   }
 
   throw new Error(`Unable to locate installed package directory for ${packageName}`);
+}
+
+function verifyPackagedSidecar() {
+  const smokeDbPath = path.join(os.tmpdir(), `ora-runtime-sidecar-smoke-${process.pid}.db`);
+  try {
+    const output = execFileSync(stagedNodePath, [bundledRuntimePath], {
+      cwd: stageAppDir,
+      input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "runtime.bootstrap" })}\n`,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ORA_RUNTIME_STORE_DIR: smokeDbPath,
+      },
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const response = JSON.parse(output.trim());
+    if (response.jsonrpc !== "2.0" || response.id !== 1 || !response.result) {
+      throw new Error(`Unexpected runtime.bootstrap smoke response: ${output.trim()}`);
+    }
+  } finally {
+    rmSync(smokeDbPath, { force: true });
+    rmSync(`${smokeDbPath}-shm`, { force: true });
+    rmSync(`${smokeDbPath}-wal`, { force: true });
+  }
 }
 
 function run(command, args, cwd) {

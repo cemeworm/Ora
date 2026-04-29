@@ -4,7 +4,7 @@ import { getComposerInteractivity } from "../../desktop/src/components/ChatInput
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
 import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
-import { buildPendingClarificationResumePatch, waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
+import { buildPendingClarificationResumePatch, clarificationOptionAnswer, waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
 import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
 
@@ -489,6 +489,10 @@ describe("desktop composer pending-run behavior", () => {
             nodeLabel: "Clarify request",
             key: "intent_guard",
             question: "在继续查资料前，我需要确认：你们在这个问题里的角色是清算通道方、收单机构还是跨境商户？另外“这种规模”大概指月交易额、日单量、商户数、牌照/地区范围中的哪些指标？这些会直接影响结算 T+N 判断。",
+            options: [
+              { id: "acquirer", label: "收单机构", value: "我们是收单机构。", description: "按收单机构口径判断" },
+              { id: "merchant", label: "跨境商户", value: "我们是跨境商户。" },
+            ],
             requestedAt: 11,
           },
           pending: 1,
@@ -505,6 +509,10 @@ describe("desktop composer pending-run behavior", () => {
         nodeLabel: "Clarify request",
         key: "intent_guard",
         question: "在继续查资料前，我需要确认：你们在这个问题里的角色是清算通道方、收单机构还是跨境商户？另外“这种规模”大概指月交易额、日单量、商户数、牌照/地区范围中的哪些指标？这些会直接影响结算 T+N 判断。",
+        options: [
+          { id: "acquirer", label: "收单机构", value: "我们是收单机构。", description: "按收单机构口径判断" },
+          { id: "merchant", label: "跨境商户", value: "我们是跨境商户。" },
+        ],
         requestedAt: 11,
       }],
       pendingApprovals: [],
@@ -517,8 +525,13 @@ describe("desktop composer pending-run behavior", () => {
     expect(messages[1]).toMatchObject({
       role: "assistant",
       content: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
+      clarificationOptions: [
+        { id: "acquirer", label: "收单机构", value: "我们是收单机构。", description: "按收单机构口径判断" },
+        { id: "merchant", label: "跨境商户", value: "我们是跨境商户。" },
+      ],
       isPlaceholder: false,
     });
+    expect(clarificationOptionAnswer(messages[1]!.clarificationOptions![0]!)).toBe("我们是收单机构。");
     expect(buildPendingClarificationResumePatch(snapshot, "我们是收单机构，月交易额约 3000 万。")).toEqual({
       clarifications: {
         intent_guard: "我们是收单机构，月交易额约 3000 万。",

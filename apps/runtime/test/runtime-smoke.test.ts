@@ -204,6 +204,119 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("lets an agent ask an in-run clarification with selectable options and resume from the answer", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.DYNAMIC_CLARIFICATION_KEY;
+    process.env.DYNAMIC_CLARIFICATION_KEY = "test";
+    let providerCalls = 0;
+    const providerBodies: string[] = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      providerBodies.push(String(init?.body ?? ""));
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-clarify-1",
+                type: "function",
+                function: {
+                  name: "user__clarify",
+                  arguments: JSON.stringify({
+                    key: "target_environment",
+                    question: "你希望我在哪个环境执行这一步？",
+                    options: [
+                      { id: "staging", label: "预发环境", value: "staging", description: "先在预发环境验证" },
+                      { id: "production", label: "生产环境", value: "production" },
+                    ],
+                  }),
+                },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "已根据你选择的 staging 环境继续执行。" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "继续部署前确认一下目标环境。" },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "dynamic-clarification",
+            modelRef: "dynamic-clarification-model",
+            providerConfig: {
+              id: "dynamic-clarification",
+              label: "Dynamic Clarification",
+              type: "openai_compatible",
+              modelId: "dynamic-clarification-model",
+              baseUrl: "https://dynamic-clarification.test/v1",
+              apiKeyEnv: "DYNAMIC_CLARIFICATION_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["user.clarify"],
+            metadata: { progressNarration: true },
+          },
+        },
+      }) as { runId: string; status: string };
+      const blocked = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("interrupted");
+      expect(blocked.pendingClarifications).toHaveLength(1);
+      expect(blocked.pendingClarifications[0]).toMatchObject({
+        key: "target_environment",
+        question: "你希望我在哪个环境执行这一步？",
+        options: [
+          { id: "staging", label: "预发环境", value: "staging", description: "先在预发环境验证" },
+          { id: "production", label: "生产环境", value: "production" },
+        ],
+      });
+      expect(blocked.events.some((event) => event.type === "clarification.required")).toBe(true);
+      expect(blocked.toolCalls.find((call) => call.toolId === "user.clarify")).toMatchObject({ status: "succeeded" });
+
+      const resumed = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.resume",
+        params: {
+          runId: run.runId,
+          patch: { clarifications: { target_environment: "staging" } },
+        },
+      }));
+
+      expect(resumed.status).toBe("succeeded");
+      expect(resumed.pendingClarifications).toEqual([]);
+      expect(resumed.events.map((event) => event.type)).toContain("clarification.resolved");
+      expect(providerBodies.some((body) => body.includes("User-supplied clarification context"))).toBe(true);
+      expect(providerBodies.some((body) => body.includes("target_environment") && body.includes("staging"))).toBe(true);
+      expect(resumed.output?.text).toContain("staging 环境");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.DYNAMIC_CLARIFICATION_KEY;
+      } else {
+        process.env.DYNAMIC_CLARIFICATION_KEY = previousKey;
+      }
+    }
+  });
+
   it("does not interrupt ordinary style ambiguity", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);

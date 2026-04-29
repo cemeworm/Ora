@@ -13,6 +13,7 @@ interface ChatMessagesProps {
   hasApprovalTray?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
+  onSubmitClarificationOption?: (answer: string) => void;
 }
 
 export function ChatMessages({
@@ -23,6 +24,7 @@ export function ChatMessages({
   hasApprovalTray = false,
   onOpenArtifact,
   onSubmitFeedback,
+  onSubmitClarificationOption,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -49,6 +51,24 @@ export function ChatMessages({
                     ? ({ feedbackText }) => onSubmitFeedback(message, feedbackText)
                     : undefined}
                 />
+                {(message.clarificationOptions?.length ?? 0) > 0 && onSubmitClarificationOption ? (
+                  <div className="mx-auto mt-3 flex w-full max-w-container-md flex-wrap gap-2 px-2">
+                    {message.clarificationOptions.map((option) => {
+                      const answer = option.value?.trim() || option.label.trim();
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className="rounded-full border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:border-primary/50 hover:bg-muted active:scale-[0.98]"
+                          title={option.description}
+                          onClick={() => onSubmitClarificationOption(answer)}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             );
           }
