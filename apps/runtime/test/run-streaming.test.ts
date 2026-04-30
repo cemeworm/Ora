@@ -72,6 +72,14 @@ function agentMessage(id: string, createdAt = 1_714_000_000_001, content = "Open
       speakerLabel: "正方主辩",
       stance: "affirmative",
       status: "done",
+      layout: {
+        style: "two_sided_duel",
+        groupId: "debate",
+        sideByStance: {
+          affirmative: "left",
+          negative: "right",
+        },
+      },
     },
   };
 }
@@ -99,6 +107,7 @@ describe("streaming run snapshot projection", () => {
     expect(next.events).toHaveLength(1);
     expect(next.agentMessages).toHaveLength(1);
     expect(next.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
+    expect(next.agentMessages[0]?.transcript?.layout?.style).toBe("two_sided_duel");
   });
 
   it("replaces duplicate streamed agent messages by id", () => {

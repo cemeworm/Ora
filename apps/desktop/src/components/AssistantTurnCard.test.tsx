@@ -407,4 +407,306 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("协作轨迹");
     expect(visibleAgentMessages([transcriptMessage, collaborationMessage], "done").map((message) => message.id)).toEqual(["message-2"]);
   });
+
+  it("renders a custom two-sided staged transcript from layout metadata", () => {
+    const layout = {
+      style: "two_sided_duel",
+      groupId: "red-blue",
+      groupLabel: "Red/Blue Review",
+      stanceLabels: {
+        red_team: "Red Team",
+        blue_team: "Blue Team",
+      },
+      stanceTones: {
+        red_team: "red",
+        blue_team: "blue",
+      },
+      sideByStance: {
+        red_team: "left" as const,
+        blue_team: "right" as const,
+      },
+    };
+    const messages = [
+      agentMessage("message-red", "reply", "Attack the riskiest assumption.", {
+        transcript: {
+          kind: "stage_transcript",
+          groupId: "red-blue",
+          groupLabel: "Red/Blue Review",
+          stageId: "red-team-pressure",
+          stageLabel: "Pressure test",
+          sequence: 0,
+          speakerLabel: "Red Team",
+          speakerId: "reviewer",
+          stance: "red_team",
+          status: "done",
+          layout,
+        },
+      }),
+      agentMessage("message-blue", "reply", "Defend the launch plan.", {
+        transcript: {
+          kind: "stage_transcript",
+          groupId: "red-blue",
+          groupLabel: "Red/Blue Review",
+          stageId: "blue-team-defense",
+          stageLabel: "Defense",
+          sequence: 1,
+          speakerLabel: "Blue Team",
+          speakerId: "reviewer",
+          stance: "blue_team",
+          status: "done",
+          layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard
+        content="Final recommendation"
+        turn={{
+          runId: "run-1",
+          turnIndex: 1,
+          status: "done",
+          pattern: "orchestrator_subagent",
+          processSteps: [],
+          agentMessages: messages,
+          artifacts: [],
+          todos: [],
+          approvalCount: 0,
+          clarificationCount: 0,
+        }}
+      />,
+    );
+
+    expect(html).toContain("Red/Blue Review");
+    expect(html).toContain("Red Team");
+    expect(html).toContain("Blue Team");
+    expect(html).toContain("Attack the riskiest assumption.");
+    expect(html).toContain("Defend the launch plan.");
+  });
+
+  // ── P1 renderer tests ─────────────────────────────────────────────
+
+  it("renders rubric_matrix layout as a table with criteria rows and stance columns", () => {
+    const layout = {
+      style: "rubric_matrix",
+      groupId: "code-review",
+      groupLabel: "Code Review Rubric",
+      stanceLabels: { correctness: "正确性", readability: "可读性" },
+      stanceTones: { correctness: "green", readability: "blue" },
+    };
+    const messages = [
+      agentMessage("m1", "reply", "All tests pass.", {
+        transcript: {
+          kind: "stage_transcript",
+          groupId: "code-review",
+          groupLabel: "Code Review Rubric",
+          stageId: "criteria-1",
+          stageLabel: "逻辑正确",
+          sequence: 0,
+          speakerLabel: "Reviewer",
+          stance: "correctness",
+          status: "done",
+          layout,
+        },
+      }),
+      agentMessage("m2", "reply", "Variable names are clear.", {
+        transcript: {
+          kind: "stage_transcript",
+          groupId: "code-review",
+          groupLabel: "Code Review Rubric",
+          stageId: "criteria-1",
+          stageLabel: "逻辑正确",
+          sequence: 1,
+          speakerLabel: "Reviewer",
+          stance: "readability",
+          status: "done",
+          layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Review done" turn={{
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+      }} />,
+    );
+    expect(html).toContain("Code Review Rubric");
+    expect(html).toContain("逻辑正确");
+    expect(html).toContain("All tests pass.");
+    expect(html).toContain("Variable names are clear.");
+  });
+
+  it("renders judge_panel layout with verdict section for summary stances", () => {
+    const layout = {
+      style: "judge_panel",
+      groupId: "safety-gate",
+      groupLabel: "Safety Gate",
+      summaryStances: ["verdict"],
+      stanceLabels: { judge_1: "Judge 1", verdict: "Verdict" },
+      stanceTones: { judge_1: "blue", verdict: "violet" },
+    };
+    const messages = [
+      agentMessage("m1", "reply", "No critical issues found.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "safety-gate", groupLabel: "Safety Gate",
+          stageId: "review-1", stageLabel: "Review", sequence: 0,
+          speakerLabel: "Judge 1", stance: "judge_1", status: "done", layout,
+        },
+      }),
+      agentMessage("m2", "reply", "Approved to proceed.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "safety-gate", groupLabel: "Safety Gate",
+          stageId: "verdict", stageLabel: "Verdict", sequence: 1,
+          speakerLabel: "Verdict", stance: "verdict", status: "done", layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Gate passed" turn={{
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+      }} />,
+    );
+    expect(html).toContain("Safety Gate");
+    expect(html).toContain("No critical issues found.");
+    expect(html).toContain("Approved to proceed.");
+  });
+
+  it("renders evidence_board layout grouping entries by stance with color dots", () => {
+    const layout = {
+      style: "evidence_board",
+      groupId: "research",
+      groupLabel: "Evidence Board",
+      stanceLabels: { support: "Supporting", contradict: "Contradicting" },
+      stanceTones: { support: "green", contradict: "red" },
+    };
+    const messages = [
+      agentMessage("m1", "reply", "Data shows upward trend.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "research", groupLabel: "Evidence Board",
+          stageId: "find-1", stageLabel: "Finding", sequence: 0,
+          speakerLabel: "Researcher", stance: "support", status: "done", layout,
+        },
+      }),
+      agentMessage("m2", "reply", "Outlier contradicts the trend.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "research", groupLabel: "Evidence Board",
+          stageId: "find-2", stageLabel: "Finding", sequence: 1,
+          speakerLabel: "Researcher", stance: "contradict", status: "done", layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Research done" turn={{
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+      }} />,
+    );
+    expect(html).toContain("Evidence Board");
+    expect(html).toContain("Data shows upward trend.");
+    expect(html).toContain("Outlier contradicts the trend.");
+  });
+
+  it("renders comparison_table layout with dimension cards and side-by-side columns", () => {
+    const layout = {
+      style: "comparison_table",
+      groupId: "tool-compare",
+      groupLabel: "Tool Comparison",
+      stanceLabels: { option_a: "Option A", option_b: "Option B" },
+      stanceTones: { option_a: "green", option_b: "blue" },
+    };
+    const messages = [
+      agentMessage("m1", "reply", "Fast and lightweight.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "tool-compare", groupLabel: "Tool Comparison",
+          stageId: "performance", stageLabel: "Performance", sequence: 0,
+          speakerLabel: "Analyst", stance: "option_a", status: "done", layout,
+        },
+      }),
+      agentMessage("m2", "reply", "Battle-tested and stable.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "tool-compare", groupLabel: "Tool Comparison",
+          stageId: "performance", stageLabel: "Performance", sequence: 1,
+          speakerLabel: "Analyst", stance: "option_b", status: "done", layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Comparison done" turn={{
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+      }} />,
+    );
+    expect(html).toContain("Tool Comparison");
+    expect(html).toContain("Performance");
+    expect(html).toContain("Fast and lightweight.");
+    expect(html).toContain("Battle-tested and stable.");
+  });
+
+  it("renders artifact_gallery layout as a responsive card grid", () => {
+    const layout = {
+      style: "artifact_gallery",
+      groupId: "outputs",
+      groupLabel: "Generated Artifacts",
+    };
+    const messages = [
+      agentMessage("m1", "reply", "Module A implementation.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "outputs", groupLabel: "Generated Artifacts",
+          stageId: "artifact-1", stageLabel: "Module A", sequence: 0,
+          speakerLabel: "Builder", stance: "neutral", status: "done", layout,
+        },
+      }),
+      agentMessage("m2", "reply", "Module B implementation.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "outputs", groupLabel: "Generated Artifacts",
+          stageId: "artifact-2", stageLabel: "Module B", sequence: 1,
+          speakerLabel: "Builder", stance: "neutral", status: "done", layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="All done" turn={{
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+      }} />,
+    );
+    expect(html).toContain("Generated Artifacts");
+    expect(html).toContain("Module A implementation.");
+    expect(html).toContain("Module B implementation.");
+  });
+
+  it("renders kanban_pipeline layout with horizontal columns grouped by stage", () => {
+    const layout = {
+      style: "kanban_pipeline",
+      groupId: "pipeline",
+      groupLabel: "Processing Pipeline",
+    };
+    const messages = [
+      agentMessage("m1", "reply", "Item triaged.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "pipeline", groupLabel: "Processing Pipeline",
+          stageId: "triage", stageLabel: "Triage", sequence: 0,
+          speakerLabel: "Worker", stance: "neutral", status: "done", layout,
+        },
+      }),
+      agentMessage("m2", "reply", "Item processed.", {
+        transcript: {
+          kind: "stage_transcript", groupId: "pipeline", groupLabel: "Processing Pipeline",
+          stageId: "process", stageLabel: "Process", sequence: 1,
+          speakerLabel: "Worker", stance: "neutral", status: "done", layout,
+        },
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Pipeline done" turn={{
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+      }} />,
+    );
+    expect(html).toContain("Processing Pipeline");
+    expect(html).toContain("Item triaged.");
+    expect(html).toContain("Item processed.");
+    expect(html).toContain("Triage");
+    expect(html).toContain("Process");
+  });
 });

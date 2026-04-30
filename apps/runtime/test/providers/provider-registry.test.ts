@@ -189,6 +189,136 @@ describe("provider adapters", () => {
     expect(calls).toEqual(["https://openrouter.ai/api/v1/models"]);
   });
 
+  it("uses DeepSeek's real compatible model list endpoint", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ data: [{ id: "deepseek-chat" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const result = await fetchProviderModels({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.models).toEqual([{ id: "deepseek-chat", source: "remote" }]);
+    expect(calls).toEqual(["https://api.deepseek.com/models"]);
+  });
+
+  it("uses AiHubMix's catalog endpoint and parses model_id fields", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({
+        data: [{ model_id: "gpt-5.2", display_name: "GPT 5.2", provider: "openai" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const result = await fetchProviderModels({
+      id: "aihubmix",
+      type: "openai_compatible",
+      label: "AiHubMix",
+      modelId: "gpt-5.2",
+      baseUrl: "https://aihubmix.com/v1",
+      apiKeyEnv: "AIHUBMIX_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { AIHUBMIX_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.models).toEqual([{
+      id: "gpt-5.2",
+      name: "GPT 5.2",
+      ownedBy: "openai",
+      source: "remote",
+    }]);
+    expect(calls).toEqual(["https://aihubmix.com/api/v1/models?type=llm"]);
+  });
+
+  it("does not insert an extra /v1 for versioned compatible base URLs", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      if (String(input).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "glm-5" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const status = await verifyProviderConfig({
+      id: "zai-coding-plan",
+      type: "openai_compatible",
+      label: "Z.AI Coding Plan",
+      modelId: "glm-5",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      apiKeyEnv: "ZAI_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { ZAI_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(status.state).toBe("verified");
+    expect(calls).toEqual([
+      "https://api.z.ai/api/coding/paas/v4/models",
+      "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    ]);
+  });
+
+  it("keeps Gemini OpenAI-compatible model discovery under /v1beta/openai", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ data: [{ id: "gemini-2.5-flash" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const result = await fetchProviderModels({
+      id: "google-gemini",
+      type: "openai_compatible",
+      label: "Google Gemini",
+      modelId: "gemini-2.5-flash",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiKeyEnv: "GEMINI_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { GEMINI_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(calls).toEqual(["https://generativelanguage.googleapis.com/v1beta/openai/models"]);
+  });
+
   it("sends an OpenAI Responses API request and parses output_text", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);

@@ -246,6 +246,27 @@ describe("Ora shared contracts", () => {
     expect(debate.family).toBe("orchestrator_subagent");
     expect(debate.profiles.map((profile) => profile.id)).toEqual(["moderator", "debate_agent"]);
     expect(debate.nodes.map((node) => node.id)).toEqual(["frame", "debate", "synthesis"]);
+    expect(debate.stages?.map((stage) => stage.nodeId)).toEqual([
+      "debate",
+      "debate",
+      "debate",
+      "debate",
+      "debate",
+      "debate",
+      "debate",
+      "debate",
+      "synthesis",
+    ]);
+    expect(debate.stages?.every((stage) => debate.nodes.some((node) => node.id === stage.nodeId))).toBe(true);
+    expect(debate.stages?.every((stage) => !stage.speakerId || debate.profiles.some((profile) => profile.id === stage.speakerId))).toBe(true);
+    expect(debate.transcriptLayout).toMatchObject({
+      style: "two_sided_duel",
+      groupId: "debate",
+      sideByStance: {
+        affirmative: "left",
+        negative: "right",
+      },
+    });
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
@@ -364,6 +385,14 @@ describe("Ora shared contracts", () => {
 
     expect(parsed.runtimePolicy.thinking).toBe("standard");
     expect(parsed.runtimePolicy.budgetProfile).toBe("balanced");
+  });
+
+  it("accepts legacy mode specs without staged transcript declarations", () => {
+    const { stages: _stages, transcriptLayout: _transcriptLayout, ...legacy } = MVP_MODES.find((mode) => mode.id === DEBATE_MODE_ID)!;
+    const parsed = ModeSpecSchema.parse(legacy);
+
+    expect(parsed.stages).toBeUndefined();
+    expect(parsed.transcriptLayout).toBeUndefined();
   });
 
   it("validates recovery policy tool and skip constraints", () => {
@@ -661,20 +690,29 @@ describe("Ora shared contracts", () => {
       content: "The affirmative case stands unless the negative side proves the risk dominates.",
       transcript: {
         kind: "stage_transcript",
-        groupId: "debate",
-        groupLabel: "结构化辩论",
-        stageId: "affirmative-lead-opening",
-        stageLabel: "开篇立论",
+        groupId: "red-blue",
+        groupLabel: "Red/Blue Review",
+        stageId: "red-team-opening",
+        stageLabel: "Opening pressure",
         sequence: 0,
-        speakerLabel: "正方主辩",
-        speakerId: "affirmative_lead",
-        stance: "affirmative",
+        speakerLabel: "Red Team",
+        speakerId: "red_team",
+        stance: "red_team",
         status: "done",
+        layout: {
+          style: "two_sided_duel",
+          groupId: "red-blue",
+          sideByStance: {
+            red_team: "left",
+            blue_team: "right",
+          },
+        },
       },
     });
-    expect(transcriptMessage.transcript?.speakerLabel).toBe("正方主辩");
+    expect(transcriptMessage.transcript?.speakerLabel).toBe("Red Team");
     expect(transcriptMessage.transcript?.sequence).toBe(0);
-    expect(transcriptMessage.transcript?.stance).toBe("affirmative");
+    expect(transcriptMessage.transcript?.stance).toBe("red_team");
+    expect(transcriptMessage.transcript?.layout?.style).toBe("two_sided_duel");
 
     const decision = PolicyDecisionSchema.parse({
       id: "policy-1",

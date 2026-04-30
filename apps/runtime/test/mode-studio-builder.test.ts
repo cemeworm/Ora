@@ -111,6 +111,58 @@ describe("Mode Studio guided builder", () => {
     expect(store.listAgents()).toEqual([]);
   });
 
+  it("generates, applies, and runs a red-team blue-team staged mode with a duel transcript layout", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+    const bundle = store.generateModeStudioDraft({
+      messages: [
+        { role: "user", content: "做一个多个 agent 的 red team / blue team launch review mode。红队攻击上线计划风险，蓝队防守并给缓解方案，最终输出 go/no-go 结论、风险和验收标准，需要文件和搜索工具。" },
+      ],
+      baseModeId: "orchestrator_subagent",
+    });
+
+    expect(bundle.needsInput).toBe(false);
+    expect(bundle.validation.valid).toBe(true);
+    expect(bundle.modeDraft.family).toBe("orchestrator_subagent");
+    expect(bundle.modeDraft.profiles.map((profile) => profile.id)).toEqual(["moderator", "red_team", "blue_team"]);
+    expect(bundle.modeDraft.stages?.map((stage) => stage.stance)).toEqual([
+      "red_team",
+      "blue_team",
+      "red_team",
+      "blue_team",
+      "moderator",
+    ]);
+    expect(bundle.modeDraft.stages?.every((stage) => bundle.modeDraft.nodes.some((node) => node.id === stage.nodeId))).toBe(true);
+    expect(bundle.modeDraft.stages?.every((stage) => !stage.speakerId || bundle.modeDraft.profiles.some((profile) => profile.id === stage.speakerId))).toBe(true);
+    expect(bundle.modeDraft.transcriptLayout).toMatchObject({
+      style: "two_sided_duel",
+      groupId: "red-blue-review",
+      sideByStance: {
+        red_team: "left",
+        blue_team: "right",
+      },
+    });
+
+    const applied = store.applyModeStudioDraft({ draftBundle: bundle });
+    expect(applied.mode.stages).toHaveLength(5);
+    expect(store.getMode({ modeId: applied.mode.id }).transcriptLayout?.style).toBe("two_sided_duel");
+
+    const handle = await store.startRun({
+      input: { prompt: "Review the launch plan." },
+      config: { pattern: "orchestrator_subagent", modeId: applied.mode.id, providerId: "local-smoke", modelRef: "local/smoke-model" },
+    });
+    const state = store.getRunState({ runId: handle.runId });
+    const transcriptMessages = state.agentMessages.filter((message) => message.transcript);
+    expect(transcriptMessages).toHaveLength(5);
+    expect(transcriptMessages.map((message) => message.transcript?.stance)).toEqual([
+      "red_team",
+      "blue_team",
+      "red_team",
+      "blue_team",
+      "moderator",
+    ]);
+    expect(transcriptMessages[0]?.transcript?.layout?.style).toBe("two_sided_duel");
+  });
+
   it("returns proactive guidance instead of a full roster for vague prompts", () => {
     const store = new LocalRunStore({ dataDir: freshStoreDir() });
 
@@ -312,6 +364,72 @@ describe("Mode Studio guided builder", () => {
 
     expect(result.draftBundle?.modeDraft.label).toBe("Team Implementation");
     expect(result.draftBundle?.validation.valid).toBe(true);
+  });
+
+  it("repairs provider generated staged references before validation", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir() });
+    const base = createModeSpecFromPattern("orchestrator_subagent");
+    providerResponses.push(JSON.stringify({
+      assistantMessage: "已生成红蓝对抗审查 mode。",
+      needsInput: false,
+      modeDraft: {
+        ...base,
+        id: "red-blue-launch-review",
+        label: "Red Blue Launch Review",
+        summary: "Run a staged red-team blue-team launch review.",
+        systemPreset: false,
+        visibility: "user",
+        stages: [
+          {
+            id: "red-opening",
+            label: "Red opening",
+            nodeId: "missing-node",
+            speakerId: "missing-speaker",
+            speakerLabel: "Red Team",
+            stance: "red_team",
+            instruction: "Attack launch risk.",
+          },
+          {
+            id: "blue-response",
+            label: "Blue response",
+            nodeId: "missing-node",
+            speakerId: "missing-speaker",
+            speakerLabel: "Blue Team",
+            stance: "blue_team",
+            instruction: "Defend and mitigate.",
+          },
+        ],
+        transcriptLayout: {
+          style: "two_sided_duel",
+          groupId: "red-blue",
+          sideByStance: {
+            red_team: "left",
+            blue_team: "right",
+          },
+        },
+      },
+      agentDrafts: [],
+      changeSummary: ["Generated staged red/blue review."],
+      issues: [],
+    }));
+
+    const handle = await store.startModeStudioBuilderRun({
+      operation: "generate",
+      messages: [{ role: "user", content: "多个 agent 的 red team blue team launch review，最终输出 go/no-go、风险和验收标准。" }],
+      baseModeId: "orchestrator_subagent",
+      providerId: "mock-provider",
+      modelRef: "mock-model",
+    });
+    const result = store.modeStudioBuilderResult({ runId: handle.runId });
+
+    expect(result.draftBundle?.validation.valid).toBe(true);
+    expect(result.draftBundle?.modeDraft.stages?.every((stage) =>
+      result.draftBundle?.modeDraft.nodes.some((node) => node.id === stage.nodeId)
+    )).toBe(true);
+    expect(result.draftBundle?.modeDraft.stages?.every((stage) =>
+      !stage.speakerId || result.draftBundle?.modeDraft.profiles.some((profile) => profile.id === stage.speakerId)
+    )).toBe(true);
+    expect(result.draftBundle?.modeDraft.transcriptLayout?.style).toBe("two_sided_duel");
   });
 
   it("keeps provider clarification results non-apply-ready", async () => {

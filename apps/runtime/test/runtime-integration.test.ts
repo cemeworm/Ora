@@ -556,6 +556,82 @@ describe("LocalRunStore", () => {
     expect(transcriptMessages.at(-1)?.fromAgentId).toBe("moderator");
   });
 
+  it("runs a custom non-Debate staged mode through the generic transcript executor", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const base = createModeSpecFromPattern("orchestrator_subagent");
+    const researchNode = base.nodes.find((node) => node.template === "research")!;
+    const speakerId = researchNode.ownerAgentId ?? "researcher";
+    const customMode = {
+      ...base,
+      id: "red_blue_review",
+      label: "Red Blue Review",
+      summary: "Custom staged red-team and blue-team review.",
+      systemPreset: false,
+      stages: [
+        {
+          id: "red-team-pressure",
+          label: "Pressure test",
+          nodeId: researchNode.id,
+          speakerId,
+          speakerLabel: "Red Team",
+          stance: "red_team",
+          instruction: "Attack the proposal's riskiest assumption.",
+        },
+        {
+          id: "blue-team-defense",
+          label: "Defense",
+          nodeId: researchNode.id,
+          speakerId,
+          speakerLabel: "Blue Team",
+          stance: "blue_team",
+          instruction: "Defend the proposal against the red-team pressure.",
+        },
+      ],
+      transcriptLayout: {
+        style: "two_sided_duel",
+        groupId: "red-blue",
+        groupLabel: "Red/Blue Review",
+        sideByStance: {
+          red_team: "left",
+          blue_team: "right",
+        },
+      },
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const { systemPreset: _systemPreset, createdAt: _createdAt, updatedAt: _updatedAt, ...modePayload } = customMode;
+    await handle({
+      jsonrpc: "2.0",
+      id: "mode-create-red-blue",
+      method: "modes.create",
+      params: modePayload,
+    });
+
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: "start-red-blue",
+      method: "runs.start",
+      params: {
+        input: { prompt: "Review this launch plan." },
+        config: { pattern: "orchestrator_subagent", modeId: "red_blue_review" }
+      }
+    }) as { runId: string };
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: "state-red-blue",
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const transcriptMessages = state.agentMessages.filter((message) => message.transcript);
+
+    expect(state.modeId).toBe("red_blue_review");
+    expect(transcriptMessages).toHaveLength(2);
+    expect(transcriptMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["Red Team", "Blue Team"]);
+    expect(transcriptMessages.map((message) => message.transcript?.stance)).toEqual(["red_team", "blue_team"]);
+    expect(new Set(transcriptMessages.map((message) => message.transcript?.groupId))).toEqual(new Set(["red-blue"]));
+    expect(transcriptMessages[0]?.transcript?.layout?.style).toBe("two_sided_duel");
+  });
+
   it("injects stance-lock constraints into debate mode agent prompts", async () => {
     const handle = createRuntimeMethodHandler(createStore());
     const result = await handle({
