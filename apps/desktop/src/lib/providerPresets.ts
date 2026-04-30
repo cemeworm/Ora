@@ -498,8 +498,8 @@ export function createDraftFromProvider(provider: OraProviderConfig): ProviderDr
     anthropicVersion: provider.anthropicVersion ?? "2023-06-01",
     maxTokens: provider.maxTokens ? String(provider.maxTokens) : "",
     temperature: provider.temperature !== undefined ? String(provider.temperature) : "",
-    dropParams: provider.dropParams.join(", "),
-    capabilities: provider.capabilities,
+    dropParams: (provider.dropParams ?? []).join(", "),
+    capabilities: provider.capabilities?.length ? [...provider.capabilities] : ["chat"],
     headersText: formatHeaders(provider.headers),
     enabled: provider.enabled !== false,
   };

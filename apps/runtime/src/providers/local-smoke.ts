@@ -1,4 +1,4 @@
-import type { ProviderConfig } from "@ora/shared";
+import { ProviderModelsResultSchema, type ProviderConfig } from "@ora/shared";
 import { normalizeMessages, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta } from "./streaming.js";
@@ -42,6 +42,13 @@ export function createLocalSmokeProvider(
       raw,
     };
   };
+
+  provider.listModels = async () => ProviderModelsResultSchema.parse({
+    models: [{ id: "smoke-model", source: "local" }],
+    status: "ok",
+    authoritative: true,
+    fetchedAt: new Date().toISOString(),
+  });
 
   provider.stream = async (request, callbacks) => {
     const response = await provider(request);

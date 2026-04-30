@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, invokeRunProvider, verifyProviderConfig } from "../../src/providers/index.js";
+import { createDefaultProviderRegistry, createModelProvider, createProviderRegistry, fetchProviderModels, invokeRunProvider, verifyProviderConfig } from "../../src/providers/index.js";
 
 describe("provider adapters", () => {
   it("builds a deterministic local smoke response", async () => {
@@ -43,6 +43,150 @@ describe("provider adapters", () => {
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.at(-1)?.text).toBe(response?.text);
     expect(chunks.every((chunk) => chunk.text.endsWith(chunk.delta) || chunk.delta.trim().length > 0)).toBe(true);
+  });
+
+  it("lists local smoke models through the unified discovery path", async () => {
+    const result = await fetchProviderModels({
+      id: "local-smoke",
+      type: "local_smoke",
+      label: "Smoke",
+      modelId: "smoke-model",
+      headers: {},
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      authoritative: true,
+      models: [{ id: "smoke-model", source: "local" }],
+    });
+  });
+
+  it("fetches provider models before verify smoke calls and blocks missing authoritative models", async () => {
+    const calls: string[] = [];
+    const provider = {
+      id: "openrouter",
+      type: "openai_compatible" as const,
+      label: "OpenRouter",
+      modelId: "missing-model",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions" as const,
+      headers: {},
+    };
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ data: [{ id: "listed-model" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const status = await verifyProviderConfig(provider, {
+      env: { OPENROUTER_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(status.state).toBe("failed");
+    expect(status.detail).toContain("was not found in provider model list");
+    expect(calls).toEqual(["https://openrouter.ai/api/v1/models"]);
+  });
+
+  it("runs verify smoke call after an authoritative model list contains the model", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      if (String(input).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "listed-model" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const status = await verifyProviderConfig({
+      id: "openrouter",
+      type: "openai_compatible",
+      label: "OpenRouter",
+      modelId: "listed-model",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { OPENROUTER_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(status.state).toBe("verified");
+    expect(calls).toEqual([
+      "https://openrouter.ai/api/v1/models",
+      "https://openrouter.ai/api/v1/chat/completions",
+    ]);
+  });
+
+  it("continues verify smoke call when compatible model discovery is unsupported", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      if (String(input).endsWith("/models")) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const status = await verifyProviderConfig({
+      id: "openrouter",
+      type: "openai_compatible",
+      label: "OpenRouter",
+      modelId: "custom-model",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { OPENROUTER_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(status.state).toBe("verified");
+    expect(status.detail).toContain("Model discovery is not supported");
+    expect(calls).toEqual([
+      "https://openrouter.ai/api/v1/models",
+      "https://openrouter.ai/api/v1/chat/completions",
+    ]);
+  });
+
+  it("fails verify before smoke call when model discovery returns an error", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response("bad key", { status: 401 });
+    });
+
+    const status = await verifyProviderConfig({
+      id: "openrouter",
+      type: "openai_compatible",
+      label: "OpenRouter",
+      modelId: "custom-model",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { OPENROUTER_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    expect(status.state).toBe("failed");
+    expect(status.detail).toContain("Failed to fetch provider model list");
+    expect(calls).toEqual(["https://openrouter.ai/api/v1/models"]);
   });
 
   it("sends an OpenAI Responses API request and parses output_text", async () => {
@@ -790,12 +934,20 @@ describe("provider adapters", () => {
   });
 
   it("verifies provider configs and returns a verified status", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "OK" } }],
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "openai/gpt-4o-mini" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "OK" } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
 
     const status = await verifyProviderConfig(
       {

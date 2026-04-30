@@ -4,7 +4,7 @@ import type {
   ModeSpec,
   OraEventEnvelope,
   OraToolCallEnvelope,
-  type PendingClarificationOption,
+  PendingClarificationOption,
   RunConfig,
 } from "@ora/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";

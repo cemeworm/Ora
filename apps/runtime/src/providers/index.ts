@@ -19,6 +19,7 @@ export {
   createProviderRegistry,
   createProviderRegistryForRun,
   invokeRunProvider,
+  fetchProviderModels,
   invokeRunProviderStream,
   verifyProviderConfig,
 } from "./registry.js";

@@ -1,4 +1,4 @@
-import type { ModeReasoningEffort, ProviderConfig, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@ora/shared";
+import type { ModeReasoningEffort, ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@ora/shared";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -69,6 +69,7 @@ export interface ProviderRuntimeOptions {
 export interface ModelProvider {
   (request: ModelRequest): Promise<ModelResponse>;
   stream?: (request: ModelRequest, callbacks?: ModelStreamCallbacks) => Promise<ModelResponse>;
+  listModels?: () => Promise<ProviderModelsResult>;
 }
 
 export interface ProviderRegistry {

@@ -12,5 +12,6 @@ export function createAnthropicCompatibleProvider(
     defaultOrigin: config.baseUrl ?? "https://api.anthropic.com",
     defaultVersion: config.anthropicVersion ?? "2023-06-01",
     errorLabel: "Anthropic-compatible",
+    unsupportedOnNotImplemented: true,
   });
 }

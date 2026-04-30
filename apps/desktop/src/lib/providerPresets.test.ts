@@ -164,6 +164,25 @@ describe("provider presets", () => {
     expect(catalog.some((entry) => entry.providers.some((provider) => provider.id === "local-smoke"))).toBe(false);
     expect(catalog.some((entry) => entry.preset.id === "local-smoke")).toBe(false);
   });
+
+  it("tolerates legacy provider configs without defaulted arrays", () => {
+    const legacyProvider = {
+      id: "legacy-openai",
+      type: "openai_compatible",
+      label: "Legacy OpenAI-compatible",
+      modelId: "legacy-model",
+      enabled: true,
+      baseUrl: "https://legacy.example/v1",
+      apiKeyEnv: "LEGACY_API_KEY",
+      protocol: "chat_completions",
+    } as unknown as OraProviderConfig;
+
+    const catalog = buildProviderCatalog([legacyProvider]);
+    const entry = catalog.find((candidate) => candidate.key === "provider:legacy-openai");
+
+    expect(entry?.draft.dropParams).toBe("");
+    expect(entry?.draft.capabilities).toEqual(["chat"]);
+  });
 });
 
 describe("provider options", () => {

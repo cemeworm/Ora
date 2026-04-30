@@ -1,5 +1,5 @@
-import type { ProviderConfig, ProviderRegistry as SharedProviderRegistry, ProviderStatus, RunConfig } from "@ora/shared";
-import { DEFAULT_PROVIDERS } from "@ora/shared";
+import type { ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderStatus, RunConfig } from "@ora/shared";
+import { DEFAULT_PROVIDERS, ProviderModelsResultSchema } from "@ora/shared";
 import { createAnthropicProvider } from "./anthropic.js";
 import { createAnthropicCompatibleProvider } from "./anthropic-compatible.js";
 import { createLocalSmokeProvider } from "./local-smoke.js";
@@ -16,7 +16,7 @@ type ProviderRegistryOptions = ProviderRuntimeOptions & {
 
 export function createModelProvider(
   config: ProviderConfig,
-  options: ProviderRegistryOptions = {}
+  options: ProviderRuntimeOptions = {}
 ): ModelProvider {
   switch (config.type) {
     case "anthropic":
@@ -29,6 +29,33 @@ export function createModelProvider(
       return createOpenAICompatibleProvider(config, options);
     case "local_smoke":
       return createLocalSmokeProvider(config, options);
+  }
+}
+
+export async function fetchProviderModels(
+  config: ProviderConfig,
+  options: ProviderRuntimeOptions = {}
+): Promise<ProviderModelsResult> {
+  try {
+    const provider = createModelProvider(config, options);
+    if (!provider.listModels) {
+      return ProviderModelsResultSchema.parse({
+        models: [],
+        status: "unsupported",
+        authoritative: false,
+        message: `Provider ${config.id} does not expose model discovery.`,
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+    return ProviderModelsResultSchema.parse(await provider.listModels());
+  } catch (error) {
+    return ProviderModelsResultSchema.parse({
+      models: [],
+      status: "error",
+      authoritative: false,
+      message: error instanceof Error ? error.message : "Failed to fetch provider model list.",
+      fetchedAt: new Date().toISOString(),
+    });
   }
 }
 
@@ -179,15 +206,6 @@ export async function verifyProviderConfig(
   config: ProviderConfig,
   options: ProviderRuntimeOptions = {}
 ): Promise<ProviderStatus> {
-  if (config.type === "local_smoke") {
-    return {
-      providerId: config.id,
-      state: "verified",
-      detail: "Local smoke provider is ready.",
-      checkedAt: Date.now(),
-    };
-  }
-
   if (!config.modelId.trim()) {
     return {
       providerId: config.id,
@@ -206,6 +224,37 @@ export async function verifyProviderConfig(
     };
   }
 
+  const modelList = await fetchProviderModels(config, options);
+  if (modelList.status === "error") {
+    return {
+      providerId: config.id,
+      state: "failed",
+      detail: `Failed to fetch provider model list: ${modelList.message ?? "Unknown error"}`,
+      checkedAt: Date.now(),
+    };
+  }
+
+  if (modelList.status === "ok" && modelList.authoritative) {
+    const modelIds = new Set(modelList.models.map((model) => model.id));
+    if (!modelIds.has(config.modelId)) {
+      return {
+        providerId: config.id,
+        state: "failed",
+        detail: `Model "${config.modelId}" was not found in provider model list.`,
+        checkedAt: Date.now(),
+      };
+    }
+  }
+
+  if (config.type === "local_smoke") {
+    return {
+      providerId: config.id,
+      state: "verified",
+      detail: "Local smoke provider is ready.",
+      checkedAt: Date.now(),
+    };
+  }
+
   try {
     const provider = createModelProvider(config, options);
     await provider({
@@ -218,7 +267,9 @@ export async function verifyProviderConfig(
     return {
       providerId: config.id,
       state: "verified",
-      detail: "Connection verified.",
+      detail: modelList.status === "unsupported"
+        ? "Connection verified. Model discovery is not supported by this provider, so the model was verified by smoke call only."
+        : "Connection verified.",
       checkedAt: Date.now(),
     };
   } catch (error) {

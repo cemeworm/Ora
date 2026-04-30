@@ -1,7 +1,145 @@
-import type { ProviderConfig } from "@ora/shared";
+import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@ora/shared";
 import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractTextFromValue, failMissingApiKey, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelMessage, ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { anthropicTextDelta, emitTextDelta, readSseMessages } from "./streaming.js";
+
+function parseAnthropicModels(raw: unknown): ProviderModelsResult["models"] {
+  const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+  const source = Array.isArray(record?.data)
+    ? record.data
+    : Array.isArray(record?.models)
+      ? record.models
+      : undefined;
+  if (!source) {
+    return [];
+  }
+
+  return source.flatMap((entry) => {
+    if (typeof entry === "string" && entry.trim()) {
+      return [{ id: entry, source: "remote" as const }];
+    }
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const model = entry as Record<string, unknown>;
+    const id = typeof model.id === "string"
+      ? model.id
+      : typeof model.name === "string"
+        ? model.name
+        : undefined;
+    if (!id?.trim()) {
+      return [];
+    }
+    return [{
+      id,
+      name: typeof model.display_name === "string"
+        ? model.display_name
+        : typeof model.name === "string" && model.name !== id
+          ? model.name
+          : undefined,
+      created: typeof model.created === "number" && Number.isInteger(model.created) && model.created >= 0
+        ? model.created
+        : undefined,
+      ownedBy: typeof model.owned_by === "string" ? model.owned_by : undefined,
+      source: "remote" as const,
+    }];
+  });
+}
+
+function unsupportedAnthropicModelsResult(config: ProviderConfig): ProviderModelsResult {
+  return ProviderModelsResultSchema.parse({
+    models: [],
+    status: "unsupported",
+    authoritative: false,
+    message: `Provider ${config.id} does not expose model discovery.`,
+    fetchedAt: new Date().toISOString(),
+  });
+}
+
+export async function listAnthropicStyleModels(
+  config: ProviderConfig,
+  options: ProviderRuntimeOptions = {},
+  settings: {
+    fallbackEnvName: string;
+    allowCustomBaseUrl?: boolean;
+    defaultOrigin?: string;
+    defaultVersion?: string;
+    errorLabel?: string;
+    unsupportedOnNotImplemented?: boolean;
+  }
+): Promise<ProviderModelsResult> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const env = options.env ?? process.env;
+  const apiKey = readProviderApiKey(config, settings.fallbackEnvName, env);
+  if (!apiKey) {
+    return ProviderModelsResultSchema.parse({
+      models: [],
+      status: "error",
+      authoritative: false,
+      message: failMissingApiKey(config.id, settings.fallbackEnvName).message,
+      fetchedAt: new Date().toISOString(),
+    });
+  }
+
+  try {
+    const response = await fetchImpl(resolveProviderEndpoint({
+      providerId: config.id,
+      baseUrl: config.baseUrl,
+      defaultOrigin: settings.defaultOrigin ?? "https://api.anthropic.com",
+      path: "/v1/models",
+      env,
+      allowCustomBaseUrl: settings.allowCustomBaseUrl,
+    }), {
+      method: "GET",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": config.anthropicVersion ?? settings.defaultVersion ?? "2023-06-01",
+        ...(config.headers ?? {}),
+      },
+    });
+    const rawText = await response.text();
+    if (settings.unsupportedOnNotImplemented && [404, 405, 501].includes(response.status)) {
+      return unsupportedAnthropicModelsResult(config);
+    }
+    if (!response.ok) {
+      return ProviderModelsResultSchema.parse({
+        models: [],
+        status: "error",
+        authoritative: false,
+        message: `${settings.errorLabel ?? "Anthropic"} provider ${config.id} model list failed with ${response.status}: ${rawText}`,
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+
+    const raw = rawText ? JSON.parse(rawText) : {};
+    const models = parseAnthropicModels(raw);
+    if (models.length === 0) {
+      return settings.unsupportedOnNotImplemented
+        ? unsupportedAnthropicModelsResult(config)
+        : ProviderModelsResultSchema.parse({
+            models: [],
+            status: "error",
+            authoritative: false,
+            message: `${settings.errorLabel ?? "Anthropic"} provider ${config.id} returned no parseable model IDs.`,
+            fetchedAt: new Date().toISOString(),
+          });
+    }
+    return ProviderModelsResultSchema.parse({
+      models,
+      status: "ok",
+      authoritative: true,
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    return ProviderModelsResultSchema.parse({
+      models: [],
+      status: "error",
+      authoritative: false,
+      message: error instanceof Error ? error.message : "Failed to fetch Anthropic model list.",
+      fetchedAt: new Date().toISOString(),
+    });
+  }
+}
 
 export function createAnthropicStyleProvider(
   config: ProviderConfig,
@@ -12,6 +150,7 @@ export function createAnthropicStyleProvider(
     defaultOrigin?: string;
     defaultVersion?: string;
     errorLabel?: string;
+    unsupportedOnNotImplemented?: boolean;
   }
 ): ModelProvider {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -122,6 +261,8 @@ export function createAnthropicStyleProvider(
         : undefined,
     } satisfies ModelResponse;
   };
+
+  provider.listModels = () => listAnthropicStyleModels(config, options, settings);
 
   provider.stream = async (request, callbacks) => {
     const apiKey = readProviderApiKey(config, settings.fallbackEnvName, env);

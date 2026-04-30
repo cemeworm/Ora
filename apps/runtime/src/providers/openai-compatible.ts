@@ -1,4 +1,4 @@
-import type { ProviderConfig } from "@ora/shared";
+import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@ora/shared";
 import {
   appendIfDefined,
   buildResponsesInput,
@@ -23,6 +23,135 @@ import { emitTextDelta, openAiChatDelta, openAiResponsesDelta, readSseMessages }
 
 function createError(status: number, body: string, providerId: string) {
   return new Error(`OpenAI-compatible provider ${providerId} failed with ${status}: ${body}`);
+}
+
+function compatibleEnvName(config: ProviderConfig) {
+  return config.apiKeyEnv ?? `${config.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+}
+
+function parseCompatibleModels(raw: unknown): ProviderModelsResult["models"] {
+  const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+  const source = Array.isArray(record?.data)
+    ? record.data
+    : Array.isArray(record?.models)
+      ? record.models
+      : undefined;
+  if (!source) {
+    return [];
+  }
+
+  return source.flatMap((entry) => {
+    if (typeof entry === "string" && entry.trim()) {
+      return [{ id: entry, source: "remote" as const }];
+    }
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const model = entry as Record<string, unknown>;
+    const id = typeof model.id === "string"
+      ? model.id
+      : typeof model.name === "string"
+        ? model.name
+        : undefined;
+    if (!id?.trim()) {
+      return [];
+    }
+    return [{
+      id,
+      name: typeof model.name === "string" && model.name !== id ? model.name : undefined,
+      created: typeof model.created === "number" && Number.isInteger(model.created) && model.created >= 0
+        ? model.created
+        : undefined,
+      ownedBy: typeof model.owned_by === "string" ? model.owned_by : undefined,
+      source: "remote" as const,
+    }];
+  });
+}
+
+function unsupportedModelsResult(message: string): ProviderModelsResult {
+  return ProviderModelsResultSchema.parse({
+    models: [],
+    status: "unsupported",
+    authoritative: false,
+    message,
+    fetchedAt: new Date().toISOString(),
+  });
+}
+
+export async function listOpenAICompatibleModels(
+  config: ProviderConfig,
+  options: ProviderRuntimeOptions = {}
+): Promise<ProviderModelsResult> {
+  if (!config.baseUrl) {
+    return ProviderModelsResultSchema.parse({
+      models: [],
+      status: "error",
+      authoritative: false,
+      message: `OpenAI-compatible provider ${config.id} requires a baseUrl`,
+      fetchedAt: new Date().toISOString(),
+    });
+  }
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const env = options.env ?? process.env;
+  const envName = compatibleEnvName(config);
+  const apiKey = readProviderApiKey(config, envName, env);
+  if (!apiKey) {
+    return ProviderModelsResultSchema.parse({
+      models: [],
+      status: "error",
+      authoritative: false,
+      message: failMissingApiKey(config.id, `${envName} or macOS Keychain service ora.provider.${config.id}`).message,
+      fetchedAt: new Date().toISOString(),
+    });
+  }
+
+  try {
+    const response = await fetchImpl(resolveCompatibleProviderEndpoint({
+      providerId: config.id,
+      baseUrl: config.baseUrl,
+      path: "/models",
+    }), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...(config.headers ?? {}),
+      },
+    });
+    const rawText = await response.text();
+    if ([404, 405, 501].includes(response.status)) {
+      return unsupportedModelsResult(`Provider ${config.id} does not expose model discovery.`);
+    }
+    if (!response.ok) {
+      return ProviderModelsResultSchema.parse({
+        models: [],
+        status: "error",
+        authoritative: false,
+        message: `OpenAI-compatible provider ${config.id} model list failed with ${response.status}: ${rawText}`,
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+
+    const raw = rawText ? JSON.parse(rawText) : {};
+    const models = parseCompatibleModels(raw);
+    if (models.length === 0) {
+      return unsupportedModelsResult(`Provider ${config.id} returned no parseable model IDs.`);
+    }
+    return ProviderModelsResultSchema.parse({
+      models,
+      status: "ok",
+      authoritative: true,
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    return ProviderModelsResultSchema.parse({
+      models: [],
+      status: "error",
+      authoritative: false,
+      message: error instanceof Error ? error.message : "Failed to fetch OpenAI-compatible model list.",
+      fetchedAt: new Date().toISOString(),
+    });
+  }
 }
 
 function configuredPayload<T extends Record<string, unknown>>(payload: T, dropParams: readonly string[]): T {
@@ -126,7 +255,7 @@ export function createOpenAICompatibleProvider(
       throw new Error(`OpenAI-compatible provider ${config.id} requires a baseUrl`);
     }
 
-    const envName = config.apiKeyEnv ?? `${config.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+    const envName = compatibleEnvName(config);
     const apiKey = readProviderApiKey(config, envName, env);
     if (!apiKey) {
       throw failMissingApiKey(config.id, `${envName} or macOS Keychain service ora.provider.${config.id}`);
@@ -183,12 +312,14 @@ export function createOpenAICompatibleProvider(
     } satisfies ModelResponse;
   };
 
+  provider.listModels = () => listOpenAICompatibleModels(config, options);
+
   provider.stream = async (request, callbacks) => {
     if (!config.baseUrl) {
       throw new Error(`OpenAI-compatible provider ${config.id} requires a baseUrl`);
     }
 
-    const envName = config.apiKeyEnv ?? `${config.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+    const envName = compatibleEnvName(config);
     const apiKey = readProviderApiKey(config, envName, env);
     if (!apiKey) {
       throw failMissingApiKey(config.id, `${envName} or macOS Keychain service ora.provider.${config.id}`);

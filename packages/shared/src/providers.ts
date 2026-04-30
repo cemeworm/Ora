@@ -80,6 +80,35 @@ export const ProviderStatusSchema = z.object({
 });
 export type ProviderStatus = z.infer<typeof ProviderStatusSchema>;
 
+export const ProviderModelSourceSchema = z.enum(["remote", "preset", "local"]);
+export type ProviderModelSource = z.infer<typeof ProviderModelSourceSchema>;
+
+export const ProviderModelSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).optional(),
+  created: z.number().int().nonnegative().optional(),
+  ownedBy: z.string().min(1).optional(),
+  source: ProviderModelSourceSchema.optional(),
+});
+export type ProviderModel = z.infer<typeof ProviderModelSchema>;
+
+export const ProviderModelsStatusSchema = z.enum(["ok", "unsupported", "error"]);
+export type ProviderModelsStatus = z.infer<typeof ProviderModelsStatusSchema>;
+
+export const ProviderModelsParamsSchema = z.object({
+  provider: ProviderConfigSchema,
+});
+export type ProviderModelsParams = z.infer<typeof ProviderModelsParamsSchema>;
+
+export const ProviderModelsResultSchema = z.object({
+  models: z.array(ProviderModelSchema),
+  status: ProviderModelsStatusSchema,
+  authoritative: z.boolean(),
+  message: z.string().min(1).optional(),
+  fetchedAt: z.string().datetime().optional(),
+});
+export type ProviderModelsResult = z.infer<typeof ProviderModelsResultSchema>;
+
 export const ProviderVerifyParamsSchema = z.object({
   provider: ProviderConfigSchema,
 });
