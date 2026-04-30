@@ -212,7 +212,7 @@ function createResponsesPayload(config: ProviderConfig, request: Parameters<Mode
     : withTools;
 
   return configuredPayload(
-    appendIfDefined(withChoice, "temperature", request.temperature ?? config.temperature),
+    appendIfDefined(withChoice, "temperature", config.temperature ?? request.temperature),
     config.dropParams ?? []
   );
 }
@@ -225,6 +225,7 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     ...(instructions ? [{ role: "system", content: instructions }] : []),
     ...dialog.map((message) => {
       if (message.role === "tool") {
+        if (!message.toolCallId) return undefined;
         return {
           role: "tool",
           tool_call_id: message.toolCallId,
@@ -250,7 +251,7 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
         role: message.role === "developer" ? "system" : message.role,
         content: message.content,
       };
-    }),
+    }).filter(Boolean),
   ];
 
   const body = appendIfDefined(
@@ -268,7 +269,7 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     : withTools;
 
   return configuredPayload(
-    appendIfDefined(withChoice, "temperature", request.temperature ?? config.temperature),
+    appendIfDefined(withChoice, "temperature", config.temperature ?? request.temperature),
     config.dropParams ?? []
   );
 }

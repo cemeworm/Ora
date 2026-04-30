@@ -209,7 +209,7 @@ export function createAnthropicStyleProvider(
     return appendIfDefined(
       withChoice,
       "temperature",
-      request.temperature ?? config.temperature
+      config.temperature ?? request.temperature
     );
   };
 

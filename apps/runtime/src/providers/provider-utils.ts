@@ -241,7 +241,9 @@ export function extractOpenAiChatStreamToolCalls(rawEvents: readonly unknown[], 
         const existing = calls.get(index) ?? { arguments: "", raw: [] };
         const fn = record.function && typeof record.function === "object" ? record.function as Record<string, unknown> : {};
         calls.set(index, {
-          id: typeof record.id === "string" ? record.id : existing.id,
+          id: typeof record.id === "string" ? record.id
+            : typeof record.call_id === "string" ? record.call_id
+            : existing.id,
           name: typeof fn.name === "string" ? fn.name : existing.name,
           arguments: existing.arguments + (typeof fn.arguments === "string" ? fn.arguments : ""),
           raw: [...existing.raw, record],

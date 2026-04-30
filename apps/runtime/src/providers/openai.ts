@@ -122,7 +122,7 @@ export function createOpenAIProvider(
     const payload = appendIfDefined(
       withChoice,
       "temperature",
-      request.temperature ?? config.temperature
+      config.temperature ?? request.temperature
     );
 
     const response = await fetchImpl(resolveProviderEndpoint({
@@ -188,7 +188,7 @@ export function createOpenAIProvider(
     const payload = appendIfDefined(
       withChoice,
       "temperature",
-      request.temperature ?? config.temperature
+      config.temperature ?? request.temperature
     );
 
     const response = await fetchImpl(resolveProviderEndpoint({
