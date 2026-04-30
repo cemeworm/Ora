@@ -1,7 +1,7 @@
 # TASK-20260430-1502-ora-onboarding-first-use
 
 **Created:** 2026-04-30 15:02 GMT+8
-**Status:** In Progress
+**Status:** Implementation Complete / Manual Verification Pending
 **Source of Truth:** This file is the authoritative plan and task journal for the Ora first-use onboarding iteration. Chat summaries are non-authoritative.
 
 ---
@@ -183,12 +183,12 @@ Warm workbench onboarding. The page should feel like an Ora workspace panel, not
 ## Active Files
 - `tasks/TASK-20260430-1502-ora-onboarding-first-use.md`
 - `apps/desktop/src/App.tsx`
-- `apps/desktop/src/lib/onboarding.ts` (planned new)
+- `apps/desktop/src/lib/onboarding.ts`
 - `apps/desktop/src/lib/providerPresets.ts`
-- `apps/desktop/src/hooks/useProviderSetup.ts` (planned new)
+- `apps/desktop/src/hooks/useProviderSetup.ts`
 - `apps/desktop/src/components/SettingsView.tsx`
-- `apps/desktop/src/components/onboarding/OnboardingView.tsx` (planned new)
-- `apps/desktop/src/components/onboarding/ProviderOnboardingStep.tsx` (planned new)
+- `apps/desktop/src/components/onboarding/OnboardingView.tsx`
+- `apps/desktop/src/components/onboarding/ProviderOnboardingStep.tsx`
 - `apps/desktop/src/components/ChatView.tsx` (read/coordination only unless needed)
 - `apps/desktop/src/components/ModesView.tsx` (reference only)
 
@@ -219,52 +219,66 @@ Warm workbench onboarding. The page should feel like an Ora workspace panel, not
   - Tradeoffs: Lower implementation risk; less hands-on mode setup during first run.
 
 ## Open Issues
-- [ ] Confirm exact sort direction for `onboardingPriority` before implementation. Recommendation: lower number means earlier display, or document the chosen convention in code.
-- [ ] Confirm whether OpenRouter is the only provider with known free model availability for v1. Recommendation: only OpenRouter gets `freeTier` initially unless another provider is explicitly verified.
-- [ ] During implementation, inspect `actions.storeProviderSecret` behavior to ensure secret write can be awaited or followed by verification reliably.
+- [x] Confirm exact sort direction for `onboardingPriority` before implementation. Chosen convention: lower number renders earlier.
+- [x] Confirm whether OpenRouter is the only provider with known free model availability for v1. Only OpenRouter gets `freeTier` initially.
+- [x] During implementation, inspect `actions.storeProviderSecret` behavior to ensure secret write can be awaited or followed by verification reliably. It is awaitable and followed by verify in the shared hook, though it catches errors internally.
+- [ ] TODO(FOLLOWUP): Validate successful provider verification with a real OpenRouter/API key in the native desktop app.
+- [ ] TODO(FOLLOWUP): Run a native Settings provider configuration regression with a real provider key.
 
 ## TODO
-- [ ] Implement `apps/desktop/src/lib/onboarding.ts`.
-- [ ] Add provider free-tier metadata to `apps/desktop/src/lib/providerPresets.ts`.
-- [ ] Extract minimal `apps/desktop/src/hooks/useProviderSetup.ts`.
-- [ ] Update `apps/desktop/src/components/SettingsView.tsx` to use shared provider setup logic without changing unrelated sections.
-- [ ] Create `apps/desktop/src/components/onboarding/OnboardingView.tsx`.
-- [ ] Create `apps/desktop/src/components/onboarding/ProviderOnboardingStep.tsx`.
-- [ ] Integrate onboarding gating in `apps/desktop/src/App.tsx`.
-- [ ] Run typecheck and tests.
-- [ ] Perform manual first-run verification matrix.
+- [x] Implement `apps/desktop/src/lib/onboarding.ts`.
+- [x] Add provider free-tier metadata to `apps/desktop/src/lib/providerPresets.ts`.
+- [x] Extract minimal `apps/desktop/src/hooks/useProviderSetup.ts`.
+- [x] Update `apps/desktop/src/components/SettingsView.tsx` to use shared provider setup logic without changing unrelated sections.
+- [x] Create `apps/desktop/src/components/onboarding/OnboardingView.tsx`.
+- [x] Create `apps/desktop/src/components/onboarding/ProviderOnboardingStep.tsx`.
+- [x] Integrate onboarding gating in `apps/desktop/src/App.tsx`.
+- [x] Run typecheck and tests.
+- [ ] TODO(FOLLOWUP): Perform real-key/native Settings portions of the manual first-run verification matrix.
 
 ## Retrospective
-- No implementation retrospective yet. Fill after the first meaningful build/rework loop.
+- Pitfall: Manual provider verification cannot be fully proven without a real external API key.
+  - Status: local_only
+  - Evidence: Headless UI covered empty-key and skip behavior; valid-key flow remains a documented follow-up.
+  - Guardrail: Keep external-service happy-path checks as explicit residual risk unless credentials are available.
+- Pitfall: Repo-wide TODO helper is noisy in this workspace.
+  - Status: local_only
+  - Evidence: `todo_scan.sh` emitted historical/generated task TODO noise; touched-file `rg` fallback over onboarding files returned no matches.
+  - Guardrail: Pair long-task helper output with touched-file TODO/FIXME scan when closing Ora tasks.
 
 ## Functional Verification
 
 ### Code Verification (Code Correctness)
-- [ ] Desktop typecheck passes.
-- [ ] Unit tests pass where available.
-- [ ] No unintended changes outside onboarding/provider setup files.
+- [x] Desktop typecheck passes.
+- [x] Unit tests pass where available.
+- [x] No unintended changes outside onboarding/provider setup files from this implementation pass.
 
 **Output:** Paste command outputs after implementation.
 
 ### Functional Verification (Feature Works)
-- [ ] First-run display:
+- [x] First-run display:
   - Method: clear `ora.onboarding.v1` and ensure no verified non-local provider.
   - Expected: full-screen onboarding appears.
-- [ ] Skip behavior:
+  - Evidence: Chrome headless CDP on `http://127.0.0.1:1421/` reported `HAS_ONBOARDING true`.
+- [x] Skip behavior:
   - Method: click Skip, refresh/restart.
   - Expected: onboarding does not reappear.
+  - Evidence: Chrome headless CDP reported `STORAGE_AFTER_SKIP skipped` and `ONBOARDING_AFTER_SKIP false`.
 - [ ] Existing provider bypass:
   - Method: have at least one verified non-`local_smoke` provider.
   - Expected: onboarding does not appear.
-- [ ] Provider first row:
+- [x] Provider first row:
   - Method: inspect provider onboarding UI.
   - Expected: OpenRouter appears in free-tier/recommended row.
-- [ ] Full provider row:
+  - Evidence: Chrome headless CDP provider-step check reported `HAS_OPENROUTER true` and `HAS_FREE_ROW true`.
+- [x] Full provider row:
   - Method: inspect provider onboarding UI.
   - Expected: all user-visible provider presets appear in full list; `local_smoke` is excluded.
-- [ ] Empty API key handling:
+  - Evidence: Chrome headless CDP provider-step check reported `HAS_FULL_LIST true` and `HAS_LOCAL_SMOKE false`.
+- [x] Empty API key handling:
   - Method: attempt verify with blank key.
   - Expected: no verification or clear validation message.
+  - Evidence: Chrome headless CDP reported `EMPTY_KEY_ERROR true`.
 - [ ] Invalid API key handling:
   - Method: attempt verify with invalid key.
   - Expected: verification failure is shown; onboarding remains usable; Skip still works.
@@ -274,6 +288,7 @@ Warm workbench onboarding. The page should feel like an Ora workspace panel, not
 - [ ] Settings regression:
   - Method: configure/verify provider from Settings after hook extraction.
   - Expected: existing Settings provider flow still works.
+  - Evidence so far: typecheck/tests pass after extraction; native real-key regression remains TODO(FOLLOWUP).
 
 **Output:** Paste manual verification results after implementation.
 
@@ -299,26 +314,26 @@ Warm workbench onboarding. The page should feel like an Ora workspace panel, not
 ### Checkpoint 1: First-run gating
 - Requirement: Show onboarding only for fresh users without a verified real provider.
 - Verification method: manual localStorage/provider status matrix.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending implementation.
+- Status: [x] Pass / [ ] Fail
+- Evidence: Headless Chrome CDP after clearing `ora.onboarding.v1` showed onboarding; Skip wrote `skipped` and removed onboarding on the next render. Existing verified-provider bypass still needs a real verified provider for manual confirmation.
 
 ### Checkpoint 2: Provider metadata and layout
 - Requirement: Providers are separated into free-tier/recommended row and full-list row.
 - Verification method: inspect rendered onboarding UI and provider catalog output.
-- Status: [ ] Pass / [ ] Fail
-- Evidence: Pending implementation.
+- Status: [x] Pass / [ ] Fail
+- Evidence: Headless Chrome CDP showed `OpenRouter`, `Start with a free-model option`, and `Full provider list`; `Local Smoke` was absent. Desktop and mobile screenshots saved at `/tmp/ora-onboarding/provider-step.png` and `/tmp/ora-onboarding/provider-step-mobile.png`.
 
 ### Checkpoint 3: Embedded provider verification
 - Requirement: User can paste API Key, verify, enable provider, and finish onboarding.
 - Verification method: manual valid/invalid key tests plus provider status inspection.
 - Status: [ ] Pass / [ ] Fail
-- Evidence: Pending implementation.
+- Evidence: Empty API key path shows inline validation. Valid/invalid external-key paths need real provider credentials.
 
 ### Checkpoint 4: Settings regression safety
 - Requirement: Existing Settings provider configuration remains functional.
 - Verification method: manually verify provider from Settings and run typecheck/tests.
 - Status: [ ] Pass / [ ] Fail
-- Evidence: Pending implementation.
+- Evidence: `pnpm --filter @ora/desktop typecheck` and `pnpm --filter @ora/desktop test` pass after extracting `useProviderSetup`; native real-key Settings regression remains pending.
 
 **All checkpoints must pass before marking task DONE.**
 
@@ -330,10 +345,10 @@ Warm workbench onboarding. The page should feel like an Ora workspace panel, not
 - Key new files: `lib/onboarding.ts`, `hooks/useProviderSetup.ts`, `components/onboarding/OnboardingView.tsx`, `components/onboarding/ProviderOnboardingStep.tsx`.
 - Key modified files: `App.tsx`, `providerPresets.ts`, `SettingsView.tsx`.
 - Do not do: no routing rewrite, no Mode builder embedding, no full Settings UI duplication, no forced provider setup.
-- In-progress: task plan recorded; implementation not started.
-- Next actions: implement onboarding persistence helper; add provider metadata; extract provider setup hook from Settings.
-- Blockers/Risks: Settings provider logic coupling; provider verification network failures; conservative free-tier claims.
-- Verification status: pending implementation.
+- In-progress: implementation complete; real-key/native manual verification remains.
+- Next actions: validate valid/invalid provider key behavior with real credentials; manually verify Settings provider setup in native desktop; then close DONE gate.
+- Blockers/Risks: external provider verification requires credentials; Settings provider logic was extracted surgically but needs native real-key regression.
+- Verification status: desktop typecheck/tests pass; headless Chrome onboarding display/skip/provider rows/empty-key/mobile checks pass.
 
 ## Verification
 
@@ -349,8 +364,31 @@ Must provide the following evidence before DONE:
 - Environment: macOS / darwin, workspace `/Users/quintenchen/developer/ora`, Node 22.17.0, pnpm workspace.
 
 ### Commands run + outputs
-- Planning only so far. No implementation verification commands run yet.
+- `pnpm --filter @ora/desktop typecheck`
+  - Output:
+    - `> @ora/desktop@0.1.0 typecheck /Users/quintenchen/developer/Ora/apps/desktop`
+    - `> tsc --noEmit`
+    - Exit status 0.
+- `pnpm --filter @ora/desktop test`
+  - Output:
+    - `Test Files  12 passed (12)`
+    - `Tests  85 passed (85)`
+    - Exit status 0.
+- `git diff --check -- <onboarding/provider task files>`
+  - Output: no whitespace errors; exit status 0.
+- `bash /Users/quintenchen/.codex/skills/long-task-protocol/scripts/todo_scan.sh`
+  - Output summary: repo-wide historical/generated task TODO noise; not suitable as sole gate in this workspace.
+- `rg --pcre2 -n "TODO(?!\\(FOLLOWUP\\))|FIXME|XXX" <task touched source files> || true`
+  - Output: no matches.
+- Headless Chrome CDP on Vite dev server `http://127.0.0.1:1421/`:
+  - First-run/skip: `HAS_ONBOARDING true`, `HAS_SKIP true`, `STORAGE_AFTER_SKIP skipped`, `ONBOARDING_AFTER_SKIP false`.
+  - Provider step: `HAS_OPENROUTER true`, `HAS_FREE_ROW true`, `HAS_FULL_LIST true`, `HAS_LOCAL_SMOKE false`, `EMPTY_KEY_ERROR true`.
+  - Mobile viewport: `{"bodyWidth":375,"viewport":375,"hasHorizontalOverflow":false}`.
 
 ## Progress Log
 - 2026-04-30 15:02 GMT+8 - Created task journal from approved planning direction and user decisions.
   Next: Implement `apps/desktop/src/lib/onboarding.ts`; add provider onboarding metadata in `providerPresets.ts`; extract `useProviderSetup.ts`.
+- 2026-04-30 18:52 GMT+8 - Started implementation pass. Read long-task/frontend-design guidance and inspected `App.tsx`, `providerPresets.ts`, `SettingsView.tsx`, `useRunActions.ts`, shared provider schemas, UI primitives, and Tailwind tokens. Chosen convention: lower `onboardingPriority` renders earlier. Extraction will stay minimal: shared catalog/draft/status/secret/verify-enable flow, with Settings retaining its model-discovery and advanced edit UI.
+  Next: Add `lib/onboarding.ts`; add OpenRouter metadata; create `hooks/useProviderSetup.ts`.
+- 2026-04-30 21:59 GMT+8 - Implemented onboarding persistence, OpenRouter free-tier metadata, shared `useProviderSetup`, Settings hook wiring, full-screen onboarding UI, provider onboarding step, and app startup gating. Verified desktop typecheck/tests, headless first-run/skip/provider rows/empty-key behavior, and mobile no-horizontal-overflow. Left real-key valid/invalid verification and native Settings regression as explicit follow-ups because no provider credential was available in this session.
+  Next: Run real OpenRouter/API key onboarding verification; run native Settings provider regression; close TODO/DONE gate if both pass.

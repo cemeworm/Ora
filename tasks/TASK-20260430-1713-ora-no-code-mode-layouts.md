@@ -737,43 +737,125 @@ Why:
 
 ### Phase 1 TODO
 
-- [ ] Add `ModeStageSpecSchema`.
-- [ ] Add `ModeTranscriptLayoutSchema`.
-- [ ] Extend `ModeSpecSchema` with optional `stages` and `transcriptLayout`.
-- [ ] Update `createDebateModeSpec()` to declare current Debate turns as `stages[]`.
-- [ ] Update shared contract tests.
+- [x] Add `ModeStageSpecSchema`.
+- [x] Add `ModeTranscriptLayoutSchema`.
+- [x] Extend `ModeSpecSchema` with optional `stages` and `transcriptLayout`.
+- [x] Update `createDebateModeSpec()` to declare current Debate turns as `stages[]`.
+- [x] Update shared contract tests.
 
 ### Phase 2 TODO
 
-- [ ] Add `executeStagedTranscriptMode()`.
-- [ ] Route staged modes through the generic staged executor.
-- [ ] Migrate Debate execution off `DEBATE_TURNS` hardcoded constant.
-- [ ] Preserve Debate stance-lock prompt contract through stage-level prompt assembly.
-- [ ] Add runtime integration test for custom non-Debate staged mode.
-- [ ] Add/adjust streaming tests for staged transcript projection.
+- [x] Add `executeStagedTranscriptMode()`.
+- [x] Route staged modes through the generic staged executor.
+- [x] Migrate Debate execution off `DEBATE_TURNS` hardcoded constant.
+- [x] Preserve Debate stance-lock prompt contract through stage-level prompt assembly.
+- [x] Add runtime integration test for custom non-Debate staged mode.
+- [x] Add/adjust streaming tests for staged transcript projection.
 
 ### Phase 3 TODO
 
-- [ ] Add transcript renderer registry.
-- [ ] Convert Debate-specific duel components into `TwoSidedDuelTranscriptRenderer`.
-- [ ] Add `StageListRenderer` fallback.
+- [x] Add transcript renderer registry.
+- [x] Convert Debate-specific duel components into `TwoSidedDuelTranscriptRenderer`.
+- [x] Add `StageListRenderer` fallback.
 - [ ] Add `TimelineRenderer` if not too large for MVP; otherwise leave as P1.
 - [ ] Add `RoleLanesRenderer` if not too large for MVP; otherwise leave as P1.
-- [ ] Remove dependency on `group.id === "debate"` for duel layout routing.
-- [ ] Add frontend tests for custom non-Debate duel layout.
+- [x] Remove dependency on `group.id === "debate"` for duel layout routing.
+- [x] Add frontend tests for custom non-Debate duel layout.
 
 ### Phase 4 TODO
 
-- [ ] Update Mode Studio builder prompts for stages/layouts.
-- [ ] Update Mode Studio draft enrichment/repair for stage references.
-- [ ] Add Mode Studio validation messages for invalid staged layout config.
-- [ ] Add compact stage/layout preview in `ModesView`.
-- [ ] Add builder test for red-team/blue-team mode generation.
+- [x] Update Mode Studio builder prompts for stages/layouts.
+- [x] Update Mode Studio draft enrichment/repair for stage references.
+- [x] Add Mode Studio validation messages for invalid staged layout config.
+- [x] Add compact stage/layout preview in `ModesView`.
+- [x] Add builder test for red-team/blue-team mode generation.
 
 ### Phase 5 TODO
 
-- [ ] Prioritize and implement P1 renderers after MVP stabilizes.
-- [ ] Start with `rubric_matrix`, `judge_panel`, and `evidence_board` if reviewer/research modes need them.
+- [x] Prioritize and implement P1 renderers after MVP stabilizes.
+- [x] Implement `rubric_matrix` renderer: evaluation rubric table with criteria rows and stance columns.
+- [x] Implement `judge_panel` renderer: multi-judge review cards with verdict section.
+- [x] Implement `evidence_board` renderer: evidence cards grouped by stance with color dots.
+- [x] Implement `comparison_table` renderer: dimension cards with side-by-side option columns.
+- [x] Implement `artifact_gallery` renderer: responsive card grid for generated outputs.
+- [x] Implement `kanban_pipeline` renderer: horizontal scrollable columns grouped by stage.
+- [x] Update Mode Studio builder prompts to list all 8 available layouts.
+- [x] Update `modeStudioStructuredLayoutIntent` to detect all P1 layout intents.
+- [x] Update `normalizeModeStudioStagesAndLayout` to auto-select detected layout style.
+- [x] Add frontend tests for all 6 new renderers.
+
+---
+
+## Active Files
+
+- `packages/shared/src/modes.ts`
+- `packages/shared/src/runtime.ts`
+- `packages/shared/test/contracts.test.ts`
+- `apps/runtime/src/mode-studio-draft.ts`
+- `apps/runtime/src/mode-studio-store.ts`
+- `apps/runtime/src/patterns/driver-registry.ts`
+- `apps/runtime/test/mode-studio-builder.test.ts`
+- `apps/runtime/test/runtime-integration.test.ts`
+- `apps/runtime/test/run-streaming.test.ts`
+- `apps/desktop/src/components/ModesView.tsx`
+- `apps/desktop/src/components/StageTranscript.tsx`
+- `apps/desktop/src/components/AssistantTurnCard.test.tsx`
+- `apps/desktop/src/lib/state.tsx`
+- `apps/desktop/src/types.ts`
+- `tasks/TASK-20260430-1713-ora-no-code-mode-layouts.md`
+
+---
+
+## Progress Log
+
+### 2026-04-30 21:28 CST
+
+- Started implementation from this plan.
+- Assumption: implement Phase 1 and Phase 2 first; only move into Phase 3 once staged transcript metadata can carry layout hints without broad frontend churn.
+- Success criteria for this pass: shared schema compatibility, Debate still emits 9 ordered transcript entries, and one non-Debate staged mode can emit transcript entries through the generic executor.
+- Next: inspect shared schema/tests, inspect Debate runtime executor/tests, then make the smallest schema/spec changes.
+
+### 2026-04-30 21:40 CST
+
+- Implemented Phase 1 schema/spec migration: `ModeSpec.stages`, `ModeSpec.transcriptLayout`, Debate declarative stages/layout, shared validation, and transcript metadata layout hints.
+- Implemented Phase 2 generic staged executor: staged modes now route by `modeSpec.stages?.length`; Debate no longer uses `DEBATE_TURNS`, `executeDebateMode()`, or `modeSpec.id === "debate"` runtime branching.
+- Implemented Phase 3 core renderer routing: `StageTranscript` resolves `two_sided_duel` from layout metadata and keeps `stage_list` fallback; old Debate transcript groups still have a compatibility fallback.
+- Deferred full `timeline` and `role_lanes` renderers to avoid expanding scope beyond the verified MVP path.
+- Noted unrelated pre-existing dirty files in provider-model work and another task journal; they were not touched by this task.
+- Next: Phase 4 Mode Studio builder prompt/enrichment/preview support; then optional renderer expansion.
+
+### 2026-04-30 21:48 CST
+
+- Started Phase 4 implementation.
+- Assumption: keep Phase 4 focused on enabling Mode Studio to generate valid linear staged modes with existing layout primitives, plus a compact preview in the existing mode editor UI.
+- Non-goal for this pass: full visual stage editor or implementing deferred renderers.
+- Next: inspect `mode-studio-draft`, `mode-studio-store`, builder tests, and `ModesView`; then patch prompt/enrichment/validation/preview in the smallest path.
+
+### 2026-04-30 22:00 CST
+
+- Implemented Phase 4 Mode Studio support.
+- Builder prompt now documents `stages[]`, `transcriptLayout`, and apply-ready layout choices (`stage_list`, `two_sided_duel`).
+- Local Mode Studio generation now recognizes red-team/blue-team, debate, pro/con, and attack/defense intents as `orchestrator_subagent` staged modes with `two_sided_duel` layout.
+- Provider-generated drafts now preserve and repair staged references by normalizing stage `nodeId` and `speakerId` values against the generated ModeSpec.
+- Apply paths now preserve `stages` and `transcriptLayout` in both runtime and desktop create payloads.
+- `ModesView` overview now shows a compact transcript layout/stage preview.
+- Verification proved a generated red/blue mode can be applied and run, producing staged transcript messages with layout metadata.
+- Next: optional Phase 5 renderer expansion when needed.
+
+### 2026-04-30 22:50 CST
+
+- Implemented Phase 5 P1 renderer expansion: all 6 new renderers.
+- Frontend renderers added to `StageTranscript.tsx`: `rubric_matrix`, `judge_panel`, `evidence_board`, `comparison_table`, `artifact_gallery`, `kanban_pipeline`.
+- Shared helpers added: `pivotTranscriptEntries` (for table-based renderers), `groupByTranscriptField` (for grouped renderers), `accentDot` (for evidence board dots).
+- `resolveTranscriptRenderer` updated to switch-based dispatch for all 8 layout styles.
+- `TranscriptRendererId` expanded to include all P1 styles.
+- Frontend `types.ts` layout type expanded with `laneBySpeaker`, `lanes`, `orientation`, `showArtifacts`, `groupBy` fields.
+- Mode Studio builder prompt updated with all 8 available layouts and usage guidance.
+- `modeStudioStructuredLayoutIntent` expanded to detect all P1 layout intents (Chinese + English keywords).
+- `inferModeStudioFamily` updated to route any staged layout intent to `orchestrator_subagent`.
+- `normalizeModeStudioStagesAndLayout` updated to auto-select detected layout style with layout-specific config (e.g., `summaryStances` for judge_panel, `lanes` for kanban_pipeline).
+- 6 new frontend tests added (one per renderer), all pass.
+- Next: optional Phase 5 P2 renderer expansion.
 
 ---
 
@@ -784,35 +866,167 @@ Why:
 - Requirement: Existing modes still parse; Debate mode also declares stages/layout.
 - Verification method: shared contract tests and typecheck.
 - Pass criteria: all built-in modes parse; old custom mode fixture without `stages` passes.
-- Status: [ ] Pass / [ ] Fail
+- Status: [x] Pass / [ ] Fail
 
 ### Checkpoint 2: staged runtime behavior
 
 - Requirement: Generic staged executor can run a non-Debate staged mode and emit ordered transcript messages.
 - Verification method: runtime integration test.
 - Pass criteria: custom staged mode emits ordered transcript entries without `modeSpec.id === "debate"`.
-- Status: [ ] Pass / [ ] Fail
+- Status: [x] Pass / [ ] Fail
 
 ### Checkpoint 3: Debate compatibility
 
 - Requirement: Debate still emits the same 9 ordered transcript entries and prompt contract remains strong.
 - Verification method: existing and updated runtime integration tests.
 - Pass criteria: first 8 entries from `debate_agent`, final entry from `moderator`, stance-lock assertions pass.
-- Status: [ ] Pass / [ ] Fail
+- Status: [x] Pass / [ ] Fail
 
 ### Checkpoint 4: renderer generalization
 
 - Requirement: `two_sided_duel` renderer works for Debate and another non-Debate mode.
 - Verification method: desktop component/view-model tests.
 - Pass criteria: renderer is selected by layout config, not by `group.id === "debate"`.
-- Status: [ ] Pass / [ ] Fail
+- Status: [x] Pass / [ ] Fail
 
 ### Checkpoint 5: Mode Studio no-code creation
 
 - Requirement: user can generate, apply, and run a new staged mode from natural language.
 - Verification method: Mode Studio builder test and manual/automated runtime smoke.
 - Pass criteria: generated mode has valid `stages[]` and `transcriptLayout`; run displays structured transcript UI.
-- Status: [ ] Pass / [ ] Fail
+- Status: [x] Pass / [ ] Fail
+
+### Checkpoint 6: P1 renderer coverage
+
+- Requirement: all 6 P1 renderers render correctly for non-trivial transcript groups.
+- Verification method: desktop component tests.
+- Pass criteria: each renderer shows groupLabel, entry content, and layout-specific visual elements.
+- Status: [x] Pass / [ ] Fail
+
+---
+
+## Verification
+
+### 2026-04-30 Phase 1-3 implementation pass
+
+Commands run:
+
+```bash
+pnpm --filter @ora/shared test
+```
+
+Output: `test/contracts.test.ts` passed; 88 tests passed.
+
+```bash
+pnpm --filter @ora/runtime test -- runtime-integration.test.ts run-streaming.test.ts
+```
+
+Output: runtime suite passed; 20 files passed, 278 tests passed. This includes Debate 9-entry compatibility, custom non-Debate staged mode execution, Debate prompt stance-lock contract, and streaming projection preserving transcript layout hints.
+
+```bash
+pnpm --filter @ora/desktop test -- src/lib/viewModel.test.ts src/components/AssistantTurnCard.test.tsx
+```
+
+Output: desktop target suite passed; 12 files passed, 85 tests passed. This includes custom non-Debate `two_sided_duel` layout rendering.
+
+```bash
+pnpm typecheck
+```
+
+Output: shared, runtime, and desktop typechecks passed.
+
+```bash
+pnpm lint
+```
+
+Output: command completed successfully; no workspace package reported lint failures.
+
+### 2026-04-30 Phase 4 implementation pass
+
+Commands run:
+
+```bash
+pnpm --filter @ora/shared build
+```
+
+Output: shared package build completed successfully.
+
+```bash
+pnpm --filter @ora/runtime test -- mode-studio-builder.test.ts
+```
+
+Output: runtime target suite passed; 20 files passed, 280 tests passed. This includes a red-team/blue-team Mode Studio draft that is generated, applied, run, and verified to emit staged transcript entries with `two_sided_duel` layout metadata.
+
+```bash
+pnpm --filter @ora/shared test
+```
+
+Output: `test/contracts.test.ts` passed; 88 tests passed.
+
+```bash
+pnpm --filter @ora/desktop test -- src/components/AssistantTurnCard.test.tsx src/lib/viewModel.test.ts
+```
+
+Output: desktop target suite passed; 12 files passed, 85 tests passed.
+
+```bash
+pnpm typecheck
+```
+
+Output: shared, runtime, and desktop typechecks passed.
+
+```bash
+pnpm lint
+```
+
+Output: command completed successfully; no workspace package reported lint failures.
+
+Residual risk:
+
+- `timeline` and `role_lanes` renderers remain deferred; current frontend MVP covers `stage_list` and `two_sided_duel`.
+- Full visual stage editing remains deferred; Mode Studio currently provides generation, validation, repair, apply, and compact preview.
+
+### 2026-04-30 Phase 5 P1 implementation pass
+
+Commands run:
+
+```bash
+pnpm --filter @ora/shared test
+```
+
+Output: `test/contracts.test.ts` passed; 88 tests passed.
+
+```bash
+pnpm --filter @ora/runtime test -- mode-studio-builder.test.ts runtime-integration.test.ts run-streaming.test.ts
+```
+
+Output: runtime suite passed; 20 files passed, 280 tests passed.
+
+```bash
+pnpm --filter @ora/desktop test
+```
+
+Output: desktop suite passed; 12 files passed, 91 tests passed (includes 6 new renderer tests).
+
+```bash
+pnpm typecheck
+```
+
+Output: shared, runtime, and desktop typechecks passed.
+
+```bash
+pnpm lint
+```
+
+Output: command completed successfully; no workspace package reported lint failures.
+
+Files changed:
+
+- `apps/desktop/src/components/StageTranscript.tsx`: added 6 P1 renderers, 3 helpers, updated routing.
+- `apps/desktop/src/types.ts`: expanded layout type with `laneBySpeaker`, `lanes`, `orientation`, `showArtifacts`, `groupBy`.
+- `apps/desktop/src/components/AssistantTurnCard.test.tsx`: added 6 renderer test cases.
+- `apps/runtime/src/mode-studio-draft.ts`: updated builder prompt, layout intent detection, family inference, normalize function.
+- `tasks/TASK-20260430-1713-ora-no-code-mode-layouts.md`: updated TODO, progress log, checkpoints, compressed state.
 
 ---
 
@@ -916,19 +1130,13 @@ Record full output under this task’s Verification section. Allow only pre-exis
 ## Compressed State (<= 20 lines)
 
 - Objective: make Ora support no-code creation of structured staged modes by promoting Debate’s useful pieces into generic primitives.
-- Baseline: ModeSpec/custom mode storage exists; Stage Transcript protocol exists; Mode Studio builder exists.
-- Main hardcoding: `DEBATE_TURNS`, `executeDebateMode()`, `modeSpec.id === DEBATE_MODE_ID`, and Debate-specific `StageTranscript` renderer routing.
-- Target: optional `stages[]`, optional `transcriptLayout`, generic staged transcript executor, transcript renderer registry, Mode Studio generation support.
-- Product boundary: code provides finite layout renderers; ModeSpec configures them; arbitrary new UI still requires code.
-- MVP layouts: `stage_list`, `timeline`, `two_sided_duel`, `role_lanes`.
-- P1 layouts: `kanban_pipeline`, `rubric_matrix`, `judge_panel`, `evidence_board`, `comparison_table`, `artifact_gallery`.
+- Implemented Phase 1-4: shared schema, generic staged executor, renderer registry, Mode Studio builder support. All verified.
+- Implemented Phase 5 P1: 6 new renderers (`rubric_matrix`, `judge_panel`, `evidence_board`, `comparison_table`, `artifact_gallery`, `kanban_pipeline`).
+- Helpers added: `pivotTranscriptEntries` (table pivoting), `groupByTranscriptField` (grouped views), `accentDot` (evidence board dots).
+- Mode Studio updated: builder prompt lists 8 layouts, intent detection covers all P1 styles, auto-layout-selection in normalize.
+- Frontend types expanded: `laneBySpeaker`, `lanes`, `orientation`, `showArtifacts`, `groupBy` added to layout type.
+- Current implemented layouts (8 total): `stage_list`, `two_sided_duel`, `rubric_matrix`, `judge_panel`, `evidence_board`, `comparison_table`, `artifact_gallery`, `kanban_pipeline`.
+- Deferred layouts: `timeline`, `role_lanes` (Phase 3 deferred).
 - P2 layouts: `branch_compare`, `state_board`, `event_stream`, `graph_topology`, `report_builder`.
-- Key decision: do not add a new `debate` CoordinationPattern.
-- Key decision: keep one reusable Debate Agent with virtual speaker labels.
-- Phase 1: schema + Debate spec data declaration.
-- Phase 2: generic staged executor.
-- Phase 3: renderer registry and Debate UI generalization.
-- Phase 4: Mode Studio staged mode generation.
-- Phase 5: optional P1 renderer expansion.
-- Next actions: start Phase 1 in `packages/shared/src/modes.ts`; update shared tests; then move to runtime executor.
-- Current status: ready for implementation; no code changed by this task record.
+- Verification passed: shared 88 tests; runtime 280 tests; desktop 91 tests; typecheck; lint.
+- Current status: Phase 1-5 P1 complete.

@@ -1,7 +1,7 @@
 # TASK-20260430-1801-provider-models-fetch-verify-edit
 
 **Created:** 2026-04-30 18:01 GMT+8  
-**Status:** Done  
+**Status:** Resolved with caveat — provider fetch endpoint coverage fixed; unrelated runtime typecheck errors remain
 **Authoritative Source:** Yes — this file is the single source of truth for this task. Chat messages and older ad-hoc plan files are non-authoritative summaries only.
 
 ---
@@ -673,6 +673,14 @@ Create helper with this policy:
 
 ## TODO
 
+### Reopen — Provider Fetch Completeness
+
+- [x] Audit existing provider model listing implementations against real provider APIs.
+- [x] Identify providers/presets whose model list fetch is only generic or missing.
+- [x] Implement real model-list fetch paths for supported providers.
+- [x] Add regression coverage proving the concrete provider endpoints are used.
+- [x] Rerun relevant runtime/desktop/shared verification.
+
 ### Shared / RPC
 
 - [x] Add `providers.models` to `RuntimeJsonRpcMethodSchema`.
@@ -735,6 +743,17 @@ Create helper with this policy:
 ---
 
 ## Retrospective
+
+### Item 3
+
+- Pitfall: Treating all OpenAI-compatible base URLs as unversioned roots can silently invent nonexistent `/v1/...` paths.
+- Symptom: Provider fetch existed as a generic `/models` capability, but versioned compatible providers such as Gemini/Z.AI were resolved to `/v1beta/openai/v1/models` or `/api/paas/v4/v1/models` instead of the provider-documented base path.
+- Root Cause: `resolveCompatibleProviderEndpoint()` only recognized base URLs ending exactly in `/v1`; it did not recognize `/v1beta/openai`, `/api/paas/v4`, or provider-specific roots such as DeepSeek.
+- Reusable Guardrail: For each built-in provider preset, add endpoint-shape regression tests that assert the concrete URLs generated for both model listing and smoke calls.
+- Evidence: Added runtime tests for DeepSeek, AiHubMix, Z.AI Coding Plan, and Google Gemini compatible model discovery.
+- Scope: local_only
+- Suggested Writeback Target: None for now.
+- Status: local_only
 
 ### Item 1
 
@@ -888,6 +907,18 @@ pnpm -r --if-present typecheck
 
 ### Commands run + outputs
 
+- Reopen verification:
+  - `pnpm --filter @ora/runtime test -- provider-registry.test.ts` — PASS; Vitest ran runtime suite, 20 files passed, 278 tests passed.
+  - `pnpm --filter @ora/desktop test -- runtimeClient.test.ts` — PASS; 12 files passed, 85 tests passed.
+  - `pnpm --filter @ora/shared test -- contracts.test.ts` — PASS; 88 tests passed.
+  - `pnpm --filter @ora/runtime typecheck` — FAIL on unrelated existing/shared-mode changes in `apps/runtime/src/patterns/driver-registry.ts` (`ModeStageSpec`, `stages`, `transcriptLayout`, `layout`). No provider fetch files were named by TypeScript.
+- Reopen root cause:
+  - `apps/runtime/src/providers/provider-utils.ts` inserted `/v1` for any compatible `baseUrl` not ending exactly in `/v1`, so existing presets with versioned paths resolved to wrong model list URLs.
+  - `apps/runtime/src/providers/openai-compatible.ts` used that generic model-list URL for every provider and did not parse provider catalog shapes using `model_id`.
+- Reopen fix:
+  - `resolveCompatibleProviderEndpoint()` now treats versioned path endings like `/v4`, `/v1beta`, and `/v1beta/openai` as already-versioned compatible bases.
+  - OpenAI-compatible model listing now uses provider-specific model endpoints for DeepSeek (`/models`) and AiHubMix (`/api/v1/models?type=llm`) and parses `model_id`/`display_name`/`provider`.
+  - Regression tests assert concrete model-list URLs for DeepSeek, AiHubMix, Z.AI Coding Plan, and Google Gemini.
 - `pnpm --filter @ora/shared test -- contracts.test.ts`
   - Result: PASS — 1 test file passed, 87 tests passed.
 - `pnpm --filter @ora/runtime test -- provider-registry.test.ts`
@@ -921,7 +952,7 @@ Output summary: scan completed; remaining matches are unrelated pre-existing/tem
 - `apps/runtime/src/json-rpc.ts`
 - `apps/runtime/src/providers/types.ts`
 - `apps/runtime/src/providers/registry.ts`
-- `apps/runtime/src/providers/provider-utils.ts` (referenced; no direct change required)
+- `apps/runtime/src/providers/provider-utils.ts`
 - `apps/runtime/src/providers/openai.ts`
 - `apps/runtime/src/providers/openai-compatible.ts`
 - `apps/runtime/src/providers/anthropic.ts`
@@ -949,6 +980,10 @@ Output summary: scan completed; remaining matches are unrelated pre-existing/tem
 
 ## Progress Log
 
+- 2026-04-30 21:37 CST - Root cause found and patched: compatible provider endpoint resolution only understood `/v1`, so built-in versioned/provider-specific bases could produce fake `/v1/models` paths. Fixed versioned-base detection, added DeepSeek and AiHubMix model-list overrides plus broader model parser support, and added URL regression tests. Verification passed for runtime tests, desktop tests, and shared contracts; runtime typecheck is blocked by unrelated dirty mode-driver changes.
+  Next: 1) Hand off concise summary; 2) Keep unrelated typecheck failures out of this provider-fetch patch; 3) If desired later, add live-key smoke checks per provider.
+- 2026-04-30 21:29 CST - Reopened after user report that the provider fetch capability was not actually complete: existing code may expose a unified interface but not truly discover model-list APIs for every provider in the preset list.
+  Next: 1) Audit current adapter and preset/provider coverage against official model-list APIs; 2) State a root cause with file/function evidence before editing code; 3) Patch concrete fetch implementations and add regression tests.
 - 2026-04-30 18:01 GMT+8 - Created authoritative task journal for provider model discovery, verify preflight, Settings model list integration, full model editing, safe replacement, and selection safety.
   Next: 1) Implement shared `providers.models` schema/RPC; 2) Implement runtime `fetchProviderModels` and verify preflight; 3) Wire desktop Settings to fetch/display/edit models.
 - 2026-04-30 18:31 GMT+8 - Implemented provider model discovery end-to-end: shared schemas/RPC method, runtime adapter `listModels` implementations, `fetchProviderModels`, `providers.models`, verify preflight before smoke call, desktop runtime client method, Settings `Fetch models` UI, full model edit/save/rename replacement, and disabled-provider selection safety. Verification passed: shared targeted contracts test, runtime full test/typecheck, desktop full test/typecheck, and workspace recursive typecheck.
@@ -958,8 +993,12 @@ Output summary: scan completed; remaining matches are unrelated pre-existing/tem
 
 ## Compressed State (<= 20 lines)
 
-- Objective complete: Provider models are fetched through a unified interface; verify fetches model list before smoke call; Settings models support remote fetch, full edit, and safe replace.
-- Status: Done.
+- Status: Resolved with caveat on 2026-04-30 21:37 CST; provider fetch endpoint coverage fixed, unrelated runtime typecheck errors remain.
+- Root cause: `resolveCompatibleProviderEndpoint()` only recognized `/v1` and inserted fake `/v1` segments for versioned compatible bases like `/v1beta/openai`, `/api/paas/v4`, and `/api/coding/paas/v4`.
+- Fix: versioned compatible base paths now append provider paths directly; DeepSeek model listing uses `/models`; AiHubMix model listing uses `/api/v1/models?type=llm`.
+- Parser fix: OpenAI-compatible model discovery now accepts `model_id`, `modelId`, `display_name`, `displayName`, `ownedBy`, and `provider`.
+- Tests: runtime suite passed 278 tests; desktop suite passed 85 tests; shared contracts passed 88 tests.
+- Caveat: `pnpm --filter @ora/runtime typecheck` fails in unrelated `apps/runtime/src/patterns/driver-registry.ts` mode layout changes already present in the dirty tree.
 - Shared: `providers.models`, `ProviderModelSchema`, `ProviderModelsParamsSchema`, `ProviderModelsResultSchema` added and tested.
 - Runtime: `fetchProviderModels(config, options)` added; OpenAI/Anthropic official call `/v1/models`; compatible providers call `/models`; local smoke returns `smoke-model`.
 - Verify: authoritative ok rejects missing model IDs before smoke; unsupported continues smoke; error fails before smoke.
