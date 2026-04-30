@@ -133,6 +133,16 @@ async function pickProjectDirectory(): Promise<string | null> {
   return typeof entered === "string" && entered.trim() ? entered.trim() : null;
 }
 
+interface UpsertCustomProviderOptions {
+  select?: boolean;
+  replacementForProviderId?: string;
+}
+
+interface DeleteCustomProviderOptions {
+  replacementProviderId?: string;
+  deleteSecret?: boolean;
+}
+
 export function useRunActions() {
   const { state, dispatch } = useWorkbench();
   const runtimeClient = getSharedRuntimeClient();
@@ -684,12 +694,16 @@ export function useRunActions() {
     }
   }
 
-  async function upsertCustomProvider(provider: OraProviderConfig) {
+  async function upsertCustomProvider(provider: OraProviderConfig, options: UpsertCustomProviderOptions = {}) {
     dispatch({ type: "SET_BUSY_COMMAND", command: "Save provider" });
     try {
       const registry = await runtimeClient.upsertCustomProvider(provider);
       dispatch({ type: "SET_PROVIDER_REGISTRY", providerRegistry: registry });
-      dispatch({ type: "SET_PROVIDER", providerId: provider.id });
+      const shouldSelect = options.select ?? provider.enabled !== false;
+      const replacesSelected = options.replacementForProviderId === state.selectedProviderId;
+      if (provider.enabled !== false && (shouldSelect || replacesSelected)) {
+        dispatch({ type: "SET_PROVIDER", providerId: provider.id });
+      }
       const statuses = await runtimeClient.refreshProviderSecretStatuses(registry.providers);
       dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
       dispatch({
@@ -704,13 +718,18 @@ export function useRunActions() {
     }
   }
 
-  async function deleteCustomProvider(providerId: string) {
+  async function deleteCustomProvider(providerId: string, options: DeleteCustomProviderOptions = {}) {
     dispatch({ type: "SET_BUSY_COMMAND", command: "Remove provider" });
     try {
-      await runtimeClient.deleteProviderSecret(providerId);
+      if (options.deleteSecret !== false) {
+        await runtimeClient.deleteProviderSecret(providerId);
+      }
       const registry = await runtimeClient.deleteCustomProvider(providerId);
       dispatch({ type: "DELETE_PROVIDER", providerId });
       dispatch({ type: "SET_PROVIDER_REGISTRY", providerRegistry: registry });
+      if (options.replacementProviderId) {
+        dispatch({ type: "SET_PROVIDER", providerId: options.replacementProviderId });
+      }
       const statuses = await runtimeClient.refreshProviderSecretStatuses(registry.providers);
       dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
       dispatch({

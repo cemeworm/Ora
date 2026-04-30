@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID } from "@ora/shared";
 import { initialWorkbenchState, mergeRunStreamSnapshot, mergeStateSnapshot, workbenchReducer } from "./state";
 import type { WorkbenchState } from "./state";
-import type { OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
+import type { OraProviderConfig, OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 function sessionSummary(sessionId: string): OraSessionSummary {
   return {
@@ -120,6 +120,51 @@ function agentMessageEvent(message: OraStateSnapshot["agentMessages"][number], s
 }
 
 describe("desktop workbench state", () => {
+  it("does not leave a disabled provider selected after registry updates", () => {
+    const enabled: OraProviderConfig = {
+      id: "enabled-openai",
+      type: "openai",
+      label: "Enabled OpenAI",
+      modelId: "gpt-4o",
+      enabled: true,
+      capabilities: ["chat"],
+      dropParams: [],
+      headers: {},
+    };
+    const disabled: OraProviderConfig = {
+      id: "disabled-openai",
+      type: "openai",
+      label: "Disabled OpenAI",
+      modelId: "gpt-4o-mini",
+      enabled: false,
+      capabilities: ["chat"],
+      dropParams: [],
+      headers: {},
+    };
+
+    let state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedProviderId: disabled.id,
+      providerRegistry: {
+        providers: [disabled, enabled],
+        defaultProviderId: disabled.id,
+      },
+    };
+
+    state = workbenchReducer(state, {
+      type: "SET_PROVIDER_REGISTRY",
+      providerRegistry: {
+        providers: [disabled, enabled],
+        defaultProviderId: disabled.id,
+      },
+    });
+
+    expect(state.selectedProviderId).toBe(enabled.id);
+
+    state = workbenchReducer(state, { type: "SET_PROVIDER", providerId: disabled.id });
+    expect(state.selectedProviderId).toBe(enabled.id);
+  });
+
   it("keeps unsent composer text scoped to the selected session", () => {
     let state: WorkbenchState = {
       ...initialWorkbenchState,

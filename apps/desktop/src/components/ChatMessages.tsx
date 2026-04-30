@@ -51,7 +51,7 @@ export function ChatMessages({
                     ? ({ feedbackText }) => onSubmitFeedback(message, feedbackText)
                     : undefined}
                 />
-                {(message.clarificationOptions?.length ?? 0) > 0 && onSubmitClarificationOption ? (
+                {message.clarificationOptions && message.clarificationOptions.length > 0 && onSubmitClarificationOption ? (
                   <div className="mx-auto mt-3 flex w-full max-w-container-md flex-wrap gap-2 px-2">
                     {message.clarificationOptions.map((option) => {
                       const answer = option.value?.trim() || option.label.trim();

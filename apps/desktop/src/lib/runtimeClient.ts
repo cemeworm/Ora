@@ -4,6 +4,11 @@ import type {
   AgentProfile as OraAgentProfile,
   ArtifactRef as OraArtifactRef,
   CheckpointMeta as OraCheckpointMeta,
+  ChannelConfig as OraChannelConfig,
+  ChannelKind as OraChannelKind,
+  ChannelCreateParams as OraChannelCreateParams,
+  ChannelStatusResult as OraChannelStatusResult,
+  ChannelUpdateParams as OraChannelUpdateParams,
   CoordinationPattern,
   CustomAgentCheckNameResult as OraCustomAgentCheckNameResult,
   CustomAgentCreateParams as OraCustomAgentCreateParams,
@@ -65,6 +70,7 @@ import type {
   ProjectFilesResult as OraProjectFilesResult,
   ProjectSummary as OraProjectSummary,
   ProviderConfig as OraProviderConfig,
+  ProviderModelsResult as OraProviderModelsResult,
   ProviderRegistry as OraProviderRegistry,
   ProviderSecretStatus as OraProviderSecretStatus,
   ProviderStatus as OraProviderStatus,
@@ -99,6 +105,7 @@ import type {
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
 import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
 export const USER_INTERRUPTED_MESSAGE = "Paused as instructed.";
@@ -110,6 +117,10 @@ export type {
   OraAgentProfile,
   OraArtifactRef,
   OraCheckpointMeta,
+  OraChannelConfig,
+  OraChannelCreateParams,
+  OraChannelStatusResult,
+  OraChannelUpdateParams,
   OraCustomAgentCheckNameResult,
   OraCustomAgentCreateParams,
   OraCustomAgentDetail,
@@ -158,6 +169,7 @@ export type {
   OraPackageStoreSnapshot,
   OraPatternDefinition,
   OraProviderConfig,
+  OraProviderModelsResult,
   OraProviderRegistry,
   OraProviderSecretStatus,
   OraProviderStatus,
@@ -343,6 +355,21 @@ export function createRuntimeClient() {
     },
     async createSession(params: OraSessionCreateParams = {}): Promise<OraSessionSummary> {
       return call<OraSessionSummary>("sessions.create", params);
+    },
+    async listChannels(params: { kind?: string; enabled?: boolean; limit?: number } = {}): Promise<OraChannelConfig[]> {
+      return call<OraChannelConfig[]>("channels.list", params);
+    },
+    async createChannel(params: OraChannelCreateParams): Promise<OraChannelConfig> {
+      return call<OraChannelConfig>("channels.create", params);
+    },
+    async updateChannel(params: OraChannelUpdateParams): Promise<OraChannelConfig> {
+      return call<OraChannelConfig>("channels.update", params);
+    },
+    async deleteChannel(channelId: string): Promise<{ deleted: true; channelId: string }> {
+      return call<{ deleted: true; channelId: string }>("channels.delete", { channelId });
+    },
+    async channelStatus(): Promise<OraChannelStatusResult> {
+      return call<OraChannelStatusResult>("channels.status");
     },
     async createProject(params: OraProjectCreateParams): Promise<OraProjectSummary> {
       return call<OraProjectSummary>("projects.create", params);
@@ -699,6 +726,12 @@ export function createRuntimeClient() {
     async verifyProvider(provider: OraProviderConfig): Promise<OraProviderStatus> {
       return call<OraProviderStatus>("providers.verify", { provider });
     },
+    async listProviderModels(provider: OraProviderConfig): Promise<OraProviderModelsResult> {
+      if (lastHealth?.mode === "browser_mock") {
+        return mockProviderModels(provider);
+      }
+      return call<OraProviderModelsResult>("providers.models", { provider });
+    },
     async upsertCustomProvider(provider: OraProviderConfig): Promise<OraProviderRegistry> {
       const parsed = ProviderConfigSchema.parse(provider) as OraProviderConfig;
       const providers = readCustomProviders();
@@ -715,6 +748,42 @@ export function createRuntimeClient() {
     async openExternalUrl(url: string): Promise<void> {
       return openExternalUrl(url);
     },
+  };
+}
+
+function mockProviderModels(provider: OraProviderConfig): OraProviderModelsResult {
+  if (provider.type === "local_smoke") {
+    return {
+      models: [{ id: "smoke-model", source: "local" }],
+      status: "ok",
+      authoritative: true,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  const preset = PROVIDER_PRESETS.find((entry) => {
+    if (entry.fixedProviderId && provider.id.startsWith(entry.fixedProviderId)) {
+      return true;
+    }
+    return entry.type === provider.type && entry.baseUrl === provider.baseUrl;
+  }) ?? PROVIDER_PRESETS.find((entry) => entry.type === provider.type);
+
+  if (preset?.modelSuggestions.length) {
+    return {
+      models: preset.modelSuggestions.map((id) => ({ id, source: "preset" })),
+      status: "ok",
+      authoritative: false,
+      message: "Runtime is in browser mock mode; showing preset model suggestions.",
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  return {
+    models: [],
+    status: "unsupported",
+    authoritative: false,
+    message: "Runtime is in browser mock mode and no model suggestions are available.",
+    fetchedAt: new Date().toISOString(),
   };
 }
 
@@ -951,6 +1020,7 @@ function unwrapJsonRpc<T>(response: JsonRpcResponse): T {
 class LocalJsonRpcRuntime {
   private projects = new Map<string, OraProjectSummary>();
   private sessions = new Map<string, OraSessionSummary>();
+  private channels = new Map<string, OraChannelConfig>();
   private runs = new Map<string, OraStateSnapshot>();
   private modeStudioBuilderResults = new Map<string, OraModeStudioBuilderResult>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
@@ -1151,6 +1221,15 @@ class LocalJsonRpcRuntime {
           checkedAt: Date.now(),
         } satisfies OraProviderStatus;
       }
+      case "providers.models": {
+        const provider = isRecord(params) && isRecord(params.provider)
+          ? ProviderConfigSchema.parse(params.provider) as OraProviderConfig
+          : undefined;
+        if (!provider) {
+          throw new Error("Provider config is required for model listing.");
+        }
+        return mockProviderModels(provider);
+      }
       case "memory.get":
         return this.memory;
       case "memory.clear":
@@ -1214,6 +1293,28 @@ class LocalJsonRpcRuntime {
         return this.getSessionDetail(params);
       case "sessions.archive":
         return this.archiveSession(params);
+      case "channels.list":
+        return [...this.channels.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.channelId.localeCompare(b.channelId));
+      case "channels.create":
+        return this.createChannel(params);
+      case "channels.update":
+        return this.updateChannel(params);
+      case "channels.delete":
+        return this.deleteChannel(params);
+      case "channels.status":
+        return {
+          channels: [...this.channels.values()].map((channel) => ({
+            channelId: channel.channelId,
+            kind: channel.kind,
+            label: channel.label,
+            enabled: channel.enabled,
+            state: channel.enabled ? "running" : "stopped",
+            queueSize: 0,
+            runningCount: 0,
+            updatedAt: channel.updatedAt,
+          })),
+          bus: {},
+        };
       case "evaluation.datasets.import":
         return this.importEvaluationDataset(params);
       case "evaluation.datasets.list":
@@ -1796,6 +1897,57 @@ class LocalJsonRpcRuntime {
       this.syncProjectSummary(session.projectId);
     }
     return session;
+  }
+
+  private createChannel(params: unknown): OraChannelConfig {
+    const record = isRecord(params) ? params : {};
+    const now = Date.now();
+    const channelKindValues = ["http_webhook", "slack", "feishu", "wechat", "wecom", "telegram", "discord", "dingtalk"];
+    const kind = typeof record.kind === "string" && channelKindValues.includes(record.kind)
+      ? record.kind as OraChannelKind
+      : "http_webhook";
+    const channel = {
+      channelId: typeof record.channelId === "string" && record.channelId ? record.channelId : `channel-${this.channels.size + 1}`,
+      kind,
+      label: typeof record.label === "string" && record.label ? record.label : "Channel",
+      enabled: typeof record.enabled === "boolean" ? record.enabled : true,
+      capabilities: {
+        supportsStreamingUpdates: false,
+        supportsThreadReplies: false,
+        supportsReactions: false,
+        supportsFileInbound: false,
+        supportsFileOutbound: false,
+        supportsMessageUpdate: false,
+      },
+      config: isRecord(record.config) ? record.config : {},
+      secretRefs: {},
+      createdAt: now,
+      updatedAt: now,
+    } satisfies OraChannelConfig;
+    this.channels.set(channel.channelId, channel);
+    return channel;
+  }
+
+  private updateChannel(params: unknown): OraChannelConfig {
+    const record = isRecord(params) ? params : {};
+    const channelId = typeof record.channelId === "string" ? record.channelId : "";
+    const existing = this.channels.get(channelId);
+    if (!existing) throw new Error(`Channel not found: ${channelId}`);
+    const updated = {
+      ...existing,
+      label: typeof record.label === "string" && record.label ? record.label : existing.label,
+      enabled: typeof record.enabled === "boolean" ? record.enabled : existing.enabled,
+      config: isRecord(record.config) ? { ...existing.config, ...record.config } : existing.config,
+      updatedAt: Date.now(),
+    } satisfies OraChannelConfig;
+    this.channels.set(channelId, updated);
+    return updated;
+  }
+
+  private deleteChannel(params: unknown): { deleted: true; channelId: string } {
+    const channelId = isRecord(params) && typeof params.channelId === "string" ? params.channelId : "";
+    this.channels.delete(channelId);
+    return { deleted: true, channelId };
   }
 
   private createProject(params: unknown): OraProjectSummary {

@@ -22,4 +22,13 @@ describe("welcome greeting", () => {
       "Good morning, what would you like to do?",
     );
   });
+
+  it("mentions the project when a project label is provided", () => {
+    expect(getWelcomeGreeting(new Date(2026, 3, 26, 15), "zh", "ora")).toBe(
+      "下午好，想在ora做点什么？",
+    );
+    expect(getWelcomeGreeting(new Date(2026, 3, 26, 15), "en", "ora")).toBe(
+      "Good afternoon, what would you like to do in ora?",
+    );
+  });
 });

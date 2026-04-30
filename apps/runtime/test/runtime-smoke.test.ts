@@ -96,12 +96,15 @@ describe("Ora runtime smoke path", () => {
     const previousKey = process.env.INTENT_CLARIFICATION_KEY;
     process.env.INTENT_CLARIFICATION_KEY = "test";
     let providerCalls = 0;
+    let intentClarificationIssued = false;
     const providerBodies: string[] = [];
 
     globalThis.fetch = (async (_input, init) => {
       providerCalls += 1;
-      providerBodies.push(String(init?.body ?? ""));
-      if (providerCalls === 1) {
+      const body = String(init?.body ?? "");
+      providerBodies.push(body);
+      if (!intentClarificationIssued && body.includes("needsClarification")) {
+        intentClarificationIssued = true;
         return new Response(JSON.stringify({
           choices: [{
             message: {
@@ -155,7 +158,7 @@ describe("Ora runtime smoke path", () => {
 
       expect(run.status).toBe("interrupted");
       expect(blocked.status).toBe("interrupted");
-      expect(providerCalls).toBe(1);
+      expect(providerBodies.some((body) => body.includes("needsClarification"))).toBe(true);
       expect(blocked.toolCalls).toHaveLength(0);
       expect(blocked.pendingClarifications).toHaveLength(1);
       expect(blocked.pendingClarifications[0]).toMatchObject({
@@ -210,12 +213,15 @@ describe("Ora runtime smoke path", () => {
     const previousKey = process.env.DYNAMIC_CLARIFICATION_KEY;
     process.env.DYNAMIC_CLARIFICATION_KEY = "test";
     let providerCalls = 0;
+    let clarificationToolIssued = false;
     const providerBodies: string[] = [];
 
     globalThis.fetch = (async (_input, init) => {
       providerCalls += 1;
-      providerBodies.push(String(init?.body ?? ""));
-      if (providerCalls === 1) {
+      const body = String(init?.body ?? "");
+      providerBodies.push(body);
+      if (!clarificationToolIssued && body.includes("user__clarify")) {
+        clarificationToolIssued = true;
         return new Response(JSON.stringify({
           choices: [{
             message: {

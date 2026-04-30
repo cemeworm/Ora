@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   AgentProfileSchema,
   AgentConversationMessageSchema,
+  ChannelBindingSchema,
+  ChannelConfigSchema,
+  ChannelDeliveryRetryParamsSchema,
+  ChannelDeliverySchema,
+  ChannelIngestParamsSchema,
+  ChannelInboundMessageSchema,
+  ChannelOutboundMessageSchema,
   ActionRecordSchema,
   ApprovalDecisionSchema,
   ApprovalRequestSchema,
@@ -105,6 +112,9 @@ import {
   ProjectSignalSchema,
   ProjectSummarySchema,
   ProviderConfigSchema,
+  ProviderModelSchema,
+  ProviderModelsParamsSchema,
+  ProviderModelsResultSchema,
   ProviderRegistrySchema,
   ProviderSecretStatusSchema,
   ProviderSecretWriteSchema,
@@ -239,6 +249,22 @@ describe("Ora shared contracts", () => {
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
+  });
+
+  it("validates provider model discovery contracts", () => {
+    expect(RuntimeJsonRpcMethodSchema.parse("providers.models")).toBe("providers.models");
+    expect(ProviderModelSchema.parse({ id: "gpt-4o", source: "remote", created: 1 }).id).toBe("gpt-4o");
+    expect(ProviderModelsParamsSchema.parse({ provider: DEFAULT_PROVIDERS[0] }).provider.id).toBe(DEFAULT_PROVIDERS[0]?.id);
+
+    for (const status of ["ok", "unsupported", "error"] as const) {
+      expect(ProviderModelsResultSchema.parse({
+        models: status === "ok" ? [{ id: "model", source: "remote" }] : [],
+        status,
+        authoritative: status === "ok",
+        message: status === "ok" ? undefined : "Model discovery unavailable.",
+        fetchedAt: "2026-04-30T10:00:00.000Z",
+      }).status).toBe(status);
+    }
   });
 
   it("validates effective run strategy records", () => {
@@ -818,6 +844,84 @@ describe("Ora shared contracts", () => {
     }).toolId).toBe("skills.create");
   });
 
+
+  it("validates channel connector contracts", () => {
+    const config = ChannelConfigSchema.parse({
+      channelId: "channel-http",
+      kind: "http_webhook",
+      label: "HTTP Webhook",
+      config: { callbackUrl: "http://localhost:9876/callback", token: "secret" },
+      createdAt: 1,
+      updatedAt: 1
+    });
+    expect(config.enabled).toBe(true);
+    expect(config.capabilities.supportsFileOutbound).toBe(false);
+
+    const inbound = ChannelInboundMessageSchema.parse({
+      id: "inbound-1",
+      channelId: config.channelId,
+      channelKind: config.kind,
+      externalMessageId: "msg-1",
+      externalChatId: "chat-1",
+      text: "hello ora",
+      receivedAt: 2
+    });
+    expect(inbound.type).toBe("chat");
+    expect(inbound.attachments).toEqual([]);
+
+    const binding = ChannelBindingSchema.parse({
+      bindingId: "binding-1",
+      channelId: config.channelId,
+      externalChatId: inbound.externalChatId,
+      sessionId: "session-1",
+      createdAt: 2,
+      updatedAt: 2
+    });
+    expect(binding.metadata).toEqual({});
+
+    const outbound = ChannelOutboundMessageSchema.parse({
+      id: "outbound-1",
+      channelId: config.channelId,
+      bindingId: binding.bindingId,
+      sessionId: binding.sessionId,
+      runId: "run-1",
+      externalChatId: inbound.externalChatId,
+      inReplyToExternalMessageId: inbound.externalMessageId,
+      text: "hello back",
+      isFinal: true,
+      kind: "final",
+      createdAt: 3
+    });
+    expect(outbound.attachments).toEqual([]);
+
+    const delivery = ChannelDeliverySchema.parse({
+      deliveryId: "delivery-1",
+      channelId: config.channelId,
+      outboundMessageId: outbound.id,
+      sessionId: binding.sessionId,
+      runId: outbound.runId,
+      status: "queued",
+      attemptCount: 0,
+      message: outbound,
+      createdAt: 3,
+      updatedAt: 3
+    });
+    expect(delivery.status).toBe("queued");
+
+    expect(ChannelIngestParamsSchema.parse({
+      channelId: config.channelId,
+      externalMessageId: "msg-2",
+      externalChatId: "chat-1",
+      text: "next"
+    }).type).toBe("chat");
+    expect(ChannelDeliveryRetryParamsSchema.parse({ deliveryId: delivery.deliveryId }).deliveryId).toBe(delivery.deliveryId);
+
+    expect(() => ChannelConfigSchema.parse({ ...config, channelId: "" })).toThrow();
+    expect(() => ChannelDeliverySchema.parse({ ...delivery, status: "lost" })).toThrow();
+    expect(() => ChannelInboundMessageSchema.parse({ ...inbound, externalMessageId: "" })).toThrow();
+    expect(() => ChannelOutboundMessageSchema.parse({ ...outbound, kind: "unknown" })).toThrow();
+  });
+
   it("validates JSON-RPC request and response shapes", () => {
     expect(
       JsonRpcRequestSchema.parse({
@@ -891,6 +995,24 @@ describe("Ora shared contracts", () => {
         params: { projectId: "project-0001" }
       }).method
     ).toBe("projects.files");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "channels.create",
+        params: { label: "HTTP Webhook", kind: "http_webhook" }
+      }).method
+    ).toBe("channels.create");
+
+    expect(
+      JsonRpcRequestSchema.parse({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "channels.ingest",
+        params: { channelId: "channel-http", externalMessageId: "msg-1", externalChatId: "chat-1", text: "hello" }
+      }).method
+    ).toBe("channels.ingest");
 
     expect(
       JsonRpcResponseSchema.parse({

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { FileImage, FileJson, FileText, X } from "lucide-react";
 import { JsonTree } from "./JsonTree";
 import { MarkdownContent } from "./MarkdownContent";
@@ -55,6 +56,16 @@ function ArtifactKindIcon({ artifact }: { artifact?: ArtifactRecord }) {
 function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
   const fileChange = fileChangePayload(artifact.payload);
   if (fileChange) {
+    if (isHtmlArtifact(artifact)) {
+      return (
+        <HtmlArtifactBrowser
+          artifact={artifact}
+          html={fileChange.afterContent}
+          sourceText={fileChange.afterContent}
+        />
+      );
+    }
+
     if (isMarkdownArtifact(artifact)) {
       return (
         <section className="flex min-h-0 flex-1 p-4">
@@ -63,13 +74,7 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
       );
     }
 
-    return (
-      <section className="flex min-h-0 flex-1 p-3">
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">
-          {fileChange.afterContent}
-        </pre>
-      </section>
-    );
+    return <SourceTextPanel text={fileChange.afterContent} />;
   }
 
   if (artifact.mimeType.startsWith("image/") && artifact.uri) {
@@ -102,30 +107,118 @@ function ArtifactPreview({ artifact }: { artifact: ArtifactRecord }) {
 
     if (isHtmlArtifact(artifact)) {
       return (
-        <section className="min-h-0 flex-1 overflow-hidden">
-          <iframe
-            title={artifact.label}
-            srcDoc={text}
-            sandbox=""
-            className="h-full min-h-[70vh] w-full bg-white"
-          />
-        </section>
+        <HtmlArtifactBrowser
+          artifact={artifact}
+          html={text}
+          sourceText={text}
+        />
       );
     }
 
-    return (
-      <section className="flex min-h-0 flex-1 p-3">
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">
-          {text}
-        </pre>
-      </section>
-    );
+    return <SourceTextPanel text={text} />;
+  }
+
+  if (isHtmlArtifact(artifact) && artifact.uri) {
+    return <HtmlArtifactBrowser artifact={artifact} uri={artifact.uri} />;
   }
 
   return (
     <section className="flex-1 rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
       No inline preview is available for this artifact yet.
       {artifact.uri ? <p data-i18n-skip="" className="mt-2 break-all text-xs">{artifact.uri}</p> : null}
+    </section>
+  );
+}
+
+function HtmlArtifactBrowser({
+  artifact,
+  html,
+  uri,
+  sourceText,
+}: {
+  artifact: ArtifactRecord;
+  html?: string;
+  uri?: string;
+  sourceText?: string;
+}) {
+  const [mode, setMode] = useState<"preview" | "source">("preview");
+  const canShowSource = sourceText !== undefined;
+
+  useEffect(() => {
+    setMode("preview");
+  }, [artifact.id]);
+
+  if (mode === "source" && canShowSource) {
+    return (
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <HtmlPreviewToolbar mode={mode} onModeChange={setMode} />
+        <SourceTextPanel text={sourceText} className="rounded-none border-0" />
+      </section>
+    );
+  }
+
+  const iframeSource = html !== undefined
+    ? { srcDoc: html }
+    : uri
+      ? { src: uri }
+      : undefined;
+
+  if (!iframeSource) {
+    return (
+      <section className="flex-1 rounded-xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
+        No HTML preview is available for this artifact yet.
+      </section>
+    );
+  }
+
+  return (
+    <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {canShowSource ? <HtmlPreviewToolbar mode={mode} onModeChange={setMode} /> : null}
+      <iframe
+        title={`HTML preview: ${artifact.label}`}
+        sandbox="allow-scripts"
+        className="h-full min-h-[70vh] w-full flex-1 bg-white"
+        {...iframeSource}
+      />
+    </section>
+  );
+}
+
+function HtmlPreviewToolbar({
+  mode,
+  onModeChange,
+}: {
+  mode: "preview" | "source";
+  onModeChange: (mode: "preview" | "source") => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-end gap-1 border-b border-border bg-card/70 px-2 py-1.5">
+      <Button
+        type="button"
+        size="sm"
+        variant={mode === "preview" ? "secondary" : "ghost"}
+        onClick={() => onModeChange("preview")}
+      >
+        Preview
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant={mode === "source" ? "secondary" : "ghost"}
+        onClick={() => onModeChange("source")}
+      >
+        Source
+      </Button>
+    </div>
+  );
+}
+
+function SourceTextPanel({ text, className = "" }: { text: string; className?: string }) {
+  return (
+    <section className={`flex min-h-0 flex-1 p-3 ${className}`}>
+      <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-bench-800">
+        {text}
+      </pre>
     </section>
   );
 }

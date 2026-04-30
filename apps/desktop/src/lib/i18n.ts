@@ -274,6 +274,7 @@ const ZH_COPY: Record<string, string> = {
   Images: "图片",
   Reasoning: "推理",
   Tools: "工具",
+  Channels: "渠道",
   "Close settings": "关闭设置",
   "Connecting to the Ora runtime bridge.": "正在连接 Ora 运行时桥接。",
   "Select a session to inspect its latest turn, checkpoints, and approvals.":

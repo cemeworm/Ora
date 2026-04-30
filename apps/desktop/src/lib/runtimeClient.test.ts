@@ -2,6 +2,42 @@ import { describe, expect, it } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
 
 describe("desktop runtime client agent catalog", () => {
+  it("lists provider models in browser fallback", async () => {
+    const client = createRuntimeClient();
+
+    await expect(client.listProviderModels({
+      id: "local-smoke",
+      type: "local_smoke",
+      label: "Smoke",
+      modelId: "smoke-model",
+      enabled: true,
+      capabilities: ["chat"],
+      dropParams: [],
+      headers: {},
+    })).resolves.toMatchObject({
+      status: "ok",
+      authoritative: true,
+      models: [{ id: "smoke-model", source: "local" }],
+    });
+
+    await expect(client.listProviderModels({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      enabled: false,
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      capabilities: ["chat"],
+      dropParams: [],
+      headers: {},
+    })).resolves.toMatchObject({
+      status: "ok",
+      authoritative: false,
+    });
+  });
+
   it("exposes built-in agents and applies global overrides in browser fallback", async () => {
     const client = createRuntimeClient();
     const catalog = await client.agentCatalog();

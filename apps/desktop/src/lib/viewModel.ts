@@ -2195,8 +2195,13 @@ function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
     uri: artifact.uri,
     sizeBytes: artifact.sizeBytes,
     payload: artifact.payload,
-    previewable: artifact.mimeType.startsWith("image/"),
+    previewable: isPreviewableTurnArtifact(artifact),
   };
+}
+
+function isPreviewableTurnArtifact(artifact: OraArtifactRef): boolean {
+  const label = artifact.label.toLowerCase();
+  return artifact.mimeType.startsWith("image/") || artifact.mimeType.includes("html") || label.endsWith(".html") || label.endsWith(".htm");
 }
 
 function adaptTurnFileChange(artifact: OraArtifactRef): TurnFileChangeAttachment[] {

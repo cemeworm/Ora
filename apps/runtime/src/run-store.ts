@@ -79,6 +79,7 @@ import {
   UserTaskInputSchema
 } from "@ora/shared";
 import { TodoService } from "./capabilities.js";
+import { ChannelService } from "./channels/service.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
@@ -265,6 +266,7 @@ export class LocalRunStore {
   private readonly skillRegistry: RuntimeSkillRegistry;
   private readonly longTermMemory: LongTermMemoryManager;
   private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
+  private readonly channelService: ChannelService;
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
@@ -301,6 +303,7 @@ export class LocalRunStore {
     this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) =>
       processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
     );
+    this.channelService = new ChannelService(this.backend, this, { clock: this.clock });
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
@@ -492,6 +495,61 @@ export class LocalRunStore {
       modeStudioContext: () => this.modeStudioContext(),
     };
   }
+
+
+
+  createChannel(params: unknown) {
+    return this.channelService.create(params);
+  }
+
+  listChannels(params: unknown = {}) {
+    return this.channelService.list(params);
+  }
+
+  getChannel(params: unknown, options: { redact?: boolean } = {}) {
+    return this.channelService.get(params, options);
+  }
+
+  updateChannel(params: unknown) {
+    return this.channelService.update(params);
+  }
+
+  deleteChannel(params: unknown) {
+    return this.channelService.delete(params);
+  }
+
+  startChannel(params: unknown) {
+    return this.channelService.start(params);
+  }
+
+  stopChannel(params: unknown) {
+    return this.channelService.stop(params);
+  }
+
+  restartChannel(params: unknown) {
+    return this.channelService.restart(params);
+  }
+
+  channelStatus() {
+    return this.channelService.status();
+  }
+
+  ingestChannel(params: unknown) {
+    return this.channelService.ingest(params);
+  }
+
+  listChannelBindings(params: unknown = {}) {
+    return this.channelService.listBindings(params);
+  }
+
+  listChannelDeliveries(params: unknown = {}) {
+    return this.channelService.listDeliveries(params);
+  }
+
+  retryChannelDelivery(params: unknown) {
+    return this.channelService.retryDelivery(params);
+  }
+
 
   createProject(params: unknown = {}): ProjectSummary {
     return createProjectOperation(params, this.projectSessionOperationDeps());
@@ -928,7 +986,11 @@ export class LocalRunStore {
       resumeSnapshot: approvedActionIds.length === 0 ? snapshot : undefined,
       onEvent: applyLiveEvent,
     }).then(async (nextSnapshot) => {
-      const finalSnapshot = attachTraceMetadata(nextSnapshot);
+      const finalSnapshot = this.appendResolvedClarificationEvents(
+        attachTraceMetadata(nextSnapshot),
+        snapshot.pendingClarifications,
+        clarificationPatch,
+      );
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -1105,7 +1167,11 @@ export class LocalRunStore {
         approvedActions,
         resumeSnapshot: approvedActionIds.length === 0 ? snapshot : undefined,
       });
-      const tracedSnapshot = attachTraceMetadata(resumedSnapshot);
+      const tracedSnapshot = this.appendResolvedClarificationEvents(
+        attachTraceMetadata(resumedSnapshot),
+        snapshot.pendingClarifications,
+        clarificationPatch,
+      );
       await this.persistRunWithGeneratedTitle(tracedSnapshot);
       return tracedSnapshot;
     }
@@ -1437,6 +1503,38 @@ export class LocalRunStore {
       runsForSession: (sessionId) => this.runsForSession(sessionId),
       sessionTranscript: (sessionId) => this.sessionTranscript(sessionId),
     };
+  }
+
+
+
+  private appendResolvedClarificationEvents(
+    snapshot: StateSnapshot,
+    pendingClarifications: StateSnapshot["pendingClarifications"],
+    clarificationPatch: Record<string, unknown>,
+  ): StateSnapshot {
+    let working = snapshot;
+    for (const clarification of pendingClarifications) {
+      const answer = clarificationPatch[clarification.id] ?? clarificationPatch[clarification.key];
+      if (answer === undefined) {
+        continue;
+      }
+      const alreadyEmitted = working.events.some((event) => {
+        if (event.type !== "clarification.resolved" || !event.payload || typeof event.payload !== "object") {
+          return false;
+        }
+        return (event.payload as Record<string, unknown>).clarificationId === clarification.id;
+      });
+      if (alreadyEmitted) {
+        continue;
+      }
+      working = this.appendEvent(working, "clarification.resolved", {
+        clarificationId: clarification.id,
+        nodeId: clarification.nodeId,
+        answer,
+        mode: "resume",
+      }, { nodeId: clarification.nodeId, agentId: clarification.nodeId });
+    }
+    return working;
   }
 
   private appendEvent(

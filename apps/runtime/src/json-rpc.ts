@@ -7,9 +7,9 @@ import {
 import { ZodError } from "zod";
 import { LocalRunStore } from "./run-store.js";
 import { OraRuntimeError } from "./runtime-errors.js";
-import { createDefaultProviderRegistry, verifyProviderConfig } from "./providers/index.js";
+import { createDefaultProviderRegistry, fetchProviderModels, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
-import { MVP_MODE_RUNTIME_ATOMS, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
+import { MVP_MODE_RUNTIME_ATOMS, ProviderModelsParamsSchema, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
 import type { RunEventStream } from "@ora/shared";
 import { PackageManager } from "./package-manager.js";
 
@@ -122,6 +122,10 @@ export function createRuntimeMethodHandler(
         const parsed = ProviderVerifyParamsSchema.parse(request.params);
         return verifyProviderConfig(parsed.provider);
       }
+      case "providers.models": {
+        const parsed = ProviderModelsParamsSchema.parse(request.params);
+        return fetchProviderModels(parsed.provider);
+      }
       case "agents.list":
         return store.listAgents();
       case "agents.get":
@@ -160,6 +164,32 @@ export function createRuntimeMethodHandler(
         return store.getSession(request.params);
       case "sessions.archive":
         return store.archiveSession(request.params);
+      case "channels.create":
+        return store.createChannel(request.params);
+      case "channels.list":
+        return store.listChannels(request.params);
+      case "channels.get":
+        return store.getChannel(request.params);
+      case "channels.update":
+        return store.updateChannel(request.params);
+      case "channels.delete":
+        return store.deleteChannel(request.params);
+      case "channels.start":
+        return store.startChannel(request.params);
+      case "channels.stop":
+        return store.stopChannel(request.params);
+      case "channels.restart":
+        return store.restartChannel(request.params);
+      case "channels.status":
+        return store.channelStatus();
+      case "channels.ingest":
+        return store.ingestChannel(request.params);
+      case "channels.bindings.list":
+        return store.listChannelBindings(request.params);
+      case "channels.deliveries.list":
+        return store.listChannelDeliveries(request.params);
+      case "channels.deliveries.retry":
+        return store.retryChannelDelivery(request.params);
       case "runs.start":
         return store.startRun(request.params);
       case "runs.startStreaming":

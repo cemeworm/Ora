@@ -164,7 +164,7 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("我会先读取这些 skill。");
   });
 
-  it("keeps meaningful live runtime status in the progress area after assistant text starts", () => {
+  it("shows live progress text in content area without a separate progress card when no process steps exist", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
       turnIndex: 1,
@@ -183,9 +183,10 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="我会先读取这些 skill。" turn={turn} />,
     );
 
-    expect(html).toContain("运行进度");
-    expect(html).toContain("当前状态");
-    expect(html).toContain("已选择单智能体模式，我准备好了");
+    // No separate progress card when there are no process steps
+    expect(html).not.toContain("运行进度");
+    expect(html).not.toContain("当前状态");
+    // Live progress text appears in the assistant content
     expect(html).toContain("我会先读取这些 skill。");
   });
 

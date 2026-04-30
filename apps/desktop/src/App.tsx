@@ -734,6 +734,7 @@ function WorkbenchInner() {
             activeMode={activeMode}
             actionRecords={actionRecords}
             selectedCustomAgentId={state.selectedCustomAgentId}
+            projectLabel={selectedProject?.label}
             activeSnapshot={state.activeSnapshot}
             agents={agents}
             busyCommand={state.busyCommand}

@@ -2,6 +2,7 @@ import { CoordinationPatternSchema, SINGLE_AGENT_MODE_ID, type ModeSelection } f
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
+import { chooseEnabledProviderId } from "./providerSelection";
 import type {
   OraModeSpec,
   OraPackageStoreSnapshot,
@@ -994,12 +995,16 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "SET_PROVIDER": {
       const provider = state.providerRegistry?.providers.find((entry) => entry.id === action.providerId);
+      const selectedProviderId = chooseEnabledProviderId(state.providerRegistry, {
+        preferredProviderId: action.providerId,
+        currentProviderId: state.selectedProviderId,
+      });
       return {
         ...state,
-        selectedProviderId: action.providerId,
-        commandFeedback: provider
+        selectedProviderId,
+        commandFeedback: provider && provider.enabled !== false
           ? `${provider.label} selected for the next turn.`
-          : `Provider ${action.providerId} selected for the next turn.`,
+          : `Provider ${action.providerId} is not enabled for chat.`,
       };
     }
 
@@ -1013,13 +1018,13 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
 
     case "SET_PROVIDER_REGISTRY": {
-      const selectedProvider = action.providerRegistry.providers.some((provider) => provider.id === state.selectedProviderId)
-        ? state.selectedProviderId
-        : action.providerRegistry.defaultProviderId;
+      const selectedProviderId = chooseEnabledProviderId(action.providerRegistry, {
+        currentProviderId: state.selectedProviderId,
+      });
       return {
         ...state,
         providerRegistry: action.providerRegistry,
-        selectedProviderId: selectedProvider,
+        selectedProviderId,
       };
     }
 
@@ -1041,13 +1046,17 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         action.provider,
         ...providers.filter((provider) => provider.id !== action.provider.id),
       ];
+      const providerRegistry = {
+        providers: nextProviders,
+        defaultProviderId: state.providerRegistry?.defaultProviderId ?? action.provider.id,
+      };
       return {
         ...state,
-        providerRegistry: {
-          providers: nextProviders,
-          defaultProviderId: state.providerRegistry?.defaultProviderId ?? action.provider.id,
-        },
-        selectedProviderId: action.provider.id,
+        providerRegistry,
+        selectedProviderId: chooseEnabledProviderId(providerRegistry, {
+          preferredProviderId: action.provider.enabled !== false ? action.provider.id : undefined,
+          currentProviderId: state.selectedProviderId,
+        }),
         commandFeedback: `${action.provider.label} saved for future turns.`,
       };
     }
@@ -1055,15 +1064,16 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "DELETE_PROVIDER": {
       const providers = state.providerRegistry?.providers.filter((provider) => provider.id !== action.providerId) ?? [];
       const defaultProviderId = state.providerRegistry?.defaultProviderId ?? "local-smoke";
-      const selectedProviderId = state.selectedProviderId === action.providerId
-        ? defaultProviderId
-        : state.selectedProviderId;
+      const providerRegistry = state.providerRegistry
+        ? { providers, defaultProviderId }
+        : state.providerRegistry;
       return {
         ...state,
-        providerRegistry: state.providerRegistry
-          ? { providers, defaultProviderId }
-          : state.providerRegistry,
-        selectedProviderId,
+        providerRegistry,
+        selectedProviderId: chooseEnabledProviderId(providerRegistry, {
+          currentProviderId: state.selectedProviderId,
+          previousProviderId: action.providerId,
+        }),
         providerSecretStatuses: state.providerSecretStatuses.filter((status) => status.providerId !== action.providerId),
         providerStatuses: state.providerStatuses.filter((status) => status.providerId !== action.providerId),
         commandFeedback: `Removed provider ${action.providerId}.`,

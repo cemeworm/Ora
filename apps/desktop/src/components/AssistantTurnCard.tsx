@@ -36,10 +36,6 @@ interface AssistantTurnCardProps {
 
 const QUOTED_MESSAGE_PREVIEW_LIMIT = 128;
 
-function isPlaceholderLiveProgressText(text: string): boolean {
-  return text === "正在努力";
-}
-
 export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
   const agentMessages = turn?.agentMessages ?? [];
@@ -53,10 +49,7 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
   const liveProgressText = turn?.liveProgressText?.trim();
-  const liveProgressIsPlaceholder = liveProgressText ? isPlaceholderLiveProgressText(liveProgressText) : false;
-  const canShowLiveProgress = turn?.status === "running" || turn?.status === "approval_required";
-  const showLiveProgressInProcess = Boolean(canShowLiveProgress && liveProgressText && !liveProgressIsPlaceholder && content.trim() !== liveProgressText);
-  const hasProcessSteps = processSteps.length > 0 || showLiveProgressInProcess;
+  const hasProcessSteps = processSteps.length > 0;
   const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
   const contentIsLiveProgress = Boolean(liveProgressText && content.trim() === liveProgressText);
   const hasStageTranscript = stageTranscriptMessages.length > 0;
@@ -142,14 +135,11 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               summary={processSteps.length > 0 ? processSummary(processSteps, turn?.status, isPlaceholder) : undefined}
               collapsedPreview={latestProcessStep
                 ? <ProcessStepItem step={latestProcessStep} />
-                : showLiveProgressInProcess && liveProgressText
-                  ? <LiveProgressItem text={liveProgressText} />
-                  : undefined}
+                : undefined}
             >
               {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
               ))}
-              {showLiveProgressInProcess && liveProgressText ? <LiveProgressItem text={liveProgressText} active={turn?.status === "running"} /> : null}
             </CollapsibleCard>
           ) : null}
 
@@ -467,23 +457,6 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
           </TaskItemMeta>
         </div>
         <StepStatusIcon step={step} />
-      </div>
-    </TaskItem>
-  );
-}
-
-function LiveProgressItem({ text, active = false }: { text: string; active?: boolean }) {
-  return (
-    <TaskItem className="relative">
-      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-medium">当前状态</p>
-          <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{text}</p>
-        </div>
-        {active
-          ? <LoaderCircle size={14} className="mt-0.5 shrink-0 animate-spin text-muted-foreground" />
-          : <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />}
       </div>
     </TaskItem>
   );
