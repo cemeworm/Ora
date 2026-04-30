@@ -1,4 +1,4 @@
-import { CoordinationPatternSchema, SINGLE_AGENT_MODE_ID, type ModeSelection } from "@ora/shared";
+import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MODE_ID, type ModeSelection } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
@@ -591,12 +591,7 @@ function readAgentConversationTranscript(value: unknown): OraStateSnapshot["agen
   ) {
     return undefined;
   }
-  const stance = value.stance === "affirmative" ||
-    value.stance === "negative" ||
-    value.stance === "moderator" ||
-    value.stance === "neutral"
-    ? value.stance
-    : "neutral";
+  const stance = typeof value.stance === "string" && value.stance.trim() ? value.stance : "neutral";
   const status = value.status === "sent" ||
     value.status === "running" ||
     value.status === "done" ||
@@ -614,7 +609,13 @@ function readAgentConversationTranscript(value: unknown): OraStateSnapshot["agen
     speakerId: typeof value.speakerId === "string" ? value.speakerId : undefined,
     stance,
     status,
+    layout: readTranscriptLayout(value.layout),
   };
+}
+
+function readTranscriptLayout(value: unknown): NonNullable<OraStateSnapshot["agentMessages"][number]["transcript"]>["layout"] | undefined {
+  const parsed = ModeTranscriptLayoutSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function mergeStreamActionUpdates(

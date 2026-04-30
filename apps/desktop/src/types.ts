@@ -246,8 +246,25 @@ export interface TurnAgentConversationMessage {
     sequence: number;
     speakerLabel: string;
     speakerId?: string;
-    stance: "affirmative" | "negative" | "moderator" | "neutral";
+    stance: string;
     status: "sent" | "running" | "done" | "failed";
+    layout?: {
+      style: string;
+      groupId?: string;
+      groupLabel?: string;
+      stanceLabels?: Record<string, string>;
+      stanceTones?: Record<string, string>;
+      sideByStance?: Record<string, "left" | "right" | "center">;
+      laneBySpeaker?: Record<string, string>;
+      summaryStances?: string[];
+      showStatus?: boolean;
+      showTimestamp?: boolean;
+      showSpeaker?: boolean;
+      orientation?: "vertical" | "horizontal";
+      showArtifacts?: boolean;
+      groupBy?: "speakerId" | "stance" | "nodeId";
+      lanes?: Array<{ id: string; label: string }>;
+    };
   };
   timestamp: string;
 }

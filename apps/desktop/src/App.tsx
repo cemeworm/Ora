@@ -16,9 +16,15 @@ import { AppShell } from "./components/AppShell";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
 import { ChatView } from "./components/ChatView";
 import { DocumentsDrawer } from "./components/DocumentsDrawer";
+import { OnboardingView } from "./components/onboarding/OnboardingView";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
+import {
+  readOnboardingStatus,
+  writeOnboardingStatus,
+  type OnboardingStatus,
+} from "./lib/onboarding";
 import {
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
@@ -70,6 +76,24 @@ const MIN_DETAIL_PANEL_WIDTH = 360;
 const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora";
+
+function hasVerifiedRealProvider(
+  providers: readonly { id: string; type: string }[] | undefined,
+  statuses: readonly { providerId: string; state: string }[],
+) {
+  if (!providers) {
+    return false;
+  }
+  const verifiedProviderIds = new Set(
+    statuses
+      .filter((status) => status.state === "verified")
+      .map((status) => status.providerId),
+  );
+  return providers.some(
+    (provider) =>
+      provider.type !== "local_smoke" && verifiedProviderIds.has(provider.id),
+  );
+}
 
 function windowTitleForView(
   activeView: AppView,
@@ -182,6 +206,9 @@ function WorkbenchInner() {
     selectedCheckpoint,
     actions,
   } = useRunActions();
+  const [onboardingStatus, setOnboardingStatus] = useState<
+    OnboardingStatus | undefined
+  >(() => readOnboardingStatus());
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [detailPanelWidth, setDetailPanelWidth] = useState(
     DEFAULT_DETAIL_PANEL_WIDTH,
@@ -195,6 +222,11 @@ function WorkbenchInner() {
   const [projectFileArtifact, setProjectFileArtifact] =
     useState<ArtifactRecord>();
   useDocumentTranslations(state.language);
+
+  function completeOnboarding(status: OnboardingStatus) {
+    writeOnboardingStatus(status);
+    setOnboardingStatus(status);
+  }
 
   function clampDetailPanelWidth(nextWidth: number) {
     const containerWidth =
@@ -628,6 +660,22 @@ function WorkbenchInner() {
       onOpenChange={(open) => dispatch({ type: "SET_SETTINGS_OPEN", open })}
     />
   ) : null;
+  const shouldShowOnboarding =
+    !onboardingStatus &&
+    Boolean(state.providerRegistry) &&
+    !hasVerifiedRealProvider(
+      state.providerRegistry?.providers,
+      state.providerStatuses,
+    );
+
+  if (shouldShowOnboarding) {
+    return (
+      <OnboardingView
+        onComplete={() => completeOnboarding("completed")}
+        onSkip={() => completeOnboarding("skipped")}
+      />
+    );
+  }
 
   // Loading / error state
   if (!viewModel || !selectedSession || !state.bridgeStatus) {

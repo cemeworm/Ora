@@ -1034,7 +1034,10 @@ function ModeOverviewInspector({
           {selectedNode ? (
             <StageExplanationPanel mode={mode} node={selectedNode} atoms={atoms} language={language} />
           ) : (
-            <ModeContractPanel mode={mode} atoms={atoms} executionPreview={executionPreview} language={language} />
+            <>
+              <ModeContractPanel mode={mode} atoms={atoms} executionPreview={executionPreview} language={language} />
+              <ModeTranscriptLayoutPreview mode={mode} language={language} />
+            </>
           )}
           {definition && (
             <ModePurposePanel mode={mode} definition={definition} language={language} />
@@ -1091,6 +1094,7 @@ function ModeInspector({
       {activeSection === "overview" && (
         <>
           <ModeContractPanel mode={draft} atoms={atoms} executionPreview={executionPreview} language={language} />
+          <ModeTranscriptLayoutPreview mode={draft} language={language} />
           <ModeSettingsPanel
             draft={draft}
             editingModeId={editingModeId}
@@ -1164,6 +1168,66 @@ function ModeInspector({
         </div>
       )}
     </>
+  );
+}
+
+function ModeTranscriptLayoutPreview({
+  mode,
+  language,
+}: {
+  mode: OraModeSpec;
+  language: AppLanguage;
+}) {
+  const stages = mode.stages ?? [];
+  const layout = mode.transcriptLayout;
+  if (stages.length === 0 && !layout) {
+    return null;
+  }
+  const previewStages = stages.slice(0, 5);
+  const hiddenCount = Math.max(0, stages.length - previewStages.length);
+
+  return (
+    <section className="rounded-2xl bg-white p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-bench-700">{translateCopy(language, "Transcript layout")}</p>
+          <h4 className="mt-1 text-sm font-semibold">{displayText(language, layout?.groupLabel ?? mode.label)}</h4>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-semibold text-bench-800">
+          <span className="rounded-full bg-bench-100 px-3 py-1">{formatEnumLabel(language, layout?.style ?? "stage_list")}</span>
+          <span className="rounded-full bg-bench-100 px-3 py-1">{stages.length} {translateCopy(language, "stages")}</span>
+        </div>
+      </div>
+      {previewStages.length > 0 && (
+        <div className="mt-4 grid gap-2">
+          {previewStages.map((stage, index) => (
+            <div key={stage.id} className="flex items-start gap-3 rounded-lg border border-bench-200 bg-bench-50/80 px-3 py-3">
+              <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-white text-xs font-semibold text-bench-800 ring-1 ring-inset ring-bench-200">
+                {index + 1}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-bench-950">{displayText(language, stage.label)}</p>
+                  {stage.stance && (
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-bench-700 ring-1 ring-inset ring-bench-200">
+                      {layout?.stanceLabels?.[stage.stance] ?? stage.stance}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs leading-5 text-bench-700">
+                  {displayText(language, stage.speakerLabel ?? stage.speakerId ?? ownerForStage(mode, stage) ?? stage.nodeId)}
+                  {" · "}
+                  {stage.nodeId}
+                </p>
+              </div>
+            </div>
+          ))}
+          {hiddenCount > 0 && (
+            <p className="text-xs font-medium text-bench-600">+{hiddenCount} {translateCopy(language, "more")}</p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -3162,6 +3226,16 @@ function ownerDisplayName(mode: OraModeSpec, node: OraModeSpec["nodes"][number],
   return node.ownerAgentId ? displayText(language, node.ownerAgentId) : translateCopy(language, "Runtime default");
 }
 
+function ownerForStage(mode: OraModeSpec, stage: NonNullable<OraModeSpec["stages"]>[number]): string | undefined {
+  const profile = stage.speakerId ? mode.profiles.find((candidate) => candidate.id === stage.speakerId) : undefined;
+  if (profile) {
+    return profile.label;
+  }
+  const node = mode.nodes.find((candidate) => candidate.id === stage.nodeId);
+  const ownerProfile = node?.ownerAgentId ? mode.profiles.find((candidate) => candidate.id === node.ownerAgentId) : undefined;
+  return ownerProfile?.label ?? node?.ownerAgentId;
+}
+
 function nodeStoryDescription(
   language: AppLanguage,
   mode: OraModeSpec,
@@ -3297,7 +3371,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, stages, transcriptLayout, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy } = spec;
   return {
     id,
     family,
@@ -3315,6 +3389,8 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     defaultBudget,
     profiles,
     runtimeAtoms,
+    stages,
+    transcriptLayout,
     completionPolicy,
     runtimePolicy,
     recoveryPolicy,
