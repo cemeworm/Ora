@@ -371,6 +371,20 @@ export function createRuntimeClient() {
     async channelStatus(): Promise<OraChannelStatusResult> {
       return call<OraChannelStatusResult>("channels.status");
     },
+    async wechatRequestQrCode(channelId: string): Promise<{ base64: string; qrcode: string }> {
+      return call<{ base64: string; qrcode: string }>("channels.wechat.requestQrCode", { channelId });
+    },
+    async wechatPollQrCodeStatus(channelId: string): Promise<{
+      status: string;
+      botToken?: string;
+      baseUrl?: string;
+    }> {
+      return call<{
+        status: string;
+        botToken?: string;
+        baseUrl?: string;
+      }>("channels.wechat.pollQrCodeStatus", { channelId });
+    },
     async createProject(params: OraProjectCreateParams): Promise<OraProjectSummary> {
       return call<OraProjectSummary>("projects.create", params);
     },
@@ -1315,6 +1329,14 @@ class LocalJsonRpcRuntime {
           })),
           bus: {},
         };
+      case "channels.wechat.requestQrCode": {
+        return {
+          base64: "iVBORw0KGgoAAAANSUhEUgAAABUAAAAVCAAAAACMfPpKAAAAPUlEQVR4nGP4//8HQ3MYB8OuVS8Ydoe9ANMg/r/VPxiuhkYwrFq1Aiv9b9UKhubQCIZdq1Yw7IbSID7QPAB9+CcNRdy/cgAAAABJRU5ErkJggg==",
+          qrcode: "mock-qr-key",
+        };
+      }
+      case "channels.wechat.pollQrCodeStatus":
+        return { status: "waiting" };
       case "evaluation.datasets.import":
         return this.importEvaluationDataset(params);
       case "evaluation.datasets.list":

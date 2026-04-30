@@ -721,6 +721,95 @@ const ZH_COPY: Record<string, string> = {
   "Start run": "开始运行",
   Starting: "启动中",
   "Show topology": "显示拓扑",
+
+  // ── 提供方状态标签 ──
+  "Verified off": "已验证（已关闭）",
+  Ready: "就绪",
+  "Key saved": "密钥已保存",
+  Saved: "已保存",
+  Preset: "预设",
+  "Preset draft": "预设草稿",
+  "Saved provider": "已保存提供方",
+
+  // ── 提供方详情面板 ──
+  "API Keys": "API 密钥",
+  Remove: "移除",
+  Models: "模型",
+  "Stored in the runtime layer and Keychain.":
+    "存储在运行时层和 Keychain 中。",
+  "Enable one or more models for this provider. Enter a custom model ID when it is not listed.":
+    "为此提供方启用一个或多个模型。未列出时可输入自定义模型 ID。",
+  "Use custom model ID": "使用自定义模型 ID",
+  "Not in provider list": "不在提供方列表中",
+  "Enabled model": "已启用模型",
+  "Saved disabled": "已保存（已停用）",
+  "Remote model": "远程模型",
+  "Preset suggestion": "预设推荐",
+  "Current draft": "当前草稿",
+  "Editing:": "编辑中：",
+  "Add model": "添加模型",
+  "Fetching...": "正在获取...",
+  "Fetch models": "获取模型列表",
+  "Provider does not expose model discovery.":
+    "该提供方不支持模型发现。",
+  "Failed to fetch provider models.":
+    "获取提供方模型列表失败。",
+  "Showing fallback model suggestions.":
+    "正在显示备选模型建议。",
+  "Provider details changed after the last fetch.":
+    "上次获取后提供方详情已变更。",
+  "Save Details": "保存详情",
+  "Verify & Enable": "验证并启用",
+  "Protocol, environment variable, limits, capabilities, drop params, and headers.":
+    "协议、环境变量、限额、能力、丢弃参数和请求头。",
+  "No providers match that search.": "没有匹配的提供方。",
+  "No models match that search.": "没有匹配的模型。",
+
+  // ── Web Search ──
+  "Web Search": "网页搜索",
+  "Runtime tool: web.search and web.fetch. Provider-native browsing is not required.":
+    "运行时工具：web.search 和 web.fetch。不需要提供方原生浏览功能。",
+  "Search Provider": "搜索提供方",
+  "Max Results": "最大结果数",
+  "Timeout Ms": "超时时间（毫秒）",
+  "MCP Server ID": "MCP 服务 ID",
+  "MCP Tool Name": "MCP 工具名称",
+  Reset: "重置",
+  "Save Search Settings": "保存搜索设置",
+  "Web search settings saved for future turns.":
+    "网页搜索设置已保存，将在后续轮次中生效。",
+  "Web search settings reset to auto.":
+    "网页搜索设置已重置为自动。",
+  Auto: "自动",
+  "Use provider default env": "使用提供方默认环境变量",
+
+  // ── 渠道部分 ──
+  "Default Model": "默认模型",
+  "global default": "全局默认",
+  Connection: "连接",
+  Started: "已启动",
+  "Last Event": "最近事件",
+  "No events yet": "暂无事件",
+  "Bot Token": "Bot Token",
+  "Allowed Users": "允许的用户",
+  "Allowed Guilds": "允许的服务器",
+  "App Token": "应用 Token",
+  "Bot Webhook URL": "Bot Webhook 地址",
+  "App ID": "应用 ID",
+  "App Secret": "应用密钥",
+  "Verification Token": "验证 Token",
+  "Signing Secret": "签名密钥",
+  Domain: "域名",
+  "Bot ID": "Bot ID",
+  "Bot Secret": "Bot 密码",
+  "Working Message": "处理中消息",
+  "Client ID": "客户端 ID",
+  "Client Secret": "客户端密钥",
+  "Card Template ID": "卡片模板 ID",
+  "Inbound Token": "入站 Token",
+  "Callback URL": "回调地址",
+  "Callback Token": "回调 Token",
+  "HTTP Webhook": "HTTP Webhook",
 };
 
 const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
@@ -994,6 +1083,12 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [/^(.+) skill saved\.$/, (match) => `${match[1]} 技能已保存。`],
   [/^Deleted skill (.+)\.$/, (match) => `已删除技能 ${match[1]}。`],
+  [/^Connect Ora to (.+) for messaging$/, (match) => `将 Ora 连接到 ${match[1]} 进行消息通信`],
+  [/^AI model for (.+) conversations\. Falls back to global default if not set\.$/, (match) => `${match[1]} 对话使用的 AI 模型。未设置时回退到全局默认。`],
+  [/^Fetched (\d+) remote models\.$/, (match) => `已获取 ${match[1]} 个远程模型。`],
+  [/^Saving will replace (.+) with (.+)\.$/, (match) => `保存将把 ${match[1]} 替换为 ${match[2]}。`],
+  [/^Provider (.+) already exists\. Choose a different model ID\.$/, (match) => `提供方 ${match[1]} 已存在。请选择不同的模型 ID。`],
+  [/^Verify and enable (.+)$/, (match) => `验证并启用 ${match[1]}`],
 ];
 
 const textOriginals = new WeakMap<Text, string>();

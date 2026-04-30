@@ -86,3 +86,55 @@
     overflow: visible;
   }
 }
+
+/* ── Onboarding animations ─────────────────────────────── */
+
+@keyframes ora-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.03);
+    opacity: 0.85;
+  }
+}
+
+@keyframes ora-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ora-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@layer utilities {
+  .animate-breathe {
+    animation: ora-breathe 3s ease-in-out infinite;
+  }
+
+  .animate-fade-in {
+    animation: ora-fade-in 0.5s ease-out both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe,
+  .animate-fade-in {
+    animation: none;
+  }
+}

@@ -12,6 +12,7 @@ import {
   KeyRound,
   Plus,
   Power,
+  Radio,
   Save,
   Search,
   Settings,
@@ -43,6 +44,7 @@ import type { OraChannelConfig, OraLongTermMemoryProfile, OraProviderModelsResul
 import { cn } from "../lib/utils";
 import { LANGUAGE_OPTIONS } from "../lib/i18n";
 import { ProjectSignalsView } from "./ProjectSignalsView";
+import { WechatQrCodePanel } from "./WechatQrCodePanel";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent } from "./ui/dialog";
 import { Select } from "./ui/select";
@@ -59,7 +61,7 @@ const settingsSections: Array<{
   { id: "memory", label: "Memory", icon: Database },
   { id: "runtime", label: "Status", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
-  { id: "channels", label: "渠道", icon: Power },
+  { id: "channels", label: "渠道", icon: Radio },
 ];
 
 const capabilityOptions: Array<{ id: ProviderCapability; label: string }> = [
@@ -159,16 +161,11 @@ const channelProviderTabs: Array<{
     id: "wechat",
     label: "WeChat",
     title: "WeChat",
-    description: "参照 DeerFlow iLink 方案：Bot Token、基础 API/CDN 地址、白名单与本地状态目录。",
-    runtimeImplemented: false,
+    description: "通过扫描微信 QR 码绑定 iLink Bot，实现消息收发。",
+    runtimeImplemented: true,
     channelKind: "wechat",
     fields: [
-      { key: "botToken", label: "Bot Token", placeholder: "iLink bot token", secret: true },
-      { key: "baseUrl", label: "Base URL", placeholder: "https://ilinkai.weixin.qq.com" },
-      { key: "cdnBaseUrl", label: "CDN Base URL", placeholder: "https://novac2c.cdn.weixin.qq.com/c2c" },
       { key: "allowedUsers", label: "Allowed Users", placeholder: "可选，逗号分隔用户 id" },
-      { key: "stateDir", label: "State Dir", placeholder: "可选，本地鉴权/游标状态目录" },
-      { key: "maxInboundFileBytes", label: "Max Inbound File Bytes", placeholder: "52428800" },
     ],
   },
   {
@@ -1343,6 +1340,74 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <h4 className="text-sm font-semibold text-bench-900">
+                            API Key
+                          </h4>
+                          <p className="mt-1 text-xs text-bench-700">
+                            Stored in the runtime layer and Keychain.
+                          </p>
+                        </div>
+                        <span
+                          className={cn(
+                            "rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset",
+                            statusClasses(draftProviderStatus.state),
+                          )}
+                        >
+                          {needsSecret
+                            ? draftSecretStatus?.hasSecret
+                              ? "Key ready"
+                              : "Key needed"
+                            : "Local"}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+                        <input
+                          ref={secretInputRef}
+                          type="password"
+                          disabled={
+                            !needsSecret || state.busyCommand !== undefined
+                          }
+                          placeholder={
+                            needsSecret
+                              ? `${providerDraft.label || "Provider"} API key`
+                              : "No key required for local smoke"
+                          }
+                          className="h-11 min-w-0 rounded-xl border border-bench-200 bg-white px-3 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                        <Button
+                          type="button"
+                          className="h-11 rounded-xl px-4"
+                          onClick={saveSecret}
+                          disabled={
+                            !needsSecret || state.busyCommand !== undefined
+                          }
+                        >
+                          <Save size={15} />
+                          Save Key
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-11 rounded-xl bg-white px-4"
+                          onClick={() =>
+                            void actions.deleteProviderSecret(providerDraft.id)
+                          }
+                          disabled={
+                            !needsSecret ||
+                            state.busyCommand !== undefined ||
+                            !draftSecretStatus?.hasSecret
+                          }
+                        >
+                          <Trash2 size={15} />
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 rounded-[18px] bg-bench-50/70 p-4 ring-1 ring-inset ring-bench-200">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-bench-900">
                             Models
                           </h4>
                           <p className="mt-1 text-xs text-bench-700">
@@ -1515,74 +1580,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                               No models match that search.
                             </div>
                           )}
-                      </div>
-                    </div>
-
-                    <div className="mt-5 rounded-[18px] bg-bench-50/70 p-4 ring-1 ring-inset ring-bench-200">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <h4 className="text-sm font-semibold text-bench-900">
-                            API Key
-                          </h4>
-                          <p className="mt-1 text-xs text-bench-700">
-                            Stored in the runtime layer and Keychain.
-                          </p>
-                        </div>
-                        <span
-                          className={cn(
-                            "rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset",
-                            statusClasses(draftProviderStatus.state),
-                          )}
-                        >
-                          {needsSecret
-                            ? draftSecretStatus?.hasSecret
-                              ? "Key ready"
-                              : "Key needed"
-                            : "Local"}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
-                        <input
-                          ref={secretInputRef}
-                          type="password"
-                          disabled={
-                            !needsSecret || state.busyCommand !== undefined
-                          }
-                          placeholder={
-                            needsSecret
-                              ? `${providerDraft.label || "Provider"} API key`
-                              : "No key required for local smoke"
-                          }
-                          className="h-11 min-w-0 rounded-xl border border-bench-200 bg-white px-3 text-sm outline-none transition focus:border-bench-900 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                        <Button
-                          type="button"
-                          className="h-11 rounded-xl px-4"
-                          onClick={saveSecret}
-                          disabled={
-                            !needsSecret || state.busyCommand !== undefined
-                          }
-                        >
-                          <Save size={15} />
-                          Save Key
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-11 rounded-xl bg-white px-4"
-                          onClick={() =>
-                            void actions.deleteProviderSecret(providerDraft.id)
-                          }
-                          disabled={
-                            !needsSecret ||
-                            state.busyCommand !== undefined ||
-                            !draftSecretStatus?.hasSecret
-                          }
-                        >
-                          <Trash2 size={15} />
-                          Remove
-                        </Button>
                       </div>
                     </div>
 
@@ -2151,7 +2148,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                       </span>
                       <div>
                         <h3 className="text-lg font-semibold text-bench-900">{selectedChannelTab.title}</h3>
-                        <p className="mt-1 text-sm text-bench-500">{selectedChannelTab.description}</p>
                       </div>
                     </div>
 
@@ -2234,6 +2230,33 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                           </label>
                         ))}
                       </div>
+                      {selectedChannelTab.id === "wechat" && (
+                        <div className="mt-4">
+                          {selectedChannel ? (
+                            <WechatQrCodePanel
+                              channelId={selectedChannel.channelId}
+                              isBound={Boolean(selectedChannel.config?.bound)}
+                              onBind={async (id, credentials) => {
+                                await runtimeClient.updateChannel({
+                                  channelId: id,
+                                  config: {
+                                    botToken: credentials.botToken,
+                                    baseUrl: credentials.baseUrl,
+                                    bound: true,
+                                  },
+                                });
+                                await loadChannels();
+                              }}
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center gap-3 rounded-xl bg-bench-50 px-4 py-6 ring-1 ring-inset ring-bench-200">
+                              <p className="text-xs text-bench-500">
+                                请先点击"保存"创建 WeChat 渠道，然后扫码绑定。
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {!selectedChannelTab.runtimeImplemented && (
                         <p className="mt-4 rounded-xl bg-bench-50 px-3 py-2 text-xs leading-5 text-bench-500 ring-1 ring-inset ring-bench-200">
                           该渠道配置按 DeerFlow 字段预留，可保存为禁用配置；真正启用需要补齐对应 runtime adapter。
