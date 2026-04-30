@@ -12,6 +12,7 @@ import { ChannelStore } from "./store.js";
 import type { ChannelAdapter } from "./base.js";
 import { FeishuChannelAdapter } from "./feishu.js";
 import { HttpWebhookChannelAdapter } from "./http-webhook.js";
+import { WechatChannelAdapter } from "./wechat.js";
 
 export interface ChannelServiceOptions {
   clock?: () => number;
@@ -120,6 +121,40 @@ export class ChannelService {
     return this.store.retryDelivery(params);
   }
 
+  // -----------------------------------------------------------------------
+  // WeChat QR code binding
+  // -----------------------------------------------------------------------
+
+  async wechatRequestQrCode(params: unknown): Promise<{ base64: string; qrcode: string }> {
+    const { channelId } = params as { channelId: string };
+    const adapter = this.getOrCreateWechatAdapter(channelId);
+    return adapter.requestQrCode();
+  }
+
+  async wechatPollQrCodeStatus(params: unknown): Promise<{
+    status: string;
+    botToken?: string;
+    baseUrl?: string;
+  }> {
+    const { channelId } = params as { channelId: string };
+    const adapter = this.getOrCreateWechatAdapter(channelId);
+    return adapter.pollQrCodeStatus();
+  }
+
+  private getOrCreateWechatAdapter(channelId: string): WechatChannelAdapter {
+    const existing = this.adapters.get(channelId);
+    if (existing && existing instanceof WechatChannelAdapter) {
+      return existing;
+    }
+    const config = this.store.getConfigOrThrow(channelId, { redact: false });
+    if (config.kind !== "wechat") {
+      throw new Error(`Channel ${channelId} is not a wechat channel`);
+    }
+    const adapter = this.createAdapter(config);
+    this.adapters.set(channelId, adapter);
+    return adapter as WechatChannelAdapter;
+  }
+
   private ensureAdapter(channelId: string): ChannelAdapter {
     const existing = this.adapters.get(channelId);
     if (existing) {
@@ -162,6 +197,15 @@ export class ChannelService {
         return new HttpWebhookChannelAdapter(config, this.fetchImpl);
       case "feishu":
         return new FeishuChannelAdapter(config, this.fetchImpl);
+      case "wechat":
+        return new WechatChannelAdapter(config, this.fetchImpl, {
+          onIngest: (params) => this.manager.ingest(params),
+          onConfigUpdate: (channelId, patch) =>
+            this.store.updateConfig({
+              channelId,
+              config: patch,
+            }),
+        });
       default:
         throw new Error(`Channel kind '${config.kind}' is not implemented yet.`);
     }

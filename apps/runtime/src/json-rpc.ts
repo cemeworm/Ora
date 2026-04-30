@@ -190,6 +190,10 @@ export function createRuntimeMethodHandler(
         return store.listChannelDeliveries(request.params);
       case "channels.deliveries.retry":
         return store.retryChannelDelivery(request.params);
+      case "channels.wechat.requestQrCode":
+        return store.wechatRequestQrCode(request.params);
+      case "channels.wechat.pollQrCodeStatus":
+        return store.wechatPollQrCodeStatus(request.params);
       case "runs.start":
         return store.startRun(request.params);
       case "runs.startStreaming":

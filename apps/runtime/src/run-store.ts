@@ -248,6 +248,7 @@ const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 export interface LocalRunStoreOptions {
   dataDir?: string;
   clock?: () => number;
+  fetchImpl?: typeof fetch;
 }
 
 interface StreamingRunOptions {
@@ -303,7 +304,7 @@ export class LocalRunStore {
     this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) =>
       processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
     );
-    this.channelService = new ChannelService(this.backend, this, { clock: this.clock });
+    this.channelService = new ChannelService(this.backend, this, { clock: this.clock, fetchImpl: options.fetchImpl });
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
@@ -548,6 +549,14 @@ export class LocalRunStore {
 
   retryChannelDelivery(params: unknown) {
     return this.channelService.retryDelivery(params);
+  }
+
+  wechatRequestQrCode(params: unknown) {
+    return this.channelService.wechatRequestQrCode(params);
+  }
+
+  wechatPollQrCodeStatus(params: unknown) {
+    return this.channelService.wechatPollQrCodeStatus(params);
   }
 
 
