@@ -3,6 +3,10 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   ArtifactRefSchema,
+  ChannelBindingSchema,
+  ChannelConfigSchema,
+  ChannelDeliverySchema,
+  ChannelMessageRecordSchema,
   ProjectSummarySchema,
   SessionSummarySchema,
   StateSnapshotSchema
@@ -13,6 +17,10 @@ import type {
   PersistedArtifact,
   RuntimePersistenceBackend,
   StoreManifest,
+  StoredChannelBinding,
+  StoredChannelConfig,
+  StoredChannelDelivery,
+  StoredChannelMessage,
   StoredProject,
   StoredRun,
   StoredSession
@@ -65,6 +73,66 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 `;
 
+
+const CREATE_CHANNEL_CONFIGS_TABLE = `
+CREATE TABLE IF NOT EXISTS channel_configs (
+  channelId TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL
+);
+`;
+
+const CREATE_CHANNEL_BINDINGS_TABLE = `
+CREATE TABLE IF NOT EXISTS channel_bindings (
+  bindingId TEXT PRIMARY KEY,
+  channelId TEXT NOT NULL,
+  externalChatId TEXT NOT NULL,
+  externalThreadId TEXT,
+  sessionId TEXT NOT NULL,
+  externalUserId TEXT,
+  data TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  UNIQUE(channelId, externalChatId, externalThreadId)
+);
+`;
+
+const CREATE_CHANNEL_MESSAGES_TABLE = `
+CREATE TABLE IF NOT EXISTS channel_messages (
+  messageId TEXT PRIMARY KEY,
+  channelId TEXT NOT NULL,
+  externalMessageId TEXT,
+  bindingId TEXT,
+  sessionId TEXT,
+  runId TEXT,
+  direction TEXT NOT NULL,
+  type TEXT NOT NULL,
+  data TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  UNIQUE(channelId, externalMessageId)
+);
+`;
+
+const CREATE_CHANNEL_DELIVERIES_TABLE = `
+CREATE TABLE IF NOT EXISTS channel_deliveries (
+  deliveryId TEXT PRIMARY KEY,
+  channelId TEXT NOT NULL,
+  outboundMessageId TEXT NOT NULL,
+  sessionId TEXT,
+  runId TEXT,
+  status TEXT NOT NULL,
+  attemptCount INTEGER NOT NULL,
+  nextAttemptAt INTEGER,
+  lastError TEXT,
+  data TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL
+);
+`;
+
 const SEED_MANIFEST = `
 INSERT INTO manifest (schemaVersion, nextRunNumber, nextSessionNumber, nextProjectNumber)
 SELECT ?, ?, ?, ?
@@ -85,6 +153,19 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtSaveRun: Database.Statement;
   private readonly stmtSaveArtifact: Database.Statement;
   private readonly stmtLoadArtifact: Database.Statement;
+  private readonly stmtSaveChannelConfig: Database.Statement;
+  private readonly stmtListChannelConfigs: Database.Statement;
+  private readonly stmtGetChannelConfig: Database.Statement;
+  private readonly stmtDeleteChannelConfig: Database.Statement;
+  private readonly stmtSaveChannelBinding: Database.Statement;
+  private readonly stmtListChannelBindings: Database.Statement;
+  private readonly stmtGetChannelBindingByExternalKey: Database.Statement;
+  private readonly stmtSaveChannelMessage: Database.Statement;
+  private readonly stmtListChannelMessages: Database.Statement;
+  private readonly stmtGetChannelMessageByExternalId: Database.Statement;
+  private readonly stmtSaveChannelDelivery: Database.Statement;
+  private readonly stmtListChannelDeliveries: Database.Statement;
+  private readonly stmtGetChannelDelivery: Database.Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -100,6 +181,10 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.db.exec(CREATE_SESSIONS_TABLE);
     this.db.exec(CREATE_PROJECTS_TABLE);
     this.db.exec(CREATE_ARTIFACTS_TABLE);
+    this.db.exec(CREATE_CHANNEL_CONFIGS_TABLE);
+    this.db.exec(CREATE_CHANNEL_BINDINGS_TABLE);
+    this.db.exec(CREATE_CHANNEL_MESSAGES_TABLE);
+    this.db.exec(CREATE_CHANNEL_DELIVERIES_TABLE);
     this.ensureColumn("manifest", "nextSessionNumber", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("manifest", "nextProjectNumber", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("runs", "sessionId", "TEXT");
@@ -128,6 +213,28 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       "INSERT INTO artifacts (id, runId, kind, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET runId = excluded.runId, kind = excluded.kind, data = excluded.data"
     );
     this.stmtLoadArtifact = this.db.prepare("SELECT data FROM artifacts WHERE id = ?");
+
+    this.stmtSaveChannelConfig = this.db.prepare(
+      "INSERT INTO channel_configs (channelId, kind, enabled, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(channelId) DO UPDATE SET kind = excluded.kind, enabled = excluded.enabled, data = excluded.data, updatedAt = excluded.updatedAt"
+    );
+    this.stmtListChannelConfigs = this.db.prepare("SELECT data FROM channel_configs ORDER BY updatedAt DESC, channelId ASC");
+    this.stmtGetChannelConfig = this.db.prepare("SELECT data FROM channel_configs WHERE channelId = ?");
+    this.stmtDeleteChannelConfig = this.db.prepare("DELETE FROM channel_configs WHERE channelId = ?");
+    this.stmtSaveChannelBinding = this.db.prepare(
+      "INSERT INTO channel_bindings (bindingId, channelId, externalChatId, externalThreadId, sessionId, externalUserId, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bindingId) DO UPDATE SET channelId = excluded.channelId, externalChatId = excluded.externalChatId, externalThreadId = excluded.externalThreadId, sessionId = excluded.sessionId, externalUserId = excluded.externalUserId, data = excluded.data, updatedAt = excluded.updatedAt"
+    );
+    this.stmtListChannelBindings = this.db.prepare("SELECT data FROM channel_bindings ORDER BY updatedAt DESC, bindingId ASC");
+    this.stmtGetChannelBindingByExternalKey = this.db.prepare("SELECT data FROM channel_bindings WHERE channelId = ? AND externalChatId = ? AND COALESCE(externalThreadId, '') = COALESCE(?, '') LIMIT 1");
+    this.stmtSaveChannelMessage = this.db.prepare(
+      "INSERT INTO channel_messages (messageId, channelId, externalMessageId, bindingId, sessionId, runId, direction, type, data, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(messageId) DO UPDATE SET bindingId = excluded.bindingId, sessionId = excluded.sessionId, runId = excluded.runId, data = excluded.data"
+    );
+    this.stmtListChannelMessages = this.db.prepare("SELECT data FROM channel_messages ORDER BY createdAt DESC, messageId ASC");
+    this.stmtGetChannelMessageByExternalId = this.db.prepare("SELECT data FROM channel_messages WHERE channelId = ? AND externalMessageId = ? LIMIT 1");
+    this.stmtSaveChannelDelivery = this.db.prepare(
+      "INSERT INTO channel_deliveries (deliveryId, channelId, outboundMessageId, sessionId, runId, status, attemptCount, nextAttemptAt, lastError, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(deliveryId) DO UPDATE SET status = excluded.status, attemptCount = excluded.attemptCount, nextAttemptAt = excluded.nextAttemptAt, lastError = excluded.lastError, data = excluded.data, updatedAt = excluded.updatedAt"
+    );
+    this.stmtListChannelDeliveries = this.db.prepare("SELECT data FROM channel_deliveries ORDER BY updatedAt DESC, deliveryId ASC");
+    this.stmtGetChannelDelivery = this.db.prepare("SELECT data FROM channel_deliveries WHERE deliveryId = ?");
   }
 
   load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] } {
@@ -226,6 +333,130 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       sizeBytes: Buffer.byteLength(data)
     });
   }
+
+
+
+  saveChannelConfig(config: StoredChannelConfig): void {
+    const parsed = ChannelConfigSchema.parse(config);
+    this.stmtSaveChannelConfig.run(
+      parsed.channelId,
+      parsed.kind,
+      parsed.enabled ? 1 : 0,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+      parsed.updatedAt,
+    );
+  }
+
+  listChannelConfigs(): StoredChannelConfig[] {
+    const rows = this.stmtListChannelConfigs.all() as { data: string }[];
+    return rows.map((row) => ChannelConfigSchema.parse(JSON.parse(row.data)));
+  }
+
+  getChannelConfig(channelId: string): StoredChannelConfig | undefined {
+    const row = this.stmtGetChannelConfig.get(channelId) as { data: string } | undefined;
+    return row ? ChannelConfigSchema.parse(JSON.parse(row.data)) : undefined;
+  }
+
+  deleteChannelConfig(channelId: string): void {
+    this.stmtDeleteChannelConfig.run(channelId);
+  }
+
+  saveChannelBinding(binding: StoredChannelBinding): void {
+    const parsed = ChannelBindingSchema.parse(binding);
+    this.stmtSaveChannelBinding.run(
+      parsed.bindingId,
+      parsed.channelId,
+      parsed.externalChatId,
+      parsed.externalThreadId ?? null,
+      parsed.sessionId,
+      parsed.externalUserId ?? null,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+      parsed.updatedAt,
+    );
+  }
+
+  listChannelBindings(params: { channelId?: string; externalChatId?: string; sessionId?: string; limit?: number } = {}): StoredChannelBinding[] {
+    const rows = this.stmtListChannelBindings.all() as { data: string }[];
+    return rows
+      .map((row) => ChannelBindingSchema.parse(JSON.parse(row.data)))
+      .filter((binding) => params.channelId ? binding.channelId === params.channelId : true)
+      .filter((binding) => params.externalChatId ? binding.externalChatId === params.externalChatId : true)
+      .filter((binding) => params.sessionId ? binding.sessionId === params.sessionId : true)
+      .slice(0, params.limit);
+  }
+
+  getChannelBindingByExternalKey(channelId: string, externalChatId: string, externalThreadId?: string): StoredChannelBinding | undefined {
+    const row = this.stmtGetChannelBindingByExternalKey.get(channelId, externalChatId, externalThreadId ?? null) as { data: string } | undefined;
+    return row ? ChannelBindingSchema.parse(JSON.parse(row.data)) : undefined;
+  }
+
+  saveChannelMessage(message: StoredChannelMessage): void {
+    const parsed = ChannelMessageRecordSchema.parse(message);
+    this.stmtSaveChannelMessage.run(
+      parsed.messageId,
+      parsed.channelId,
+      parsed.externalMessageId ?? null,
+      parsed.bindingId ?? null,
+      parsed.sessionId ?? null,
+      parsed.runId ?? null,
+      parsed.direction,
+      parsed.type,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+    );
+  }
+
+  listChannelMessages(params: { channelId?: string; bindingId?: string; sessionId?: string; limit?: number } = {}): StoredChannelMessage[] {
+    const rows = this.stmtListChannelMessages.all() as { data: string }[];
+    return rows
+      .map((row) => ChannelMessageRecordSchema.parse(JSON.parse(row.data)))
+      .filter((message) => params.channelId ? message.channelId === params.channelId : true)
+      .filter((message) => params.bindingId ? message.bindingId === params.bindingId : true)
+      .filter((message) => params.sessionId ? message.sessionId === params.sessionId : true)
+      .slice(0, params.limit);
+  }
+
+  getChannelMessageByExternalId(channelId: string, externalMessageId: string): StoredChannelMessage | undefined {
+    const row = this.stmtGetChannelMessageByExternalId.get(channelId, externalMessageId) as { data: string } | undefined;
+    return row ? ChannelMessageRecordSchema.parse(JSON.parse(row.data)) : undefined;
+  }
+
+  saveChannelDelivery(delivery: StoredChannelDelivery): void {
+    const parsed = ChannelDeliverySchema.parse(delivery);
+    this.stmtSaveChannelDelivery.run(
+      parsed.deliveryId,
+      parsed.channelId,
+      parsed.outboundMessageId,
+      parsed.sessionId ?? null,
+      parsed.runId ?? null,
+      parsed.status,
+      parsed.attemptCount,
+      parsed.nextAttemptAt ?? null,
+      parsed.lastError ?? null,
+      JSON.stringify(parsed),
+      parsed.createdAt,
+      parsed.updatedAt,
+    );
+  }
+
+  listChannelDeliveries(params: { channelId?: string; status?: string; sessionId?: string; runId?: string; limit?: number } = {}): StoredChannelDelivery[] {
+    const rows = this.stmtListChannelDeliveries.all() as { data: string }[];
+    return rows
+      .map((row) => ChannelDeliverySchema.parse(JSON.parse(row.data)))
+      .filter((delivery) => params.channelId ? delivery.channelId === params.channelId : true)
+      .filter((delivery) => params.status ? delivery.status === params.status : true)
+      .filter((delivery) => params.sessionId ? delivery.sessionId === params.sessionId : true)
+      .filter((delivery) => params.runId ? delivery.runId === params.runId : true)
+      .slice(0, params.limit);
+  }
+
+  getChannelDelivery(deliveryId: string): StoredChannelDelivery | undefined {
+    const row = this.stmtGetChannelDelivery.get(deliveryId) as { data: string } | undefined;
+    return row ? ChannelDeliverySchema.parse(JSON.parse(row.data)) : undefined;
+  }
+
 
   close(): void {
     this.db.close();

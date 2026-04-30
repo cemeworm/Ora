@@ -14,6 +14,11 @@ export {
 export { ModeSpecFileStore } from "./modes.js";
 export { createRuntimeMethodHandler, handleJsonRpcLine } from "./json-rpc.js";
 export { PackageManager } from "./package-manager.js";
+export { ChannelService } from "./channels/service.js";
+export { ChannelStore } from "./channels/store.js";
+export { ChannelManager } from "./channels/manager.js";
+export { ChannelMessageBus } from "./channels/message-bus.js";
+export { createRuntimeHttpServer, listenRuntimeHttpServer } from "./http-server.js";
 export { InMemoryRunStore, LocalRunStore } from "./run-store.js";
 export { OraRuntimeError } from "./runtime-errors.js";
 export { runStdioServer } from "./stdio.js";

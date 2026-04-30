@@ -39,6 +39,266 @@ export const EffectiveRunStrategySchema = z.object({
 });
 export type EffectiveRunStrategy = z.infer<typeof EffectiveRunStrategySchema>;
 
+
+export const ChannelKindSchema = z.enum([
+  "http_webhook",
+  "slack",
+  "feishu",
+  "wechat",
+  "wecom",
+  "telegram",
+  "discord",
+  "dingtalk"
+]);
+export type ChannelKind = z.infer<typeof ChannelKindSchema>;
+
+export const ChannelCapabilitiesSchema = z.object({
+  supportsStreamingUpdates: z.boolean().default(false),
+  supportsThreadReplies: z.boolean().default(false),
+  supportsReactions: z.boolean().default(false),
+  supportsFileInbound: z.boolean().default(false),
+  supportsFileOutbound: z.boolean().default(false),
+  supportsMessageUpdate: z.boolean().default(false)
+});
+export type ChannelCapabilities = z.infer<typeof ChannelCapabilitiesSchema>;
+
+export const ChannelStatusStateSchema = z.enum(["stopped", "starting", "running", "stopping", "failed"]);
+export type ChannelStatusState = z.infer<typeof ChannelStatusStateSchema>;
+
+export const ChannelConfigSchema = z.object({
+  channelId: z.string().min(1),
+  kind: ChannelKindSchema,
+  label: z.string().min(1),
+  enabled: z.boolean().default(true),
+  capabilities: ChannelCapabilitiesSchema.default({}),
+  config: z.record(z.unknown()).default({}),
+  secretRefs: z.record(z.string().min(1)).default({}),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative()
+});
+export type ChannelConfig = z.infer<typeof ChannelConfigSchema>;
+
+export const ChannelStatusSchema = z.object({
+  channelId: z.string().min(1),
+  kind: ChannelKindSchema,
+  label: z.string().min(1),
+  enabled: z.boolean(),
+  state: ChannelStatusStateSchema,
+  detail: z.string().min(1).optional(),
+  queueSize: z.number().int().nonnegative().default(0),
+  runningCount: z.number().int().nonnegative().default(0),
+  updatedAt: z.number().int().nonnegative()
+});
+export type ChannelStatus = z.infer<typeof ChannelStatusSchema>;
+
+export const ChannelAttachmentSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["file", "image", "audio", "video", "link", "unknown"]).default("unknown"),
+  name: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  url: z.string().min(1).optional(),
+  metadata: z.record(z.unknown()).default({})
+});
+export type ChannelAttachment = z.infer<typeof ChannelAttachmentSchema>;
+
+export const ChannelInboundTypeSchema = z.enum(["chat", "command", "event"]);
+export type ChannelInboundType = z.infer<typeof ChannelInboundTypeSchema>;
+
+export const ChannelInboundMessageSchema = z.object({
+  id: z.string().min(1),
+  channelId: z.string().min(1),
+  channelKind: ChannelKindSchema,
+  externalMessageId: z.string().min(1),
+  externalChatId: z.string().min(1),
+  externalThreadId: z.string().min(1).optional(),
+  externalUserId: z.string().min(1).optional(),
+  externalUserDisplayName: z.string().min(1).optional(),
+  type: ChannelInboundTypeSchema.default("chat"),
+  text: z.string().default(""),
+  attachments: z.array(ChannelAttachmentSchema).default([]),
+  receivedAt: z.number().int().nonnegative(),
+  raw: z.unknown().optional(),
+  metadata: z.record(z.unknown()).default({})
+});
+export type ChannelInboundMessage = z.infer<typeof ChannelInboundMessageSchema>;
+
+export const ChannelOutboundKindSchema = z.enum(["status", "delta", "final", "error", "command_response"]);
+export type ChannelOutboundKind = z.infer<typeof ChannelOutboundKindSchema>;
+
+export const ChannelOutboundMessageSchema = z.object({
+  id: z.string().min(1),
+  channelId: z.string().min(1),
+  bindingId: z.string().min(1),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  externalChatId: z.string().min(1),
+  externalThreadId: z.string().min(1).optional(),
+  inReplyToExternalMessageId: z.string().min(1).optional(),
+  text: z.string().default(""),
+  isFinal: z.boolean(),
+  kind: ChannelOutboundKindSchema,
+  attachments: z.array(ChannelAttachmentSchema).default([]),
+  createdAt: z.number().int().nonnegative(),
+  metadata: z.record(z.unknown()).default({})
+});
+export type ChannelOutboundMessage = z.infer<typeof ChannelOutboundMessageSchema>;
+
+export const ChannelBindingSchema = z.object({
+  bindingId: z.string().min(1),
+  channelId: z.string().min(1),
+  externalChatId: z.string().min(1),
+  externalThreadId: z.string().min(1).optional(),
+  sessionId: z.string().min(1),
+  externalUserId: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  metadata: z.record(z.unknown()).default({})
+});
+export type ChannelBinding = z.infer<typeof ChannelBindingSchema>;
+
+export const ChannelMessageDirectionSchema = z.enum(["inbound", "outbound"]);
+export type ChannelMessageDirection = z.infer<typeof ChannelMessageDirectionSchema>;
+
+export const ChannelMessageRecordTypeSchema = z.enum([
+  "chat",
+  "command",
+  "event",
+  "status",
+  "delta",
+  "final",
+  "error",
+  "command_response"
+]);
+export type ChannelMessageRecordType = z.infer<typeof ChannelMessageRecordTypeSchema>;
+
+export const ChannelMessageRecordSchema = z.object({
+  messageId: z.string().min(1),
+  channelId: z.string().min(1),
+  bindingId: z.string().min(1).optional(),
+  sessionId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  direction: ChannelMessageDirectionSchema,
+  externalMessageId: z.string().min(1).optional(),
+  type: ChannelMessageRecordTypeSchema,
+  payload: z.unknown(),
+  createdAt: z.number().int().nonnegative()
+});
+export type ChannelMessageRecord = z.infer<typeof ChannelMessageRecordSchema>;
+
+export const ChannelDeliveryStatusSchema = z.enum(["queued", "sending", "sent", "retry_scheduled", "failed"]);
+export type ChannelDeliveryStatus = z.infer<typeof ChannelDeliveryStatusSchema>;
+
+export const ChannelDeliverySchema = z.object({
+  deliveryId: z.string().min(1),
+  channelId: z.string().min(1),
+  outboundMessageId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  status: ChannelDeliveryStatusSchema,
+  attemptCount: z.number().int().nonnegative(),
+  nextAttemptAt: z.number().int().nonnegative().optional(),
+  lastError: z.string().optional(),
+  message: ChannelOutboundMessageSchema,
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative()
+});
+export type ChannelDelivery = z.infer<typeof ChannelDeliverySchema>;
+
+export const ChannelCreateParamsSchema = z.object({
+  channelId: z.string().min(1).optional(),
+  kind: ChannelKindSchema.default("http_webhook"),
+  label: z.string().min(1),
+  enabled: z.boolean().default(true),
+  capabilities: ChannelCapabilitiesSchema.partial().optional(),
+  config: z.record(z.unknown()).default({}),
+  secretRefs: z.record(z.string().min(1)).default({})
+});
+export type ChannelCreateParams = z.infer<typeof ChannelCreateParamsSchema>;
+
+export const ChannelUpdateParamsSchema = z.object({
+  channelId: z.string().min(1),
+  label: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+  capabilities: ChannelCapabilitiesSchema.partial().optional(),
+  config: z.record(z.unknown()).optional(),
+  secretRefs: z.record(z.string().min(1)).optional()
+});
+export type ChannelUpdateParams = z.infer<typeof ChannelUpdateParamsSchema>;
+
+export const ChannelGetParamsSchema = z.object({ channelId: z.string().min(1) });
+export type ChannelGetParams = z.infer<typeof ChannelGetParamsSchema>;
+
+export const ChannelListParamsSchema = z.object({
+  kind: ChannelKindSchema.optional(),
+  enabled: z.boolean().optional(),
+  limit: z.number().int().positive().max(500).optional()
+});
+export type ChannelListParams = z.infer<typeof ChannelListParamsSchema>;
+
+export const ChannelLifecycleParamsSchema = z.object({ channelId: z.string().min(1) });
+export type ChannelLifecycleParams = z.infer<typeof ChannelLifecycleParamsSchema>;
+
+export const ChannelIngestParamsSchema = z.object({
+  channelId: z.string().min(1),
+  externalMessageId: z.string().min(1),
+  externalChatId: z.string().min(1),
+  externalThreadId: z.string().min(1).optional(),
+  externalUserId: z.string().min(1).optional(),
+  externalUserDisplayName: z.string().min(1).optional(),
+  type: ChannelInboundTypeSchema.default("chat"),
+  text: z.string().default(""),
+  attachments: z.array(ChannelAttachmentSchema).default([]),
+  metadata: z.record(z.unknown()).default({}),
+  raw: z.unknown().optional()
+});
+export type ChannelIngestParams = z.infer<typeof ChannelIngestParamsSchema>;
+
+export const ChannelIngestResultSchema = z.object({
+  accepted: z.boolean(),
+  duplicate: z.boolean().default(false),
+  inboundMessageId: z.string().min(1),
+  bindingId: z.string().min(1).optional(),
+  sessionId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  deliveryId: z.string().min(1).optional(),
+  outboundMessage: ChannelOutboundMessageSchema.optional()
+});
+export type ChannelIngestResult = z.infer<typeof ChannelIngestResultSchema>;
+
+export const ChannelStatusResultSchema = z.object({
+  channels: z.array(ChannelStatusSchema),
+  bus: z.object({
+    inboundQueueSize: z.number().int().nonnegative().default(0),
+    inboundPublishedCount: z.number().int().nonnegative().default(0),
+    outboundPublishedCount: z.number().int().nonnegative().default(0),
+    outboundSubscriberFailures: z.number().int().nonnegative().default(0)
+  }).default({})
+});
+export type ChannelStatusResult = z.infer<typeof ChannelStatusResultSchema>;
+
+export const ChannelBindingsListParamsSchema = z.object({
+  channelId: z.string().min(1).optional(),
+  externalChatId: z.string().min(1).optional(),
+  sessionId: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(500).optional()
+});
+export type ChannelBindingsListParams = z.infer<typeof ChannelBindingsListParamsSchema>;
+
+export const ChannelDeliveriesListParamsSchema = z.object({
+  channelId: z.string().min(1).optional(),
+  status: ChannelDeliveryStatusSchema.optional(),
+  sessionId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(500).optional()
+});
+export type ChannelDeliveriesListParams = z.infer<typeof ChannelDeliveriesListParamsSchema>;
+
+export const ChannelDeliveryRetryParamsSchema = z.object({
+  deliveryId: z.string().min(1)
+});
+export type ChannelDeliveryRetryParams = z.infer<typeof ChannelDeliveryRetryParamsSchema>;
+
 export const RunConfigSchema = z.object({
   pattern: CoordinationPatternSchema.default("orchestrator_subagent"),
   modeId: ModeIdSchema.optional(),

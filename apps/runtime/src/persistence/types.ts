@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type {
   ArtifactRef,
+  ChannelBinding,
+  ChannelConfig,
+  ChannelDelivery,
+  ChannelMessageRecord,
   ProjectSummary,
   SessionSummary,
   StateSnapshot
@@ -17,6 +21,10 @@ export type StoreManifest = z.infer<typeof StoreManifestSchema>;
 export type StoredRun = StateSnapshot;
 export type StoredSession = SessionSummary;
 export type StoredProject = ProjectSummary;
+export type StoredChannelConfig = ChannelConfig;
+export type StoredChannelBinding = ChannelBinding;
+export type StoredChannelMessage = ChannelMessageRecord;
+export type StoredChannelDelivery = ChannelDelivery;
 
 export interface PersistedArtifact {
   ref: ArtifactRef;
@@ -30,4 +38,17 @@ export interface RuntimePersistenceBackend {
   saveSession(session: StoredSession): void;
   saveProject(project: StoredProject): void;
   saveArtifact(artifact: PersistedArtifact): ArtifactRef;
+  saveChannelConfig(config: StoredChannelConfig): void;
+  listChannelConfigs(): StoredChannelConfig[];
+  getChannelConfig(channelId: string): StoredChannelConfig | undefined;
+  deleteChannelConfig(channelId: string): void;
+  saveChannelBinding(binding: StoredChannelBinding): void;
+  listChannelBindings(params?: { channelId?: string; externalChatId?: string; sessionId?: string; limit?: number }): StoredChannelBinding[];
+  getChannelBindingByExternalKey(channelId: string, externalChatId: string, externalThreadId?: string): StoredChannelBinding | undefined;
+  saveChannelMessage(message: StoredChannelMessage): void;
+  listChannelMessages(params?: { channelId?: string; bindingId?: string; sessionId?: string; limit?: number }): StoredChannelMessage[];
+  getChannelMessageByExternalId(channelId: string, externalMessageId: string): StoredChannelMessage | undefined;
+  saveChannelDelivery(delivery: StoredChannelDelivery): void;
+  listChannelDeliveries(params?: { channelId?: string; status?: string; sessionId?: string; runId?: string; limit?: number }): StoredChannelDelivery[];
+  getChannelDelivery(deliveryId: string): StoredChannelDelivery | undefined;
 }

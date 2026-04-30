@@ -5,6 +5,10 @@ import { z } from "zod";
 import {
   ArtifactRef,
   ArtifactRefSchema,
+  ChannelBindingSchema,
+  ChannelConfigSchema,
+  ChannelDeliverySchema,
+  ChannelMessageRecordSchema,
   ProjectSummarySchema,
   SessionSummarySchema,
   StateSnapshotSchema
@@ -15,6 +19,10 @@ import {
   type PersistedArtifact,
   type RuntimePersistenceBackend,
   type StoreManifest,
+  type StoredChannelBinding,
+  type StoredChannelConfig,
+  type StoredChannelDelivery,
+  type StoredChannelMessage,
   type StoredProject,
   type StoredRun,
   type StoredSession
@@ -26,6 +34,10 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   private readonly projectsDir: string;
   private readonly runsDir: string;
   private readonly artifactsDir: string;
+  private readonly channelConfigsDir: string;
+  private readonly channelBindingsDir: string;
+  private readonly channelMessagesDir: string;
+  private readonly channelDeliveriesDir: string;
 
   constructor(private readonly dataDir: string) {
     this.manifestPath = path.join(dataDir, "manifest.json");
@@ -33,6 +45,10 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     this.projectsDir = path.join(dataDir, "projects");
     this.runsDir = path.join(dataDir, "runs");
     this.artifactsDir = path.join(dataDir, "artifacts");
+    this.channelConfigsDir = path.join(dataDir, "channels", "configs");
+    this.channelBindingsDir = path.join(dataDir, "channels", "bindings");
+    this.channelMessagesDir = path.join(dataDir, "channels", "messages");
+    this.channelDeliveriesDir = path.join(dataDir, "channels", "deliveries");
   }
 
   load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] } {
@@ -108,11 +124,117 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     });
   }
 
+
+
+  saveChannelConfig(config: StoredChannelConfig): void {
+    this.ensureDirs();
+    const parsed = ChannelConfigSchema.parse(config);
+    this.writeJsonFile(path.join(this.channelConfigsDir, `${this.fileSafeId(parsed.channelId)}.json`), parsed);
+  }
+
+  listChannelConfigs(): StoredChannelConfig[] {
+    this.ensureDirs();
+    return this.readJsonDir(this.channelConfigsDir, ChannelConfigSchema)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.channelId.localeCompare(b.channelId));
+  }
+
+  getChannelConfig(channelId: string): StoredChannelConfig | undefined {
+    const filePath = path.join(this.channelConfigsDir, `${this.fileSafeId(channelId)}.json`);
+    return fs.existsSync(filePath) ? this.readJsonFile(filePath, ChannelConfigSchema) : undefined;
+  }
+
+  deleteChannelConfig(channelId: string): void {
+    const filePath = path.join(this.channelConfigsDir, `${this.fileSafeId(channelId)}.json`);
+    if (fs.existsSync(filePath)) {
+      fs.rmSync(filePath);
+    }
+  }
+
+  saveChannelBinding(binding: StoredChannelBinding): void {
+    this.ensureDirs();
+    const parsed = ChannelBindingSchema.parse(binding);
+    this.writeJsonFile(path.join(this.channelBindingsDir, `${this.fileSafeId(parsed.bindingId)}.json`), parsed);
+  }
+
+  listChannelBindings(params: { channelId?: string; externalChatId?: string; sessionId?: string; limit?: number } = {}): StoredChannelBinding[] {
+    this.ensureDirs();
+    return this.readJsonDir(this.channelBindingsDir, ChannelBindingSchema)
+      .filter((binding) => params.channelId ? binding.channelId === params.channelId : true)
+      .filter((binding) => params.externalChatId ? binding.externalChatId === params.externalChatId : true)
+      .filter((binding) => params.sessionId ? binding.sessionId === params.sessionId : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.bindingId.localeCompare(b.bindingId))
+      .slice(0, params.limit);
+  }
+
+  getChannelBindingByExternalKey(channelId: string, externalChatId: string, externalThreadId?: string): StoredChannelBinding | undefined {
+    return this.listChannelBindings({ channelId, externalChatId })
+      .find((binding) => (binding.externalThreadId ?? "") === (externalThreadId ?? ""));
+  }
+
+  saveChannelMessage(message: StoredChannelMessage): void {
+    this.ensureDirs();
+    const parsed = ChannelMessageRecordSchema.parse(message);
+    this.writeJsonFile(path.join(this.channelMessagesDir, `${this.fileSafeId(parsed.messageId)}.json`), parsed);
+  }
+
+  listChannelMessages(params: { channelId?: string; bindingId?: string; sessionId?: string; limit?: number } = {}): StoredChannelMessage[] {
+    this.ensureDirs();
+    return this.readJsonDir(this.channelMessagesDir, ChannelMessageRecordSchema)
+      .filter((message) => params.channelId ? message.channelId === params.channelId : true)
+      .filter((message) => params.bindingId ? message.bindingId === params.bindingId : true)
+      .filter((message) => params.sessionId ? message.sessionId === params.sessionId : true)
+      .sort((a, b) => b.createdAt - a.createdAt || a.messageId.localeCompare(b.messageId))
+      .slice(0, params.limit);
+  }
+
+  getChannelMessageByExternalId(channelId: string, externalMessageId: string): StoredChannelMessage | undefined {
+    return this.listChannelMessages({ channelId }).find((message) => message.externalMessageId === externalMessageId);
+  }
+
+  saveChannelDelivery(delivery: StoredChannelDelivery): void {
+    this.ensureDirs();
+    const parsed = ChannelDeliverySchema.parse(delivery);
+    this.writeJsonFile(path.join(this.channelDeliveriesDir, `${this.fileSafeId(parsed.deliveryId)}.json`), parsed);
+  }
+
+  listChannelDeliveries(params: { channelId?: string; status?: string; sessionId?: string; runId?: string; limit?: number } = {}): StoredChannelDelivery[] {
+    this.ensureDirs();
+    return this.readJsonDir(this.channelDeliveriesDir, ChannelDeliverySchema)
+      .filter((delivery) => params.channelId ? delivery.channelId === params.channelId : true)
+      .filter((delivery) => params.status ? delivery.status === params.status : true)
+      .filter((delivery) => params.sessionId ? delivery.sessionId === params.sessionId : true)
+      .filter((delivery) => params.runId ? delivery.runId === params.runId : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.deliveryId.localeCompare(b.deliveryId))
+      .slice(0, params.limit);
+  }
+
+  getChannelDelivery(deliveryId: string): StoredChannelDelivery | undefined {
+    const filePath = path.join(this.channelDeliveriesDir, `${this.fileSafeId(deliveryId)}.json`);
+    return fs.existsSync(filePath) ? this.readJsonFile(filePath, ChannelDeliverySchema) : undefined;
+  }
+
+
   private ensureDirs(): void {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
     fs.mkdirSync(this.projectsDir, { recursive: true });
     fs.mkdirSync(this.runsDir, { recursive: true });
     fs.mkdirSync(this.artifactsDir, { recursive: true });
+    fs.mkdirSync(this.channelConfigsDir, { recursive: true });
+    fs.mkdirSync(this.channelBindingsDir, { recursive: true });
+    fs.mkdirSync(this.channelMessagesDir, { recursive: true });
+    fs.mkdirSync(this.channelDeliveriesDir, { recursive: true });
+  }
+
+
+
+  private readJsonDir<T>(dirPath: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): T[] {
+    if (!fs.existsSync(dirPath)) {
+      return [];
+    }
+    return fs
+      .readdirSync(dirPath)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => this.readJsonFile(path.join(dirPath, name), schema));
   }
 
   private readJsonFile<T>(
