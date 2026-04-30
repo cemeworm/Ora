@@ -3,6 +3,7 @@ import {
   CoordinationPattern,
   CustomAgentGeneratedDraft,
   DEFAULT_WEB_TOOL_IDS,
+  DEFAULT_RESOURCE_BUDGETS,
   ModeStudioContextResult,
   ModeStudioDraftBundle,
   ModeStudioDraftBundleSchema,
@@ -14,6 +15,8 @@ import {
   getModeNodeRuntimeTemplateDefinition,
   getPatternDefinition,
   type ModeCreateParams,
+  type ModeStageSpec,
+  type ModeTranscriptLayout,
   type ModeSpec
 } from "@ora/shared";
 import { normalizeGeneratedAgentDraft } from "./agent-draft.js";
@@ -51,6 +54,9 @@ export function modeStudioBuilderSystemPrompt(): string {
     "If any critical design area is missing, set needsInput true and ask 1-3 concrete questions in assistantMessage. You may include a preview-safe modeDraft, but it must not be presented as ready to apply.",
     "If the design is complete enough, set needsInput false and make assistantMessage summarize the proposed mode and tell the user they can apply it or keep chatting to refine it.",
     "ModeDraft must use Ora ModeSpec fields exactly. Keep family and node templates compatible with the selected topology.",
+    "For structured staged workflows, use ModeSpec.stages[] plus transcriptLayout. stages[] is linear and each stage must reference an existing nodeId and, when speakerId is set, an existing profile id.",
+    "Available transcript layouts for apply-ready drafts: stage_list for ordinary sequential workflows; two_sided_duel for debate/pro-con/red-team-blue-team/attack-defense flows; rubric_matrix for evaluation rubrics with criteria rows and score columns; judge_panel for multi-judge review with a final verdict; evidence_board for research with evidence grouped by category; comparison_table for side-by-side option comparison across dimensions; artifact_gallery for displaying generated artifacts as a card grid; kanban_pipeline for pipeline/kanban views with horizontal stage columns. Use only code-provided layout fields, not arbitrary UI.",
+    "For two_sided_duel, set transcriptLayout.sideByStance, stanceLabels, summaryStances, and groupId/groupLabel. Keep stance strings open and descriptive, for example red_team/blue_team or affirmative/negative.",
     "Name the mode for the actual user purpose, not by copying the entire prompt. Use a concise human label and a lowercase kebab-case id.",
     "Every enabled stage must have ownerAgentId, concrete instructions, a concrete prompt, and config.story explaining what happens in that stage.",
     "Every generated agent must include name, description, toolGroups, toolIds, skillIds, and long-form soul instructions.",
@@ -98,6 +104,40 @@ export function modeStudioBuilderUserPrompt(
       scope: atom.scope,
       compatibleFamilies: atom.compatibleFamilies,
     })),
+    availableTranscriptLayouts: [
+      {
+        style: "stage_list",
+        use: "Default sequential staged transcript for research→analysis→synthesis or plan→execute→verify workflows.",
+      },
+      {
+        style: "two_sided_duel",
+        use: "Two-sided debate, red-team/blue-team, attack/defense, support/opposition, or pro/con review.",
+      },
+      {
+        style: "rubric_matrix",
+        use: "Evaluation rubric with criteria rows and scored dimensions as columns. For code review, PRD review, candidate evaluation, or architecture scoring.",
+      },
+      {
+        style: "judge_panel",
+        use: "Multi-judge review with separate evaluations and a final consolidated verdict. For safety gates, quality checks, go/no-go decisions.",
+      },
+      {
+        style: "evidence_board",
+        use: "Research evidence grouped by category with color-coded cards. For fact-checking, due diligence, source analysis.",
+      },
+      {
+        style: "comparison_table",
+        use: "Side-by-side comparison of options across multiple dimensions. For tool selection, technical route comparison, option analysis.",
+      },
+      {
+        style: "artifact_gallery",
+        use: "Card grid display of generated artifacts or outputs. For multi-file generation, prompt variants, batch processing.",
+      },
+      {
+        style: "kanban_pipeline",
+        use: "Horizontal pipeline with stage columns. For issue triage, content production, batch processing workflows.",
+      },
+    ],
   };
   return [
     "Generate or refine the Mode Studio draft from this runtime context.",
@@ -219,6 +259,9 @@ function modeStudioClarificationQuestion(area: ModeStudioDesignArea): string {
 
 export function inferModeStudioFamily(text: string, fallback: CoordinationPattern): CoordinationPattern {
   const lower = text.toLowerCase();
+  const layoutIntent = modeStudioStructuredLayoutIntent(lower);
+  // 有 staged layout 意图的模式都需要 orchestrator_subagent 来执行 stages[]
+  if (layoutIntent.style) return "orchestrator_subagent";
   if (/(parallel|team|roles|roster|multiple|多人|多个|并行|分工|团队)/i.test(lower)) return "agent_teams";
   if (/(verify|verifier|review|critic|rubric|审核|审查|验证|互审|严格)/i.test(lower)) return "generator_verifier";
   if (/(route|event|bus|publish|subscribe|routing|路由|事件|消息)/i.test(lower)) return "message_bus";
@@ -236,6 +279,14 @@ export function modeStudioRolePlans(family: CoordinationPattern, text: string): 
   const plannerStyle = strict ? "careful planner" : creative ? "creative planner" : "structured planner";
   const builderStyle = fast ? "fast builder" : strict ? "careful builder" : "focused builder";
   const reviewerStyle = strict ? "strict reviewer" : "balanced reviewer";
+  if (family === "orchestrator_subagent" && modeStudioStructuredLayoutIntent(text).style === "two_sided_duel") {
+    const duel = modeStudioDuelSides(text);
+    return [
+      { profileId: "moderator", label: "Moderator", role: "Frame the staged review and synthesize the final judgment.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: duel.left.id, label: duel.left.label, role: duel.left.role, style: "adversarial reviewer", toolIntent: "review" },
+      { profileId: duel.right.id, label: duel.right.label, role: duel.right.role, style: "defensive reviewer", toolIntent: "review" },
+    ];
+  }
   if (family === "generator_verifier") {
     return [
       { profileId: "generator", label: "Generator", role: "Produce the candidate result from the user's goal.", style: builderStyle, toolIntent: "code" },
@@ -314,6 +365,261 @@ export function prepareModeStudioDraft(
   };
 }
 
+function modeStudioStructuredLayoutIntent(text: string): { style?: ModeTranscriptLayout["style"] } {
+  if (/(debate|red\s*team|blue\s*team|red-team|blue-team|attack|defense|defence|pro\/con|pro-con|support|opposition|courtroom|辩论|正方|反方|红队|蓝队|攻防|支持|反对)/i.test(text)) {
+    return { style: "two_sided_duel" };
+  }
+  if (/(rubric|matrix|scoring|评分|矩阵|打分|评分标准|评审标准)/i.test(text)) {
+    return { style: "rubric_matrix" };
+  }
+  if (/(judge|panel|verdict|jury|评审团|裁决|判决|安全门|quality.?gate|go\/no.?go)/i.test(text)) {
+    return { style: "judge_panel" };
+  }
+  if (/(evidence|investigat|fact.?check|due.?diligence|证据|调查|事实核查|尽职调查)/i.test(text)) {
+    return { style: "evidence_board" };
+  }
+  if (/(compar(ison|e)|versus|option.*?(?:a|b)|对比|比较|选型|方案对比)/i.test(text)) {
+    return { style: "comparison_table" };
+  }
+  if (/(gallery|artifact|portfolio|制品|画廊|作品集|批量生成)/i.test(text)) {
+    return { style: "artifact_gallery" };
+  }
+  if (/(kanban|pipeline|triage|funnel|看板|流水线|分拣|漏斗)/i.test(text)) {
+    return { style: "kanban_pipeline" };
+  }
+  return {};
+}
+
+function modeStudioDuelSides(text: string) {
+  if (/(debate|pro\/con|pro-con|support|opposition|辩论|正方|反方|支持|反对)/i.test(text)) {
+    return {
+      left: {
+        id: "affirmative",
+        label: "Affirmative",
+        role: "Argue for the proposal, strongest interpretation, or support case.",
+        stance: "affirmative",
+      },
+      right: {
+        id: "negative",
+        label: "Negative",
+        role: "Argue against the proposal, expose missing proof, and pressure the opposing case.",
+        stance: "negative",
+      },
+      groupId: "structured-debate",
+      groupLabel: "Structured Debate",
+    };
+  }
+  return {
+    left: {
+      id: "red_team",
+      label: "Red Team",
+      role: "Attack the plan's riskiest assumptions, failure modes, and exploitable gaps.",
+      stance: "red_team",
+    },
+    right: {
+      id: "blue_team",
+      label: "Blue Team",
+      role: "Defend the plan, propose mitigations, and strengthen the implementation path.",
+      stance: "blue_team",
+    },
+    groupId: "red-blue-review",
+    groupLabel: "Red/Blue Review",
+  };
+}
+
+function modeStudioDuelStagePrompt(): string {
+  return [
+    "User request:\n{{prompt}}",
+    "Framing:\n{{decompose}}",
+    "Current speaker: {{speakerLabel}}",
+    "Assigned stance: {{stance}}",
+    "Stage instruction: {{stageInstruction}}",
+    "Prior transcript:\n{{priorTranscript}}",
+    "Write only this stage's contribution. Stay in role, respond to prior transcript when useful, and keep the argument concrete.",
+  ].join("\n\n");
+}
+
+export function modeStudioStagedDraft(mode: ModeSpec, text: string, rolePlans: ModeStudioRolePlan[]): ModeSpec {
+  if (modeStudioStructuredLayoutIntent(text).style !== "two_sided_duel" || mode.family !== "orchestrator_subagent") {
+    return normalizeModeStudioStagesAndLayout(mode, text);
+  }
+
+  const duel = modeStudioDuelSides(text);
+  const baseProfile = mode.profiles[0];
+  const profiles = [
+    {
+      ...(baseProfile ?? mode.profiles[0]!),
+      id: "moderator",
+      label: "Moderator",
+      role: "Frame the staged exchange and synthesize the final decision.",
+      toolPolicyId: baseProfile?.toolPolicyId ?? "orchestrator_subagent.default",
+      toolIds: modeStudioToolIds("minimal", text),
+      skillIds: baseProfile?.skillIds ?? [],
+      memoryNamespaces: baseProfile?.memoryNamespaces ?? ["session", "project"],
+      budget: baseProfile?.budget ?? DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+    },
+    ...[duel.left, duel.right].map((side, index) => {
+      const role = rolePlans.find((candidate) => candidate.profileId === side.id);
+      const source = mode.profiles[index + 1] ?? baseProfile;
+      return {
+        ...(source ?? baseProfile!),
+        id: side.id,
+        label: side.label,
+        role: role?.role ?? side.role,
+        toolPolicyId: source?.toolPolicyId ?? "orchestrator_subagent.default",
+        toolIds: modeStudioToolIds("review", text),
+        skillIds: source?.skillIds ?? [],
+        memoryNamespaces: source?.memoryNamespaces ?? ["session", "project"],
+        budget: source?.budget ?? DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
+      };
+    }),
+  ];
+  const frameNode = mode.nodes.find((node) => node.template === "decompose") ?? mode.nodes[0];
+  const exchangeNode = mode.nodes.find((node) => node.template === "research") ?? mode.nodes.find((node) => node.template === "review") ?? frameNode;
+  const synthesisNode = mode.nodes.find((node) => node.template === "synthesize") ?? mode.nodes.at(-1) ?? exchangeNode;
+  const promptTemplate = modeStudioDuelStagePrompt();
+  const stages: ModeStageSpec[] = [
+    {
+      id: `${duel.left.stance}-opening`,
+      label: "Opening pressure",
+      nodeId: exchangeNode.id,
+      speakerId: duel.left.id,
+      speakerLabel: duel.left.label,
+      stance: duel.left.stance,
+      instruction: "Open with the strongest case for this side and name the core burden of proof.",
+      promptTemplate,
+    },
+    {
+      id: `${duel.right.stance}-response`,
+      label: "Response",
+      nodeId: exchangeNode.id,
+      speakerId: duel.right.id,
+      speakerLabel: duel.right.label,
+      stance: duel.right.stance,
+      instruction: "Answer the opening case, identify weak assumptions, and make the strongest opposing case.",
+      promptTemplate,
+    },
+    {
+      id: `${duel.left.stance}-rebuttal`,
+      label: "Rebuttal",
+      nodeId: exchangeNode.id,
+      speakerId: duel.left.id,
+      speakerLabel: duel.left.label,
+      stance: duel.left.stance,
+      instruction: "Rebut the response and sharpen the strongest unresolved pressure.",
+      promptTemplate,
+    },
+    {
+      id: `${duel.right.stance}-closing`,
+      label: "Closing",
+      nodeId: exchangeNode.id,
+      speakerId: duel.right.id,
+      speakerLabel: duel.right.label,
+      stance: duel.right.stance,
+      instruction: "Close with the strongest final answer and practical mitigation or rejection criteria.",
+      promptTemplate,
+    },
+    {
+      id: "moderator-synthesis",
+      label: "Synthesis",
+      nodeId: synthesisNode.id,
+      speakerId: "moderator",
+      speakerLabel: "Moderator",
+      stance: "moderator",
+      outputKey: "synthesis",
+    },
+  ];
+  const transcriptLayout: ModeTranscriptLayout = {
+    style: "two_sided_duel",
+    groupId: duel.groupId,
+    groupLabel: duel.groupLabel,
+    sideByStance: {
+      [duel.left.stance]: "left",
+      [duel.right.stance]: "right",
+    },
+    stanceLabels: {
+      [duel.left.stance]: duel.left.label,
+      [duel.right.stance]: duel.right.label,
+      moderator: "Moderator",
+      neutral: "Neutral",
+    },
+    stanceTones: {
+      [duel.left.stance]: duel.left.stance === "red_team" ? "red" : "green",
+      [duel.right.stance]: "blue",
+      moderator: "violet",
+      neutral: "gray",
+    },
+    summaryStances: ["moderator", "neutral"],
+    showStatus: true,
+    showSpeaker: true,
+  };
+
+  return normalizeModeStudioStagesAndLayout(ModeSpecSchema.parse({
+    ...mode,
+    profiles,
+    nodes: mode.nodes.map((node) => ({
+      ...node,
+      ownerAgentId: node.id === synthesisNode.id || node.id === frameNode.id ? "moderator" : node.ownerAgentId,
+      enabled: node.template === "review" && node.id !== exchangeNode.id ? false : node.enabled,
+    })),
+    stages,
+    transcriptLayout,
+  }), text);
+}
+
+function normalizeModeStudioStagesAndLayout(mode: ModeSpec, text: string): ModeSpec {
+  const nodeIds = new Set(mode.nodes.map((node) => node.id));
+  const profileIds = new Set(mode.profiles.map((profile) => profile.id));
+  const fallbackNode = mode.nodes.find((node) => node.template === "research")
+    ?? mode.nodes.find((node) => node.template === "synthesize")
+    ?? mode.nodes[0];
+  const normalizedStages = mode.stages?.map((stage) => {
+    const node = nodeIds.has(stage.nodeId) ? mode.nodes.find((candidate) => candidate.id === stage.nodeId) : fallbackNode;
+    const speakerId = stage.speakerId && profileIds.has(stage.speakerId)
+      ? stage.speakerId
+      : node?.ownerAgentId && profileIds.has(node.ownerAgentId)
+        ? node.ownerAgentId
+        : mode.profiles[0]?.id;
+    return {
+      ...stage,
+      nodeId: node?.id ?? stage.nodeId,
+      speakerId,
+    };
+  });
+  const layoutIntent = modeStudioStructuredLayoutIntent(text);
+  const layout = mode.transcriptLayout
+    ?? (normalizedStages?.length
+      ? {
+          style: (layoutIntent.style ?? "stage_list") as ModeTranscriptLayout["style"],
+          groupId: slugifyModeStudio(mode.label) || mode.id,
+          groupLabel: mode.label,
+          ...(layoutIntent.style === "judge_panel" ? { summaryStances: ["moderator", "verdict"] } : {}),
+          ...(layoutIntent.style === "evidence_board" ? { groupBy: "stance" as const } : {}),
+          ...(layoutIntent.style === "kanban_pipeline" ? { lanes: deriveKanbanLanesFromStages(normalizedStages) } : {}),
+          showStatus: true,
+          showSpeaker: true,
+        }
+      : undefined);
+  return ModeSpecSchema.parse({
+    ...mode,
+    stages: normalizedStages,
+    transcriptLayout: layout,
+  });
+}
+
+function deriveKanbanLanesFromStages(stages?: ModeStageSpec[]): Array<{ id: string; label: string }> {
+  if (!stages) return [];
+  const seen = new Set<string>();
+  const lanes: Array<{ id: string; label: string }> = [];
+  for (const stage of stages) {
+    if (!seen.has(stage.id)) {
+      lanes.push({ id: stage.id, label: stage.label });
+      seen.add(stage.id);
+    }
+  }
+  return lanes;
+}
+
 export function modeStudioLabel(text: string): string {
   const purpose = modeStudioPurpose(text);
   const label = purpose.length > 40 ? `${purpose.slice(0, 40).trim()} Mode` : `${purpose} Mode`;
@@ -381,7 +687,7 @@ export function enrichModeStudioGeneratedDraft(
     toolIds: profile.toolIds.length > 0 ? profile.toolIds : params.agentDrafts[index]?.toolIds ?? profile.toolIds,
     skillIds: profile.skillIds.length > 0 ? profile.skillIds : params.agentDrafts[index]?.skillIds ?? profile.skillIds,
   }));
-  return ModeSpecSchema.parse({
+  return normalizeModeStudioStagesAndLayout(ModeSpecSchema.parse({
     ...mode,
     systemPreset: false,
     visibility: "user",
@@ -422,7 +728,7 @@ export function enrichModeStudioGeneratedDraft(
         ...params.agentDrafts.flatMap((agent) => agent.skillIds),
       ])],
     },
-  });
+  }), params.text);
 }
 
 export function modeStudioRuntimeAtoms(family: CoordinationPattern, text: string, existing: ModeSpec["runtimeAtoms"]): ModeSpec["runtimeAtoms"] {
@@ -593,6 +899,8 @@ export function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     defaultBudget,
     profiles,
     runtimeAtoms,
+    stages,
+    transcriptLayout,
     completionPolicy,
     runtimePolicy,
     recoveryPolicy,
@@ -615,6 +923,8 @@ export function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     defaultBudget,
     profiles,
     runtimeAtoms,
+    stages,
+    transcriptLayout,
     completionPolicy,
     runtimePolicy,
     recoveryPolicy,

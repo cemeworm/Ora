@@ -33,6 +33,7 @@ import {
   modeStudioPurpose,
   modeStudioRolePlans,
   modeStudioRuntimeAtoms,
+  modeStudioStagedDraft,
   modeStudioSummary,
   modeStudioToolIds,
   modeStudioTopologyChoices,
@@ -104,7 +105,7 @@ export function buildModeStudioDraft(
   const toolIds = [...new Set(profiles.flatMap((profile) => profile.toolIds))];
   const skillIds = [...new Set(profiles.flatMap((profile) => profile.skillIds))];
   const runtimeAtoms = modeStudioRuntimeAtoms(family, userText, base.runtimeAtoms);
-  const nextDraft = {
+  const nextDraft = modeStudioStagedDraft({
     ...modeDraft,
     family,
     summary: modeStudioSummary(userText, pattern.summary),
@@ -134,7 +135,7 @@ export function buildModeStudioDraft(
     },
     runtimeAtoms,
     updatedAt: Date.now(),
-  };
+  }, userText, rolePlans);
   const guidance = modeStudioGuidance(family, userText);
   return withModeStudioValidation(ModeStudioDraftBundleSchema.parse({
     modeDraft: nextDraft,

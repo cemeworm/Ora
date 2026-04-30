@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PolicyDecisionSchema, TodoItemSchema } from "./actions.js";
 import { SearchProviderConfigSchema } from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
-import { ModeSpecSchema } from "./modes.js";
+import { ModeSpecSchema, ModeTranscriptLayoutSchema } from "./modes.js";
 import { AgentProfileSchema, CoordinationKindSchema, CoordinationPatternSchema, ModeBudgetProfileSchema, ModeCompletionPolicySchema, ModeDelegationSchema, ModeIdSchema, ModePlanningSchema, ModeReasoningEffortSchema, ModeThinkingSchema, ResourceBudgetSchema, RunStatusSchema } from "./primitives.js";
 import { ProviderConfigSchema } from "./providers.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
@@ -441,12 +441,7 @@ export const AgentConversationMessageStatusSchema = z.enum([
 ]);
 export type AgentConversationMessageStatus = z.infer<typeof AgentConversationMessageStatusSchema>;
 
-export const AgentConversationTranscriptStanceSchema = z.enum([
-  "affirmative",
-  "negative",
-  "moderator",
-  "neutral",
-]);
+export const AgentConversationTranscriptStanceSchema = z.string().min(1);
 export type AgentConversationTranscriptStance = z.infer<typeof AgentConversationTranscriptStanceSchema>;
 
 export const AgentConversationTranscriptSchema = z.object({
@@ -460,6 +455,7 @@ export const AgentConversationTranscriptSchema = z.object({
   speakerId: z.string().min(1).optional(),
   stance: AgentConversationTranscriptStanceSchema.default("neutral"),
   status: AgentConversationMessageStatusSchema.default("done"),
+  layout: ModeTranscriptLayoutSchema.optional(),
 });
 export type AgentConversationTranscript = z.infer<typeof AgentConversationTranscriptSchema>;
 

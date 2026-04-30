@@ -150,6 +150,66 @@ export const ModeRuntimeAtomDefinitionSchema = z.object({
 });
 export type ModeRuntimeAtomDefinition = z.infer<typeof ModeRuntimeAtomDefinitionSchema>;
 
+export const ModeStageSpecSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  nodeId: z.string().min(1),
+  speakerId: z.string().min(1).optional(),
+  speakerLabel: z.string().min(1).optional(),
+  stance: z.string().min(1).optional(),
+  instruction: z.string().min(1).optional(),
+  promptTemplate: z.string().min(1).optional(),
+  outputKey: z.string().min(1).optional(),
+});
+export type ModeStageSpec = z.infer<typeof ModeStageSpecSchema>;
+
+export const TranscriptLayoutStyleSchema = z.enum([
+  "stage_list",
+  "timeline",
+  "two_sided_duel",
+  "role_lanes",
+  "kanban_pipeline",
+  "rubric_matrix",
+  "judge_panel",
+  "evidence_board",
+  "comparison_table",
+  "artifact_gallery",
+  "branch_compare",
+  "state_board",
+  "event_stream",
+  "graph_topology",
+  "report_builder",
+]);
+export type TranscriptLayoutStyle = z.infer<typeof TranscriptLayoutStyleSchema>;
+
+export const TranscriptLayoutToneSchema = z.enum(["green", "blue", "violet", "amber", "red", "gray"]);
+export type TranscriptLayoutTone = z.infer<typeof TranscriptLayoutToneSchema>;
+
+export const ModeTranscriptLayoutLaneSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+});
+export type ModeTranscriptLayoutLane = z.infer<typeof ModeTranscriptLayoutLaneSchema>;
+
+export const ModeTranscriptLayoutSchema = z.object({
+  style: TranscriptLayoutStyleSchema,
+  groupId: z.string().min(1).optional(),
+  groupLabel: z.string().min(1).optional(),
+  stanceLabels: z.record(z.string().min(1)).optional(),
+  stanceTones: z.record(TranscriptLayoutToneSchema).optional(),
+  sideByStance: z.record(z.enum(["left", "right", "center"])).optional(),
+  laneBySpeaker: z.record(z.string().min(1)).optional(),
+  summaryStances: z.array(z.string().min(1)).optional(),
+  showStatus: z.boolean().optional(),
+  showTimestamp: z.boolean().optional(),
+  showSpeaker: z.boolean().optional(),
+  orientation: z.enum(["vertical", "horizontal"]).optional(),
+  showArtifacts: z.boolean().optional(),
+  groupBy: z.enum(["speakerId", "stance", "nodeId"]).optional(),
+  lanes: z.array(ModeTranscriptLayoutLaneSchema).optional(),
+});
+export type ModeTranscriptLayout = z.infer<typeof ModeTranscriptLayoutSchema>;
+
 export const ModeMemoryPolicySchema = z.object({
   enabled: z.boolean().default(true),
   updater: z.enum(["provider", "heuristic"]).default("provider"),
@@ -200,6 +260,8 @@ export const ModeSpecSchema = z.object({
   defaultBudget: ResourceBudgetSchema,
   profiles: z.array(AgentProfileSchema).min(1),
   runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
+  stages: z.array(ModeStageSpecSchema).optional(),
+  transcriptLayout: ModeTranscriptLayoutSchema.optional(),
   completionPolicy: ModeCompletionPolicySchema.default(COMPLETION_POLICY_PRESETS.balanced),
   runtimePolicy: ModeRuntimePolicySchema.default(DEFAULT_MODE_RUNTIME_POLICY),
   recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
@@ -1847,6 +1909,34 @@ function createDebateModeSpec(): ModeSpec {
     "Boundary: do not let either side's rhetoric hide missing evidence, and do not present unresolved factual dependencies as settled.",
     "Output: give concise framing and final synthesis that identifies the strongest arguments, remaining uncertainty, and the most defensible conclusion.",
   ].join("\n");
+  const debateSpeechPromptTemplate = [
+    "Proposition or user request:\n{{prompt}}",
+    "Moderator framing:\n{{frame}}",
+    "Current virtual speaker: {{speakerLabel}}",
+    "Assigned stance: {{stance}}",
+    "STANCE LOCK: You are {{speakerLabel}}. Your mandatory stance is \"{{stance}}\"; every claim must support this side or attack the opposing side.",
+    "Turn instruction: {{stageInstruction}}",
+    "Prior debate transcript:\n{{priorTranscript}}",
+    "Use the prior transcript only as material to rebut or pressure the opposing side; do not synthesize it into a neutral middle position.",
+    "HARD CONSTRAINT: do not hedge, equivocate, or grant the opposing side's core premises. If you acknowledge an opponent's point, immediately counter it and make your own side stronger.",
+    "OUTPUT FORMAT: Lead with the strongest claim for the {{stance}} position. Structure the speech as: (1) core thesis restatement, (2) new evidence or rebuttal, (3) burden-of-proof pressure on the opponent.",
+    "Write only this speaker's speech. Keep the stance firm, responsive, and intellectually honest.",
+  ].join("\n\n");
+  const debateSpeechStages = [
+    { id: "affirmative-lead-opening", label: "开篇立论", speakerLabel: "正方主辩", stance: "affirmative", instruction: "Open for the affirmative. Define the proposition favorably, make the strongest affirmative case, and set the burden of proof for the negative side." },
+    { id: "negative-lead-opening", label: "开篇立论", speakerLabel: "反方主辩", stance: "negative", instruction: "Open for the negative. Attack the affirmative framing, present the strongest opposing case, and identify what the affirmative has not proven." },
+    { id: "affirmative-deputy-one", label: "第一副辩", speakerLabel: "正方第一副辩", stance: "affirmative", instruction: "Rebut the negative opening. Strengthen the affirmative evidence and expose contradictions or overreach in the negative case." },
+    { id: "negative-deputy-one", label: "第一副辩", speakerLabel: "反方第一副辩", stance: "negative", instruction: "Rebut the affirmative deputy. Press weak assumptions, missing evidence, and unresolved burden-of-proof gaps." },
+    { id: "affirmative-deputy-two", label: "第二副辩", speakerLabel: "正方第二副辩", stance: "affirmative", instruction: "Advance the affirmative response. Address the strongest negative attacks and sharpen the affirmative comparative advantage." },
+    { id: "negative-deputy-two", label: "第二副辩", speakerLabel: "反方第二副辩", stance: "negative", instruction: "Advance the negative response. Answer the latest affirmative claims and show why the negative position remains more defensible." },
+    { id: "affirmative-lead-final", label: "总结陈词", speakerLabel: "正方主辩", stance: "affirmative", instruction: "Give the affirmative final statement. Weigh the debate, answer the decisive negative objections, and close without introducing unsupported new facts." },
+    { id: "negative-lead-final", label: "总结陈词", speakerLabel: "反方主辩", stance: "negative", instruction: "Give the negative final statement. Weigh the debate, answer the affirmative closing line, and close without introducing unsupported new facts." },
+  ].map((stage) => ({
+    ...stage,
+    nodeId: "debate",
+    speakerId: "debate_agent",
+    promptTemplate: debateSpeechPromptTemplate,
+  }));
 
   return autoLayoutModeSpec(ModeSpecSchema.parse({
     id: DEBATE_MODE_ID,
@@ -1887,7 +1977,7 @@ function createDebateModeSpec(): ModeSpec {
         ownerAgentId: "moderator",
         enabled: true,
         instructions: "Synthesize the completed debate. Identify the strongest arguments on each side, unresolved factual dependencies, and the most defensible conclusion without pretending the debate resolved what it did not. Evaluate argument quality rigorously: if one side presented stronger evidence, cleaner logic, or fewer burden-of-proof gaps, say so explicitly. Do not default to 'both sides are equally valid' unless the evidence genuinely supports that rare conclusion.",
-        prompt: "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{framing}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis. Make an explicit judgment about which side presented the stronger case based on evidence quality, logic, and burden-of-proof gaps. Do not default to saying both sides are equally valid unless the debate evidence genuinely supports that rare conclusion.",
+        prompt: "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{frame}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis. Make an explicit judgment about which side presented the stronger case based on evidence quality, logic, and burden-of-proof gaps. Do not default to saying both sides are equally valid unless the debate evidence genuinely supports that rare conclusion.",
         config: {},
       },
     ],
@@ -1895,6 +1985,42 @@ function createDebateModeSpec(): ModeSpec {
       { id: "frame-debate", source: "frame", target: "debate", kind: "delegation", label: "dispatch", enabled: true },
       { id: "debate-synthesis", source: "debate", target: "synthesis", kind: "control", label: "synthesize", enabled: true },
     ],
+    stages: [
+      ...debateSpeechStages,
+      {
+        id: "moderator-synthesis",
+        label: "主持总结",
+        nodeId: "synthesis",
+        speakerId: "moderator",
+        speakerLabel: "主持人总结",
+        stance: "moderator",
+        outputKey: "synthesis",
+      },
+    ],
+    transcriptLayout: {
+      style: "two_sided_duel",
+      groupId: "debate",
+      groupLabel: "结构化辩论",
+      sideByStance: {
+        affirmative: "left",
+        negative: "right",
+      },
+      summaryStances: ["moderator", "neutral"],
+      stanceLabels: {
+        affirmative: "正方",
+        negative: "反方",
+        moderator: "主持",
+        neutral: "中立",
+      },
+      stanceTones: {
+        affirmative: "green",
+        negative: "blue",
+        moderator: "violet",
+        neutral: "gray",
+      },
+      showStatus: true,
+      showSpeaker: true,
+    },
     stopPolicy: {
       type: "queue_drained",
       detail: "Stop after the moderator has synthesized the ordered debate transcript.",
@@ -2285,6 +2411,35 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
       }
       if (activeRuntimeAtoms.has(atom.id)) {
         warnings.push(`Node '${node.id}' redundantly enables runtime atom '${atom.id}' that is already active for the mode.`);
+      }
+    }
+  }
+
+  const profileIds = new Set(spec.profiles.map((profile) => profile.id));
+  const stageIds = new Set<string>();
+  for (const stage of spec.stages ?? []) {
+    if (stageIds.has(stage.id)) {
+      errors.push(`Duplicate stage id '${stage.id}'.`);
+    }
+    stageIds.add(stage.id);
+    if (!nodeIds.has(stage.nodeId)) {
+      errors.push(`Stage '${stage.id}' references unknown node '${stage.nodeId}'.`);
+    }
+    if (stage.speakerId && !profileIds.has(stage.speakerId)) {
+      errors.push(`Stage '${stage.id}' references unknown speaker profile '${stage.speakerId}'.`);
+    }
+  }
+  if (spec.transcriptLayout) {
+    const stagedStances = new Set((spec.stages ?? []).map((stage) => stage.stance).filter((stance): stance is string => typeof stance === "string"));
+    for (const stance of Object.keys(spec.transcriptLayout.sideByStance ?? {})) {
+      if (stagedStances.size > 0 && !stagedStances.has(stance)) {
+        warnings.push(`Transcript layout side '${stance}' does not match any staged transcript stance.`);
+      }
+    }
+    if (spec.transcriptLayout.style === "two_sided_duel" && (spec.stages?.length ?? 0) > 0) {
+      const configuredSides = new Set(Object.values(spec.transcriptLayout.sideByStance ?? {}));
+      if (!configuredSides.has("left") || !configuredSides.has("right")) {
+        warnings.push("Transcript layout 'two_sided_duel' should configure both left and right sides.");
       }
     }
   }
