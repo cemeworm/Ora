@@ -20,30 +20,30 @@ interface ProviderOnboardingStepProps {
 function statusClasses(state: string) {
   switch (state) {
     case "verified":
-      return "bg-lime-50 text-bench-900 ring-lime-200";
+      return "bg-lime-50 text-bench-900";
     case "failed":
-      return "bg-red-50 text-bench-900 ring-red-200";
+      return "bg-red-50 text-bench-900";
     case "key_stored":
-      return "bg-bench-50 text-bench-900 ring-bench-200";
+      return "bg-bench-100 text-bench-900";
     case "needs_key":
-      return "bg-amber-50 text-bench-900 ring-amber-200";
+      return "bg-amber-50 text-bench-900";
     default:
-      return "bg-bench-50 text-bench-900 ring-bench-200";
+      return "bg-bench-100 text-bench-900";
   }
 }
 
 function statusLabel(state: string) {
   switch (state) {
     case "verified":
-      return "Verified";
+      return "已验证";
     case "failed":
-      return "Verification failed";
+      return "验证失败";
     case "key_stored":
-      return "Key stored";
+      return "密钥已保存";
     case "needs_key":
-      return "Needs key";
+      return "需要密钥";
     default:
-      return "Not configured";
+      return "未配置";
   }
 }
 
@@ -100,7 +100,7 @@ export function ProviderOnboardingStep({
             <div className="mb-3 flex items-center gap-2">
               <Sparkles size={16} className="text-signal-amber" />
               <h3 className="text-sm font-semibold text-bench-900">
-                Start with a free-model option
+                免费模型推荐
               </h3>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -123,7 +123,7 @@ export function ProviderOnboardingStep({
           <div className="mb-3 flex items-center gap-2">
             <Zap size={16} className="text-bench-700" />
             <h3 className="text-sm font-semibold text-bench-900">
-              Full provider list
+              全部服务提供方
             </h3>
           </div>
           <div className="grid max-h-[320px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
@@ -136,13 +136,11 @@ export function ProviderOnboardingStep({
                   selectProviderEntry(entry);
                 }}
                 className={cn(
-                  "flex min-h-[74px] items-center gap-3 rounded-2xl border px-3 py-3 text-left transition hover:bg-white active:scale-[0.99]",
-                  selectedProviderKey === entry.key
-                    ? "border-bench-900/70 bg-white shadow-xs"
-                    : "border-bench-200 bg-white/70 hover:border-bench-300",
+                  "flex min-h-[74px] items-center gap-3 rounded-2xl bg-bench-50/40 px-3 py-3 text-left transition hover:bg-white hover:shadow-xs hover:scale-[1.01] active:scale-[0.99]",
+                  selectedProviderKey === entry.key && "bg-white shadow-xs",
                 )}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-bench-50 text-[11px] font-bold text-bench-700 ring-1 ring-inset ring-bench-200">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-bench-100 text-[11px] font-bold text-bench-700">
                   {entry.preset.iconLabel}
                 </span>
                 <span className="min-w-0 flex-1">
@@ -162,11 +160,11 @@ export function ProviderOnboardingStep({
         </section>
       </div>
 
-      <aside className="rounded-[24px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+      <aside className="rounded-2xl bg-sidebar p-5 shadow-pane">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">
-              Selected provider
+              已选服务提供方
             </p>
             <h3 className="mt-2 truncate text-xl font-semibold text-bench-900">
               {providerDraft.label || activePreset.label}
@@ -174,7 +172,7 @@ export function ProviderOnboardingStep({
           </div>
           <span
             className={cn(
-              "shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset",
+              "shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold",
               statusClasses(draftProviderStatus.state),
             )}
           >
@@ -187,7 +185,7 @@ export function ProviderOnboardingStep({
         </p>
 
         {activePreset.freeTier && (
-          <div className="mt-4 rounded-2xl bg-lime-50 px-3 py-2.5 text-xs leading-5 text-bench-900 ring-1 ring-inset ring-lime-200">
+          <div className="mt-4 rounded-2xl bg-signal-acid/15 px-3 py-2.5 text-xs leading-5 text-bench-900">
             <span className="font-semibold">{activePreset.freeTier.label}</span>
             {activePreset.freeTier.description
               ? ` · ${activePreset.freeTier.description}`
@@ -198,7 +196,7 @@ export function ProviderOnboardingStep({
         <div className="mt-5 space-y-4">
           <label className="space-y-2">
             <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">
-              Model
+              模型
             </span>
             <Input
               value={providerDraft.modelId}
@@ -225,7 +223,7 @@ export function ProviderOnboardingStep({
 
           <label className="space-y-2">
             <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-700">
-              API Key
+              API 密钥
             </span>
             <div className="relative">
               <LockKeyhole
@@ -240,9 +238,9 @@ export function ProviderOnboardingStep({
                 placeholder={
                   needsSecret
                     ? selectedProviderHasKey
-                      ? "Key already saved; paste a new one to replace it"
-                      : `${providerDraft.label || "Provider"} API key`
-                    : "No key required"
+                      ? "密钥已保存，粘贴新密钥可替换"
+                      : `${providerDraft.label || "服务提供方"} API 密钥`
+                    : "无需密钥"
                 }
                 className="h-11 rounded-xl bg-white pl-9"
               />
@@ -250,7 +248,7 @@ export function ProviderOnboardingStep({
           </label>
         </div>
 
-        <div className="mt-4 rounded-2xl bg-bench-50/80 px-3 py-2.5 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
+        <div className="mt-4 rounded-2xl bg-bench-50/60 px-3 py-2.5 text-xs leading-5 text-bench-700">
           {providerActionError ?? draftProviderStatus.detail}
         </div>
 
@@ -264,7 +262,7 @@ export function ProviderOnboardingStep({
             >
               <a href={activePreset.apiKeyUrl} target="_blank" rel="noreferrer">
                 <KeyRound size={15} />
-                API Keys
+                API 密钥页
                 <ExternalLink size={13} />
               </a>
             </Button>
@@ -276,7 +274,7 @@ export function ProviderOnboardingStep({
             disabled={!canVerify}
           >
             <CheckCircle2 size={15} />
-            Verify & Enter Ora
+            验证并进入 Ora
           </Button>
         </div>
       </aside>
@@ -298,17 +296,15 @@ function ProviderChoiceCard({
       type="button"
       onClick={onClick}
       className={cn(
-        "min-h-[138px] rounded-[22px] border p-4 text-left transition hover:bg-white active:scale-[0.99]",
-        active
-          ? "border-bench-900/70 bg-white shadow-pane"
-          : "border-bench-200 bg-white/72 hover:border-bench-300",
+        "min-h-[138px] rounded-[22px] bg-bench-50/40 p-4 text-left transition hover:bg-white hover:shadow-xs hover:scale-[1.01] active:scale-[0.99]",
+        active && "bg-white shadow-pane",
       )}
     >
       <span className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-bench-50 text-xs font-bold text-bench-700 ring-1 ring-inset ring-bench-200">
+        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-bench-100 text-xs font-bold text-bench-700">
           {entry.preset.iconLabel}
         </span>
-        <span className="max-w-full truncate rounded-full bg-lime-50 px-2.5 py-1 text-xs font-semibold text-bench-900 ring-1 ring-inset ring-lime-200">
+        <span className="max-w-full truncate rounded-full bg-signal-acid/15 px-2.5 py-1 text-xs font-semibold text-bench-900">
           {entry.preset.freeTier?.label}
         </span>
       </span>

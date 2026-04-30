@@ -2,13 +2,9 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
-  BrainCircuit,
-  Check,
   KeyRound,
   MessageSquare,
   ShieldCheck,
-  SlidersHorizontal,
-  Sparkles,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../../lib/utils";
@@ -21,26 +17,25 @@ interface OnboardingViewProps {
 }
 
 const steps = [
-  { id: "welcome", label: "Welcome", icon: Sparkles },
-  { id: "modes", label: "Modes", icon: SlidersHorizontal },
-  { id: "provider", label: "Provider", icon: KeyRound },
+  { id: "welcome", label: "Welcome" },
+  { id: "provider", label: "Provider" },
 ] as const;
 
 const modeFeatures = [
   {
     icon: MessageSquare,
-    title: "Collaboration style",
-    body: "Modes shape how direct, exploratory, careful, or concise Ora should be in a conversation.",
+    title: "对话风格你来定",
+    body: "需要直接答案、一起讨论方案、还是逐步确认？换个模式，Ora 的回答方式跟着变。",
   },
   {
     icon: Bot,
-    title: "Tool access",
-    body: "Each Mode can carry its own tool choices, so project work and everyday chat do not need the same setup.",
+    title: "干活有工具，聊天不干扰",
+    body: "写代码时带上终端和文件访问，闲聊时只保留搜索。每个场景配合适的工具。",
   },
   {
     icon: ShieldCheck,
-    title: "Safety behavior",
-    body: "Approvals, output format, and boundaries can match the kind of work you are doing.",
+    title: "重要的你来把关",
+    body: "删文件、跑命令这类操作，可以让 Ora 先问你。日常小事它自己跑就行。",
   },
 ] as const;
 
@@ -51,87 +46,96 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
 
   return (
     <main className="flex h-full min-h-0 w-full bg-background p-3 text-bench-900 sm:p-4">
-      <section className="relative flex min-h-0 w-full flex-col overflow-hidden rounded-[28px] bg-sidebar shadow-pane ring-1 ring-inset ring-bench-200">
-        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-bench-200/80 px-5 py-4 sm:px-7">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-bench-900 text-sm font-bold text-white shadow-xs">
-              O
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-bench-900">
-                Ora first-use setup
-              </p>
-              <p className="truncate text-xs text-bench-700">
-                Configure the workspace once, then start chatting.
-              </p>
+      <section className="relative flex min-h-0 w-full flex-col overflow-hidden rounded-[28px] bg-sidebar shadow-pane">
+        {/* Progress bar */}
+        <div className="flex shrink-0 items-center gap-3 px-7 pt-6 pb-2">
+          <div className="flex-1">
+            <div className="h-[2px] rounded-full bg-bench-200">
+              <div
+                className="h-full rounded-full bg-bench-900 transition-all duration-500 ease-out"
+                style={{
+                  width: `${((stepIndex + 1) / steps.length) * 100}%`,
+                }}
+              />
             </div>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="rounded-xl bg-white"
-            onClick={onSkip}
-          >
-            Skip
-          </Button>
-        </header>
-
-        <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-bench-200/70 px-5 py-3 sm:px-7">
-          {steps.map((step, index) => {
-            const Icon = step.icon;
-            const active = index === stepIndex;
-            const complete = index < stepIndex;
-            return (
-              <button
-                key={step.id}
-                type="button"
-                onClick={() => setStepIndex(index)}
-                className={cn(
-                  "flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-sm font-semibold transition",
-                  active
-                    ? "bg-bench-900 text-white"
-                    : complete
-                      ? "bg-white text-bench-900 ring-1 ring-inset ring-bench-200"
-                      : "text-bench-700 hover:bg-white",
-                )}
-              >
-                {complete ? <Check size={15} /> : <Icon size={15} />}
-                {step.label}
-              </button>
-            );
-          })}
+          <div className="flex items-center gap-2">
+            {steps.map((step) => {
+              const index = steps.indexOf(step);
+              return (
+                <span
+                  key={step.id}
+                  className={cn(
+                    "h-2 w-2 rounded-full transition-all duration-300",
+                    index === stepIndex
+                      ? "bg-bench-900"
+                      : index < stepIndex
+                        ? "bg-bench-400"
+                        : "bg-bench-200",
+                  )}
+                />
+              );
+            })}
+          </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-6">
-          {stepIndex === 0 && <WelcomeStep />}
-          {stepIndex === 1 && <ModesStep />}
-          {stepIndex === 2 && (
-            <ProviderOnboardingStep onComplete={onComplete} />
-          )}
-        </div>
-
-        {!isProviderStep && (
-          <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-bench-200/80 px-5 py-4 sm:px-7">
-            <Button
-              type="button"
-              variant="outline"
-              className="rounded-xl bg-white"
-              onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
-              disabled={isFirstStep}
+        {/* Step content — absolute positioned for slide transitions */}
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          {steps.map((step, index) => (
+            <div
+              key={step.id}
+              className={cn(
+                "absolute inset-0 overflow-y-auto px-7 py-6 transition-all duration-500 ease-out",
+                index === stepIndex
+                  ? "translate-x-0 opacity-100"
+                  : index < stepIndex
+                    ? "-translate-x-8 opacity-0 pointer-events-none"
+                    : "translate-x-8 opacity-0 pointer-events-none",
+              )}
             >
-              <ArrowLeft size={15} />
-              Back
-            </Button>
+              {step.id === "welcome" && <WelcomeStep />}
+              {step.id === "provider" && (
+                <ProviderOnboardingStep onComplete={onComplete} />
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Footer navigation */}
+        {!isProviderStep && (
+          <footer className="flex shrink-0 items-center justify-between gap-3 px-7 py-5">
+            {isFirstStep ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="rounded-2xl"
+                onClick={onSkip}
+              >
+                跳过
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                className="rounded-2xl"
+                onClick={() =>
+                  setStepIndex((current) => Math.max(0, current - 1))
+                }
+              >
+                <ArrowLeft size={15} />
+                上一步
+              </Button>
+            )}
             <Button
               type="button"
-              className="rounded-xl"
+              className="rounded-2xl"
               onClick={() =>
                 setStepIndex((current) =>
                   Math.min(steps.length - 1, current + 1),
                 )
               }
             >
-              Continue
+              继续
               <ArrowRight size={15} />
             </Button>
           </footer>
@@ -143,92 +147,50 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
 
 function WelcomeStep() {
   return (
-    <div className="grid min-h-full content-center gap-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(320px,0.6fr)] lg:items-center">
-      <div className="max-w-3xl">
-        <p className="text-sm font-semibold uppercase tracking-[0.14em] text-bench-700">
-          Welcome to Ora
-        </p>
-        <h1 className="mt-4 max-w-3xl text-4xl font-semibold leading-tight text-bench-900 sm:text-5xl">
-          An AI workspace that adapts to how you work.
-        </h1>
-        <p className="mt-5 max-w-2xl text-base leading-7 text-bench-700">
-          Ora brings chat, tools, projects, and custom Modes into one focused
-          desktop workbench. Set up a provider now and the first conversation can
-          use a real model right away.
-        </p>
-      </div>
+    <div className="flex min-h-full flex-col items-center justify-center text-center">
+      <span className="animate-breathe font-serif text-7xl font-bold text-bench-900">
+        O
+      </span>
+      <h1
+        className="animate-fade-in mt-6 text-4xl font-semibold leading-tight text-bench-900 sm:text-5xl"
+        style={{ animationDelay: "150ms" }}
+      >
+        让 AI 按你的方式来。
+      </h1>
+      <p
+        className="animate-fade-in mt-5 max-w-lg text-base leading-7 text-bench-700"
+        style={{ animationDelay: "300ms" }}
+      >
+        同一个窗口里写代码、查资料、跑脚本，不用在十个应用之间切来切去。
+        下面选一个服务提供方，一分钟就能开始。
+      </p>
 
-      <div className="rounded-[26px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-bench-900 text-white">
-            <BrainCircuit size={20} />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-bench-900">
-              First-run checklist
-            </p>
-            <p className="text-xs text-bench-700">
-              Three quick steps before the workbench opens.
-            </p>
-          </div>
-        </div>
-        <div className="mt-5 space-y-3">
-          {["Meet the workspace", "Understand Modes", "Verify a provider"].map(
-            (item, index) => (
-              <div
-                key={item}
-                className="flex items-center gap-3 rounded-2xl bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200"
-              >
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white text-xs font-bold text-bench-900 ring-1 ring-inset ring-bench-200">
-                  {index + 1}
-                </span>
-                <span className="text-sm font-semibold text-bench-900">
-                  {item}
-                </span>
-              </div>
-            ),
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ModesStep() {
-  return (
-    <div className="grid min-h-full content-center gap-6">
-      <div className="max-w-3xl">
-        <p className="text-sm font-semibold uppercase tracking-[0.14em] text-bench-700">
-          Modes are the control surface
-        </p>
-        <h2 className="mt-4 max-w-3xl text-3xl font-semibold leading-tight text-bench-900 sm:text-4xl">
-          Different work deserves different AI behavior.
-        </h2>
-        <p className="mt-4 max-w-2xl text-base leading-7 text-bench-700">
-          In Ora, Modes are reusable working styles. You can start from a preset,
-          clone it, customize it, or describe the Mode you want in natural
-          language and use it in chat.
-        </p>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-3">
-        {modeFeatures.map((feature) => {
+      {/* Modes overview */}
+      <div className="animate-fade-in mt-10 w-full max-w-xl space-y-4">
+        {modeFeatures.map((feature, index) => {
           const Icon = feature.icon;
+          const isReversed = index % 2 !== 0;
           return (
-            <article
+            <div
               key={feature.title}
-              className="rounded-[24px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200"
+              className={cn(
+                "animate-fade-in flex items-start gap-5",
+                isReversed && "flex-row-reverse text-right",
+              )}
+              style={{ animationDelay: `${(index + 2) * 150}ms` }}
             >
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-bench-50 text-bench-900 ring-1 ring-inset ring-bench-200">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-bench-100 text-bench-900">
                 <Icon size={20} />
               </div>
-              <h3 className="mt-4 text-base font-semibold text-bench-900">
-                {feature.title}
-              </h3>
-              <p className="mt-2 text-sm leading-6 text-bench-700">
-                {feature.body}
-              </p>
-            </article>
+              <div className={cn(isReversed ? "text-right" : "text-left")}>
+                <h3 className="text-sm font-semibold text-bench-900">
+                  {feature.title}
+                </h3>
+                <p className="mt-0.5 text-sm leading-6 text-bench-700">
+                  {feature.body}
+                </p>
+              </div>
+            </div>
           );
         })}
       </div>
