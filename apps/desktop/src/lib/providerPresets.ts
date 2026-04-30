@@ -11,6 +11,13 @@ export interface ProviderPreset {
   iconLabel: string;
   homepageUrl?: string;
   apiKeyUrl?: string;
+  freeTier?: {
+    label: string;
+    description?: string;
+    url?: string;
+  };
+  recommendationReason?: string;
+  onboardingPriority?: number;
   isRecommended?: boolean;
   fixedProviderId?: string;
   suggestedIdBase: string;
@@ -318,6 +325,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     iconLabel: "OR",
     homepageUrl: "https://openrouter.ai/docs",
     apiKeyUrl: "https://openrouter.ai/settings/keys",
+    freeTier: {
+      label: "Free models available",
+      description: "OpenRouter lists free model options in its catalog.",
+      url: "https://openrouter.ai/models?max_price=0",
+    },
+    recommendationReason: "Start quickly with a unified model gateway.",
+    onboardingPriority: 0,
     isRecommended: true,
     suggestedIdBase: "openrouter",
     suggestedApiKeyEnv: "OPENROUTER_API_KEY",

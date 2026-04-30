@@ -21,19 +21,14 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useProviderSetup } from "../hooks/useProviderSetup";
 import { useWorkbench } from "../lib/state";
 import {
-  BUILT_IN_PROVIDER_IDS,
-  PROVIDER_PRESETS,
   buildProviderConfigFromDraft,
-  buildProviderCatalog,
   canEditBaseUrl,
-  createDraftFromPreset,
   createDraftFromProvider,
   createModelProviderId,
-  findPresetById,
   getModelProviderBaseId,
-  type ProviderCatalogEntry,
   type ProviderDraft,
 } from "../lib/providerPresets";
 import {
@@ -276,10 +271,6 @@ function providerTypeLabel(type: ProviderDraft["type"]) {
   }
 }
 
-function emptyDraft(): ProviderDraft {
-  return createDraftFromPreset(PROVIDER_PRESETS[0], []);
-}
-
 function memoryValue(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -358,16 +349,14 @@ function channelStateLabel(channel: OraChannelConfig | undefined, runtimeImpleme
 
 export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const { state, dispatch } = useWorkbench();
-  const { runtimeClient, actions } = useRunActions();
+  const { runtimeClient } = useRunActions();
+  const providerSetup = useProviderSetup();
   const secretInputRef = useRef<HTMLInputElement>(null);
   const providerModelsRequestRef = useRef(0);
   const [activeSection, setActiveSection] =
     useState<SettingsSection>("general");
-  const [selectedProviderKey, setSelectedProviderKey] = useState<string>("");
   const [providerSearch, setProviderSearch] = useState("");
   const [modelSearch, setModelSearch] = useState("");
-  const [providerDraft, setProviderDraft] =
-    useState<ProviderDraft>(emptyDraft());
   const [providerModelsResult, setProviderModelsResult] = useState<OraProviderModelsResult | undefined>();
   const [providerModelsLoading, setProviderModelsLoading] = useState(false);
   const [lastFetchedProviderModelsKey, setLastFetchedProviderModelsKey] = useState<string | undefined>();
@@ -389,27 +378,31 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     useState<ChannelProviderKind>("feishu");
   const [channelDraft, setChannelDraft] = useState<Record<string, string>>({ label: "" });
 
-  const providers = state.providerRegistry?.providers ?? [];
-  const selectedProvider = providers.find(
-    (provider) => provider.id === state.selectedProviderId,
-  );
-  const providerCatalog = useMemo(
-    () => buildProviderCatalog(providers),
-    [providers],
-  );
-  const activePreset = useMemo(
-    () => findPresetById(providerDraft.presetId),
-    [providerDraft.presetId],
-  );
-  const selectedCatalogEntry = useMemo(
-    () =>
-      providerCatalog.find((entry) => entry.key === selectedProviderKey) ??
-      providerCatalog.find((entry) =>
-        entry.providers.some((provider) => provider.id === providerDraft.id),
-      ) ??
-      providerCatalog.find((entry) => entry.draft.id === providerDraft.id),
-    [providerCatalog, providerDraft.id, selectedProviderKey],
-  );
+  const {
+    actions,
+    activePreset,
+    buildProviderConfigForModel,
+    canDeleteProvider,
+    draftProviderStatus,
+    draftSecretStatus,
+    modelProviderByModelId,
+    needsSecret,
+    providerActionError,
+    providerCatalog,
+    providerDraft,
+    providers,
+    saveDisabled,
+    selectedCatalogEntry,
+    selectedProvider,
+    selectedProviderKey,
+    addCustomProvider,
+    saveProviderSecret,
+    selectProviderEntry,
+    setProviderDraft,
+    toggleCapability,
+    updateDraft,
+    verifyAndEnableProvider,
+  } = providerSetup;
   const filteredProviderCatalog = useMemo(() => {
     const query = providerSearch.trim().toLowerCase();
     if (!query) {
@@ -477,21 +470,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   }, [memoryRecords, state.activeSnapshot?.profiles]);
 
   useEffect(() => {
-    if (!selectedProvider || selectedProvider.type === "local_smoke") {
-      return;
-    }
-    const entry = providerCatalog.find((candidate) =>
-      candidate.providers.some(
-        (provider) => provider.id === selectedProvider.id,
-      ),
-    );
-    setSelectedProviderKey(
-      entry?.key ?? `provider:${getModelProviderBaseId(selectedProvider.id)}`,
-    );
-    setProviderDraft(createDraftFromProvider(selectedProvider));
-  }, [providerCatalog, selectedProvider]);
-
-  useEffect(() => {
     if (!open || activeSection !== "memory") {
       return;
     }
@@ -505,35 +483,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     void loadChannels();
   }, [activeSection, open]);
 
-  const draftProvider = useMemo(
-    () => buildProviderConfigFromDraft(providerDraft),
-    [providerDraft],
-  );
-  const draftSecretStatus = state.providerSecretStatuses.find(
-    (status) => status.providerId === providerDraft.id,
-  );
-  const draftProviderStatus =
-    state.providerStatuses.find(
-      (status) => status.providerId === providerDraft.id,
-    ) ??
-    (draftProvider.type === "local_smoke"
-      ? {
-          providerId: providerDraft.id,
-          state: "verified",
-          detail: "Local smoke provider is ready.",
-        }
-      : draftSecretStatus?.hasSecret
-        ? {
-            providerId: providerDraft.id,
-            state: "key_stored",
-            detail: "API key stored. Run verify to confirm connectivity.",
-          }
-        : {
-            providerId: providerDraft.id,
-            state: "needs_key",
-            detail: "API key required before verification.",
-          });
-
   const providerModelsKey = `${providerDraft.type}:${providerDraft.baseUrl}:${providerDraft.apiKeyEnv}:${providerDraft.id}`;
   const activeProviderModelsResult = lastFetchedProviderModelsKey === providerModelsKey ? providerModelsResult : undefined;
   const fetchedModelsAuthoritative = activeProviderModelsResult?.status === "ok" && activeProviderModelsResult.authoritative;
@@ -542,14 +491,6 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     activePreset.modelSuggestions.length > 0
       ? activePreset.modelSuggestions
       : [providerDraft.modelId];
-  const modelProviderByModelId = useMemo(() => {
-    return new Map(
-      (selectedCatalogEntry?.providers ?? []).map((provider) => [
-        provider.modelId,
-        provider,
-      ]),
-    );
-  }, [selectedCatalogEntry]);
   const modelOptions = useMemo<ProviderModelOption[]>(() => {
     const byId = new Map<string, ProviderModelOption>();
     const add = (option: ProviderModelOption) => {
@@ -611,64 +552,22 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     !modelOptions.some(
       (model) => model.id.toLowerCase() === modelSearch.trim().toLowerCase(),
     );
-  const isBuiltInProvider = BUILT_IN_PROVIDER_IDS.has(providerDraft.id);
-  const isSavedProvider = providers.some(
-    (provider) => provider.id === providerDraft.id,
-  );
-  const canDeleteProvider = isSavedProvider && !isBuiltInProvider;
-  const needsSecret = providerDraft.type !== "local_smoke";
-  const saveDisabled =
-    !providerDraft.label.trim() ||
-    !providerDraft.modelId.trim() ||
-    ((providerDraft.type === "openai_compatible" ||
-      providerDraft.type === "anthropic_compatible") &&
-      !providerDraft.baseUrl.trim()) ||
-    state.busyCommand !== undefined;
-
-  function updateDraft(patch: Partial<ProviderDraft>) {
-    setProviderDraft((current) => ({ ...current, ...patch }));
-  }
-
   function clearModelFetchState() {
     setProviderModelsResult(undefined);
     setLastFetchedProviderModelsKey(undefined);
   }
 
-  function buildModelProviderConfig(modelId: string, enabled: boolean) {
-    const existingProvider = modelProviderByModelId.get(modelId);
-    const baseProviderId = getModelProviderBaseId(providerDraft.id);
-    const providerId =
-      existingProvider?.id ??
-      (modelId === activePreset.defaultModelId
-        ? baseProviderId
-        : createModelProviderId(baseProviderId, modelId));
-    return buildProviderConfigFromDraft({
-      ...providerDraft,
-      id: providerId,
-      label: providerDraft.label.trim() || activePreset.label,
-      modelId,
-      enabled,
-    });
-  }
-
-  function selectProviderEntry(entry: ProviderCatalogEntry) {
-    setSelectedProviderKey(entry.key);
-    setProviderDraft(entry.draft);
+  function handleSelectProviderEntry(entry: typeof providerCatalog[number]) {
+    selectProviderEntry(entry);
     setEditingModelProviderId(undefined);
     setEditingOriginalModelId(undefined);
     clearModelFetchState();
     setModelSearch("");
     setAdvancedOpen(false);
-    if (entry.provider) {
-      dispatch({ type: "SET_PROVIDER", providerId: entry.provider.id });
-    }
   }
 
-  function addCustomProvider() {
-    const preset = findPresetById("openai-compatible-generic");
-    const draft = createDraftFromPreset(preset, providers);
-    setSelectedProviderKey(`draft:${draft.id}`);
-    setProviderDraft(draft);
+  function handleAddCustomProvider() {
+    addCustomProvider();
     setEditingModelProviderId(undefined);
     setEditingOriginalModelId(undefined);
     clearModelFetchState();
@@ -680,7 +579,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     if (!secretInputRef.current) return;
     const secret = secretInputRef.current.value.trim();
     if (!secret) return;
-    void actions.storeProviderSecret(providerDraft.id, secret);
+    void saveProviderSecret(secret);
     secretInputRef.current.value = "";
   }
 
@@ -718,7 +617,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
       setEditingModelProviderId(modelProvider.id);
       setEditingOriginalModelId(modelProvider.modelId);
     } else {
-      const provider = buildModelProviderConfig(modelId, false);
+      const provider = buildProviderConfigForModel(modelId, false);
       setProviderDraft(createDraftFromProvider(provider));
       setEditingModelProviderId(provider.id);
       setEditingOriginalModelId(modelId);
@@ -763,18 +662,8 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     setProviderDraft(createDraftFromProvider(provider));
   }
 
-  async function verifyAndEnableProvider() {
-    const provider = buildModelProviderConfig(providerDraft.modelId, true);
-    const status = await actions.verifyProvider(provider);
-    if (status?.state !== "verified") {
-      return;
-    }
-    updateDraft({ enabled: true });
-    void actions.upsertCustomProvider(provider, { select: true });
-  }
-
   function disableProvider() {
-    const disabledProvider = buildModelProviderConfig(
+    const disabledProvider = buildProviderConfigForModel(
       providerDraft.modelId,
       false,
     );
@@ -789,11 +678,11 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     }
     updateDraft({ modelId, enabled: false });
     setModelSearch("");
-    void actions.upsertCustomProvider(buildModelProviderConfig(modelId, false), { select: false });
+    void actions.upsertCustomProvider(buildProviderConfigForModel(modelId, false), { select: false });
   }
 
   async function enableModel(modelId: string) {
-    const provider = buildModelProviderConfig(modelId, true);
+    const provider = buildProviderConfigForModel(modelId, true);
     const status = await actions.verifyProvider(provider);
     if (status?.state !== "verified") {
       updateDraft({ modelId, enabled: false });
@@ -804,17 +693,9 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   }
 
   function disableModel(modelId: string) {
-    const provider = buildModelProviderConfig(modelId, false);
+    const provider = buildProviderConfigForModel(modelId, false);
     updateDraft({ modelId, enabled: false });
     void actions.upsertCustomProvider(provider, { select: false });
-  }
-
-  function toggleCapability(capability: ProviderCapability) {
-    updateDraft({
-      capabilities: providerDraft.capabilities.includes(capability)
-        ? providerDraft.capabilities.filter((entry) => entry !== capability)
-        : [...providerDraft.capabilities, capability],
-    });
   }
 
   function updateSearchSettings(patch: Partial<DesktopSearchSettings>) {
@@ -1233,7 +1114,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                         size="icon-sm"
                         aria-label="Add custom provider"
                         className="rounded-lg bg-white"
-                        onClick={addCustomProvider}
+                        onClick={handleAddCustomProvider}
                       >
                         <Plus size={14} />
                       </Button>
@@ -1286,7 +1167,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             key={entry.key}
                             type="button"
                             aria-label={`${entry.label} ${entryStatus?.state === "failed" ? "failed" : stateText}`}
-                            onClick={() => selectProviderEntry(entry)}
+                            onClick={() => handleSelectProviderEntry(entry)}
                             className={cn(
                               "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition active:scale-[0.99]",
                               active
@@ -1414,7 +1295,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                     </div>
 
                     <div className="mt-5 rounded-2xl bg-bench-50/70 px-4 py-3 text-xs leading-5 text-bench-700 ring-1 ring-inset ring-bench-200">
-                      {draftProviderStatus.detail}
+                      {providerActionError ?? draftProviderStatus.detail}
                     </div>
 
                     <div className="mt-5 grid gap-4">
