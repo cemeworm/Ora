@@ -52,19 +52,53 @@ function parseCompatibleModels(raw: unknown): ProviderModelsResult["models"] {
       ? model.id
       : typeof model.name === "string"
         ? model.name
-        : undefined;
+        : typeof model.model_id === "string"
+          ? model.model_id
+          : typeof model.modelId === "string"
+            ? model.modelId
+            : undefined;
     if (!id?.trim()) {
       return [];
     }
+    const name = typeof model.display_name === "string"
+      ? model.display_name
+      : typeof model.displayName === "string"
+        ? model.displayName
+        : typeof model.name === "string" && model.name !== id
+          ? model.name
+          : undefined;
     return [{
       id,
-      name: typeof model.name === "string" && model.name !== id ? model.name : undefined,
+      name,
       created: typeof model.created === "number" && Number.isInteger(model.created) && model.created >= 0
         ? model.created
         : undefined,
-      ownedBy: typeof model.owned_by === "string" ? model.owned_by : undefined,
+      ownedBy: typeof model.owned_by === "string"
+        ? model.owned_by
+        : typeof model.ownedBy === "string"
+          ? model.ownedBy
+          : typeof model.provider === "string"
+            ? model.provider
+            : undefined,
       source: "remote" as const,
     }];
+  });
+}
+
+function resolveOpenAICompatibleModelsEndpoint(config: ProviderConfig) {
+  const baseUrl = config.baseUrl ?? "";
+  const url = new URL(baseUrl);
+  const host = url.hostname.toLowerCase();
+  if (host === "api.deepseek.com") {
+    return new URL("/models", url.origin).href;
+  }
+  if (host === "aihubmix.com") {
+    return new URL("/api/v1/models?type=llm", url.origin).href;
+  }
+  return resolveCompatibleProviderEndpoint({
+    providerId: config.id,
+    baseUrl,
+    path: "/models",
   });
 }
 
@@ -107,11 +141,7 @@ export async function listOpenAICompatibleModels(
   }
 
   try {
-    const response = await fetchImpl(resolveCompatibleProviderEndpoint({
-      providerId: config.id,
-      baseUrl: config.baseUrl,
-      path: "/models",
-    }), {
+    const response = await fetchImpl(resolveOpenAICompatibleModelsEndpoint(config), {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,

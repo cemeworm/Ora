@@ -591,11 +591,24 @@ export function resolveCompatibleProviderEndpoint(params: {
 
   let pathname = url.pathname.replace(/\/+$/, "");
   if (!pathname.endsWith(params.path)) {
-    pathname = pathname.endsWith("/v1")
+    pathname = isVersionedCompatibleBasePath(pathname)
       ? `${pathname}${params.path}`
       : `${pathname}/v1${params.path}`;
   }
 
   url.pathname = pathname;
   return url.href;
+}
+
+function isVersionedCompatibleBasePath(pathname: string) {
+  const segments = pathname.split("/").filter(Boolean);
+  const last = segments.at(-1);
+  const previous = segments.at(-2);
+  if (!last) {
+    return false;
+  }
+  if (/^v\d+(?:[a-z]+)?$/i.test(last)) {
+    return true;
+  }
+  return last.toLowerCase() === "openai" && Boolean(previous && /^v\d+(?:[a-z]+)?$/i.test(previous));
 }
