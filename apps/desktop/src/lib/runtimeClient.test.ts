@@ -48,6 +48,7 @@ describe("desktop runtime client agent catalog", () => {
     expect(catalog.systemAgents.map((agent) => agent.id).sort()).toEqual([
       "builder",
       "debate_agent",
+      "debugger",
       "generator",
       "moderator",
       "ora",
