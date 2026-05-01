@@ -7,6 +7,7 @@ import type {
   OraProjectInsight,
   OraProjectSignal,
   OraSelfIterationCandidate,
+  OraSelfIterationPolicy,
   RuntimeClient,
 } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -28,6 +29,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
   const [insights, setInsights] = useState<OraProjectInsight[]>([]);
   const [rules, setRules] = useState<OraFeedbackLoopCalibrationRule[]>([]);
   const [selfIterationCandidates, setSelfIterationCandidates] = useState<OraSelfIterationCandidate[]>([]);
+  const [selfIterationPolicy, setSelfIterationPolicy] = useState<OraSelfIterationPolicy>();
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [error, setError] = useState<string>();
   const [actionResult, setActionResult] = useState<OraFeedbackLoopActionResult>();
@@ -39,16 +41,18 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
     setLoadState("loading");
     setError(undefined);
     try {
-      const [nextSignals, nextInsights, nextRules, nextCandidates] = await Promise.all([
+      const [nextSignals, nextInsights, nextRules, nextCandidates, nextPolicy] = await Promise.all([
         runtimeClient.listProjectSignals({ projectId: projectIdParam, limit: 200 }),
         runtimeClient.listProjectInsights({ projectId: projectIdParam, limit: 100 }),
         runtimeClient.listFeedbackLoopRules(projectIdParam ? { projectId: projectIdParam } : {}),
         runtimeClient.listSelfIterationCandidates({ projectId: projectIdParam, limit: 100 }),
+        projectIdParam ? runtimeClient.getSelfIterationPolicy(projectIdParam) : Promise.resolve(undefined),
       ]);
       setSignals(nextSignals);
       setInsights(nextInsights);
       setRules(nextRules);
       setSelfIterationCandidates(nextCandidates);
+      setSelfIterationPolicy(nextPolicy);
       setLoadState("idle");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load project signals.");
@@ -65,6 +69,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
   const warningCount = signals.filter((signal) => signal.severity === "warning").length;
   const pendingFeedbackCount = signals.filter((signal) => signal.source === "evaluation_feedback" && signal.metadata.feedbackStatus === "pending").length;
   const recoveryCount = signals.filter((signal) => signal.source === "recovery_event").length;
+  const environmentSignal = signals.find((signal) => signal.source === "project_file" && signal.metadata.observerKind === "environment_snapshot");
   const selectedProjectLabel = useMemo(() => {
     if (selectedProjectId === "all") return "All projects";
     return state.projects.find((project) => project.projectId === selectedProjectId)?.label ?? selectedProjectId;
@@ -93,6 +98,12 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
 
     if (target.kind === "evaluation" || target.kind === "feedback") {
       dispatch({ type: "SET_VIEW", view: "evaluation" });
+      onOpenEvidence?.();
+      return;
+    }
+
+    if (target.kind === "project_file") {
+      dispatch({ type: "SET_VIEW", view: "chat" });
       onOpenEvidence?.();
     }
   }
@@ -189,6 +200,23 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
     }
   }
 
+  async function updateEnvironmentObserver(patch: Partial<OraSelfIterationPolicy["environmentObserver"]>) {
+    if (!selfIterationPolicy) return;
+    try {
+      const updated = await runtimeClient.updateSelfIterationPolicy({
+        ...selfIterationPolicy,
+        environmentObserver: {
+          ...selfIterationPolicy.environmentObserver,
+          ...patch,
+        },
+      });
+      setSelfIterationPolicy(updated);
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to update environment observer policy.");
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-sidebar">
       <header className="flex shrink-0 items-center justify-between border-b border-border/70 px-6 py-4">
@@ -270,6 +298,63 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
           <Metric icon={<ShieldAlert size={16} />} label="Critical signals" value={criticalCount} tone={criticalCount > 0 ? "critical" : "neutral"} />
           <Metric icon={<Inbox size={16} />} label="Pending feedback" value={pendingFeedbackCount} tone={pendingFeedbackCount > 0 ? "warning" : "neutral"} />
           <Metric icon={<GitBranchPlus size={16} />} label="Recovery signals" value={recoveryCount} tone={recoveryCount > 0 ? "warning" : "neutral"} />
+        </section>
+
+        <section className="mt-5">
+          <SectionTitle title="Environment Observer" subtitle="Opt-in metadata-only workspace observation" />
+          <div className="mt-3 rounded-lg border border-border bg-background p-4 shadow-sm">
+            {selectedProjectId === "all" || !selfIterationPolicy ? (
+              <p className="text-sm text-muted-foreground">Select one project to enable scoped observation. Ora will not watch all projects at once.</p>
+            ) : (
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                      selfIterationPolicy.environmentObserver.enabled && !selfIterationPolicy.environmentObserver.paused ? "bg-emerald-100 text-emerald-800" : "bg-muted text-muted-foreground",
+                    )}>
+                      {selfIterationPolicy.environmentObserver.enabled
+                        ? selfIterationPolicy.environmentObserver.paused ? "paused" : "enabled"
+                        : "disabled"}
+                    </span>
+                    <span className="text-xs text-muted-foreground">Budget {selfIterationPolicy.environmentObserver.scanBudgetFiles} files · max {Math.round(selfIterationPolicy.environmentObserver.maxFileBytes / 1024)} KB/file</span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Watches {selfIterationPolicy.environmentObserver.watchedPaths.join(", ")} and excludes {selfIterationPolicy.environmentObserver.excludedGlobs.join(", ")}. Observation records file paths, sizes, modified times, extension counts, and run-status summaries only.
+                  </p>
+                  {environmentSignal && (
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                      Latest signal: {String(environmentSignal.metadata.observedFiles ?? 0)} files observed · raw content policy {String(environmentSignal.metadata.privacy ?? "metadata_only")}
+                    </p>
+                  )}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void updateEnvironmentObserver({ enabled: !selfIterationPolicy.environmentObserver.enabled, paused: false })}
+                    className="h-8 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted"
+                  >
+                    {selfIterationPolicy.environmentObserver.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!selfIterationPolicy.environmentObserver.enabled}
+                    onClick={() => void updateEnvironmentObserver({ paused: !selfIterationPolicy.environmentObserver.paused })}
+                    className="h-8 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {selfIterationPolicy.environmentObserver.paused ? "Resume" : "Pause"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refresh()}
+                    className="h-8 rounded-md bg-foreground px-3 text-xs font-medium text-background transition hover:bg-foreground/90"
+                  >
+                    Observe now
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </section>
 
         <section className="mt-5">
