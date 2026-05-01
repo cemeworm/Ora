@@ -59,6 +59,25 @@ export type SelfIterationCandidate = z.infer<typeof SelfIterationCandidateSchema
 export const SelfIterationAutonomySchema = z.enum(["low_risk_auto", "human_review", "experimental_auto"]);
 export type SelfIterationAutonomy = z.infer<typeof SelfIterationAutonomySchema>;
 
+export const SelfIterationCuratorTriggerSchema = z.enum([
+  "evaluation_run_completed",
+  "feedback_accepted",
+  "feedback_submitted",
+  "recovery_insight_created",
+  "run_completed_idle",
+]);
+export type SelfIterationCuratorTrigger = z.infer<typeof SelfIterationCuratorTriggerSchema>;
+
+export const SelfIterationEnvironmentObserverPolicySchema = z.object({
+  enabled: z.boolean().default(false),
+  paused: z.boolean().default(false),
+  watchedPaths: z.array(z.string().min(1)).default(["."]),
+  excludedGlobs: z.array(z.string().min(1)).default([".git/**", "node_modules/**", "dist/**", "build/**", "target/**", ".turbo/**"]),
+  scanBudgetFiles: z.number().int().positive().max(5_000).default(200),
+  maxFileBytes: z.number().int().positive().max(25_000_000).default(512_000),
+});
+export type SelfIterationEnvironmentObserverPolicy = z.infer<typeof SelfIterationEnvironmentObserverPolicySchema>;
+
 export const SelfIterationPolicySchema = z.object({
   projectId: z.string().min(1),
   autonomy: SelfIterationAutonomySchema.default("low_risk_auto"),
@@ -66,6 +85,10 @@ export const SelfIterationPolicySchema = z.object({
   promptApplyRequiresConfirmation: z.boolean().default(true),
   modeApplyRequiresConfirmation: z.boolean().default(true),
   skillApplyRequiresConfirmation: z.boolean().default(true),
+  curatorEnabled: z.boolean().default(true),
+  scanCadenceMs: z.number().int().nonnegative().default(5 * 60 * 1000),
+  idleScanDelayMs: z.number().int().nonnegative().default(30 * 1000),
+  environmentObserver: SelfIterationEnvironmentObserverPolicySchema.default({}),
   updatedAt: z.number().int().nonnegative(),
 });
 export type SelfIterationPolicy = z.infer<typeof SelfIterationPolicySchema>;

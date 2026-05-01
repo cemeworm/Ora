@@ -8,6 +8,7 @@ import {
   SelfIterationCandidateListParamsSchema,
   SelfIterationCandidateRejectParamsSchema,
   SelfIterationCandidateSchema,
+  SelfIterationCuratorTriggerSchema,
   SelfIterationPolicyGetParamsSchema,
   SelfIterationPolicySchema,
   SelfIterationPolicyUpdateParamsSchema,
@@ -20,6 +21,7 @@ import {
   type ProjectSignal,
   type ProjectSignalEvidence,
   type SelfIterationCandidate,
+  type SelfIterationCuratorTrigger,
   type SelfIterationPolicy,
   type SelfIterationRun,
   type StateSnapshot,
@@ -32,9 +34,19 @@ const SelfIterationStateSchema = z.object({
   candidates: z.record(SelfIterationCandidateSchema).default({}),
   policies: z.record(SelfIterationPolicySchema).default({}),
   runs: z.array(SelfIterationRunSchema).default([]),
+  curator: z.record(z.object({
+    lastScanAt: z.number().int().nonnegative().optional(),
+    lastTrigger: SelfIterationCuratorTriggerSchema.optional(),
+  })).default({}),
 });
 
 type SelfIterationState = z.infer<typeof SelfIterationStateSchema>;
+
+const SelfIterationCuratorTriggerParamsSchema = z.object({
+  projectId: z.string().min(1).optional(),
+  trigger: SelfIterationCuratorTriggerSchema.default("run_completed_idle"),
+  force: z.boolean().default(false),
+}).default({});
 
 export interface SelfIterationDerivationInput {
   signals: ProjectSignal[];
@@ -49,6 +61,19 @@ export interface SelfIterationApplyDeps {
   applyPromptCandidate(candidate: SelfIterationCandidate): unknown;
   applySkillCandidate(candidate: SelfIterationCandidate): unknown;
   applyModeCandidate(candidate: SelfIterationCandidate): unknown;
+}
+
+export interface SelfIterationEvaluationOutcome {
+  evaluationRunId?: string;
+  passed?: boolean;
+  message?: string;
+  metadata?: Record<string, unknown>;
+  proposedChangeAfter?: unknown;
+  proposedChangeMetadata?: Record<string, unknown>;
+}
+
+export interface SelfIterationEvaluateDeps {
+  evaluateCandidate(candidate: SelfIterationCandidate): SelfIterationEvaluationOutcome | Promise<SelfIterationEvaluationOutcome>;
 }
 
 export class LocalSelfIterationStore {
@@ -84,6 +109,24 @@ export class LocalSelfIterationStore {
     return SelfIterationScanResultSchema.parse({ run, candidates: upserted, autoApplied });
   }
 
+  triggerCuratorScan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
+    const parsed = SelfIterationCuratorTriggerParamsSchema.parse(params ?? {});
+    const projectId = parsed.projectId ?? firstProjectId(input) ?? DEFAULT_PROJECT_ID;
+    const policy = this.policyForProject(projectId);
+    const now = this.clock();
+    const lastScanAt = this.state.curator[projectId]?.lastScanAt;
+    if (!policy.curatorEnabled) {
+      return { scanned: false as const, reason: "disabled", projectId, trigger: parsed.trigger };
+    }
+    if (!parsed.force && typeof lastScanAt === "number" && now - lastScanAt < policy.scanCadenceMs) {
+      return { scanned: false as const, reason: "cadence", projectId, trigger: parsed.trigger, lastScanAt };
+    }
+    const result = this.scan({ projectId }, input, deps);
+    this.state.curator[projectId] = { lastScanAt: now, lastTrigger: parsed.trigger };
+    this.saveState();
+    return { scanned: true as const, projectId, trigger: parsed.trigger, result };
+  }
+
   listCandidates(params: unknown = {}) {
     const parsed = SelfIterationCandidateListParamsSchema.parse(params ?? {});
     return Object.values(this.state.candidates)
@@ -104,24 +147,76 @@ export class LocalSelfIterationStore {
     return SelfIterationCandidateSchema.parse(candidate);
   }
 
-  evaluateCandidate(params: unknown) {
+  async evaluateCandidate(params: unknown, deps?: SelfIterationEvaluateDeps) {
     const parsed = SelfIterationCandidateEvaluateParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
-    const next = SelfIterationCandidateSchema.parse({
+    const evaluating = SelfIterationCandidateSchema.parse({
       ...candidate,
-      status: "ready",
-      evaluationRunId: candidate.evaluationRunId ?? `self-iteration-eval:${candidate.id}`,
+      status: "evaluating",
       updatedAt: this.clock(),
     });
-    this.state.candidates[next.id] = next;
-    this.recordRun({
-      projectId: next.projectId,
-      kind: "evaluate",
-      candidateIds: [next.id],
-      message: `Candidate ${next.id} is ready for review.`,
-    });
+    this.state.candidates[evaluating.id] = evaluating;
     this.saveState();
-    return next;
+
+    try {
+      const outcome = deps
+        ? await deps.evaluateCandidate(evaluating)
+        : { evaluationRunId: candidate.evaluationRunId ?? `self-iteration-eval:${candidate.id}`, passed: true };
+      const next = SelfIterationCandidateSchema.parse({
+        ...evaluating,
+        status: outcome.passed === false ? "failed" : "ready",
+        evaluationRunId: outcome.evaluationRunId ?? evaluating.evaluationRunId ?? `self-iteration-eval:${evaluating.id}`,
+        proposedChange: {
+          ...evaluating.proposedChange,
+          after: outcome.proposedChangeAfter ?? evaluating.proposedChange.after,
+          metadata: {
+            ...evaluating.proposedChange.metadata,
+            ...(outcome.proposedChangeMetadata ?? {}),
+            selfIterationEvaluation: {
+              passed: outcome.passed !== false,
+              message: outcome.message ?? "Candidate evaluation completed.",
+              ...(outcome.metadata ?? {}),
+            },
+          },
+        },
+        updatedAt: this.clock(),
+      });
+      this.state.candidates[next.id] = next;
+      this.recordRun({
+        projectId: next.projectId,
+        kind: "evaluate",
+        candidateIds: [next.id],
+        status: next.status === "failed" ? "failed" : "succeeded",
+        message: outcome.message ?? `Candidate ${next.id} is ${next.status === "failed" ? "blocked by evaluation" : "ready for review"}.`,
+        metadata: { evaluationRunId: next.evaluationRunId, passed: next.status !== "failed" },
+      });
+      this.saveState();
+      return next;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const next = SelfIterationCandidateSchema.parse({
+        ...evaluating,
+        status: "failed",
+        proposedChange: {
+          ...evaluating.proposedChange,
+          metadata: {
+            ...evaluating.proposedChange.metadata,
+            selfIterationEvaluation: { passed: false, message },
+          },
+        },
+        updatedAt: this.clock(),
+      });
+      this.state.candidates[next.id] = next;
+      this.recordRun({
+        projectId: next.projectId,
+        kind: "evaluate",
+        candidateIds: [next.id],
+        status: "failed",
+        message,
+      });
+      this.saveState();
+      return next;
+    }
   }
 
   rejectCandidate(params: unknown) {
@@ -142,6 +237,10 @@ export class LocalSelfIterationStore {
     const parsed = SelfIterationCandidateApplyParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
     const policy = this.policyForProject(candidate.projectId);
+    const evaluation = selfIterationEvaluationMetadata(candidate);
+    if (candidate.targetKind !== "evaluation" && evaluation?.passed === false && !parsed.confirmed) {
+      throw new Error(`${candidate.targetKind} self-iteration candidates failed evaluation and require explicit override confirmation before apply.`);
+    }
     if (candidate.targetKind !== "evaluation" && !parsed.confirmed && requiresConfirmation(candidate, policy)) {
       throw new Error(`${candidate.targetKind} self-iteration candidates require confirmation before apply.`);
     }
@@ -241,6 +340,7 @@ function candidateGenerators(projectId: string, input: SelfIterationDerivationIn
   return [
     ...feedbackEvaluationCandidates(projectId, input, now),
     ...runtimePromptCandidates(projectId, input, now),
+    ...environmentObserverCandidates(projectId, input, now),
     ...modeCandidates(projectId, input, now),
     ...skillCandidates(projectId, input, now),
   ];
@@ -294,6 +394,34 @@ function runtimePromptCandidates(projectId: string, input: SelfIterationDerivati
       now,
     });
   });
+}
+
+function environmentObserverCandidates(projectId: string, input: SelfIterationDerivationInput, now: number): SelfIterationCandidate[] {
+  const signals = input.signals
+    .filter((signal) => signal.projectId === projectId && signal.source === "project_file" && signal.metadata.observerKind === "environment_snapshot")
+    .slice(0, 1);
+  return signals.map((signal) => buildCandidate({
+    id: `${projectId}:self:mode:environment-observer`,
+    projectId,
+    targetKind: "mode",
+    targetRef: { kind: "mode", id: "environment-observer" },
+    title: "Review mode orchestration from environment observer context",
+    summary: "Opt-in workspace observation found scoped file metadata and run-context signals that may improve mode orchestration.",
+    evidence: signal.evidence.length > 0 ? signal.evidence : [{
+      id: signal.id,
+      label: "Environment observer snapshot",
+      summary: signal.summary,
+      target: { kind: "project_file", id: signal.sourceRef },
+    }],
+    proposedChange: {
+      operation: "mode.studio.generateDraft",
+      title: "Open a Mode Studio draft from environment context",
+      summary: "Use metadata-only project observation to draft conservative, reviewable mode improvements.",
+      metadata: { sourceSignalId: signal.id, observerKind: "environment_snapshot" },
+    },
+    riskLevel: "high",
+    now,
+  }));
 }
 
 function modeCandidates(projectId: string, input: SelfIterationDerivationInput, now: number): SelfIterationCandidate[] {
@@ -364,11 +492,32 @@ function requiresConfirmation(candidate: SelfIterationCandidate, policy: SelfIte
 }
 
 function applyCandidateChange(candidate: SelfIterationCandidate, deps: Partial<SelfIterationApplyDeps>) {
-  if (candidate.targetKind === "evaluation") return deps.applyEvaluationCandidate?.(candidate) ?? { applied: true };
-  if (candidate.targetKind === "prompt") return deps.applyPromptCandidate?.(candidate) ?? { applied: true };
-  if (candidate.targetKind === "skill") return deps.applySkillCandidate?.(candidate) ?? { applied: true };
-  if (candidate.targetKind === "mode") return deps.applyModeCandidate?.(candidate) ?? { applied: true };
-  return { applied: true };
+  const result = candidate.targetKind === "evaluation" ? deps.applyEvaluationCandidate?.(candidate) ?? { applied: true }
+    : candidate.targetKind === "prompt" ? deps.applyPromptCandidate?.(candidate) ?? { applied: true }
+      : candidate.targetKind === "skill" ? deps.applySkillCandidate?.(candidate) ?? { applied: true }
+        : candidate.targetKind === "mode" ? deps.applyModeCandidate?.(candidate) ?? { applied: true }
+          : { applied: true };
+  const evaluation = selfIterationEvaluationMetadata(candidate);
+  if (!evaluation) return result;
+  return evaluation.scoreEvidence
+    ? { result, evaluation, scoreEvidence: evaluation.scoreEvidence }
+    : { result, evaluation };
+}
+
+function selfIterationEvaluationMetadata(candidate: SelfIterationCandidate): Record<string, unknown> | undefined {
+  const value = candidate.proposedChange.metadata.selfIterationEvaluation;
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    passed: typeof record.passed === "boolean" ? record.passed : undefined,
+    message: typeof record.message === "string" ? record.message : undefined,
+    evaluationRunId: candidate.evaluationRunId,
+    score: typeof record.score === "number" ? record.score : undefined,
+    passRate: typeof record.passRate === "number" ? record.passRate : undefined,
+    regressionCount: typeof record.regressionCount === "number" ? record.regressionCount : undefined,
+    totalAttempts: typeof record.totalAttempts === "number" ? record.totalAttempts : undefined,
+    scoreEvidence: record.scoreEvidence,
+  };
 }
 
 function firstProjectId(input: SelfIterationDerivationInput): string | undefined {

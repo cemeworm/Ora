@@ -123,6 +123,7 @@ export interface RuntimeKernelOptions {
   skillRegistry?: RuntimeSkillRegistry;
   toolRegistry?: RuntimeToolRegistry;
   modeRegistry?: import("./runtime-tool-executor.js").ModeRegistryTools;
+  selfIterationRegistry?: import("./runtime-tool-executor.js").SelfIterationRegistryTools;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
   customAgentOverlay?: string;
@@ -226,6 +227,7 @@ export async function executeRuntimeKernel(
     toolDescriptors: tools.tools,
     skillRegistry,
     modeRegistry: options.modeRegistry,
+    selfIterationRegistry: options.selfIterationRegistry,
     packageManager,
     searchProviderConfig: config.searchProvider,
   });

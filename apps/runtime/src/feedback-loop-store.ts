@@ -50,6 +50,7 @@ export interface FeedbackLoopDerivationInput {
   runs: StateSnapshot[];
   evaluationRuns: EvaluationRun[];
   feedbackRecords: EvaluationFeedbackRecord[];
+  environmentSignals?: ProjectSignal[];
 }
 
 export class LocalFeedbackLoopStore {
@@ -185,6 +186,8 @@ export class LocalFeedbackLoopStore {
       signals.push(...signalsForFeedback(projectId, feedback));
     }
 
+    signals.push(...(input.environmentSignals ?? []));
+
     return signals.map((signal) => ProjectSignalSchema.parse(signal));
   }
 
@@ -199,6 +202,7 @@ export class LocalFeedbackLoopStore {
       insights.push(...this.evaluationRegressionInsights(projectId, projectSignals));
       insights.push(...this.approvalBottleneckInsights(projectId, projectSignals));
       insights.push(...this.runFailureInsights(projectId, projectSignals));
+      insights.push(...this.environmentObserverInsights(projectId, projectSignals));
     }
 
     return insights.map((insight) => this.applyInsightState(ProjectInsightSchema.parse(insight)));
@@ -292,6 +296,23 @@ export class LocalFeedbackLoopStore {
       confidence: 0.78,
       updatedAt: latestTimestamp(failures),
       actions: filterActionsByRule([openTrailsAction(failures[0]!), draftSelfIterationAction(projectId, "Draft Prompt candidate")], rule),
+    })];
+  }
+
+  private environmentObserverInsights(projectId: string, signals: ProjectSignal[]): ProjectInsight[] {
+    const rule = this.ruleForProject(projectId, "environment_observer_review");
+    if (!ruleAllows(rule, "project_file", "info")) return [];
+    const observations = signals.filter((signal) => signal.source === "project_file" && signal.metadata.observerKind === "environment_snapshot");
+    if (observations.length === 0) return [];
+    return [buildInsight({
+      projectId,
+      id: `${projectId}:insight:environment_observer`,
+      title: "Environment observer has workspace context",
+      summary: "Opt-in project observation produced scoped file and run-context summaries for Self-Iteration review.",
+      signalIds: observations.map((signal) => signal.id),
+      confidence: 0.72,
+      updatedAt: latestTimestamp(observations),
+      actions: filterActionsByRule([draftSelfIterationAction(projectId, "Draft environment-aware Self-Iteration candidate")], rule),
     })];
   }
 
@@ -710,6 +731,16 @@ function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[
       severityThreshold: "warning",
       humanReviewRequired: true,
       actionPolicy: { allowedActionKinds: ["open_trails", "draft_self_iteration_candidate"] },
+    },
+    {
+      id: `${projectId}:rule:environment_observer_review`,
+      projectId,
+      name: "Environment observer review",
+      enabled: true,
+      sourceFilters: ["project_file"],
+      severityThreshold: "info",
+      humanReviewRequired: true,
+      actionPolicy: { allowedActionKinds: ["draft_self_iteration_candidate"] },
     },
   ].map((rule) => FeedbackLoopCalibrationRuleSchema.parse(rule));
 }

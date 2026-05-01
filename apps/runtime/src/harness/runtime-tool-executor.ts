@@ -42,6 +42,11 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "modes.refineDraft",
   "modes.validate",
   "modes.applyDraft",
+  "selfIteration.list",
+  "selfIteration.get",
+  "selfIteration.scan",
+  "selfIteration.evaluate",
+  "selfIteration.apply",
 ] as const;
 
 export type RuntimeToolId = typeof IMPLEMENTED_RUNTIME_TOOL_IDS[number];
@@ -76,6 +81,7 @@ export interface RuntimeToolExecutorOptions {
   toolDescriptors?: readonly ToolDescriptor[];
   skillRegistry?: SkillRegistryTools;
   modeRegistry?: ModeRegistryTools;
+  selfIterationRegistry?: SelfIterationRegistryTools;
   fetchImpl?: typeof fetch;
   mcpConfigPaths?: string[];
   searchProvider?: SearchProvider;
@@ -99,6 +105,14 @@ export interface ModeRegistryTools {
   refineModeStudioDraft(params: unknown): unknown;
   validateModeStudioDraft(params: unknown): unknown;
   applyModeStudioDraft(params: unknown): unknown;
+}
+
+export interface SelfIterationRegistryTools {
+  listSelfIterationCandidates(params?: unknown): unknown;
+  getSelfIterationCandidate(params: unknown): unknown;
+  scanSelfIteration(params?: unknown): unknown;
+  evaluateSelfIterationCandidate(params: unknown): unknown;
+  applySelfIterationCandidate(params: unknown): unknown;
 }
 
 interface McpServerConfig {
@@ -222,6 +236,7 @@ export class RuntimeToolExecutor {
   private readonly toolDescriptors: readonly ToolDescriptor[];
   private readonly skillRegistry?: SkillRegistryTools;
   private readonly modeRegistry?: ModeRegistryTools;
+  private readonly selfIterationRegistry?: SelfIterationRegistryTools;
   private readonly mcpConfigPaths?: string[];
   private readonly searchProvider: SearchProvider;
   private readonly packageManager?: PackageManager;
@@ -231,6 +246,7 @@ export class RuntimeToolExecutor {
     this.toolDescriptors = options.toolDescriptors ?? [];
     this.skillRegistry = options.skillRegistry;
     this.modeRegistry = options.modeRegistry;
+    this.selfIterationRegistry = options.selfIterationRegistry;
     this.mcpConfigPaths = options.mcpConfigPaths;
     this.packageManager = options.packageManager;
     this.workspace = options.workspace;
@@ -317,6 +333,7 @@ export class RuntimeToolExecutor {
       || call.tool === "skills.update"
       || call.tool === "skills.setEnabled"
       || call.tool === "modes.applyDraft"
+      || call.tool === "selfIteration.apply"
       || call.tool.startsWith("package.")
     ) {
       return "high";
@@ -403,6 +420,16 @@ export class RuntimeToolExecutor {
         return { output: validateRuntimeModeDraft(this.modeRegistry, call.args) };
       case "modes.applyDraft":
         return { output: applyRuntimeModeDraft(this.modeRegistry, call.args) };
+      case "selfIteration.list":
+        return { output: listRuntimeSelfIterationCandidates(this.selfIterationRegistry, call.args) };
+      case "selfIteration.get":
+        return { output: getRuntimeSelfIterationCandidate(this.selfIterationRegistry, call.args) };
+      case "selfIteration.scan":
+        return { output: scanRuntimeSelfIteration(this.selfIterationRegistry, call.args) };
+      case "selfIteration.evaluate":
+        return { output: await evaluateRuntimeSelfIterationCandidate(this.selfIterationRegistry, call.args) };
+      case "selfIteration.apply":
+        return { output: applyRuntimeSelfIterationCandidate(this.selfIterationRegistry, call.args, options.allowRisky === true) };
       default: {
         const neverTool: never = call.tool;
         throw new Error(`Unsupported runtime tool: ${neverTool}`);
@@ -465,6 +492,7 @@ function toolNeedsUserApprovalCopy(toolId: RuntimeToolId): boolean {
     || toolId === "skills.setEnabled"
     || toolId === "mcp.call"
     || toolId === "modes.applyDraft"
+    || toolId === "selfIteration.apply"
     || toolId.startsWith("package.");
 }
 
@@ -653,6 +681,26 @@ function fallbackApprovalRequestForToolCall(call: RuntimeToolCall, userPrompt?: 
             confirmLabel: "Approve and continue",
           };
     }
+    case "selfIteration.apply": {
+      const candidateId = stringArg(call.args, "candidateId", zh ? "这个候选方案" : "this candidate");
+      return zh
+        ? {
+            title: "需要你确认应用自迭代候选",
+            summary: `我准备应用 Self-Iteration 候选“${candidateId}”。`,
+            whatWillChange: "可能会接受评测用例，或在候选已通过评测后应用 prompt、mode、skill 相关变更。",
+            whyNeeded: "Self-Iteration 的高风险变更必须经过用户确认后才能落地。",
+            riskNote: "请先确认候选内容、评测结果和影响范围；prompt/mode/skill 变更会影响后续运行行为。",
+            confirmLabel: "批准并应用",
+          }
+        : {
+            title: "Confirm Self-Iteration apply",
+            summary: `I am ready to apply Self-Iteration candidate "${candidateId}".`,
+            whatWillChange: "This may accept evaluation material or apply reviewed prompt, mode, or skill changes after evaluation.",
+            whyNeeded: "High-risk Self-Iteration changes require explicit user confirmation before they can land.",
+            riskNote: "Review the candidate, evaluation result, and scope first; prompt/mode/skill changes affect future runs.",
+            confirmLabel: "Approve and apply",
+          };
+    }
     default:
       return zh
         ? {
@@ -747,6 +795,16 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"modes.validate\",\"args\":{\"draftBundle\":{...}}}";
     case "modes.applyDraft":
       return "{\"tool\":\"modes.applyDraft\",\"args\":{\"draftBundle\":{...},\"saveAgentDrafts\":true}}";
+    case "selfIteration.list":
+      return "{\"tool\":\"selfIteration.list\",\"args\":{\"status\":\"ready\",\"limit\":10}}";
+    case "selfIteration.get":
+      return "{\"tool\":\"selfIteration.get\",\"args\":{\"candidateId\":\"project:self:prompt:single_agent\"}}";
+    case "selfIteration.scan":
+      return "{\"tool\":\"selfIteration.scan\",\"args\":{\"projectId\":\"local-project\"}}";
+    case "selfIteration.evaluate":
+      return "{\"tool\":\"selfIteration.evaluate\",\"args\":{\"candidateId\":\"project:self:prompt:single_agent\"}}";
+    case "selfIteration.apply":
+      return "{\"tool\":\"selfIteration.apply\",\"args\":{\"candidateId\":\"project:self:prompt:single_agent\"}}";
   }
 }
 
@@ -1198,6 +1256,9 @@ async function extractDocument(rootPath: string | undefined, fetchImpl: typeof f
   let data: Buffer;
 
   if (pathArg) {
+    if (/^https?:\/\//i.test(pathArg)) {
+      throw new Error(`document.extract received a URL in path. Use the url parameter instead: {"url":"${pathArg}","format":"${format}"}.`);
+    }
     if (!rootPath) {
       throw new Error("A selected project folder is required for local document extraction.");
     }
@@ -1669,4 +1730,46 @@ function applyRuntimeModeDraft(modeRegistry: ModeRegistryTools | undefined, args
     throw new Error("A mode registry is required for modes.applyDraft.");
   }
   return modeRegistry.applyModeStudioDraft(args);
+}
+
+// ---------------------------------------------------------------------------
+// Self-Iteration tool helpers
+// ---------------------------------------------------------------------------
+
+function listRuntimeSelfIterationCandidates(registry: SelfIterationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!registry) {
+    throw new Error("A Self-Iteration registry is required for selfIteration.list.");
+  }
+  return { candidates: registry.listSelfIterationCandidates(args) };
+}
+
+function getRuntimeSelfIterationCandidate(registry: SelfIterationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!registry) {
+    throw new Error("A Self-Iteration registry is required for selfIteration.get.");
+  }
+  return registry.getSelfIterationCandidate(args);
+}
+
+function scanRuntimeSelfIteration(registry: SelfIterationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!registry) {
+    throw new Error("A Self-Iteration registry is required for selfIteration.scan.");
+  }
+  return registry.scanSelfIteration(args);
+}
+
+async function evaluateRuntimeSelfIterationCandidate(registry: SelfIterationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!registry) {
+    throw new Error("A Self-Iteration registry is required for selfIteration.evaluate.");
+  }
+  return await registry.evaluateSelfIterationCandidate(args);
+}
+
+function applyRuntimeSelfIterationCandidate(registry: SelfIterationRegistryTools | undefined, args: Record<string, unknown>, approved: boolean) {
+  if (!registry) {
+    throw new Error("A Self-Iteration registry is required for selfIteration.apply.");
+  }
+  if (!approved) {
+    throw new Error("selfIteration.apply requires user approval before execution.");
+  }
+  return registry.applySelfIterationCandidate({ ...args, confirmed: true });
 }

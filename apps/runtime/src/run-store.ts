@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -12,8 +13,11 @@ import {
   CustomAgentSummary,
   CustomAgentUpdateParams,
   CustomAgentCreateParamsSchema,
+  EvaluationConfigSummary,
   EvaluationFeedbackRecord,
+  EvaluationSpecSchema,
   SelfIterationCandidate,
+  SelfIterationCuratorTrigger,
   MODE_STUDIO_BUILDER_MODE_ID,
   ModeStudioApplyDraftParamsSchema,
   ModeStudioApplyDraftResult,
@@ -42,11 +46,14 @@ import {
   ProjectDetail,
   ProjectFileReadResult,
   ProjectFilesResult,
+  ProjectSignal,
+  ProjectSignalSchema,
   ProjectSummary,
   ProjectSummarySchema,
   RunConfig,
   RunConfigSchema,
   RunEventStream,
+  SINGLE_AGENT_MODE_ID,
   RunForkParamsSchema,
   RunHandle,
   type RunLatencyMark,
@@ -71,6 +78,7 @@ import {
   SkillRegistry,
   SkillSetEnabledParams,
   SkillUpdateParams,
+  SelfIterationEnvironmentObserverPolicy,
   StateSnapshot,
   StateSnapshotSchema,
   SystemAgentOverride,
@@ -273,6 +281,7 @@ export class LocalRunStore {
   private readonly longTermMemory: LongTermMemoryManager;
   private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
   private readonly channelService: ChannelService;
+  private readonly selfIterationCuratorTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
@@ -783,6 +792,7 @@ export class LocalRunStore {
       clock: this.clock,
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
+      selfIterationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -868,6 +878,7 @@ export class LocalRunStore {
       clock: this.clock,
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
+      selfIterationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1010,6 +1021,7 @@ export class LocalRunStore {
       clock: this.clock,
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
+      selfIterationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1073,6 +1085,7 @@ export class LocalRunStore {
       clock: this.clock,
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
+      selfIterationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1194,6 +1207,7 @@ export class LocalRunStore {
         clock: this.clock,
         skillRegistry: this.skillRegistry,
       modeRegistry: this,
+      selfIterationRegistry: this,
         customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
         customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
         systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1407,7 +1421,9 @@ export class LocalRunStore {
     params: unknown,
     createRun: (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>
   ) {
-    return this.evaluationStore.startRun(params, createRun);
+    const detail = await this.evaluationStore.startRun(params, createRun);
+    this.queueSelfIterationCurator("evaluation_run_completed");
+    return detail;
   }
 
   listEvaluationRuns(params: unknown = {}) {
@@ -1438,11 +1454,13 @@ export class LocalRunStore {
     const runId = this.requireRunId(params);
     const snapshot = attachTraceMetadata(this.getRunOrThrow(runId));
     const sourceContext = await buildFeedbackSourceContext(snapshot, this.feedbackSourceContextDeps());
-    return this.evaluationStore.submitFeedback(
+    const feedback = await this.evaluationStore.submitFeedback(
       params,
       sourceContext,
       ({ feedbackId, feedbackText, sourceContext }) => curateFeedbackDraft(snapshot.config, feedbackId, feedbackText, sourceContext)
     );
+    this.queueSelfIterationCurator("feedback_submitted", snapshot.input.projectId);
+    return feedback;
   }
 
   listEvaluationFeedback(params: unknown = {}) {
@@ -1466,7 +1484,10 @@ export class LocalRunStore {
   }
 
   acceptEvaluationFeedback(params: unknown) {
-    return this.evaluationStore.acceptFeedback(params);
+    const feedback = this.evaluationStore.getFeedback(params);
+    const result = this.evaluationStore.acceptFeedback(params);
+    this.queueSelfIterationCurator("feedback_accepted", feedback.sourceRunId ? this.runs.get(feedback.sourceRunId)?.input.projectId : undefined);
+    return result;
   }
 
   rejectEvaluationFeedback(params: unknown) {
@@ -1520,7 +1541,9 @@ export class LocalRunStore {
   }
 
   evaluateSelfIterationCandidate(params: unknown) {
-    return this.selfIterationStore.evaluateCandidate(params);
+    return this.selfIterationStore.evaluateCandidate(params, {
+      evaluateCandidate: (candidate) => this.runSelfIterationEvaluation(candidate),
+    });
   }
 
   rejectSelfIterationCandidate(params: unknown) {
@@ -1677,6 +1700,7 @@ export class LocalRunStore {
   private persistRun(snapshot: StateSnapshot): void {
     this.cacheRun(snapshot, true);
     scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps());
+    this.queueSelfIterationAfterTerminalRun(snapshot);
   }
 
   private async persistRunWithGeneratedTitle(snapshot: StateSnapshot): Promise<void> {
@@ -1686,6 +1710,45 @@ export class LocalRunStore {
     );
     this.cacheRun(snapshot, true, { titleOverride });
     scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps());
+    this.queueSelfIterationAfterTerminalRun(snapshot);
+  }
+
+  private queueSelfIterationAfterTerminalRun(snapshot: StateSnapshot): void {
+    if (!isTerminalRunStatus(snapshot.status)) return;
+    if (snapshot.events.some((event) => event.type === "recovery.exhausted") || snapshot.status === "failed") {
+      this.queueSelfIterationCurator("recovery_insight_created", snapshot.input.projectId);
+    }
+    this.queueSelfIterationCurator("run_completed_idle", snapshot.input.projectId);
+  }
+
+  private queueSelfIterationCurator(trigger: SelfIterationCuratorTrigger, projectId?: string): void {
+    const policy = this.selfIterationStore.getPolicy({ projectId });
+    if (!policy.curatorEnabled) return;
+    const delayMs = trigger === "run_completed_idle" ? policy.idleScanDelayMs : 0;
+    const key = `${projectId ?? "default"}:${trigger}`;
+    const existing = this.selfIterationCuratorTimers.get(key);
+    if (existing) clearTimeout(existing);
+    const run = () => {
+      this.selfIterationCuratorTimers.delete(key);
+      this.runSelfIterationCurator(trigger, projectId);
+    };
+    if (delayMs === 0) {
+      run();
+      return;
+    }
+    const timer = setTimeout(run, delayMs);
+    timer.unref?.();
+    this.selfIterationCuratorTimers.set(key, timer);
+  }
+
+  private runSelfIterationCurator(trigger: SelfIterationCuratorTrigger, projectId?: string): void {
+    try {
+      this.selfIterationStore.triggerCuratorScan({ projectId, trigger }, this.selfIterationInput(), {
+        applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
+      });
+    } catch {
+      // Curator scans are opportunistic and must not affect the foreground run.
+    }
   }
 
   private cacheRun(
@@ -1947,13 +2010,65 @@ export class LocalRunStore {
     return transcript;
   }
 
+  private environmentObserverSignals(projects: ProjectSummary[]): ProjectSignal[] {
+    return projects.flatMap((project) => {
+      const policy = this.selfIterationStore.getPolicy({ projectId: project.projectId }).environmentObserver;
+      if (!policy.enabled || policy.paused) return [];
+      try {
+        return [this.environmentObserverSignal(project, policy)];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  private environmentObserverSignal(project: ProjectSummary, policy: SelfIterationEnvironmentObserverPolicy): ProjectSignal {
+    const summary = summarizeProjectEnvironment(project, policy, [...this.runs.values()].filter((run) => projectIdForSnapshotLocal(run, this.sessions) === project.projectId));
+    const now = this.now();
+    return ProjectSignalSchema.parse({
+      id: `${project.projectId}:signal:project_file:environment_observer`,
+      projectId: project.projectId,
+      source: "project_file",
+      sourceRef: `environment-observer:${project.projectId}`,
+      title: "Environment observer snapshot",
+      summary: `Scoped observer scanned ${summary.observedFiles} file${summary.observedFiles === 1 ? "" : "s"} under ${summary.watchedPaths.join(", ")} without reading raw content.`,
+      severity: summary.truncated ? "warning" : "info",
+      confidence: 0.72,
+      createdAt: now,
+      updatedAt: now,
+      evidence: summary.recentFiles.slice(0, 5).map((file) => ({
+        id: `${project.projectId}:file:${file.path}`,
+        label: "Observed project file",
+        summary: `${file.path} · ${file.sizeBytes} bytes`,
+        target: { kind: "project_file", id: file.path, projectFilePath: file.path },
+      })),
+      metadata: {
+        observerKind: "environment_snapshot",
+        privacy: "metadata_only_no_raw_content",
+        watchedPaths: summary.watchedPaths,
+        excludedGlobs: policy.excludedGlobs,
+        scanBudgetFiles: policy.scanBudgetFiles,
+        maxFileBytes: policy.maxFileBytes,
+        observedFiles: summary.observedFiles,
+        skippedLargeFiles: summary.skippedLargeFiles,
+        truncated: summary.truncated,
+        extensionCounts: summary.extensionCounts,
+        recentFiles: summary.recentFiles,
+        largestFiles: summary.largestFiles,
+        runContext: summary.runContext,
+      },
+    });
+  }
+
   private feedbackLoopInput() {
+    const projects = [...this.projects.values()];
     return {
-      projects: [...this.projects.values()],
+      projects,
       sessions: [...this.sessions.values()],
       runs: [...this.runs.values()],
       evaluationRuns: this.evaluationStore.listRuns(),
       feedbackRecords: this.evaluationStore.listFeedback(),
+      environmentSignals: this.environmentObserverSignals(projects),
     };
   }
 
@@ -1966,6 +2081,111 @@ export class LocalRunStore {
       evaluationRuns: feedbackLoopInput.evaluationRuns,
       feedbackRecords: feedbackLoopInput.feedbackRecords,
     };
+  }
+
+  private async runSelfIterationEvaluation(candidate: SelfIterationCandidate) {
+    const modeDraft = candidate.targetKind === "mode"
+      ? this.generateSelfIterationModeDraft(candidate)
+      : undefined;
+    const datasetId = this.selfIterationEvaluationDatasetId(candidate);
+    const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+    const spec = EvaluationSpecSchema.parse({
+      datasetId,
+      profileId: "outcome",
+      objective: {
+        kind: "assertions",
+        target: "runtime.mode_selection",
+        metrics: ["assertion_pass_rate"],
+        assertions: [{
+          type: "equals",
+          path: "runtime.modeId",
+          value: modeId,
+          rationale: "Self-Iteration gate verifies the candidate's target mode can still be selected by Evaluation Studio.",
+        }],
+      },
+      configs: ["before", "after"].map((phase) => ({
+        id: `self-iteration-${phase}`,
+        label: phase === "before" ? "Current Ora behavior" : "Proposed Self-Iteration behavior",
+        description: `Self-Iteration ${phase} gate for ${candidate.targetKind} candidate ${candidate.id}.`,
+        runConfig: {
+          pattern: "orchestrator_subagent",
+          modeId,
+          modeSelection: "manual",
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          metadata: {
+            evaluationRouterOnly: true,
+            selfIterationCandidateId: candidate.id,
+            selfIterationTargetKind: candidate.targetKind,
+            selfIterationScorePhase: phase,
+          },
+        },
+      })),
+      repetitions: 1,
+      concurrency: 1,
+      metadata: {
+        source: "self_iteration",
+        candidateId: candidate.id,
+        targetKind: candidate.targetKind,
+      },
+    });
+    const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
+      const handle = await this.startRun({ input, config });
+      return this.getRunState({ runId: handle.runId });
+    });
+    const scorecard = detail.run.scorecard;
+    const passed = detail.run.status === "succeeded" && scorecard.passRate >= 1 && scorecard.regressionCount === 0;
+    const scoreEvidence = selfIterationScoreEvidence(detail.run.id, scorecard.configSummaries);
+    return {
+      evaluationRunId: detail.run.id,
+      passed,
+      message: passed
+        ? `Evaluation Studio run ${detail.run.id} passed for candidate ${candidate.id}.`
+        : `Evaluation Studio run ${detail.run.id} did not pass the self-iteration gate.`,
+      metadata: {
+        score: scorecard.overallScore,
+        passRate: scorecard.passRate,
+        regressionCount: scorecard.regressionCount,
+        totalAttempts: detail.run.totalAttempts,
+        scoreEvidence,
+      },
+      proposedChangeAfter: modeDraft ?? candidate.proposedChange.after,
+      proposedChangeMetadata: modeDraft
+        ? { modeStudioDraftGenerated: true, modeStudioDraftNeedsInput: modeDraft.needsInput, modeStudioDraftValid: modeDraft.validation.valid }
+        : undefined,
+    };
+  }
+
+  private selfIterationEvaluationDatasetId(candidate: SelfIterationCandidate): string {
+    if (candidate.targetKind === "evaluation") {
+      const feedbackId = candidate.targetRef.feedbackId ?? String(candidate.proposedChange.metadata.feedbackId ?? "");
+      if (feedbackId) {
+        const feedback = this.evaluationStore.getFeedback({ feedbackId });
+        if (feedback.datasetId && feedback.acceptedCaseId) {
+          const detail = this.evaluationStore.getDataset({ datasetId: feedback.datasetId });
+          if (detail.cases.some((evaluationCase) => evaluationCase.id === feedback.acceptedCaseId)) {
+            return feedback.datasetId;
+          }
+        }
+      }
+    }
+    const caseRecord = selfIterationEvaluationCase(candidate);
+    const dataset = this.evaluationStore.importDataset({
+      name: `Self-Iteration Gate · ${candidate.targetKind}`,
+      description: `Synthetic gate dataset for candidate ${candidate.id}.`,
+      sourceFormat: "inline",
+      content: JSON.stringify([caseRecord]),
+      tags: ["self-iteration", candidate.targetKind],
+    });
+    return dataset.dataset.id;
+  }
+
+  private generateSelfIterationModeDraft(candidate: SelfIterationCandidate): ModeStudioDraftBundle | undefined {
+    const bundle = this.generateModeStudioDraft({
+      messages: [{ role: "user", content: selfIterationModeDraftPrompt(candidate) }],
+      baseModeId: candidate.targetRef.modeId,
+    });
+    return bundle;
   }
 
   private applyEvaluationSelfIterationCandidate(candidate: SelfIterationCandidate) {
@@ -2010,12 +2230,19 @@ export class LocalRunStore {
   }
 
   private applyModeSelfIterationCandidate(candidate: SelfIterationCandidate) {
-    return {
-      applied: true,
-      handoff: "mode_studio",
-      insightId: candidate.proposedChange.metadata.insightId,
-      message: "Mode candidates are recorded as Mode Studio handoffs in V1.",
-    };
+    const after = candidate.proposedChange.after;
+    const draftBundle = after && typeof after === "object" && "modeDraft" in after
+      ? after as ModeStudioDraftBundle
+      : undefined;
+    if (!draftBundle) {
+      return {
+        applied: false,
+        handoff: "mode_studio",
+        insightId: candidate.proposedChange.metadata.insightId,
+        message: "Mode candidates must be evaluated into a Mode Studio draft bundle before apply.",
+      };
+    }
+    return this.applyModeStudioDraft({ draftBundle, saveAgentDrafts: false });
   }
 
   private migrationState() {
@@ -2031,6 +2258,213 @@ export class LocalRunStore {
   private now(): number {
     return this.clock();
   }
+}
+
+function summarizeProjectEnvironment(project: ProjectSummary, policy: SelfIterationEnvironmentObserverPolicy, runs: StateSnapshot[]) {
+  const rootPath = path.resolve(project.rootPath);
+  const excludes = policy.excludedGlobs.map(globToRegExp);
+  const watchedPaths = policy.watchedPaths.map((entry) => entry.trim()).filter(Boolean);
+  const files: Array<{ path: string; sizeBytes: number; modifiedAt: number; extension: string }> = [];
+  let observedFiles = 0;
+  let skippedLargeFiles = 0;
+  let truncated = false;
+
+  for (const watchPath of watchedPaths) {
+    if (truncated) break;
+    const absoluteWatchPath = path.resolve(rootPath, watchPath);
+    const relativeWatchPath = path.relative(rootPath, absoluteWatchPath);
+    if (relativeWatchPath.startsWith("..") || path.isAbsolute(relativeWatchPath)) {
+      continue;
+    }
+    visitEnvironmentPath(rootPath, absoluteWatchPath, excludes, policy, files, () => {
+      observedFiles += 1;
+      if (observedFiles >= policy.scanBudgetFiles) truncated = true;
+      return truncated;
+    }, () => {
+      skippedLargeFiles += 1;
+    });
+  }
+
+  const extensionCounts = files.reduce<Record<string, number>>((acc, file) => {
+    acc[file.extension] = (acc[file.extension] ?? 0) + 1;
+    return acc;
+  }, {});
+  const recentFiles = [...files]
+    .sort((left, right) => right.modifiedAt - left.modifiedAt || left.path.localeCompare(right.path))
+    .slice(0, 12)
+    .map(({ path: filePath, sizeBytes, modifiedAt }) => ({ path: filePath, sizeBytes, modifiedAt }));
+  const largestFiles = [...files]
+    .sort((left, right) => right.sizeBytes - left.sizeBytes || left.path.localeCompare(right.path))
+    .slice(0, 8)
+    .map(({ path: filePath, sizeBytes, modifiedAt }) => ({ path: filePath, sizeBytes, modifiedAt }));
+
+  return {
+    watchedPaths,
+    observedFiles: files.length,
+    skippedLargeFiles,
+    truncated,
+    extensionCounts,
+    recentFiles,
+    largestFiles,
+    runContext: summarizeObserverRunContext(runs),
+  };
+}
+
+function visitEnvironmentPath(
+  rootPath: string,
+  absolutePath: string,
+  excludes: RegExp[],
+  policy: SelfIterationEnvironmentObserverPolicy,
+  files: Array<{ path: string; sizeBytes: number; modifiedAt: number; extension: string }>,
+  didObserve: () => boolean,
+  didSkipLarge: () => void,
+): void {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(absolutePath);
+  } catch {
+    return;
+  }
+  const relativePath = path.relative(rootPath, absolutePath) || ".";
+  const normalizedRelativePath = relativePath.split(path.sep).join("/");
+  if (excludes.some((exclude) => exclude.test(normalizedRelativePath) || exclude.test(`${normalizedRelativePath}/`))) {
+    return;
+  }
+  if (stat.isDirectory()) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(absolutePath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      if (files.length >= policy.scanBudgetFiles) return;
+      visitEnvironmentPath(rootPath, path.join(absolutePath, entry.name), excludes, policy, files, didObserve, didSkipLarge);
+    }
+    return;
+  }
+  if (!stat.isFile()) return;
+  if (stat.size > policy.maxFileBytes) {
+    didSkipLarge();
+    return;
+  }
+  files.push({
+    path: normalizedRelativePath,
+    sizeBytes: stat.size,
+    modifiedAt: Math.max(0, Math.floor(stat.mtimeMs)),
+    extension: path.extname(absolutePath).toLowerCase() || "[no extension]",
+  });
+  didObserve();
+}
+
+function summarizeObserverRunContext(runs: StateSnapshot[]) {
+  const recentRuns = [...runs]
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.runId.localeCompare(right.runId))
+    .slice(0, 5)
+    .map((run) => ({
+      runId: run.runId,
+      status: run.status,
+      modeId: run.modeId ?? run.pattern,
+      toolFailures: run.toolCalls.filter((toolCall) => toolCall.status === "failed" || toolCall.status === "interrupted").length,
+      updatedAt: run.updatedAt,
+    }));
+  return {
+    totalRuns: runs.length,
+    failedRuns: runs.filter((run) => run.status === "failed").length,
+    interruptedRuns: runs.filter((run) => run.status === "interrupted" || run.status === "cancelled").length,
+    recentRuns,
+  };
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const normalized = pattern.split(path.sep).join("/");
+  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const regex = escaped.replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*");
+  return new RegExp(`^${regex}$`);
+}
+
+function projectIdForSnapshotLocal(run: StateSnapshot, sessions: Map<string, SessionSummary>): string {
+  if (run.sessionId) {
+    const projectId = sessions.get(run.sessionId)?.projectId;
+    if (projectId) return projectId;
+  }
+  const contextProjectId = run.input.context.projectId;
+  return typeof contextProjectId === "string" && contextProjectId.trim() ? contextProjectId : "local-project";
+}
+
+function selfIterationEvaluationCase(candidate: SelfIterationCandidate) {
+  const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+  const expectedText = `Evaluation router-only run selected mode '${modeId}'.`;
+  return {
+    id: `self-iteration-${safeSelfIterationId(candidate.id)}`,
+    input: {
+      prompt: [
+        candidate.title,
+        candidate.summary,
+        candidate.evidence.map((item) => item.summary ?? item.label).filter(Boolean).join("\n"),
+      ].filter(Boolean).join("\n\n"),
+      context: {
+        selfIterationCandidateId: candidate.id,
+        selfIterationTargetKind: candidate.targetKind,
+      },
+    },
+    expected: { text: expectedText },
+    metadata: {
+      source: "self_iteration",
+      candidateId: candidate.id,
+      targetKind: candidate.targetKind,
+      modeId,
+    },
+  };
+}
+
+function selfIterationModeDraftPrompt(candidate: SelfIterationCandidate): string {
+  return [
+    "Create a Mode Studio draft that improves Ora's mode orchestration from this evidence cluster.",
+    `Candidate: ${candidate.title}`,
+    `Summary: ${candidate.summary}`,
+    `Operation: ${candidate.proposedChange.operation}`,
+    "Evidence:",
+    ...candidate.evidence.map((item) => `- ${item.label}: ${item.summary ?? item.target.id}`),
+    "Keep the draft conservative, reviewable, and behind Mode Studio apply confirmation.",
+  ].join("\n");
+}
+
+function selfIterationScoreEvidence(evaluationRunId: string, summaries: readonly EvaluationConfigSummary[]) {
+  const before = summaries.find((summary) => summary.configId === "self-iteration-before") ?? summaries[0];
+  const after = summaries.find((summary) => summary.configId === "self-iteration-after") ?? before;
+  if (!before || !after) {
+    return { evaluationRunId };
+  }
+  return {
+    evaluationRunId,
+    before: selfIterationScoreSnapshot(before),
+    after: selfIterationScoreSnapshot(after),
+    delta: {
+      overallScore: roundSelfIterationScore(after.overallScore - before.overallScore),
+      passRate: roundSelfIterationScore(after.passRate - before.passRate),
+      regressionCount: after.regressionCount - before.regressionCount,
+    },
+  };
+}
+
+function selfIterationScoreSnapshot(summary: EvaluationConfigSummary) {
+  return {
+    configId: summary.configId,
+    overallScore: summary.overallScore,
+    passRate: summary.passRate,
+    regressionCount: summary.regressionCount,
+    caseCount: summary.caseCount,
+  };
+}
+
+function roundSelfIterationScore(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function safeSelfIterationId(value: string): string {
+  return value.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "candidate";
 }
 
 function runLatencyMark(
@@ -2132,6 +2566,10 @@ function markLatencyForRunEvent(snapshot: StateSnapshot, event: OraEventEnvelope
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isTerminalRunStatus(status: StateSnapshot["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
 export class InMemoryRunStore extends LocalRunStore {}
