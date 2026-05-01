@@ -1097,6 +1097,7 @@ export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
           skillIds: [],
           toolIds: [],
           approvalMode: "high_risk_only",
+          permissionMode: "default",
           patternOptions: {},
           metadata: {},
           deterministicSeed: "ora-smoke",

@@ -185,6 +185,7 @@ function createEmptySessionPreview(
       modelRef: "local/smoke-model",
       budget: definition.defaultBudget,
       approvalMode: "high_risk_only",
+      permissionMode: "default",
       patternOptions: {},
       metadata: {},
       deterministicSeed: "ora-preview",

@@ -1,4 +1,4 @@
-import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MODE_ID, type ModeSelection, type TaskIntent } from "@ora/shared";
+import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MODE_ID, type ModeSelection, type PermissionMode, type TaskIntent } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
@@ -75,6 +75,8 @@ export interface WorkbenchState {
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
   sessionPromptTexts: Record<string, string>;
+  permissionMode: PermissionMode;
+  sessionPermissionModes: Record<string, PermissionMode>;
   taskIntent: TaskIntent;
   sessionTaskIntents: Record<string, TaskIntent>;
   lastRunTaskIntent?: TaskIntent;
@@ -114,6 +116,7 @@ export type WorkbenchAction =
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
   | { type: "SET_MODE"; modeId: string }
   | { type: "SET_MODE_SELECTION"; selection: ModeSelection }
+  | { type: "SET_PERMISSION_MODE"; permissionMode: PermissionMode }
   | { type: "SET_TASK_INTENT"; taskIntent: TaskIntent }
   | {
       type: "HYDRATE_SESSION";
@@ -212,6 +215,8 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionPromptTexts: {},
   selectedSkillIds: [],
   sessionSkillIds: {},
+  permissionMode: "default",
+  sessionPermissionModes: {},
   taskIntent: "implement",
   sessionTaskIntents: {},
   sessionProjectFileAttachments: {},
@@ -317,6 +322,20 @@ function setSessionTaskIntent(state: WorkbenchState, taskIntent: TaskIntent): Re
 
 function clearSessionTaskIntent(state: WorkbenchState, sessionId: string): Record<string, TaskIntent> {
   const { [sessionId]: _cleared, ...rest } = state.sessionTaskIntents;
+  return rest;
+}
+
+function sessionPermissionMode(state: WorkbenchState, sessionId: string | undefined): PermissionMode {
+  return sessionId ? (state.sessionPermissionModes[sessionId] ?? "default") : "default";
+}
+
+function setSessionPermissionMode(state: WorkbenchState, permissionMode: PermissionMode): Record<string, PermissionMode> {
+  if (!state.selectedSessionId) return state.sessionPermissionModes;
+  return { ...state.sessionPermissionModes, [state.selectedSessionId]: permissionMode };
+}
+
+function clearSessionPermissionMode(state: WorkbenchState, sessionId: string): Record<string, PermissionMode> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionPermissionModes;
   return rest;
 }
 
@@ -991,6 +1010,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedBeatId: snapshot?.events.at(-1)?.id,
         promptText: sessionPromptText(state, action.detail.session.sessionId),
         selectedSkillIds: sessionSkillIds(state, action.detail.session.sessionId),
+        permissionMode: sessionPermissionMode(state, action.detail.session.sessionId),
         taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
         pendingRun: undefined,
@@ -1017,9 +1037,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         sessionProjectFileAttachments: clearProjectFileAttachments(state, action.sessionId),
         sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
+        sessionPermissionModes: clearSessionPermissionMode(state, action.sessionId),
         sessionTaskIntents: clearSessionTaskIntent(state, action.sessionId),
         promptText: state.selectedSessionId === action.sessionId ? "" : state.promptText,
         selectedSkillIds: state.selectedSessionId === action.sessionId ? [] : state.selectedSkillIds,
+        permissionMode: state.selectedSessionId === action.sessionId ? "default" as PermissionMode : state.permissionMode,
         taskIntent: state.selectedSessionId === action.sessionId ? "implement" as TaskIntent : state.taskIntent,
         projects: archivedSession?.projectId
           ? state.projects.map((project) =>
@@ -1086,6 +1108,13 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         commandFeedback: action.selection === "auto"
           ? "Auto mode selected for the next turn."
           : "Manual mode selection restored for the next turn.",
+      };
+
+    case "SET_PERMISSION_MODE":
+      return {
+        ...state,
+        permissionMode: action.permissionMode,
+        sessionPermissionModes: setSessionPermissionMode(state, action.permissionMode),
       };
 
     case "SET_TASK_INTENT":
@@ -1231,6 +1260,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedProviderId: snapshot?.config.providerId ?? session?.latestProviderId ?? state.selectedProviderId,
         promptText: sessionPromptText(state, action.sessionId),
         selectedSkillIds: sessionSkillIds(state, action.sessionId),
+        permissionMode: sessionPermissionMode(state, action.sessionId),
         taskIntent: sessionTaskIntent(state, action.sessionId),
         selectedArtifactId: undefined,
         detailDrawer: undefined,

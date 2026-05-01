@@ -194,6 +194,8 @@ export function ChatView({
               path,
             })
           }
+          permissionMode={state.permissionMode}
+          onPermissionModeChange={(mode) => dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })}
           taskIntent={state.taskIntent}
           onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
           lastRunTaskIntent={state.lastRunTaskIntent}

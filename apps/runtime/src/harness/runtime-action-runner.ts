@@ -39,6 +39,7 @@ export interface RuntimeActionDeps {
   actionLedger: ActionLedger;
   policyService: PolicyService;
   approvalMode: RunConfig["approvalMode"];
+  permissionMode: RunConfig["permissionMode"];
   resumeApprovals: ResumeApprovalMatcher;
   emit: RuntimeActionEmit;
   emitProgressNarration: EmitProgressNarration;
@@ -58,6 +59,7 @@ export interface ResolveRuntimeApprovalParams {
   deps: RuntimeActionDeps;
   decision?: PolicyDecision;
   approvalMode?: RunConfig["approvalMode"];
+  permissionMode?: RunConfig["permissionMode"];
   toolCallRecord?: OraToolCallEnvelope;
 }
 
@@ -72,12 +74,42 @@ export async function resolveRuntimeActionApproval({
   deps,
   decision = deps.policyService.evaluate(action),
   approvalMode = deps.approvalMode,
+  permissionMode = deps.permissionMode,
   toolCallRecord,
 }: ResolveRuntimeApprovalParams): Promise<ResolveRuntimeApprovalResult> {
+  const skipApproval =
+    permissionMode === "full_access" || permissionMode === "auto_review";
   const approvedForRiskyExecution =
-    !decision.requiredApproval || approvalMode === "auto";
+    !decision.requiredApproval || approvalMode === "auto" || skipApproval;
+
   if (!decision.requiredApproval || approvalMode === "auto") {
     return { decision, approvedForRiskyExecution };
+  }
+
+  if (permissionMode === "full_access") {
+    return { decision, approvedForRiskyExecution };
+  }
+
+  if (permissionMode === "auto_review") {
+    const approved = deps.actionLedger.transition(action.id, "approved");
+    if (toolCallRecord) {
+      deps.appendToolCallStatus?.(toolCallRecord, "approved");
+    }
+    deps.emit(
+      "approval.resolved",
+      {
+        actionId: action.id,
+        decision: "approved",
+        mode: "auto_review",
+      },
+      { agentId: context.agentId, nodeId: context.nodeId },
+    );
+    deps.emit(
+      "action.updated",
+      { actionId: action.id, status: "approved", record: approved },
+      { agentId: context.agentId, nodeId: context.nodeId },
+    );
+    return { decision, approvedForRiskyExecution: true };
   }
 
   if (!deps.resumeApprovals.consume(action)) {

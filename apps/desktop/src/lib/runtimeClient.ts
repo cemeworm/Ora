@@ -4335,6 +4335,7 @@ class LocalJsonRpcRuntime {
         modelRef: provider?.modelRef ?? "local/smoke-model",
         budget: definition.defaultBudget,
         approvalMode: mode.capabilityFlags.approvalMode,
+        permissionMode: "default",
         patternOptions: {},
         metadata: {
           source: "desktop-smoke",

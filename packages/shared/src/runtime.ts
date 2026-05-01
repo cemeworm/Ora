@@ -3,6 +3,7 @@ import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PlanList
 import { SearchProviderConfigSchema } from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
 import { ModeSpecSchema, ModeTranscriptLayoutSchema } from "./modes.js";
+import { PermissionModeSchema } from "./config.js";
 import { AgentProfileSchema, CoordinationKindSchema, CoordinationPatternSchema, ModeBudgetProfileSchema, ModeCompletionPolicySchema, ModeDelegationSchema, ModeIdSchema, ModePlanningSchema, ModeReasoningEffortSchema, ModeThinkingSchema, ResourceBudgetSchema, RunStatusSchema } from "./primitives.js";
 import { ProviderConfigSchema } from "./providers.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
@@ -318,6 +319,7 @@ export const RunConfigSchema = z.object({
   toolIds: z.array(z.string().min(1)).default([]),
   searchProvider: SearchProviderConfigSchema.optional(),
   approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
+  permissionMode: PermissionModeSchema.default("default"),
   patternOptions: z.record(z.unknown()).default({}),
   metadata: z.record(z.unknown()).default({}),
   deterministicSeed: z.string().min(1).default("ora-smoke")

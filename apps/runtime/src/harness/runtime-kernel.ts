@@ -496,6 +496,7 @@ export async function executeRuntimeKernel(
     actionLedger,
     policyService,
     approvalMode: config.approvalMode,
+    permissionMode: config.permissionMode,
     resumeApprovals,
     emit,
     emitProgressNarration,

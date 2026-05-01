@@ -547,6 +547,7 @@ export function useRunActions() {
           modelRef: provider?.modelId ?? "local/smoke-model",
           ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
           toolIds: filteredToolIds,
+          permissionMode: state.permissionMode,
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,

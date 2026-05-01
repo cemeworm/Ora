@@ -10,7 +10,9 @@ import {
   Paperclip,
   Play,
   Rocket,
+  Shield,
   Square,
+  Unlock,
   X,
 } from "lucide-react";
 import {
@@ -26,7 +28,7 @@ import { cn } from "../lib/utils";
 import type { ActionRecord, ModeCard } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
-import type { ModeSelection, TaskIntent } from "@ora/shared";
+import type { ModeSelection, PermissionMode, TaskIntent } from "@ora/shared";
 import { ApprovalRequestCard } from "./ApprovalRequestCard";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
@@ -59,6 +61,8 @@ interface ChatInputProps {
   onRemoveLocalFileAttachment: (path: string) => void;
   onOpenLocalFiles: () => void;
   onClearSelectedCustomAgent?: () => void;
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
   taskIntent: TaskIntent;
   onTaskIntentChange: (taskIntent: TaskIntent) => void;
   lastRunTaskIntent?: TaskIntent;
@@ -113,6 +117,8 @@ export function ChatInput({
   onRemoveLocalFileAttachment,
   onOpenLocalFiles,
   onClearSelectedCustomAgent,
+  permissionMode,
+  onPermissionModeChange,
   taskIntent,
   onTaskIntentChange,
   lastRunTaskIntent,
@@ -122,7 +128,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [openPicker, setOpenPicker] = useState<
-    "pattern" | "provider" | "skills" | "taskIntent" | undefined
+    "pattern" | "provider" | "skills" | "taskIntent" | "permissionMode" | undefined
   >();
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
@@ -251,6 +257,12 @@ export function ChatInput({
     { value: "implement" as TaskIntent, label: "实施", icon: <Play size={13} />, description: "可以修改文件，帮助完成任务" },
     { value: "plan" as TaskIntent, label: "计划", icon: <ClipboardList size={13} />, description: "分析问题并输出执行计划，不修改文件" },
     { value: "chat" as TaskIntent, label: "对话", icon: <MessagesSquare size={13} />, description: "问答模式，不能修改任何文件" },
+  ];
+
+  const permissionModeOptions = [
+    { value: "full_access" as PermissionMode, label: "完全访问", icon: <Unlock size={13} />, description: "所有操作自动批准，不询问" },
+    { value: "default" as PermissionMode, label: "默认", icon: <Shield size={13} />, description: "高风险操作需要确认" },
+    { value: "auto_review" as PermissionMode, label: "自动审查", icon: <Bot size={13} />, description: "自动批准并记录，不打断工作" },
   ];
 
   return (
@@ -397,6 +409,45 @@ export function ChatInput({
                       className={cn(
                         "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
                         taskIntent === option.value &&
+                          "bg-accent text-accent-foreground",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 text-xs font-medium">
+                        {option.icon}
+                        <span>{option.label}</span>
+                      </div>
+                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                        {option.description}
+                      </div>
+                    </button>
+                  ))}
+                </Picker>
+                <Picker
+                  open={openPicker === "permissionMode"}
+                  onOpenChange={(open) =>
+                    setOpenPicker(open ? "permissionMode" : undefined)
+                  }
+                  trigger={
+                    <>
+                      {permissionModeOptions.find((o) => o.value === permissionMode)?.icon ?? <Shield size={13} />}
+                      <span className="hidden xl:inline">权限</span>
+                      <span className="max-w-[100px] truncate text-foreground">
+                        {permissionModeOptions.find((o) => o.value === permissionMode)?.label ?? "默认"}
+                      </span>
+                    </>
+                  }
+                >
+                  {permissionModeOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        onPermissionModeChange(option.value);
+                        setOpenPicker(undefined);
+                      }}
+                      className={cn(
+                        "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                        permissionMode === option.value &&
                           "bg-accent text-accent-foreground",
                       )}
                     >

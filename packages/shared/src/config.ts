@@ -6,6 +6,9 @@ import { CoordinationPatternSchema, ResourceBudgetSchema } from "./primitives.js
 // Session Config Schemas
 // ---------------------------------------------------------------------------
 
+export const PermissionModeSchema = z.enum(["full_access", "default", "auto_review"]);
+export type PermissionMode = z.infer<typeof PermissionModeSchema>;
+
 export const SessionConfigSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -14,6 +17,7 @@ export const SessionConfigSchema = z.object({
   defaultProviderId: z.string().min(1).optional(),
   defaultBudget: ResourceBudgetSchema.optional(),
   approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
+  permissionMode: PermissionModeSchema.default("default"),
   tools: z.array(z.string().min(1)).default([]),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
