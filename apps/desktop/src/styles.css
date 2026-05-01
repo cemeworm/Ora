@@ -122,6 +122,27 @@
   }
 }
 
+@keyframes ora-paper-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-0.4deg);
+  }
+  50% {
+    transform: translateY(-5px) rotate(0.4deg);
+  }
+}
+
+@keyframes ora-ink-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) rotate(-0.6deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
 @layer utilities {
   .animate-breathe {
     animation: ora-breathe 3s ease-in-out infinite;
@@ -130,11 +151,21 @@
   .animate-fade-in {
     animation: ora-fade-in 0.5s ease-out both;
   }
+
+  .animate-paper-float {
+    animation: ora-paper-float 5.5s ease-in-out infinite;
+  }
+
+  .animate-ink-in {
+    animation: ora-ink-in 0.65s ease-out both;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
-  .animate-fade-in {
+  .animate-fade-in,
+  .animate-paper-float,
+  .animate-ink-in {
     animation: none;
   }
 }

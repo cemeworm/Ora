@@ -95,7 +95,11 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
             >
               {step.id === "welcome" && <WelcomeStep />}
               {step.id === "provider" && (
-                <ProviderOnboardingStep onComplete={onComplete} />
+                <ProviderOnboardingStep
+                  onBack={() => setStepIndex(0)}
+                  onComplete={onComplete}
+                  onSkip={onSkip}
+                />
               )}
             </div>
           ))}
@@ -146,53 +150,132 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
 }
 
 function WelcomeStep() {
-  return (
-    <div className="flex min-h-full flex-col items-center justify-center text-center">
-      <span className="animate-breathe font-serif text-7xl font-bold text-bench-900">
-        O
-      </span>
-      <h1
-        className="animate-fade-in mt-6 text-4xl font-semibold leading-tight text-bench-900 sm:text-5xl"
-        style={{ animationDelay: "150ms" }}
-      >
-        让 AI 按你的方式来。
-      </h1>
-      <p
-        className="animate-fade-in mt-5 max-w-lg text-base leading-7 text-bench-700"
-        style={{ animationDelay: "300ms" }}
-      >
-        同一个窗口里写代码、查资料、跑脚本，不用在十个应用之间切来切去。
-        下面选一个服务提供方，一分钟就能开始。
-      </p>
+  const notePositions = [
+    "sm:absolute sm:left-0 sm:top-2 sm:w-[53%] sm:-rotate-2",
+    "sm:absolute sm:right-0 sm:top-28 sm:w-[55%] sm:rotate-2",
+    "sm:absolute sm:left-14 sm:bottom-0 sm:w-[56%] sm:-rotate-1",
+  ];
 
-      {/* Modes overview */}
-      <div className="animate-fade-in mt-10 w-full max-w-xl space-y-4">
-        {modeFeatures.map((feature, index) => {
-          const Icon = feature.icon;
-          const isReversed = index % 2 !== 0;
-          return (
-            <div
-              key={feature.title}
-              className={cn(
-                "animate-fade-in flex items-start gap-5",
-                isReversed && "flex-row-reverse text-right",
-              )}
-              style={{ animationDelay: `${(index + 2) * 150}ms` }}
-            >
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-bench-100 text-bench-900">
-                <Icon size={20} />
-              </div>
-              <div className={cn(isReversed ? "text-right" : "text-left")}>
-                <h3 className="text-sm font-semibold text-bench-900">
-                  {feature.title}
-                </h3>
-                <p className="mt-0.5 text-sm leading-6 text-bench-700">
-                  {feature.body}
+  return (
+    <div className="mx-auto grid min-h-full w-full max-w-6xl items-center gap-10 py-8 text-left lg:grid-cols-[0.9fr_1.1fr] lg:py-4">
+      <div className="max-w-xl">
+        <p
+          className="animate-fade-in text-sm font-semibold tracking-[0.28em] text-bench-600"
+          style={{ animationDelay: "50ms" }}
+        >
+          嗨，我是 Ora
+        </p>
+        <h1
+          className="animate-fade-in mt-5 text-5xl font-semibold leading-[0.95] tracking-[-0.05em] text-bench-900 sm:text-6xl lg:text-7xl"
+          style={{ animationDelay: "160ms" }}
+        >
+          把 AI 摆成
+          <span className="block font-serif italic tracking-[-0.04em]">
+            你的工作台。
+          </span>
+        </h1>
+        <p
+          className="animate-fade-in mt-7 max-w-md text-base leading-8 text-bench-700"
+          style={{ animationDelay: "280ms" }}
+        >
+          同一个窗口里写代码、查资料、跑脚本，不用在十个应用之间切来切去。
+          下面选一个服务提供方，一分钟就能开始。
+        </p>
+        <div
+          className="animate-fade-in mt-8 inline-flex items-center gap-3 rounded-full border border-bench-200 bg-white/55 px-4 py-2 text-sm text-bench-700 shadow-sm"
+          style={{ animationDelay: "400ms" }}
+        >
+          <span className="h-2 w-2 rounded-full bg-bench-900" />
+          继续后，Ora 会先问清楚怎么接入
+        </div>
+      </div>
+
+      <div
+        className="animate-fade-in relative mx-auto w-full max-w-2xl"
+        style={{ animationDelay: "260ms" }}
+        aria-label="Ora 工作台插画"
+      >
+        <div className="absolute -left-5 top-10 h-28 w-24 -rotate-6 rounded-3xl border border-[#dbcbb3] bg-[#eee1cf] shadow-sm" />
+        <div className="absolute -right-3 bottom-8 h-32 w-28 rotate-6 rounded-3xl border border-[#d8c4a6] bg-[#f0dcc1] shadow-sm" />
+
+        <div className="animate-paper-float relative overflow-hidden rounded-[34px] border border-[#d6c4a8] bg-[#f8efe2] p-5 shadow-[0_24px_70px_rgba(77,58,34,0.16)] sm:p-7">
+          <div
+            className="absolute inset-0 opacity-45"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle at 1px 1px, rgba(89, 70, 44, 0.16) 1px, transparent 0)",
+              backgroundSize: "22px 22px",
+            }}
+          />
+          <div className="absolute left-1/2 top-3 h-6 w-28 -translate-x-1/2 -rotate-2 rounded-sm bg-[#d9b98f]/55 shadow-sm" />
+          <div className="relative rounded-[26px] border border-[#d9c8ad] bg-[#fffaf1]/90 p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] sm:p-8">
+            <div className="flex items-start justify-between gap-5">
+              <div>
+                <p className="animate-ink-in text-xs font-semibold uppercase tracking-[0.35em] text-bench-500">
+                  Ora desk map
+                </p>
+                <p className="animate-ink-in mt-3 font-serif text-6xl font-bold leading-none text-bench-900 sm:text-7xl">
+                  Ora
                 </p>
               </div>
+              <div className="animate-ink-in rounded-full border border-[#dac8ad] bg-[#f6ead8] px-3 py-1 text-xs font-medium text-bench-700">
+                先聊清楚，再动手
+              </div>
             </div>
-          );
-        })}
+
+            <svg
+              className="pointer-events-none absolute inset-x-7 top-32 hidden h-40 text-[#b99363] opacity-45 sm:block"
+              viewBox="0 0 520 180"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M148 22 C212 34 220 78 292 75 C358 72 380 44 432 64"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeDasharray="7 9"
+              />
+              <path
+                d="M114 118 C188 90 220 142 302 128 C356 118 380 100 438 130"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeDasharray="7 9"
+              />
+            </svg>
+
+            <div className="relative mt-9 grid gap-4 sm:min-h-[330px] sm:block">
+              {modeFeatures.map((feature, index) => {
+                const Icon = feature.icon;
+                const notePosition = notePositions[index] ?? "";
+
+                return (
+                  <div
+                    key={feature.title}
+                    className={cn(
+                      "animate-ink-in rounded-[24px] border border-[#decbb0] bg-[#fff7ea] p-4 text-left shadow-[0_12px_32px_rgba(86,62,33,0.10)]",
+                      notePosition,
+                    )}
+                    style={{ animationDelay: `${520 + index * 140}ms` }}
+                  >
+                    <div className="mb-3 flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-[#efe0ca] text-bench-900">
+                        <Icon size={18} />
+                      </span>
+                      <h3 className="text-sm font-semibold text-bench-900">
+                        {feature.title}
+                      </h3>
+                    </div>
+                    <p className="text-sm leading-6 text-bench-700">
+                      {feature.body}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
