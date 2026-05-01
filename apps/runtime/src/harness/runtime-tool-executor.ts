@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import { ActionApprovalRequestCopySchema } from "@ora/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, ToolDescriptor } from "@ora/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
@@ -88,6 +88,7 @@ export interface RuntimeToolExecutorOptions {
   searchProviderConfig?: SearchProviderConfig;
   searchEnv?: NodeJS.ProcessEnv;
   packageManager?: PackageManager;
+  toolLimits?: ModeToolLimits;
 }
 
 interface SkillRegistryTools {
@@ -153,6 +154,41 @@ const SHELL_APPROVED_COMMANDS = new Set([
   "yarn",
 ]);
 const SKIPPED_DIRS = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules", "target"]);
+
+interface ResolvedToolLimits {
+  fileReadMaxBytes: number;
+  fileListMaxEntries: number;
+  fileSearchMaxFiles: number;
+  fileSearchMaxMatches: number;
+  fileSearchMaxBytes: number;
+  fileWriteMaxBytes: number;
+  webMaxBytes: number;
+  documentExtractMaxBytes: number;
+  documentSourceMaxBytes: number;
+  shellMaxOutputBytes: number;
+  shellTimeoutMs: number;
+  shellReadOnlyCommands: Set<string>;
+  shellApprovedCommands: Set<string>;
+}
+
+function resolveToolLimits(overrides: ModeToolLimits = {} as ModeToolLimits): ResolvedToolLimits {
+  const shellReadOnlyCommands = new Set([...SHELL_READ_ONLY_COMMANDS, ...(overrides.shellExtraReadOnlyCommands ?? [])]);
+  return {
+    fileReadMaxBytes: overrides.fileReadMaxBytes ?? FILE_READ_MAX_BYTES,
+    fileListMaxEntries: overrides.fileListMaxEntries ?? FILE_LIST_MAX_ENTRIES,
+    fileSearchMaxFiles: overrides.fileSearchMaxFiles ?? FILE_SEARCH_MAX_FILES,
+    fileSearchMaxMatches: overrides.fileSearchMaxMatches ?? FILE_SEARCH_MAX_MATCHES,
+    fileSearchMaxBytes: overrides.fileSearchMaxBytes ?? FILE_SEARCH_MAX_BYTES,
+    fileWriteMaxBytes: overrides.fileWriteMaxBytes ?? FILE_WRITE_MAX_BYTES,
+    webMaxBytes: overrides.webMaxBytes ?? WEB_MAX_BYTES,
+    documentExtractMaxBytes: overrides.documentExtractMaxBytes ?? DOCUMENT_EXTRACT_MAX_BYTES,
+    documentSourceMaxBytes: overrides.documentSourceMaxBytes ?? DOCUMENT_SOURCE_MAX_BYTES,
+    shellMaxOutputBytes: overrides.shellMaxOutputBytes ?? SHELL_MAX_OUTPUT_BYTES,
+    shellTimeoutMs: overrides.shellTimeoutMs ?? SHELL_TIMEOUT_MS,
+    shellReadOnlyCommands,
+    shellApprovedCommands: new Set([...shellReadOnlyCommands, ...SHELL_APPROVED_COMMANDS, ...(overrides.shellExtraApprovedCommands ?? [])]),
+  };
+}
 
 export function isRuntimeToolImplemented(toolId: string): toolId is RuntimeToolId {
   return IMPLEMENTED_TOOL_SET.has(toolId);
@@ -240,6 +276,7 @@ export class RuntimeToolExecutor {
   private readonly mcpConfigPaths?: string[];
   private readonly searchProvider: SearchProvider;
   private readonly packageManager?: PackageManager;
+  private readonly limits: ResolvedToolLimits;
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -250,6 +287,7 @@ export class RuntimeToolExecutor {
     this.mcpConfigPaths = options.mcpConfigPaths;
     this.packageManager = options.packageManager;
     this.workspace = options.workspace;
+    this.limits = resolveToolLimits(options.toolLimits);
     this.searchProvider = options.searchProvider ?? createSearchProvider({
       fetchImpl: this.fetchImpl,
       env: options.searchEnv,
@@ -344,7 +382,7 @@ export class RuntimeToolExecutor {
     if (call.tool === "shell.execute") {
       const command = typeof call.args.command === "string" ? call.args.command : "";
       const [executable] = parseShellCommand(command);
-      return executable && SHELL_READ_ONLY_COMMANDS.has(executable) ? "low" : "high";
+      return executable && this.limits.shellReadOnlyCommands.has(executable) ? "low" : "high";
     }
     return "low";
   }
@@ -360,25 +398,25 @@ export class RuntimeToolExecutor {
   async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<RuntimeToolExecutionResult> {
     switch (call.tool) {
       case "file.read":
-        return { output: readWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args) };
+        return { output: readWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args, this.limits) };
       case "file.list":
-        return { output: listWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args) };
+        return { output: listWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args, this.limits) };
       case "file.glob":
-        return { output: globWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args) };
+        return { output: globWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args, this.limits) };
       case "file.grep":
-        return { output: grepWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args) };
+        return { output: grepWorkspaceFiles(requireWorkspaceRoot(this.workspace), call.args, this.limits) };
       case "file.write":
-        return writeWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args);
+        return writeWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args, this.limits);
       case "file.patch":
-        return patchWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args);
+        return patchWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args, this.limits);
       case "shell.execute":
-        return { output: executeWorkspaceShell(requireWorkspaceRoot(this.workspace), call.args, options.allowRisky === true) };
+        return { output: executeWorkspaceShell(requireWorkspaceRoot(this.workspace), call.args, options.allowRisky === true, this.limits) };
       case "web.fetch":
-        return { output: await fetchUrl(this.fetchImpl, call.args) };
+        return { output: await fetchUrl(this.fetchImpl, call.args, this.limits) };
       case "web.search":
         return { output: await searchWithProvider(this.searchProvider, call.args) };
       case "document.extract":
-        return { output: await extractDocument(workspaceRootPath(this.workspace), this.fetchImpl, call.args) };
+        return { output: await extractDocument(workspaceRootPath(this.workspace), this.fetchImpl, call.args, this.limits) };
       case "user.clarify":
         throw new Error("user.clarify must be handled by the runtime loop as a clarification interrupt.");
       case "skills.list":
@@ -849,13 +887,13 @@ function relativeWorkspacePath(rootPath: string, absolutePath: string): string {
   return relative || ".";
 }
 
-function readWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
+function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const absolutePath = resolveWorkspacePath(rootPath, args.path);
   const stat = fs.statSync(absolutePath);
   if (!stat.isFile()) {
     throw new Error("file.read target must be a file.");
   }
-  if (stat.size > FILE_READ_MAX_BYTES) {
+  if (stat.size > limits.fileReadMaxBytes) {
     throw new Error(`file.read target is too large (${stat.size} bytes).`);
   }
   return {
@@ -865,14 +903,14 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
   };
 }
 
-function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
+function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const absolutePath = resolveWorkspacePath(rootPath, args.path ?? ".");
   const stat = fs.statSync(absolutePath);
   if (!stat.isDirectory()) {
     throw new Error("file.list target must be a directory.");
   }
   const entries = fs.readdirSync(absolutePath, { withFileTypes: true })
-    .slice(0, readPositiveInt(args.limit, FILE_LIST_MAX_ENTRIES, FILE_LIST_MAX_ENTRIES))
+    .slice(0, readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries))
     .map((entry) => {
       const entryPath = path.join(absolutePath, entry.name);
       const entryStat = fs.statSync(entryPath);
@@ -889,16 +927,16 @@ function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
   };
 }
 
-function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
+function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern : undefined;
   if (!pattern) {
     throw new Error("file.glob requires a non-empty pattern.");
   }
   const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
   const matcher = globToRegExp(pattern);
-  const limit = readPositiveInt(args.limit, FILE_LIST_MAX_ENTRIES, FILE_LIST_MAX_ENTRIES);
+  const limit = readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries);
   const matches: string[] = [];
-  for (const filePath of walkFiles(rootPath, basePath, FILE_SEARCH_MAX_FILES)) {
+  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles)) {
     const relative = relativeWorkspacePath(rootPath, filePath);
     if (matcher.test(relative)) {
       matches.push(relative);
@@ -910,7 +948,7 @@ function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
   return { pattern, matches };
 }
 
-function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
+function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern : undefined;
   if (!pattern) {
     throw new Error("file.grep requires a non-empty pattern.");
@@ -919,16 +957,16 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
   const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
   const caseSensitive = args.caseSensitive !== false;
   const needle = caseSensitive ? pattern : pattern.toLowerCase();
-  const limit = readPositiveInt(args.limit, FILE_SEARCH_MAX_MATCHES, FILE_SEARCH_MAX_MATCHES);
+  const limit = readPositiveInt(args.limit, limits.fileSearchMaxMatches, limits.fileSearchMaxMatches);
   const matches: Array<{ path: string; line: number; text: string }> = [];
 
-  for (const filePath of walkFiles(rootPath, basePath, FILE_SEARCH_MAX_FILES)) {
+  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles)) {
     const relative = relativeWorkspacePath(rootPath, filePath);
     if (include && !include.test(relative)) {
       continue;
     }
     const stat = fs.statSync(filePath);
-    if (stat.size > FILE_SEARCH_MAX_BYTES) {
+    if (stat.size > limits.fileSearchMaxBytes) {
       continue;
     }
     const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
@@ -946,12 +984,12 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>) {
   return { pattern, matches, truncated: false };
 }
 
-function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
+function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   if (typeof args.content !== "string") {
     throw new Error("file.write requires string content.");
   }
   const sizeBytes = Buffer.byteLength(args.content);
-  if (sizeBytes > FILE_WRITE_MAX_BYTES) {
+  if (sizeBytes > limits.fileWriteMaxBytes) {
     throw new Error(`file.write content is too large (${sizeBytes} bytes).`);
   }
   const absolutePath = resolveWorkspacePath(rootPath, args.path);
@@ -976,7 +1014,7 @@ function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
   };
 }
 
-function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
+function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   if (typeof args.search !== "string" || args.search.length === 0) {
     throw new Error("file.patch requires a non-empty search string.");
   }
@@ -988,7 +1026,7 @@ function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>) {
   if (!stat.isFile()) {
     throw new Error("file.patch target must be a file.");
   }
-  if (stat.size > FILE_WRITE_MAX_BYTES) {
+  if (stat.size > limits.fileWriteMaxBytes) {
     throw new Error(`file.patch target is too large (${stat.size} bytes).`);
   }
   const current = fs.readFileSync(absolutePath, "utf8");
@@ -1161,7 +1199,7 @@ function parseShellCommand(command: string): string[] {
   return tokens;
 }
 
-function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>, allowRisky: boolean) {
+function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>, allowRisky: boolean, limits: ResolvedToolLimits) {
   const command = typeof args.command === "string" ? args.command.trim() : "";
   if (!command) {
     throw new Error("shell.execute requires a non-empty command.");
@@ -1173,7 +1211,7 @@ function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>, 
   if (!executable) {
     throw new Error("shell.execute requires an executable.");
   }
-  const allowedCommands = allowRisky ? SHELL_APPROVED_COMMANDS : SHELL_READ_ONLY_COMMANDS;
+  const allowedCommands = allowRisky ? limits.shellApprovedCommands : limits.shellReadOnlyCommands;
   if (!allowedCommands.has(executable)) {
     throw new Error(`shell.execute command must be one of: ${[...allowedCommands].join(", ")}.`);
   }
@@ -1183,8 +1221,8 @@ function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>, 
     const output = execFileSync(executable, argv, {
       cwd: rootPath,
       encoding: "utf8",
-      timeout: readPositiveInt(args.timeoutMs, SHELL_TIMEOUT_MS, SHELL_TIMEOUT_MS),
-      maxBuffer: SHELL_MAX_OUTPUT_BYTES,
+      timeout: readPositiveInt(args.timeoutMs, limits.shellTimeoutMs, limits.shellTimeoutMs),
+      maxBuffer: limits.shellMaxOutputBytes,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return {
@@ -1217,7 +1255,7 @@ function assertWorkspaceShellArgsStayLocal(argv: readonly string[]) {
   }
 }
 
-async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>) {
+async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const url = parseHttpUrl(args.url, "web.fetch");
   const response = await fetchImpl(url);
   const contentType = response.headers.get("content-type") ?? undefined;
@@ -1231,7 +1269,7 @@ async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>) 
       truncated: false,
     };
   }
-  const text = truncateText(await response.text(), readPositiveInt(args.maxBytes, WEB_MAX_BYTES, WEB_MAX_BYTES));
+  const text = truncateText(await response.text(), readPositiveInt(args.maxBytes, limits.webMaxBytes, limits.webMaxBytes));
   return {
     url,
     status: response.status,
@@ -1242,7 +1280,7 @@ async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>) 
   };
 }
 
-async function extractDocument(rootPath: string | undefined, fetchImpl: typeof fetch, args: Record<string, unknown>) {
+async function extractDocument(rootPath: string | undefined, fetchImpl: typeof fetch, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const pathArg = typeof args.path === "string" && args.path.trim() ? args.path.trim() : undefined;
   const urlArg = typeof args.url === "string" && args.url.trim() ? args.url.trim() : undefined;
   if ((pathArg ? 1 : 0) + (urlArg ? 1 : 0) !== 1) {
@@ -1250,7 +1288,7 @@ async function extractDocument(rootPath: string | undefined, fetchImpl: typeof f
   }
 
   const format = args.format === "markdown" ? "markdown" : "text";
-  const maxBytes = readPositiveInt(args.maxBytes, DOCUMENT_EXTRACT_MAX_BYTES, DOCUMENT_EXTRACT_MAX_BYTES);
+  const maxBytes = readPositiveInt(args.maxBytes, limits.documentExtractMaxBytes, limits.documentExtractMaxBytes);
   let source: string;
   let contentType: string | undefined;
   let data: Buffer;
@@ -1267,7 +1305,7 @@ async function extractDocument(rootPath: string | undefined, fetchImpl: typeof f
     if (!stat.isFile()) {
       throw new Error("document.extract target must be a file.");
     }
-    if (stat.size > DOCUMENT_SOURCE_MAX_BYTES) {
+    if (stat.size > limits.documentSourceMaxBytes) {
       throw new Error(`document.extract source is too large (${stat.size} bytes).`);
     }
     source = relativeWorkspacePath(path.resolve(rootPath), absolutePath);
@@ -1284,7 +1322,7 @@ async function extractDocument(rootPath: string | undefined, fetchImpl: typeof f
       throw new Error("document.extract currently supports PDF URLs only.");
     }
     const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > DOCUMENT_SOURCE_MAX_BYTES) {
+    if (arrayBuffer.byteLength > limits.documentSourceMaxBytes) {
       throw new Error(`document.extract source is too large (${arrayBuffer.byteLength} bytes).`);
     }
     source = url;

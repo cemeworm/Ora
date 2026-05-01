@@ -905,6 +905,7 @@ export function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     runtimePolicy,
     recoveryPolicy,
     memoryPolicy,
+    toolLimits,
   } = spec;
   return {
     id,
@@ -929,6 +930,7 @@ export function modeCreateParamsFromSpec(spec: ModeSpec): ModeCreateParams {
     runtimePolicy,
     recoveryPolicy,
     memoryPolicy,
+    toolLimits,
   };
 }
 

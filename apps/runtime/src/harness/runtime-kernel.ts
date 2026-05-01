@@ -230,6 +230,7 @@ export async function executeRuntimeKernel(
     selfIterationRegistry: options.selfIterationRegistry,
     packageManager,
     searchProviderConfig: config.searchProvider,
+    toolLimits: modeSpec.toolLimits,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);

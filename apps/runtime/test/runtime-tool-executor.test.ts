@@ -617,4 +617,46 @@ rl.on("line", (line) => {
     expect(search.providerId).toBe("mcp");
     expect(search.results[0]).toMatchObject({ title: "MCP Result", url: "https://example.com/mcp", snippet: "ora" });
   });
+
+  it("applies toolLimits.fileReadMaxBytes from mode config", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "big.txt"), "x".repeat(100), "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS, toolLimits: { fileReadMaxBytes: 50 } });
+
+    await expect(executor.execute({ tool: "file.read", args: { path: "big.txt" } })).rejects.toThrow("too large");
+  });
+
+  it("applies toolLimits.shellExtraApprovedCommands from mode config", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS, toolLimits: { shellExtraApprovedCommands: ["echo"] } });
+    const call = { tool: "shell.execute" as const, args: { command: "echo hello" } };
+
+    expect(executor.riskLevel(call)).toBe("high");
+    const result = await executor.execute(call, { allowRisky: true }) as { exitCode: number; stdout: string };
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hello");
+  });
+
+  it("falls back to hardcoded defaults when toolLimits is omitted", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+    const readOnly = { tool: "shell.execute" as const, args: { command: "pwd" } };
+    const broader = { tool: "shell.execute" as const, args: { command: "node --version" } };
+
+    expect(executor.riskLevel(readOnly)).toBe("low");
+    expect(executor.riskLevel(broader)).toBe("high");
+    const readResult = await executor.execute(readOnly) as { exitCode: number };
+    expect(readResult.exitCode).toBe(0);
+  });
+
+  it("applies toolLimits.shellExtraReadOnlyCommands to low-risk set", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS, toolLimits: { shellExtraReadOnlyCommands: ["echo"] } });
+    const call = { tool: "shell.execute" as const, args: { command: "echo test" } };
+
+    expect(executor.riskLevel(call)).toBe("low");
+    const result = await executor.execute(call) as { exitCode: number; stdout: string };
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("test");
+  });
 });

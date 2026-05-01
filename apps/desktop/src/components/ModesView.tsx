@@ -3371,7 +3371,7 @@ function canvasSelectionExists(
 }
 
 function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
-  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, stages, transcriptLayout, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy } = spec;
+  const { id, family, label, summary, description, recommendedUse, failureMode, visibility, nodes, edges, stopPolicy, capabilityFlags, editorConstraints, defaultBudget, profiles, runtimeAtoms, stages, transcriptLayout, completionPolicy, runtimePolicy, recoveryPolicy, memoryPolicy, toolLimits } = spec;
   return {
     id,
     family,
@@ -3395,6 +3395,7 @@ function toCreateParams(spec: OraModeSpec): OraModeCreateParams {
     runtimePolicy,
     recoveryPolicy,
     memoryPolicy,
+    toolLimits,
   };
 }
 

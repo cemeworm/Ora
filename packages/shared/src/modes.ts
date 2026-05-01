@@ -221,6 +221,23 @@ export const ModeMemoryPolicySchema = z.object({
 });
 export type ModeMemoryPolicy = z.infer<typeof ModeMemoryPolicySchema>;
 
+export const ModeToolLimitsSchema = z.object({
+  fileReadMaxBytes: z.number().int().positive().optional(),
+  fileListMaxEntries: z.number().int().positive().optional(),
+  fileSearchMaxFiles: z.number().int().positive().optional(),
+  fileSearchMaxMatches: z.number().int().positive().optional(),
+  fileSearchMaxBytes: z.number().int().positive().optional(),
+  fileWriteMaxBytes: z.number().int().positive().optional(),
+  webMaxBytes: z.number().int().positive().optional(),
+  documentExtractMaxBytes: z.number().int().positive().optional(),
+  documentSourceMaxBytes: z.number().int().positive().optional(),
+  shellMaxOutputBytes: z.number().int().positive().optional(),
+  shellTimeoutMs: z.number().int().positive().optional(),
+  shellExtraReadOnlyCommands: z.array(z.string().min(1)).default([]),
+  shellExtraApprovedCommands: z.array(z.string().min(1)).default([]),
+});
+export type ModeToolLimits = z.infer<typeof ModeToolLimitsSchema>;
+
 export const ModeCapabilityFlagsSchema = z.object({
   supportsPersistentWorkers: z.boolean().default(false),
   supportsSharedState: z.boolean().default(false),
@@ -266,6 +283,7 @@ export const ModeSpecSchema = z.object({
   runtimePolicy: ModeRuntimePolicySchema.default(DEFAULT_MODE_RUNTIME_POLICY),
   recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
   memoryPolicy: ModeMemoryPolicySchema.default({}),
+  toolLimits: ModeToolLimitsSchema.default({}),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
