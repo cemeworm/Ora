@@ -27,6 +27,7 @@ import {
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
+  type TaskIntent,
 } from "@ora/shared";
 import {
   ActionLedger,
@@ -758,6 +759,17 @@ export async function executeRuntimeKernel(
     typeof config.metadata.memoryPromptOverlay === "string"
       ? config.metadata.memoryPromptOverlay
       : undefined;
+  const taskIntentContext = (() => {
+    const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
+    switch (taskIntent) {
+      case "chat":
+        return "你处于对话模式，不能修改任何文件。请以问答方式帮助用户，解释代码、回答问题，但不要尝试编辑或创建文件。";
+      case "plan":
+        return "你处于计划模式。请理解用户意图，拆解目标方案，输出详细的执行计划。不要执行任何文件修改操作。计划应包含清晰的步骤、涉及的文件、以及预期结果。计划输出后等待用户确认。";
+      default:
+        return undefined;
+    }
+  })();
   const systemPrompt = (extra: string) => extra.trim();
 
   const withAgentRuntimeContext = (
@@ -781,6 +793,7 @@ export async function executeRuntimeKernel(
       workspaceContext,
       clarificationContext,
       memoryContext,
+      taskIntentContext,
       availableSkills,
       toolProtocol: toolPrompt,
       skillSnippets: snippets,

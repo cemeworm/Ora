@@ -194,6 +194,13 @@ export function ChatView({
               path,
             })
           }
+          taskIntent={state.taskIntent}
+          onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
+          lastRunTaskIntent={state.lastRunTaskIntent}
+          onConfirmPlan={() => {
+            dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
+            onComposerPromptChange("请按照上述计划开始执行");
+          }}
           onOpenLocalFiles={() => void openLocalFiles()}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}

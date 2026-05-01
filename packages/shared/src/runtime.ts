@@ -19,6 +19,9 @@ export type UserTaskInput = z.infer<typeof UserTaskInputSchema>;
 export const ModeSelectionSchema = z.enum(["manual", "auto"]);
 export type ModeSelection = z.infer<typeof ModeSelectionSchema>;
 
+export const TaskIntentSchema = z.enum(["chat", "plan", "implement"]);
+export type TaskIntent = z.infer<typeof TaskIntentSchema>;
+
 export const ProviderPolicyStatusSchema = z.enum(["applied", "unsupported", "degraded"]);
 export type ProviderPolicyStatus = z.infer<typeof ProviderPolicyStatusSchema>;
 

@@ -9,6 +9,7 @@ export type AgentPromptSectionId =
   | "workspace_context"
   | "clarification_context"
   | "memory_context"
+  | "task_intent_context"
   | "available_skills"
   | "tool_protocol"
   | "skills"
@@ -30,6 +31,7 @@ export interface AgentPromptContextInput {
   workspaceContext?: string;
   clarificationContext?: string;
   memoryContext?: string;
+  taskIntentContext?: string;
   availableSkills?: readonly SkillDescriptor[];
   toolProtocol?: string;
   skillSnippets?: string[];
@@ -51,6 +53,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     promptSection("workspace_context", "Workspace Context", input.workspaceContext),
     promptSection("clarification_context", "Clarification Context", input.clarificationContext),
     promptSection("memory_context", "Memory Context", input.memoryContext),
+    promptSection("task_intent_context", "Task Intent", input.taskIntentContext),
     promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
     promptSection("tool_protocol", "Tool Protocol", input.toolProtocol),
     ...skillSections(input.skillSnippets),

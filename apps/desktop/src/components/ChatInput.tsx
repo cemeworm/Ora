@@ -3,9 +3,12 @@ import {
   BrainCircuit,
   Bot,
   Check,
+  ClipboardList,
   FileText,
   LoaderCircle,
+  MessagesSquare,
   Paperclip,
+  Play,
   Rocket,
   Square,
   X,
@@ -23,7 +26,7 @@ import { cn } from "../lib/utils";
 import type { ActionRecord, ModeCard } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
-import type { ModeSelection } from "@ora/shared";
+import type { ModeSelection, TaskIntent } from "@ora/shared";
 import { ApprovalRequestCard } from "./ApprovalRequestCard";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
@@ -56,6 +59,10 @@ interface ChatInputProps {
   onRemoveLocalFileAttachment: (path: string) => void;
   onOpenLocalFiles: () => void;
   onClearSelectedCustomAgent?: () => void;
+  taskIntent: TaskIntent;
+  onTaskIntentChange: (taskIntent: TaskIntent) => void;
+  lastRunTaskIntent?: TaskIntent;
+  onConfirmPlan?: () => void;
   onStartRun: () => void;
   onStopRun: () => void;
 }
@@ -106,12 +113,16 @@ export function ChatInput({
   onRemoveLocalFileAttachment,
   onOpenLocalFiles,
   onClearSelectedCustomAgent,
+  taskIntent,
+  onTaskIntentChange,
+  lastRunTaskIntent,
+  onConfirmPlan,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [openPicker, setOpenPicker] = useState<
-    "pattern" | "provider" | "skills" | undefined
+    "pattern" | "provider" | "skills" | "taskIntent" | undefined
   >();
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
@@ -236,6 +247,12 @@ export function ChatInput({
       ? "Auto"
       : (activeMode?.label ?? "Default");
 
+  const taskIntentOptions = [
+    { value: "implement" as TaskIntent, label: "实施", icon: <Play size={13} />, description: "可以修改文件，帮助完成任务" },
+    { value: "plan" as TaskIntent, label: "计划", icon: <ClipboardList size={13} />, description: "分析问题并输出执行计划，不修改文件" },
+    { value: "chat" as TaskIntent, label: "对话", icon: <MessagesSquare size={13} />, description: "问答模式，不能修改任何文件" },
+  ];
+
   return (
     <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
       <div className="pointer-events-auto relative w-full max-w-[88rem]">
@@ -353,6 +370,56 @@ export function ChatInput({
                 >
                   <Paperclip size={14} />
                 </Button>
+                <Picker
+                  open={openPicker === "taskIntent"}
+                  onOpenChange={(open) =>
+                    setOpenPicker(open ? "taskIntent" : undefined)
+                  }
+                  trigger={
+                    <>
+                      {taskIntentOptions.find((o) => o.value === taskIntent)?.icon ?? <Play size={13} />}
+                      <span className="hidden xl:inline">任务目标</span>
+                      <span className="max-w-[100px] truncate text-foreground">
+                        {taskIntentOptions.find((o) => o.value === taskIntent)?.label ?? "实施"}
+                      </span>
+                    </>
+                  }
+                  widthClassName="w-60"
+                >
+                  {taskIntentOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        onTaskIntentChange(option.value);
+                        setOpenPicker(undefined);
+                      }}
+                      className={cn(
+                        "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                        taskIntent === option.value &&
+                          "bg-accent text-accent-foreground",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 text-xs font-medium">
+                        {option.icon}
+                        <span>{option.label}</span>
+                      </div>
+                      <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                        {option.description}
+                      </div>
+                    </button>
+                  ))}
+                </Picker>
+                {taskIntent === "plan" && lastRunTaskIntent === "plan" && onConfirmPlan ? (
+                  <button
+                    type="button"
+                    onClick={onConfirmPlan}
+                    className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100"
+                  >
+                    <Play size={13} />
+                    <span>确认执行</span>
+                  </button>
+                ) : null}
                 {selectedCustomAgentId && (
                   <button
                     type="button"

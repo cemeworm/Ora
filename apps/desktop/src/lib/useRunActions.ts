@@ -8,6 +8,24 @@ import { buildWorkbenchViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
+const FILE_MODIFICATION_TOOL_IDS = [
+  "file.write",
+  "file.patch",
+  "file.delete",
+  "shell.execute",
+  "skills.create",
+  "skills.update",
+  "skills.setEnabled",
+  "package.buildCandidate",
+  "package.verify",
+  "package.promote",
+  "package.switch",
+  "package.rollback",
+  "modes.applyDraft",
+  "selfIteration.apply",
+  "mcp.call",
+];
+
 type DesktopLatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
 
 function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
@@ -508,6 +526,10 @@ export function useRunActions() {
       ...state.selectedSkillIds,
     ])];
     try {
+      const resolvedToolIds = toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId);
+      const filteredToolIds = (state.taskIntent === "chat" || state.taskIntent === "plan")
+        ? resolvedToolIds.filter((id) => !(FILE_MODIFICATION_TOOL_IDS as readonly string[]).includes(id))
+        : resolvedToolIds;
       desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
       const handle = await runtimeClient.startStreamingRun(
         {
@@ -524,13 +546,14 @@ export function useRunActions() {
           customAgentId: state.selectedCustomAgentId,
           modelRef: provider?.modelId ?? "local/smoke-model",
           ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
-          toolIds: toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId),
+          toolIds: filteredToolIds,
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
             clarificationPreflight: true,
             progressNarration: true,
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
+            taskIntent: state.taskIntent,
             ...searchConfig.metadata,
             ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),

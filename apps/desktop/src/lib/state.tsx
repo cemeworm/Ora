@@ -1,4 +1,4 @@
-import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MODE_ID, type ModeSelection } from "@ora/shared";
+import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MODE_ID, type ModeSelection, type TaskIntent } from "@ora/shared";
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
@@ -75,6 +75,9 @@ export interface WorkbenchState {
   bridgeStatus: RuntimeBridgeStatus | undefined;
   promptText: string;
   sessionPromptTexts: Record<string, string>;
+  taskIntent: TaskIntent;
+  sessionTaskIntents: Record<string, TaskIntent>;
+  lastRunTaskIntent?: TaskIntent;
   selectedSkillIds: string[];
   sessionSkillIds: Record<string, string[]>;
   sessionProjectFileAttachments: Record<string, ComposerProjectFileAttachment[]>;
@@ -111,6 +114,7 @@ export type WorkbenchAction =
   | { type: "SET_PATTERN"; pattern: CoordinationPattern }
   | { type: "SET_MODE"; modeId: string }
   | { type: "SET_MODE_SELECTION"; selection: ModeSelection }
+  | { type: "SET_TASK_INTENT"; taskIntent: TaskIntent }
   | {
       type: "HYDRATE_SESSION";
       projects: OraProjectSummary[];
@@ -208,6 +212,8 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionPromptTexts: {},
   selectedSkillIds: [],
   sessionSkillIds: {},
+  taskIntent: "implement",
+  sessionTaskIntents: {},
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
   pendingRun: undefined,
@@ -297,6 +303,20 @@ function setSessionSkillIds(state: WorkbenchState, skillIds: string[]): Record<s
 
 function clearSessionSkillIds(state: WorkbenchState, sessionId: string): Record<string, string[]> {
   const { [sessionId]: _cleared, ...rest } = state.sessionSkillIds;
+  return rest;
+}
+
+function sessionTaskIntent(state: WorkbenchState, sessionId: string | undefined): TaskIntent {
+  return sessionId ? (state.sessionTaskIntents[sessionId] ?? "implement") : "implement";
+}
+
+function setSessionTaskIntent(state: WorkbenchState, taskIntent: TaskIntent): Record<string, TaskIntent> {
+  if (!state.selectedSessionId) return state.sessionTaskIntents;
+  return { ...state.sessionTaskIntents, [state.selectedSessionId]: taskIntent };
+}
+
+function clearSessionTaskIntent(state: WorkbenchState, sessionId: string): Record<string, TaskIntent> {
+  const { [sessionId]: _cleared, ...rest } = state.sessionTaskIntents;
   return rest;
 }
 
@@ -907,6 +927,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionPromptTexts: {},
         selectedSkillIds: [],
         sessionSkillIds: {},
+        taskIntent: "implement",
+        sessionTaskIntents: {},
         sessionProjectFileAttachments: {},
         sessionLocalFileAttachments: {},
         pendingRun: undefined,
@@ -969,6 +991,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedBeatId: snapshot?.events.at(-1)?.id,
         promptText: sessionPromptText(state, action.detail.session.sessionId),
         selectedSkillIds: sessionSkillIds(state, action.detail.session.sessionId),
+        taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
         pendingRun: undefined,
         isLoading: false,
@@ -994,8 +1017,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         sessionProjectFileAttachments: clearProjectFileAttachments(state, action.sessionId),
         sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
+        sessionTaskIntents: clearSessionTaskIntent(state, action.sessionId),
         promptText: state.selectedSessionId === action.sessionId ? "" : state.promptText,
         selectedSkillIds: state.selectedSessionId === action.sessionId ? [] : state.selectedSkillIds,
+        taskIntent: state.selectedSessionId === action.sessionId ? "implement" as TaskIntent : state.taskIntent,
         projects: archivedSession?.projectId
           ? state.projects.map((project) =>
             project.projectId === archivedSession.projectId
@@ -1061,6 +1086,13 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         commandFeedback: action.selection === "auto"
           ? "Auto mode selected for the next turn."
           : "Manual mode selection restored for the next turn.",
+      };
+
+    case "SET_TASK_INTENT":
+      return {
+        ...state,
+        taskIntent: action.taskIntent,
+        sessionTaskIntents: setSessionTaskIntent(state, action.taskIntent),
       };
 
     case "SET_PROVIDER": {
@@ -1199,6 +1231,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedProviderId: snapshot?.config.providerId ?? session?.latestProviderId ?? state.selectedProviderId,
         promptText: sessionPromptText(state, action.sessionId),
         selectedSkillIds: sessionSkillIds(state, action.sessionId),
+        taskIntent: sessionTaskIntent(state, action.sessionId),
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
@@ -1238,6 +1271,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         : state.activeSnapshot;
       const streamSnapshot = streamBelongsToActiveTurn ? activeSnapshot : action.stream.snapshot;
       const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, streamSnapshot);
+      const isSettled = action.stream.status === "succeeded" || action.stream.status === "failed";
       return {
         ...state,
         sessions,
@@ -1250,6 +1284,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedBeatId: streamBelongsToActiveTurn ? action.stream.events.at(-1)?.id ?? state.selectedBeatId : state.selectedBeatId,
         pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? undefined : state.pendingRun,
         selectedModeSelection: streamBelongsToActiveTurn ? activeSnapshot?.config.modeSelection ?? state.selectedModeSelection : state.selectedModeSelection,
+        lastRunTaskIntent: isSettled && streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? state.taskIntent : state.lastRunTaskIntent,
         isLoading: streamBelongsToActiveTurn ? action.stream.status === "running" || action.stream.status === "queued" : state.isLoading,
         commandFeedback: streamBelongsToActiveTurn && action.stream.status === "succeeded"
           ? "Run completed."
@@ -1353,6 +1388,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         },
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
+        lastRunTaskIntent: undefined,
         isLoading: true,
       };
 
