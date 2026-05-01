@@ -20,6 +20,7 @@ function testSnapshot(params: {
   updatedAt?: number;
   agentMessages?: OraStateSnapshot["agentMessages"];
   events?: OraStateSnapshot["events"];
+  latency?: OraStateSnapshot["latency"];
 } = {}): OraStateSnapshot {
   const runId = params.runId ?? "run-debate";
   const sessionId = params.sessionId ?? "session-debate";
@@ -67,6 +68,7 @@ function testSnapshot(params: {
     busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
     pendingClarifications: [],
     pendingApprovals: [],
+    latency: params.latency,
     updatedAt,
   } as unknown as OraStateSnapshot;
 }
@@ -458,6 +460,77 @@ describe("desktop workbench state", () => {
 
     expect(merged?.agentMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["正方主辩", "反方主辩"]);
     expect(merged?.agentMessages.map((message) => message.content)).toEqual(["Opening argument.", "Opening response."]);
+  });
+
+  it("preserves desktop and runtime latency marks when snapshots merge", () => {
+    const existing = testSnapshot({
+      latency: {
+        marks: [{ name: "submitAt", at: 100, source: "desktop", detail: {} }],
+      },
+    });
+    const incoming = testSnapshot({
+      latency: {
+        marks: [{ name: "firstApplyLiveEvent", at: 120, source: "runtime", detail: { eventType: "run.started" } }],
+      },
+      updatedAt: 1_714_000_000_002,
+    });
+
+    const merged = mergeStateSnapshot(existing, incoming);
+
+    expect(merged?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual([
+      "desktop:submitAt",
+      "runtime:firstApplyLiveEvent",
+    ]);
+  });
+
+  it("records desktop latency marks from received run streams", () => {
+    const snapshot = testSnapshot({ runId: "run-latency" });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: snapshot.sessionId,
+      selectedTurnRunId: snapshot.runId,
+      activeSnapshot: snapshot,
+      activeSessionDetail: {
+        session: sessionSummary(snapshot.sessionId!),
+        turns: [{
+          runId: snapshot.runId,
+          sessionId: snapshot.sessionId!,
+          turnIndex: 1,
+          status: "running",
+          pattern: snapshot.pattern,
+          prompt: snapshot.input.prompt,
+          startedAt: snapshot.updatedAt,
+          updatedAt: snapshot.updatedAt,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+    };
+    const stream = {
+      runId: snapshot.runId,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: "run-latency:event:0",
+        runId: snapshot.runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: snapshot.updatedAt + 1,
+        payload: { role: "assistant", content: "Hello", delta: "Hello", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 200 });
+
+    expect(next.activeSnapshot?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual([
+      "desktop:firstRunStreamReceivedAt",
+      "desktop:firstMessageDeltaAt",
+      "desktop:firstNonProgressAssistantTextAt",
+    ]);
   });
 
   it("recovers debate transcript messages from snapshot agent.message events", () => {

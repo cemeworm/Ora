@@ -313,6 +313,23 @@ export async function runNodeRuntimeLoop(
             { agentId: params.agentId, nodeId: params.agentId },
           );
         },
+        onStreamEvent: (event: {
+          kind: string;
+          streamMode: string;
+          raw?: unknown;
+        }) => {
+          emit(
+            "node.updated",
+            {
+              state: event.kind,
+              title: params.title,
+              streamMode: event.streamMode,
+              providerStream: true,
+              raw: event.raw,
+            },
+            { agentId: params.agentId, nodeId: params.agentId },
+          );
+        },
       }
     : undefined;
   const repairDanglingToolCalls = (candidateMessages: ModelMessage[]) => {

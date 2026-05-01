@@ -838,6 +838,19 @@ export const RunTraceMetadataSchema = z.object({
 });
 export type RunTraceMetadata = z.infer<typeof RunTraceMetadataSchema>;
 
+export const RunLatencyMarkSchema = z.object({
+  name: z.string().min(1),
+  at: z.number().int().nonnegative(),
+  source: z.enum(["desktop", "runtime", "provider"]),
+  detail: z.record(z.unknown()).default({}),
+});
+export type RunLatencyMark = z.infer<typeof RunLatencyMarkSchema>;
+
+export const RunLatencyDiagnosticsSchema = z.object({
+  marks: z.array(RunLatencyMarkSchema).default([]),
+});
+export type RunLatencyDiagnostics = z.infer<typeof RunLatencyDiagnosticsSchema>;
+
 export const RunTrailMetricsSchema = z.object({
   runtimeMs: z.number().int().nonnegative(),
   eventCount: z.number().int().nonnegative(),
@@ -947,6 +960,7 @@ export const StateSnapshotSchema = z.object({
   pendingClarifications: z.array(PendingClarificationSchema).default([]),
   pendingApprovals: z.array(z.string().min(1)).default([]),
   trace: RunTraceMetadataSchema.optional(),
+  latency: RunLatencyDiagnosticsSchema.optional(),
   modeSpec: z.lazy(() => ModeSpecSchema).optional(),
   output: z.unknown().optional(),
   error: z.string().optional(),

@@ -213,8 +213,13 @@ export function createOpenAIProvider(
     }
 
     let text = "";
+    let sawStreamFrame = false;
     const rawEvents = await readSseMessages(response, async (message) => {
       const data = JSON.parse(message.data) as unknown;
+      if (!sawStreamFrame) {
+        sawStreamFrame = true;
+        await callbacks?.onStreamEvent?.({ kind: "sse_frame", streamMode: "sse", raw: data });
+      }
       const delta = openAiResponsesDelta(data);
       if (!delta) return;
       text += delta;

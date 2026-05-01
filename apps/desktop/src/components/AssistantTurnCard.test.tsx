@@ -40,6 +40,7 @@ function processStep(
   id: string,
   status: TurnProcessStep["status"],
   detail: string,
+  extra: Partial<TurnProcessStep> = {},
 ): TurnProcessStep {
   return {
     id,
@@ -48,7 +49,8 @@ function processStep(
     detail,
     timestamp: "00:05",
     status,
-    tone: "neutral",
+    tone: extra.tone ?? "neutral",
+    contextLabel: extra.contextLabel,
   };
 }
 
@@ -121,7 +123,7 @@ describe("assistant turn display helpers", () => {
       pattern: "agent_teams",
       processSteps: [
         processStep("step-1", "complete", "已完成资料收集。"),
-        processStep("step-2", "active", "正在综合专家观点。"),
+        processStep("step-2", "active", "正在综合专家观点。", { contextLabel: "analysis/report.md" }),
       ],
       agentMessages: [],
       artifacts: [],
@@ -135,6 +137,7 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html).toContain("正在综合专家观点。");
+    expect(html).toContain("对象：analysis/report.md");
     expect(html).not.toContain("正在：正在综合专家观点。");
     expect(html).not.toContain("已完成资料收集。");
   });
@@ -301,6 +304,33 @@ describe("assistant turn display helpers", () => {
       "message-2",
       "message-3",
     ]);
+  });
+
+  it("renders collaboration metadata with Chinese labels", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-meta",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      processSteps: [],
+      agentMessages: [agentMessage("message-meta", "route", "@builder 请处理。", {
+        topic: "task.findings",
+        correlationId: "bus-1",
+        planItemId: "plan-1",
+        artifactIds: ["artifact-1", "artifact-2"],
+      })],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+    };
+
+    const html = renderToStaticMarkup(<AssistantTurnCard content="正文" turn={turn} />);
+
+    expect(html).toContain("主题：task.findings");
+    expect(html).toContain("关联：bus-1");
+    expect(html).toContain("关联任务");
+    expect(html).toContain("关联产物 2 个");
   });
 
   it("limits running collaboration detail to the latest two meaningful exchanges", () => {

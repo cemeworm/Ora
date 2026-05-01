@@ -426,7 +426,8 @@ function WorkbenchInner() {
     let cancelled = false;
     void runtimeClient
       .subscribeRunEvents((stream) => {
-        dispatch({ type: "APPLY_RUN_STREAM", stream });
+        const receivedAt = Date.now();
+        dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
         setTurnSnapshots((current) => {
           const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
           return merged ? { ...current, [stream.runId]: merged } : current;

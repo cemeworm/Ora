@@ -13,6 +13,7 @@ import {
   CustomAgentUpdateParams,
   CustomAgentCreateParamsSchema,
   EvaluationFeedbackRecord,
+  SelfIterationCandidate,
   MODE_STUDIO_BUILDER_MODE_ID,
   ModeStudioApplyDraftParamsSchema,
   ModeStudioApplyDraftResult,
@@ -48,6 +49,7 @@ import {
   RunEventStream,
   RunForkParamsSchema,
   RunHandle,
+  type RunLatencyMark,
   RunResumeParamsSchema,
   RunTrail,
   RunTrailParamsSchema,
@@ -113,6 +115,7 @@ import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
 import { LocalFeedbackLoopStore } from "./feedback-loop-store.js";
+import { LocalSelfIterationStore } from "./self-iteration-store.js";
 import {
   projectWorkspaceContext
 } from "./project-workspace.js";
@@ -167,6 +170,7 @@ import {
   defaultCustomAgentsDir,
   defaultEvaluationStoreDir,
   defaultFeedbackLoopStoreDir,
+  defaultSelfIterationStoreDir,
   defaultMemoryDir,
   defaultModesDir,
   defaultPublicSkillsDir,
@@ -261,6 +265,7 @@ export class LocalRunStore {
   private readonly persistenceType: "sqlite" | "json-file";
   private readonly evaluationStore: LocalEvaluationStore;
   private readonly feedbackLoopStore: LocalFeedbackLoopStore;
+  private readonly selfIterationStore: LocalSelfIterationStore;
   private readonly customAgentStore: CustomAgentFileStore;
   private readonly systemAgentOverrideStore: SystemAgentOverrideFileStore;
   private readonly modeStore: ModeSpecFileStore;
@@ -297,6 +302,7 @@ export class LocalRunStore {
       this.clock,
     );
     this.feedbackLoopStore = new LocalFeedbackLoopStore(defaultFeedbackLoopStoreDir(dataDir), this.clock);
+    this.selfIterationStore = new LocalSelfIterationStore(defaultSelfIterationStoreDir(dataDir), this.clock);
     this.longTermMemory = new LongTermMemoryManager(
       new FileLongTermMemoryStore(defaultMemoryDir(dataDir)),
       this.clock,
@@ -789,6 +795,11 @@ export class LocalRunStore {
   }
 
   async startStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
+    const latencyMarks: RunLatencyMark[] = [];
+    const markRuntimeLatency = (name: string, detail: Record<string, unknown> = {}) => {
+      latencyMarks.push(runLatencyMark("runtime", name, this.now(), detail));
+    };
+    markRuntimeLatency("startStreamingRun.enter");
     const parsed = StartRunParamsSchema.parse(params);
     const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
     const input = this.enrichInputForSession(UserTaskInputSchema.parse({
@@ -796,11 +807,20 @@ export class LocalRunStore {
       createdAt: parsed.input.createdAt ?? this.now()
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
+    markRuntimeLatency("modeSelection.done", {
+      modeSelection: resolved.fullConfig.modeSelection,
+      modeId: resolved.modeSpec.id,
+    });
     const { modeSpec, definition } = resolved;
     const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
+    markRuntimeLatency("memoryPrompt.done", {
+      hasMemoryPromptOverlay: typeof fullConfig.metadata.memoryPromptOverlay === "string",
+      activeMemoryDecision: isRecord(fullConfig.metadata.activeMemory) ? fullConfig.metadata.activeMemory.decision : undefined,
+    });
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
+    markRuntimeLatency("conversationMessages.done", { messageCount: conversationMessages.length });
     let liveSnapshot = createRunningRunSnapshot({
       runId,
       sessionId: session.sessionId,
@@ -811,7 +831,12 @@ export class LocalRunStore {
       definition,
       clock: this.clock,
     });
+    markRuntimeLatency("snapshot.created");
+    liveSnapshot = withRunLatencyMarks(liveSnapshot, latencyMarks);
     this.persistRun(liveSnapshot);
+    liveSnapshot = appendFirstRunLatencyMark(liveSnapshot, runLatencyMark("runtime", "snapshotPersisted", this.now()));
+    liveSnapshot = appendFirstRunLatencyMark(liveSnapshot, runLatencyMark("runtime", "kernelScheduled", this.now()));
+    this.cacheRun(liveSnapshot, false, { deferInitialTitle: true });
 
     const publishStream = (events: OraEventEnvelope[], snapshot?: StateSnapshot) => {
       publishRunStream({
@@ -824,6 +849,7 @@ export class LocalRunStore {
     };
 
     const applyLiveEvent = (event: OraEventEnvelope) => {
+      liveSnapshot = markLatencyForRunEvent(liveSnapshot, event, this.now());
       liveSnapshot = applyStreamingRunEvent(liveSnapshot, event);
       this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
         deferInitialTitle: true,
@@ -850,7 +876,7 @@ export class LocalRunStore {
       streamProvider: true,
       onEvent: applyLiveEvent,
     }).then(async (snapshot) => {
-      const finalSnapshot = attachTraceMetadata(snapshot);
+      const finalSnapshot = attachTraceMetadata(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? []));
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -1479,6 +1505,45 @@ export class LocalRunStore {
     return this.feedbackLoopStore.updateRule(params);
   }
 
+  scanSelfIteration(params: unknown = {}) {
+    return this.selfIterationStore.scan(params, this.selfIterationInput(), {
+      applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
+    });
+  }
+
+  listSelfIterationCandidates(params: unknown = {}) {
+    return this.selfIterationStore.listCandidates(params);
+  }
+
+  getSelfIterationCandidate(params: unknown) {
+    return this.selfIterationStore.getCandidate(params);
+  }
+
+  evaluateSelfIterationCandidate(params: unknown) {
+    return this.selfIterationStore.evaluateCandidate(params);
+  }
+
+  rejectSelfIterationCandidate(params: unknown) {
+    return this.selfIterationStore.rejectCandidate(params);
+  }
+
+  applySelfIterationCandidate(params: unknown) {
+    return this.selfIterationStore.applyCandidate(params, {
+      applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
+      applyPromptCandidate: (candidate) => this.applyPromptSelfIterationCandidate(candidate),
+      applySkillCandidate: (candidate) => this.applySkillSelfIterationCandidate(candidate),
+      applyModeCandidate: (candidate) => this.applyModeSelfIterationCandidate(candidate),
+    });
+  }
+
+  getSelfIterationPolicy(params: unknown = {}) {
+    return this.selfIterationStore.getPolicy(params);
+  }
+
+  updateSelfIterationPolicy(params: unknown) {
+    return this.selfIterationStore.updatePolicy(params);
+  }
+
   private modeSelectionDeps(): ModeSelectionDeps {
     return {
       modeStore: this.modeStore,
@@ -1892,6 +1957,67 @@ export class LocalRunStore {
     };
   }
 
+  private selfIterationInput() {
+    const feedbackLoopInput = this.feedbackLoopInput();
+    return {
+      signals: this.feedbackLoopStore.listSignals({}, feedbackLoopInput),
+      insights: this.feedbackLoopStore.listInsights({}, feedbackLoopInput),
+      runs: feedbackLoopInput.runs,
+      evaluationRuns: feedbackLoopInput.evaluationRuns,
+      feedbackRecords: feedbackLoopInput.feedbackRecords,
+    };
+  }
+
+  private applyEvaluationSelfIterationCandidate(candidate: SelfIterationCandidate) {
+    const feedbackId = candidate.targetRef.feedbackId ?? String(candidate.proposedChange.metadata.feedbackId ?? "");
+    if (!feedbackId) return { applied: false, reason: "No feedback id was attached." };
+    return this.evaluationStore.acceptFeedback({ feedbackId });
+  }
+
+  private applyPromptSelfIterationCandidate(candidate: SelfIterationCandidate) {
+    const modeId = candidate.targetRef.modeId ?? String(candidate.proposedChange.metadata.modeId ?? "");
+    if (!modeId) return { applied: false, reason: "No mode id was attached." };
+    const mode = this.modeStore.get({ modeId });
+    const nodeId = candidate.targetRef.nodeId;
+    const targetNode = mode.nodes.find((node) => node.id === nodeId) ?? mode.nodes.find((node) => node.enabled) ?? mode.nodes[0];
+    if (!targetNode) return { applied: false, reason: "Mode has no editable node." };
+    const addition = typeof candidate.proposedChange.after === "string"
+      ? candidate.proposedChange.after
+      : candidate.proposedChange.summary;
+    const nextPrompt = [targetNode.prompt ?? targetNode.instructions ?? "", addition]
+      .filter(Boolean)
+      .join("\n\nSelf-Iteration guidance: ");
+    const nextMode = this.modeStore.update({
+      modeId,
+      spec: modeCreateParamsFromSpec({
+        ...mode,
+        nodes: mode.nodes.map((node) => node.id === targetNode.id ? { ...node, prompt: nextPrompt } : node),
+      }),
+    });
+    return { applied: true, modeId: nextMode.id, nodeId: targetNode.id };
+  }
+
+  private applySkillSelfIterationCandidate(candidate: SelfIterationCandidate) {
+    const after = candidate.proposedChange.after;
+    if (!after || typeof after !== "object") return { applied: false, reason: "Skill candidate has no package draft." };
+    const draft = after as { name?: unknown; description?: unknown; content?: unknown };
+    return this.skillRegistry.create({
+      name: String(draft.name ?? candidate.targetRef.skillName ?? "learned-workflow"),
+      description: String(draft.description ?? candidate.proposedChange.summary),
+      content: typeof draft.content === "string" ? draft.content : undefined,
+      enabled: true,
+    });
+  }
+
+  private applyModeSelfIterationCandidate(candidate: SelfIterationCandidate) {
+    return {
+      applied: true,
+      handoff: "mode_studio",
+      insightId: candidate.proposedChange.metadata.insightId,
+      message: "Mode candidates are recorded as Mode Studio handoffs in V1.",
+    };
+  }
+
   private migrationState() {
     return {
       projects: this.projects,
@@ -1907,6 +2033,107 @@ export class LocalRunStore {
   }
 }
 
+function runLatencyMark(
+  source: RunLatencyMark["source"],
+  name: string,
+  at: number,
+  detail: Record<string, unknown> = {},
+): RunLatencyMark {
+  return {
+    name,
+    at,
+    source,
+    detail,
+  };
+}
+
+function withRunLatencyMarks(snapshot: StateSnapshot, marks: readonly RunLatencyMark[]): StateSnapshot {
+  if (marks.length === 0) {
+    return snapshot;
+  }
+  const existing = snapshot.latency?.marks ?? [];
+  return StateSnapshotSchema.parse({
+    ...snapshot,
+    latency: { marks: [...existing, ...marks] },
+  });
+}
+
+function appendFirstRunLatencyMark(snapshot: StateSnapshot, mark: RunLatencyMark): StateSnapshot {
+  if (snapshot.latency?.marks.some((candidate) => candidate.name === mark.name)) {
+    return snapshot;
+  }
+  return withRunLatencyMarks(snapshot, [mark]);
+}
+
+function markLatencyForRunEvent(snapshot: StateSnapshot, event: OraEventEnvelope, at: number): StateSnapshot {
+  let next = appendFirstRunLatencyMark(
+    snapshot,
+    runLatencyMark("runtime", "firstApplyLiveEvent", at, { eventType: event.type, seq: event.seq }),
+  );
+  if (event.type === "message.delta" || event.type === "token.delta") {
+    next = appendFirstRunLatencyMark(
+      next,
+      runLatencyMark("runtime", "firstTextDelta", at, { eventType: event.type, seq: event.seq }),
+    );
+  }
+  if (event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string" && event.payload.content.trim()) {
+    next = appendFirstRunLatencyMark(
+      next,
+      runLatencyMark("runtime", "firstUserReadableAssistantTextProduced", at, { seq: event.seq }),
+    );
+  }
+  if (event.type === "task.progress" && isRecord(event.payload) && event.payload.source === "progress_narrator") {
+    next = appendFirstRunLatencyMark(
+      next,
+      runLatencyMark("runtime", "firstProgressNarration", at, { seq: event.seq }),
+    );
+  }
+  if (event.type === "node.updated" && isRecord(event.payload)) {
+    const state = typeof event.payload.state === "string" ? event.payload.state : undefined;
+    if (state === "running_model") {
+      next = appendFirstRunLatencyMark(
+        next,
+        runLatencyMark("runtime", "providerCallStarted", at, { agentId: event.agentId, seq: event.seq }),
+      );
+    }
+    if (state === "tool_requested") {
+      next = appendFirstRunLatencyMark(
+        next,
+        runLatencyMark("runtime", "firstToolCallDetected", at, { agentId: event.agentId, toolId: event.payload.toolId, seq: event.seq }),
+      );
+    }
+    if (state === "sse_frame" || state === "local_stream_started") {
+      next = appendFirstRunLatencyMark(
+        next,
+        runLatencyMark("provider", "firstProviderStreamFrame", at, { streamMode: event.payload.streamMode, seq: event.seq }),
+      );
+    }
+    if (state === "fallback_started") {
+      next = appendFirstRunLatencyMark(
+        next,
+        runLatencyMark("provider", "providerFallbackStarted", at, { streamMode: event.payload.streamMode, seq: event.seq }),
+      );
+    }
+    if (state === "fallback_response") {
+      next = appendFirstRunLatencyMark(
+        next,
+        runLatencyMark("provider", "providerFallbackResponse", at, { streamMode: event.payload.streamMode, seq: event.seq }),
+      );
+    }
+  }
+  if (event.type === "action.updated" && isRecord(event.payload) && event.payload.status === "proposed") {
+    next = appendFirstRunLatencyMark(
+      next,
+      runLatencyMark("runtime", "firstToolCallDetected", at, { actionId: event.payload.actionId, seq: event.seq }),
+    );
+  }
+  return next;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export class InMemoryRunStore extends LocalRunStore {}
 
 export {
@@ -1917,6 +2144,7 @@ export {
   defaultModesDir,
   defaultPublicSkillsDir,
   defaultRuntimeStoreDir,
+  defaultSelfIterationStoreDir,
   defaultSkillsDir,
   defaultSystemAgentOverridesDir
 };

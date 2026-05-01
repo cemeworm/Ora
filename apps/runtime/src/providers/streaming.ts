@@ -83,7 +83,9 @@ export function anthropicTextDelta(data: unknown): string {
 
 export function streamFallback(provider: (request: ModelRequest) => Promise<ModelResponse>) {
   return async (request: ModelRequest, callbacks?: ModelStreamCallbacks): Promise<ModelResponse> => {
+    await callbacks?.onStreamEvent?.({ kind: "fallback_started", streamMode: "fallback_single" });
     const response = await provider(request);
+    await callbacks?.onStreamEvent?.({ kind: "fallback_response", streamMode: "fallback_single", raw: response.raw });
     if (response.text) {
       await emitTextDelta(callbacks, {
         delta: response.text,

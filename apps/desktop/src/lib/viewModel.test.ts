@@ -233,7 +233,7 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.status).toBe("failed");
     expect(assistant?.turn?.liveProgressText).toBeUndefined();
     expect(processSteps.map((step) => step.label)).toEqual([
-      "Waiting for approval",
+      "等待确认",
       "审批不通过",
     ]);
     expect(processSteps.at(-1)).toMatchObject({
@@ -242,7 +242,7 @@ describe("desktop session view model", () => {
       status: "blocked",
       tone: "warning",
     });
-    expect(processSteps.some((step) => step.label === "Recovered")).toBe(false);
+    expect(processSteps.some((step) => step.label === "已恢复")).toBe(false);
     expect(assistant?.content).toBe("审批不通过，已停止继续执行。");
     expect(assistant?.content).not.toContain("已恢复");
     expect(assistant?.content).not.toContain("文档已成功更新");
@@ -1034,7 +1034,7 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.processSteps).toEqual([]);
   });
 
-  it("shows deterministic runtime status until streamed assistant text arrives", () => {
+  it("keeps progress-only status distinct and prefers streamed assistant answer", () => {
     const createdAt = 1_714_000_000_000;
     const baseSnapshot = {
       runId: "run-runtime-status",
@@ -1137,7 +1137,11 @@ describe("desktop session view model", () => {
     }).find((message) => message.role === "assistant");
 
     expect(statusMessage?.content).toBe("已选择单智能体模式，我准备好了");
+    expect(statusMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
     expect(deltaMessage?.content).toBe("我会先读取这些 skill。");
+    expect(deltaMessage?.content).not.toBe(deltaMessage?.turn?.liveProgressText);
+    expect(deltaMessage?.content).not.toContain("已选择单智能体模式");
+    expect(deltaMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
     expect(placeholderMessage?.content).toBe("");
     expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
   });
@@ -1331,8 +1335,8 @@ describe("desktop session view model", () => {
     const processSteps = assistant?.turn?.processSteps ?? [];
 
     expect(processSteps).toHaveLength(1);
-    expect(processSteps[0]?.label).toBe("Waiting for approval");
-    expect(processSteps[0]?.detail).toBe("Waiting for your approval before continuing.");
+    expect(processSteps[0]?.label).toBe("等待确认");
+    expect(processSteps[0]?.detail).toBe("需要你确认后，我才能继续。");
     expect(processSteps[0]?.detail).not.toContain("Manual approval required");
     expect(processSteps[0]?.detail).not.toContain("run-approval-node:action:tool-1");
   });
@@ -1458,5 +1462,7 @@ describe("desktop session view model", () => {
     expect(processSteps).toHaveLength(1);
     expect(processSteps[0]?.eventType).toBe("tool.called");
     expect(processSteps[0]?.label).toBe("读取文件");
+    expect(processSteps[0]?.detail).toContain("已读取 10-Wiki/项目/西芒杜项目.md");
+    expect(processSteps[0]?.contextLabel).toBe("10-Wiki/项目/西芒杜项目.md");
   });
 });

@@ -8,6 +8,8 @@ import { buildWorkbenchViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
+type DesktopLatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
+
 function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
   const toolIds = [...new Set(modeToolIds ?? [])];
   if (!projectId) {
@@ -22,6 +24,26 @@ function modeDisablesDefaultWebTools(modeToolIds: readonly string[] | undefined)
   }
   const ids = new Set(modeToolIds ?? []);
   return DEFAULT_WEB_TOOL_IDS.some((toolId) => !ids.has(toolId));
+}
+
+function desktopLatencyMark(name: string, at = Date.now(), detail: Record<string, unknown> = {}): DesktopLatencyMark {
+  return {
+    name,
+    at,
+    source: "desktop",
+    detail,
+  };
+}
+
+function appendDesktopLatencyMarks(snapshot: OraStateSnapshot, marks: readonly DesktopLatencyMark[]): OraStateSnapshot {
+  if (marks.length === 0) {
+    return snapshot;
+  }
+  const existing = snapshot.latency?.marks ?? [];
+  return {
+    ...snapshot,
+    latency: { marks: [...existing, ...marks] },
+  };
 }
 
 export function buildDesktopRunContext(
@@ -428,6 +450,7 @@ export function useRunActions() {
 
   async function startRun() {
     if (!state.selectedSessionId || !state.promptText.trim()) return;
+    const desktopLatencyMarks: DesktopLatencyMark[] = [desktopLatencyMark("submitAt")];
     const sessionId = state.selectedSessionId;
     const submittedPrompt = state.promptText;
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
@@ -451,6 +474,7 @@ export function useRunActions() {
       }
     });
     await waitForPendingRunPaint();
+    desktopLatencyMarks.push(desktopLatencyMark("pendingPaintedAt"));
     if (!clarificationPatch && selectedRunModeSelection === "auto") {
       dispatch({
         type: "SET_PENDING_RUN_PROGRESS",
@@ -484,6 +508,7 @@ export function useRunActions() {
       ...state.selectedSkillIds,
     ])];
     try {
+      desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
       const handle = await runtimeClient.startStreamingRun(
         {
           prompt: submittedPrompt,
@@ -513,7 +538,11 @@ export function useRunActions() {
         },
         sessionId,
       );
-      const snapshot = await runtimeClient.getRunState(handle.runId);
+      desktopLatencyMarks.push(desktopLatencyMark("handleReceivedAt", Date.now(), { runId: handle.runId }));
+      const snapshot = appendDesktopLatencyMarks(
+        await runtimeClient.getRunState(handle.runId),
+        [...desktopLatencyMarks, desktopLatencyMark("getRunStateReceivedAt", Date.now(), { runId: handle.runId })],
+      );
       dispatch({ type: "SELECT_TURN", runId: handle.runId, snapshot });
       await refreshCurrentSession(snapshot, `Started turn ${snapshot.turnIndex ?? "?"}.`);
       const health = runtimeClient.getHealth();

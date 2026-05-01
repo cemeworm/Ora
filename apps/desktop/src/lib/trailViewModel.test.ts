@@ -6,7 +6,10 @@ import {
   buildSemanticTimeline,
   buildToolLedger,
   buildTrailDebugSummary,
+  buildLatencyDiagnostics,
   collectTrailFindings,
+  eventKindLabel,
+  severityLabel,
 } from "./trailViewModel";
 import type { OraStateSnapshot } from "./runtimeClient";
 
@@ -41,8 +44,8 @@ describe("trail debugger view model", () => {
       expect.objectContaining({ severity: "info", id: "trace.local" }),
     ]);
     expect(findings.some((finding) => finding.severity === "warning")).toBe(false);
-    expect(summary.statusLabel).toBe("Done");
-    expect(summary.currentStage).toBe("completed");
+    expect(summary.statusLabel).toBe("已完成");
+    expect(summary.currentStage).toBe("已完成");
   });
 
   it("prioritizes failed runs and points developers to flow evidence", () => {
@@ -63,10 +66,10 @@ describe("trail debugger view model", () => {
 
     expect(findings[0]).toMatchObject({
       severity: "error",
-      message: "Run failed: Verifier response did not contain a parseable pass/fail verdict.",
+      message: "运行失败：Verifier response did not contain a parseable pass/fail verdict.",
       suggestedTab: "flow",
     });
-    expect(summary.statusLabel).toBe("Failed");
+    expect(summary.statusLabel).toBe("失败");
     expect(summary.recommendedTab).toBe("flow");
   });
 
@@ -100,6 +103,14 @@ describe("trail debugger view model", () => {
           checkpointId: "checkpoint-1",
           payload: { label: "Pattern checkpoint" },
         },
+        {
+          id: "evt-worker",
+          runId: "run-test",
+          seq: 4,
+          type: "worker.claimed",
+          createdAt: 5,
+          payload: { workerId: "worker-1" },
+        },
       ],
     });
 
@@ -107,7 +118,16 @@ describe("trail debugger view model", () => {
 
     expect(timeline.map((item) => item.id)).toEqual(["evt-tool", "evt-checkpoint"]);
     expect(timeline[0]).toMatchObject({ kind: "tool", agentLabel: "Builder" });
+    expect(timeline[0]).toMatchObject({ kind: "tool", label: "工具调用", detail: "搜索网页：已完成。", agentLabel: "Builder" });
     expect(timeline[1]).toMatchObject({ kind: "checkpoint", detail: "Pattern checkpoint" });
+    expect(buildSemanticTimeline(snapshot, { includeInternalEvents: true }).map((item) => item.id)).toContain("evt-worker");
+  });
+
+  it("provides Chinese labels for timeline filters and severities", () => {
+    expect(eventKindLabel("tool")).toBe("工具");
+    expect(eventKindLabel("all")).toBe("全部");
+    expect(severityLabel("warning")).toBe("警告");
+    expect(severityLabel("all")).toBe("全部");
   });
 
   it("groups agent messages and tool counts by agent lane", () => {
@@ -233,8 +253,8 @@ describe("trail debugger view model", () => {
     });
 
     expect(buildEffectiveStrategySummary(snapshot)).toMatchObject({
-      title: "Deep thinking",
-      statusLabel: "Degraded",
+      title: "deep 思考策略",
+      statusLabel: "已降级",
       statusTone: "warning",
     });
     expect(collectTrailFindings(snapshot, undefined, undefined, [])).toContainEqual(
@@ -243,6 +263,56 @@ describe("trail debugger view model", () => {
         severity: "warning",
       }),
     );
+  });
+
+  it("builds latency diagnostics from snapshot marks", () => {
+    const snapshot = baseSnapshot({
+      latency: {
+        marks: [
+          { source: "runtime", name: "startStreamingRun.enter", at: 100, detail: {} },
+          { source: "runtime", name: "modeSelection.done", at: 130, detail: { modeSelection: "auto" } },
+          { source: "runtime", name: "kernelScheduled", at: 150, detail: {} },
+          { source: "runtime", name: "firstApplyLiveEvent", at: 200, detail: { eventType: "run.started" } },
+          { source: "runtime", name: "providerCallStarted", at: 320, detail: {} },
+          { source: "provider", name: "firstProviderStreamFrame", at: 520, detail: { streamMode: "sse" } },
+          { source: "runtime", name: "firstTextDelta", at: 560, detail: {} },
+          { source: "runtime", name: "firstUserReadableAssistantTextProduced", at: 560, detail: {} },
+          { source: "runtime", name: "firstProgressNarration", at: 700, detail: {} },
+        ],
+      },
+    });
+
+    const diagnostics = buildLatencyDiagnostics(snapshot);
+
+    expect(diagnostics.summary).toMatchObject({
+      statusLabel: "链路正常",
+      statusTone: "success",
+      firstText: "460ms",
+      firstReadableText: "460ms",
+      providerMode: "sse",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "first-text-to-progress")).toMatchObject({
+      duration: "140ms",
+      status: "ok",
+    });
+  });
+
+  it("flags progress narration that happens before first text", () => {
+    const snapshot = baseSnapshot({
+      latency: {
+        marks: [
+          { source: "runtime", name: "startStreamingRun.enter", at: 100, detail: {} },
+          { source: "runtime", name: "firstProgressNarration", at: 250, detail: {} },
+          { source: "runtime", name: "firstTextDelta", at: 300, detail: {} },
+        ],
+      },
+    });
+
+    const diagnostics = buildLatencyDiagnostics(snapshot);
+
+    expect(diagnostics.summary.statusLabel).toBe("进度早于回答");
+    expect(diagnostics.summary.statusTone).toBe("error");
+    expect(diagnostics.summary.recommendation).toContain("进度叙述早于首个回答");
   });
 
   it("summarizes active-memory run metadata", () => {

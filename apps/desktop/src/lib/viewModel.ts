@@ -44,7 +44,8 @@ import type {
 } from "./runtimeClient";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
 
-const APPROVAL_INTERRUPT_MESSAGE = "Waiting for your approval before continuing.";
+const APPROVAL_INTERRUPT_MESSAGE = "需要你确认后，我才能继续。";
+const APPROVAL_INTERRUPT_MESSAGE_EN = "Waiting for your approval before continuing.";
 const APPROVAL_DENIED_MESSAGE = "审批不通过，已停止继续执行。";
 const APPROVAL_DENIED_STEP_LABEL = "审批不通过";
 const APPROVAL_DENIED_STEP_DETAIL = "已停止继续执行。";
@@ -496,14 +497,9 @@ function adaptStreamLines(events: OraEventEnvelope[]): StreamLine[] {
 
 function eventText(event: OraEventEnvelope): string {
   if (isRecord(event.payload)) {
-    if (typeof event.payload.message === "string") {
-      return event.payload.message;
-    }
-    if (typeof event.payload.content === "string") {
-      return event.payload.content;
-    }
-    if (typeof event.payload.summary === "string") {
-      return event.payload.summary;
+    const readable = readablePayloadText(event.payload);
+    if (readable) {
+      return readable;
     }
   }
 
@@ -512,13 +508,31 @@ function eventText(event: OraEventEnvelope): string {
       return "";
     case "node.updated":
       return isRecord(event.payload) && typeof event.payload.state === "string"
-        ? `Processing state updated: ${event.payload.state}.`
-        : "Processing state updated.";
+        ? `处理状态已更新：${event.payload.state}。`
+        : "处理状态已更新。";
     case "run.failed":
-      return "The run did not finish. Open Trails for the latest details.";
+      return "本轮任务未完成。可打开轨迹查看最新细节。";
     default:
       return event.type;
   }
+}
+
+function readablePayloadText(payload: Record<string, unknown>): string | undefined {
+  const candidates = [
+    payload.summary,
+    payload.message,
+    payload.title,
+    payload.detail,
+    payload.content,
+    payload.error,
+    payload.reason,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
 }
 
 function adaptAgentProfile(profile: OraAgentProfile): AgentProfile {
@@ -797,98 +811,99 @@ function beatGroup(event: OraEventEnvelope): RunBeat["group"] {
 function beatLabel(event: OraEventEnvelope): string {
   switch (event.type) {
     case "run.started":
-      return "Run started";
+      return "开始运行";
     case "run.resumed":
-      return "Resumed";
+      return "继续运行";
     case "run.forked":
-      return "Forked";
+      return "已分叉";
     case "run.replayed":
-      return "Replayed";
+      return "已重放";
     case "topology.updated":
-      return "Topology";
+      return "拓扑更新";
     case "agent.started":
-      return "Agent start";
+      return "智能体启动";
     case "agent.completed":
-      return "Agent done";
+      return "智能体完成";
     case "profile.updated":
-      return "Profile";
+      return "配置更新";
     case "memory.queued":
-      return "Memory queued";
+      return "记忆待写入";
     case "memory.updated":
-      return "Memory";
+      return "记忆更新";
     case "memory.flushed":
-      return "Memory flushed";
+      return "记忆已写入";
     case "plan.updated":
-      return "Plan";
+      return "计划更新";
     case "todo.updated":
-      return "To-do";
+      return "待办更新";
     case "action.updated":
-      return "Action";
+      return "操作更新";
     case "task.started":
-      return "Task start";
+      return "任务开始";
     case "task.progress":
-      return "Task";
+      return "任务进展";
     case "task.completed":
-      return "Task done";
+      return "任务完成";
     case "task.failed":
-      return "Task failed";
+      return "任务失败";
     case "approval.required":
-      return "Approval";
+      return "需要确认";
     case "clarification.required":
-      return "Clarify";
+      return "需要补充信息";
     case "approval.resolved":
-      return "Approval done";
+      return "确认已处理";
     case "clarification.resolved":
-      return "Clarified";
+      return "补充信息已处理";
     case "tool.called":
-      return isRecord(event.payload) ? toolCallLabel(event.payload) : "Tool";
+      return isRecord(event.payload) ? toolCallLabel(event.payload) : "工具调用";
     case "tool.repaired":
-      return "Tool repaired";
+      return "工具结果已恢复";
     case "message.delta":
-      return "Stream";
+      return "消息输出";
     case "agent.message":
-      return "Agent message";
+      return "智能体消息";
     case "message.published":
-      return "Publish";
+      return "消息发布";
     case "message.routed":
-      return "Route";
+      return "消息路由";
     case "token.delta":
-      return "Token";
+      return "文本输出";
     case "queue.updated":
-      return "Queue";
+      return "队列更新";
     case "shared_state.updated":
-      return "Shared state";
+      return "共享状态更新";
     case "worker.claimed":
-      return "Worker claimed";
+      return "工作单元接手";
     case "worker.released":
-      return "Worker released";
+      return "工作单元释放";
     case "checkpoint.created":
-      return "Checkpoint";
+      return "检查点";
     case "artifact.exported":
+      return "产物已发布";
     case "artifact.degraded":
-      return "Artifact";
+      return "产物已降级";
     case "completion.updated":
-      return "Completion";
+      return "生成控制";
     case "node.updated":
-      return "Node";
+      return "节点状态";
     case "recovery.detected":
-      return "Recovery";
+      return "检测到恢复需求";
     case "recovery.retry_scheduled":
-      return "Retry";
+      return "准备重试";
     case "recovery.applied":
-      return "Recovered";
+      return "已恢复";
     case "recovery.exhausted":
-      return "Recovery exhausted";
+      return "恢复失败";
     case "node.skipped":
-      return "Node skipped";
+      return "节点已跳过";
     case "run.interrupted":
-      return "Interrupted";
+      return "已暂停";
     case "run.cancelled":
-      return "Cancelled";
+      return "已取消";
     case "run.done":
-      return "Done";
+      return "已完成";
     case "run.failed":
-      return "Failed";
+      return "失败";
   }
 }
 
@@ -1660,16 +1675,16 @@ function processStepLabel(event: OraEventEnvelope): string {
     switch (event.payload.state) {
       case "interrupted":
         return isApprovalInterruptDetail(stringValue(event.payload.detail) ?? "")
-          ? "Waiting for approval"
-          : "Interrupted";
+          ? "等待确认"
+          : "已暂停";
       case "repairing":
-        return "Recovered";
+        return "已恢复";
       case "degraded":
-        return "Continued with limited context";
+        return "已在有限上下文下继续";
       case "failed":
-        return "Failed";
+        return "处理失败";
       default:
-        return "Processing state changed";
+        return "处理状态已更新";
     }
   }
   if (
@@ -1677,21 +1692,21 @@ function processStepLabel(event: OraEventEnvelope): string {
     isRecord(event.payload)
   ) {
     if (event.type === "tool.repaired") {
-      return "Recovered";
+      return "已恢复";
     }
     return toolCallLabel(event.payload);
   }
   if (event.type === "completion.updated") {
-    return "Stopped tool use";
+    return "已停止工具调用";
   }
   if (event.type === "approval.required") {
-    return "Waiting for approval";
+    return "等待确认";
   }
   if (event.type === "clarification.required") {
-    return "Waiting for clarification";
+    return "等待补充信息";
   }
   if (event.type === "action.updated") {
-    return "Action failed";
+    return "操作失败";
   }
   return beatLabel(event);
 }
@@ -1707,6 +1722,9 @@ function processStepDetail(event: OraEventEnvelope): string {
       event.type === "task.failed") &&
     !isChatProgressEvent(event)
   ) {
+    return isRecord(event.payload) ? readablePayloadText(event.payload) ?? "" : "";
+  }
+  if (event.type === "completion.updated") {
     return "";
   }
   const detail = eventText(event);
@@ -1722,18 +1740,18 @@ function processStepDetail(event: OraEventEnvelope): string {
     const actionDetail = toolCallDetail(event.payload);
     if (event.type === "tool.repaired") {
       return actionDetail
-        ? `Recovered missing tool result for ${actionDetail}.`
-        : "Recovered a missing tool result so the run could continue.";
+        ? `已恢复缺失的工具结果：${actionDetail}。`
+        : "已恢复缺失的工具结果，本轮任务可以继续。";
     }
     if (status === "failed" && typeof event.payload.error === "string") {
-      return `${actionDetail ?? title} failed: ${event.payload.error}`;
+      return `工具执行失败：${actionDetail ?? title}。${event.payload.error}`;
     }
     if (actionDetail) {
       return status === "failed"
-        ? `${actionDetail} failed.`
-        : `${actionDetail}.`;
+        ? `工具执行失败：${actionDetail}。`
+        : `${actionDetail}。`;
     }
-    return status ? `${title} ${status}.` : `${title} completed.`;
+    return status ? `工具调用更新：${title}（${toolStatusLabel(status)}）。` : `工具调用完成：${title}。`;
   }
   if (
     (event.type === "artifact.exported" ||
@@ -1748,8 +1766,8 @@ function processStepDetail(event: OraEventEnvelope): string {
           ? event.payload.label
           : "artifact";
     return event.type === "artifact.degraded"
-      ? `Degraded ${label}.`
-      : `Published ${label}.`;
+      ? `产物已降级：${label}。`
+      : `已发布产物：${label}。`;
   }
   if (
     event.type.startsWith("recovery.") &&
@@ -1774,7 +1792,7 @@ function processStepDetail(event: OraEventEnvelope): string {
     isRecord(event.payload) &&
     typeof event.payload.nodeLabel === "string"
   ) {
-    return `Skipped ${event.payload.nodeLabel}.`;
+    return `已跳过 ${event.payload.nodeLabel}。`;
   }
   if (
     event.type === "node.updated" &&
@@ -1787,18 +1805,18 @@ function processStepDetail(event: OraEventEnvelope): string {
         : "";
     switch (event.payload.state) {
       case "repairing":
-        return `Recovered missing tool context${detail}.`;
+        return `已恢复缺失的工具上下文${detail}。`;
       case "degraded":
-        return `Continued with limited context${detail}.`;
+        return `已在有限上下文下继续${detail}。`;
       case "interrupted":
         if (isApprovalInterruptDetail(detail.trim())) {
           return APPROVAL_INTERRUPT_MESSAGE;
         }
-        return `Paused after processing was interrupted${detail}.`;
+        return `处理已暂停${detail}。`;
       case "failed":
-        return `Processing step failed${detail}.`;
+        return `处理步骤失败${detail}。`;
       default:
-        return `Processing state changed${detail}.`;
+        return `处理状态已更新${detail}。`;
     }
   }
   return detail;
@@ -1807,6 +1825,7 @@ function processStepDetail(event: OraEventEnvelope): string {
 function isApprovalInterruptDetail(detail: string): boolean {
   return (
     detail === APPROVAL_INTERRUPT_MESSAGE ||
+    detail === APPROVAL_INTERRUPT_MESSAGE_EN ||
     /^Manual approval required for action .+\.$/.test(detail)
   );
 }
@@ -1912,14 +1931,22 @@ function rawToolId(payload: Record<string, unknown>): string | undefined {
 function toolCallDetail(payload: Record<string, unknown>): string | undefined {
   const toolId =
     typeof payload.toolId === "string" ? payload.toolId : undefined;
-  const input = isRecord(payload.input) ? payload.input : {};
-  const output = isRecord(payload.output) ? payload.output : {};
+  const input = isRecord(payload.input)
+    ? payload.input
+    : isRecord(payload.args)
+      ? payload.args
+      : {};
+  const output = isRecord(payload.output)
+    ? payload.output
+    : isRecord(payload.result)
+      ? payload.result
+      : {};
   const targetPath = stringValue(output.path) ?? stringValue(input.path);
 
   switch (toolId) {
     case "file.read":
       return targetPath
-        ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes)}`
+        ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes ?? output.bytes)}`
         : undefined;
     case "file.list":
       return targetPath
@@ -2021,9 +2048,32 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
   }
 }
 
+function toolStatusLabel(status: string): string {
+  switch (status) {
+    case "succeeded":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "running":
+      return "运行中";
+    case "proposed":
+      return "待确认";
+    case "approval_required":
+      return "需要确认";
+    case "interrupted":
+      return "已中断";
+    case "denied":
+      return "已拒绝";
+    case "repaired":
+      return "已恢复";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
 function humanizeActionError(error: string): string {
   if (/tool call instead of a final answer after completion control disabled tools/i.test(error)) {
-    return "The model tried to call another tool after Ora had stopped tool use, so the turn ended with the available answer.";
+    return "Ora 已停止工具调用，但模型仍尝试继续调用工具；本轮已使用现有答案结束。";
   }
   if (/interrupted by caller|paused as instructed/i.test(error)) {
     return USER_INTERRUPTED_MESSAGE;
@@ -2034,7 +2084,7 @@ function humanizeActionError(error: string): string {
   if (/cancelled by caller|canceled by caller|run was cancelled|stopped processing as instructed/i.test(error)) {
     return USER_CANCELLED_MESSAGE;
   }
-  return `Could not complete this operation: ${error}`;
+  return `无法完成这个操作：${error}`;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -2169,8 +2219,16 @@ function processToolTargetLabel(
     return undefined;
   }
 
-  const input = isRecord(payload.input) ? payload.input : {};
-  const output = isRecord(payload.output) ? payload.output : {};
+  const input = isRecord(payload.input)
+    ? payload.input
+    : isRecord(payload.args)
+      ? payload.args
+      : {};
+  const output = isRecord(payload.output)
+    ? payload.output
+    : isRecord(payload.result)
+      ? payload.result
+      : {};
   return (
     stringValue(output.path) ??
     stringValue(input.path) ??

@@ -51,6 +51,7 @@ export function createLocalSmokeProvider(
   });
 
   provider.stream = async (request, callbacks) => {
+    await callbacks?.onStreamEvent?.({ kind: "local_stream_started", streamMode: "local_smoke", raw: { provider: config.type, model: config.modelId } });
     const response = await provider(request);
     const parts = response.text.match(/\S+\s*/g) ?? [response.text];
     let text = "";

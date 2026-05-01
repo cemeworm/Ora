@@ -139,7 +139,7 @@ export type WorkbenchAction =
   | { type: "SET_PROVIDER_STATUSES"; statuses: OraProviderStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
-  | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream }
+  | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream; receivedAt?: number }
   | { type: "BEGIN_RUN_RESUME"; runId: string; approvedActionIds: string[]; updatedAt: number }
   | { type: "SELECT_TAB"; tab: DockTab }
   | { type: "SELECT_BEAT"; beatId: string | undefined }
@@ -426,6 +426,28 @@ function mergeEvents(
     .sort((left, right) => left.seq - right.seq);
 }
 
+function mergeLatencyDiagnostics(
+  ...sources: Array<OraStateSnapshot["latency"] | undefined>
+): OraStateSnapshot["latency"] | undefined {
+  const marks = sources
+    .flatMap((source) => source?.marks ?? [])
+    .sort((left, right) => left.at - right.at || left.source.localeCompare(right.source) || left.name.localeCompare(right.name));
+  if (marks.length === 0) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  return {
+    marks: marks.filter((mark) => {
+      const key = `${mark.source}:${mark.name}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    }),
+  };
+}
+
 function mergeAgentMessages(
   ...sources: Array<OraStateSnapshot["agentMessages"] | undefined>
 ): OraStateSnapshot["agentMessages"] {
@@ -496,6 +518,7 @@ export function mergeStateSnapshot(
     agentMessages: mergeAgentMessages(normalizedExisting.agentMessages, normalizedIncoming.agentMessages, agentMessagesFromEvents(events)),
     artifacts: mergeById(normalizedExisting.artifacts, normalizedIncoming.artifacts),
     trace: normalizedIncoming.trace ?? normalizedExisting.trace,
+    latency: mergeLatencyDiagnostics(normalizedExisting.latency, normalizedIncoming.latency),
     modeSpec: normalizedIncoming.modeSpec ?? normalizedExisting.modeSpec,
     output: normalizedIncoming.output ?? normalizedExisting.output,
     error: normalizedIncoming.error ?? normalizedExisting.error,
@@ -524,6 +547,52 @@ export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, s
     agentMessages,
     events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
+  };
+}
+
+function markDesktopLatencyForStream(
+  snapshot: OraStateSnapshot | undefined,
+  stream: OraRunEventStream,
+  receivedAt: number | undefined,
+): OraStateSnapshot | undefined {
+  if (!snapshot || receivedAt === undefined) {
+    return snapshot;
+  }
+  let next = appendFirstDesktopLatencyMark(snapshot, "firstRunStreamReceivedAt", receivedAt, {
+    eventType: stream.events[0]?.type,
+    eventCount: stream.events.length,
+  });
+  if (stream.events.some((event) => event.type === "message.delta" || event.type === "token.delta")) {
+    next = appendFirstDesktopLatencyMark(next, "firstMessageDeltaAt", receivedAt);
+  }
+  if (stream.events.some((event) => event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string" && event.payload.content.trim())) {
+    next = appendFirstDesktopLatencyMark(next, "firstNonProgressAssistantTextAt", receivedAt);
+  }
+  return next;
+}
+
+function appendFirstDesktopLatencyMark(
+  snapshot: OraStateSnapshot,
+  name: string,
+  at: number,
+  detail: Record<string, unknown> = {},
+): OraStateSnapshot {
+  if (snapshot.latency?.marks.some((mark) => mark.source === "desktop" && mark.name === name)) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    latency: {
+      marks: [
+        ...(snapshot.latency?.marks ?? []),
+        {
+          name,
+          at,
+          source: "desktop",
+          detail,
+        },
+      ],
+    },
   };
 }
 
@@ -1161,7 +1230,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         (state.activeSessionDetail?.turns.some((turn) => turn.runId === action.stream.runId) ?? false);
       const streamBelongsToActiveTurn = streamMatchesActiveSession && streamReferencesActiveRun;
       const activeSnapshot = streamBelongsToActiveTurn
-        ? mergeRunStreamSnapshot(state.activeSnapshot, action.stream)
+        ? markDesktopLatencyForStream(
+            mergeRunStreamSnapshot(state.activeSnapshot, action.stream),
+            action.stream,
+            action.receivedAt,
+          )
         : state.activeSnapshot;
       const streamSnapshot = streamBelongsToActiveTurn ? activeSnapshot : action.stream.snapshot;
       const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, streamSnapshot);

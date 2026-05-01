@@ -37,19 +37,26 @@ import {
   buildPendingApprovalItems,
   buildSemanticTimeline,
   buildToolLedger,
+  buildLatencyDiagnostics,
+  agentStatusLabel,
   buildTrailDebugSummary,
   canOpenLangfuseTrace,
   collectTrailFindings,
+  eventKindLabel,
   formatUsd,
+  severityLabel,
   snapshotPendingClarifications,
   tabLabel,
+  toolSourceLabel,
+  toolStatusLabel,
   type SemanticTimelineItem,
   type TrailDebuggerTab,
   type TrailFinding,
   type TrailFindingSeverity,
+  type TrailLatencyDiagnostics,
 } from "../lib/trailViewModel";
 
-const trailsTabs: TrailDebuggerTab[] = ["overview", "flow", "agents", "tools", "evidence"];
+const trailsTabs: TrailDebuggerTab[] = ["overview", "flow", "agents", "tools", "latency", "evidence"];
 const severityOptions: Array<TrailFindingSeverity | "all"> = ["all", "error", "warning", "info"];
 
 interface TrailsTabsProps {
@@ -99,6 +106,7 @@ export function TrailsTabs({
   const [openingTrace, setOpeningTrace] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<TrailFindingSeverity | "all">("all");
   const [eventKindFilter, setEventKindFilter] = useState<string>("all");
+  const [showInternalEvents, setShowInternalEvents] = useState(false);
   const [expandedTimelineId, setExpandedTimelineId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
@@ -115,7 +123,7 @@ export function TrailsTabs({
       } catch (error) {
         if (!cancelled) {
           setTrail(undefined);
-          setTrailError(error instanceof Error ? error.message : "Trace load failed.");
+          setTrailError(error instanceof Error ? error.message : "追踪数据加载失败。");
         }
       } finally {
         if (!cancelled) {
@@ -139,10 +147,11 @@ export function TrailsTabs({
     () => buildTrailDebugSummary(activeSnapshot, trail, actions, findings),
     [activeSnapshot, trail, actions, findings],
   );
-  const timelineItems = useMemo(() => buildSemanticTimeline(activeSnapshot), [activeSnapshot]);
+  const timelineItems = useMemo(() => buildSemanticTimeline(activeSnapshot, { includeInternalEvents: showInternalEvents }), [activeSnapshot, showInternalEvents]);
   const eventKinds = useMemo(() => ["all", ...Array.from(new Set(timelineItems.map((item) => item.kind)))], [timelineItems]);
   const agentLanes = useMemo(() => buildAgentLanes(activeSnapshot, agents, trail, findings), [activeSnapshot, agents, trail, findings]);
   const toolLedger = useMemo(() => buildToolLedger(activeSnapshot), [activeSnapshot]);
+  const latencyDiagnostics = useMemo(() => buildLatencyDiagnostics(activeSnapshot), [activeSnapshot]);
   const pendingApprovals = useMemo(() => buildPendingApprovalItems(activeSnapshot), [activeSnapshot]);
   const effectiveStrategy = useMemo(() => buildEffectiveStrategySummary(activeSnapshot), [activeSnapshot]);
   const activeMemorySummary = useMemo(() => buildActiveMemorySummary(activeSnapshot), [activeSnapshot]);
@@ -238,7 +247,9 @@ export function TrailsTabs({
             items={visibleTimeline}
             onEventKindFilterChange={setEventKindFilter}
             onToggleItem={(id) => setExpandedTimelineId((current) => current === id ? undefined : id)}
+            onToggleInternalEvents={() => setShowInternalEvents((current) => !current)}
             selectedBeat={selectedBeat}
+            showInternalEvents={showInternalEvents}
           />
         )}
 
@@ -254,6 +265,10 @@ export function TrailsTabs({
             commandFeedback={commandFeedback}
             items={toolLedger}
           />
+        )}
+
+        {selectedTab === "latency" && (
+          <TrailLatency diagnostics={latencyDiagnostics} />
         )}
 
         {selectedTab === "evidence" && (
@@ -274,17 +289,17 @@ export function TrailsTabs({
         )}
 
         {(selectedTab === "overview" || selectedTab === "flow") && findings.length > 0 && (
-          <DockCard title="Findings Filter" icon={<ListFilter size={16} />}>
+          <DockCard title="发现筛选" icon={<ListFilter size={16} />}>
             <div className="flex flex-wrap gap-2">
               {severityOptions.map((severity) => (
                 <button
                   key={severity}
                   onClick={() => setSeverityFilter(severity)}
-                  className={`rounded px-2.5 py-1 text-[11px] font-semibold capitalize transition active:scale-95 ${
+                  className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
                     severityFilter === severity ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
                   }`}
                 >
-                  {severity}
+                  {severityLabel(severity)}
                 </button>
               ))}
             </div>
@@ -341,15 +356,15 @@ function TrailOverview({
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
-        <OverviewMetric label="Run" value={selectedSession.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
-        <OverviewMetric label="Stage" value={summary.currentStage} detail={summary.blockingGate === "None" ? "No active gate" : summary.blockingGate} />
-        <OverviewMetric label="Focus" value={selectedNode?.label ?? "Run overview"} detail={selectedCheckpoint?.label ?? "No checkpoint selected"} />
-        <OverviewMetric label="Evidence" value={`${timelineItems.length} events`} detail={`${checkpoints.length} checkpoints · ${artifacts.length} artifacts`} />
+        <OverviewMetric label="运行" value={selectedSession.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
+        <OverviewMetric label="阶段" value={summary.currentStage} detail={summary.blockingGate === "无" ? "暂无人工关卡" : summary.blockingGate} />
+        <OverviewMetric label="焦点" value={selectedNode?.label ?? "运行概览"} detail={selectedCheckpoint?.label ?? "未选择检查点"} />
+        <OverviewMetric label="证据" value={`${timelineItems.length} 个事件`} detail={`${checkpoints.length} 个检查点 · ${artifacts.length} 个产物`} />
       </div>
 
-      <DockCard title="Findings" icon={<Radar size={16} />}>
+      <DockCard title="发现" icon={<Radar size={16} />}>
         {findings.length === 0 ? (
-          <p className="text-xs leading-5 text-bench-700">No findings for this run. Use Evidence for raw observations.</p>
+          <p className="text-xs leading-5 text-bench-700">本轮运行没有需要关注的发现。原始观测可在「证据」中查看。</p>
         ) : (
           <div className="space-y-2">
             {findings.map((finding) => (
@@ -370,7 +385,7 @@ function TrailOverview({
       </DockCard>
 
       {effectiveStrategy && (
-        <DockCard title="Runtime Strategy" icon={<SlidersHorizontal size={16} />}>
+        <DockCard title="运行策略" icon={<SlidersHorizontal size={16} />}>
           <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-semibold text-bench-900">{effectiveStrategy.title}</span>
@@ -385,7 +400,7 @@ function TrailOverview({
       )}
 
       {activeMemorySummary && (
-        <DockCard title="Active Memory" icon={<Database size={16} />}>
+        <DockCard title="主动记忆" icon={<Database size={16} />}>
           <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-semibold text-bench-900">{activeMemorySummary.mode}</span>
@@ -393,7 +408,7 @@ function TrailOverview({
             </div>
             <p className="mt-1 text-xs leading-5 text-bench-700">{activeMemorySummary.reason}</p>
             <p className="mt-2 text-[11px] text-bench-700">
-              {activeMemorySummary.selectedIds.length} selected · {activeMemorySummary.rejectedCount} rejected · {activeMemorySummary.candidateCount} candidates · {activeMemorySummary.renderedChars} chars
+              {activeMemorySummary.selectedIds.length} 条已选 · {activeMemorySummary.rejectedCount} 条已排除 · {activeMemorySummary.candidateCount} 条候选 · {activeMemorySummary.renderedChars} 字符
             </p>
             {activeMemorySummary.selectedIds.length > 0 && (
               <p className="mt-2 truncate font-mono text-[11px] text-bench-700">{activeMemorySummary.selectedIds.join(", ")}</p>
@@ -405,9 +420,9 @@ function TrailOverview({
         </DockCard>
       )}
 
-      <DockCard title="Blocking Gates" icon={<CircleAlert size={16} />}>
+      <DockCard title="阻塞关卡" icon={<CircleAlert size={16} />}>
         {pendingApprovals.length === 0 && pendingClarifications.length === 0 ? (
-          <p className="text-xs leading-5 text-bench-700">This run is not currently paused behind a manual gate.</p>
+          <p className="text-xs leading-5 text-bench-700">当前运行没有暂停在人工关卡后。</p>
         ) : (
           <div className="space-y-2">
             {pendingApprovals.map((item) => (
@@ -423,7 +438,7 @@ function TrailOverview({
               <div key={item.id} className="rounded-md bg-sky-50 px-3 py-2 ring-1 ring-inset ring-sky-200">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-semibold text-sky-950">{item.nodeLabel}</span>
-                  <span className="text-[11px] font-semibold uppercase text-sky-900">clarification</span>
+                  <span className="text-[11px] font-semibold text-sky-900">补充信息</span>
                 </div>
                 <p className="mt-1 text-xs leading-5 text-sky-900">{item.question}</p>
               </div>
@@ -432,9 +447,9 @@ function TrailOverview({
         )}
       </DockCard>
 
-      <DockCard title="Execution Map" icon={<Network size={16} />}>
+      <DockCard title="执行地图" icon={<Network size={16} />}>
         {activeSnapshot.topology.nodes.length === 0 ? (
-          <p className="text-xs leading-5 text-bench-700">No topology nodes were recorded for this run.</p>
+          <p className="text-xs leading-5 text-bench-700">本轮运行没有记录拓扑节点。</p>
         ) : (
           <div className="space-y-2">
             {activeSnapshot.topology.nodes.slice(0, 8).map((node) => (
@@ -450,20 +465,20 @@ function TrailOverview({
         )}
       </DockCard>
 
-      <DockCard title="Operator Actions" icon={<Activity size={16} />}>
+      <DockCard title="操作" icon={<Activity size={16} />}>
         <p className="mb-3 text-xs leading-5 text-bench-700">{commandFeedback}</p>
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" size="sm" onClick={onExportReport} disabled={busyCommand !== undefined}>
-            Export
+            导出
           </Button>
           <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
-            Fork
+            分叉
           </Button>
           <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined}>
-            Resume
+            继续
           </Button>
           <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined}>
-            Cancel
+            取消
           </Button>
         </div>
       </DockCard>
@@ -477,7 +492,9 @@ function TrailFlow({
   expandedTimelineId,
   items,
   selectedBeat,
+  showInternalEvents,
   onEventKindFilterChange,
+  onToggleInternalEvents,
   onToggleItem,
 }: {
   eventKindFilter: string;
@@ -485,30 +502,41 @@ function TrailFlow({
   expandedTimelineId?: string;
   items: SemanticTimelineItem[];
   selectedBeat?: RunBeat;
+  showInternalEvents: boolean;
   onEventKindFilterChange: (value: string) => void;
+  onToggleInternalEvents: () => void;
   onToggleItem: (id: string) => void;
 }) {
   return (
     <>
-      <DockCard title="Flow Filter" icon={<ListFilter size={16} />}>
+      <DockCard title="流程筛选" icon={<ListFilter size={16} />}>
         <div className="flex flex-wrap gap-2">
           {eventKinds.map((kind) => (
             <button
               key={kind}
               onClick={() => onEventKindFilterChange(kind)}
-              className={`rounded px-2.5 py-1 text-[11px] font-semibold capitalize transition active:scale-95 ${
+              className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
                 eventKindFilter === kind ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
               }`}
             >
-              {kind}
+              {eventKindLabel(kind as SemanticTimelineItem["kind"] | "all")}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={onToggleInternalEvents}
+            className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
+              showInternalEvents ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+            }`}
+          >
+            {showInternalEvents ? "隐藏内部事件" : "显示内部事件"}
+          </button>
         </div>
       </DockCard>
 
       <div className="space-y-2">
         {items.length === 0 ? (
-          <p className="rounded-lg bg-white p-3 text-xs leading-5 text-bench-700 shadow-sm ring-1 ring-inset ring-bench-200">No semantic events match this filter.</p>
+          <p className="rounded-lg bg-white p-3 text-xs leading-5 text-bench-700 shadow-sm ring-1 ring-inset ring-bench-200">没有符合当前筛选条件的流程事件。</p>
         ) : items.map((item) => (
           <button
             key={item.id}
@@ -523,8 +551,8 @@ function TrailFlow({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="text-sm font-semibold text-bench-900">{item.label}</p>
-                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-bench-700">
-                    {item.kind}
+                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-semibold tracking-[0.06em] text-bench-700">
+                    {eventKindLabel(item.kind)}
                   </span>
                   {item.severity !== "neutral" ? <SeverityPill severity={item.severity} /> : null}
                 </div>
@@ -540,8 +568,8 @@ function TrailFlow({
             </div>
             {expandedTimelineId === item.id ? (
               <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-                <EvidenceSnippet label="Input" value={item.inputPreview ?? "No input summary"} />
-                <EvidenceSnippet label="Output" value={item.outputPreview ?? "No output summary"} />
+                <EvidenceSnippet label="输入" value={item.inputPreview ?? "暂无输入摘要"} />
+                <EvidenceSnippet label="输出" value={item.outputPreview ?? "暂无输出摘要"} />
                 <div className="sm:col-span-2 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
                   <JsonTree data={item.rawPayload} defaultExpanded={1} />
                 </div>
@@ -557,8 +585,8 @@ function TrailFlow({
 function TrailAgents({ lanes, selectedAgentId }: { lanes: ReturnType<typeof buildAgentLanes>; selectedAgentId?: string }) {
   if (lanes.length === 0) {
     return (
-      <DockCard title="Agent Lanes" icon={<Bot size={16} />}>
-        <p className="text-xs leading-5 text-bench-700">No agent-level activity was recorded for this run.</p>
+      <DockCard title="智能体泳道" icon={<Bot size={16} />}>
+        <p className="text-xs leading-5 text-bench-700">本轮运行没有记录智能体级活动。</p>
       </DockCard>
     );
   }
@@ -573,12 +601,12 @@ function TrailAgents({ lanes, selectedAgentId }: { lanes: ReturnType<typeof buil
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold text-bench-900">{lane.label}</p>
-                <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold capitalize text-bench-800">{lane.status}</span>
+                <span className="rounded-full bg-bench-100 px-2 py-0.5 text-[11px] font-semibold text-bench-800">{agentStatusLabel(lane.status)}</span>
               </div>
               <p className="mt-1 text-xs leading-5 text-bench-700">{lane.role}</p>
             </div>
             <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
-              <p>{lane.messageCount} msgs · {lane.toolCount} tools</p>
+              <p>{lane.messageCount} 条消息 · {lane.toolCount} 次工具</p>
               <p>{formatUsd(lane.costUsd)}</p>
             </div>
           </div>
@@ -595,11 +623,11 @@ function TrailAgents({ lanes, selectedAgentId }: { lanes: ReturnType<typeof buil
               {lane.messages.map((message) => (
                 <div key={message.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-bench-700">{message.kind} · {message.status}</span>
+                    <span className="text-[11px] font-semibold tracking-[0.06em] text-bench-700">{agentMessageKindLabel(message.kind)} · {toolStatusLabel(message.status)}</span>
                     <span className="text-[11px] text-bench-600">{message.timestamp}</span>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-bench-800">{message.content}</p>
-                  {message.toLabels.length > 0 ? <p className="mt-1 text-[11px] text-bench-700">to {message.toLabels.join(", ")}</p> : null}
+                  {message.toLabels.length > 0 ? <p className="mt-1 text-[11px] text-bench-700">发送给 {message.toLabels.join(", ")}</p> : null}
                 </div>
               ))}
             </div>
@@ -610,9 +638,76 @@ function TrailAgents({ lanes, selectedAgentId }: { lanes: ReturnType<typeof buil
   );
 }
 
+function TrailLatency({ diagnostics }: { diagnostics: TrailLatencyDiagnostics }) {
+  return (
+    <>
+      <DockCard title="延迟诊断" icon={<Clock3 size={16} />}>
+        <div className="rounded-md bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-bench-900">首 token 链路</span>
+                <StatusChip tone={diagnostics.summary.statusTone}>{diagnostics.summary.statusLabel}</StatusChip>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-bench-700">{diagnostics.summary.recommendation}</p>
+            </div>
+            <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
+              <p>首文本 {diagnostics.summary.firstText}</p>
+              <p>可读回答 {diagnostics.summary.firstReadableText}</p>
+              <p>provider {diagnostics.summary.providerMode}</p>
+            </div>
+          </div>
+        </div>
+      </DockCard>
+
+      <DockCard title="关键分段" icon={<Route size={16} />}>
+        <div className="space-y-2">
+          {diagnostics.segments.map((segment) => (
+            <div key={segment.id} className="rounded-md bg-white px-3 py-2 ring-1 ring-inset ring-bench-200">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-bench-900">{segment.label}</span>
+                    <LatencyStatusPill status={segment.status} />
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-bench-700">{segment.note}</p>
+                  <p className="mt-1 truncate text-[11px] text-bench-600">{segment.from} → {segment.to}</p>
+                </div>
+                <span className="shrink-0 font-mono text-xs text-bench-800">{segment.duration}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </DockCard>
+
+      <DockCard title="原始 marks" icon={<Database size={16} />}>
+        {diagnostics.marks.length === 0 ? (
+          <p className="text-xs leading-5 text-bench-700">暂无 latency.marks。请运行带延迟诊断的 runtime 后再查看。</p>
+        ) : (
+          <div className="space-y-2">
+            {diagnostics.marks.map((mark) => (
+              <div key={mark.id} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-mono text-xs font-semibold text-bench-900">{mark.source}:{mark.name}</span>
+                  <span className="font-mono text-[11px] text-bench-700">+{mark.offset}</span>
+                </div>
+                {Object.keys(mark.detail).length > 0 ? (
+                  <div className="mt-2 rounded bg-white/70 p-2 text-[11px] ring-1 ring-inset ring-bench-200">
+                    <JsonTree data={mark.detail} defaultExpanded={0} />
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </DockCard>
+    </>
+  );
+}
+
 function TrailTools({ commandFeedback, items }: { commandFeedback: string; items: ReturnType<typeof buildToolLedger> }) {
   return (
-    <DockCard title="Tool Ledger" icon={<Wrench size={16} />}>
+    <DockCard title="工具记录" icon={<Wrench size={16} />}>
       {items.length === 0 ? (
         <p className="text-xs leading-5 text-bench-700">本次 run 未调用结构化工具。{commandFeedback ? ` ${commandFeedback}` : ""}</p>
       ) : (
@@ -623,17 +718,17 @@ function TrailTools({ commandFeedback, items }: { commandFeedback: string; items
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-bench-900">{item.toolId}</p>
                   <p className="mt-1 text-[11px] text-bench-700">
-                    {[item.source, item.agentLabel, item.nodeLabel, item.latency].filter(Boolean).join(" · ")}
+                    {[toolSourceLabel(item.source), item.agentLabel, item.nodeLabel, item.latency].filter(Boolean).join(" · ")}
                   </p>
                 </div>
-                <StatusChip tone={item.statusTone}>{item.status.replace(/_/g, " ")}</StatusChip>
+                <StatusChip tone={item.statusTone}>{toolStatusLabel(item.status)}</StatusChip>
               </div>
               {item.repairReason || item.error ? (
                 <p className="mt-2 text-xs leading-5 text-amber-800">{(item.repairReason ?? item.error)?.replace(/_/g, " ")}</p>
               ) : null}
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <EvidenceSnippet label="Args" value={item.argsPreview} />
-                <EvidenceSnippet label="Result" value={item.resultPreview || "No result captured"} />
+                <EvidenceSnippet label="参数" value={item.argsPreview} />
+                <EvidenceSnippet label="结果" value={item.resultPreview || "暂无结果记录"} />
               </div>
             </div>
           ))}
@@ -672,12 +767,12 @@ function TrailEvidence({
 }) {
   return (
     <>
-      <DockCard title="Trace Status" icon={<GitBranch size={16} />}>
+      <DockCard title="追踪状态" icon={<GitBranch size={16} />}>
         <div className="space-y-2">
-          <EvidenceRow label="Provider" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
-          <EvidenceRow label="Source" value={trace?.source ?? "trace unavailable"} />
-          <EvidenceRow label="Trace ID" value={trace?.traceId ?? "Not captured"} />
-          <EvidenceRow label="Availability" value={trace?.available ? "Available" : trace?.enabled ? "Pending / degraded" : "Disabled"} />
+          <EvidenceRow label="提供方" value={trace?.provider === "langfuse" ? "Langfuse" : "Ora Trails"} />
+          <EvidenceRow label="来源" value={trace?.source ?? "追踪不可用"} />
+          <EvidenceRow label="Trace ID" value={trace?.traceId ?? "未记录"} />
+          <EvidenceRow label="可用性" value={trace?.available ? "可用" : trace?.enabled ? "等待中 / 已降级" : "未启用"} />
         </div>
         {trace?.reason && <p className="mt-3 text-xs leading-5 text-bench-700">{trace.reason}</p>}
         <div className="mt-3 flex flex-wrap gap-2">
@@ -686,37 +781,37 @@ function TrailEvidence({
             size="sm"
             onClick={handleOpenTrace}
             disabled={traceOpenDisabled}
-            title={traceOpenUnavailable ? "No Langfuse trace is attached to this local Trail." : undefined}
+            title={traceOpenUnavailable ? "这个本地 Trail 没有关联 Langfuse 追踪。" : undefined}
           >
             <ExternalLink size={14} />
-            {traceOpenUnavailable ? "Local Trail only" : openingTrace ? "Opening" : "Open in Langfuse"}
+            {traceOpenUnavailable ? "仅本地 Trail" : openingTrace ? "正在打开" : "在 Langfuse 中打开"}
           </Button>
         </div>
       </DockCard>
 
-      <DockCard title="Generation Refs" icon={<Clock3 size={16} />}>
+      <DockCard title="生成引用" icon={<Clock3 size={16} />}>
         {trace?.generationRefs.length ? (
           <div className="space-y-2">
             {trace.generationRefs.map((generation) => (
               <div key={generation.observationId} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-medium text-bench-900">{generation.name}</span>
-                  <span className="shrink-0 text-[11px] text-bench-700">{generation.model ?? "unknown model"}</span>
+                  <span className="shrink-0 text-[11px] text-bench-700">{generation.model ?? "未知模型"}</span>
                 </div>
                 <p className="mt-1 text-[11px] text-bench-700">
-                  {(generation.providerId ?? "provider n/a")} · latency {generation.latencySeconds === undefined ? "n/a" : `${generation.latencySeconds.toFixed(2)}s`} · cost {formatUsd(generation.totalCostUsd ?? 0)}
+                  {(generation.providerId ?? "提供方不可用")} · 延迟 {generation.latencySeconds === undefined ? "不可用" : `${generation.latencySeconds.toFixed(2)}s`} · 成本 {formatUsd(generation.totalCostUsd ?? 0)}
                 </p>
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-xs leading-5 text-bench-700">No generation refs were captured for this run.</p>
+          <p className="text-xs leading-5 text-bench-700">本轮运行没有记录生成引用。</p>
         )}
       </DockCard>
 
-      <DockCard title="Observations" icon={<CheckCircle2 size={16} />}>
+      <DockCard title="观测记录" icon={<CheckCircle2 size={16} />}>
         {trailLoading ? (
-          <p className="text-xs leading-5 text-bench-700">Loading trace observations...</p>
+          <p className="text-xs leading-5 text-bench-700">正在加载追踪观测...</p>
         ) : trailError ? (
           <p className="text-xs leading-5 text-amber-700">{trailError}</p>
         ) : trail?.observations.length ? (
@@ -729,7 +824,7 @@ function TrailEvidence({
                     <span className="shrink-0 text-[11px] uppercase tracking-[0.08em] text-bench-700">{observation.type}</span>
                   </div>
                   <p className="mt-1 truncate text-[11px] text-bench-700">
-                    {observation.model ? `${observation.model} · ` : ""}{observation.statusMessage ?? "No status message"}
+                    {observation.model ? `${observation.model} · ` : ""}{observation.statusMessage ?? "暂无状态信息"}
                   </p>
                 </summary>
                 {(observation.input !== undefined || observation.output !== undefined) && (
@@ -741,12 +836,12 @@ function TrailEvidence({
             ))}
           </div>
         ) : (
-          <p className="text-xs leading-5 text-bench-700">Trace data is not available for this run yet. Local Trails views are still backed by Ora runtime state.</p>
+          <p className="text-xs leading-5 text-bench-700">本轮运行暂时没有可用的追踪数据。本地 Trails 视图仍由 Ora 运行时状态支撑。</p>
         )}
       </DockCard>
 
       {(artifacts.length > 0 || checkpoints.length > 0 || planItems.length > 0) && (
-        <DockCard title="Run Attachments" icon={<Boxes size={16} />}>
+        <DockCard title="运行附件" icon={<Boxes size={16} />}>
           <div className="space-y-2">
             {artifacts.map((artifact) => (
               <EvidenceRow key={artifact.id} label={artifact.label} value={`${artifact.kind} · ${artifact.mimeType}`} />
@@ -761,9 +856,9 @@ function TrailEvidence({
         </DockCard>
       )}
 
-      <DockCard title="Snapshot" icon={<Route size={16} />}>
+      <DockCard title="快照" icon={<Route size={16} />}>
         <details>
-          <summary className="cursor-pointer text-sm font-semibold text-bench-900">Raw run snapshot</summary>
+          <summary className="cursor-pointer text-sm font-semibold text-bench-900">原始运行快照</summary>
           <div className="mt-2 max-h-72 overflow-y-auto rounded-md bg-bench-50 p-2">
             <JsonTree data={activeSnapshot} defaultExpanded={1} />
           </div>
@@ -808,10 +903,47 @@ function SeverityPill({ severity }: { severity: TrailFindingSeverity }) {
       ? "bg-amber-100 text-amber-900"
       : "bg-sky-100 text-sky-900";
   return (
-    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${className}`}>
-      {severity}
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-[0.06em] ${className}`}>
+      {severityLabel(severity)}
     </span>
   );
+}
+
+function agentMessageKindLabel(kind: string) {
+  switch (kind) {
+    case "handoff":
+      return "交接";
+    case "reply":
+      return "回复";
+    case "route":
+      return "路由";
+    case "mention":
+      return "提及";
+    case "publish":
+      return "发布";
+    case "status":
+      return "状态";
+    default:
+      return kind;
+  }
+}
+
+function LatencyStatusPill({ status }: { status: TrailLatencyDiagnostics["segments"][number]["status"] }) {
+  const label = status === "ok"
+    ? "正常"
+    : status === "warning"
+      ? "偏慢"
+      : status === "slow"
+        ? "慢段"
+        : "缺失";
+  const className = status === "ok"
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    : status === "warning"
+      ? "bg-amber-50 text-amber-800 ring-amber-200"
+      : status === "slow"
+        ? "bg-red-50 text-red-700 ring-red-200"
+        : "bg-bench-100 text-bench-700 ring-bench-200";
+  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${className}`}>{label}</span>;
 }
 
 function StatusChip({ tone, children }: { tone: "success" | "warning" | "error" | "neutral"; children: React.ReactNode }) {

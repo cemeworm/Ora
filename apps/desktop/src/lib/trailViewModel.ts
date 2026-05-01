@@ -1,8 +1,43 @@
 import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
 
-export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "evidence";
+export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence";
 export type TrailFindingSeverity = "error" | "warning" | "info";
+
+type LatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
+
+export interface TrailLatencyMarkItem {
+  id: string;
+  name: string;
+  source: LatencyMark["source"];
+  at: number;
+  offset: string;
+  detail: Record<string, unknown>;
+}
+
+export interface TrailLatencySegment {
+  id: string;
+  label: string;
+  from: string;
+  to: string;
+  duration: string;
+  durationMs?: number;
+  status: "ok" | "warning" | "slow" | "missing";
+  note: string;
+}
+
+export interface TrailLatencyDiagnostics {
+  summary: {
+    statusLabel: string;
+    statusTone: "success" | "warning" | "error" | "neutral";
+    recommendation: string;
+    firstText: string;
+    firstReadableText: string;
+    providerMode: string;
+  };
+  marks: TrailLatencyMarkItem[];
+  segments: TrailLatencySegment[];
+}
 
 export interface TrailFinding {
   id: string;
@@ -154,11 +189,11 @@ export function buildTrailDebugSummary(
   };
 }
 
-export function buildSemanticTimeline(snapshot: OraStateSnapshot): SemanticTimelineItem[] {
+export function buildSemanticTimeline(snapshot: OraStateSnapshot, options: { includeInternalEvents?: boolean } = {}): SemanticTimelineItem[] {
   const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   const agentLabels = buildAgentLabelMap(snapshot);
   return snapshot.events
-    .filter((event) => shouldShowSemanticEvent(event.type))
+    .filter((event) => shouldShowSemanticEvent(event, options.includeInternalEvents === true))
     .map((event) => {
       const payload = isRecord(event.payload) ? event.payload : undefined;
       const agentLabel = event.agentId ? agentLabels.get(event.agentId) ?? event.agentId : undefined;
@@ -236,16 +271,69 @@ export function buildAgentLanes(
     return {
       id: agentId,
       label: labelMap.get(agentId) ?? agentId,
-      role: roleMap.get(agentId) ?? "Runtime participant",
+      role: roleMap.get(agentId) ?? "运行时参与者",
       status: inferAgentStatus(snapshot, agentId, laneFindings),
       messageCount: messages.length,
       toolCount,
       costUsd: generationCosts.get(agentId) ?? 0,
-      latestActivity: latestEvent ? timelineDetail(latestEvent) : "No recent agent activity.",
+      latestActivity: latestEvent ? timelineDetail(latestEvent) : "暂无最近智能体活动。",
       messages,
       findings: laneFindings,
     };
   });
+}
+
+export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatencyDiagnostics {
+  const sortedMarks = [...(snapshot.latency?.marks ?? [])]
+    .sort((left, right) => left.at - right.at || left.source.localeCompare(right.source) || left.name.localeCompare(right.name));
+  const baseAt = sortedMarks[0]?.at ?? snapshot.input.createdAt ?? snapshot.updatedAt;
+  const markByKey = new Map(sortedMarks.map((mark) => [`${mark.source}:${mark.name}`, mark]));
+  const segments = LATENCY_SEGMENT_DEFINITIONS.map((definition) => buildLatencySegment(definition, markByKey));
+  const firstText = markByKey.get("runtime:firstTextDelta") ?? markByKey.get("desktop:firstMessageDeltaAt");
+  const firstReadableText = markByKey.get("runtime:firstUserReadableAssistantTextProduced") ?? markByKey.get("desktop:firstNonProgressAssistantTextAt");
+  const firstProgressNarration = markByKey.get("runtime:firstProgressNarration");
+  const providerFrame = markByKey.get("provider:firstProviderStreamFrame") ?? markByKey.get("provider:providerFallbackStarted");
+  const providerMode = typeof providerFrame?.detail.streamMode === "string"
+    ? providerFrame.detail.streamMode
+    : "未记录";
+  const warningSegments = segments.filter((segment) => segment.status === "warning" || segment.status === "slow");
+  const progressBeforeText = Boolean(firstProgressNarration && firstText && firstProgressNarration.at < firstText.at);
+  const missingText = !firstText;
+  const statusTone = missingText || progressBeforeText
+    ? "error"
+    : warningSegments.length > 0
+      ? "warning"
+      : sortedMarks.length > 0
+        ? "success"
+        : "neutral";
+
+  return {
+    summary: {
+      statusLabel: missingText
+        ? "未见首个文本"
+        : progressBeforeText
+          ? "进度早于回答"
+          : warningSegments.length > 0
+            ? "存在慢段"
+            : sortedMarks.length > 0
+              ? "链路正常"
+              : "暂无数据",
+      statusTone,
+      recommendation: latencyRecommendation({ missingText, progressBeforeText, warningSegments, providerMode, sortedMarks }),
+      firstText: firstText ? formatDuration(firstText.at - baseAt) : "未记录",
+      firstReadableText: firstReadableText ? formatDuration(firstReadableText.at - baseAt) : "未记录",
+      providerMode,
+    },
+    marks: sortedMarks.map((mark) => ({
+      id: `${mark.source}:${mark.name}:${mark.at}`,
+      name: mark.name,
+      source: mark.source,
+      at: mark.at,
+      offset: formatDuration(mark.at - baseAt),
+      detail: mark.detail ?? {},
+    })),
+    segments,
+  };
 }
 
 export function buildToolLedger(snapshot: OraStateSnapshot): ToolLedgerItem[] {
@@ -263,7 +351,7 @@ export function buildToolLedger(snapshot: OraStateSnapshot): ToolLedgerItem[] {
     nodeLabel: call.nodeId ? nodeLabels.get(call.nodeId) ?? call.nodeId : undefined,
     latency: formatDuration(Math.max(0, (call.result?.updatedAt ?? call.updatedAt) - call.requestedAt)),
     argsPreview: previewValue(call.args) ?? "{}",
-    resultPreview: previewValue(call.result?.output ?? call.result?.content ?? call.result?.error) ?? "No result captured",
+    resultPreview: previewValue(call.result?.output ?? call.result?.content ?? call.result?.error) ?? "暂无结果记录",
     repairReason: call.repairReason,
     error: call.error ?? call.result?.error,
   }));
@@ -286,10 +374,10 @@ export function collectTrailFindings(
     push({
       id: "run.failed",
       severity: "error",
-      title: "Run failed",
+      title: "运行失败",
       message: failureDetail
-        ? `Run failed: ${failureDetail}`
-        : "The run ended in a failed state. Inspect the latest events and trace rows for the failing branch.",
+        ? `运行失败：${failureDetail}`
+        : "本轮运行以失败状态结束。请查看最新事件和追踪记录定位失败分支。",
       targetType: "run",
       suggestedTab: "flow",
     });
@@ -298,8 +386,8 @@ export function collectTrailFindings(
     push({
       id: "strategy.provider-degraded",
       severity: "warning",
-      title: "Provider thinking degraded",
-      message: snapshot.config.effectiveStrategy.notes[0] ?? "The selected provider could not honor this mode's requested reasoning policy.",
+      title: "模型思考策略降级",
+      message: snapshot.config.effectiveStrategy.notes[0] ?? "当前模型提供方无法满足该模式请求的推理策略。",
       targetType: "run",
       suggestedTab: "overview",
     });
@@ -309,8 +397,8 @@ export function collectTrailFindings(
       push({
         id: `tool.failed:${call.id}`,
         severity: "error",
-        title: "Tool failed",
-        message: `${call.toolId} failed${call.error ?? call.result?.error ? `: ${call.error ?? call.result?.error}` : "."}`,
+        title: "工具调用失败",
+        message: `${toolDisplayLabel(call.toolId)} 失败${call.error ?? call.result?.error ? `：${call.error ?? call.result?.error}` : "。"}`,
         targetType: "tool",
         targetId: call.id,
         suggestedTab: "tools",
@@ -320,8 +408,8 @@ export function collectTrailFindings(
       push({
         id: `tool.repaired:${call.id}`,
         severity: "warning",
-        title: "Tool call repaired",
-        message: "A dangling provider tool call was repaired as interrupted before the next model call.",
+        title: "工具结果已恢复",
+        message: "检测到缺失的模型工具结果，并在下一次模型调用前将其恢复为已中断状态。",
         targetType: "tool",
         targetId: call.id,
         suggestedTab: "tools",
@@ -331,8 +419,8 @@ export function collectTrailFindings(
       push({
         id: `tool.interrupted:${call.id}`,
         severity: "warning",
-        title: "Tool interrupted",
-        message: "A tool call was interrupted before completion.",
+        title: "工具调用已中断",
+        message: "工具调用在完成前被中断。",
         targetType: "tool",
         targetId: call.id,
         suggestedTab: "tools",
@@ -342,8 +430,8 @@ export function collectTrailFindings(
       push({
         id: `tool.approval:${call.id}`,
         severity: "warning",
-        title: "Tool approval pending",
-        message: `${call.toolId} is waiting for manual approval.`,
+        title: "工具调用等待确认",
+        message: `${toolDisplayLabel(call.toolId)} 正在等待人工确认。`,
         targetType: "tool",
         targetId: call.id,
         suggestedTab: "tools",
@@ -354,8 +442,8 @@ export function collectTrailFindings(
     push({
       id: "approval.pending",
       severity: "warning",
-      title: "Approval pending",
-      message: "A pending approval is blocking forward progress.",
+      title: "等待确认",
+      message: "有待确认操作正在阻塞后续进度。",
       targetType: "run",
       suggestedTab: "overview",
     });
@@ -368,8 +456,8 @@ export function collectTrailFindings(
     push({
       id: `continuation.${activeContinuation.status}:${activeContinuation.id}`,
       severity: activeContinuation.status === "failed" ? "error" : "info",
-      title: "Continuation frame active",
-      message: `Runtime continuation is ${activeContinuation.status} for ${activeContinuation.reason}.`,
+      title: "运行续接中",
+      message: `运行续接状态：${toolStatusLabel(activeContinuation.status)}，原因：${activeContinuation.reason}。`,
       targetType: "run",
       suggestedTab: "flow",
     });
@@ -378,7 +466,7 @@ export function collectTrailFindings(
     push({
       id: `clarification.pending:${clarification.id}`,
       severity: "warning",
-      title: "Clarification pending",
+      title: "等待补充信息",
       message: clarification.question,
       targetType: "event",
       targetId: clarification.id,
@@ -390,7 +478,7 @@ export function collectTrailFindings(
     push({
       id: `recovery.exhausted:${recoveryExhausted.id}`,
       severity: "error",
-      title: "Recovery exhausted",
+      title: "恢复失败",
       message: timelineDetail(recoveryExhausted),
       targetType: "event",
       targetId: recoveryExhausted.id,
@@ -402,8 +490,8 @@ export function collectTrailFindings(
     push({
       id: "run.stop-reason",
       severity: "info",
-      title: "Stop reason",
-      message: `Run stop reason: ${stopReason}.`,
+      title: "停止原因",
+      message: `运行停止原因：${stopReasonLabel(stopReason) ?? stopReason}。`,
       targetType: "run",
       suggestedTab: "evidence",
     });
@@ -412,8 +500,8 @@ export function collectTrailFindings(
     push({
       id: "trace.local",
       severity: "info",
-      title: "Local trail active",
-      message: "Ora-native Trails is active; Langfuse is optional for deeper observability.",
+      title: "本地轨迹已启用",
+      message: "Ora 原生 Trails 已启用；Langfuse 仅作为更深层可观测性的可选补充。",
       targetType: "trace",
       suggestedTab: "evidence",
     });
@@ -421,8 +509,8 @@ export function collectTrailFindings(
     push({
       id: "trace.disabled",
       severity: "info",
-      title: "Remote tracing disabled",
-      message: "Langfuse tracing is disabled, so Trails is operating in local-only mode.",
+      title: "远程追踪未启用",
+      message: "Langfuse 追踪未启用，Trails 当前以本地模式运行。",
       targetType: "trace",
       suggestedTab: "evidence",
     });
@@ -430,8 +518,8 @@ export function collectTrailFindings(
     push({
       id: "trace.degraded",
       severity: "warning",
-      title: "Remote trace unavailable",
-      message: trace.reason ?? "Remote trace data is unavailable; the drawer is using local synthesized observations.",
+      title: "远程追踪不可用",
+      message: trace.reason ?? "远程追踪数据不可用，当前面板使用本地合成观测。",
       targetType: "trace",
       suggestedTab: "evidence",
     });
@@ -440,8 +528,8 @@ export function collectTrailFindings(
     push({
       id: "trace.fetch-error",
       severity: "warning",
-      title: "Trace fetch degraded",
-      message: `Trace fetch degraded: ${trailError}`,
+      title: "追踪数据获取降级",
+      message: `追踪数据获取降级：${trailError}`,
       targetType: "trace",
       suggestedTab: "evidence",
     });
@@ -450,8 +538,8 @@ export function collectTrailFindings(
     push({
       id: "events.empty",
       severity: "info",
-      title: "No runtime events",
-      message: "No runtime events were recorded for this run.",
+      title: "暂无运行事件",
+      message: "本轮运行尚未记录运行时事件。",
       targetType: "run",
       suggestedTab: "evidence",
     });
@@ -495,20 +583,20 @@ export function buildEffectiveStrategySummary(snapshot: OraStateSnapshot): Effec
       ? "success"
       : "neutral";
   const statusLabel = strategy.providerPolicyStatus === "applied"
-    ? "Applied"
+    ? "已应用"
     : strategy.providerPolicyStatus === "degraded"
-      ? "Degraded"
-      : "Unsupported";
+      ? "已降级"
+      : "不支持";
   return {
-    title: `${sentenceCase(strategy.thinking)} thinking`,
+    title: `${strategy.thinking} 思考策略`,
     detail: [
-      `${sentenceCase(strategy.sourceModeSelection)} mode ${strategy.sourceModeId}`,
-      `${sentenceCase(strategy.reasoningEffort ?? "none")} reasoning`,
-      `${sentenceCase(strategy.planning)} planning`,
+      `${strategy.sourceModeSelection} 模式 ${strategy.sourceModeId}`,
+      `${strategy.reasoningEffort ?? "none"} 推理强度`,
+      `${strategy.planning} 规划`,
       strategy.delegationEnabled
-        ? `${sentenceCase(strategy.delegation)} delegation`
-        : "No delegation",
-      `${strategy.budget.maxToolCalls} tools`,
+        ? `${strategy.delegation} 委派`
+        : "未启用委派",
+      `${strategy.budget.maxToolCalls} 次工具预算`,
     ].join(" · "),
     statusLabel,
     statusTone,
@@ -538,8 +626,8 @@ export function buildActiveMemorySummary(snapshot: OraStateSnapshot): ActiveMemo
   return {
     statusLabel: status,
     statusTone: warnings.length > 0 ? "warning" : status === "USE" ? "success" : "neutral",
-    mode: typeof decision.mode === "string" ? decision.mode : "unknown",
-    reason: typeof decision.reason === "string" ? decision.reason : "No active-memory reason was recorded.",
+    mode: typeof decision.mode === "string" ? decision.mode : "未知模式",
+    reason: typeof decision.reason === "string" ? decision.reason : "未记录主动记忆选择原因。",
     candidateCount: candidateIds.length,
     selectedIds,
     rejectedCount: rejectedIds.length,
@@ -581,8 +669,101 @@ export function tabLabel(tab: TrailDebuggerTab) {
       return "智能体";
     case "tools":
       return "工具";
+    case "latency":
+      return "延迟";
     case "evidence":
       return "证据";
+  }
+}
+
+export function eventKindLabel(kind: SemanticTimelineItem["kind"] | "all") {
+  switch (kind) {
+    case "all":
+      return "全部";
+    case "run":
+      return "运行";
+    case "agent":
+      return "智能体";
+    case "tool":
+      return "工具";
+    case "handoff":
+      return "交接";
+    case "checkpoint":
+      return "检查点";
+    case "recovery":
+      return "恢复";
+    case "gate":
+      return "关卡";
+    case "artifact":
+      return "产物";
+    case "state":
+      return "状态";
+  }
+}
+
+export function severityLabel(severity: TrailFindingSeverity | "neutral" | "all") {
+  switch (severity) {
+    case "all":
+      return "全部";
+    case "error":
+      return "错误";
+    case "warning":
+      return "警告";
+    case "info":
+      return "信息";
+    case "neutral":
+      return "记录";
+  }
+}
+
+export function agentStatusLabel(status: AgentLane["status"]) {
+  switch (status) {
+    case "active":
+      return "进行中";
+    case "blocked":
+      return "已阻塞";
+    case "failed":
+      return "失败";
+    case "done":
+      return "已完成";
+    case "idle":
+      return "空闲";
+  }
+}
+
+export function toolStatusLabel(status: string) {
+  switch (status) {
+    case "succeeded":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "running":
+      return "运行中";
+    case "approval_required":
+      return "需要确认";
+    case "interrupted":
+      return "已中断";
+    case "denied":
+      return "已拒绝";
+    case "repaired":
+      return "已恢复";
+    case "queued":
+      return "排队中";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
+export function toolSourceLabel(source: string) {
+  switch (source) {
+    case "provider native":
+      return "模型工具调用";
+    case "manual repair":
+      return "手动恢复";
+    case "runtime":
+      return "运行时";
+    default:
+      return source;
   }
 }
 
@@ -590,32 +771,212 @@ export function formatUsd(value: number) {
   return `$${value.toFixed(value > 0 ? 4 : 2)}`;
 }
 
+const LATENCY_SEGMENT_DEFINITIONS = [
+  {
+    id: "submit-to-pending-paint",
+    label: "提交 → 首屏占位",
+    from: "desktop:submitAt",
+    to: "desktop:pendingPaintedAt",
+    note: "React pending 消息是否及时绘制。",
+  },
+  {
+    id: "pending-paint-to-handle",
+    label: "首屏占位 → Runtime handle",
+    from: "desktop:pendingPaintedAt",
+    to: "desktop:handleReceivedAt",
+    note: "handle 前同步工作：模式选择、记忆注入、快照创建与持久化。",
+  },
+  {
+    id: "handle-to-first-stream",
+    label: "Runtime handle → 首个 stream",
+    from: "desktop:handleReceivedAt",
+    to: "desktop:firstRunStreamReceivedAt",
+    note: "JSON-RPC response 与 stream 通知到达 UI 的间隔。",
+  },
+  {
+    id: "runtime-enter-to-first-text",
+    label: "Runtime 入口 → 首个文本",
+    from: "runtime:startStreamingRun.enter",
+    to: "runtime:firstTextDelta",
+    note: "后端从收到 run 到产生首个模型文本 delta 的总耗时。",
+  },
+  {
+    id: "mode-selection",
+    label: "模式选择",
+    from: "runtime:startStreamingRun.enter",
+    to: "runtime:modeSelection.done",
+    note: "auto router 或手动模式解析耗时。",
+  },
+  {
+    id: "memory-prompt",
+    label: "主动记忆注入",
+    from: "runtime:modeSelection.done",
+    to: "runtime:memoryPrompt.done",
+    note: "长期记忆候选筛选与 prompt overlay 构造耗时。",
+  },
+  {
+    id: "kernel-to-first-event",
+    label: "Kernel 调度 → 首事件",
+    from: "runtime:kernelScheduled",
+    to: "runtime:firstApplyLiveEvent",
+    note: "kernel 启动后首个事件写入延迟。",
+  },
+  {
+    id: "first-event-to-provider",
+    label: "首事件 → 模型调用",
+    from: "runtime:firstApplyLiveEvent",
+    to: "runtime:providerCallStarted",
+    note: "拓扑、计划、澄清预检、进度等前置逻辑耗时。",
+  },
+  {
+    id: "provider-call-to-frame",
+    label: "模型调用 → 首帧",
+    from: "runtime:providerCallStarted",
+    to: "provider:firstProviderStreamFrame",
+    note: "供应商首包 / 本地流首帧延迟。",
+  },
+  {
+    id: "frame-to-first-text",
+    label: "首帧 → 首文本",
+    from: "provider:firstProviderStreamFrame",
+    to: "runtime:firstTextDelta",
+    note: "reasoning、tool call 或空 delta 到文本 delta 的间隔。",
+  },
+  {
+    id: "first-text-to-progress",
+    label: "首文本 → 进度叙述",
+    from: "runtime:firstTextDelta",
+    to: "runtime:firstProgressNarration",
+    note: "LLM progress narration 是否在首个回答之后出现。",
+  },
+] as const;
+
+function buildLatencySegment(
+  definition: typeof LATENCY_SEGMENT_DEFINITIONS[number],
+  markByKey: Map<string, LatencyMark>,
+): TrailLatencySegment {
+  const from = markByKey.get(definition.from);
+  const to = markByKey.get(definition.to);
+  if (!from || !to) {
+    return {
+      id: definition.id,
+      label: definition.label,
+      from: latencyMarkLabel(definition.from),
+      to: latencyMarkLabel(definition.to),
+      duration: "未记录",
+      status: "missing",
+      note: definition.note,
+    };
+  }
+  const durationMs = Math.max(0, to.at - from.at);
+  return {
+    id: definition.id,
+    label: definition.label,
+    from: latencyMarkLabel(definition.from),
+    to: latencyMarkLabel(definition.to),
+    duration: formatDuration(durationMs),
+    durationMs,
+    status: latencySegmentStatus(durationMs),
+    note: definition.note,
+  };
+}
+
+function latencySegmentStatus(durationMs: number): TrailLatencySegment["status"] {
+  if (durationMs >= 2_000) return "slow";
+  if (durationMs >= 500) return "warning";
+  return "ok";
+}
+
+function latencyMarkLabel(key: string): string {
+  const [, name] = key.split(":");
+  switch (name) {
+    case "submitAt":
+      return "提交";
+    case "pendingPaintedAt":
+      return "首屏占位";
+    case "handleReceivedAt":
+      return "收到 handle";
+    case "firstRunStreamReceivedAt":
+      return "首个 stream";
+    case "firstMessageDeltaAt":
+    case "firstTextDelta":
+      return "首个文本";
+    case "firstNonProgressAssistantTextAt":
+    case "firstUserReadableAssistantTextProduced":
+      return "首个可读回答";
+    case "startStreamingRun.enter":
+      return "Runtime 入口";
+    case "modeSelection.done":
+      return "模式选择完成";
+    case "memoryPrompt.done":
+      return "记忆注入完成";
+    case "kernelScheduled":
+      return "Kernel 已调度";
+    case "firstApplyLiveEvent":
+      return "首事件";
+    case "providerCallStarted":
+      return "模型调用";
+    case "firstProviderStreamFrame":
+      return "供应商首帧";
+    case "firstProgressNarration":
+      return "进度叙述";
+    default:
+      return name ?? key;
+  }
+}
+
+function latencyRecommendation(params: {
+  missingText: boolean;
+  progressBeforeText: boolean;
+  warningSegments: TrailLatencySegment[];
+  providerMode: string;
+  sortedMarks: LatencyMark[];
+}): string {
+  if (params.sortedMarks.length === 0) {
+    return "暂无 latency.marks。请确认当前 run 使用了带延迟诊断的 runtime。";
+  }
+  if (params.missingText) {
+    return "尚未记录首个文本 delta。优先检查 provider 首包、工具先行或模型是否只返回 tool call。";
+  }
+  if (params.progressBeforeText) {
+    return "进度叙述早于首个回答。应继续保护 progress narration，避免首屏被进度抢占。";
+  }
+  const firstSlow = params.warningSegments.find((segment) => segment.status === "slow") ?? params.warningSegments[0];
+  if (firstSlow) {
+    return `优先检查慢段：${firstSlow.label}（${firstSlow.duration}）。`;
+  }
+  if (params.providerMode === "fallback_single") {
+    return "当前 provider 使用 fallback_single，不是真流式；首 token 只能等完整响应。";
+  }
+  return "当前记录未显示明显慢段。若用户仍感觉慢，下一步抓真实 provider 和工具先行场景。";
+}
+
 function currentBlockingGate(snapshot: OraStateSnapshot) {
   const clarification = snapshotPendingClarifications(snapshot)[0];
   if (clarification) {
-    return `Clarification · ${clarification.nodeLabel}`;
+    return `补充信息 · ${clarification.nodeLabel}`;
   }
   const approval = buildPendingApprovalItems(snapshot)[0];
   if (approval) {
-    return `Approval · ${approval.nodeLabel}`;
+    return `确认 · ${approval.nodeLabel}`;
   }
-  return "None";
+  return "无";
 }
 
 function inferCurrentStage(snapshot: OraStateSnapshot, lastImportantEvent?: SemanticTimelineItem) {
   if (snapshot.status === "failed") {
-    return "Failed at latest critical event";
+    return "在最新关键事件处失败";
   }
   if (snapshot.status === "succeeded") {
-    return stopReasonFromSnapshot(snapshot) ?? "Completed";
+    return stopReasonLabel(stopReasonFromSnapshot(snapshot)) ?? "已完成";
   }
   if (snapshot.status === "interrupted" || snapshot.pendingApprovals.length > 0 || snapshot.pendingClarifications.length > 0) {
-    return "Waiting for user input";
+    return "等待用户输入";
   }
   if (snapshot.activeAgents.length > 0) {
-    return `Active: ${snapshot.activeAgents.join(", ")}`;
+    return `进行中：${snapshot.activeAgents.join(", ")}`;
   }
-  return lastImportantEvent?.label ?? "Runtime initialized";
+  return lastImportantEvent?.label ?? "运行时已初始化";
 }
 
 function inferAgentStatus(snapshot: OraStateSnapshot, agentId: string, findings: TrailFinding[]): AgentLane["status"] {
@@ -644,11 +1005,44 @@ function buildAgentLabelMap(snapshot: OraStateSnapshot, agents: AgentProfile[] =
   return result;
 }
 
-function shouldShowSemanticEvent(type: string) {
-  if (type === "token.delta" || type === "message.delta") {
+function shouldShowSemanticEvent(event: OraStateSnapshot["events"][number], includeInternalEvents: boolean) {
+  if (event.type === "token.delta" || event.type === "message.delta") {
     return false;
   }
+  if (includeInternalEvents) {
+    return true;
+  }
+  if (event.type === "worker.claimed" || event.type === "worker.released" || event.type === "queue.updated" || event.type === "topology.updated") {
+    return false;
+  }
+  if (event.type === "node.updated") {
+    return isImportantNodeEvent(event);
+  }
+  if (event.type === "action.updated") {
+    return isImportantActionEvent(event);
+  }
   return true;
+}
+
+function isImportantNodeEvent(event: OraStateSnapshot["events"][number]): boolean {
+  if (!isRecord(event.payload) || typeof event.payload.state !== "string") {
+    return false;
+  }
+  return ["failed", "interrupted", "repairing", "degraded", "blocked"].includes(event.payload.state);
+}
+
+function isImportantActionEvent(event: OraStateSnapshot["events"][number]): boolean {
+  if (!isRecord(event.payload)) {
+    return false;
+  }
+  const status = typeof event.payload.status === "string" ? event.payload.status : undefined;
+  if (status === "failed" || status === "approval_required") {
+    return true;
+  }
+  const record = isRecord(event.payload.record) ? event.payload.record : undefined;
+  const recordState = typeof record?.state === "string" ? record.state : undefined;
+  const recordStatus = typeof record?.status === "string" ? record.status : undefined;
+  return recordState === "failed" || recordStatus === "failed" || recordStatus === "approval_required";
 }
 
 function eventKind(type: string): SemanticTimelineItem["kind"] {
@@ -673,79 +1067,79 @@ function eventSeverity(type: string): SemanticTimelineItem["severity"] {
 function timelineLabel(eventType: string) {
   switch (eventType) {
     case "agent.started":
-      return "Agent started";
+      return "智能体启动";
     case "agent.completed":
-      return "Agent completed";
+      return "智能体完成";
     case "topology.updated":
-      return "Topology change";
+      return "拓扑变更";
     case "action.updated":
-      return "Action change";
+      return "操作变更";
     case "task.started":
-      return "Task started";
+      return "任务开始";
     case "task.progress":
-      return "Task progress";
+      return "任务进展";
     case "task.completed":
-      return "Task completed";
+      return "任务完成";
     case "task.failed":
-      return "Task failed";
+      return "任务失败";
     case "tool.called":
-      return "Tool call";
+      return "工具调用";
     case "tool.repaired":
-      return "Tool repaired";
+      return "工具结果已恢复";
     case "approval.required":
-      return "Approval required";
+      return "需要确认";
     case "approval.resolved":
-      return "Approval resolved";
+      return "确认已处理";
     case "clarification.required":
-      return "Clarification required";
+      return "需要补充信息";
     case "clarification.resolved":
-      return "Clarification resolved";
+      return "补充信息已处理";
     case "checkpoint.created":
-      return "Checkpoint captured";
+      return "已记录检查点";
     case "artifact.exported":
-      return "Artifact exported";
+      return "产物已导出";
     case "artifact.degraded":
-      return "Degraded artifact";
+      return "产物已降级";
     case "completion.updated":
-      return "Completion control";
+      return "生成控制";
     case "node.updated":
-      return "Node runtime";
+      return "节点运行状态";
     case "recovery.detected":
-      return "Recovery detected";
+      return "检测到恢复需求";
     case "recovery.retry_scheduled":
-      return "Retry scheduled";
+      return "已安排重试";
     case "recovery.applied":
-      return "Recovery applied";
+      return "恢复已应用";
     case "recovery.exhausted":
-      return "Recovery exhausted";
+      return "恢复失败";
     case "node.skipped":
-      return "Node skipped";
+      return "节点已跳过";
     case "agent.message":
-      return "Agent message";
+      return "智能体消息";
     case "message.published":
-      return "Message published";
+      return "消息已发布";
     case "message.routed":
-      return "Message routed";
+      return "消息已路由";
     case "worker.claimed":
-      return "Worker claimed";
+      return "工作单元接手";
     case "worker.released":
-      return "Worker released";
+      return "工作单元释放";
     case "run.started":
-      return "Run started";
+      return "运行开始";
     case "run.resumed":
-      return "Run resumed";
+      return "运行继续";
     case "run.forked":
-      return "Run forked";
+      return "运行已分叉";
     case "run.replayed":
-      return "Run replayed";
+      return "运行已重放";
     case "run.interrupted":
-      return "Run interrupted";
+      return "运行已暂停";
     case "run.cancelled":
-      return "Run cancelled";
+      return "运行已取消";
     case "run.done":
-      return "Run completed";
+      return "运行已完成";
     case "run.failed":
-      return "Run failed";
+      return "运行失败";
     default:
       return eventType.replace(/\./g, " ");
   }
@@ -756,7 +1150,7 @@ function timelineDetail(event: OraStateSnapshot["events"][number]) {
     if (event.type === "tool.called" || event.type === "tool.repaired") {
       const toolId = typeof event.payload.toolId === "string" ? event.payload.toolId : "tool";
       const status = typeof event.payload.status === "string" ? event.payload.status : "updated";
-      return `${toolId} ${status.replace(/_/g, " ")}.`;
+      return `${toolDisplayLabel(toolId)}：${toolStatusLabel(status)}。`;
     }
     if (event.type === "checkpoint.created" && typeof event.payload.label === "string") {
       return event.payload.label;
@@ -764,23 +1158,57 @@ function timelineDetail(event: OraStateSnapshot["events"][number]) {
     if (isRecord(event.payload.decision) && typeof event.payload.decision.summary === "string") {
       return event.payload.decision.summary;
     }
-    if (typeof event.payload.summary === "string") {
-      return event.payload.summary;
-    }
-    if (typeof event.payload.message === "string") {
-      return event.payload.message;
-    }
-    if (typeof event.payload.content === "string") {
-      return event.payload.content;
-    }
-    if (typeof event.payload.error === "string") {
-      return event.payload.error;
-    }
-    if (typeof event.payload.reason === "string") {
-      return event.payload.reason;
+    const readable = readablePayloadText(event.payload);
+    if (readable) {
+      return readable;
     }
   }
-  return "Runtime state updated.";
+  return "运行状态已更新。";
+}
+
+function readablePayloadText(payload: Record<string, unknown>): string | undefined {
+  const candidates = [
+    payload.summary,
+    payload.message,
+    payload.title,
+    payload.detail,
+    payload.content,
+    payload.error,
+    payload.reason,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+}
+
+function toolDisplayLabel(toolId: string) {
+  switch (toolId) {
+    case "web.fetch":
+      return "浏览网页";
+    case "web.search":
+      return "搜索网页";
+    case "file.read":
+      return "读取文件";
+    case "file.list":
+      return "列出文件";
+    case "file.glob":
+      return "匹配文件";
+    case "file.grep":
+      return "搜索文件";
+    case "file.write":
+      return "写入文件";
+    case "file.patch":
+      return "修改文件";
+    case "shell.execute":
+      return "运行命令";
+    case "mcp.call":
+      return "调用 MCP 工具";
+    default:
+      return toolId;
+  }
 }
 
 function readPayloadInput(payload: Record<string, unknown> | undefined) {
@@ -846,20 +1274,38 @@ function stopReasonFromSnapshot(snapshot: OraStateSnapshot): string | undefined 
   return undefined;
 }
 
+function stopReasonLabel(reason?: string): string | undefined {
+  if (!reason) {
+    return undefined;
+  }
+  switch (reason) {
+    case "completed":
+    case "stop":
+      return "已完成";
+    case "cancelled":
+    case "canceled":
+      return "已取消";
+    case "tool_use_stopped":
+      return "已停止工具调用";
+    default:
+      return reason;
+  }
+}
+
 function runStatusLabel(status: OraStateSnapshot["status"]) {
   switch (status) {
     case "succeeded":
-      return "Done";
+      return "已完成";
     case "failed":
-      return "Failed";
+      return "失败";
     case "interrupted":
-      return "Waiting";
+      return "等待中";
     case "cancelled":
-      return "Cancelled";
+      return "已取消";
     case "queued":
-      return "Queued";
+      return "排队中";
     default:
-      return "Running";
+      return "运行中";
   }
 }
 
@@ -890,7 +1336,7 @@ function formatDuration(ms: number) {
 
 function formatTimestamp(value?: number | string) {
   if (value === undefined) {
-    return "n/a";
+    return "不可用";
   }
   const date = typeof value === "number"
     ? new Date(value)
@@ -923,15 +1369,15 @@ function readActionNodeId(input: unknown): string | undefined {
 
 function humanizeActionType(type?: string) {
   if (!type) {
-    return "approval gate";
+    return "确认关卡";
   }
   return type.replace(/^graph\./, "").replace(/\./g, " ");
 }
 
 function fallbackApprovalReason(riskLevel?: "low" | "medium" | "high") {
   return riskLevel === "high"
-    ? "Please confirm this operation before I continue."
-    : "Please confirm before this step continues.";
+    ? "继续前请确认这个操作。"
+    : "继续这个步骤前请确认。";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

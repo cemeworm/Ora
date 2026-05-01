@@ -57,8 +57,15 @@ export interface ModelStreamChunk {
   raw?: unknown;
 }
 
+export interface ModelStreamEvent {
+  kind: "sse_frame" | "fallback_started" | "fallback_response" | "local_stream_started";
+  streamMode: "sse" | "fallback_single" | "local_smoke";
+  raw?: unknown;
+}
+
 export interface ModelStreamCallbacks {
   onTextDelta?: (chunk: ModelStreamChunk) => void | Promise<void>;
+  onStreamEvent?: (event: ModelStreamEvent) => void | Promise<void>;
 }
 
 export interface ProviderRuntimeOptions {

@@ -332,10 +332,12 @@ function AgentConversationItem({
             <span className="text-xs text-muted-foreground">{message.timestamp}</span>
           </div>
           <p className={cn("mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]", spacious && "leading-7")}>{message.content}</p>
-          {(message.topic || message.correlationId) ? (
+          {(message.topic || message.correlationId || message.planItemId || message.artifactIds.length > 0) ? (
             <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-              {message.topic ? <span>topic: {message.topic}</span> : null}
-              {message.correlationId ? <span>correlation: {message.correlationId}</span> : null}
+              {message.topic ? <span>主题：{message.topic}</span> : null}
+              {message.correlationId ? <span>关联：{message.correlationId}</span> : null}
+              {message.planItemId ? <span>关联任务</span> : null}
+              {message.artifactIds.length > 0 ? <span>关联产物 {message.artifactIds.length} 个</span> : null}
             </div>
           ) : null}
         </div>
@@ -454,6 +456,7 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
           {detail ? <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{detail}</p> : null}
           <TaskItemMeta>
             <span>{step.timestamp}</span>
+            {step.contextLabel ? <span>对象：{step.contextLabel}</span> : null}
           </TaskItemMeta>
         </div>
         <StepStatusIcon step={step} />

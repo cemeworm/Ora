@@ -38,6 +38,9 @@ export async function emitRuntimeProgressNarration(
   if (deps.config.metadata.progressNarration !== true) {
     return;
   }
+  if (!hasAssistantTextDelta(deps.events)) {
+    return;
+  }
   const basedOnSeq = deps.events.at(-1)?.seq ?? -1;
   try {
     const recentEvents = deps.events.slice(-8).map((event) => ({
@@ -91,6 +94,16 @@ export async function emitRuntimeProgressNarration(
   } catch {
     // Progress narration is cosmetic; provider failures must never affect the run.
   }
+}
+
+function hasAssistantTextDelta(events: readonly OraEventEnvelope[]): boolean {
+  return events.some((event) => {
+    if (event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
+      return false;
+    }
+    const payload = event.payload as Record<string, unknown>;
+    return payload.role === "assistant" && typeof payload.content === "string" && payload.content.trim().length > 0;
+  });
 }
 
 function countStatuses(statuses: Array<string | undefined>): Record<string, number> {

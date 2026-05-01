@@ -17,6 +17,12 @@ export function defaultFeedbackLoopStoreDir(runtimeDataDir: string): string {
     : path.join(runtimeDataDir, "feedback-loop-store");
 }
 
+export function defaultSelfIterationStoreDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "self-iteration-store")
+    : path.join(runtimeDataDir, "self-iteration-store");
+}
+
 export function defaultCustomAgentsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "agents")
