@@ -25,6 +25,7 @@ import {
   DEFAULT_AGENT_MODE_TOOL_IDS,
   DEFAULT_SKILL_TOOL_IDS,
   DEFAULT_WEB_TOOL_IDS,
+  CODE_DEVELOPMENT_MODE_ID,
   DEBATE_MODE_ID,
   DEERFLOW_HARNESS_MODE_ID,
   EvaluationAttemptSchema,
@@ -179,7 +180,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(10);
+    expect(MVP_MODES).toHaveLength(11);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -193,6 +194,7 @@ describe("Ora shared contracts", () => {
       DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
       DEBATE_MODE_ID,
+      CODE_DEVELOPMENT_MODE_ID,
       ORA_SELF_BUILDER_MODE_ID,
       MODE_STUDIO_BUILDER_MODE_ID,
       "agent_teams",
@@ -273,6 +275,50 @@ describe("Ora shared contracts", () => {
         negative: "right",
       },
     });
+    const codeDevelopment = MVP_MODES.find((mode) => mode.id === CODE_DEVELOPMENT_MODE_ID)!;
+    expect(codeDevelopment.systemPreset).toBe(true);
+    expect(codeDevelopment.visibility).toBe("user");
+    expect(codeDevelopment.family).toBe("agent_teams");
+    expect(codeDevelopment.completionPolicy.preset).toBe("persistent");
+    expect(codeDevelopment.description).toContain("long-task-protocol");
+    expect(codeDevelopment.recommendedUse).toContain("long-task-protocol");
+    expect(codeDevelopment.capabilityFlags.skillIds).toContain("long-task-protocol");
+    expect(codeDevelopment.runtimePolicy).toMatchObject({
+      thinking: "deep",
+      planning: "explicit",
+      delegation: "preferred",
+      providerThinking: "required",
+    });
+    expect(codeDevelopment.profiles.map((profile) => profile.id)).toEqual([
+      "orchestrator",
+      "builder",
+      "reviewer",
+      "debugger",
+    ]);
+    expect(codeDevelopment.nodes.map((node) => [node.id, node.template, node.ownerAgentId])).toEqual([
+      ["triage", "triage", "orchestrator"],
+      ["build", "build", "builder"],
+      ["review", "check", "reviewer"],
+      ["debug", "check", "debugger"],
+      ["handoff", "handoff", "orchestrator"],
+    ]);
+    expect(codeDevelopment.nodes.find((node) => node.id === "triage")?.instructions).toContain("long-task-protocol");
+    expect(codeDevelopment.nodes.find((node) => node.id === "handoff")?.prompt).toContain("DONE gates");
+    expect(codeDevelopment.stages?.every((stage) => codeDevelopment.nodes.some((node) => node.id === stage.nodeId))).toBe(true);
+    expect(codeDevelopment.stages?.every((stage) => !stage.speakerId || codeDevelopment.profiles.some((profile) => profile.id === stage.speakerId))).toBe(true);
+    expect(codeDevelopment.transcriptLayout).toMatchObject({
+      style: "role_lanes",
+      groupId: "code-development",
+      groupBy: "speakerId",
+      laneBySpeaker: {
+        orchestrator: "orchestrator",
+        builder: "builder",
+        reviewer: "reviewer",
+        debugger: "debugger",
+      },
+    });
+    expect(codeDevelopment.runtimeAtoms.every((atomId) => MVP_MODE_RUNTIME_ATOMS.find((atom) => atom.id === atomId)?.scope === "mode")).toBe(true);
+
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
@@ -327,6 +373,7 @@ describe("Ora shared contracts", () => {
     expect([...systemProfiles.keys()].sort()).toEqual([
       "builder",
       "debate_agent",
+      "debugger",
       "generator",
       "moderator",
       "ora",
@@ -2175,7 +2222,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(9);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(10);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");

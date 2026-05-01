@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@ora/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
 import { summarizeNarratorProgressPayload } from "../src/harness/runtime-prompts.js";
@@ -3583,6 +3583,7 @@ describe("Ora runtime smoke path", () => {
       DEERFLOW_HARNESS_MODE_ID,
       "single_agent",
       DEBATE_MODE_ID,
+      CODE_DEVELOPMENT_MODE_ID,
       ORA_SELF_BUILDER_MODE_ID,
       "agent_teams",
       "message_bus",

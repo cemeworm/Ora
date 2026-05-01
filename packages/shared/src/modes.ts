@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
-import { AgentProfileSchema, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -2181,6 +2181,255 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
   }));
 }
 
+function createCodeDevelopmentModeSpec(): ModeSpec {
+  const now = 0;
+  const orchestratorSoul = [
+    "You are Orchestrator, Ora's project-development scope owner.",
+    "Responsibility: clarify ambiguous requirements, create the smallest safe implementation plan, define acceptance criteria, enforce long-task-protocol task journals for non-trivial code work, and decide when the work is ready to hand off.",
+    "Boundary: do not let implementation begin before scope, risk, and verification gates are explicit; do not expand scope or hide blocked assumptions.",
+    "Output: provide the task breakdown, owner map, approval points, verification gates, SAVEPOINT state, DONE evidence, and residual risks.",
+  ].join("\n");
+  const builderSoul = [
+    "You are Builder, Ora's project code implementation agent.",
+    "Responsibility: make the smallest source changes that satisfy the approved scope, follow the repository's existing style, add or update focused tests, and keep verification evidence concrete.",
+    "Boundary: do not refactor unrelated code, invent unrequested architecture, skip failing checks, or conceal assumptions that affect correctness.",
+    "Output: report changed files, implementation notes, tests or checks run, failures encountered, and anything Reviewer or Debugger must inspect.",
+  ].join("\n");
+  const reviewerSoul = [
+    "You are Reviewer, Ora's code quality and regression gate.",
+    "Responsibility: inspect the builder output for correctness, regressions, missing tests, architecture drift, security issues, and unclear acceptance evidence.",
+    "Boundary: do not rubber-stamp work because it looks plausible; do not rewrite unless the stage asks for a fix plan.",
+    "Output: lead with blocking findings, then non-blocking concerns, evidence, and a pass/fail verdict tied to the acceptance criteria.",
+  ].join("\n");
+  const debuggerSoul = [
+    "You are Debugger, Ora's failing-check and runtime-error diagnostician.",
+    "Responsibility: diagnose failing tests, type errors, runtime crashes, and tool failures from evidence before proposing the smallest correction.",
+    "Boundary: do not guess without logs or traces, do not patch symptoms before naming the root cause, and do not broaden the fix beyond the failing path.",
+    "Output: state the root cause, evidence, minimal fix path, re-run commands, and whether the failure is resolved or still blocked.",
+  ].join("\n");
+
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: CODE_DEVELOPMENT_MODE_ID,
+    family: "agent_teams",
+    label: "Code Development",
+    summary: "A project-development team mode that plans, edits, reviews, debugs, and verifies code changes with explicit gates.",
+    description: "Use this mode for real project coding tasks where Ora should keep scope tight, use long-task-protocol as the task source of truth, write code, review the diff, diagnose failures, and hand off verifiable evidence instead of only chatting about implementation.",
+    recommendedUse: "Use for non-trivial code changes that need long-task-protocol task journals, planning, source edits, tests, review, and failure diagnosis before final delivery.",
+    failureMode: "If acceptance criteria or verification commands are vague, the team can spend effort coordinating without proving the code works.",
+    systemPreset: true,
+    nodes: [
+      {
+        id: "triage",
+        template: "triage",
+        label: "Plan development task",
+        title: "Plan development task",
+        ownerAgentId: "orchestrator",
+        enabled: true,
+        instructions: "Clarify the requested code change, invoke long-task-protocol for non-trivial development work, create or update the task journal, define acceptance criteria, identify risky files, and choose focused verification gates before implementation.",
+        prompt: "User request:\n{{prompt}}\n\nCreate a compact development plan. For non-trivial code work, use long-task-protocol and make the task journal the source of truth. Include scope, out-of-scope items, changed surfaces, required approvals, verification commands, SAVEPOINT needs, and blocked assumptions. Do not implement in this stage.",
+        config: {},
+      },
+      {
+        id: "build",
+        template: "build",
+        label: "Implement change",
+        title: "Implement change",
+        ownerAgentId: "builder",
+        enabled: true,
+        instructions: "Implement only the approved scope, match existing code style, avoid speculative abstractions, and add or update focused tests when the change affects behavior.",
+        prompt: "User request:\n{{prompt}}\n\nDevelopment plan:\n{{triage}}\n\nMake the smallest viable code change. Report changed files, assumptions, and focused verification evidence.",
+        riskLevel: "high",
+        config: {},
+      },
+      {
+        id: "review",
+        template: "check",
+        label: "Review diff",
+        title: "Review diff",
+        ownerAgentId: "reviewer",
+        enabled: true,
+        instructions: "Review the implementation against the request and acceptance criteria. Prioritize regressions, missing tests, schema drift, unsafe broad edits, and unclear verification evidence.",
+        prompt: "User request:\n{{prompt}}\n\nDevelopment plan:\n{{triage}}\n\nBuilder output:\n{{build}}\n\nReview the change. Return blocking findings, non-blocking findings, verification gaps, and a pass/fail verdict.",
+        riskLevel: "high",
+        config: {},
+      },
+      {
+        id: "debug",
+        template: "check",
+        label: "Diagnose failures",
+        title: "Diagnose failures",
+        ownerAgentId: "debugger",
+        enabled: true,
+        instructions: "Diagnose failing tests, type errors, runtime errors, or reviewer-blocked behavior from evidence before suggesting the smallest correction. If no failures exist, explicitly confirm no debug action is needed.",
+        prompt: "User request:\n{{prompt}}\n\nDevelopment plan:\n{{triage}}\n\nBuilder output:\n{{build}}\n\nReviewer findings:\n{{review}}\n\nDiagnose any failure or blocked verification. Name the root cause, evidence, minimal fix path, and re-run command. If everything passed, say no debug action is needed.",
+        riskLevel: "high",
+        config: {},
+      },
+      {
+        id: "handoff",
+        template: "handoff",
+        label: "Finalize handoff",
+        title: "Finalize handoff",
+        ownerAgentId: "orchestrator",
+        enabled: true,
+        instructions: "Package the final development state with changed files, verification evidence, long-task-protocol TODO scan and DONE gates, unresolved risks, and the next useful action for the user.",
+        prompt: "User request:\n{{prompt}}\n\nPlan:\n{{triage}}\n\nBuilder:\n{{build}}\n\nReviewer:\n{{review}}\n\nDebugger:\n{{debug}}\n\nWrite the final handoff. Include changed files, task journal path, TODO scan result, verification evidence, residual risks, and whether the long-task-protocol DONE gates passed or the task is blocked.",
+        config: {},
+      },
+    ],
+    edges: [
+      { id: "triage-build", source: "triage", target: "build", kind: "control", label: "implement", enabled: true },
+      { id: "build-review", source: "build", target: "review", kind: "verification", label: "review", enabled: true },
+      { id: "review-debug", source: "review", target: "debug", kind: "verification", label: "diagnose", enabled: true },
+      { id: "debug-handoff", source: "debug", target: "handoff", kind: "control", label: "handoff", enabled: true },
+    ],
+    stages: [
+      {
+        id: "plan",
+        label: "Plan",
+        nodeId: "triage",
+        speakerId: "orchestrator",
+        speakerLabel: "Orchestrator",
+        stance: "orchestrator",
+        outputKey: "triage",
+      },
+      {
+        id: "implement",
+        label: "Implement",
+        nodeId: "build",
+        speakerId: "builder",
+        speakerLabel: "Builder",
+        stance: "builder",
+        outputKey: "build",
+      },
+      {
+        id: "review",
+        label: "Review",
+        nodeId: "review",
+        speakerId: "reviewer",
+        speakerLabel: "Reviewer",
+        stance: "reviewer",
+        outputKey: "review",
+      },
+      {
+        id: "debug",
+        label: "Debug",
+        nodeId: "debug",
+        speakerId: "debugger",
+        speakerLabel: "Debugger",
+        stance: "debugger",
+        outputKey: "debug",
+      },
+      {
+        id: "finalize",
+        label: "Finalize",
+        nodeId: "handoff",
+        speakerId: "orchestrator",
+        speakerLabel: "Orchestrator",
+        stance: "orchestrator",
+        outputKey: "handoff",
+      },
+    ],
+    transcriptLayout: {
+      style: "role_lanes",
+      groupId: "code-development",
+      groupLabel: "Code Development",
+      groupBy: "speakerId",
+      laneBySpeaker: {
+        orchestrator: "orchestrator",
+        builder: "builder",
+        reviewer: "reviewer",
+        debugger: "debugger",
+      },
+      lanes: [
+        { id: "orchestrator", label: "Orchestrator" },
+        { id: "builder", label: "Builder" },
+        { id: "reviewer", label: "Reviewer" },
+        { id: "debugger", label: "Debugger" },
+      ],
+      stanceLabels: {
+        orchestrator: "Orchestrator",
+        builder: "Builder",
+        reviewer: "Reviewer",
+        debugger: "Debugger",
+      },
+      stanceTones: {
+        orchestrator: "violet",
+        builder: "blue",
+        reviewer: "amber",
+        debugger: "red",
+      },
+      showStatus: true,
+      showSpeaker: true,
+      showArtifacts: true,
+    },
+    stopPolicy: {
+      type: "queue_drained",
+      detail: "Stop after the orchestrator has collected implementation, review, debug, and verification handoff evidence.",
+    },
+    capabilityFlags: {
+      supportsPersistentWorkers: true,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "high_risk_only",
+      skillIds: ["long-task-protocol", "hunt", "check"],
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
+    },
+    runtimeAtoms: defaultRuntimeAtomsForFamily("agent_teams"),
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.agent_teams.allowedTemplates,
+      requiredNodeTemplates: MODE_FAMILY_RULES.agent_teams.requiredTemplates,
+      readOnly: true,
+      allowReorder: true,
+      allowCreate: true,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: {
+      ...DEFAULT_RESOURCE_BUDGETS.agent_teams,
+      maxRuntimeMs: 900000,
+    },
+    completionPolicy: completionPolicyForPreset("persistent"),
+    runtimePolicy: runtimePolicyForPreset("team"),
+    profiles: [
+      profile(
+        "orchestrator",
+        "Orchestrator",
+        "Clarify scope, coordinate implementation gates, and package final delivery evidence.",
+        "agent_teams",
+        ["session", "project"],
+        orchestratorSoul,
+      ),
+      profile(
+        "builder",
+        "Builder",
+        "Make minimal source changes and produce focused verification evidence.",
+        "agent_teams",
+        ["session", "project", "worker"],
+        builderSoul,
+      ),
+      profile(
+        "reviewer",
+        "Reviewer",
+        "Review code changes for regressions, missing tests, and acceptance gaps.",
+        "agent_teams",
+        ["session", "project", "worker", "artifact"],
+        reviewerSoul,
+      ),
+      profile(
+        "debugger",
+        "Debugger",
+        "Diagnose failing checks and runtime errors before the final handoff.",
+        "agent_teams",
+        ["session", "project", "worker", "artifact"],
+        debuggerSoul,
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
 function createOraSelfBuilderModeSpec(): ModeSpec {
   const now = 0;
   return autoLayoutModeSpec(ModeSpecSchema.parse({
@@ -2311,6 +2560,7 @@ export const MVP_MODES = [
   createDeerflowHarnessModeSpec(),
   createSingleAgentModeSpec(),
   createDebateModeSpec(),
+  createCodeDevelopmentModeSpec(),
   createOraSelfBuilderModeSpec(),
   createModeStudioBuilderModeSpec(),
   ...BUILTIN_PATTERN_MODES.slice(ORCHESTRATOR_MODE_INDEX + 1),
