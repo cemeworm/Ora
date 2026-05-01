@@ -218,7 +218,7 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("Smoke run report");
   });
 
-  it("renders file-change artifacts before the diff panel", () => {
+  it("renders file-change artifacts before the collapsed diff panel", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
       turnIndex: 1,
@@ -259,8 +259,8 @@ describe("assistant turn display helpers", () => {
     expect(diffIndex).toBeGreaterThan(artifactIndex);
     expect(html).toContain("+1");
     expect(html).toContain("-1");
-    expect(html).toContain("const oldValue = true;");
-    expect(html).toContain("const newValue = true;");
+    expect(html).not.toContain("const oldValue = true;");
+    expect(html).not.toContain("const newValue = true;");
   });
 
   it("summarizes completed and blocked process steps without log wording", () => {

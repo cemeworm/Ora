@@ -17,51 +17,107 @@ import {
   Reply,
   Send,
 } from "lucide-react";
-import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnFileChangeAttachment, TurnProcessStep, TurnTodoItem } from "../types";
+import type {
+  AssistantTurnAttachment,
+  TurnAgentConversationMessage,
+  TurnArtifactAttachment,
+  TurnFileChangeAttachment,
+  TurnProcessStep,
+  TurnTodoItem,
+} from "../types";
 import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
-import { Artifact, ArtifactActions, ArtifactDescription, ArtifactHeader, ArtifactTitle } from "./ai-elements/artifact";
-import { TaskItem, TaskItemMeta, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
+import {
+  Artifact,
+  ArtifactActions,
+  ArtifactDescription,
+  ArtifactHeader,
+  ArtifactTitle,
+} from "./ai-elements/artifact";
+import {
+  TaskItem,
+  TaskItemMeta,
+  TaskList,
+  TaskListBody,
+  TaskListHeader,
+} from "./ai-elements/task";
 import { MarkdownContent } from "./MarkdownContent";
 import { StageTranscript } from "./StageTranscript";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 interface AssistantTurnCardProps {
   content: string;
   turn?: AssistantTurnAttachment;
   isPlaceholder?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
-  onSubmitFeedback?: (params: { turn: AssistantTurnAttachment; feedbackText: string }) => Promise<void>;
+  onSubmitFeedback?: (params: {
+    turn: AssistantTurnAttachment;
+    feedbackText: string;
+  }) => Promise<void>;
 }
 
 const QUOTED_MESSAGE_PREVIEW_LIMIT = 128;
 
-export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpenArtifact, onSubmitFeedback }: AssistantTurnCardProps) {
+export function AssistantTurnCard({
+  content,
+  turn,
+  isPlaceholder = false,
+  onOpenArtifact,
+  onSubmitFeedback,
+}: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
   const agentMessages = turn?.agentMessages ?? [];
-  const stageTranscriptMessages = agentMessages.filter((message) => message.transcript);
-  const collaborationMessages = agentMessages.filter((message) => !message.transcript);
+  const stageTranscriptMessages = agentMessages.filter(
+    (message) => message.transcript,
+  );
+  const collaborationMessages = agentMessages.filter(
+    (message) => !message.transcript,
+  );
   const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
-  const [feedbackError, setFeedbackError] = useState<string | undefined>(undefined);
+  const [feedbackError, setFeedbackError] = useState<string | undefined>(
+    undefined,
+  );
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
   const liveProgressText = turn?.liveProgressText?.trim();
   const hasProcessSteps = processSteps.length > 0;
-  const latestProcessStep = hasProcessSteps ? processSteps[processSteps.length - 1] : undefined;
-  const contentIsLiveProgress = Boolean(liveProgressText && content.trim() === liveProgressText);
+  const latestProcessStep = hasProcessSteps
+    ? processSteps[processSteps.length - 1]
+    : undefined;
+  const contentIsLiveProgress = Boolean(
+    liveProgressText && content.trim() === liveProgressText,
+  );
   const hasStageTranscript = stageTranscriptMessages.length > 0;
-  const hasVisibleAgentMessages = visibleAgentMessages(collaborationMessages, turn?.status).length > 0;
+  const hasVisibleAgentMessages =
+    visibleAgentMessages(collaborationMessages, turn?.status).length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
-  const canCopyContent = Boolean(!isPlaceholder && turn?.status !== "running" && content.trim());
-  const canSubmitFeedback = Boolean(turn && onSubmitFeedback && !isPlaceholder && turn.status !== "running" && content.trim());
+  const canCopyContent = Boolean(
+    !isPlaceholder && turn?.status !== "running" && content.trim(),
+  );
+  const canSubmitFeedback = Boolean(
+    turn &&
+    onSubmitFeedback &&
+    !isPlaceholder &&
+    turn.status !== "running" &&
+    content.trim(),
+  );
   const canShowActions = canCopyContent || canSubmitFeedback;
 
   useEffect(() => {
-    if (!isPlaceholder && (turn?.status !== "running" || (content.trim() && !contentIsLiveProgress))) {
+    if (
+      !isPlaceholder &&
+      (turn?.status !== "running" || (content.trim() && !contentIsLiveProgress))
+    ) {
       setProcessOpen(false);
     }
   }, [content, contentIsLiveProgress, isPlaceholder, turn?.status]);
@@ -77,7 +133,9 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
       setFeedbackText("");
       setFeedbackOpen(false);
     } catch (error) {
-      setFeedbackError(error instanceof Error ? error.message : "Feedback submission failed.");
+      setFeedbackError(
+        error instanceof Error ? error.message : "Feedback submission failed.",
+      );
     } finally {
       setFeedbackSubmitting(false);
     }
@@ -132,10 +190,16 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               onToggle={() => setProcessOpen((current) => !current)}
               title="运行进度"
               icon={<Clock3 size={14} />}
-              summary={processSteps.length > 0 ? processSummary(processSteps, turn?.status, isPlaceholder) : undefined}
-              collapsedPreview={latestProcessStep
-                ? <ProcessStepItem step={latestProcessStep} />
-                : undefined}
+              summary={
+                processSteps.length > 0
+                  ? processSummary(processSteps, turn?.status, isPlaceholder)
+                  : undefined
+              }
+              collapsedPreview={
+                latestProcessStep ? (
+                  <ProcessStepItem step={latestProcessStep} />
+                ) : undefined
+              }
             >
               {processSteps.map((step) => (
                 <ProcessStepItem key={step.id} step={step} />
@@ -148,17 +212,28 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
           ) : null}
 
           {hasVisibleAgentMessages ? (
-            <AgentConversationTimeline messages={collaborationMessages} status={turn?.status} isPlaceholder={isPlaceholder} />
+            <AgentConversationTimeline
+              messages={collaborationMessages}
+              status={turn?.status}
+              isPlaceholder={isPlaceholder}
+            />
           ) : null}
 
           <MessageContent className="w-full">
-            <MarkdownContent content={content} className={cn(isPlaceholder && "text-muted-foreground")} />
+            <MarkdownContent
+              content={content}
+              className={cn(isPlaceholder && "text-muted-foreground")}
+            />
           </MessageContent>
 
           {visibleArtifacts.length > 0 ? (
             <div className="space-y-3">
               {visibleArtifacts.map((artifact) => (
-                <ArtifactCard key={artifact.id} artifact={artifact} onOpenArtifact={onOpenArtifact} />
+                <ArtifactCard
+                  key={artifact.id}
+                  artifact={artifact}
+                  onOpenArtifact={onOpenArtifact}
+                />
               ))}
             </div>
           ) : null}
@@ -220,7 +295,9 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
             placeholder="Describe what was wrong, missing, confusing, or should be evaluated next time."
             className="min-h-32 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-bench-900/15"
           />
-          {feedbackError ? <p className="mt-2 text-xs text-red-700">{feedbackError}</p> : null}
+          {feedbackError ? (
+            <p className="mt-2 text-xs text-red-700">{feedbackError}</p>
+          ) : null}
           <DialogFooter>
             <button
               type="button"
@@ -236,7 +313,11 @@ export function AssistantTurnCard({ content, turn, isPlaceholder = false, onOpen
               disabled={!feedbackText.trim() || feedbackSubmitting}
               className="inline-flex h-9 items-center gap-2 rounded-md bg-bench-900 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {feedbackSubmitting ? <LoaderCircle size={14} className="animate-spin" /> : <Send size={14} />}
+              {feedbackSubmitting ? (
+                <LoaderCircle size={14} className="animate-spin" />
+              ) : (
+                <Send size={14} />
+              )}
               Submit
             </button>
           </DialogFooter>
@@ -255,7 +336,10 @@ function AgentConversationTimeline({
   status?: AssistantTurnAttachment["status"];
   isPlaceholder: boolean;
 }) {
-  const conversationActive = isPlaceholder || status === "running" || messages.some((message) => message.status === "running");
+  const conversationActive =
+    isPlaceholder ||
+    status === "running" ||
+    messages.some((message) => message.status === "running");
   const [open, setOpen] = useState(conversationActive);
   const byId = new Map(messages.map((message) => [message.id, message]));
   const visibleMessages = visibleAgentMessages(messages, status);
@@ -270,15 +354,25 @@ function AgentConversationTimeline({
 
   return (
     <TaskList>
-      <button type="button" onClick={() => setOpen((current) => !current)} className="w-full text-left" aria-expanded={open}>
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="w-full text-left"
+        aria-expanded={open}
+      >
         <TaskListHeader>
           <div className="flex min-w-0 items-center gap-2">
             <GitBranch size={14} />
             <span className="font-medium text-foreground">协作轨迹</span>
-            <span className="truncate text-xs text-muted-foreground">{agentConversationSummary(messages)}</span>
+            <span className="truncate text-xs text-muted-foreground">
+              {agentConversationSummary(messages)}
+            </span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
+            <ChevronDown
+              size={14}
+              className={cn("transition-transform", open && "rotate-180")}
+            />
           </div>
         </TaskListHeader>
       </button>
@@ -288,7 +382,9 @@ function AgentConversationTimeline({
             <AgentConversationItem
               key={message.id}
               message={message}
-              replyTo={message.replyToId ? byId.get(message.replyToId) : undefined}
+              replyTo={
+                message.replyToId ? byId.get(message.replyToId) : undefined
+              }
               spacious
             />
           ))}
@@ -308,11 +404,20 @@ function AgentConversationItem({
   spacious?: boolean;
 }) {
   return (
-    <div className={cn(spacious ? "px-4 py-4" : "px-3 py-3", message.replyToId && (spacious ? "pl-10" : "pl-8"))}>
+    <div
+      className={cn(
+        spacious ? "px-4 py-4" : "px-3 py-3",
+        message.replyToId && (spacious ? "pl-10" : "pl-8"),
+      )}
+    >
       {replyTo ? (
         <div className="mb-2 border-l-2 border-border pl-2 text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">{replyTo.fromAgentLabel}</span>
-          <span className="break-words">: {truncate(replyTo.content, QUOTED_MESSAGE_PREVIEW_LIMIT)}</span>
+          <span className="font-medium text-foreground">
+            {replyTo.fromAgentLabel}
+          </span>
+          <span className="break-words">
+            : {truncate(replyTo.content, QUOTED_MESSAGE_PREVIEW_LIMIT)}
+          </span>
         </div>
       ) : null}
       <div className="flex items-start gap-3">
@@ -321,23 +426,44 @@ function AgentConversationItem({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-foreground">{message.fromAgentLabel}</span>
+            <span className="text-sm font-semibold text-foreground">
+              {message.fromAgentLabel}
+            </span>
             <KindPill message={message} />
             {message.toAgentLabels.map((label, index) => (
-              <span key={`${message.id}:to:${message.toAgentIds[index] ?? label}`} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+              <span
+                key={`${message.id}:to:${message.toAgentIds[index] ?? label}`}
+                className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              >
                 <AtSign size={11} />
                 {label}
               </span>
             ))}
-            <span className="text-xs text-muted-foreground">{message.timestamp}</span>
+            <span className="text-xs text-muted-foreground">
+              {message.timestamp}
+            </span>
           </div>
-          <p className={cn("mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]", spacious && "leading-7")}>{message.content}</p>
-          {(message.topic || message.correlationId || message.planItemId || message.artifactIds.length > 0) ? (
+          <p
+            className={cn(
+              "mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]",
+              spacious && "leading-7",
+            )}
+          >
+            {message.content}
+          </p>
+          {message.topic ||
+          message.correlationId ||
+          message.planItemId ||
+          message.artifactIds.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
               {message.topic ? <span>主题：{message.topic}</span> : null}
-              {message.correlationId ? <span>关联：{message.correlationId}</span> : null}
+              {message.correlationId ? (
+                <span>关联：{message.correlationId}</span>
+              ) : null}
               {message.planItemId ? <span>关联任务</span> : null}
-              {message.artifactIds.length > 0 ? <span>关联产物 {message.artifactIds.length} 个</span> : null}
+              {message.artifactIds.length > 0 ? (
+                <span>关联产物 {message.artifactIds.length} 个</span>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -348,11 +474,14 @@ function AgentConversationItem({
 }
 
 function KindPill({ message }: { message: TurnAgentConversationMessage }) {
-  const icon = message.kind === "reply"
-    ? <Reply size={11} />
-    : message.kind === "route"
-      ? <GitBranch size={11} />
-      : <AtSign size={11} />;
+  const icon =
+    message.kind === "reply" ? (
+      <Reply size={11} />
+    ) : message.kind === "route" ? (
+      <GitBranch size={11} />
+    ) : (
+      <AtSign size={11} />
+    );
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
       {icon}
@@ -361,34 +490,55 @@ function KindPill({ message }: { message: TurnAgentConversationMessage }) {
   );
 }
 
-function AgentMessageStatusIcon({ status }: { status: TurnAgentConversationMessage["status"] }) {
+function AgentMessageStatusIcon({
+  status,
+}: {
+  status: TurnAgentConversationMessage["status"];
+}) {
   if (status === "failed") {
     return <AlertCircle size={14} className="mt-1 shrink-0 text-amber-600" />;
   }
   if (status === "running") {
-    return <LoaderCircle size={14} className="mt-1 shrink-0 animate-spin text-muted-foreground" />;
+    return (
+      <LoaderCircle
+        size={14}
+        className="mt-1 shrink-0 animate-spin text-muted-foreground"
+      />
+    );
   }
   if (status === "done") {
-    return <CheckCircle2 size={14} className="mt-1 shrink-0 text-emerald-600" />;
+    return (
+      <CheckCircle2 size={14} className="mt-1 shrink-0 text-emerald-600" />
+    );
   }
   return <Circle size={14} className="mt-1 shrink-0 text-muted-foreground" />;
 }
 
 function initials(value: string): string {
-  return value
-    .split(/[\s_-]+/)
-    .map((part) => part[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join("")
-    .toUpperCase() || "A";
+  return (
+    value
+      .split(/[\s_-]+/)
+      .map((part) => part[0])
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "A"
+  );
 }
 
 function truncate(value: string, maxLength: number): string {
-  return value.length <= maxLength ? value : `${value.slice(0, maxLength).trimEnd()}...`;
+  return value.length <= maxLength
+    ? value
+    : `${value.slice(0, maxLength).trimEnd()}...`;
 }
 
-function TurnStatusIcon({ status, isPlaceholder }: { status?: AssistantTurnAttachment["status"]; isPlaceholder: boolean }) {
+function TurnStatusIcon({
+  status,
+  isPlaceholder,
+}: {
+  status?: AssistantTurnAttachment["status"];
+  isPlaceholder: boolean;
+}) {
   if (status === "approval_required") {
     return <AlertCircle size={14} className="text-amber-600" />;
   }
@@ -428,12 +578,23 @@ function CollapsibleCard({
           <div className="flex min-w-0 items-center gap-2">
             {icon}
             <span className="font-medium text-foreground">{title}</span>
-            {summary ? <span className="truncate text-xs text-muted-foreground">{summary}</span> : null}
+            {summary ? (
+              <span className="truncate text-xs text-muted-foreground">
+                {summary}
+              </span>
+            ) : null}
           </div>
-          <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
+          <ChevronDown
+            size={14}
+            className={cn("transition-transform", open && "rotate-180")}
+          />
         </TaskListHeader>
       </button>
-      {open ? <TaskListBody>{children}</TaskListBody> : collapsedPreview ? <TaskListBody>{collapsedPreview}</TaskListBody> : null}
+      {open ? (
+        <TaskListBody>{children}</TaskListBody>
+      ) : collapsedPreview ? (
+        <TaskListBody>{collapsedPreview}</TaskListBody>
+      ) : null}
     </TaskList>
   );
 }
@@ -453,10 +614,13 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className={cn("font-medium", toneClassName)}>{step.label}</p>
-          {detail ? <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{detail}</p> : null}
+          {detail ? (
+            <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+              {detail}
+            </p>
+          ) : null}
           <TaskItemMeta>
             <span>{step.timestamp}</span>
-            {step.contextLabel ? <span>对象：{step.contextLabel}</span> : null}
           </TaskItemMeta>
         </div>
         <StepStatusIcon step={step} />
@@ -470,12 +634,25 @@ function StepStatusIcon({ step }: { step: TurnProcessStep }) {
     return <AlertCircle size={14} className="mt-0.5 shrink-0 text-amber-600" />;
   }
   if (step.status === "active") {
-    return <LoaderCircle size={14} className="mt-0.5 shrink-0 animate-spin text-muted-foreground" />;
+    return (
+      <LoaderCircle
+        size={14}
+        className="mt-0.5 shrink-0 animate-spin text-muted-foreground"
+      />
+    );
   }
-  return <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />;
+  return (
+    <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />
+  );
 }
 
-function ArtifactCard({ artifact, onOpenArtifact }: { artifact: TurnArtifactAttachment; onOpenArtifact?: (artifactId: string) => void }) {
+function ArtifactCard({
+  artifact,
+  onOpenArtifact,
+}: {
+  artifact: TurnArtifactAttachment;
+  onOpenArtifact?: (artifactId: string) => void;
+}) {
   return (
     <button
       type="button"
@@ -483,15 +660,28 @@ function ArtifactCard({ artifact, onOpenArtifact }: { artifact: TurnArtifactAtta
       className="block w-full text-left"
       disabled={!onOpenArtifact}
     >
-      <Artifact className={cn("transition", onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]")}>
+      <Artifact
+        className={cn(
+          "transition",
+          onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]",
+        )}
+      >
         <ArtifactHeader>
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground">
-              {artifact.previewable ? <FileImage size={18} /> : <FileText size={18} />}
+              {artifact.previewable ? (
+                <FileImage size={18} />
+              ) : (
+                <FileText size={18} />
+              )}
             </div>
             <div className="min-w-0">
-              <ArtifactTitle className="truncate">{artifact.label}</ArtifactTitle>
-              <ArtifactDescription>{artifact.kind} - {artifact.mimeType}</ArtifactDescription>
+              <ArtifactTitle className="truncate">
+                {artifact.label}
+              </ArtifactTitle>
+              <ArtifactDescription>
+                {artifact.kind} - {artifact.mimeType}
+              </ArtifactDescription>
             </div>
           </div>
           <ArtifactActions>
@@ -505,10 +695,20 @@ function ArtifactCard({ artifact, onOpenArtifact }: { artifact: TurnArtifactAtta
   );
 }
 
-function FileChangeDiffPanel({ fileChanges }: { fileChanges: TurnFileChangeAttachment[] }) {
-  const [openPaths, setOpenPaths] = useState<Set<string>>(() => new Set(fileChanges.slice(0, 1).map((change) => change.path)));
-  const additions = fileChanges.reduce((total, change) => total + change.additions, 0);
-  const deletions = fileChanges.reduce((total, change) => total + change.deletions, 0);
+function FileChangeDiffPanel({
+  fileChanges,
+}: {
+  fileChanges: TurnFileChangeAttachment[];
+}) {
+  const [openPaths, setOpenPaths] = useState<Set<string>>(() => new Set());
+  const additions = fileChanges.reduce(
+    (total, change) => total + change.additions,
+    0,
+  );
+  const deletions = fileChanges.reduce(
+    (total, change) => total + change.deletions,
+    0,
+  );
 
   function togglePath(path: string) {
     setOpenPaths((current) => {
@@ -544,10 +744,20 @@ function FileChangeDiffPanel({ fileChanges }: { fileChanges: TurnFileChangeAttac
               >
                 <div className="min-w-0 truncate font-mono text-xs text-foreground">
                   {change.path}
-                  <span className="ml-2 font-sans font-semibold text-emerald-700">+{change.additions}</span>
-                  <span className="ml-1 font-sans font-semibold text-rose-700">-{change.deletions}</span>
+                  <span className="ml-2 font-sans font-semibold text-emerald-700">
+                    +{change.additions}
+                  </span>
+                  <span className="ml-1 font-sans font-semibold text-rose-700">
+                    -{change.deletions}
+                  </span>
                 </div>
-                <ChevronDown size={14} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+                <ChevronDown
+                  size={14}
+                  className={cn(
+                    "shrink-0 text-muted-foreground transition-transform",
+                    open && "rotate-180",
+                  )}
+                />
               </button>
               {open ? <DiffLines change={change} /> : null}
             </div>
@@ -567,8 +777,10 @@ function DiffLines({ change }: { change: TurnFileChangeAttachment }) {
           key={`${line.kind}:${line.beforeLine ?? ""}:${line.afterLine ?? ""}:${index}`}
           className={cn(
             "grid grid-cols-[3.25rem_1fr] border-l-2 pr-3",
-            line.kind === "add" && "border-emerald-500 bg-emerald-50/80 text-emerald-950",
-            line.kind === "delete" && "border-rose-400 bg-rose-50/80 text-rose-950",
+            line.kind === "add" &&
+              "border-emerald-500 bg-emerald-50/80 text-emerald-950",
+            line.kind === "delete" &&
+              "border-rose-400 bg-rose-50/80 text-rose-950",
             line.kind === "context" && "border-transparent text-foreground",
           )}
         >
@@ -576,7 +788,13 @@ function DiffLines({ change }: { change: TurnFileChangeAttachment }) {
             {line.kind === "add" ? line.afterLine : line.beforeLine}
           </span>
           <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            <span className={cn("mr-2 select-none", line.kind === "add" && "text-emerald-700", line.kind === "delete" && "text-rose-700")}>
+            <span
+              className={cn(
+                "mr-2 select-none",
+                line.kind === "add" && "text-emerald-700",
+                line.kind === "delete" && "text-rose-700",
+              )}
+            >
               {line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " "}
             </span>
             {line.text || " "}
@@ -594,7 +812,10 @@ type DiffLine = {
   afterLine?: number;
 };
 
-function buildLineDiff(beforeContent: string, afterContent: string): DiffLine[] {
+function buildLineDiff(
+  beforeContent: string,
+  afterContent: string,
+): DiffLine[] {
   const beforeLines = splitDiffLines(beforeContent);
   const afterLines = splitDiffLines(afterContent);
   const table = lcsTable(beforeLines, afterLines);
@@ -611,7 +832,10 @@ function buildLineDiff(beforeContent: string, afterContent: string): DiffLine[] 
       });
       beforeIndex += 1;
       afterIndex += 1;
-    } else if ((table[beforeIndex + 1]?.[afterIndex] ?? 0) >= (table[beforeIndex]?.[afterIndex + 1] ?? 0)) {
+    } else if (
+      (table[beforeIndex + 1]?.[afterIndex] ?? 0) >=
+      (table[beforeIndex]?.[afterIndex + 1] ?? 0)
+    ) {
       lines.push({
         kind: "delete",
         text: beforeLines[beforeIndex] ?? "",
@@ -654,12 +878,26 @@ function splitDiffLines(content: string): string[] {
 }
 
 function lcsTable(beforeLines: string[], afterLines: string[]): number[][] {
-  const table = Array.from({ length: beforeLines.length + 1 }, () => new Array(afterLines.length + 1).fill(0));
-  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
-    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
-      table[beforeIndex]![afterIndex] = beforeLines[beforeIndex] === afterLines[afterIndex]
-        ? (table[beforeIndex + 1]?.[afterIndex + 1] ?? 0) + 1
-        : Math.max(table[beforeIndex + 1]?.[afterIndex] ?? 0, table[beforeIndex]?.[afterIndex + 1] ?? 0);
+  const table = Array.from({ length: beforeLines.length + 1 }, () =>
+    new Array(afterLines.length + 1).fill(0),
+  );
+  for (
+    let beforeIndex = beforeLines.length - 1;
+    beforeIndex >= 0;
+    beforeIndex -= 1
+  ) {
+    for (
+      let afterIndex = afterLines.length - 1;
+      afterIndex >= 0;
+      afterIndex -= 1
+    ) {
+      table[beforeIndex]![afterIndex] =
+        beforeLines[beforeIndex] === afterLines[afterIndex]
+          ? (table[beforeIndex + 1]?.[afterIndex + 1] ?? 0) + 1
+          : Math.max(
+              table[beforeIndex + 1]?.[afterIndex] ?? 0,
+              table[beforeIndex]?.[afterIndex + 1] ?? 0,
+            );
     }
   }
   return table;
@@ -674,7 +912,14 @@ function TodoItemRow({ todo }: { todo: TurnTodoItem }) {
     <TaskItem className="flex items-start gap-3">
       <TodoStatusIcon status={todo.status} />
       <div className="min-w-0 flex-1">
-        <p className={cn("font-medium", todo.status === "done" && "text-muted-foreground line-through")}>{todo.label}</p>
+        <p
+          className={cn(
+            "font-medium",
+            todo.status === "done" && "text-muted-foreground line-through",
+          )}
+        >
+          {todo.label}
+        </p>
         <TaskItemMeta>
           <span>{todo.status}</span>
           {todo.owner ? <span>{todo.owner}</span> : null}
@@ -688,17 +933,32 @@ function TodoItemRow({ todo }: { todo: TurnTodoItem }) {
 function TodoStatusIcon({ status }: { status: TurnTodoItem["status"] }) {
   switch (status) {
     case "done":
-      return <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" />;
+      return (
+        <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" />
+      );
     case "running":
-      return <LoaderCircle size={16} className="mt-0.5 shrink-0 animate-spin text-muted-foreground" />;
+      return (
+        <LoaderCircle
+          size={16}
+          className="mt-0.5 shrink-0 animate-spin text-muted-foreground"
+        />
+      );
     case "blocked":
-      return <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-600" />;
+      return (
+        <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-600" />
+      );
     default:
-      return <Circle size={16} className="mt-0.5 shrink-0 text-muted-foreground" />;
+      return (
+        <Circle size={16} className="mt-0.5 shrink-0 text-muted-foreground" />
+      );
   }
 }
 
-export function processSummary(steps: TurnProcessStep[], status?: AssistantTurnAttachment["status"], isPlaceholder = false) {
+export function processSummary(
+  steps: TurnProcessStep[],
+  status?: AssistantTurnAttachment["status"],
+  isPlaceholder = false,
+) {
   if (status === "running" || isPlaceholder) {
     return undefined;
   }
@@ -719,7 +979,9 @@ function todoSummary(todos: TurnTodoItem[]) {
   return `${done}/${todos.length} done`;
 }
 
-export function agentConversationSummary(messages: TurnAgentConversationMessage[]): string {
+export function agentConversationSummary(
+  messages: TurnAgentConversationMessage[],
+): string {
   const agentLabels = new Set<string>();
   for (const message of messages) {
     agentLabels.add(message.fromAgentLabel);
@@ -727,7 +989,9 @@ export function agentConversationSummary(messages: TurnAgentConversationMessage[
       agentLabels.add(label);
     }
   }
-  const handoffCount = highValueAgentMessages(messages).length || messages.filter((message) => message.content.trim()).length;
+  const handoffCount =
+    highValueAgentMessages(messages).length ||
+    messages.filter((message) => message.content.trim()).length;
   if (agentLabels.size > 0 && handoffCount > 0) {
     return `${agentLabels.size} 个 agent，${handoffCount} 次交接`;
   }
@@ -741,11 +1005,19 @@ export function visibleAgentMessages(
   messages: TurnAgentConversationMessage[],
   status?: AssistantTurnAttachment["status"],
 ): TurnAgentConversationMessage[] {
-  const conversationMessages = messages.filter((message) => !message.transcript);
+  const conversationMessages = messages.filter(
+    (message) => !message.transcript,
+  );
   const highValueMessages = highValueAgentMessages(conversationMessages);
-  const displayMessages = highValueMessages.length > 0
-    ? highValueMessages
-    : conversationMessages.filter((message) => message.content.trim() && message.kind !== "publish" && message.kind !== "status");
+  const displayMessages =
+    highValueMessages.length > 0
+      ? highValueMessages
+      : conversationMessages.filter(
+          (message) =>
+            message.content.trim() &&
+            message.kind !== "publish" &&
+            message.kind !== "status",
+        );
 
   if (status === "running") {
     return displayMessages.slice(-2);
@@ -753,7 +1025,9 @@ export function visibleAgentMessages(
   return displayMessages;
 }
 
-export function agentMessageDisplayKind(message: TurnAgentConversationMessage): string {
+export function agentMessageDisplayKind(
+  message: TurnAgentConversationMessage,
+): string {
   switch (message.kind) {
     case "handoff":
       return "交接";
@@ -770,9 +1044,14 @@ export function agentMessageDisplayKind(message: TurnAgentConversationMessage): 
   }
 }
 
-function highValueAgentMessages(messages: TurnAgentConversationMessage[]): TurnAgentConversationMessage[] {
-  return messages.filter((message) =>
-    message.content.trim().length > 0 &&
-    (message.kind === "handoff" || message.kind === "reply" || message.kind === "route")
+function highValueAgentMessages(
+  messages: TurnAgentConversationMessage[],
+): TurnAgentConversationMessage[] {
+  return messages.filter(
+    (message) =>
+      message.content.trim().length > 0 &&
+      (message.kind === "handoff" ||
+        message.kind === "reply" ||
+        message.kind === "route"),
   );
 }
