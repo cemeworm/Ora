@@ -7,7 +7,7 @@ import {
   WechatChannelAdapter,
   normalizeWechatMessage,
 } from "../src/channels/wechat.js";
-import { createRuntimeMethodHandler, LocalRunStore } from "../src/index.js";
+import { createRuntimeMethodHandler, handleJsonRpcLine, LocalRunStore } from "../src/index.js";
 
 let tempDir: string;
 let currentTime: number;
@@ -140,6 +140,209 @@ describe("WechatChannelAdapter QR code flow", () => {
       "wechat-test",
       expect.objectContaining({ qrCodeKey: "qr-key-123" }),
     );
+  });
+
+  it("requestQrCode accepts qrcode_img_content from the iLink API", async () => {
+    const base64 = "iVBORw0KGgoAAAANSUhEUgAAABUAAAAVCAAAAACMfPpKAAAAPUlEQVR4nGP4//8HQ3MYB8OuVS8Ydoe9ANMg/r/VPxiuhkYwrFq1Aiv9b9UKhubQCIZdq1Yw7IbSID7QPAB9+CcNRdy/cgAAAABJRU5ErkJggg==";
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          qrcode: "qr-key-actual",
+          qrcode_img_content: `data:image/png;base64,${base64}`,
+          ret: 0,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const onConfigUpdate = vi.fn();
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
+      onIngest: vi.fn(),
+      onConfigUpdate,
+    });
+    const result = await adapter.requestQrCode();
+
+    expect(result).toEqual({
+      base64,
+      qrcode: "qr-key-actual",
+      mimeType: "image/png",
+      imageSrc: `data:image/png;base64,${base64}`,
+    });
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      "wechat-test",
+      expect.objectContaining({ qrCodeKey: "qr-key-actual" }),
+    );
+  });
+
+  it("requestQrCode downloads qrcode_img_content when it is an image URL", async () => {
+    const pngBase64 = "iVBORw0KGgo=";
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("get_bot_qrcode")) {
+        return new Response(
+          JSON.stringify({
+            qrcode: "qr-key-url",
+            qrcode_img_content: "https://liteapp.weixin.qq.com/qrcode.png",
+            ret: 0,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(Buffer.from(pngBase64, "base64"), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    });
+
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl);
+    const result = await adapter.requestQrCode();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe("https://liteapp.weixin.qq.com/qrcode.png");
+    expect(result).toEqual({
+      base64: pngBase64,
+      qrcode: "qr-key-url",
+      mimeType: "image/png",
+      imageSrc: `data:image/png;base64,${pngBase64}`,
+    });
+  });
+
+  it("requestQrCode extracts and downloads an image from an HTML QR page", async () => {
+    const pngBase64 = "iVBORw0KGgo=";
+    const html = "<!doctype html><html><body><img src=\"/qr/actual.png\" /></body></html>";
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("get_bot_qrcode")) {
+        return new Response(
+          JSON.stringify({
+            qrcode: "qr-key-html-url",
+            qrcode_img_content: "https://liteapp.weixin.qq.com/qrcode-page",
+            ret: 0,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "https://liteapp.weixin.qq.com/qrcode-page") {
+        return new Response(html, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      return new Response(Buffer.from(pngBase64, "base64"), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    });
+
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl);
+    const result = await adapter.requestQrCode();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(String(fetchImpl.mock.calls[2]?.[0])).toBe("https://liteapp.weixin.qq.com/qr/actual.png");
+    expect(result).toEqual({
+      base64: pngBase64,
+      qrcode: "qr-key-html-url",
+      mimeType: "image/png",
+      imageSrc: `data:image/png;base64,${pngBase64}`,
+    });
+  });
+
+  it("requestQrCode returns pageSrc when an HTML QR page has no image candidate", async () => {
+    const html = "<!doctype html><html><body>qr page</body></html>";
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("get_bot_qrcode")) {
+        return new Response(
+          JSON.stringify({
+            qrcode: "qr-key-html-url-fallback",
+            qrcode_img_content: "https://liteapp.weixin.qq.com/qrcode-page-empty",
+            ret: 0,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(html, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl);
+    const result = await adapter.requestQrCode();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.qrcode).toBe("qr-key-html-url-fallback");
+    expect(result.mimeType).toBe("text/html");
+    expect(result.imageSrc).toBe("");
+    expect(result.pageSrc).toBe("https://liteapp.weixin.qq.com/qrcode-page-empty");
+    expect(Buffer.from(result.base64, "base64").toString("utf8")).toBe(html);
+  });
+
+  it("requestQrCode normalizes base64url QR image content", async () => {
+    const pngBase64 = "iVBORw0KGgo=";
+    const base64Url = pngBase64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          qrcode: "qr-key-base64url",
+          qrcode_img_content: base64Url,
+          ret: 0,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl);
+    const result = await adapter.requestQrCode();
+
+    expect(result.qrcode).toBe("qr-key-base64url");
+    expect(result.mimeType).toBe("image/png");
+    expect(result.base64).toBe(pngBase64);
+    expect(result.imageSrc).toBe(`data:image/png;base64,${pngBase64}`);
+  });
+
+  it("requestQrCode returns a browser-ready imageSrc for raw PNG image content", async () => {
+    const rawPng = "\u0089PNG\r\n\u001a\nraw";
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          qrcode: "qr-key-raw-png",
+          qrcode_img_content: rawPng,
+          ret: 0,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl);
+    const result = await adapter.requestQrCode();
+
+    expect(result.qrcode).toBe("qr-key-raw-png");
+    expect(result.mimeType).toBe("image/png");
+    expect(result.imageSrc).toBe(`data:image/png;base64,${result.base64}`);
+    expect(Buffer.from(result.base64, "base64").toString("latin1")).toBe(rawPng);
+  });
+
+  it("requestQrCode returns a browser-ready imageSrc for SVG QR image content", async () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="black"/></svg>`;
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          qrcode: "qr-key-svg",
+          qrcode_img_content: svg,
+          ret: 0,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl);
+    const result = await adapter.requestQrCode();
+
+    expect(result.qrcode).toBe("qr-key-svg");
+    expect(result.mimeType).toBe("image/svg+xml");
+    expect(result.imageSrc).toBe(`data:image/svg+xml;base64,${result.base64}`);
+    expect(Buffer.from(result.base64, "base64").toString("utf8")).toBe(svg);
   });
 
   it("pollQrCodeStatus restores qrCodeKey from config across process restarts", async () => {
@@ -304,7 +507,7 @@ describe("wechat JSON-RPC methods", () => {
         const url = String(input);
         if (url.includes("get_bot_qrcode")) {
           return new Response(
-            JSON.stringify({ base64: "base64data", qrcode: "qr-key" }),
+            JSON.stringify({ base64: "iVBORw0KGgo=", qrcode: "qr-key" }),
             { status: 200, headers: { "content-type": "application/json" } },
           );
         }
@@ -329,7 +532,55 @@ describe("wechat JSON-RPC methods", () => {
       channelId: "wechat-rpc",
     })) as { base64: string; qrcode: string };
 
-    expect(result.base64).toBe("base64data");
+    expect(result.base64).toBe("iVBORw0KGgo=");
     expect(result.qrcode).toBe("qr-key");
+  });
+
+  it("serializes channels.wechat.requestQrCode with an explicit JSON-RPC result", async () => {
+    const store = new LocalRunStore({
+      dataDir: path.join(tempDir, "runtime.db"),
+      clock,
+      fetchImpl: async () => new Response(
+        JSON.stringify({ base64: "iVBORw0KGgo=", qrcode: "qr-key" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    });
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "wechat-rpc-json",
+      label: "WeChat RPC JSON Test",
+      kind: "wechat",
+      config: {},
+    }));
+
+    const response = await handleJsonRpcLine(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "wechat-qr",
+      method: "channels.wechat.requestQrCode",
+      params: { channelId: "wechat-rpc-json" },
+    }), handler);
+
+    expect(response).toEqual({
+      jsonrpc: "2.0",
+      id: "wechat-qr",
+      result: {
+        base64: "iVBORw0KGgo=",
+        qrcode: "qr-key",
+        mimeType: "image/png",
+        imageSrc: "data:image/png;base64,iVBORw0KGgo=",
+      },
+    });
+  });
+
+  it("turns undefined handler results into JSON-RPC errors instead of success responses", async () => {
+    const response = await handleJsonRpcLine(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "undefined-result",
+      method: "channels.wechat.requestQrCode",
+      params: { channelId: "wechat-rpc" },
+    }), async () => undefined);
+
+    expect(response && "error" in response).toBe(true);
+    expect(response && "result" in response).toBe(false);
   });
 });

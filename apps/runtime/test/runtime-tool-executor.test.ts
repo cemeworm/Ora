@@ -213,6 +213,52 @@ describe("RuntimeToolExecutor", () => {
     expect(promoted.active.activeVersionId).toBe("slot-tool");
   });
 
+  it("exposes reviewed Self-Iteration tools and keeps apply approval-gated", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const selfIterationRegistry = {
+      listSelfIterationCandidates: (params?: unknown) => {
+        calls.push({ method: "list", params });
+        return [{ id: "candidate-1", status: "ready" }];
+      },
+      getSelfIterationCandidate: (params: unknown) => {
+        calls.push({ method: "get", params });
+        return { id: "candidate-1", status: "ready" };
+      },
+      scanSelfIteration: (params?: unknown) => {
+        calls.push({ method: "scan", params });
+        return { candidates: [{ id: "candidate-1" }], autoApplied: [] };
+      },
+      evaluateSelfIterationCandidate: async (params: unknown) => {
+        calls.push({ method: "evaluate", params });
+        return { id: "candidate-1", status: "ready", evaluationRunId: "eval-1" };
+      },
+      applySelfIterationCandidate: (params: unknown) => {
+        calls.push({ method: "apply", params });
+        return { id: "candidate-1", status: "applied" };
+      },
+    };
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS, selfIterationRegistry });
+    const prompt = executor.systemPrompt(["selfIteration.list", "selfIteration.evaluate", "selfIteration.apply"]) ?? "";
+    const applyDefinition = executor.toolDefinitions(["selfIteration.apply"])[0];
+
+    expect(prompt).toContain("selfIteration.apply");
+    expect(prompt).toContain("include args.approvalRequest");
+    expect(applyDefinition?.parameters?.properties).toMatchObject({
+      approvalRequest: expect.objectContaining({ required: ["title", "summary"] }),
+    });
+    expect(executor.riskLevel({ tool: "selfIteration.apply", args: { candidateId: "candidate-1" } })).toBe("high");
+
+    const list = await executor.execute({ tool: "selfIteration.list", args: { status: "ready" } }) as { candidates: unknown[] };
+    const evaluated = await executor.execute({ tool: "selfIteration.evaluate", args: { candidateId: "candidate-1" } }) as { evaluationRunId: string };
+    await expect(executor.execute({ tool: "selfIteration.apply", args: { candidateId: "candidate-1" } })).rejects.toThrow("requires user approval");
+    const applied = await executor.execute({ tool: "selfIteration.apply", args: { candidateId: "candidate-1" } }, { allowRisky: true }) as { status: string };
+
+    expect(list.candidates).toHaveLength(1);
+    expect(evaluated.evaluationRunId).toBe("eval-1");
+    expect(applied.status).toBe("applied");
+    expect(calls).toContainEqual({ method: "apply", params: { candidateId: "candidate-1", confirmed: true } });
+  });
+
   it("builds natural approval copy for high-risk local tools", () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
@@ -336,6 +382,16 @@ describe("RuntimeToolExecutor", () => {
     expect(result.pageCount).toBe(1);
     expect(result.text).toContain("Hello PDF from Ora");
     expect(result.truncated).toBe(false);
+  });
+
+  it("rejects URL values passed as document.extract paths with a url-parameter hint", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    await expect(executor.execute({
+      tool: "document.extract",
+      args: { path: "https://example.com/paper.pdf", format: "text" },
+    })).rejects.toThrow("Use the url parameter instead");
   });
 
   it("extracts text from PDF URLs with document.extract", async () => {

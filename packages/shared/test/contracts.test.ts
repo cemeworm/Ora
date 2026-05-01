@@ -137,6 +137,7 @@ import {
   RunLatencyDiagnosticsSchema,
   SelfIterationCandidateApplyParamsSchema,
   SelfIterationCandidateSchema,
+  SelfIterationCuratorTriggerSchema,
   SelfIterationPolicySchema,
   SelfIterationRunSchema,
   RunTraceMetadataSchema,
@@ -1005,6 +1006,17 @@ describe("Ora shared contracts", () => {
     expect(policy.autonomy).toBe("low_risk_auto");
     expect(policy.evaluationAutoApply).toBe(true);
     expect(policy.skillApplyRequiresConfirmation).toBe(true);
+    expect(policy.curatorEnabled).toBe(true);
+    expect(policy.scanCadenceMs).toBe(5 * 60 * 1000);
+    expect(policy.environmentObserver).toMatchObject({
+      enabled: false,
+      paused: false,
+      watchedPaths: ["."],
+      scanBudgetFiles: 200,
+      maxFileBytes: 512_000,
+    });
+    expect(SelfIterationCuratorTriggerSchema.parse("feedback_submitted")).toBe("feedback_submitted");
+    expect(SelfIterationCuratorTriggerSchema.parse("feedback_accepted")).toBe("feedback_accepted");
 
     expect(SelfIterationCandidateApplyParamsSchema.parse({ candidateId: candidate.id }).confirmed).toBe(false);
     expect(SelfIterationRunSchema.parse({
@@ -1108,6 +1120,9 @@ describe("Ora shared contracts", () => {
       }).method
     ).toBe("channels.ingest");
 
+    expect(RuntimeJsonRpcMethodSchema.parse("channels.wechat.requestQrCode")).toBe("channels.wechat.requestQrCode");
+    expect(RuntimeJsonRpcMethodSchema.parse("channels.wechat.pollQrCodeStatus")).toBe("channels.wechat.pollQrCodeStatus");
+
     expect(RuntimeJsonRpcMethodSchema.parse("selfIteration.scan")).toBe("selfIteration.scan");
     expect(RuntimeJsonRpcMethodSchema.parse("selfIteration.candidates.apply")).toBe("selfIteration.candidates.apply");
     expect(ProjectSignalActionSchema.parse({
@@ -1125,6 +1140,29 @@ describe("Ora shared contracts", () => {
         result: { ok: true }
       }).jsonrpc
     ).toBe("2.0");
+
+    expect(
+      JsonRpcResponseSchema.parse({
+        jsonrpc: "2.0",
+        id: 2,
+        result: null
+      }).result
+    ).toBeNull();
+
+    expect(
+      JsonRpcResponseSchema.safeParse({
+        jsonrpc: "2.0",
+        id: 3
+      }).success
+    ).toBe(false);
+
+    expect(
+      JsonRpcResponseSchema.safeParse({
+        jsonrpc: "2.0",
+        id: 4,
+        result: undefined
+      }).success
+    ).toBe(false);
   });
 
   it("validates custom agent draft generation contracts", () => {

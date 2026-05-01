@@ -98,6 +98,69 @@ function agentMessageEvent(message: AgentConversationMessage, seq = 0): OraEvent
   };
 }
 
+function actionRecord(status: StateSnapshot["actions"][number]["status"] = "approval_required"): StateSnapshot["actions"][number] {
+  return {
+    id: "run-debate:action:tool-1",
+    runId: "run-debate",
+    agentId: "ora",
+    type: "shell.execute",
+    riskLevel: "high",
+    status,
+    input: { command: "touch approved.txt" },
+    artifactIds: [],
+  };
+}
+
+function actionUpdatedEvent(record = actionRecord(), seq = 2): OraEventEnvelope {
+  return {
+    id: `run-debate:evt-${seq}`,
+    runId: "run-debate",
+    seq,
+    type: "action.updated",
+    createdAt: 1_714_000_000_003,
+    pattern: "orchestrator_subagent",
+    agentId: "ora",
+    payload: { actionId: record.id, status: record.status, record },
+  };
+}
+
+function approvalRequiredEvent(actionId = "run-debate:action:tool-1", seq = 3): OraEventEnvelope {
+  return {
+    id: `run-debate:evt-${seq}`,
+    runId: "run-debate",
+    seq,
+    type: "approval.required",
+    createdAt: 1_714_000_000_004,
+    pattern: "orchestrator_subagent",
+    agentId: "ora",
+    payload: {
+      actionId,
+      decision: {
+        id: `${actionId}:policy`,
+        runId: "run-debate",
+        actionId,
+        policyId: "ora.tool_policy",
+        requiredApproval: true,
+        reason: "High-risk external effect must pass the Ora approval gate.",
+        createdAt: 1_714_000_000_004,
+      },
+    },
+  };
+}
+
+function approvalResolvedEvent(actionId = "run-debate:action:tool-1", seq = 4): OraEventEnvelope {
+  return {
+    id: `run-debate:evt-${seq}`,
+    runId: "run-debate",
+    seq,
+    type: "approval.resolved",
+    createdAt: 1_714_000_000_005,
+    pattern: "orchestrator_subagent",
+    agentId: "ora",
+    payload: { actionId, decision: "approved", mode: "resume" },
+  };
+}
+
 describe("streaming run snapshot projection", () => {
   it("projects agent.message events into live snapshot agentMessages", () => {
     const message = agentMessage("run-debate:agent-message:0");
@@ -135,5 +198,47 @@ describe("streaming run snapshot projection", () => {
     const next = applyStreamingRunEvent(snapshot([existing]), event);
 
     expect(next.agentMessages).toEqual([existing]);
+  });
+
+  it("projects streamed action updates into the live snapshot", () => {
+    const proposed = actionRecord("proposed");
+    const approvalRequired = actionRecord("approval_required");
+
+    const afterProposed = applyStreamingRunEvent(snapshot(), actionUpdatedEvent(proposed));
+    const next = applyStreamingRunEvent(afterProposed, actionUpdatedEvent(approvalRequired, 3));
+
+    expect(next.actions).toHaveLength(1);
+    expect(next.actions[0]).toMatchObject({
+      id: approvalRequired.id,
+      status: "approval_required",
+      type: "shell.execute",
+    });
+  });
+
+  it("projects approval required and resolved events into pending approvals", () => {
+    const actionId = "run-debate:action:tool-1";
+    const afterRequired = applyStreamingRunEvent(snapshot(), approvalRequiredEvent(actionId));
+    const afterDuplicate = applyStreamingRunEvent(afterRequired, approvalRequiredEvent(actionId, 4));
+    const afterResolved = applyStreamingRunEvent(afterDuplicate, approvalResolvedEvent(actionId, 5));
+
+    expect(afterRequired.pendingApprovals).toEqual([actionId]);
+    expect(afterDuplicate.pendingApprovals).toEqual([actionId]);
+    expect(afterResolved.pendingApprovals).toEqual([]);
+  });
+
+  it("still projects terminal run events into status", () => {
+    const event: OraEventEnvelope = {
+      id: "run-debate:evt-6",
+      runId: "run-debate",
+      seq: 6,
+      type: "run.done",
+      createdAt: 1_714_000_000_006,
+      pattern: "orchestrator_subagent",
+      payload: { status: "succeeded" },
+    };
+
+    const next = applyStreamingRunEvent(snapshot(), event);
+
+    expect(next.status).toBe("succeeded");
   });
 });
