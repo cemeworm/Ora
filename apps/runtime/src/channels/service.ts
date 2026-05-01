@@ -125,7 +125,7 @@ export class ChannelService {
   // WeChat QR code binding
   // -----------------------------------------------------------------------
 
-  async wechatRequestQrCode(params: unknown): Promise<{ base64: string; qrcode: string }> {
+  async wechatRequestQrCode(params: unknown): Promise<{ base64: string; qrcode: string; mimeType: string; imageSrc: string; pageSrc?: string }> {
     const { channelId } = params as { channelId: string };
     const adapter = this.getOrCreateWechatAdapter(channelId);
     return adapter.requestQrCode();

@@ -19,6 +19,9 @@ export interface WechatAdapterDeps {
 interface QrCodeResponse {
   base64: string;
   qrcode: string;
+  mimeType: string;
+  imageSrc: string;
+  pageSrc?: string;
 }
 
 interface QrCodeStatusResponse {
@@ -163,7 +166,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
   // QR code binding
   // -----------------------------------------------------------------------
 
-  async requestQrCode(): Promise<{ base64: string; qrcode: string }> {
+  async requestQrCode(): Promise<QrCodeResponse> {
     const baseUrl = this.getBaseUrl();
     if (!baseUrl) {
       throw new Error("WeChat baseUrl not configured");
@@ -188,6 +191,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
       typeof raw.base64 === "string" ? raw.base64 :
       typeof raw.image === "string" ? raw.image :
       typeof raw.qr_image === "string" ? raw.qr_image :
+      typeof raw.qrcode_img_content === "string" ? raw.qrcode_img_content :
       "";
     const qrKey =
       typeof raw.qrcode === "string" ? raw.qrcode :
@@ -202,12 +206,11 @@ export class WechatChannelAdapter implements ChannelAdapter {
       );
     }
 
-    // Strip data URL prefix if present (e.g. "data:image/png;base64,abc123" → "abc123")
-    const base64 = base64Raw.replace(/^data:image\/[^;]+;base64,/, "");
+    const image = await normalizeQrImagePayload(base64Raw, this.fetchImpl);
 
     this.qrCodeKey = qrKey;
     this.deps?.onConfigUpdate(this.channelId, { qrCodeKey: qrKey });
-    return { base64, qrcode: qrKey };
+    return { ...image, qrcode: qrKey };
   }
 
   async pollQrCodeStatus(): Promise<{
@@ -346,6 +349,198 @@ export class WechatChannelAdapter implements ChannelAdapter {
       ? this.config.config.botToken
       : undefined;
   }
+}
+
+async function normalizeQrImagePayload(rawValue: string, fetchImpl: typeof fetch): Promise<Omit<QrCodeResponse, "qrcode">> {
+  const decoded = safeDecodeURIComponent(rawValue.trim());
+  const dataUrlMatch = decoded.match(/^data:(image\/[^;,]+)(?:;charset=[^;,]+)?;base64,(.+)$/i);
+  if (dataUrlMatch) {
+    const mimeType = dataUrlMatch[1].toLowerCase();
+    const base64 = normalizeBase64(dataUrlMatch[2]);
+    return { base64, mimeType, imageSrc: `data:${mimeType};base64,${base64}` };
+  }
+
+  const bareDataUrlMatch = decoded.match(/^(image\/[^;,]+)(?:;charset=[^;,]+)?;base64,(.+)$/i);
+  if (bareDataUrlMatch) {
+    const mimeType = bareDataUrlMatch[1].toLowerCase();
+    const base64 = normalizeBase64(bareDataUrlMatch[2]);
+    return { base64, mimeType, imageSrc: `data:${mimeType};base64,${base64}` };
+  }
+
+  const trimmed = decoded.trim();
+  if (isHttpUrl(trimmed)) {
+    return fetchQrImageUrl(trimmed, fetchImpl);
+  }
+
+  if (trimmed.startsWith("<svg") || trimmed.startsWith("<?xml")) {
+    const base64 = Buffer.from(trimmed, "utf8").toString("base64");
+    return { base64, mimeType: "image/svg+xml", imageSrc: `data:image/svg+xml;base64,${base64}` };
+  }
+
+  const rawImage = encodeRawImageContent(trimmed);
+  if (rawImage) {
+    return rawImage;
+  }
+
+  const base64 = normalizeBase64(trimmed);
+  const mimeType = detectImageMimeType(base64);
+  return { base64, mimeType, imageSrc: `data:${mimeType};base64,${base64}` };
+}
+
+function safeDecodeURIComponent(value: string): string {
+  if (!value.includes("%")) {
+    return value;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+async function fetchQrImageUrl(url: string, fetchImpl: typeof fetch): Promise<Omit<QrCodeResponse, "qrcode">> {
+  const res = await fetchImpl(url, {
+    method: "GET",
+    headers: {
+      accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/svg+xml,text/html;q=0.8,*/*;q=0.5",
+      "user-agent": "Mozilla/5.0 OraRuntime/0.1 WeChatQrBinding",
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`get_bot_qrcode 图片下载失败 HTTP ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const sniffedMimeType = detectImageMimeTypeFromBuffer(buffer);
+  if (sniffedMimeType) {
+    const base64 = buffer.toString("base64");
+    return { base64, mimeType: sniffedMimeType, imageSrc: `data:${sniffedMimeType};base64,${base64}` };
+  }
+
+  const text = buffer.toString("utf8").trimStart();
+  if (looksLikeHtml(text)) {
+    const embeddedImage = extractQrImageCandidateFromHtml(text, url);
+    if (embeddedImage) {
+      return normalizeQrImagePayload(embeddedImage, fetchImpl);
+    }
+
+    const base64 = buffer.toString("base64");
+    return {
+      base64,
+      mimeType: "text/html",
+      imageSrc: "",
+      pageSrc: url,
+    };
+  }
+
+  const base64 = buffer.toString("base64");
+  const mimeType = normalizeImageContentType(res.headers.get("content-type")) ?? detectImageMimeType(base64);
+  return { base64, mimeType, imageSrc: `data:${mimeType};base64,${base64}` };
+}
+
+function normalizeImageContentType(contentType: string | null): string | undefined {
+  const mimeType = contentType?.split(";")[0]?.trim().toLowerCase();
+  return mimeType?.startsWith("image/") ? mimeType : undefined;
+}
+
+function looksLikeHtml(value: string): boolean {
+  const lower = value.toLowerCase();
+  return lower.startsWith("<!doctype html") || lower.startsWith("<html") || lower.includes("<body");
+}
+
+function extractQrImageCandidateFromHtml(html: string, baseUrl: string): string | undefined {
+  const candidates = [
+    ...matchHtmlAttributeValues(html, /<img\b[^>]+src=["']([^"']+)["'][^>]*>/gi),
+    ...matchHtmlAttributeValues(html, /<source\b[^>]+srcset=["']([^"']+)["'][^>]*>/gi),
+    ...matchHtmlAttributeValues(html, /<meta\b[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["'][^>]*>/gi),
+    ...matchHtmlAttributeValues(html, /url\(["']?([^"')]+)["']?\)/gi),
+  ];
+
+  for (const candidate of candidates) {
+    const value = candidate.split(/\s+/)[0]?.trim();
+    if (!value || value.startsWith("#")) continue;
+    if (/^data:image\//i.test(value)) return value;
+    if (/\.(png|jpe?g|gif|webp|svg)(?:[?#].*)?$/i.test(value) || isHttpUrl(value) || value.startsWith("/")) {
+      return resolveUrl(value, baseUrl);
+    }
+  }
+
+  return undefined;
+}
+
+function matchHtmlAttributeValues(html: string, pattern: RegExp): string[] {
+  const values: string[] = [];
+  for (const match of html.matchAll(pattern)) {
+    if (match[1]) values.push(match[1]);
+  }
+  return values;
+}
+
+function resolveUrl(value: string, baseUrl: string): string {
+  if (/^data:/i.test(value)) return value;
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return value;
+  }
+}
+
+function detectImageMimeTypeFromBuffer(buffer: Buffer): string | undefined {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const head = buffer.subarray(0, 256).toString("utf8").trimStart();
+  if (head.startsWith("GIF87a") || head.startsWith("GIF89a")) return "image/gif";
+  if (head.startsWith("<svg") || head.startsWith("<?xml")) return "image/svg+xml";
+  return undefined;
+}
+
+function normalizeBase64(value: string): string {
+  const compact = value.replace(/\s+/g, "").replace(/^base64,/i, "").replace(/-/g, "+").replace(/_/g, "/");
+  const remainder = compact.length % 4;
+  return remainder === 0 ? compact : `${compact}${"=".repeat(4 - remainder)}`;
+}
+
+function encodeRawImageContent(value: string): Omit<QrCodeResponse, "qrcode"> | undefined {
+  const rawMimeType = detectRawImageMimeType(value);
+  if (!rawMimeType) {
+    return undefined;
+  }
+  const base64 = Buffer.from(value, "latin1").toString("base64");
+  return { base64, mimeType: rawMimeType, imageSrc: `data:${rawMimeType};base64,${base64}` };
+}
+
+function detectRawImageMimeType(value: string): string | undefined {
+  if (value.startsWith("\u0089PNG\r\n\u001a\n") || value.startsWith("PNG\r\n\u001a\n")) return "image/png";
+  if (value.startsWith("\u00ff\u00d8")) return "image/jpeg";
+  if (value.startsWith("GIF87a") || value.startsWith("GIF89a")) return "image/gif";
+  return undefined;
+}
+
+function detectImageMimeType(base64: string): string {
+  if (base64.startsWith("iVBOR")) return "image/png";
+  if (base64.startsWith("/9j/")) return "image/jpeg";
+  if (base64.startsWith("R0lGOD")) return "image/gif";
+
+  try {
+    const head = Buffer.from(base64.slice(0, 128), "base64").toString("utf8").trimStart();
+    if (head.startsWith("<svg") || head.startsWith("<?xml")) {
+      return "image/svg+xml";
+    }
+  } catch {
+    // Keep the conservative default below.
+  }
+
+  return "image/png";
 }
 
 // ---------------------------------------------------------------------------

@@ -386,8 +386,8 @@ export function createRuntimeClient() {
     async channelStatus(): Promise<OraChannelStatusResult> {
       return call<OraChannelStatusResult>("channels.status");
     },
-    async wechatRequestQrCode(channelId: string): Promise<{ base64: string; qrcode: string }> {
-      return call<{ base64: string; qrcode: string }>("channels.wechat.requestQrCode", { channelId });
+    async wechatRequestQrCode(channelId: string): Promise<{ base64: string; qrcode: string; mimeType?: string; imageSrc?: string; pageSrc?: string }> {
+      return call<{ base64: string; qrcode: string; mimeType?: string; imageSrc?: string; pageSrc?: string }>("channels.wechat.requestQrCode", { channelId });
     },
     async wechatPollQrCodeStatus(channelId: string): Promise<{
       status: string;
@@ -1371,9 +1371,12 @@ class LocalJsonRpcRuntime {
           bus: {},
         };
       case "channels.wechat.requestQrCode": {
+        const base64 = "iVBORw0KGgoAAAANSUhEUgAAABUAAAAVCAAAAACMfPpKAAAAPUlEQVR4nGP4//8HQ3MYB8OuVS8Ydoe9ANMg/r/VPxiuhkYwrFq1Aiv9b9UKhubQCIZdq1Yw7IbSID7QPAB9+CcNRdy/cgAAAABJRU5ErkJggg==";
         return {
-          base64: "iVBORw0KGgoAAAANSUhEUgAAABUAAAAVCAAAAACMfPpKAAAAPUlEQVR4nGP4//8HQ3MYB8OuVS8Ydoe9ANMg/r/VPxiuhkYwrFq1Aiv9b9UKhubQCIZdq1Yw7IbSID7QPAB9+CcNRdy/cgAAAABJRU5ErkJggg==",
+          base64,
           qrcode: "mock-qr-key",
+          mimeType: "image/png",
+          imageSrc: `data:image/png;base64,${base64}`,
         };
       }
       case "channels.wechat.pollQrCodeStatus":
@@ -1812,6 +1815,46 @@ class LocalJsonRpcRuntime {
       }));
     }
 
+    for (const project of this.projects.values()) {
+      if (projectId && project.projectId !== projectId) continue;
+      const policy = this.selfIterationPolicy(project.projectId).environmentObserver;
+      if (!policy.enabled || policy.paused) continue;
+      const observedFiles = Math.min(policy.scanBudgetFiles, 3);
+      signals.push(ProjectSignalSchema.parse({
+        id: `${project.projectId}:signal:project_file:environment_observer`,
+        projectId: project.projectId,
+        source: "project_file",
+        sourceRef: `environment-observer:${project.projectId}`,
+        title: "Environment observer snapshot",
+        summary: `Scoped observer scanned ${observedFiles} file summaries under ${policy.watchedPaths.join(", ")} without reading raw content.`,
+        severity: "info",
+        confidence: 0.72,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        evidence: [{
+          id: `${project.projectId}:file:mock`,
+          label: "Observed project file",
+          summary: "Mock browser fallback metadata only",
+          target: { kind: "project_file", id: "mock", projectFilePath: "mock" },
+        }],
+        metadata: {
+          observerKind: "environment_snapshot",
+          privacy: "metadata_only_no_raw_content",
+          watchedPaths: policy.watchedPaths,
+          excludedGlobs: policy.excludedGlobs,
+          scanBudgetFiles: policy.scanBudgetFiles,
+          maxFileBytes: policy.maxFileBytes,
+          observedFiles,
+          skippedLargeFiles: 0,
+          truncated: false,
+          extensionCounts: { ".ts": 1, ".md": 1 },
+          recentFiles: [{ path: "README.md", sizeBytes: 128, modifiedAt: Date.now() }],
+          largestFiles: [{ path: "src/App.tsx", sizeBytes: 4096, modifiedAt: Date.now() }],
+          runContext: { totalRuns: this.runs.size, failedRuns: 0, interruptedRuns: 0, recentRuns: [] },
+        },
+      }));
+    }
+
     return signals.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
   }
 
@@ -1851,6 +1894,30 @@ class LocalJsonRpcRuntime {
           confidence: 0.82,
           createdAt: recovery[0]?.createdAt ?? Date.now(),
           updatedAt: recovery[0]?.updatedAt ?? Date.now(),
+        }));
+      }
+      const environmentRule = rules.find((rule) => rule.id.endsWith(":rule:environment_observer_review"));
+      const environmentSignals = projectSignals.filter((signal) => signal.source === "project_file" && signal.metadata.observerKind === "environment_snapshot");
+      if (environmentRule && mockRuleAllows(environmentRule, "project_file", "info") && environmentSignals.length > 0) {
+        const insightId = `${nextProjectId}:insight:environment_observer`;
+        const action = {
+          id: `draft-self-iteration:${nextProjectId}`,
+          kind: "draft_self_iteration_candidate" as const,
+          label: "Draft Self-Iteration candidate",
+          payload: { projectId: nextProjectId },
+          requiresConfirmation: true,
+        };
+        insights.push(ProjectInsightSchema.parse({
+          id: insightId,
+          projectId: nextProjectId,
+          title: "Environment observer has workspace context",
+          summary: "Opt-in project observation produced scoped file and run-context summaries for Self-Iteration review.",
+          status: this.feedbackLoopApplied.has(insightId) ? "applied" : this.feedbackLoopDismissed.has(insightId) ? "dismissed" : "open",
+          signalIds: environmentSignals.map((signal) => signal.id),
+          recommendedActions: mockRuleAllowsAction(environmentRule, action) ? [action] : [],
+          confidence: 0.72,
+          createdAt: environmentSignals[0]?.createdAt ?? Date.now(),
+          updatedAt: environmentSignals[0]?.updatedAt ?? Date.now(),
         }));
       }
       const feedbackRule = rules.find((rule) => rule.id.endsWith(":rule:feedback_pending_review"));
@@ -1933,6 +2000,29 @@ class LocalJsonRpcRuntime {
           metadata: { feedbackId: feedback.id },
         },
         riskLevel: "low",
+        status: "draft",
+        createdAt: now,
+        updatedAt: now,
+      }));
+    }
+    const environmentSignal = this.listProjectSignals({ projectId, source: "project_file" })
+      .find((signal) => signal.metadata.observerKind === "environment_snapshot");
+    if (environmentSignal) {
+      candidates.push(SelfIterationCandidateSchema.parse({
+        id: `${projectId}:self:mode:environment-observer`,
+        projectId,
+        targetKind: "mode",
+        targetRef: { kind: "mode", id: "environment-observer" },
+        title: "Review mode orchestration from environment observer context",
+        summary: "Opt-in workspace observation found scoped file metadata and run-context signals that may improve mode orchestration.",
+        evidence: environmentSignal.evidence,
+        proposedChange: {
+          operation: "mode.studio.generateDraft",
+          title: "Open a Mode Studio draft from environment context",
+          summary: "Use metadata-only project observation to draft conservative, reviewable mode improvements.",
+          metadata: { sourceSignalId: environmentSignal.id, observerKind: "environment_snapshot" },
+        },
+        riskLevel: "high",
         status: "draft",
         createdAt: now,
         updatedAt: now,
@@ -2048,6 +2138,16 @@ class LocalJsonRpcRuntime {
         severityThreshold: "info",
         humanReviewRequired: true,
         actionPolicy: { allowedActionKinds: ["open_evaluation_feedback"] },
+      }),
+      FeedbackLoopCalibrationRuleSchema.parse({
+        id: `${projectId}:rule:environment_observer_review`,
+        projectId,
+        name: "Environment observer review",
+        enabled: true,
+        sourceFilters: ["project_file"],
+        severityThreshold: "info",
+        humanReviewRequired: true,
+        actionPolicy: { allowedActionKinds: ["draft_self_iteration_candidate"] },
       }),
     ].map((rule) => this.feedbackLoopRules.get(rule.id) ?? rule);
   }

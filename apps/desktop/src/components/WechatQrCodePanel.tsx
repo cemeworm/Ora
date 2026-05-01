@@ -32,7 +32,9 @@ export function WechatQrCodePanel({
   runtimeClient,
 }: WechatQrCodePanelProps) {
   const [state, setState] = useState<QrState>(isBound ? "bound" : "idle");
-  const [qrBase64, setQrBase64] = useState("");
+  const [qrImageSrc, setQrImageSrc] = useState("");
+  const [qrPageSrc, setQrPageSrc] = useState("");
+  const [qrImageMeta, setQrImageMeta] = useState<{ mimeType?: string; length: number; prefix: string } | undefined>();
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -49,10 +51,17 @@ export function WechatQrCodePanel({
     setError("");
     try {
       const result = await runtimeClient.wechatRequestQrCode(channelId);
-      if (!result?.base64) {
+      if (!result?.base64 && !result?.imageSrc && !result?.pageSrc) {
         throw new Error(`runtime 返回了无效的 QR 码响应: ${JSON.stringify(result)}`);
       }
-      setQrBase64(result.base64);
+      const imageSrc = result.imageSrc ?? (result.base64 ? `data:${result.mimeType ?? "image/png"};base64,${result.base64}` : "");
+      setQrImageSrc(imageSrc);
+      setQrPageSrc(result.pageSrc ?? "");
+      setQrImageMeta({
+        mimeType: result.mimeType,
+        length: imageSrc.length,
+        prefix: imageSrc.slice(0, 48),
+      });
       setState("showing_qr");
       startPolling();
     } catch (err) {
@@ -104,8 +113,19 @@ export function WechatQrCodePanel({
   const resetToIdle = () => {
     if (pollRef.current) clearTimeout(pollRef.current);
     setState("idle");
-    setQrBase64("");
+    setQrImageSrc("");
+    setQrPageSrc("");
+    setQrImageMeta(undefined);
     setError("");
+  };
+
+  const openQrPage = async () => {
+    if (!qrPageSrc) return;
+    try {
+      await runtimeClient.openExternalUrl(qrPageSrc);
+    } catch (err) {
+      setError(`无法打开二维码页面: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // --- Render ---
@@ -165,12 +185,37 @@ export function WechatQrCodePanel({
   // showing_qr or scanned
   return (
     <div className="flex flex-col items-center gap-3 rounded-xl bg-bench-50 px-4 py-6 ring-1 ring-inset ring-bench-200">
-      {qrBase64 && (
+      {qrPageSrc ? (
+        <div className="flex h-52 w-52 flex-col items-center justify-center gap-3 rounded-lg bg-white p-4 text-center ring-1 ring-inset ring-bench-200">
+          <p className="text-sm font-semibold text-bench-800">
+            微信返回的是二维码页面
+          </p>
+          <p className="text-xs leading-5 text-bench-500">
+            该页面无法在 Ora 内直接展示，请在浏览器中打开后扫码。
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="rounded-xl bg-bench-900 text-white hover:bg-bench-800"
+            onClick={openQrPage}
+          >
+            打开二维码页面
+          </Button>
+        </div>
+      ) : qrImageSrc ? (
         <img
-          src={`data:image/png;base64,${qrBase64}`}
+          src={qrImageSrc}
           alt="WeChat QR Code"
           className="h-52 w-52 rounded-lg"
+          onError={() => {
+            setError(
+              `二维码图片无法解码: ${qrImageMeta?.mimeType ?? "unknown"}, length=${qrImageMeta?.length ?? 0}, prefix=${qrImageMeta?.prefix ?? ""}`,
+            );
+          }}
         />
+      ) : null}
+      {error && (
+        <p className="max-w-64 break-all text-center text-xs text-red-600">{error}</p>
       )}
       <span className="text-sm font-semibold text-bench-700">
         {state === "scanned" ? "已扫码，请在手机上确认" : "请使用微信扫描二维码"}
