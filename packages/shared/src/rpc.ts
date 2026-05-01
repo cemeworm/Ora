@@ -75,6 +75,8 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "channels.bindings.list",
   "channels.deliveries.list",
   "channels.deliveries.retry",
+  "channels.wechat.requestQrCode",
+  "channels.wechat.pollQrCodeStatus",
   "runs.start",
   "runs.startStreaming",
   "runs.list",
@@ -149,6 +151,14 @@ export const JsonRpcSuccessResponseSchema = z.object({
   jsonrpc: z.literal("2.0"),
   id: JsonRpcIdSchema.nullable(),
   result: z.unknown()
+}).superRefine((response, ctx) => {
+  if (!Object.prototype.hasOwnProperty.call(response, "result") || response.result === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["result"],
+      message: "JSON-RPC success responses must include a non-undefined result. Use null when there is no value."
+    });
+  }
 });
 export type JsonRpcSuccessResponse = z.infer<typeof JsonRpcSuccessResponseSchema>;
 
