@@ -56,6 +56,7 @@ export function ProviderOnboardingStep({
   onSkip,
 }: ProviderOnboardingStepProps) {
   const [apiKey, setApiKey] = useState("");
+  const [showAllProviders, setShowAllProviders] = useState(false);
   const {
     activePreset,
     draftProviderStatus,
@@ -109,24 +110,24 @@ export function ProviderOnboardingStep({
               <div className="mt-3 flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                 <div>
                   <h2 className="text-4xl font-semibold tracking-[-0.05em] text-bench-900 xl:text-5xl">
-                    先把模型服务接上。
+                    选择你的 AI 引擎。
                   </h2>
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-bench-700">
-                    选一个服务提供方，填入密钥并验证。你也可以先跳过，之后在设置里慢慢补。
+                    推荐从免费模型开始，有自有密钥也可以随时填入。随时可以跳过，之后在设置里更改。
                   </p>
                 </div>
                 <span className="w-fit rounded-full border border-bench-200 bg-bench-50 px-3 py-1.5 text-xs font-medium text-bench-600">
-                  推荐从免费模型开始
+                  最后一步
                 </span>
               </div>
             </header>
 
             {recommendedProviders.length > 0 && (
-              <section className="animate-ink-in" style={{ animationDelay: "90ms" }}>
+              <section className="animate-ink-in" style={{ animationDelay: "150ms" }}>
                 <div className="mb-3 flex items-center gap-2">
                   <Sparkles size={16} className="text-signal-amber" />
                   <h3 className="text-sm font-semibold text-bench-900">
-                    免费模型推荐
+                    免费推荐
                   </h3>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -145,54 +146,67 @@ export function ProviderOnboardingStep({
               </section>
             )}
 
-            <section className="animate-ink-in" style={{ animationDelay: "180ms" }}>
-              <div className="mb-3 flex items-center gap-2">
-                <Zap size={16} className="text-bench-700" />
-                <h3 className="text-sm font-semibold text-bench-900">
-                  全部服务提供方
-                </h3>
+            {!showAllProviders ? (
+              <div className="animate-ink-in flex justify-center" style={{ animationDelay: "280ms" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowAllProviders(true)}
+                  className="flex items-center gap-2 rounded-2xl border border-bench-200 bg-white px-5 py-2.5 text-sm font-medium text-bench-700 shadow-sm transition hover:bg-bench-50 hover:shadow active:scale-[0.99]"
+                >
+                  <Zap size={16} />
+                  显示更多服务提供方
+                </button>
               </div>
-              <div className="grid max-h-[360px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-4">
-                {providerCatalog.map((entry) => (
-                  <button
-                    key={entry.key}
-                    type="button"
-                    onClick={() => {
-                      setApiKey("");
-                      selectProviderEntry(entry);
-                    }}
-                    className={cn(
-                      "flex min-h-[76px] items-center gap-3 rounded-[20px] border border-bench-200 bg-white px-3 py-3 text-left transition hover:-translate-y-0.5 hover:bg-bench-50 hover:shadow-sm active:scale-[0.99]",
-                      selectedProviderKey === entry.key &&
-                        "border-bench-900 bg-bench-50 shadow-sm",
-                    )}
-                  >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-bench-100 text-[11px] font-bold text-bench-700">
-                      {entry.preset.iconLabel}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold text-bench-900">
-                        {entry.label}
+            ) : (
+              <section className="animate-ink-in" style={{ animationDelay: "280ms" }}>
+                <div className="mb-3 flex items-center gap-2">
+                  <Zap size={16} className="text-bench-700" />
+                  <h3 className="text-sm font-semibold text-bench-900">
+                    全部服务提供方
+                  </h3>
+                </div>
+                <div className="grid max-h-[360px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-4">
+                  {providerCatalog.map((entry) => (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      onClick={() => {
+                        setApiKey("");
+                        selectProviderEntry(entry);
+                      }}
+                      className={cn(
+                        "flex min-h-[76px] items-center gap-3 rounded-[20px] border border-bench-200 bg-white px-3 py-3 text-left transition hover:-translate-y-0.5 hover:bg-bench-50 hover:shadow-sm active:scale-[0.99]",
+                        selectedProviderKey === entry.key &&
+                          "border-bench-900 bg-bench-50 shadow-sm",
+                      )}
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-bench-100 text-[11px] font-bold text-bench-700">
+                        {entry.preset.iconLabel}
                       </span>
-                      <span className="mt-0.5 block truncate text-xs text-bench-700">
-                        {entry.preset.recommendationReason ?? entry.description}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold text-bench-900">
+                          {entry.label}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-bench-700">
+                          {entry.preset.recommendationReason ?? entry.description}
+                        </span>
                       </span>
-                    </span>
-                    {entry.saved && (
-                      <CheckCircle2
-                        size={15}
-                        className="shrink-0 text-lime-600"
-                      />
-                    )}
-                  </button>
-                ))}
-              </div>
-            </section>
+                      {entry.saved && (
+                        <CheckCircle2
+                          size={15}
+                          className="shrink-0 text-lime-600"
+                        />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
 
           <aside
             className="animate-ink-in flex min-h-full flex-col rounded-[28px] border border-[#d9c8ad] bg-[#fffaf1]/92 p-5 shadow-[0_18px_44px_rgba(77,58,34,0.14),inset_0_1px_0_rgba(255,255,255,0.7)] sm:p-6"
-            style={{ animationDelay: "120ms" }}
+            style={{ animationDelay: "200ms" }}
           >
             <div className="mx-auto mb-4 h-5 w-28 -rotate-1 rounded-sm bg-[#d9b98f]/45 shadow-sm" />
             <div className="flex items-start justify-between gap-3">

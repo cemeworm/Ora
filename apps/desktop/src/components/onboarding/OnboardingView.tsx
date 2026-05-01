@@ -161,38 +161,38 @@ function WelcomeStep() {
       <div className="max-w-xl">
         <p
           className="animate-fade-in text-sm font-semibold tracking-[0.28em] text-bench-600"
-          style={{ animationDelay: "50ms" }}
+          style={{ animationDelay: "120ms" }}
         >
           嗨，我是 Ora
         </p>
         <h1
           className="animate-fade-in mt-5 text-5xl font-semibold leading-[0.95] tracking-[-0.05em] text-bench-900 sm:text-6xl lg:text-7xl"
-          style={{ animationDelay: "160ms" }}
+          style={{ animationDelay: "320ms" }}
         >
-          把 AI 摆成
+          把事情做完，
           <span className="block font-serif italic tracking-[-0.04em]">
-            你的工作台。
+            不用切来切去。
           </span>
         </h1>
         <p
           className="animate-fade-in mt-7 max-w-md text-base leading-8 text-bench-700"
-          style={{ animationDelay: "280ms" }}
+          style={{ animationDelay: "520ms" }}
         >
-          同一个窗口里写代码、查资料、跑脚本，不用在十个应用之间切来切去。
-          下面选一个服务提供方，一分钟就能开始。
+          Ora 是你的 AI 工作台。写文档、查资料、跑任务，都在这一个窗口里完成。
+          选一个服务，一分钟就能开始。
         </p>
         <div
           className="animate-fade-in mt-8 inline-flex items-center gap-3 rounded-full border border-bench-200 bg-white/55 px-4 py-2 text-sm text-bench-700 shadow-sm"
-          style={{ animationDelay: "400ms" }}
+          style={{ animationDelay: "720ms" }}
         >
-          <span className="h-2 w-2 rounded-full bg-bench-900" />
-          继续后，Ora 会先问清楚怎么接入
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          只需两步，即可开始使用
         </div>
       </div>
 
       <div
         className="animate-fade-in relative mx-auto w-full max-w-2xl"
-        style={{ animationDelay: "260ms" }}
+        style={{ animationDelay: "420ms" }}
         aria-label="Ora 工作台插画"
       >
         <div className="absolute -left-5 top-10 h-28 w-24 -rotate-6 rounded-3xl border border-[#dbcbb3] bg-[#eee1cf] shadow-sm" />
@@ -257,7 +257,7 @@ function WelcomeStep() {
                       "animate-ink-in rounded-[24px] border border-[#decbb0] bg-[#fff7ea] p-4 text-left shadow-[0_12px_32px_rgba(86,62,33,0.10)]",
                       notePosition,
                     )}
-                    style={{ animationDelay: `${520 + index * 140}ms` }}
+                    style={{ animationDelay: `${780 + index * 200}ms` }}
                   >
                     <div className="mb-3 flex items-center gap-3">
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-[#efe0ca] text-bench-900">
