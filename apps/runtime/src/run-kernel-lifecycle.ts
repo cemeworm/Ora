@@ -9,6 +9,7 @@ import type {
 } from "@ora/shared";
 import { StateSnapshotSchema } from "@ora/shared";
 import type { RuntimeSkillRegistry } from "./harness/capability-registries.js";
+import { type ModeRegistryTools } from "./harness/runtime-tool-executor.js";
 import { executeRuntimeKernel, type RuntimeKernelOptions } from "./harness/runtime-kernel.js";
 import type { ModelMessage } from "./providers/index.js";
 import { withLangfuseRunTrace } from "./telemetry/langfuse.js";
@@ -24,6 +25,7 @@ interface KernelLifecycleBaseParams {
   turnIndex?: number;
   clock?: () => number;
   skillRegistry?: RuntimeSkillRegistry;
+  modeRegistry?: ModeRegistryTools;
   customAgentOverlay?: string;
   customAgentOverlays?: Record<string, string>;
   systemAgentOverlays?: Record<string, string>;
@@ -75,6 +77,7 @@ function kernelOptions(params: KernelLifecycleBaseParams): RuntimeKernelOptions 
     modeSpec: params.modeSpec,
     definition: params.definition,
     skillRegistry: params.skillRegistry,
+    modeRegistry: params.modeRegistry,
     customAgentOverlay: params.customAgentOverlay,
     customAgentOverlays: params.customAgentOverlays,
     systemAgentOverlays: params.systemAgentOverlays,
