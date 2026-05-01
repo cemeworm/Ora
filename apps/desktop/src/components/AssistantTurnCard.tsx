@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertCircle,
-  AtSign,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -10,16 +9,13 @@ import {
   Copy,
   FileImage,
   FileText,
-  GitBranch,
   ListTodo,
   LoaderCircle,
   MessageSquareWarning,
-  Reply,
   Send,
 } from "lucide-react";
 import type {
   AssistantTurnAttachment,
-  TurnAgentConversationMessage,
   TurnArtifactAttachment,
   TurnFileChangeAttachment,
   TurnProcessStep,
@@ -62,8 +58,6 @@ interface AssistantTurnCardProps {
   }) => Promise<void>;
 }
 
-const QUOTED_MESSAGE_PREVIEW_LIMIT = 128;
-
 export function AssistantTurnCard({
   content,
   turn,
@@ -75,9 +69,6 @@ export function AssistantTurnCard({
   const agentMessages = turn?.agentMessages ?? [];
   const stageTranscriptMessages = agentMessages.filter(
     (message) => message.transcript,
-  );
-  const collaborationMessages = agentMessages.filter(
-    (message) => !message.transcript,
   );
   const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
@@ -97,8 +88,6 @@ export function AssistantTurnCard({
     liveProgressText && content.trim() === liveProgressText,
   );
   const hasStageTranscript = stageTranscriptMessages.length > 0;
-  const hasVisibleAgentMessages =
-    visibleAgentMessages(collaborationMessages, turn?.status).length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
   const canCopyContent = Boolean(
@@ -211,14 +200,6 @@ export function AssistantTurnCard({
             <StageTranscript messages={stageTranscriptMessages} />
           ) : null}
 
-          {hasVisibleAgentMessages ? (
-            <AgentConversationTimeline
-              messages={collaborationMessages}
-              status={turn?.status}
-              isPlaceholder={isPlaceholder}
-            />
-          ) : null}
-
           <MessageContent className="w-full">
             <MarkdownContent
               content={content}
@@ -327,211 +308,6 @@ export function AssistantTurnCard({
   );
 }
 
-function AgentConversationTimeline({
-  messages,
-  status,
-  isPlaceholder,
-}: {
-  messages: TurnAgentConversationMessage[];
-  status?: AssistantTurnAttachment["status"];
-  isPlaceholder: boolean;
-}) {
-  const conversationActive =
-    isPlaceholder ||
-    status === "running" ||
-    messages.some((message) => message.status === "running");
-  const [open, setOpen] = useState(conversationActive);
-  const byId = new Map(messages.map((message) => [message.id, message]));
-  const visibleMessages = visibleAgentMessages(messages, status);
-
-  useEffect(() => {
-    if (!conversationActive) {
-      setOpen(false);
-      return;
-    }
-    setOpen(true);
-  }, [conversationActive]);
-
-  return (
-    <TaskList>
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        className="w-full text-left"
-        aria-expanded={open}
-      >
-        <TaskListHeader>
-          <div className="flex min-w-0 items-center gap-2">
-            <GitBranch size={14} />
-            <span className="font-medium text-foreground">协作轨迹</span>
-            <span className="truncate text-xs text-muted-foreground">
-              {agentConversationSummary(messages)}
-            </span>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <ChevronDown
-              size={14}
-              className={cn("transition-transform", open && "rotate-180")}
-            />
-          </div>
-        </TaskListHeader>
-      </button>
-      {open ? (
-        <TaskListBody className="max-h-[min(70vh,42rem)] divide-y divide-border overflow-y-auto overscroll-contain border-l-0 pl-0">
-          {visibleMessages.map((message) => (
-            <AgentConversationItem
-              key={message.id}
-              message={message}
-              replyTo={
-                message.replyToId ? byId.get(message.replyToId) : undefined
-              }
-              spacious
-            />
-          ))}
-        </TaskListBody>
-      ) : null}
-    </TaskList>
-  );
-}
-
-function AgentConversationItem({
-  message,
-  replyTo,
-  spacious = false,
-}: {
-  message: TurnAgentConversationMessage;
-  replyTo?: TurnAgentConversationMessage;
-  spacious?: boolean;
-}) {
-  return (
-    <div
-      className={cn(
-        spacious ? "px-4 py-4" : "px-3 py-3",
-        message.replyToId && (spacious ? "pl-10" : "pl-8"),
-      )}
-    >
-      {replyTo ? (
-        <div className="mb-2 border-l-2 border-border pl-2 text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">
-            {replyTo.fromAgentLabel}
-          </span>
-          <span className="break-words">
-            : {truncate(replyTo.content, QUOTED_MESSAGE_PREVIEW_LIMIT)}
-          </span>
-        </div>
-      ) : null}
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted/35 text-xs font-semibold text-foreground">
-          {initials(message.fromAgentLabel)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-foreground">
-              {message.fromAgentLabel}
-            </span>
-            <KindPill message={message} />
-            {message.toAgentLabels.map((label, index) => (
-              <span
-                key={`${message.id}:to:${message.toAgentIds[index] ?? label}`}
-                className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-              >
-                <AtSign size={11} />
-                {label}
-              </span>
-            ))}
-            <span className="text-xs text-muted-foreground">
-              {message.timestamp}
-            </span>
-          </div>
-          <p
-            className={cn(
-              "mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]",
-              spacious && "leading-7",
-            )}
-          >
-            {message.content}
-          </p>
-          {message.topic ||
-          message.correlationId ||
-          message.planItemId ||
-          message.artifactIds.length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-              {message.topic ? <span>主题：{message.topic}</span> : null}
-              {message.correlationId ? (
-                <span>关联：{message.correlationId}</span>
-              ) : null}
-              {message.planItemId ? <span>关联任务</span> : null}
-              {message.artifactIds.length > 0 ? (
-                <span>关联产物 {message.artifactIds.length} 个</span>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-        <AgentMessageStatusIcon status={message.status} />
-      </div>
-    </div>
-  );
-}
-
-function KindPill({ message }: { message: TurnAgentConversationMessage }) {
-  const icon =
-    message.kind === "reply" ? (
-      <Reply size={11} />
-    ) : message.kind === "route" ? (
-      <GitBranch size={11} />
-    ) : (
-      <AtSign size={11} />
-    );
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
-      {icon}
-      {agentMessageDisplayKind(message)}
-    </span>
-  );
-}
-
-function AgentMessageStatusIcon({
-  status,
-}: {
-  status: TurnAgentConversationMessage["status"];
-}) {
-  if (status === "failed") {
-    return <AlertCircle size={14} className="mt-1 shrink-0 text-amber-600" />;
-  }
-  if (status === "running") {
-    return (
-      <LoaderCircle
-        size={14}
-        className="mt-1 shrink-0 animate-spin text-muted-foreground"
-      />
-    );
-  }
-  if (status === "done") {
-    return (
-      <CheckCircle2 size={14} className="mt-1 shrink-0 text-emerald-600" />
-    );
-  }
-  return <Circle size={14} className="mt-1 shrink-0 text-muted-foreground" />;
-}
-
-function initials(value: string): string {
-  return (
-    value
-      .split(/[\s_-]+/)
-      .map((part) => part[0])
-      .filter(Boolean)
-      .slice(0, 2)
-      .join("")
-      .toUpperCase() || "A"
-  );
-}
-
-function truncate(value: string, maxLength: number): string {
-  return value.length <= maxLength
-    ? value
-    : `${value.slice(0, maxLength).trimEnd()}...`;
-}
-
 function TurnStatusIcon({
   status,
   isPlaceholder,
@@ -600,6 +376,9 @@ function CollapsibleCard({
 }
 
 function ProcessStepItem({ step }: { step: TurnProcessStep }) {
+  if (step.eventType === "agent.handoff") {
+    return <HandoffStepItem step={step} />;
+  }
   const toneClassName =
     step.tone === "warning"
       ? "text-amber-700"
@@ -620,6 +399,32 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
             </p>
           ) : null}
           <TaskItemMeta>
+            {step.contextLabel ? <span>对象：{step.contextLabel}</span> : null}
+            <span>{step.timestamp}</span>
+          </TaskItemMeta>
+        </div>
+        <StepStatusIcon step={step} />
+      </div>
+    </TaskItem>
+  );
+}
+
+function HandoffStepItem({ step }: { step: TurnProcessStep }) {
+  const detail = step.detail.trim();
+
+  return (
+    <TaskItem className="relative">
+      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-emerald-400" />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-medium text-emerald-700">{step.label}</p>
+          {detail ? (
+            <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+              {detail}
+            </p>
+          ) : null}
+          <TaskItemMeta>
+            <span>交接</span>
             <span>{step.timestamp}</span>
           </TaskItemMeta>
         </div>
@@ -977,81 +782,4 @@ export function processSummary(
 function todoSummary(todos: TurnTodoItem[]) {
   const done = todos.filter((todo) => todo.status === "done").length;
   return `${done}/${todos.length} done`;
-}
-
-export function agentConversationSummary(
-  messages: TurnAgentConversationMessage[],
-): string {
-  const agentLabels = new Set<string>();
-  for (const message of messages) {
-    agentLabels.add(message.fromAgentLabel);
-    for (const label of message.toAgentLabels) {
-      agentLabels.add(label);
-    }
-  }
-  const handoffCount =
-    highValueAgentMessages(messages).length ||
-    messages.filter((message) => message.content.trim()).length;
-  if (agentLabels.size > 0 && handoffCount > 0) {
-    return `${agentLabels.size} 个 agent，${handoffCount} 次交接`;
-  }
-  if (agentLabels.size > 0) {
-    return `${agentLabels.size} 个 agent`;
-  }
-  return `${messages.length} 条记录`;
-}
-
-export function visibleAgentMessages(
-  messages: TurnAgentConversationMessage[],
-  status?: AssistantTurnAttachment["status"],
-): TurnAgentConversationMessage[] {
-  const conversationMessages = messages.filter(
-    (message) => !message.transcript,
-  );
-  const highValueMessages = highValueAgentMessages(conversationMessages);
-  const displayMessages =
-    highValueMessages.length > 0
-      ? highValueMessages
-      : conversationMessages.filter(
-          (message) =>
-            message.content.trim() &&
-            message.kind !== "publish" &&
-            message.kind !== "status",
-        );
-
-  if (status === "running") {
-    return displayMessages.slice(-2);
-  }
-  return displayMessages;
-}
-
-export function agentMessageDisplayKind(
-  message: TurnAgentConversationMessage,
-): string {
-  switch (message.kind) {
-    case "handoff":
-      return "交接";
-    case "reply":
-      return "回复";
-    case "route":
-      return "路由";
-    case "mention":
-      return "提及";
-    case "publish":
-      return "发布";
-    case "status":
-      return "状态";
-  }
-}
-
-function highValueAgentMessages(
-  messages: TurnAgentConversationMessage[],
-): TurnAgentConversationMessage[] {
-  return messages.filter(
-    (message) =>
-      message.content.trim().length > 0 &&
-      (message.kind === "handoff" ||
-        message.kind === "reply" ||
-        message.kind === "route"),
-  );
 }

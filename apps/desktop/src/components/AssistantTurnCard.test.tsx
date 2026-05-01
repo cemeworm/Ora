@@ -2,10 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   AssistantTurnCard,
-  agentConversationSummary,
-  agentMessageDisplayKind,
   processSummary,
-  visibleAgentMessages,
 } from "./AssistantTurnCard";
 import type { AssistantTurnAttachment, TurnAgentConversationMessage, TurnArtifactAttachment, TurnProcessStep } from "../types";
 
@@ -44,8 +41,8 @@ function processStep(
 ): TurnProcessStep {
   return {
     id,
-    eventType: "task.progress",
-    label: "进度",
+    eventType: extra.eventType ?? "task.progress",
+    label: extra.label ?? "进度",
     detail,
     timestamp: "00:05",
     status,
@@ -73,41 +70,6 @@ function artifact(
 }
 
 describe("assistant turn display helpers", () => {
-  it("renders collaboration trajectory directly below running progress", () => {
-    const turn: AssistantTurnAttachment = {
-      runId: "run-1",
-      turnIndex: 1,
-      status: "running",
-      pattern: "agent_teams",
-      processSteps: [processStep("step-1", "active", "正在规划回答。")],
-      agentMessages: [
-        agentMessage("message-1", "route", "@builder 请补充背景。", {
-          fromAgentId: "team_lead",
-          fromAgentLabel: "Team Lead",
-          toAgentIds: ["builder"],
-          toAgentLabels: ["Builder"],
-          status: "running",
-        }),
-      ],
-      artifacts: [],
-      todos: [],
-      approvalCount: 0,
-      clarificationCount: 0,
-    };
-
-    const html = renderToStaticMarkup(
-      <AssistantTurnCard content="正文应该在轨迹之后。" turn={turn} />,
-    );
-
-    const progressIndex = html.indexOf("运行进度");
-    const trajectoryIndex = html.indexOf("协作轨迹");
-    const contentIndex = html.indexOf("正文应该在轨迹之后。");
-
-    expect(progressIndex).toBeGreaterThanOrEqual(0);
-    expect(trajectoryIndex).toBeGreaterThan(progressIndex);
-    expect(contentIndex).toBeGreaterThan(trajectoryIndex);
-  });
-
   it("does not repeat the latest running process action in the progress header", () => {
     expect(processSummary([
       processStep("step-1", "complete", "已完成资料收集。"),
@@ -274,104 +236,52 @@ describe("assistant turn display helpers", () => {
     ], "failed")).toBe("1 个需处理");
   });
 
-  it("keeps high-value message bus handoffs visible and hides protocol-only messages", () => {
-    const messages = [
-      agentMessage("message-1", "publish", "@router input event published on task.input:", {
-        topic: "task.input",
-        correlationId: "bus-1",
-      }),
-      agentMessage("message-2", "route", "@investigator routed task.findings to you:", {
-        topic: "task.findings",
-        correlationId: "bus-1",
-      }),
-      agentMessage("message-3", "reply", "@responder findings are ready.", {
-        fromAgentId: "investigator",
-        fromAgentLabel: "Investigator",
-        toAgentIds: ["responder"],
-        toAgentLabels: ["Responder"],
-        topic: "task.findings",
-        correlationId: "bus-1",
-      }),
-      agentMessage("message-4", "status", "queue drained"),
-    ];
-
-    expect(agentConversationSummary(messages)).toBe("3 个 agent，2 次交接");
-    expect(visibleAgentMessages(messages, "done").map((message) => message.id)).toEqual([
-      "message-2",
-      "message-3",
-    ]);
-    expect(visibleAgentMessages(messages, "running").map((message) => message.id)).toEqual([
-      "message-2",
-      "message-3",
-    ]);
-  });
-
-  it("renders collaboration metadata with Chinese labels", () => {
+  it("renders handoff steps within the process timeline with accent style", () => {
     const turn: AssistantTurnAttachment = {
-      runId: "run-meta",
+      runId: "run-1",
       turnIndex: 1,
-      status: "running",
+      status: "done",
       pattern: "agent_teams",
-      processSteps: [],
-      agentMessages: [agentMessage("message-meta", "route", "@builder 请处理。", {
-        topic: "task.findings",
-        correlationId: "bus-1",
-        planItemId: "plan-1",
-        artifactIds: ["artifact-1", "artifact-2"],
-      })],
+      processSteps: [
+        processStep("step-1", "complete", "正在收集信息。"),
+        processStep("step-2", "complete", "正在生成回答。"),
+        processStep("handoff-1", "complete", "请完成最终回答。", {
+          eventType: "agent.handoff",
+          label: "Lead → Builder",
+          tone: "accent",
+        }),
+      ],
+      agentMessages: [],
       artifacts: [],
       todos: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
 
-    const html = renderToStaticMarkup(<AssistantTurnCard content="正文" turn={turn} />);
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="最终回答" turn={turn} />,
+    );
 
-    expect(html).toContain("主题：task.findings");
-    expect(html).toContain("关联：bus-1");
-    expect(html).toContain("关联任务");
-    expect(html).toContain("关联产物 2 个");
+    expect(html).toContain("Lead → Builder");
+    expect(html).toContain("请完成最终回答。");
+    expect(html).toContain("交接");
+    expect(html).not.toContain("协作轨迹");
   });
 
-  it("limits running collaboration detail to the latest two meaningful exchanges", () => {
-    const messages = [
-      agentMessage("message-1", "route", "@investigator route task.input"),
-      agentMessage("message-2", "reply", "@responder findings are ready"),
-      agentMessage("message-3", "handoff", "@reviewer please check the answer"),
-    ];
-
-    expect(visibleAgentMessages(messages, "running").map((message) => message.id)).toEqual([
-      "message-2",
-      "message-3",
-    ]);
-    expect(visibleAgentMessages(messages, "done").map((message) => message.id)).toEqual([
-      "message-1",
-      "message-2",
-      "message-3",
-    ]);
-  });
-
-  it("truncates quoted collaboration content after 128 characters", () => {
-    const quotedPrefix = "0123456789".repeat(12) + "ABCDEFGH";
-    const quotedTail = "SHOULD_NOT_RENDER";
+  it("does not render the collaboration timeline section", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
       turnIndex: 1,
       status: "running",
       pattern: "agent_teams",
-      processSteps: [],
+      processSteps: [processStep("step-1", "active", "正在规划回答。")],
       agentMessages: [
-        agentMessage("message-1", "route", quotedPrefix + quotedTail),
-        agentMessage("message-2", "reply", "findings are ready", {
-          replyToId: "message-1",
-          fromAgentId: "investigator",
-          fromAgentLabel: "Investigator",
-        }),
-        agentMessage("message-3", "handoff", "please write the final answer", {
-          fromAgentId: "investigator",
-          fromAgentLabel: "Investigator",
-          toAgentIds: ["responder"],
-          toAgentLabels: ["Responder"],
+        agentMessage("message-1", "route", "@builder 请补充背景。", {
+          fromAgentId: "team_lead",
+          fromAgentLabel: "Team Lead",
+          toAgentIds: ["builder"],
+          toAgentLabels: ["Builder"],
+          status: "running",
         }),
       ],
       artifacts: [],
@@ -381,20 +291,14 @@ describe("assistant turn display helpers", () => {
     };
 
     const html = renderToStaticMarkup(
-      <AssistantTurnCard content="正文" turn={turn} />,
+      <AssistantTurnCard content="正文内容。" turn={turn} />,
     );
 
-    expect(html).toContain(`${quotedPrefix}...`);
-    expect(html).not.toContain(quotedTail);
+    expect(html).toContain("运行进度");
+    expect(html).not.toContain("协作轨迹");
   });
 
-  it("uses localized labels for agent message kinds", () => {
-    expect(agentMessageDisplayKind(agentMessage("message-1", "route", "route"))).toBe("路由");
-    expect(agentMessageDisplayKind(agentMessage("message-2", "reply", "reply"))).toBe("回复");
-    expect(agentMessageDisplayKind(agentMessage("message-3", "handoff", "handoff"))).toBe("交接");
-  });
-
-  it("renders stage transcript in the main turn and filters it from collaboration", () => {
+  it("renders stage transcript in the main turn without collaboration section", () => {
     const transcriptMessage = agentMessage("message-1", "reply", "正方开篇内容", {
       fromAgentId: "debate_agent",
       fromAgentLabel: "Debate Agent",
@@ -413,14 +317,13 @@ describe("assistant turn display helpers", () => {
         status: "done",
       },
     });
-    const collaborationMessage = agentMessage("message-2", "handoff", "普通协作交接");
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
       turnIndex: 1,
       status: "done",
       pattern: "orchestrator_subagent",
       processSteps: [],
-      agentMessages: [transcriptMessage, collaborationMessage],
+      agentMessages: [transcriptMessage],
       artifacts: [],
       todos: [],
       approvalCount: 0,
@@ -434,8 +337,7 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("结构化辩论");
     expect(html).toContain("正方主辩");
     expect(html).toContain("正方开篇内容");
-    expect(html).toContain("协作轨迹");
-    expect(visibleAgentMessages([transcriptMessage, collaborationMessage], "done").map((message) => message.id)).toEqual(["message-2"]);
+    expect(html).not.toContain("协作轨迹");
   });
 
   it("renders a custom two-sided staged transcript from layout metadata", () => {

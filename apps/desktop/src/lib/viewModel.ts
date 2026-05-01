@@ -1555,16 +1555,18 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
     (event) => hasWorkEvent || !isLifecycleProcessEvent(event),
   );
 
-  const steps: TurnProcessStep[] = visibleEvents
-    .map((event, index) => ({
+  const baseTime = snapshot.events[0]?.createdAt ?? snapshot.updatedAt;
+
+  type TimedStep = { rawTime: number; step: TurnProcessStep };
+
+  const timed: TimedStep[] = visibleEvents.map((event, index) => ({
+    rawTime: event.createdAt,
+    step: {
       id: event.id,
       eventType: event.type,
       label: processStepLabel(event),
       detail: processStepDetail(event),
-      timestamp: formatElapsed(
-        snapshot.events[0]?.createdAt ?? event.createdAt,
-        event.createdAt,
-      ),
+      timestamp: formatElapsed(baseTime, event.createdAt),
       status: processStepStatus(
         event,
         snapshot.status,
@@ -1573,22 +1575,62 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
       tone: processStepTone(event),
       agentId: event.agentId,
       contextLabel: processContextLabel(event),
-    }));
+    },
+  }));
 
   if (hasDeniedApproval(snapshot)) {
     const deniedAt = latestEventTime(snapshot, "run.cancelled") ?? snapshot.updatedAt;
-    steps.push({
-      id: `${snapshot.runId}:approval-denied`,
-      eventType: "approval.denied",
-      label: APPROVAL_DENIED_STEP_LABEL,
-      detail: APPROVAL_DENIED_STEP_DETAIL,
-      timestamp: formatElapsed(snapshot.events[0]?.createdAt ?? deniedAt, deniedAt),
-      status: "blocked",
-      tone: "warning",
+    timed.push({
+      rawTime: deniedAt,
+      step: {
+        id: `${snapshot.runId}:approval-denied`,
+        eventType: "approval.denied",
+        label: APPROVAL_DENIED_STEP_LABEL,
+        detail: APPROVAL_DENIED_STEP_DETAIL,
+        timestamp: formatElapsed(baseTime, deniedAt),
+        status: "blocked",
+        tone: "warning",
+      },
     });
   }
 
-  return steps;
+  const profiles = new Map(snapshot.profiles.map((p) => [p.id, p.label]));
+  for (const message of snapshot.agentMessages ?? []) {
+    if (message.kind !== "handoff" || message.transcript) {
+      continue;
+    }
+    const fromLabel = profiles.get(message.fromAgentId) ?? message.fromAgentId;
+    const toLabel = message.toAgentIds
+      .map((id) => profiles.get(id) ?? id)
+      .join(", ");
+    timed.push({
+      rawTime: message.createdAt,
+      step: {
+        id: message.id,
+        eventType: "agent.handoff",
+        label: `${fromLabel} → ${toLabel}`,
+        detail: message.content,
+        timestamp: formatElapsed(baseTime, message.createdAt),
+        status: handoffStepStatus(message.status),
+        tone: "accent",
+      },
+    });
+  }
+
+  return timed.sort((a, b) => a.rawTime - b.rawTime).map((t) => t.step);
+}
+
+function handoffStepStatus(
+  status: string,
+): TurnProcessStep["status"] {
+  switch (status) {
+    case "running":
+      return "active";
+    case "failed":
+      return "blocked";
+    default:
+      return "complete";
+  }
 }
 
 function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
