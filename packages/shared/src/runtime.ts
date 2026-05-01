@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PolicyDecisionSchema, TodoItemSchema } from "./actions.js";
+import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PlanListStepSchema, PolicyDecisionSchema, TodoItemSchema } from "./actions.js";
 import { SearchProviderConfigSchema } from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
 import { ModeSpecSchema, ModeTranscriptLayoutSchema } from "./modes.js";
@@ -408,7 +408,8 @@ export const OraEventTypeSchema = z.enum([
   "run.interrupted",
   "run.cancelled",
   "run.done",
-  "run.failed"
+  "run.failed",
+  "plan_list.updated"
 ]);
 export type OraEventType = z.infer<typeof OraEventTypeSchema>;
 
@@ -945,6 +946,7 @@ export const StateSnapshotSchema = z.object({
   profiles: z.array(AgentProfileSchema),
   memory: z.array(MemoryRecordSchema),
   plan: z.array(PlanItemSchema),
+  planList: z.array(PlanListStepSchema).default([]),
   todos: z.array(TodoItemSchema).default([]),
   actions: z.array(ActionRecordSchema),
   toolCalls: z.array(OraToolCallEnvelopeSchema).default([]),

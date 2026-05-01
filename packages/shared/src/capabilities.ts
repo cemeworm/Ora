@@ -504,6 +504,34 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "selfIteration.scan", label: "Scan for Self-Iteration Candidates", description: "Run a bounded Self-Iteration scan over existing feedback, evaluations, runs, and insights without applying prompt, mode, or skill changes.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "selfIteration.evaluate", label: "Evaluate Self-Iteration Candidate", description: "Evaluate one Self-Iteration candidate through Evaluation Studio and attach pass/fail plus before/after score evidence for review.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "selfIteration.apply", label: "Apply Self-Iteration Candidate", description: "Apply a reviewed Self-Iteration candidate only after explicit user approval; prompt, mode, and skill changes remain approval-gated.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  {
+    id: "plan.update",
+    label: "Update Plan",
+    description: "Create or update the current task plan list. Provide the full plan array with each step's status: pending, in_progress, or completed. Use short step descriptions. Always maintain exactly one in_progress step until all are completed.",
+    category: "internal",
+    riskLevel: "safe",
+    parameters: {
+      type: "object",
+      properties: {
+        explanation: { type: "string", description: "Optional one-line explanation of the plan change." },
+        plan: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              step: { type: "string", description: "Short step description." },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+            },
+            required: ["step", "status"],
+          },
+        },
+      },
+      required: ["plan"],
+    },
+    requiresApproval: false,
+    implemented: true,
+    allowedForProfiles: [],
+  },
   { id: "model.handoff", label: "Model Handoff", description: "Delegate to another model.", category: "model", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
   { id: "message.publish", label: "Publish Message", description: "Publish an event to the runtime message bus.", category: "internal", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: false, allowedForProfiles: [] },
   { id: "shared_state.write", label: "Write Shared State", description: "Write a versioned update to the shared blackboard.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },

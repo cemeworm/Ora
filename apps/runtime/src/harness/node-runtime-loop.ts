@@ -658,6 +658,10 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         detail: `${toolCall.tool} returned a result.`,
       });
+      if (toolCall.tool === "plan.update") {
+        const deps = actionDeps();
+        deps.emit("plan_list.updated", toolCall.args);
+      }
 
       messages =
         toolCall.source === "provider_native" && toolCall.providerCallId

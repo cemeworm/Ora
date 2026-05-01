@@ -77,6 +77,13 @@ function projectStreamingEvent(
     };
   }
 
+  if (event.type === "plan_list.updated" && Array.isArray(event.payload.plan)) {
+    return {
+      ...snapshot,
+      planList: event.payload.plan as StateSnapshot["planList"],
+    };
+  }
+
   return snapshot;
 }
 

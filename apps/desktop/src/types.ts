@@ -188,6 +188,11 @@ export interface TurnProcessStep {
   contextLabel?: string;
 }
 
+export interface TurnPlanListStep {
+  step: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export interface TurnTodoItem {
   id: string;
   label: string;
@@ -276,6 +281,7 @@ export interface AssistantTurnAttachment {
   pattern?: CoordinationPattern;
   liveProgressText?: string;
   processSteps: TurnProcessStep[];
+  planList: TurnPlanListStep[];
   agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];
   fileChanges?: TurnFileChangeAttachment[];

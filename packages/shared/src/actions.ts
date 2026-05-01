@@ -39,6 +39,21 @@ export const TodoItemSchema = z.object({
 });
 export type TodoItem = z.infer<typeof TodoItemSchema>;
 
+export const PlanListStepStatusSchema = z.enum(["pending", "in_progress", "completed"]);
+export type PlanListStepStatus = z.infer<typeof PlanListStepStatusSchema>;
+
+export const PlanListStepSchema = z.object({
+  step: z.string().min(1),
+  status: PlanListStepStatusSchema,
+});
+export type PlanListStep = z.infer<typeof PlanListStepSchema>;
+
+export const UpdatePlanArgsSchema = z.object({
+  explanation: z.string().min(1).optional(),
+  plan: z.array(PlanListStepSchema).min(1),
+}).strict();
+export type UpdatePlanArgs = z.infer<typeof UpdatePlanArgsSchema>;
+
 export const ActionRiskLevelSchema = z.enum(["low", "medium", "high"]);
 export type ActionRiskLevel = z.infer<typeof ActionRiskLevelSchema>;
 

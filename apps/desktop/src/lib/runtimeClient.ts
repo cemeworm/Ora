@@ -4376,6 +4376,7 @@ class LocalJsonRpcRuntime {
         linkedActionIds: index === 1 ? [sidecarActionId] : [],
         checkpointIds: [checkpoint.id],
       })),
+      planList: [],
       actions: [sidecarAction, reportAction],
       toolCalls: [],
       continuation: { frames: [] },

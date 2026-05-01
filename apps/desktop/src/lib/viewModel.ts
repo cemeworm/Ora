@@ -193,6 +193,7 @@ function createEmptySessionPreview(
     profiles: definition.profiles,
     memory: [],
     plan: [],
+    planList: [],
     actions: [],
     toolCalls: [],
     continuation: { frames: [] },
@@ -280,6 +281,7 @@ function createPreviewFromPattern(
     topology: definition.topology,
     profiles: definition.profiles,
     plan: previewPlan,
+    planList: [],
     todos: previewTodos,
     actions: [
       {
@@ -758,6 +760,7 @@ function checkpointIdFromPayload(payload: unknown): string | undefined {
 function beatGroup(event: OraEventEnvelope): RunBeat["group"] {
   switch (event.type) {
     case "plan.updated":
+    case "plan_list.updated":
       return "plan";
     case "run.forked":
     case "run.replayed":
@@ -904,6 +907,10 @@ function beatLabel(event: OraEventEnvelope): string {
       return "已完成";
     case "run.failed":
       return "失败";
+    case "plan_list.updated":
+      return "计划清单更新";
+    default:
+      return event.type;
   }
 }
 
@@ -1471,6 +1478,10 @@ function buildAssistantTurnAttachment(
     pattern: snapshot.pattern,
     liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps: deriveProcessSteps(snapshot),
+    planList: (snapshot.planList ?? []).map((item) => ({
+      step: item.step,
+      status: item.status,
+    })),
     agentMessages: deriveAgentMessages(snapshot),
     artifacts: snapshot.artifacts.map(adaptTurnArtifact),
     fileChanges: snapshot.artifacts.flatMap(adaptTurnFileChange),

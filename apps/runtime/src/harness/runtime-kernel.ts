@@ -28,6 +28,7 @@ import {
   ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
   type TaskIntent,
+  type PlanListStep,
 } from "@ora/shared";
 import {
   ActionLedger,
@@ -223,6 +224,7 @@ export async function executeRuntimeKernel(
   const toolRegistry = options.toolRegistry ?? new RuntimeToolRegistry();
   const packageManager = new PackageManager();
   const tools = toolRegistry.snapshot();
+  const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
     toolDescriptors: tools.tools,
@@ -232,6 +234,7 @@ export async function executeRuntimeKernel(
     packageManager,
     searchProviderConfig: config.searchProvider,
     toolLimits: modeSpec.toolLimits,
+    taskIntent,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);
@@ -299,6 +302,8 @@ export async function executeRuntimeKernel(
     profilesById.set(ORA_ROOT_AGENT_ID, rootProfile);
   }
 
+  let planList: PlanListStep[] = [];
+
   const emit = (
     type: OraEventEnvelope["type"],
     payload: unknown,
@@ -315,6 +320,12 @@ export async function executeRuntimeKernel(
       ...extra,
     });
     events.push(envelope);
+    if (type === "plan_list.updated") {
+      const planData = payload as { plan?: PlanListStep[] };
+      if (planData.plan) {
+        planList = planData.plan;
+      }
+    }
     options.onEvent?.(envelope);
     return envelope;
   };
@@ -1692,6 +1703,7 @@ export async function executeRuntimeKernel(
     profiles,
     memory: memoryService.list(),
     plan: planService.list(),
+    planList,
     todos: todoService.list(),
     actions: actionLedger.list(),
     toolCalls: toolCallLedger.list(),

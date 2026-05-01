@@ -90,6 +90,7 @@ describe("assistant turn display helpers", () => {
       agentMessages: [],
       artifacts: [],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -115,6 +116,7 @@ describe("assistant turn display helpers", () => {
       agentMessages: [],
       artifacts: [],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -140,6 +142,7 @@ describe("assistant turn display helpers", () => {
       agentMessages: [],
       artifacts: [],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -168,6 +171,7 @@ describe("assistant turn display helpers", () => {
         artifact("run-1:report-0", "Smoke run report", { kind: "report" }),
       ],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -207,6 +211,7 @@ describe("assistant turn display helpers", () => {
         created: false,
       }],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -254,6 +259,7 @@ describe("assistant turn display helpers", () => {
       agentMessages: [],
       artifacts: [],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -286,6 +292,7 @@ describe("assistant turn display helpers", () => {
       ],
       artifacts: [],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -326,6 +333,7 @@ describe("assistant turn display helpers", () => {
       agentMessages: [transcriptMessage],
       artifacts: [],
       todos: [],
+      planList: [],
       approvalCount: 0,
       clarificationCount: 0,
     };
@@ -400,6 +408,7 @@ describe("assistant turn display helpers", () => {
           pattern: "orchestrator_subagent",
           processSteps: [],
           agentMessages: messages,
+          planList: [],
           artifacts: [],
           todos: [],
           approvalCount: 0,
@@ -458,7 +467,7 @@ describe("assistant turn display helpers", () => {
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Review done" turn={{
         runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
-        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+        processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       }} />,
     );
     expect(html).toContain("Code Review Rubric");
@@ -495,7 +504,7 @@ describe("assistant turn display helpers", () => {
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Gate passed" turn={{
         runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
-        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+        processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       }} />,
     );
     expect(html).toContain("Safety Gate");
@@ -530,7 +539,7 @@ describe("assistant turn display helpers", () => {
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Research done" turn={{
         runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
-        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+        processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       }} />,
     );
     expect(html).toContain("Evidence Board");
@@ -565,7 +574,7 @@ describe("assistant turn display helpers", () => {
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Comparison done" turn={{
         runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
-        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+        processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       }} />,
     );
     expect(html).toContain("Tool Comparison");
@@ -599,7 +608,7 @@ describe("assistant turn display helpers", () => {
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="All done" turn={{
         runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
-        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+        processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       }} />,
     );
     expect(html).toContain("Generated Artifacts");
@@ -632,7 +641,7 @@ describe("assistant turn display helpers", () => {
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Pipeline done" turn={{
         runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
-        processSteps: [], agentMessages: messages, artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
+        processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       }} />,
     );
     expect(html).toContain("Processing Pipeline");
