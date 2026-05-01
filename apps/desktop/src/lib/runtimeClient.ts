@@ -269,6 +269,9 @@ export function createRuntimeClient() {
           ])
           : tauriUnavailableReason,
       };
+      if (method.startsWith("channels.wechat")) {
+        console.warn("[ora:debug] channels.wechat response (tauri ok):", JSON.stringify(tauriResponse.response));
+      }
       return unwrapJsonRpc<T>(tauriResponse.response);
     }
 
@@ -279,6 +282,9 @@ export function createRuntimeClient() {
         service: "ora-runtime",
         detail: tauriUnavailableReason,
       };
+      if (method.startsWith("channels.wechat")) {
+        console.warn("[ora:debug] channels.wechat tauri failed:", tauriUnavailableReason, tauriResponse);
+      }
       throw new Error(tauriUnavailableReason);
     }
 
@@ -289,6 +295,9 @@ export function createRuntimeClient() {
       service: "ora-runtime-mock",
       detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
     };
+    if (method.startsWith("channels.wechat")) {
+      console.warn("[ora:debug] channels.wechat response (mock):", JSON.stringify(response));
+    }
     return unwrapJsonRpc<T>(response);
   }
 

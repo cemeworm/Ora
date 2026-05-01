@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./ui/button";
-
-// ---------------------------------------------------------------------------
-// iLink API constants
-// ---------------------------------------------------------------------------
-
-const ILINK_BASE = "https://ilinkai.weixin.qq.com";
+import type { RuntimeClient } from "../lib/runtimeClient";
 
 type QrState =
   | "idle"
@@ -23,73 +18,7 @@ interface WechatQrCodePanelProps {
   isBound: boolean;
   /** Called when binding is confirmed – persists credentials via runtime */
   onBind: (channelId: string, credentials: { botToken: string; baseUrl: string }) => Promise<void>;
-}
-
-// ---------------------------------------------------------------------------
-// iLink API helpers (frontend-side, no CORS in Tauri webview)
-// ---------------------------------------------------------------------------
-
-function randomUin(): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return `UIN${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-}
-
-async function fetchBotQrCode(
-  uin: string,
-): Promise<{ base64: string; qrcode: string }> {
-  const res = await fetch(`${ILINK_BASE}/ilink/bot/get_bot_qrcode?bot_type=3`, {
-    method: "GET",
-    headers: { "x-wechat-uin": uin },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`iLink get_bot_qrcode HTTP ${res.status}: ${body.slice(0, 200)}`);
-  }
-  const raw = (await res.json()) as Record<string, unknown>;
-
-  const base64Raw =
-    typeof raw.base64 === "string" ? raw.base64 :
-    typeof raw.image === "string" ? raw.image :
-    "";
-  const qrKey =
-    typeof raw.qrcode === "string" ? raw.qrcode :
-    typeof raw.qrcode_key === "string" ? raw.qrcode_key :
-    typeof raw.key === "string" ? raw.key :
-    "";
-
-  if (!base64Raw || !qrKey) {
-    throw new Error(
-      `iLink 返回格式无法识别。字段: ${Object.keys(raw).join(", ")}`,
-    );
-  }
-
-  const base64 = base64Raw.replace(/^data:image\/[^;]+;base64,/, "");
-  return { base64, qrcode: qrKey };
-}
-
-async function fetchQrCodeStatus(
-  uin: string,
-  qrKey: string,
-): Promise<{
-  status: string;
-  bot_token?: string;
-  baseurl?: string;
-}> {
-  const res = await fetch(
-    `${ILINK_BASE}/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrKey)}`,
-    { method: "GET", headers: { "x-wechat-uin": uin } },
-  );
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`iLink get_qrcode_status HTTP ${res.status}: ${body.slice(0, 200)}`);
-  }
-  const raw = (await res.json()) as Record<string, unknown>;
-  return {
-    status: typeof raw.status === "string" ? raw.status : "waiting",
-    bot_token: typeof raw.bot_token === "string" ? raw.bot_token : undefined,
-    baseurl: typeof raw.baseurl === "string" ? raw.baseurl : undefined,
-  };
+  runtimeClient: RuntimeClient;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,14 +29,13 @@ export function WechatQrCodePanel({
   channelId,
   isBound,
   onBind,
+  runtimeClient,
 }: WechatQrCodePanelProps) {
   const [state, setState] = useState<QrState>(isBound ? "bound" : "idle");
   const [qrBase64, setQrBase64] = useState("");
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-  const uinRef = useRef(randomUin());
-  const qrKeyRef = useRef("");
 
   useEffect(() => {
     return () => {
@@ -120,8 +48,10 @@ export function WechatQrCodePanel({
     setState("loading_qr");
     setError("");
     try {
-      const result = await fetchBotQrCode(uinRef.current);
-      qrKeyRef.current = result.qrcode;
+      const result = await runtimeClient.wechatRequestQrCode(channelId);
+      if (!result?.base64) {
+        throw new Error(`runtime 返回了无效的 QR 码响应: ${JSON.stringify(result)}`);
+      }
       setQrBase64(result.base64);
       setState("showing_qr");
       startPolling();
@@ -135,15 +65,15 @@ export function WechatQrCodePanel({
     const poll = async () => {
       if (!mountedRef.current) return;
       try {
-        const result = await fetchQrCodeStatus(uinRef.current, qrKeyRef.current);
+        const result = await runtimeClient.wechatPollQrCodeStatus(channelId);
         if (!mountedRef.current) return;
 
-        if (result.status === "confirmed" && result.bot_token && result.baseurl) {
+        if (result.status === "confirmed" && result.botToken && result.baseUrl) {
           setState("confirmed");
           try {
             await onBind(channelId, {
-              botToken: result.bot_token,
-              baseUrl: result.baseurl,
+              botToken: result.botToken,
+              baseUrl: result.baseUrl,
             });
           } catch {
             // Bind persist failed – still show success, user can retry later
@@ -176,8 +106,6 @@ export function WechatQrCodePanel({
     setState("idle");
     setQrBase64("");
     setError("");
-    uinRef.current = randomUin();
-    qrKeyRef.current = "";
   };
 
   // --- Render ---

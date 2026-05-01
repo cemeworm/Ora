@@ -2236,6 +2236,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                             <WechatQrCodePanel
                               channelId={selectedChannel.channelId}
                               isBound={Boolean(selectedChannel.config?.bound)}
+                              runtimeClient={runtimeClient}
                               onBind={async (id, credentials) => {
                                 await runtimeClient.updateChannel({
                                   channelId: id,
