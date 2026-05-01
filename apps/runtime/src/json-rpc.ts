@@ -291,6 +291,22 @@ export function createRuntimeMethodHandler(
         return store.listFeedbackLoopRules(request.params);
       case "feedbackLoop.rules.update":
         return store.updateFeedbackLoopRule(request.params);
+      case "selfIteration.scan":
+        return store.scanSelfIteration(request.params);
+      case "selfIteration.candidates.list":
+        return store.listSelfIterationCandidates(request.params);
+      case "selfIteration.candidates.get":
+        return store.getSelfIterationCandidate(request.params);
+      case "selfIteration.candidates.evaluate":
+        return store.evaluateSelfIterationCandidate(request.params);
+      case "selfIteration.candidates.reject":
+        return store.rejectSelfIterationCandidate(request.params);
+      case "selfIteration.candidates.apply":
+        return store.applySelfIterationCandidate(request.params);
+      case "selfIteration.policy.get":
+        return store.getSelfIterationPolicy(request.params);
+      case "selfIteration.policy.update":
+        return store.updateSelfIterationPolicy(request.params);
       default:
         throw new OraRuntimeError(`Method not found: ${request.method}`, -32601, {
           method: request.method

@@ -59,6 +59,9 @@ export const ProjectSignalActionKindSchema = z.enum([
   "create_evaluation_case",
   "review_mode_rules",
   "retry_run",
+  "draft_self_iteration_candidate",
+  "open_self_iteration_candidate",
+  "evaluate_self_iteration_candidate",
 ]);
 export type ProjectSignalActionKind = z.infer<typeof ProjectSignalActionKindSchema>;
 

@@ -222,6 +222,7 @@ export class LocalFeedbackLoopStore {
         actions: filterActionsByRule([
           openTrailsAction(items[0]!),
           createEvaluationCaseAction(projectId, "Create an Evaluation case from repeated recovery"),
+          draftSelfIterationAction(projectId, "Draft Self-Iteration fix"),
         ], rule),
       }));
   }
@@ -239,7 +240,7 @@ export class LocalFeedbackLoopStore {
       signalIds: pending.map((signal) => signal.id),
       confidence: 0.85,
       updatedAt: latestTimestamp(pending),
-      actions: filterActionsByRule([openEvaluationFeedbackAction()], rule),
+      actions: filterActionsByRule([openEvaluationFeedbackAction(), draftSelfIterationAction(projectId, "Draft Evaluation candidate")], rule),
     })];
   }
 
@@ -256,7 +257,7 @@ export class LocalFeedbackLoopStore {
       signalIds: regressions.map((signal) => signal.id),
       confidence: 0.8,
       updatedAt: latestTimestamp(regressions),
-      actions: filterActionsByRule([openEvaluationRunAction(regressions[0]!)], rule),
+      actions: filterActionsByRule([openEvaluationRunAction(regressions[0]!), draftSelfIterationAction(projectId, "Draft Self-Iteration candidate")], rule),
     })];
   }
 
@@ -273,7 +274,7 @@ export class LocalFeedbackLoopStore {
       signalIds: approvals.map((signal) => signal.id),
       confidence: 0.76,
       updatedAt: latestTimestamp(approvals),
-      actions: filterActionsByRule([reviewModeRulesAction(projectId)], rule),
+      actions: filterActionsByRule([reviewModeRulesAction(projectId), draftSelfIterationAction(projectId, "Draft Mode candidate")], rule),
     })];
   }
 
@@ -290,7 +291,7 @@ export class LocalFeedbackLoopStore {
       signalIds: failures.map((signal) => signal.id),
       confidence: 0.78,
       updatedAt: latestTimestamp(failures),
-      actions: filterActionsByRule([openTrailsAction(failures[0]!)], rule),
+      actions: filterActionsByRule([openTrailsAction(failures[0]!), draftSelfIterationAction(projectId, "Draft Prompt candidate")], rule),
     })];
   }
 
@@ -648,6 +649,16 @@ function reviewModeRulesAction(projectId: string): ProjectSignalAction {
   };
 }
 
+function draftSelfIterationAction(projectId: string, label: string): ProjectSignalAction {
+  return {
+    id: `draft-self-iteration:${projectId}`,
+    kind: "draft_self_iteration_candidate",
+    label,
+    payload: { projectId },
+    requiresConfirmation: true,
+  };
+}
+
 function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[] {
   return [
     {
@@ -658,7 +669,7 @@ function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[
       sourceFilters: ["recovery_event"],
       severityThreshold: "warning",
       humanReviewRequired: true,
-      actionPolicy: { allowedActionKinds: ["open_trails", "create_evaluation_case"] },
+      actionPolicy: { allowedActionKinds: ["open_trails", "create_evaluation_case", "draft_self_iteration_candidate"] },
     },
     {
       id: `${projectId}:rule:feedback_pending_review`,
@@ -668,7 +679,7 @@ function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[
       sourceFilters: ["evaluation_feedback"],
       severityThreshold: "info",
       humanReviewRequired: true,
-      actionPolicy: { allowedActionKinds: ["open_evaluation_feedback"] },
+      actionPolicy: { allowedActionKinds: ["open_evaluation_feedback", "draft_self_iteration_candidate"] },
     },
     {
       id: `${projectId}:rule:eval_regression`,
@@ -678,7 +689,7 @@ function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[
       sourceFilters: ["evaluation_result"],
       severityThreshold: "warning",
       humanReviewRequired: true,
-      actionPolicy: { allowedActionKinds: ["open_evaluation_run"] },
+      actionPolicy: { allowedActionKinds: ["open_evaluation_run", "draft_self_iteration_candidate"] },
     },
     {
       id: `${projectId}:rule:approval_bottleneck`,
@@ -688,7 +699,7 @@ function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[
       sourceFilters: ["approval_event"],
       severityThreshold: "info",
       humanReviewRequired: true,
-      actionPolicy: { allowedActionKinds: ["review_mode_rules"] },
+      actionPolicy: { allowedActionKinds: ["review_mode_rules", "draft_self_iteration_candidate"] },
     },
     {
       id: `${projectId}:rule:repeated_run_failures`,
@@ -698,7 +709,7 @@ function defaultRulesForProject(projectId: string): FeedbackLoopCalibrationRule[
       sourceFilters: ["run_event"],
       severityThreshold: "warning",
       humanReviewRequired: true,
-      actionPolicy: { allowedActionKinds: ["open_trails"] },
+      actionPolicy: { allowedActionKinds: ["open_trails", "draft_self_iteration_candidate"] },
     },
   ].map((rule) => FeedbackLoopCalibrationRuleSchema.parse(rule));
 }
@@ -786,6 +797,12 @@ function previewMessageForAction(action: ProjectSignalAction): string {
       return "This will take you to Mode Studio calibration settings for review.";
     case "retry_run":
       return "This will retry the linked run from the available checkpoint.";
+    case "draft_self_iteration_candidate":
+      return "This will scan the linked evidence and draft Self-Iteration candidates.";
+    case "open_self_iteration_candidate":
+      return "This will open the linked Self-Iteration candidate for review.";
+    case "evaluate_self_iteration_candidate":
+      return "This will evaluate the linked Self-Iteration candidate.";
   }
 }
 

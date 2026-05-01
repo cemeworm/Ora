@@ -134,6 +134,11 @@ import {
   RuntimeConversationEntrySchema,
   RuntimeToolResultLedgerEntrySchema,
   RuntimeJsonRpcMethodSchema,
+  RunLatencyDiagnosticsSchema,
+  SelfIterationCandidateApplyParamsSchema,
+  SelfIterationCandidateSchema,
+  SelfIterationPolicySchema,
+  SelfIterationRunSchema,
   RunTraceMetadataSchema,
   RunTrailParamsSchema,
   RunTrailSchema,
@@ -960,6 +965,57 @@ describe("Ora shared contracts", () => {
     expect(() => ChannelOutboundMessageSchema.parse({ ...outbound, kind: "unknown" })).toThrow();
   });
 
+  it("validates run latency diagnostics contracts", () => {
+    const latency = RunLatencyDiagnosticsSchema.parse({
+      marks: [
+        { name: "startStreamingRun.enter", at: 100, source: "runtime" },
+        { name: "firstRunStreamReceivedAt", at: 150, source: "desktop", detail: { eventType: "run.started" } },
+      ],
+    });
+    expect(latency.marks[0]?.detail).toEqual({});
+    expect(latency.marks[1]?.detail.eventType).toBe("run.started");
+  });
+
+  it("validates Self-Iteration contracts", () => {
+    const candidate = SelfIterationCandidateSchema.parse({
+      id: "project-1:self:evaluation:feedback-1",
+      projectId: "project-1",
+      targetKind: "evaluation",
+      targetRef: { kind: "evaluation", id: "feedback-1", feedbackId: "feedback-1" },
+      title: "Turn feedback into an Evaluation case",
+      summary: "The response missed a cited requirement.",
+      evidence: [{
+        id: "feedback-1",
+        label: "Feedback",
+        target: { kind: "feedback", id: "feedback-1", feedbackId: "feedback-1" },
+      }],
+      proposedChange: {
+        operation: "evaluation.feedback.accept",
+        title: "Accept feedback",
+        summary: "Add as regression material.",
+      },
+      riskLevel: "low",
+      status: "draft",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(candidate.proposedChange.metadata).toEqual({});
+
+    const policy = SelfIterationPolicySchema.parse({ projectId: "project-1", updatedAt: 2 });
+    expect(policy.autonomy).toBe("low_risk_auto");
+    expect(policy.evaluationAutoApply).toBe(true);
+    expect(policy.skillApplyRequiresConfirmation).toBe(true);
+
+    expect(SelfIterationCandidateApplyParamsSchema.parse({ candidateId: candidate.id }).confirmed).toBe(false);
+    expect(SelfIterationRunSchema.parse({
+      id: "self-iteration-run-1",
+      projectId: "project-1",
+      kind: "scan",
+      message: "Scanned.",
+      createdAt: 3,
+    }).candidateIds).toEqual([]);
+  });
+
   it("validates JSON-RPC request and response shapes", () => {
     expect(
       JsonRpcRequestSchema.parse({
@@ -1051,6 +1107,16 @@ describe("Ora shared contracts", () => {
         params: { channelId: "channel-http", externalMessageId: "msg-1", externalChatId: "chat-1", text: "hello" }
       }).method
     ).toBe("channels.ingest");
+
+    expect(RuntimeJsonRpcMethodSchema.parse("selfIteration.scan")).toBe("selfIteration.scan");
+    expect(RuntimeJsonRpcMethodSchema.parse("selfIteration.candidates.apply")).toBe("selfIteration.candidates.apply");
+    expect(ProjectSignalActionSchema.parse({
+      id: "draft-self-iteration",
+      kind: "draft_self_iteration_candidate",
+      label: "Draft Self-Iteration candidate",
+      payload: {},
+      requiresConfirmation: true,
+    }).kind).toBe("draft_self_iteration_candidate");
 
     expect(
       JsonRpcResponseSchema.parse({

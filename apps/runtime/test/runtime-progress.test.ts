@@ -55,8 +55,8 @@ describe("runtime progress narration", () => {
     capturedSystem = "";
   });
 
-  it("does not emit incomplete progress narration", async () => {
-    providerText = "正在读取该文件夹的内容，已列出其中包含的5个技能，接下来准备逐一";
+  it("does not call the provider before the first assistant text delta", async () => {
+    providerText = "正在读取该文件夹的内容。";
     const emitted: unknown[] = [];
 
     await emitRuntimeProgressNarration(
@@ -71,6 +71,55 @@ describe("runtime progress narration", () => {
             seq: 1,
             type: "tool.called",
             createdAt: 1,
+            pattern: "orchestrator_subagent",
+            payload: {
+              toolId: "file.list",
+              output: {
+                path: ".agents/skills",
+              },
+            },
+          },
+        ],
+        activeAgentCount: () => 1,
+        planStatuses: () => ["running"],
+        todoStatuses: () => ["running"],
+        emit: (type, payload, extra) => {
+          const event = { type, payload, extra };
+          emitted.push(event);
+          return event as never;
+        },
+      },
+    );
+
+    expect(capturedSystem).toBe("");
+    expect(emitted).toEqual([]);
+  });
+
+  it("does not emit incomplete progress narration after assistant text starts", async () => {
+    providerText = "正在读取该文件夹的内容，已列出其中包含的5个技能，接下来准备逐一";
+    const emitted: unknown[] = [];
+
+    await emitRuntimeProgressNarration(
+      { trigger: "tool.called", agentId: "solo_agent", nodeId: "solo_agent" },
+      {
+        config: runConfig(),
+        userPrompt: "安装这些 skills",
+        events: [
+          {
+            id: "event-1",
+            runId: "run-1",
+            seq: 1,
+            type: "message.delta",
+            createdAt: 1,
+            pattern: "orchestrator_subagent",
+            payload: { role: "assistant", content: "我会先读取这些 skills。" },
+          },
+          {
+            id: "event-2",
+            runId: "run-1",
+            seq: 2,
+            type: "tool.called",
+            createdAt: 2,
             pattern: "orchestrator_subagent",
             payload: {
               toolId: "file.list",

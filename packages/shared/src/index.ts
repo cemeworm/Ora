@@ -10,6 +10,7 @@ export * from "./mode-studio-builder.js";
 export * from "./runtime.js";
 export * from "./evaluation.js";
 export * from "./feedback-loop.js";
+export * from "./self-iteration.js";
 export * from "./rpc.js";
 export * from "./config.js";
 export * from "./bootstrap.js";

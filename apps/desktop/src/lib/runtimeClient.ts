@@ -76,6 +76,9 @@ import type {
   ProviderStatus as OraProviderStatus,
   RunTraceMetadata as OraRunTraceMetadata,
   RuntimeBootstrap as OraRuntimeBootstrap,
+  SelfIterationCandidate as OraSelfIterationCandidate,
+  SelfIterationPolicy as OraSelfIterationPolicy,
+  SelfIterationScanResult as OraSelfIterationScanResult,
   RunConfig as OraRunConfig,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
@@ -104,7 +107,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@ora/shared";
-import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
+import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@ora/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -188,6 +191,9 @@ export type {
   OraRunTraceMetadata,
   OraRunTrail,
   OraRunTrailMetrics,
+  OraSelfIterationCandidate,
+  OraSelfIterationPolicy,
+  OraSelfIterationScanResult,
   OraSessionCreateParams,
   OraSessionDetail,
   OraSessionSummary,
@@ -560,6 +566,30 @@ export function createRuntimeClient() {
     },
     async updateFeedbackLoopRule(rule: OraFeedbackLoopCalibrationRule): Promise<OraFeedbackLoopCalibrationRule> {
       return call<OraFeedbackLoopCalibrationRule>("feedbackLoop.rules.update", { rule });
+    },
+    async scanSelfIteration(params: { projectId?: string; autoApplyEvaluation?: boolean } = {}): Promise<OraSelfIterationScanResult> {
+      return call<OraSelfIterationScanResult>("selfIteration.scan", params);
+    },
+    async listSelfIterationCandidates(params: { projectId?: string; targetKind?: string; status?: string; limit?: number } = {}): Promise<OraSelfIterationCandidate[]> {
+      return call<OraSelfIterationCandidate[]>("selfIteration.candidates.list", params);
+    },
+    async getSelfIterationCandidate(candidateId: string): Promise<OraSelfIterationCandidate> {
+      return call<OraSelfIterationCandidate>("selfIteration.candidates.get", { candidateId });
+    },
+    async evaluateSelfIterationCandidate(candidateId: string): Promise<OraSelfIterationCandidate> {
+      return call<OraSelfIterationCandidate>("selfIteration.candidates.evaluate", { candidateId });
+    },
+    async rejectSelfIterationCandidate(candidateId: string, reason?: string): Promise<OraSelfIterationCandidate> {
+      return call<OraSelfIterationCandidate>("selfIteration.candidates.reject", { candidateId, reason });
+    },
+    async applySelfIterationCandidate(candidateId: string, confirmed = false): Promise<OraSelfIterationCandidate> {
+      return call<OraSelfIterationCandidate>("selfIteration.candidates.apply", { candidateId, confirmed });
+    },
+    async getSelfIterationPolicy(projectId?: string): Promise<OraSelfIterationPolicy> {
+      return call<OraSelfIterationPolicy>("selfIteration.policy.get", { projectId });
+    },
+    async updateSelfIterationPolicy(policy: OraSelfIterationPolicy): Promise<OraSelfIterationPolicy> {
+      return call<OraSelfIterationPolicy>("selfIteration.policy.update", { policy });
     },
     async getSession(sessionId: string): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.get", { sessionId });
@@ -1070,6 +1100,8 @@ class LocalJsonRpcRuntime {
   private feedbackLoopApplied = new Map<string, string>();
   private feedbackLoopDismissed = new Set<string>();
   private feedbackLoopRules = new Map<string, OraFeedbackLoopCalibrationRule>();
+  private selfIterationCandidates = new Map<string, OraSelfIterationCandidate>();
+  private selfIterationPolicies = new Map<string, OraSelfIterationPolicy>();
   private nextProjectNumber = 1;
   private nextSessionNumber = 1;
   private nextRunNumber = 1;
@@ -1469,6 +1501,48 @@ class LocalJsonRpcRuntime {
         this.feedbackLoopRules.set(parsed.rule.id, parsed.rule);
         return parsed.rule;
       }
+      case "selfIteration.scan":
+        return this.scanSelfIteration(params);
+      case "selfIteration.candidates.list":
+        return this.listSelfIterationCandidates(params);
+      case "selfIteration.candidates.get": {
+        const candidateId = candidateIdParam(params);
+        const candidate = this.selfIterationCandidates.get(candidateId);
+        if (!candidate) throw new Error(`Self-Iteration candidate not found: ${candidateId}`);
+        return candidate;
+      }
+      case "selfIteration.candidates.evaluate": {
+        const candidateId = candidateIdParam(params);
+        const candidate = this.selfIterationCandidates.get(candidateId);
+        if (!candidate) throw new Error(`Self-Iteration candidate not found: ${candidateId}`);
+        const next = SelfIterationCandidateSchema.parse({
+          ...candidate,
+          status: "ready",
+          evaluationRunId: candidate.evaluationRunId ?? `mock-self-eval:${candidate.id}`,
+          updatedAt: Date.now(),
+        });
+        this.selfIterationCandidates.set(next.id, next);
+        return next;
+      }
+      case "selfIteration.candidates.reject": {
+        const candidateId = candidateIdParam(params);
+        const candidate = this.selfIterationCandidates.get(candidateId);
+        if (!candidate) throw new Error(`Self-Iteration candidate not found: ${candidateId}`);
+        const reason = typeof params === "object" && params !== null && "reason" in params ? String(params.reason) : undefined;
+        const next = SelfIterationCandidateSchema.parse({ ...candidate, status: "rejected", rejectionReason: reason, updatedAt: Date.now() });
+        this.selfIterationCandidates.set(next.id, next);
+        return next;
+      }
+      case "selfIteration.candidates.apply":
+        return this.applySelfIterationCandidateMock(params);
+      case "selfIteration.policy.get":
+        return this.selfIterationPolicy(projectIdParam(params));
+      case "selfIteration.policy.update": {
+        const parsed = typeof params === "object" && params !== null && "policy" in params ? SelfIterationPolicySchema.parse(params.policy) : undefined;
+        if (!parsed) throw new Error("Self-Iteration policy update requires policy.");
+        this.selfIterationPolicies.set(parsed.projectId, parsed);
+        return parsed;
+      }
       case "runs.start":
         return this.startRun(params);
       case "runs.startStreaming":
@@ -1831,6 +1905,123 @@ class LocalJsonRpcRuntime {
       status: "applied",
       message: "Marked as applied in Project Signals.",
     });
+  }
+
+  private scanSelfIteration(params: unknown): OraSelfIterationScanResult {
+    const projectId = projectIdParam(params) ?? this.projects.values().next().value?.projectId ?? "local-project";
+    const now = Date.now();
+    const feedback = [...this.evaluationFeedback.values()].find((record) => record.status === "pending");
+    const candidates: OraSelfIterationCandidate[] = [];
+    if (feedback) {
+      candidates.push(SelfIterationCandidateSchema.parse({
+        id: `${projectId}:self:evaluation:${feedback.id}`,
+        projectId,
+        targetKind: "evaluation",
+        targetRef: { kind: "evaluation", id: feedback.id, feedbackId: feedback.id },
+        title: "Turn feedback into an Evaluation case",
+        summary: feedback.feedbackText,
+        evidence: [{
+          id: feedback.id,
+          label: "Evaluation feedback",
+          summary: feedback.feedbackText,
+          target: { kind: "feedback", id: feedback.id, feedbackId: feedback.id, runId: feedback.sourceRunId, datasetId: feedback.datasetId },
+        }],
+        proposedChange: {
+          operation: "evaluation.feedback.accept",
+          title: "Accept feedback into Evaluation Studio",
+          summary: "Add this reviewed feedback as regression material.",
+          metadata: { feedbackId: feedback.id },
+        },
+        riskLevel: "low",
+        status: "draft",
+        createdAt: now,
+        updatedAt: now,
+      }));
+    }
+    const failedRun = [...this.runs.values()].find((run) => run.status === "failed");
+    if (failedRun) {
+      candidates.push(SelfIterationCandidateSchema.parse({
+        id: `${projectId}:self:prompt:${failedRun.modeId ?? failedRun.pattern}`,
+        projectId,
+        targetKind: "prompt",
+        targetRef: { kind: "prompt", id: failedRun.modeId ?? failedRun.pattern, modeId: failedRun.modeId ?? failedRun.pattern },
+        title: "Tighten prompt guidance from failed run",
+        summary: failedRun.error ?? "A failed run suggests the active mode needs clearer success and recovery guidance.",
+        evidence: [{ id: failedRun.runId, label: "Failed run", target: { kind: "run", id: failedRun.runId, runId: failedRun.runId } }],
+        proposedChange: {
+          operation: "mode.node.prompt.update",
+          title: "Add failure-aware prompt guidance",
+          summary: "Append a short instruction to verify tool outcomes and surface blockers.",
+          after: "Before finalizing, verify tool outcomes and surface blockers with concrete next steps.",
+        },
+        riskLevel: "high",
+        status: "draft",
+        createdAt: now,
+        updatedAt: now,
+      }));
+    }
+    for (const candidate of candidates) {
+      if (!this.selfIterationCandidates.has(candidate.id)) {
+        this.selfIterationCandidates.set(candidate.id, candidate);
+      }
+    }
+    const autoApplied: OraSelfIterationCandidate[] = [];
+    const policy = this.selfIterationPolicy(projectId);
+    if (policy.autonomy === "low_risk_auto" && policy.evaluationAutoApply) {
+      for (const candidate of candidates.filter((item) => item.targetKind === "evaluation")) {
+        autoApplied.push(this.applySelfIterationCandidateMock({ candidateId: candidate.id, confirmed: true }));
+      }
+    }
+    return SelfIterationScanResultSchema.parse({
+      run: {
+        id: `mock-self-iteration-run-${now}`,
+        projectId,
+        kind: "scan",
+        candidateIds: candidates.map((candidate) => candidate.id),
+        status: "succeeded",
+        message: `Self-Iteration scan created or refreshed ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}.`,
+        createdAt: now,
+      },
+      candidates,
+      autoApplied,
+    });
+  }
+
+  private listSelfIterationCandidates(params: unknown): OraSelfIterationCandidate[] {
+    const projectId = projectIdParam(params);
+    const status = typeof params === "object" && params !== null && "status" in params ? String(params.status) : undefined;
+    const targetKind = typeof params === "object" && params !== null && "targetKind" in params ? String(params.targetKind) : undefined;
+    return [...this.selfIterationCandidates.values()]
+      .filter((candidate) => projectId ? candidate.projectId === projectId : true)
+      .filter((candidate) => status ? candidate.status === status : true)
+      .filter((candidate) => targetKind ? candidate.targetKind === targetKind : true)
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  }
+
+  private applySelfIterationCandidateMock(params: unknown): OraSelfIterationCandidate {
+    const parsed = SelfIterationCandidateApplyParamsSchema.parse(params);
+    const candidate = this.selfIterationCandidates.get(parsed.candidateId);
+    if (!candidate) throw new Error(`Self-Iteration candidate not found: ${parsed.candidateId}`);
+    if (candidate.targetKind !== "evaluation" && !parsed.confirmed) {
+      throw new Error(`${candidate.targetKind} self-iteration candidates require confirmation before apply.`);
+    }
+    const next = SelfIterationCandidateSchema.parse({
+      ...candidate,
+      status: "applied",
+      applyResult: { applied: true, mock: true },
+      updatedAt: Date.now(),
+    });
+    this.selfIterationCandidates.set(next.id, next);
+    return next;
+  }
+
+  private selfIterationPolicy(projectId: string | undefined): OraSelfIterationPolicy {
+    const nextProjectId = projectId ?? this.projects.values().next().value?.projectId ?? "local-project";
+    const existing = this.selfIterationPolicies.get(nextProjectId);
+    if (existing) return existing;
+    const policy = SelfIterationPolicySchema.parse({ projectId: nextProjectId, updatedAt: Date.now() });
+    this.selfIterationPolicies.set(nextProjectId, policy);
+    return policy;
   }
 
   private listFeedbackLoopRules(params: unknown): OraFeedbackLoopCalibrationRule[] {
@@ -5634,6 +5825,18 @@ function mockRuleAllows(rule: OraFeedbackLoopCalibrationRule, source: OraProject
 
 function mockRuleAllowsAction(rule: OraFeedbackLoopCalibrationRule, action: OraProjectInsight["recommendedActions"][number]): boolean {
   return rule.actionPolicy.allowedActionKinds.length === 0 || rule.actionPolicy.allowedActionKinds.includes(action.kind);
+}
+
+function projectIdParam(params: unknown): string | undefined {
+  return typeof params === "object" && params !== null && "projectId" in params && typeof params.projectId === "string"
+    ? params.projectId
+    : undefined;
+}
+
+function candidateIdParam(params: unknown): string {
+  return typeof params === "object" && params !== null && "candidateId" in params
+    ? String(params.candidateId)
+    : "";
 }
 
 function mockSeverityRank(severity: OraProjectSignal["severity"]): number {

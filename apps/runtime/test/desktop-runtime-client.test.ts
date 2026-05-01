@@ -87,7 +87,7 @@ describe("desktop browser-mock runtime lifecycle", () => {
     const steps = messages.find((message) => message.role === "assistant")?.turn?.processSteps ?? [];
     expect(steps.map((step) => step.eventType)).toEqual(["tool.called"]);
     expect(steps.at(-1)?.label).toBe("读取文件");
-    expect(steps.at(-1)?.detail).toBe("已读取 notes/project.md (2.0 KB).");
+    expect(steps.at(-1)?.detail).toBe("已读取 notes/project.md (2.0 KB)。");
     expect(steps.at(-1)?.contextLabel).toBe("notes/project.md");
   });
 

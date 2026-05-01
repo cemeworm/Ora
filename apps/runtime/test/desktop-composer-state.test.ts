@@ -986,7 +986,7 @@ describe("desktop composer pending-run behavior", () => {
     expect(assistant?.turn?.processSteps.filter((step) => step.eventType === "tool.called")).toHaveLength(1);
     expect(assistant?.turn?.processSteps.find((step) => step.eventType === "tool.called")).toMatchObject({
       label: "浏览网页",
-      detail: "已查看 https://example.com.",
+      detail: "已查看 https://example.com。",
       contextLabel: "https://example.com",
     });
   });
@@ -1049,7 +1049,7 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(steps).toHaveLength(3);
     expect(steps.map((step) => step.label)).toEqual(["浏览网页", "浏览网页", "浏览网页"]);
-    expect(steps.map((step) => step.detail)).toEqual(urls.map((url) => `已查看 ${url}.`));
+    expect(steps.map((step) => step.detail)).toEqual(urls.map((url) => `已查看 ${url}。`));
     expect(steps.some((step) => step.eventType === "checkpoint.created")).toBe(false);
     expect(steps.some((step) => step.detail.includes("200"))).toBe(false);
   });
@@ -1139,15 +1139,15 @@ describe("desktop composer pending-run behavior", () => {
       "Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
     );
     expect(assistant?.turn?.processSteps.find((step) => step.eventType === "completion.updated")).toMatchObject({
-      label: "Stopped tool use",
+      label: "已停止工具调用",
       detail: "",
     });
     expect(assistant?.turn?.processSteps.find((step) => step.eventType === "action.updated")).toMatchObject({
-      label: "Action failed",
-      detail: "The model tried to call another tool after Ora had stopped tool use, so the turn ended with the available answer.",
+      label: "操作失败",
+      detail: "Ora 已停止工具调用，但模型仍尝试继续调用工具；本轮已使用现有答案结束。",
     });
     expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
-      "Run failed: Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
+      "运行失败：Model returned a tool call instead of a final answer after completion control disabled tools: web.fetch.",
     );
   });
 
@@ -1212,7 +1212,7 @@ describe("desktop composer pending-run behavior", () => {
     const nodeSteps = assistant?.turn?.processSteps.filter((step) => step.eventType === "node.updated") ?? [];
 
     expect(nodeSteps).toHaveLength(1);
-    expect(nodeSteps[0]?.detail).toBe("Recovered missing tool context synthetic tool result.");
+    expect(nodeSteps[0]?.detail).toBe("已恢复缺失的工具上下文 synthetic tool result。");
     expect(assistant?.turn?.processSteps.some((step) => step.detail === "Respond pending.")).toBe(false);
     expect(assistant?.turn?.processSteps.some((step) => step.detail === "Respond running_model.")).toBe(false);
   });
@@ -1322,7 +1322,7 @@ describe("desktop composer pending-run behavior", () => {
     } as unknown as OraStateSnapshot;
 
     expect(collectAnomalies(snapshot, undefined, undefined, [])[0]).toBe(
-      "Run failed: Verifier response did not contain a parseable pass/fail verdict.",
+      "运行失败：Verifier response did not contain a parseable pass/fail verdict.",
     );
   });
 
@@ -1372,7 +1372,7 @@ describe("desktop composer pending-run behavior", () => {
     } as unknown as OraStateSnapshot;
 
     expect(collectAnomalies(snapshot, undefined, { enabled: true, available: true } as any, [])).toContain(
-      "A dangling provider tool call was repaired as interrupted before the next model call.",
+      "检测到缺失的模型工具结果，并在下一次模型调用前将其恢复为已中断状态。",
     );
   });
 

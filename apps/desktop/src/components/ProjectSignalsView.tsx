@@ -6,6 +6,7 @@ import type {
   OraFeedbackLoopCalibrationRule,
   OraProjectInsight,
   OraProjectSignal,
+  OraSelfIterationCandidate,
   RuntimeClient,
 } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -26,6 +27,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
   const [signals, setSignals] = useState<OraProjectSignal[]>([]);
   const [insights, setInsights] = useState<OraProjectInsight[]>([]);
   const [rules, setRules] = useState<OraFeedbackLoopCalibrationRule[]>([]);
+  const [selfIterationCandidates, setSelfIterationCandidates] = useState<OraSelfIterationCandidate[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [error, setError] = useState<string>();
   const [actionResult, setActionResult] = useState<OraFeedbackLoopActionResult>();
@@ -37,14 +39,16 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
     setLoadState("loading");
     setError(undefined);
     try {
-      const [nextSignals, nextInsights, nextRules] = await Promise.all([
+      const [nextSignals, nextInsights, nextRules, nextCandidates] = await Promise.all([
         runtimeClient.listProjectSignals({ projectId: projectIdParam, limit: 200 }),
         runtimeClient.listProjectInsights({ projectId: projectIdParam, limit: 100 }),
         runtimeClient.listFeedbackLoopRules(projectIdParam ? { projectId: projectIdParam } : {}),
+        runtimeClient.listSelfIterationCandidates({ projectId: projectIdParam, limit: 100 }),
       ]);
       setSignals(nextSignals);
       setInsights(nextInsights);
       setRules(nextRules);
+      setSelfIterationCandidates(nextCandidates);
       setLoadState("idle");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load project signals.");
@@ -115,6 +119,67 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
     }
   }
 
+  async function scanSelfIteration() {
+    try {
+      const result = await runtimeClient.scanSelfIteration({ projectId: projectIdParam });
+      setSelfIterationCandidates(result.candidates);
+      setActionResult({
+        insight: pendingAction?.insight ?? insights[0] ?? {
+          id: "self-iteration",
+          projectId: projectIdParam ?? "local-project",
+          title: "Self-Iteration scan",
+          summary: result.run.message,
+          status: "open",
+          signalIds: [],
+          recommendedActions: [],
+          confidence: 1,
+          createdAt: result.run.createdAt,
+          updatedAt: result.run.createdAt,
+        },
+        action: {
+          id: "self-iteration.scan",
+          kind: "draft_self_iteration_candidate",
+          label: "Scan Self-Iteration",
+          payload: {},
+          requiresConfirmation: false,
+        },
+        status: "applied",
+        message: result.autoApplied.length > 0
+          ? `${result.run.message} Auto-applied ${result.autoApplied.length} Evaluation candidate${result.autoApplied.length === 1 ? "" : "s"}.`
+          : result.run.message,
+      });
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to scan Self-Iteration candidates.");
+    }
+  }
+
+  async function evaluateSelfIteration(candidate: OraSelfIterationCandidate) {
+    try {
+      await runtimeClient.evaluateSelfIterationCandidate(candidate.id);
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to evaluate Self-Iteration candidate.");
+    }
+  }
+
+  async function applySelfIteration(candidate: OraSelfIterationCandidate) {
+    try {
+      await runtimeClient.applySelfIterationCandidate(candidate.id, candidate.targetKind !== "evaluation");
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to apply Self-Iteration candidate.");
+    }
+  }
+
+  async function rejectSelfIteration(candidate: OraSelfIterationCandidate) {
+    try {
+      await runtimeClient.rejectSelfIterationCandidate(candidate.id, "Rejected from Project Signals.");
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to reject Self-Iteration candidate.");
+    }
+  }
+
   async function dismissInsight(insight: OraProjectInsight) {
     try {
       await runtimeClient.dismissProjectInsight(insight.id, "Dismissed from Project Signals.");
@@ -154,6 +219,14 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
           >
             <RefreshCcw size={15} />
             Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => void scanSelfIteration()}
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-foreground px-3 text-sm font-medium text-background shadow-sm transition hover:bg-foreground/90"
+          >
+            <GitBranchPlus size={15} />
+            Self-Iteration
           </button>
         </div>
       </header>
@@ -197,6 +270,61 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
           <Metric icon={<ShieldAlert size={16} />} label="Critical signals" value={criticalCount} tone={criticalCount > 0 ? "critical" : "neutral"} />
           <Metric icon={<Inbox size={16} />} label="Pending feedback" value={pendingFeedbackCount} tone={pendingFeedbackCount > 0 ? "warning" : "neutral"} />
           <Metric icon={<GitBranchPlus size={16} />} label="Recovery signals" value={recoveryCount} tone={recoveryCount > 0 ? "warning" : "neutral"} />
+        </section>
+
+        <section className="mt-5">
+          <SectionTitle title="Self-Iteration" subtitle={`${selfIterationCandidates.length} evidence-backed candidates`} />
+          <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+            {selfIterationCandidates.length === 0 && (
+              <div className="xl:col-span-2">
+                <EmptyState title="No Self-Iteration candidates yet" detail="Run a scan to convert signals, feedback, and evaluation results into reviewable improvement candidates." />
+              </div>
+            )}
+            {selfIterationCandidates.map((candidate) => (
+              <article key={candidate.id} className="rounded-lg border border-border bg-background p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <CandidateKindPill kind={candidate.targetKind} />
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{candidate.status}</span>
+                      <span className="text-xs text-muted-foreground">{candidate.riskLevel}</span>
+                    </div>
+                    <h2 className="mt-2 text-base font-semibold text-foreground">{candidate.title}</h2>
+                    <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">{candidate.summary}</p>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{candidate.proposedChange.summary}</p>
+                    {candidate.evaluationRunId && (
+                      <p className="mt-1 text-xs text-muted-foreground">Evaluation: {candidate.evaluationRunId}</p>
+                    )}
+                  </div>
+                </div>
+                {candidate.status !== "applied" && candidate.status !== "rejected" && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void evaluateSelfIteration(candidate)}
+                      className="h-8 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted"
+                    >
+                      Evaluate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void applySelfIteration(candidate)}
+                      className="h-8 rounded-md bg-foreground px-3 text-xs font-medium text-background transition hover:bg-foreground/90"
+                    >
+                      Apply
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void rejectSelfIteration(candidate)}
+                      className="h-8 rounded-md border border-border px-3 text-xs font-medium text-muted-foreground transition hover:bg-muted"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
         </section>
 
         <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -332,6 +460,20 @@ function StatusPill({ status }: { status: OraProjectInsight["status"] }) {
       status === "applied" && "bg-emerald-100 text-emerald-800",
     )}>
       {status}
+    </span>
+  );
+}
+
+function CandidateKindPill({ kind }: { kind: OraSelfIterationCandidate["targetKind"] }) {
+  return (
+    <span className={cn(
+      "rounded-full px-2 py-0.5 text-[11px] font-medium",
+      kind === "evaluation" && "bg-emerald-100 text-emerald-800",
+      kind === "prompt" && "bg-sky-100 text-sky-800",
+      kind === "mode" && "bg-violet-100 text-violet-800",
+      kind === "skill" && "bg-amber-100 text-amber-800",
+    )}>
+      {kind}
     </span>
   );
 }

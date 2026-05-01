@@ -172,4 +172,28 @@ describe("desktop runtime client agent catalog", () => {
     });
     expect(submitted.status).toBe("submitted");
   });
+
+  it("mirrors Self-Iteration candidates and low-risk apply policy in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const snapshot = await client.startRun(
+      { prompt: "Answer with a source.", context: {} },
+      { pattern: "generator_verifier", providerId: "local-smoke", modelRef: "local/smoke-model" },
+    );
+    await client.submitEvaluationFeedback({
+      runId: snapshot.runId,
+      feedbackText: "The answer missed the required source citation.",
+    });
+
+    const scan = await client.scanSelfIteration();
+    expect(scan.candidates[0]?.targetKind).toBe("evaluation");
+    expect(scan.autoApplied[0]?.status).toBe("applied");
+
+    const listed = await client.listSelfIterationCandidates({ targetKind: "evaluation" });
+    expect(listed[0]?.status).toBe("applied");
+
+    const policy = await client.getSelfIterationPolicy();
+    expect(policy.autonomy).toBe("low_risk_auto");
+    const updated = await client.updateSelfIterationPolicy({ ...policy, evaluationAutoApply: false });
+    expect(updated.evaluationAutoApply).toBe(false);
+  });
 });

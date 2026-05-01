@@ -118,7 +118,15 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "feedbackLoop.actions.preview",
   "feedbackLoop.actions.apply",
   "feedbackLoop.rules.list",
-  "feedbackLoop.rules.update"
+  "feedbackLoop.rules.update",
+  "selfIteration.scan",
+  "selfIteration.candidates.list",
+  "selfIteration.candidates.get",
+  "selfIteration.candidates.evaluate",
+  "selfIteration.candidates.reject",
+  "selfIteration.candidates.apply",
+  "selfIteration.policy.get",
+  "selfIteration.policy.update"
 ]);
 export type RuntimeJsonRpcMethod = z.infer<typeof RuntimeJsonRpcMethodSchema>;
 
