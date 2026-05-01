@@ -310,6 +310,9 @@ export class WechatChannelAdapter implements ChannelAdapter {
         for (const item of data.item_list) {
           const normalized = normalizeWechatMessage(item);
           if (normalized) {
+            if (typeof item.context_token === "string" && item.context_token.trim()) {
+              this.contextTokenMap.set(normalized.externalChatId, item.context_token);
+            }
             try {
               await this.deps.onIngest({
                 channelId: this.channelId,

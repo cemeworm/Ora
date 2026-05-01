@@ -485,6 +485,77 @@ describe("WechatChannelAdapter send", () => {
 // ---------------------------------------------------------------------------
 
 describe("WechatChannelAdapter lifecycle", () => {
+  it("caches inbound context_token so replies can be sent", async () => {
+    let sentBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("getupdates")) {
+        return new Response(
+          JSON.stringify({
+            item_list: [{
+              msg_id: "msg-ctx-001",
+              type: 1,
+              content: "Hello from WeChat",
+              from_user: "user-wx-1",
+              to_user: "bot-001",
+              context_token: "ctx-token-abc",
+              timestamp: 1700000000,
+            }],
+            get_updates_buf: "buf-next",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.includes("sendmessage")) {
+        sentBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({ msg_id: "out-msg-ctx-001" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    let resolveIngest!: (params: ChannelIngestParams) => void;
+    const ingested = new Promise<ChannelIngestParams>((resolve) => {
+      resolveIngest = resolve;
+    });
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
+      onIngest: async (params) => {
+        resolveIngest(params);
+      },
+      onConfigUpdate: vi.fn(),
+    });
+
+    adapter.start();
+    const inbound = await ingested;
+    adapter.stop();
+
+    expect(inbound.externalChatId).toBe("user-wx-1");
+    const result = await adapter.send({
+      id: "outbound-ctx-1",
+      channelId: "wechat-test",
+      bindingId: "binding-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      externalChatId: "user-wx-1",
+      text: "Hello back!",
+      isFinal: true,
+      kind: "final",
+      attachments: [],
+      createdAt: clock(),
+      metadata: {},
+    });
+
+    expect(result.ok).toBe(true);
+    expect(sentBody).toEqual(expect.objectContaining({
+      to_user: "user-wx-1",
+      content: "Hello back!",
+      context_token: "ctx-token-abc",
+      msg_type: 1,
+    }));
+  });
+
   it("start and stop without errors", () => {
     const adapter = new WechatChannelAdapter(makeConfig({ botToken: "" }));
     adapter.start();
