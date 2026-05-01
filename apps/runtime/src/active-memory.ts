@@ -15,6 +15,7 @@ interface ActiveMemoryMessage {
 
 export interface ActiveMemoryRequest {
   memory: LongTermMemoryProfile;
+  projectMemory?: LongTermMemoryProfile;
   prompt: string;
   projectId?: string;
   sessionId?: string;
@@ -84,7 +85,15 @@ export function retrieveActiveMemoryCandidates(request: ActiveMemoryRequest): Ac
   const queryText = activeMemoryQueryText(request);
   const queryTokens = tokenize(queryText);
   const explicitMemoryIntent = hasMemoryIntent(queryText);
-  return collectActiveMemoryCandidates(request.memory, request.nowIso)
+  const globalCandidates = collectActiveMemoryCandidates(request.memory, request.nowIso);
+  const projectCandidates = request.projectMemory && request.projectId
+    ? collectActiveMemoryCandidates(request.projectMemory, request.nowIso)
+        .map((candidate) => ({
+          ...candidate,
+          scope: { ...candidate.scope, projectId: request.projectId },
+        }))
+    : [];
+  return [...globalCandidates, ...projectCandidates]
     .filter((candidate) => candidateMatchesScope(candidate, request))
     .map((candidate) => scoreCandidate(candidate, queryTokens, explicitMemoryIntent))
     .filter((candidate) => candidate.score > 0)

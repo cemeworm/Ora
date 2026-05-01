@@ -61,12 +61,16 @@ export function createEmptyLongTermMemory(nowIso = new Date().toISOString()): Lo
 }
 
 export class FileLongTermMemoryStore {
+  readonly dataDir: string;
   private readonly memoryPath: string;
   private cached: LongTermMemoryProfile | undefined;
   private cachedMtime: number | undefined;
 
-  constructor(dataDir: string) {
-    this.memoryPath = path.join(dataDir, "memory.json");
+  constructor(dataDir: string, projectId?: string) {
+    this.dataDir = dataDir;
+    this.memoryPath = projectId
+      ? path.join(dataDir, "projects", projectId, "memory.json")
+      : path.join(dataDir, "memory.json");
   }
 
   load(): LongTermMemoryProfile {
@@ -181,8 +185,23 @@ export class LongTermMemoryManager {
     return this.store.load();
   }
 
+  getProject(projectId: string): LongTermMemoryProfile {
+    return this.storeFor(projectId).load();
+  }
+
   clear(): LongTermMemoryProfile {
     return this.store.clear();
+  }
+
+  private storeFor(projectId?: string): FileLongTermMemoryStore {
+    if (!projectId) {
+      return this.store;
+    }
+    return new FileLongTermMemoryStore(this.store.dataDir, projectId);
+  }
+
+  forProject(projectId: string): LongTermMemoryManager {
+    return new LongTermMemoryManager(this.storeFor(projectId), this.clock);
   }
 
   formatForInjection(maxFacts = MAX_INJECTION_FACTS): string {

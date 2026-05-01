@@ -52,9 +52,11 @@ export async function processLongTermMemoryUpdate(
   task: LongTermMemoryUpdateTask,
   deps: MemoryUpdateDeps,
 ): Promise<void> {
-  const { factsAdded } = await deps.longTermMemory.updateFromRunWithProvider(task);
+  const projectId = task.snapshot.input.projectId;
+  const manager = projectId ? deps.longTermMemory.forProject(projectId) : deps.longTermMemory;
+  const { factsAdded } = await manager.updateFromRunWithProvider(task);
   const snapshot = deps.getCachedRun(task.snapshot.runId) ?? task.snapshot;
-  const records = deps.longTermMemory.createRunMemoryRecords(snapshot, factsAdded);
+  const records = manager.createRunMemoryRecords(snapshot, factsAdded);
   if (records.length === 0) {
     return;
   }

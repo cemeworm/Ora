@@ -211,6 +211,7 @@ export function withMemoryPrompt(
   }
   const activeMemory = buildActiveMemoryContext({
     memory: deps.longTermMemory.get(),
+    projectMemory: input.projectId ? deps.longTermMemory.getProject(input.projectId) : undefined,
     prompt: input.prompt,
     projectId: input.projectId,
     sessionId: session?.sessionId,
