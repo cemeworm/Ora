@@ -35,13 +35,59 @@ export function applyStreamingRunEvent(
   liveSnapshot: StateSnapshot,
   event: OraEventEnvelope,
 ): StateSnapshot {
+  const projected = projectStreamingEvent(liveSnapshot, event);
   return StateSnapshotSchema.parse({
-    ...liveSnapshot,
+    ...projected,
     status: statusForRunEvent(event.type, liveSnapshot.status),
     events: [...liveSnapshot.events, event],
     agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
   });
+}
+
+function projectStreamingEvent(
+  snapshot: StateSnapshot,
+  event: OraEventEnvelope,
+): StateSnapshot {
+  if (!isRecord(event.payload)) {
+    return snapshot;
+  }
+
+  if (event.type === "action.updated" && isRecord(event.payload.record)) {
+    const action = event.payload.record as StateSnapshot["actions"][number];
+    return {
+      ...snapshot,
+      actions: upsertById(snapshot.actions, action),
+    };
+  }
+
+  if (event.type === "approval.required" && typeof event.payload.actionId === "string") {
+    const actionId = event.payload.actionId;
+    return {
+      ...snapshot,
+      pendingApprovals: addUnique(snapshot.pendingApprovals, actionId),
+    };
+  }
+
+  if (event.type === "approval.resolved" && typeof event.payload.actionId === "string") {
+    const actionId = event.payload.actionId;
+    return {
+      ...snapshot,
+      pendingApprovals: snapshot.pendingApprovals.filter((pendingActionId) => pendingActionId !== actionId),
+    };
+  }
+
+  return snapshot;
+}
+
+function upsertById<T extends { id: string }>(items: readonly T[], next: T): T[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  byId.set(next.id, next);
+  return [...byId.values()];
+}
+
+function addUnique(items: readonly string[], next: string): string[] {
+  return items.includes(next) ? [...items] : [...items, next];
 }
 
 function mergeStreamingAgentMessage(
