@@ -322,6 +322,9 @@ export class LocalRunStore {
       processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
     );
     this.channelService = new ChannelService(this.backend, this, { clock: this.clock, fetchImpl: options.fetchImpl });
+    this.channelService.startAll().catch((err) => {
+      console.error("[LocalRunStore] channel 自动启动失败:", err instanceof Error ? err.message : err);
+    });
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));

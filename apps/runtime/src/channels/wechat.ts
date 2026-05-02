@@ -58,6 +58,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
   private readonly wechatUin: string;
   private qrCodeKey = "";
   private pollHandle: ReturnType<typeof setTimeout> | null = null;
+  private consecutiveErrors = 0;
 
   constructor(
     readonly config: ChannelConfig,
@@ -292,10 +293,20 @@ export class WechatChannelAdapter implements ChannelAdapter {
       });
 
       if (!res.ok) {
-        // Retry after delay on error
+        this.consecutiveErrors++;
+        if (this.consecutiveErrors >= 5) {
+          console.error(`[WeChat:${this.channelId}] poll 连续失败 ${this.consecutiveErrors} 次 (HTTP ${res.status})`);
+        }
+        if (res.status === 401 || res.status === 403) {
+          console.error(`[WeChat:${this.channelId}] 认证失败 (HTTP ${res.status})，停止轮询`);
+          this.running = false;
+          return;
+        }
         this.pollHandle = setTimeout(() => void this.pollLoop(), 5_000);
         return;
       }
+
+      this.consecutiveErrors = 0;
 
       const data = (await res.json()) as GetUpdatesResponse;
 
@@ -327,6 +338,10 @@ export class WechatChannelAdapter implements ChannelAdapter {
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         return;
+      }
+      this.consecutiveErrors++;
+      if (this.consecutiveErrors >= 5) {
+        console.error(`[WeChat:${this.channelId}] poll 连续网络错误 ${this.consecutiveErrors} 次:`, err instanceof Error ? err.message : String(err));
       }
     }
 

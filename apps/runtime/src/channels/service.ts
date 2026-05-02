@@ -120,6 +120,22 @@ export class ChannelService {
     return ChannelStatusResultSchema.parse({ channels, bus: this.bus.stats() });
   }
 
+  async startAll(): Promise<void> {
+    const enabledConfigs = this.store.listConfigs().filter((c) => c.enabled);
+    const results = await Promise.allSettled(
+      enabledConfigs.map((c) => this.start({ channelId: c.channelId })),
+    );
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === "rejected") {
+        console.error(
+          `[ChannelService] 启动 channel '${enabledConfigs[i].channelId}' 失败:`,
+          result.reason instanceof Error ? result.reason.message : result.reason,
+        );
+      }
+    }
+  }
+
   ingest(params: unknown) {
     return this.manager.ingest(params);
   }
@@ -212,15 +228,16 @@ export class ChannelService {
         return new HttpWebhookChannelAdapter(config, this.fetchImpl);
       case "feishu":
         return new FeishuChannelAdapter(config, this.fetchImpl);
-      case "wechat":
-        return new WechatChannelAdapter(config, this.fetchImpl, {
-          onIngest: (params) => this.manager.ingest(params),
-          onConfigUpdate: (channelId, patch) =>
-            this.store.updateConfig({
-              channelId,
-              config: patch,
-            }),
-        });
+      case "wechat": {
+          const adapter = new WechatChannelAdapter(config, this.fetchImpl, {
+            onIngest: (params) => this.manager.ingest(params),
+            onConfigUpdate: (_channelId, patch) => {
+              this.store.updateConfig({ channelId: config.channelId, config: patch });
+              Object.assign(adapter.config.config, patch);
+            },
+          });
+          return adapter;
+        }
       case "telegram":
         return new TelegramChannelAdapter(config, this.fetchImpl, {
           onIngest: (params) => this.manager.ingest(params),
