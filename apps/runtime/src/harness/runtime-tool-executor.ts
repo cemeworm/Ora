@@ -5,10 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import { ActionApprovalRequestCopySchema, UpdatePlanArgsSchema } from "@cemeworm/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor } from "@cemeworm/shared";
+import { resolveToolPermission } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, PermissionProfile, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
+import { ApprovalInterruptError } from "./runtime-interrupts.js";
 
 export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "file.read",
@@ -91,6 +93,7 @@ export interface RuntimeToolExecutorOptions {
   packageManager?: PackageManager;
   toolLimits?: ModeToolLimits;
   taskIntent?: TaskIntent;
+  permissionProfile?: PermissionProfile;
 }
 
 interface SkillRegistryTools {
@@ -130,6 +133,14 @@ interface McpServerConfig {
 }
 
 const IMPLEMENTED_TOOL_SET = new Set<string>(IMPLEMENTED_RUNTIME_TOOL_IDS);
+
+export function registerImplementedToolId(toolId: string): void {
+  IMPLEMENTED_TOOL_SET.add(toolId);
+}
+
+export function unregisterImplementedToolId(toolId: string): void {
+  IMPLEMENTED_TOOL_SET.delete(toolId);
+}
 const FILE_READ_MAX_BYTES = 1_000_000;
 const FILE_LIST_MAX_ENTRIES = 500;
 const FILE_SEARCH_MAX_FILES = 2_000;
@@ -280,6 +291,7 @@ export class RuntimeToolExecutor {
   private readonly packageManager?: PackageManager;
   private readonly limits: ResolvedToolLimits;
   private readonly taskIntent?: TaskIntent;
+  private readonly permissionProfile?: PermissionProfile;
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -292,6 +304,7 @@ export class RuntimeToolExecutor {
     this.workspace = options.workspace;
     this.limits = resolveToolLimits(options.toolLimits);
     this.taskIntent = options.taskIntent;
+    this.permissionProfile = options.permissionProfile;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
       fetchImpl: this.fetchImpl,
       env: options.searchEnv,
@@ -369,6 +382,18 @@ export class RuntimeToolExecutor {
     return extractRuntimeToolCallFromText(text, this.enabledToolIds(toolIds));
   }
 
+  private checkToolPermission(call: RuntimeToolCall): ToolPermission {
+    const profile = this.permissionProfile;
+    if (!profile) {
+      return "allow";
+    }
+    const descriptor = this.toolDescriptors.find((tool) => tool.id === call.tool);
+    if (!descriptor) {
+      return "ask";
+    }
+    return resolveToolPermission(profile, descriptor.category, descriptor.riskLevel);
+  }
+
   riskLevel(call: RuntimeToolCall): ActionRiskLevel {
     if (
       call.tool === "file.write"
@@ -403,6 +428,13 @@ export class RuntimeToolExecutor {
   }
 
   async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<RuntimeToolExecutionResult> {
+    const permission = this.checkToolPermission(call);
+    if (permission === "deny") {
+      throw new Error(`Tool '${call.tool}' is denied by the active permission profile.`);
+    }
+    if (permission === "ask" && options.allowRisky !== true) {
+      throw new ApprovalInterruptError(call.tool);
+    }
     switch (call.tool) {
       case "file.read":
         return { output: readWorkspaceFile(requireWorkspaceRoot(this.workspace), call.args, this.limits) };

@@ -24,6 +24,7 @@ import {
   StateSnapshotSchema,
   type CompletionStopReason,
   type CustomAgentDetail,
+  getPermissionProfile,
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
@@ -225,6 +226,8 @@ export async function executeRuntimeKernel(
   const packageManager = new PackageManager();
   const tools = toolRegistry.snapshot();
   const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
+  const permissionProfileId = config.permissionProfileId ?? modeSpec.permissionProfileId;
+  const permissionProfile = permissionProfileId ? getPermissionProfile(permissionProfileId) : undefined;
   const runtimeToolExecutor = new RuntimeToolExecutor({
     workspace: input.context?.projectWorkspace,
     toolDescriptors: tools.tools,
@@ -235,6 +238,7 @@ export async function executeRuntimeKernel(
     searchProviderConfig: config.searchProvider,
     toolLimits: modeSpec.toolLimits,
     taskIntent,
+    permissionProfile,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);

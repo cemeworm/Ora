@@ -320,6 +320,7 @@ export const RunConfigSchema = z.object({
   searchProvider: SearchProviderConfigSchema.optional(),
   approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
   permissionMode: PermissionModeSchema.default("default"),
+  permissionProfileId: z.string().min(1).optional(),
   patternOptions: z.record(z.unknown()).default({}),
   metadata: z.record(z.unknown()).default({}),
   deterministicSeed: z.string().min(1).default("ora-smoke")

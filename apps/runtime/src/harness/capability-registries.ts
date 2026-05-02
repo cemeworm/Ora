@@ -2,9 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   MVP_SKILLS,
-  MVP_TOOLS,
   SkillRegistrySchema,
-  ToolRegistrySchema,
+  ToolRegistryBuilder,
   type CoordinationPattern,
   type SkillDescriptor,
   type SkillDetail,
@@ -52,20 +51,30 @@ function defaultPublicSkillsRoot(): string {
 }
 
 export class RuntimeToolRegistry {
-  constructor(private readonly tools: readonly ToolDescriptor[] = MVP_TOOLS) {}
+  private readonly builder: ToolRegistryBuilder;
+
+  constructor(builder?: ToolRegistryBuilder) {
+    this.builder = builder ?? ToolRegistryBuilder.fromDefaults();
+  }
+
+  register(descriptor: ToolDescriptor): void {
+    this.builder.register(descriptor);
+  }
+
+  unregister(toolId: string): boolean {
+    return this.builder.unregister(toolId);
+  }
+
+  get(toolId: string): ToolDescriptor | undefined {
+    return this.builder.get(toolId);
+  }
 
   list(): ToolDescriptor[] {
-    return ToolRegistrySchema.parse({
-      tools: [...this.tools],
-      defaultPolicyId: "runtime.default_policy",
-    }).tools;
+    return this.builder.list();
   }
 
   snapshot(): ToolRegistry {
-    return ToolRegistrySchema.parse({
-      tools: this.list(),
-      defaultPolicyId: "runtime.default_policy",
-    });
+    return this.builder.snapshot();
   }
 }
 

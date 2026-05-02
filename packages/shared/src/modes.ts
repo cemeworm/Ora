@@ -284,6 +284,7 @@ export const ModeSpecSchema = z.object({
   recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
   memoryPolicy: ModeMemoryPolicySchema.default({}),
   toolLimits: ModeToolLimitsSchema.default({}),
+  permissionProfileId: z.string().min(1).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });

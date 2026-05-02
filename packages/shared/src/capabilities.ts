@@ -65,6 +65,147 @@ export const ToolRegistrySchema = z.object({
 });
 export type ToolRegistry = z.infer<typeof ToolRegistrySchema>;
 
+// ---------------------------------------------------------------------------
+// Permission Profile Schemas
+// ---------------------------------------------------------------------------
+
+export const ToolPermissionEnum = z.enum(["allow", "deny", "ask"]);
+export type ToolPermission = z.infer<typeof ToolPermissionEnum>;
+
+export const PermissionProfileRuleSchema = z.object({
+  category: ToolDescriptorSchema.shape.category,
+  riskLevel: ToolDescriptorSchema.shape.riskLevel,
+  permission: ToolPermissionEnum,
+});
+export type PermissionProfileRule = z.infer<typeof PermissionProfileRuleSchema>;
+
+export const PermissionProfileSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  rules: z.array(PermissionProfileRuleSchema),
+});
+export type PermissionProfile = z.infer<typeof PermissionProfileSchema>;
+
+export type ToolCategory = ToolDescriptor["category"];
+export type ToolRiskLevel = ToolDescriptor["riskLevel"];
+
+export function resolveToolPermission(
+  profile: PermissionProfile,
+  category: ToolCategory,
+  riskLevel: ToolRiskLevel,
+): ToolPermission {
+  for (const rule of profile.rules) {
+    if (rule.category === category && rule.riskLevel === riskLevel) {
+      return rule.permission;
+    }
+  }
+  // No matching rule: default to ask (conservative)
+  return "ask";
+}
+
+export const BUILTIN_PERMISSION_PROFILES: PermissionProfile[] = [
+  {
+    id: "runtime.full_trust",
+    label: "Full Trust",
+    description: "Allow all tools without approval. Equivalent to requiresApproval: false for every tool.",
+    rules: [
+      { category: "file", riskLevel: "safe", permission: "allow" },
+      { category: "file", riskLevel: "low_risk", permission: "allow" },
+      { category: "file", riskLevel: "requires_approval", permission: "allow" },
+      { category: "shell", riskLevel: "safe", permission: "allow" },
+      { category: "shell", riskLevel: "low_risk", permission: "allow" },
+      { category: "shell", riskLevel: "requires_approval", permission: "allow" },
+      { category: "network", riskLevel: "safe", permission: "allow" },
+      { category: "network", riskLevel: "low_risk", permission: "allow" },
+      { category: "network", riskLevel: "requires_approval", permission: "allow" },
+      { category: "mcp", riskLevel: "safe", permission: "allow" },
+      { category: "mcp", riskLevel: "low_risk", permission: "allow" },
+      { category: "mcp", riskLevel: "requires_approval", permission: "allow" },
+      { category: "model", riskLevel: "safe", permission: "allow" },
+      { category: "model", riskLevel: "low_risk", permission: "allow" },
+      { category: "model", riskLevel: "requires_approval", permission: "allow" },
+      { category: "export", riskLevel: "safe", permission: "allow" },
+      { category: "export", riskLevel: "low_risk", permission: "allow" },
+      { category: "export", riskLevel: "requires_approval", permission: "allow" },
+      { category: "internal", riskLevel: "safe", permission: "allow" },
+      { category: "internal", riskLevel: "low_risk", permission: "allow" },
+      { category: "internal", riskLevel: "requires_approval", permission: "allow" },
+      { category: "package", riskLevel: "safe", permission: "allow" },
+      { category: "package", riskLevel: "low_risk", permission: "allow" },
+      { category: "package", riskLevel: "requires_approval", permission: "allow" },
+    ],
+  },
+  {
+    id: "runtime.default_policy",
+    label: "Default Policy",
+    description: "Safe and low-risk tools auto-allowed. Requires-approval tools need user confirmation.",
+    rules: [
+      { category: "file", riskLevel: "safe", permission: "allow" },
+      { category: "file", riskLevel: "low_risk", permission: "allow" },
+      { category: "file", riskLevel: "requires_approval", permission: "ask" },
+      { category: "shell", riskLevel: "safe", permission: "allow" },
+      { category: "shell", riskLevel: "low_risk", permission: "allow" },
+      { category: "shell", riskLevel: "requires_approval", permission: "ask" },
+      { category: "network", riskLevel: "safe", permission: "allow" },
+      { category: "network", riskLevel: "low_risk", permission: "allow" },
+      { category: "network", riskLevel: "requires_approval", permission: "ask" },
+      { category: "mcp", riskLevel: "safe", permission: "allow" },
+      { category: "mcp", riskLevel: "low_risk", permission: "allow" },
+      { category: "mcp", riskLevel: "requires_approval", permission: "ask" },
+      { category: "model", riskLevel: "safe", permission: "allow" },
+      { category: "model", riskLevel: "low_risk", permission: "allow" },
+      { category: "model", riskLevel: "requires_approval", permission: "ask" },
+      { category: "export", riskLevel: "safe", permission: "allow" },
+      { category: "export", riskLevel: "low_risk", permission: "allow" },
+      { category: "export", riskLevel: "requires_approval", permission: "ask" },
+      { category: "internal", riskLevel: "safe", permission: "allow" },
+      { category: "internal", riskLevel: "low_risk", permission: "allow" },
+      { category: "internal", riskLevel: "requires_approval", permission: "ask" },
+      { category: "package", riskLevel: "safe", permission: "allow" },
+      { category: "package", riskLevel: "low_risk", permission: "allow" },
+      { category: "package", riskLevel: "requires_approval", permission: "ask" },
+    ],
+  },
+  {
+    id: "runtime.readonly",
+    label: "Read Only",
+    description: "Only allow read-type tools (file read/list/glob/grep, web fetch/search). All write/execute tools are denied.",
+    rules: [
+      // file read tools: allow
+      { category: "file", riskLevel: "safe", permission: "allow" },
+      { category: "file", riskLevel: "low_risk", permission: "deny" },
+      { category: "file", riskLevel: "requires_approval", permission: "deny" },
+      // everything else: deny
+      { category: "shell", riskLevel: "safe", permission: "deny" },
+      { category: "shell", riskLevel: "low_risk", permission: "deny" },
+      { category: "shell", riskLevel: "requires_approval", permission: "deny" },
+      { category: "network", riskLevel: "safe", permission: "deny" },
+      { category: "network", riskLevel: "low_risk", permission: "allow" },
+      { category: "network", riskLevel: "requires_approval", permission: "deny" },
+      { category: "mcp", riskLevel: "safe", permission: "deny" },
+      { category: "mcp", riskLevel: "low_risk", permission: "deny" },
+      { category: "mcp", riskLevel: "requires_approval", permission: "deny" },
+      { category: "model", riskLevel: "safe", permission: "deny" },
+      { category: "model", riskLevel: "low_risk", permission: "deny" },
+      { category: "model", riskLevel: "requires_approval", permission: "deny" },
+      { category: "export", riskLevel: "safe", permission: "deny" },
+      { category: "export", riskLevel: "low_risk", permission: "deny" },
+      { category: "export", riskLevel: "requires_approval", permission: "deny" },
+      { category: "internal", riskLevel: "safe", permission: "allow" },
+      { category: "internal", riskLevel: "low_risk", permission: "deny" },
+      { category: "internal", riskLevel: "requires_approval", permission: "deny" },
+      { category: "package", riskLevel: "safe", permission: "deny" },
+      { category: "package", riskLevel: "low_risk", permission: "deny" },
+      { category: "package", riskLevel: "requires_approval", permission: "deny" },
+    ],
+  },
+];
+
+export function getPermissionProfile(profileId: string): PermissionProfile | undefined {
+  return BUILTIN_PERMISSION_PROFILES.find((p) => p.id === profileId);
+}
+
 export const SkillCategorySchema = z.preprocess(
   (value) => value === "custom" ? "private" : value,
   z.enum(["public", "private"])
@@ -540,6 +681,46 @@ export const MVP_TOOLS: ToolDescriptor[] = [
 
 export const DEFAULT_AGENT_MODE_TOOL_IDS = MVP_TOOLS
   .map((tool) => tool.id);
+
+// ---------------------------------------------------------------------------
+// Tool Registry Builder
+// ---------------------------------------------------------------------------
+
+export class ToolRegistryBuilder {
+  private readonly tools: Map<string, ToolDescriptor> = new Map();
+
+  static fromDefaults(): ToolRegistryBuilder {
+    const builder = new ToolRegistryBuilder();
+    for (const tool of MVP_TOOLS) {
+      builder.tools.set(tool.id, tool);
+    }
+    return builder;
+  }
+
+  register(descriptor: ToolDescriptor): void {
+    const validated = ToolDescriptorSchema.parse(descriptor);
+    this.tools.set(validated.id, validated);
+  }
+
+  unregister(toolId: string): boolean {
+    return this.tools.delete(toolId);
+  }
+
+  get(toolId: string): ToolDescriptor | undefined {
+    return this.tools.get(toolId);
+  }
+
+  list(): ToolDescriptor[] {
+    return Array.from(this.tools.values());
+  }
+
+  snapshot(): ToolRegistry {
+    return ToolRegistrySchema.parse({
+      tools: this.list(),
+      defaultPolicyId: "runtime.default_policy",
+    });
+  }
+}
 
 export const MVP_SKILLS: SkillDescriptor[] = [
   {
