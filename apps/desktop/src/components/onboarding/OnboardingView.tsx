@@ -1,15 +1,16 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Bot,
   KeyRound,
-  MessageSquare,
-  ShieldCheck,
+  Layers,
+  Radio,
+  RefreshCw,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { ProviderOnboardingStep } from "./ProviderOnboardingStep";
+import { CapabilitiesShowcaseStep } from "./CapabilitiesShowcaseStep";
 
 interface OnboardingViewProps {
   onComplete: () => void;
@@ -18,24 +19,25 @@ interface OnboardingViewProps {
 
 const steps = [
   { id: "welcome", label: "Welcome" },
+  { id: "capabilities", label: "Capabilities" },
   { id: "provider", label: "Provider" },
 ] as const;
 
 const modeFeatures = [
   {
-    icon: MessageSquare,
-    title: "对话风格你来定",
-    body: "需要直接答案、一起讨论方案、还是逐步确认？换个模式，Ora 的回答方式跟着变。",
+    icon: Layers,
+    title: "模式 × 智能体 × 技能，自由组合",
+    body: "选一个协调模式，搭配适合的智能体和技能包。写代码、做研究、审方案，每种任务有自己的最优编排。",
   },
   {
-    icon: Bot,
-    title: "干活有工具，聊天不干扰",
-    body: "写代码时带上终端和文件访问，闲聊时只保留搜索。每个场景配合适的工具。",
+    icon: RefreshCw,
+    title: "越用越懂你，自己会进化",
+    body: "Ora 分析每次运行记录，发现可以优化的地方，主动提出改进。低风险变更自动生效，重要的你来拍板。",
   },
   {
-    icon: ShieldCheck,
-    title: "重要的你来把关",
-    body: "删文件、跑命令这类操作，可以让 Ora 先问你。日常小事它自己跑就行。",
+    icon: Radio,
+    title: "哪里都能找到你",
+    body: "微信、飞书、Discord、Slack……同一个 Ora，连着你常用的通讯工具。消息来了自动处理。",
   },
 ] as const;
 
@@ -94,9 +96,10 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
               )}
             >
               {step.id === "welcome" && <WelcomeStep />}
+              {step.id === "capabilities" && <CapabilitiesShowcaseStep />}
               {step.id === "provider" && (
                 <ProviderOnboardingStep
-                  onBack={() => setStepIndex(0)}
+                  onBack={() => setStepIndex(1)}
                   onComplete={onComplete}
                   onSkip={onSkip}
                 />
@@ -178,15 +181,14 @@ function WelcomeStep() {
           className="animate-fade-in mt-7 max-w-md text-base leading-8 text-bench-700"
           style={{ animationDelay: "520ms" }}
         >
-          Ora 是你的 AI 工作台。写文档、查资料、跑任务，都在这一个窗口里完成。
-          选一个服务，一分钟就能开始。
+          Ora 是你的 AI 工作台。自由组合模式、智能体和技能，它会在使用中越来越懂你。
         </p>
         <div
           className="animate-fade-in mt-8 inline-flex items-center gap-3 rounded-full border border-bench-200 bg-white/55 px-4 py-2 text-sm text-bench-700 shadow-sm"
           style={{ animationDelay: "720ms" }}
         >
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          只需两步，即可开始使用
+          三步即可开始使用
         </div>
       </div>
 

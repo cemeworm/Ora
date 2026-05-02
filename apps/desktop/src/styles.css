@@ -143,6 +143,29 @@
   }
 }
 
+@keyframes ora-draw-line {
+  from {
+    stroke-dashoffset: 600;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ora-node-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 @layer utilities {
   .animate-breathe {
     animation: ora-breathe 3s ease-in-out infinite;
@@ -159,13 +182,34 @@
   .animate-ink-in {
     animation: ora-ink-in 1s ease-out both;
   }
+
+  .animate-draw-line {
+    stroke-dasharray: 600;
+    stroke-dashoffset: 600;
+    animation: ora-draw-line 1.2s ease-out forwards;
+  }
+
+  .animate-node-pop {
+    opacity: 0;
+    animation: ora-node-pop 0.5s ease-out forwards;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe,
   .animate-fade-in,
   .animate-paper-float,
-  .animate-ink-in {
+  .animate-ink-in,
+  .animate-draw-line,
+  .animate-node-pop {
     animation: none;
+  }
+
+  .animate-node-pop {
+    opacity: 1;
+  }
+
+  .animate-draw-line {
+    stroke-dashoffset: 0;
   }
 }
