@@ -1,4 +1,4 @@
-import type { SearchProviderConfig, WebSearchResult } from "@ora/shared";
+import type { SearchProviderConfig, WebSearchResult } from "@cemeworm/shared";
 import type { McpSearchClient, SearchProvider, SearchProviderResponse, SearchQuery } from "./types.js";
 import { normalizeSearchResults, providerLimit } from "./utils.js";
 

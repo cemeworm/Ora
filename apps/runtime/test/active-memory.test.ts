@@ -3,7 +3,7 @@ import {
   ActiveMemoryContextSchema,
   LongTermMemoryProfileSchema,
   type LongTermMemoryProfile,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import {
   buildActiveMemoryContext,
   collectActiveMemoryCandidates,

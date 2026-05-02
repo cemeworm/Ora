@@ -5,8 +5,8 @@ import {
   StateSnapshotSchema,
   UserTaskInput,
   UserTaskInputSchema
-} from "@ora/shared";
-import type { ActionRecord } from "@ora/shared";
+} from "@cemeworm/shared";
+import type { ActionRecord } from "@cemeworm/shared";
 
 export interface ParsedResumePatch {
   patchRecord: Record<string, unknown>;

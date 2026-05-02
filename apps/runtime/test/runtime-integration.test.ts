@@ -30,7 +30,7 @@ import {
   ORA_ROOT_AGENT_ID,
   SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import {
   ActionLedger,
   AgentProfileRegistry,

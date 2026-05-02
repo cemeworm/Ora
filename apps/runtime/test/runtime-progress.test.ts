@@ -1,4 +1,4 @@
-import type { RunConfig } from "@ora/shared";
+import type { RunConfig } from "@cemeworm/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let providerText = "";

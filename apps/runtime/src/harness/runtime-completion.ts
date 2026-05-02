@@ -1,4 +1,4 @@
-import type { CompletionStopReason, ModeSpec, RunConfig } from "@ora/shared";
+import type { CompletionStopReason, ModeSpec, RunConfig } from "@cemeworm/shared";
 import type { RuntimeToolCall } from "./runtime-tool-executor.js";
 import { stableKeyForRuntimeTool, type RuntimeToolAttemptDecision } from "./runtime-tool-loop.js";
 

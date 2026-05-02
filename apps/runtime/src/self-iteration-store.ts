@@ -25,7 +25,7 @@ import {
   type SelfIterationPolicy,
   type SelfIterationRun,
   type StateSnapshot,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 const DEFAULT_PROJECT_ID = "local-project";
 

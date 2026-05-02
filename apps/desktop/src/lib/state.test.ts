@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { initialWorkbenchState, mergeRunStreamSnapshot, mergeStateSnapshot, workbenchReducer } from "./state";
 import type { WorkbenchState } from "./state";
 import type { OraProviderConfig, OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";

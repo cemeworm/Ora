@@ -13,7 +13,7 @@
     "moduleResolution": "Node",
     "baseUrl": ".",
     "paths": {
-      "@ora/shared": ["../../packages/shared/src/index.ts"]
+      "@cemeworm/shared": ["../../packages/shared/src/index.ts"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

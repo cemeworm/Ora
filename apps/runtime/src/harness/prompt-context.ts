@@ -1,4 +1,4 @@
-import type { AgentProfile, SkillDescriptor, UserTaskInput } from "@ora/shared";
+import type { AgentProfile, SkillDescriptor, UserTaskInput } from "@cemeworm/shared";
 
 export type AgentPromptSectionId =
   | "custom_persona"

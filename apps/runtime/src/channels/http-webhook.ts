@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { ChannelConfig, ChannelOutboundMessage } from "@ora/shared";
+import type { ChannelConfig, ChannelOutboundMessage } from "@cemeworm/shared";
 import type { ChannelAdapter } from "./base.js";
 
 export interface HttpWebhookSendResult {

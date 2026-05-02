@@ -4,8 +4,8 @@ import {
   StateSnapshot,
   StateSnapshotSchema,
   createModeSpecFromPattern
-} from "@ora/shared";
-import type { MemoryRecord } from "@ora/shared";
+} from "@cemeworm/shared";
+import type { MemoryRecord } from "@cemeworm/shared";
 import {
   patternMemoryNamespace,
   patternOutput,

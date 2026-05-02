@@ -3,7 +3,7 @@ import type {
   StateSnapshot,
   TrailGenerationRef,
   TrailObservation
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export function synthesizeLocalTrail(snapshot: StateSnapshot, base?: RunTraceMetadata): {
   trace: RunTraceMetadata;

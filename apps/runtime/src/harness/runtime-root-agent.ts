@@ -8,7 +8,7 @@ import {
   type TopologyEdge,
   type TopologyNode,
   orderedEnabledModeNodes,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export const ORA_ROOT_AGENT_ROLE =
   "Root conversation agent, Auto Mode Router initiator, clarification owner, handoff parent, observer, and final responder.";

@@ -22,7 +22,7 @@ import {
   type SkillUpdateParams,
   type ToolDescriptor,
   type ToolRegistry,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { SkillFileStore, type SkillFileStoreOptions } from "../skills.js";
 
 function repoRoot(): string {

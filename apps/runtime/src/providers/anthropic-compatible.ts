@@ -1,4 +1,4 @@
-import type { ProviderConfig } from "@ora/shared";
+import type { ProviderConfig } from "@cemeworm/shared";
 import { createAnthropicStyleProvider } from "./anthropic.js";
 import type { ModelProvider, ProviderRuntimeOptions } from "./types.js";
 

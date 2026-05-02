@@ -6,7 +6,7 @@ import {
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { AgentProfileRegistry, PlanService, TodoService } from "./capabilities.js";
 import { injectRootAgentTopology, rootAgentProfile } from "./harness/runtime-root-agent.js";
 

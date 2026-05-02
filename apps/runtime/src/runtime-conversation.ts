@@ -1,4 +1,4 @@
-import type { RuntimeConversationEntry } from "@ora/shared";
+import type { RuntimeConversationEntry } from "@cemeworm/shared";
 import type { ModelMessage } from "./providers/index.js";
 
 export function runtimeConversationToModelMessages(

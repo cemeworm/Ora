@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChannelDeliverySchema, ChannelIngestResultSchema, ChannelStatusResultSchema, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@ora/shared";
+import { ChannelDeliverySchema, ChannelIngestResultSchema, ChannelStatusResultSchema, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
 import { createRuntimeHttpServer, createRuntimeMethodHandler, LocalRunStore } from "../src/index.js";
 import { createRunningRunSnapshot } from "../src/run-snapshots.js";
 import { validateHttpWebhookAuth } from "../src/channels/http-webhook.js";

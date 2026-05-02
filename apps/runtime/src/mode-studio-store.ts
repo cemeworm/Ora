@@ -13,7 +13,7 @@ import {
   SINGLE_AGENT_MODE_ID,
   createModeSpecFromPattern,
   getPatternDefinition
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
   assessModeStudioDesignCompleteness,

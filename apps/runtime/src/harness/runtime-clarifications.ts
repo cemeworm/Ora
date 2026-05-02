@@ -6,7 +6,7 @@ import {
   type PendingClarificationOption,
   PendingClarificationSchema,
   type RunConfig,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { invokeRunProvider } from "../providers/index.js";
 import { ClarificationInterruptError } from "./runtime-interrupts.js";
 

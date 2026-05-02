@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ProviderCapability } from "@ora/shared";
+import type { ProviderCapability } from "@cemeworm/shared";
 import {
   BUILT_IN_PROVIDER_IDS,
   PROVIDER_PRESETS,

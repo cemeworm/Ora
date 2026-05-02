@@ -1,4 +1,4 @@
-import { SearchProviderConfigSchema } from "@ora/shared";
+import { SearchProviderConfigSchema } from "@cemeworm/shared";
 import { BraveSearchProvider } from "./brave.js";
 import { DuckDuckGoSearchProvider } from "./duckduckgo.js";
 import { KagiSearchProvider } from "./kagi.js";

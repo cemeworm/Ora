@@ -6,7 +6,7 @@ import type {
   OraToolCallEnvelope,
   PendingClarificationOption,
   RunConfig,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
 import {

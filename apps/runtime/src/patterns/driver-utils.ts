@@ -4,7 +4,7 @@ import {
   type ModeNodeSpec,
   type ModeSpec,
   type QueueSummary,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import type { PatternExecutionContext } from "./execution-context.js";
 
 export function correlationId(base: string): string {

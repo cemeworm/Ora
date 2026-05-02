@@ -1,4 +1,4 @@
-import { createModeSpecFromPattern, MVP_MODE_RUNTIME_ATOMS } from "@ora/shared";
+import { createModeSpecFromPattern, MVP_MODE_RUNTIME_ATOMS } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import {
   buildModeFlowEdges,

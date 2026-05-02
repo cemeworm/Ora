@@ -7,7 +7,7 @@ import {
   ProjectFilesResult,
   ProjectFilesResultSchema,
   ProjectSummary
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { OraRuntimeError } from "./runtime-errors.js";
 
 const PROJECT_WORKSPACE_MAX_FILES = 20_000;

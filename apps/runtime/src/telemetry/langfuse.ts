@@ -16,7 +16,7 @@ import type {
   TrailGenerationRef,
   TrailObservation,
   UserTaskInput
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import type { ModelRequest, ModelResponse } from "../providers/types.js";
 
 type RunLike = Pick<StateSnapshot, "runId" | "status" | "pattern" | "input" | "config" | "output" | "events" | "checkpoints" | "updatedAt">;

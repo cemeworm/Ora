@@ -18,7 +18,7 @@ import {
   type ModeStageSpec,
   type ModeTranscriptLayout,
   type ModeSpec
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { normalizeGeneratedAgentDraft } from "./agent-draft.js";
 import { parseJsonObject } from "./provider-json.js";
 

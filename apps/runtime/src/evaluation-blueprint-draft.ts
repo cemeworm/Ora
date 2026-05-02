@@ -4,7 +4,7 @@ import {
   EvaluationRecipeId,
   RunConfig,
   RunConfigSchema,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { parseJsonObject } from "./provider-json.js";
 import { invokeRunProvider } from "./providers/index.js";
 

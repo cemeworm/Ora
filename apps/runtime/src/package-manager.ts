@@ -16,7 +16,7 @@ import {
   type PackageManifest,
   type PackageStoreSnapshot,
   type PackageVerifyParams,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export interface PackageManagerOptions {
   appDataRoot?: string;

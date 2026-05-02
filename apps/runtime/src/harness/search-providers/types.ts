@@ -1,4 +1,4 @@
-import type { SearchProviderConfig, SearchProviderId, WebSearchResult } from "@ora/shared";
+import type { SearchProviderConfig, SearchProviderId, WebSearchResult } from "@cemeworm/shared";
 
 export interface SearchQuery {
   query: string;

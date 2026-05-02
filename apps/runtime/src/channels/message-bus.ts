@@ -1,4 +1,4 @@
-import type { ChannelInboundMessage, ChannelOutboundMessage } from "@ora/shared";
+import type { ChannelInboundMessage, ChannelOutboundMessage } from "@cemeworm/shared";
 
 type OutboundSubscriber = (message: ChannelOutboundMessage) => Promise<void> | void;
 

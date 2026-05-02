@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentCatalogResultSchema, CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset, ORA_ROOT_AGENT_ID } from "@ora/shared";
+import { AgentCatalogResultSchema, CustomAgentDetailSchema, CustomAgentGenerateDraftResultSchema, getModePreset, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
 
 const capturedSystems: string[] = [];
 const providerResponses: string[] = [];

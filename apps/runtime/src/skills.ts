@@ -32,7 +32,7 @@ import {
   type SkillPackageFileDescriptor,
   type SkillSetEnabledParams,
   type SkillUpdateParams,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 interface ParsedSkillFile {
   name: string;

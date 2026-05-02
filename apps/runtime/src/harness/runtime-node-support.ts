@@ -1,4 +1,4 @@
-import type { OraEventEnvelope } from "@ora/shared";
+import type { OraEventEnvelope } from "@cemeworm/shared";
 import {
   classifyRecoveryError,
   type RecoveryCoordinator,

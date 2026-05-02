@@ -4,7 +4,7 @@ import {
   type RecoveryAction,
   type RecoveryErrorType,
   type RecoveryRule,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export interface RecoveryIncident {
   errorType: RecoveryErrorType;

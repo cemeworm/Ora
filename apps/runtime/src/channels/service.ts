@@ -2,8 +2,8 @@ import type {
   ChannelConfig,
   ChannelStatus,
   ChannelStatusResult,
-} from "@ora/shared";
-import { ChannelStatusResultSchema } from "@ora/shared";
+} from "@cemeworm/shared";
+import { ChannelStatusResultSchema } from "@cemeworm/shared";
 import type { RuntimePersistenceBackend } from "../persistence/types.js";
 import type { ChannelRunRuntime } from "./manager.js";
 import { ChannelManager } from "./manager.js";

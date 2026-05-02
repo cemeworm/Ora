@@ -24,7 +24,7 @@ import {
   type ProjectSummary,
   type SessionSummary,
   type StateSnapshot,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { z } from "zod";
 
 const DEFAULT_PROJECT_ID = "local-project";

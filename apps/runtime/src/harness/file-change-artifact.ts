@@ -1,5 +1,5 @@
-import { ArtifactRefSchema } from "@ora/shared";
-import type { ArtifactRef } from "@ora/shared";
+import { ArtifactRefSchema } from "@cemeworm/shared";
+import type { ArtifactRef } from "@cemeworm/shared";
 import type { RuntimeFileChangeMetadata } from "./runtime-tool-executor.js";
 
 export function fileChangeArtifact(params: {

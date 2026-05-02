@@ -3,7 +3,7 @@ import type {
   ChannelInboundMessage,
   ChannelOutboundMessage,
   ChannelStatus,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export interface ChannelAdapter {
   readonly channelId: string;

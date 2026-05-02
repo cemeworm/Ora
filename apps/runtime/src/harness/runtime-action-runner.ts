@@ -4,7 +4,7 @@ import type {
   OraToolCallEnvelope,
   PolicyDecision,
   RunConfig,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import type { ActionLedger, PolicyService } from "../capabilities.js";
 import { ApprovalInterruptError } from "./runtime-interrupts.js";
 import type { RuntimeFileChangeMetadata, RuntimeToolCall } from "./runtime-tool-executor.js";

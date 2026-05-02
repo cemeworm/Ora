@@ -1,5 +1,5 @@
 import http from "node:http";
-import { ChannelGetParamsSchema } from "@ora/shared";
+import { ChannelGetParamsSchema } from "@cemeworm/shared";
 import type { LocalRunStore } from "./run-store.js";
 import { normalizeDingtalkWebhookPayload } from "./channels/dingtalk.js";
 import { normalizeFeishuWebhookPayload, validateFeishuWebhookAuth } from "./channels/feishu.js";

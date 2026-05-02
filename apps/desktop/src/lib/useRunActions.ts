@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
 import { flushSync } from "react-dom";
-import { DEFAULT_WEB_TOOL_IDS } from "@ora/shared";
+import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";

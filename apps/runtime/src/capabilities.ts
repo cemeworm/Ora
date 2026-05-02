@@ -14,7 +14,7 @@ import {
   PolicyDecisionSchema,
   TodoItem,
   TodoItemSchema,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export class AgentProfileRegistry {
   constructor(private readonly definition: PatternDefinition) {}

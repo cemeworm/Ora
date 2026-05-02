@@ -7,7 +7,7 @@ import {
   type CoordinationPattern,
   type ModeEdgeSpec,
   type ModeNodeTemplate,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { MarkerType, type Connection, type Edge, type Node } from "reactflow";
 import type { OraModeRuntimeAtomDefinition, OraModeSpec } from "./runtimeClient";
 

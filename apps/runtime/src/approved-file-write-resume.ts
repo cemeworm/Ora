@@ -1,5 +1,5 @@
-import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@ora/shared";
-import type { ActionRecord } from "@ora/shared";
+import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@cemeworm/shared";
+import type { ActionRecord } from "@cemeworm/shared";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { fileChangeArtifact } from "./harness/file-change-artifact.js";
 import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolId } from "./harness/runtime-tool-executor.js";

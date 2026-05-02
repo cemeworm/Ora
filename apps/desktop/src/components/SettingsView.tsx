@@ -1,4 +1,4 @@
-import type { ChannelKind, ProviderCapability } from "@ora/shared";
+import type { ChannelKind, ProviderCapability } from "@cemeworm/shared";
 import {
   Activity,
   Bot,

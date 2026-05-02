@@ -9,7 +9,7 @@ import {
   MemoryRecordSchema,
   ModeMemoryPolicy,
   StateSnapshot,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 const MEMORY_VERSION = "1.0";
 const MAX_FACTS = 120;

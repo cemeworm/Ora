@@ -9,7 +9,7 @@ import {
   SessionTurnSchema,
   StateSnapshot,
   StateSnapshotSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { getLangfuseRunTraceMetadata } from "./telemetry/langfuse.js";
 
 export function toRunHandle(snapshot: StateSnapshot): RunHandle {

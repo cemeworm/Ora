@@ -11,7 +11,7 @@ import {
   SystemAgentOverride,
   SYSTEM_AGENT_ID_ALIASES,
   SystemAgentCatalogItem
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { CustomAgentFileStore, SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { ModeSpecFileStore } from "./modes.js";
 

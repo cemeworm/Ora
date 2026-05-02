@@ -1,4 +1,4 @@
-import type { SearchProviderConfig, SearchProviderId, WebSearchResult } from "@ora/shared";
+import type { SearchProviderConfig, SearchProviderId, WebSearchResult } from "@cemeworm/shared";
 import type { SearchQuery } from "./types.js";
 
 export const SEARCH_PROVIDER_ENV_NAMES: Record<Exclude<SearchProviderId, "duckduckgo" | "mcp">, string> = {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getModePreset, modeSpecToPatternDefinition, SINGLE_AGENT_MODE_ID } from "@ora/shared";
+import { getModePreset, modeSpecToPatternDefinition, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { getComposerInteractivity } from "../../desktop/src/components/ChatInput";
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";

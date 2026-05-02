@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { ProviderConfig } from "@ora/shared";
+import type { ProviderConfig } from "@cemeworm/shared";
 import type { ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
 
 export function normalizeMessages(request: ModelRequest): ModelMessage[] {

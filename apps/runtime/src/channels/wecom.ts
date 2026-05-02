@@ -3,7 +3,7 @@ import type {
   ChannelIngestParams,
   ChannelOutboundMessage,
   ChannelStatus,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import type { ChannelAdapter } from "./base.js";
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { ProviderModelsResultSchema, type ProviderConfig } from "@ora/shared";
+import { ProviderModelsResultSchema, type ProviderConfig } from "@cemeworm/shared";
 import { normalizeMessages, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta } from "./streaming.js";

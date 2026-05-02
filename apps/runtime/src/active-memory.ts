@@ -6,7 +6,7 @@ import {
   type ActiveMemoryFreshness,
   type LongTermMemoryFact,
   type LongTermMemoryProfile,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 interface ActiveMemoryMessage {
   role: string;

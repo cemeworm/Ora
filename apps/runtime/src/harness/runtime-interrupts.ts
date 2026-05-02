@@ -1,4 +1,4 @@
-import type { ActionRecord, PendingClarification } from "@ora/shared";
+import type { ActionRecord, PendingClarification } from "@cemeworm/shared";
 import { stableJson } from "./runtime-tool-loop.js";
 
 export class ClarificationInterruptError extends Error {

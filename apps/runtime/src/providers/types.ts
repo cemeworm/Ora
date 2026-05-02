@@ -1,4 +1,4 @@
-import type { ModeReasoningEffort, ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@ora/shared";
+import type { ModeReasoningEffort, ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@cemeworm/shared";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 

@@ -6,8 +6,8 @@ import type {
   RunConfig,
   StateSnapshot,
   UserTaskInput
-} from "@ora/shared";
-import { StateSnapshotSchema } from "@ora/shared";
+} from "@cemeworm/shared";
+import { StateSnapshotSchema } from "@cemeworm/shared";
 import type { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { type ModeRegistryTools, type SelfIterationRegistryTools } from "./harness/runtime-tool-executor.js";
 import { executeRuntimeKernel, type RuntimeKernelOptions } from "./harness/runtime-kernel.js";

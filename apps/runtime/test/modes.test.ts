@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CODE_DEVELOPMENT_MODE_ID } from "@ora/shared";
+import { CODE_DEVELOPMENT_MODE_ID } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { LocalRunStore } from "../src/index.js";
 

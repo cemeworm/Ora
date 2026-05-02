@@ -1,4 +1,4 @@
-import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@ora/shared";
+import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@cemeworm/shared";
 import {
   appendIfDefined,
   buildResponsesInput,

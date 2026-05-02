@@ -5,7 +5,7 @@ import type {
   MemoryKind,
   QueueSummary,
   SharedStateSummary,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export interface PatternExecutionContext {
   projectId: string;

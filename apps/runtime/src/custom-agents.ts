@@ -26,7 +26,7 @@ import {
   type SystemAgentOverride,
   type SystemAgentOverrideResetParams,
   type SystemAgentOverrideUpdateParams,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 interface PersistedCustomAgentConfig {
   name: string;

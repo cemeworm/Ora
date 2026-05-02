@@ -24,7 +24,7 @@ import {
   SessionTranscriptMessage,
   SessionTurn,
   StateSnapshot
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import {
   listProjectFilesForProject,
   normalizeProjectRootPath,

@@ -10,7 +10,7 @@ import {
   CustomAgentGeneratedDraftSchema,
   RunConfigSchema,
   SINGLE_AGENT_MODE_ID
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import { parseJsonObject } from "./provider-json.js";
 

@@ -10,7 +10,7 @@ import {
   RecoveryActionSchema,
   RecoveryErrorTypeSchema,
   type CoordinationPattern,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import ReactFlow, {
   Background,
   Controls,

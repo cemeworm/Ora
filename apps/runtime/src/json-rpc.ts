@@ -3,14 +3,14 @@ import {
   JsonRpcRequestSchema,
   JsonRpcResponse,
   JsonRpcResponseSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { ZodError } from "zod";
 import { LocalRunStore } from "./run-store.js";
 import { OraRuntimeError } from "./runtime-errors.js";
 import { createDefaultProviderRegistry, fetchProviderModels, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
-import { MVP_MODE_RUNTIME_ATOMS, ProviderModelsParamsSchema, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@ora/shared";
-import type { RunEventStream } from "@ora/shared";
+import { MVP_MODE_RUNTIME_ATOMS, ProviderModelsParamsSchema, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@cemeworm/shared";
+import type { RunEventStream } from "@cemeworm/shared";
 import { PackageManager } from "./package-manager.js";
 
 export type JsonRpcMethodHandler = (request: JsonRpcRequest) => Promise<unknown> | unknown;

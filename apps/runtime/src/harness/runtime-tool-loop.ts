@@ -1,4 +1,4 @@
-import type { CompletionStopReason, OraToolCallSource, RunConfig } from "@ora/shared";
+import type { CompletionStopReason, OraToolCallSource, RunConfig } from "@cemeworm/shared";
 import type { ModelToolCall } from "../providers/index.js";
 import { isRuntimeToolImplemented, type RuntimeToolCall } from "./runtime-tool-executor.js";
 

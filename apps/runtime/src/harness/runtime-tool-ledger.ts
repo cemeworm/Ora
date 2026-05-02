@@ -3,7 +3,7 @@ import {
   OraToolCallEnvelopeSchema,
   type OraToolCallSource,
   type OraToolCallStatus,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export interface AppendRuntimeToolCallParams {
   id?: string;

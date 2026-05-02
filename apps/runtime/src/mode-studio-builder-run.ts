@@ -14,7 +14,7 @@ import {
   StateSnapshotSchema,
   UserTaskInput,
   UserTaskInputSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { modeStudioUserText } from "./mode-studio-draft.js";
 
 export interface ModeStudioBuilderRunResult {

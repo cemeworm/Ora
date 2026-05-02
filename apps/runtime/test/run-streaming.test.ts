@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentConversationMessage, OraEventEnvelope, StateSnapshot } from "@ora/shared";
+import type { AgentConversationMessage, OraEventEnvelope, StateSnapshot } from "@cemeworm/shared";
 import { applyStreamingRunEvent } from "../src/run-streaming.js";
 
 function snapshot(agentMessages: AgentConversationMessage[] = []): StateSnapshot {

@@ -1,4 +1,4 @@
-import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@ora/shared";
+import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@cemeworm/shared";
 import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";

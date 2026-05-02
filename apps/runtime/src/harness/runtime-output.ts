@@ -1,4 +1,4 @@
-import type { CompletionStopReason, ModeSpec } from "@ora/shared";
+import type { CompletionStopReason, ModeSpec } from "@cemeworm/shared";
 import type { ModelResponse } from "../providers/index.js";
 import { FORCED_FINAL_FALLBACK_TEXT } from "./runtime-completion.js";
 import {

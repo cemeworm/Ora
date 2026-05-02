@@ -8,7 +8,7 @@ import {
   type ModeStageSpec,
   type ModeSpec,
   type PatternDefinition,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { assessGeneratorVerifierResponse } from "./generator-verifier-utils.js";
 import type { PatternDriver, PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import {

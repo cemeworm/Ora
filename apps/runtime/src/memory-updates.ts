@@ -1,4 +1,4 @@
-import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@ora/shared";
+import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@cemeworm/shared";
 import { LongTermMemoryManager, LongTermMemoryUpdateQueue } from "./memory.js";
 import type { LongTermMemoryUpdateTask } from "./memory.js";
 import { ModeSelectionDeps, resolveMemoryPolicy } from "./mode-selection.js";

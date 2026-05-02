@@ -90,7 +90,7 @@ import {
   RunHandle,
   StateSnapshot,
   UserTaskInput,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { z } from "zod";
 import { parseJsonObject } from "./provider-json.js";
 import { invokeRunProvider } from "./providers/index.js";

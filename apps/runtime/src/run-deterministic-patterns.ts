@@ -3,7 +3,7 @@ import {
   ModeSpec,
   StateSnapshot,
   orderedEnabledModeNodes
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { OraRuntimeError } from "./runtime-errors.js";
 
 export interface DeterministicPatternOutput {

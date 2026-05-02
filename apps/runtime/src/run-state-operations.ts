@@ -9,7 +9,7 @@ import {
   RunStreamParamsSchema,
   StateSnapshot,
   StateSnapshotSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { OraRuntimeError } from "./runtime-errors.js";
 import { cancelledRunSnapshot } from "./run-snapshots.js";
 import { attachTraceMetadata } from "./run-projections.js";

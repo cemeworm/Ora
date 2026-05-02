@@ -1,5 +1,5 @@
-import type { ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderStatus, RunConfig } from "@ora/shared";
-import { DEFAULT_PROVIDERS, ProviderModelsResultSchema } from "@ora/shared";
+import type { ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderStatus, RunConfig } from "@cemeworm/shared";
+import { DEFAULT_PROVIDERS, ProviderModelsResultSchema } from "@cemeworm/shared";
 import { createAnthropicProvider } from "./anthropic.js";
 import { createAnthropicCompatibleProvider } from "./anthropic-compatible.js";
 import { createLocalSmokeProvider } from "./local-smoke.js";

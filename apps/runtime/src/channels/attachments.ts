@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { ChannelAttachmentSchema, type ChannelAttachment } from "@ora/shared";
+import { ChannelAttachmentSchema, type ChannelAttachment } from "@cemeworm/shared";
 
 export interface ChannelAttachmentPipelineOptions {
   fetchImpl?: typeof fetch;

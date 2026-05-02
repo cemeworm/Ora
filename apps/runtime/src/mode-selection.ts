@@ -16,7 +16,7 @@ import {
   UserTaskInput,
   modeSpecToPatternDefinition,
   withDefaultWebToolIds
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { buildActiveMemoryContext } from "./active-memory.js";
 import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { LongTermMemoryManager } from "./memory.js";

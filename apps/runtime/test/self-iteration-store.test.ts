@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { LocalSelfIterationStore } from "../src/self-iteration-store.js";
 import { LocalRunStore } from "../src/run-store.js";
-import type { EvaluationFeedbackRecord, ProjectInsight, ProjectSignal, StateSnapshot } from "@ora/shared";
+import type { EvaluationFeedbackRecord, ProjectInsight, ProjectSignal, StateSnapshot } from "@cemeworm/shared";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-self-iteration-"));

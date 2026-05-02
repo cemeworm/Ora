@@ -1,4 +1,4 @@
-import type { OraEventEnvelope, RunConfig } from "@ora/shared";
+import type { OraEventEnvelope, RunConfig } from "@cemeworm/shared";
 import { invokeRunProvider } from "../providers/index.js";
 import {
   normalizeProgressNarration,

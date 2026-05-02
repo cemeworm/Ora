@@ -17,7 +17,7 @@ import {
   type ModeUpdateParams,
   type ModeValidationResult,
   validateModeSpec,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export class ModeSpecFileStore {
   constructor(

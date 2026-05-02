@@ -1,5 +1,5 @@
-import { SessionSummarySchema, StateSnapshotSchema } from "@ora/shared";
-import type { ProjectSummary, SessionSummary, StateSnapshot } from "@ora/shared";
+import { SessionSummarySchema, StateSnapshotSchema } from "@cemeworm/shared";
+import type { ProjectSummary, SessionSummary, StateSnapshot } from "@cemeworm/shared";
 import type { RuntimePersistenceBackend, StoreManifest } from "./persistence/types.js";
 import { defaultSessionTitle } from "./session-title.js";
 

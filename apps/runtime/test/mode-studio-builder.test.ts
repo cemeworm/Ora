@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createModeSpecFromPattern } from "@ora/shared";
+import { createModeSpecFromPattern } from "@cemeworm/shared";
 
 const providerResponses: string[] = [];
 

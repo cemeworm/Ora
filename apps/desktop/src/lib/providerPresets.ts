@@ -1,4 +1,4 @@
-import type { OpenAICompatibleProtocol, ProviderCapability, ProviderType } from "@ora/shared";
+import type { OpenAICompatibleProtocol, ProviderCapability, ProviderType } from "@cemeworm/shared";
 import type { OraProviderConfig } from "./runtimeClient";
 
 export interface ProviderPreset {

@@ -1,7 +1,7 @@
 import { ArrowLeft, Bot, MessageSquarePlus, Pencil, Plus, RefreshCcw, Send, Sparkles, Trash2 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@ora/shared";
+import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@cemeworm/shared";
 import { useWorkbench } from "../lib/state";
 import type { OraAgentCatalogResult, OraCustomAgentGenerateDraftResult, OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";

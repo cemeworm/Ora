@@ -1,4 +1,4 @@
-import type { ChannelBinding, ChannelConfig } from "@ora/shared";
+import type { ChannelBinding, ChannelConfig } from "@cemeworm/shared";
 
 export type ChannelCommandName = "/help" | "/status" | "/new";
 

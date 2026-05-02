@@ -12,7 +12,7 @@ import {
   ProjectSummarySchema,
   SessionSummarySchema,
   StateSnapshotSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
 import {
   StoreManifestSchema,

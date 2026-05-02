@@ -20,7 +20,7 @@ import {
   type ChannelMessageRecord,
   type ChannelOutboundMessage as ChannelOutboundMessageType,
   type ChannelUpdateParams,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import type { RuntimePersistenceBackend } from "../persistence/types.js";
 import { OraRuntimeError } from "../runtime-errors.js";
 

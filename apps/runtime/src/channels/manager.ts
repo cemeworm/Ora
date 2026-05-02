@@ -14,7 +14,7 @@ import {
   type RunSummary,
   type SessionSummary,
   type StateSnapshot,
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { assistantTextForRun } from "../session-title.js";
 import { OraRuntimeError } from "../runtime-errors.js";
 import { enrichChannelAttachments } from "./attachments.js";

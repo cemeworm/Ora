@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { ChannelAttachmentSchema, type ChannelConfig, type ChannelIngestParams, type ChannelOutboundMessage } from "@ora/shared";
+import { ChannelAttachmentSchema, type ChannelConfig, type ChannelIngestParams, type ChannelOutboundMessage } from "@cemeworm/shared";
 import type { ChannelAdapter } from "./base.js";
 
 export class FeishuChannelAdapter implements ChannelAdapter {

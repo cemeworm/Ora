@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@ora/shared": fileURLToPath(new URL("../../packages/shared/src/index.ts", import.meta.url)),
+      "@cemeworm/shared": fileURLToPath(new URL("../../packages/shared/src/index.ts", import.meta.url)),
     },
   },
   clearScreen: false,

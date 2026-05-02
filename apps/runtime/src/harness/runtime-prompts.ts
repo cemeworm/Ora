@@ -1,4 +1,4 @@
-import type { StateSnapshot } from "@ora/shared";
+import type { StateSnapshot } from "@cemeworm/shared";
 
 export function checkpointLabelForStatus(status: StateSnapshot["status"]): string {
   switch (status) {

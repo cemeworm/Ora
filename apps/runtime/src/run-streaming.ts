@@ -6,7 +6,7 @@ import {
   StateSnapshot,
   StateSnapshotSchema,
   type AgentConversationMessage
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { createFailedRunEvent, statusForRunEvent } from "./run-orchestration.js";
 
 export function publishRunStream(params: {

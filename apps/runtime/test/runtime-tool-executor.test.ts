@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MVP_TOOLS } from "@ora/shared";
+import { MVP_TOOLS } from "@cemeworm/shared";
 import {
   IMPLEMENTED_RUNTIME_TOOL_IDS,
   RuntimeToolExecutor,

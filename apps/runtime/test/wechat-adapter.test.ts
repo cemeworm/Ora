@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ChannelConfig, ChannelIngestParams } from "@ora/shared";
+import type { ChannelConfig, ChannelIngestParams } from "@cemeworm/shared";
 import {
   WechatChannelAdapter,
   normalizeWechatMessage,

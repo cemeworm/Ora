@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentProfile, SkillDescriptor } from "@ora/shared";
+import type { AgentProfile, SkillDescriptor } from "@cemeworm/shared";
 import { buildAgentPromptContext, userClarificationContextPrompt } from "../src/harness/prompt-context.js";
 
 const availableSkills: SkillDescriptor[] = [

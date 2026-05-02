@@ -8,7 +8,7 @@ import type {
   ProjectSummary,
   SessionSummary,
   StateSnapshot
-} from "@ora/shared";
+} from "@cemeworm/shared";
 
 export const StoreManifestSchema = z.object({
   schemaVersion: z.literal(3).default(3),

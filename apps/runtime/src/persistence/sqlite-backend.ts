@@ -10,8 +10,8 @@ import {
   ProjectSummarySchema,
   SessionSummarySchema,
   StateSnapshotSchema
-} from "@ora/shared";
-import type { ArtifactRef } from "@ora/shared";
+} from "@cemeworm/shared";
+import type { ArtifactRef } from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
 import type {
   PersistedArtifact,

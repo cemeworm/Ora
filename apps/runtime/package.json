@@ -7,7 +7,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "package:sidecar": "pnpm --filter @ora/shared build && node scripts/package-sidecar.mjs",
+    "package:sidecar": "pnpm --filter @cemeworm/shared build && node scripts/package-sidecar.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "tsx src/sidecar-entry.ts",
     "smoke": "tsx src/cli.ts --smoke",
@@ -18,7 +18,7 @@
     "@langfuse/otel": "^5.2.0",
     "@langfuse/tracing": "^5.2.0",
     "@opentelemetry/sdk-node": "^0.215.0",
-    "@ora/shared": "workspace:*",
+    "@cemeworm/shared": "workspace:*",
     "better-sqlite3": "^12.9.0",
     "pdf-parse": "^2.4.5",
     "zod": "^3.23.8"
