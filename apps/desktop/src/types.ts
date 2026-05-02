@@ -288,6 +288,7 @@ export interface AssistantTurnAttachment {
   todos: TurnTodoItem[];
   approvalCount: number;
   clarificationCount: number;
+  hasProposedPlan: boolean;
 }
 
 export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "unavailable" | "error";

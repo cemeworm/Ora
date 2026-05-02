@@ -1,4 +1,4 @@
-import { modeSpecToPatternDefinition } from "@ora/shared";
+import { modeSpecToPatternDefinition } from "@cemeworm/shared";
 import type {
   ActionRecord,
   AgentProfile,
@@ -1489,7 +1489,13 @@ function buildAssistantTurnAttachment(
     todos: deriveTurnTodos(snapshot),
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
+    hasProposedPlan: hasProposedPlanInSnapshot(snapshot),
   };
+}
+
+function hasProposedPlanInSnapshot(snapshot: OraStateSnapshot): boolean {
+  const text = assistantTextFromSnapshot(snapshot);
+  return text ? text.includes("<proposed_plan>") : false;
 }
 
 function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {

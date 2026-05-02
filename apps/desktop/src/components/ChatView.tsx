@@ -1,4 +1,4 @@
-import type { ModeSelection } from "@ora/shared";
+import type { ModeSelection } from "@cemeworm/shared";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
@@ -199,6 +199,7 @@ export function ChatView({
           taskIntent={state.taskIntent}
           onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
           lastRunTaskIntent={state.lastRunTaskIntent}
+          hasProposedPlan={chatMessages.some((msg) => msg.turn?.hasProposedPlan)}
           onConfirmPlan={() => {
             dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
             onComposerPromptChange("请按照上述计划开始执行");

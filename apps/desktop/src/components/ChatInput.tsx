@@ -28,7 +28,7 @@ import { cn } from "../lib/utils";
 import type { ActionRecord, ModeCard } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
-import type { ModeSelection, PermissionMode, TaskIntent } from "@ora/shared";
+import type { ModeSelection, PermissionMode, TaskIntent } from "@cemeworm/shared";
 import { ApprovalRequestCard } from "./ApprovalRequestCard";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
@@ -66,6 +66,7 @@ interface ChatInputProps {
   taskIntent: TaskIntent;
   onTaskIntentChange: (taskIntent: TaskIntent) => void;
   lastRunTaskIntent?: TaskIntent;
+  hasProposedPlan?: boolean;
   onConfirmPlan?: () => void;
   onStartRun: () => void;
   onStopRun: () => void;
@@ -122,6 +123,7 @@ export function ChatInput({
   taskIntent,
   onTaskIntentChange,
   lastRunTaskIntent,
+  hasProposedPlan,
   onConfirmPlan,
   onStartRun,
   onStopRun,
@@ -461,7 +463,7 @@ export function ChatInput({
                     </button>
                   ))}
                 </Picker>
-                {taskIntent === "plan" && lastRunTaskIntent === "plan" && onConfirmPlan ? (
+                {taskIntent === "plan" && (lastRunTaskIntent === "plan" || hasProposedPlan) && onConfirmPlan ? (
                   <button
                     type="button"
                     onClick={onConfirmPlan}
