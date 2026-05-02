@@ -30,6 +30,8 @@ import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
 import type { ModeSelection, PermissionMode, TaskIntent } from "@cemeworm/shared";
 import { ApprovalRequestCard } from "./ApprovalRequestCard";
+import { ClarificationPanel } from "./ClarificationPanel";
+import type { OraStateSnapshot } from "../lib/runtimeClient";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -52,6 +54,8 @@ interface ChatInputProps {
   approvalDisabled?: boolean;
   onApprove?: () => void;
   onCancelApproval?: () => void;
+  clarificationQuestions?: OraStateSnapshot["pendingClarifications"];
+  onSubmitClarificationOption?: (answer: string) => void;
   onModeChange: (modeId: string) => void;
   onModeSelectionChange: (selection: ModeSelection) => void;
   onProviderChange: (providerId: string) => void;
@@ -109,6 +113,8 @@ export function ChatInput({
   approvalDisabled,
   onApprove,
   onCancelApproval,
+  clarificationQuestions = [],
+  onSubmitClarificationOption,
   onModeChange,
   onModeSelectionChange,
   onProviderChange,
@@ -173,6 +179,7 @@ export function ChatInput({
     && filteredSkillOptions.length > 0;
   const hasTopChips = selectedSkills.length > 0 || projectFileAttachments.length > 0 || localFileAttachments.length > 0;
   const showApprovalTray = approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
+  const showClarificationTray = !isLoading && clarificationQuestions.length > 0 && Boolean(onSubmitClarificationOption);
 
   useLayoutEffect(() => {
     const target = textareaRef.current;
@@ -308,6 +315,15 @@ export function ChatInput({
               onResume={onApprove!}
               onCancel={onCancelApproval!}
               disabled={approvalDisabled}
+            />
+          </div>
+        ) : null}
+        {showClarificationTray ? (
+          <div className="mb-2">
+            <ClarificationPanel
+              pendingClarifications={clarificationQuestions}
+              onSubmitOption={onSubmitClarificationOption!}
+              disabled={isLoading}
             />
           </div>
         ) : null}

@@ -337,7 +337,7 @@ function adaptSession(
     title: session.title,
     project: session.projectId ?? "Recent chat",
     projectId: session.projectId,
-    status: adaptRunStatus(status),
+    status: adaptRunStatus(status, { hasPendingClarifications: snapshot?.pendingClarifications && snapshot.pendingClarifications.length > 0 }),
     pattern: snapshot?.pattern ?? session.latestPattern ?? fallbackPattern,
     modeId: snapshot?.modeId ?? session.latestModeId,
     updatedAt: formatClock(snapshot?.updatedAt ?? session.updatedAt),
@@ -362,13 +362,13 @@ function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
   };
 }
 
-function adaptRunStatus(status: OraStateSnapshot["status"]): RunStatus {
+function adaptRunStatus(status: OraStateSnapshot["status"], opts?: { hasPendingClarifications?: boolean }): RunStatus {
   switch (status) {
     case "queued":
     case "running":
       return "running";
     case "interrupted":
-      return "approval_required";
+      return opts?.hasPendingClarifications ? "clarification_required" : "approval_required";
     case "cancelled":
       return "failed";
     case "succeeded":
@@ -1134,6 +1134,35 @@ export function adaptChatMessages(
         });
       }
 
+      if (turn.snapshot) {
+        const questions = extractClarificationQuestions(turn.snapshot);
+        for (const question of questions) {
+          messages.push({
+            id: `clarification-question:${turn.runId}:${question.id}`,
+            role: "assistant",
+            content: question.question,
+            timestamp: formatClock(question.requestedAt),
+            metadata: {
+              runId: turn.runId,
+              turnIndex: turn.turnIndex,
+            },
+          });
+        }
+        const answers = extractClarificationAnswers(turn.snapshot);
+        for (const answer of answers) {
+          messages.push({
+            id: `clarification-answer:${turn.runId}:${answer.id}`,
+            role: "user",
+            content: answer.answer,
+            timestamp: formatClock(answer.answeredAt),
+            metadata: {
+              runId: turn.runId,
+              turnIndex: turn.turnIndex,
+            },
+          });
+        }
+      }
+
       const assistantTurn = turn.snapshot
         ? buildAssistantTurnAttachment(turn.snapshot)
         : undefined;
@@ -1217,10 +1246,6 @@ function assistantTextFromSnapshot(
   if (outputText) {
     return outputText;
   }
-  const clarificationText = clarificationTextFromSnapshot(snapshot);
-  if (clarificationText) {
-    return clarificationText;
-  }
   if (hasRejectedFinalToolCall(snapshot)) {
     return undefined;
   }
@@ -1283,6 +1308,41 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
     }
   }
   return undefined;
+}
+
+function extractClarificationQuestions(
+  snapshot: OraStateSnapshot,
+): Array<{ id: string; question: string; requestedAt: number }> {
+  const results: Array<{ id: string; question: string; requestedAt: number }> = [];
+  for (const event of snapshot.events) {
+    if (event.type !== "clarification.required" || !isRecord(event.payload) || !isRecord(event.payload.clarification)) continue;
+    const id = typeof event.payload.clarification.id === "string" ? event.payload.clarification.id : undefined;
+    const question = typeof event.payload.clarification.question === "string" ? event.payload.clarification.question.trim() : undefined;
+    if (!id || !question) continue;
+    if (!results.some((r) => r.id === id)) {
+      results.push({ id, question, requestedAt: event.createdAt });
+    }
+  }
+  return results;
+}
+
+function extractClarificationAnswers(
+  snapshot: OraStateSnapshot,
+): Array<{ id: string; answer: string; answeredAt: number }> {
+  const results: Array<{ id: string; answer: string; answeredAt: number }> = [];
+  for (const event of snapshot.events) {
+    if (event.type !== "clarification.resolved" || !isRecord(event.payload)) continue;
+    const answer = typeof event.payload.answer === "string" ? event.payload.answer.trim() : undefined;
+    const clarificationId = typeof event.payload.clarificationId === "string" ? event.payload.clarificationId : undefined;
+    if (!answer || !clarificationId) continue;
+    const existingIndex = results.findIndex((r) => r.id === clarificationId);
+    if (existingIndex >= 0) {
+      results[existingIndex] = { id: clarificationId, answer, answeredAt: event.createdAt };
+    } else {
+      results.push({ id: clarificationId, answer, answeredAt: event.createdAt });
+    }
+  }
+  return results;
 }
 
 function clarificationTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
@@ -1475,7 +1535,7 @@ function buildAssistantTurnAttachment(
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
-    status: adaptRunStatus(snapshot.status),
+    status: adaptRunStatus(snapshot.status, { hasPendingClarifications: snapshot.pendingClarifications && snapshot.pendingClarifications.length > 0 }),
     pattern: snapshot.pattern,
     liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps: deriveProcessSteps(snapshot),

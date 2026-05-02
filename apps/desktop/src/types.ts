@@ -8,6 +8,7 @@ export type CoordinationPattern =
 export type RunStatus =
   | "running"
   | "approval_required"
+  | "clarification_required"
   | "checkpointed"
   | "done"
   | "failed";

@@ -38,6 +38,7 @@ const ZH_COPY: Record<string, string> = {
   "Show less": "收起",
   "Awaiting reply": "等待回复",
   "Needs approval": "需要审批",
+  "Needs clarification": "需要澄清",
   Failed: "失败",
   Running: "运行中",
   Done: "已完成",
@@ -810,6 +811,8 @@ const ZH_COPY: Record<string, string> = {
   "Callback URL": "回调地址",
   "Callback Token": "回调 Token",
   "HTTP Webhook": "HTTP Webhook",
+  "Or type a custom answer...": "或输入自定义答案...",
+  Submit: "提交",
 };
 
 const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [

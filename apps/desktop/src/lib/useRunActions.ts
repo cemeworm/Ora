@@ -113,7 +113,7 @@ export function buildPendingClarificationResumePatch(
 }
 
 export function clarificationOptionAnswer(option: { label: string; value?: string }): string {
-  return option.value?.trim() || option.label.trim();
+  return option.label.trim();
 }
 
 export function waitForPendingRunPaint(): Promise<void> {

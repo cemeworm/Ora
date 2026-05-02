@@ -842,7 +842,7 @@ function exampleForTool(toolId: RuntimeToolId): string {
     case "document.extract":
       return "{\"tool\":\"document.extract\",\"args\":{\"path\":\"docs/paper.pdf\",\"format\":\"text\"}}";
     case "user.clarify":
-      return "{\"tool\":\"user.clarify\",\"args\":{\"key\":\"target_environment\",\"question\":\"你希望我在哪个环境执行这一步？\",\"options\":[{\"id\":\"staging\",\"label\":\"预发环境\",\"value\":\"staging\"},{\"id\":\"production\",\"label\":\"生产环境\",\"value\":\"production\"}]}}";
+      return "{\"tool\":\"user.clarify\",\"args\":{\"key\":\"target_environment\",\"question\":\"你希望我在哪个环境执行这一步？\",\"options\":[{\"id\":\"staging\",\"label\":\"预发环境\"},{\"id\":\"production\",\"label\":\"生产环境\"}]}}";
     case "skills.list":
       return "{\"tool\":\"skills.list\",\"args\":{\"query\":\"frontend design\"}}";
     case "skills.get":

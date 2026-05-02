@@ -63,6 +63,7 @@ interface ChatViewProps {
 
 export function ChatView({
   activeMode,
+  activeSnapshot,
   actionRecords,
   modeCards,
   busyCommand,
@@ -147,9 +148,9 @@ export function ChatView({
             chatMessages={chatMessages}
             actionRecords={actionRecords}
             hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
+            hasClarificationTray={Boolean(activeSnapshot?.pendingClarifications && activeSnapshot.pendingClarifications.length > 0)}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
-            onSubmitClarificationOption={onSubmitClarificationOption}
           />
         </div>
         <ChatInput
@@ -171,6 +172,8 @@ export function ChatView({
           approvalDisabled={busyCommand !== undefined}
           onApprove={onResumeRun}
           onCancelApproval={onCancelRun}
+          clarificationQuestions={activeSnapshot?.pendingClarifications ?? []}
+          onSubmitClarificationOption={onSubmitClarificationOption}
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}
           onProviderChange={(providerId) =>

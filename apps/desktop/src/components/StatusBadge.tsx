@@ -5,6 +5,7 @@ const STATUS_COLORS: Record<string, string> = {
   blocked: "bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300",
   idle: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",
   approval_required: "bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300",
+  clarification_required: "bg-blue-100 text-blue-800 ring-1 ring-inset ring-blue-300",
   queued: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",
   succeeded: "bg-emerald-100 text-emerald-800 ring-1 ring-inset ring-emerald-300",
   proposed: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",

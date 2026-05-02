@@ -96,6 +96,7 @@ export interface WorkbenchState {
   artifactPanelOpen: boolean;
   selectedArtifactId: string | undefined;
   language: AppLanguage;
+  sessionPendingClarifications: Record<string, boolean>;
 }
 
 export type WorkbenchAction =
@@ -233,6 +234,7 @@ export const initialWorkbenchState: WorkbenchState = {
   artifactPanelOpen: false,
   selectedArtifactId: undefined,
   language: readStoredLanguage(),
+  sessionPendingClarifications: {},
 };
 
 function replaceSessionSummary(sessions: OraSessionSummary[], session: OraSessionSummary): OraSessionSummary[] {
@@ -565,6 +567,36 @@ export function mergeStateSnapshot(
   };
 }
 
+function mergeStreamClarificationUpdates(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot["pendingClarifications"] {
+  const updated = [...(snapshot.pendingClarifications ?? [])];
+  for (const event of stream.events) {
+    if (event.type === "clarification.required" && isRecord(event.payload) && isRecord(event.payload.clarification)) {
+      const payload = event.payload.clarification as Record<string, unknown>;
+      const id = typeof payload.id === "string" ? payload.id : undefined;
+      if (!id) continue;
+      const existingIndex = updated.findIndex((c) => c.id === id);
+      const clarification = payload as unknown as OraStateSnapshot["pendingClarifications"][number];
+      if (existingIndex >= 0) {
+        updated[existingIndex] = clarification;
+      } else {
+        updated.push(clarification);
+      }
+    }
+    if (event.type === "clarification.resolved" && isRecord(event.payload)) {
+      const clarificationId = typeof event.payload.clarificationId === "string" ? event.payload.clarificationId : undefined;
+      if (!clarificationId) continue;
+      const index = updated.findIndex((c) => c.id === clarificationId);
+      if (index >= 0) {
+        updated.splice(index, 1);
+      }
+    }
+  }
+  return updated;
+}
+
 export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
   if (stream.snapshot) {
     return mergeStateSnapshot(snapshot, stream.snapshot);
@@ -577,12 +609,14 @@ export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, s
     eventBySeq.set(event.seq, event);
   }
   const merged = mergeStreamActionUpdates(snapshot, stream);
+  const pendingClarifications = mergeStreamClarificationUpdates(snapshot, stream);
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
   return {
     ...snapshot,
     status: stream.status ?? snapshot.status,
     actions: merged.actions,
     pendingApprovals: merged.pendingApprovals,
+    pendingClarifications,
     agentMessages,
     events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
@@ -1013,6 +1047,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         permissionMode: sessionPermissionMode(state, action.detail.session.sessionId),
         taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
+        sessionPendingClarifications: {
+          ...state.sessionPendingClarifications,
+          [action.detail.session.sessionId]: (snapshot?.pendingClarifications?.length ?? 0) > 0,
+        },
         pendingRun: undefined,
         isLoading: false,
         busyCommand: undefined,
@@ -1302,6 +1340,13 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       const streamSnapshot = streamBelongsToActiveTurn ? activeSnapshot : action.stream.snapshot;
       const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, streamSnapshot);
       const isSettled = action.stream.status === "succeeded" || action.stream.status === "failed";
+      const pendingClarificationsSessionId = activeSnapshot?.sessionId ?? streamSessionId;
+      const sessionPendingClarifications = pendingClarificationsSessionId
+        ? {
+            ...state.sessionPendingClarifications,
+            [pendingClarificationsSessionId]: (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
+          }
+        : state.sessionPendingClarifications;
       return {
         ...state,
         sessions,
@@ -1310,6 +1355,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
           : state.sessionDetailsById,
         activeSnapshot,
+        sessionPendingClarifications,
         selectedTurnRunId: state.selectedTurnRunId ?? (streamBelongsToActiveTurn ? action.stream.runId : undefined),
         selectedBeatId: streamBelongsToActiveTurn ? action.stream.events.at(-1)?.id ?? state.selectedBeatId : state.selectedBeatId,
         pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? undefined : state.pendingRun,
