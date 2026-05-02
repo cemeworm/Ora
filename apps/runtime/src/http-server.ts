@@ -1,6 +1,7 @@
 import http from "node:http";
 import { ChannelGetParamsSchema } from "@ora/shared";
 import type { LocalRunStore } from "./run-store.js";
+import { normalizeDingtalkWebhookPayload } from "./channels/dingtalk.js";
 import { normalizeFeishuWebhookPayload, validateFeishuWebhookAuth } from "./channels/feishu.js";
 import { validateHttpWebhookAuth } from "./channels/http-webhook.js";
 
@@ -43,6 +44,14 @@ export function createRuntimeHttpServer(store: LocalRunStore): http.Server {
           }
           const result = await store.ingestChannel({ channelId, ...normalized.params });
           return sendJson(response, 202, result);
+        }
+        if (config.kind === "dingtalk") {
+          const normalized = normalizeDingtalkWebhookPayload(payload);
+          if (!normalized) {
+            return sendJson(response, 200, { ok: true });
+          }
+          const result = await store.ingestChannel({ channelId, ...normalized });
+          return sendJson(response, 200, result);
         }
         const result = await store.ingestChannel({ channelId, ...payload });
         return sendJson(response, 202, result);

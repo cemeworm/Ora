@@ -10,9 +10,14 @@ import { ChannelManager } from "./manager.js";
 import { ChannelMessageBus } from "./message-bus.js";
 import { ChannelStore } from "./store.js";
 import type { ChannelAdapter } from "./base.js";
+import { DingtalkChannelAdapter } from "./dingtalk.js";
+import { DiscordChannelAdapter } from "./discord.js";
 import { FeishuChannelAdapter } from "./feishu.js";
 import { HttpWebhookChannelAdapter } from "./http-webhook.js";
+import { SlackChannelAdapter } from "./slack.js";
+import { TelegramChannelAdapter } from "./telegram.js";
 import { WechatChannelAdapter } from "./wechat.js";
+import { WecomChannelAdapter } from "./wecom.js";
 
 export interface ChannelServiceOptions {
   clock?: () => number;
@@ -39,7 +44,8 @@ export class ChannelService {
   create(params: unknown): ChannelConfig {
     const config = this.store.createConfig(params);
     if (config.enabled) {
-      this.ensureAdapter(config.channelId);
+      const adapter = this.ensureAdapter(config.channelId);
+      adapter.start();
     }
     return config;
   }
@@ -55,15 +61,24 @@ export class ChannelService {
 
   update(params: unknown): ChannelConfig {
     const config = this.store.updateConfig(params);
+    const oldAdapter = this.adapters.get(config.channelId);
+    if (oldAdapter) {
+      oldAdapter.stop();
+    }
     this.adapters.delete(config.channelId);
     if (config.enabled) {
-      this.ensureAdapter(config.channelId);
+      const adapter = this.ensureAdapter(config.channelId);
+      adapter.start();
     }
     return config;
   }
 
   delete(params: { channelId: string } | unknown): { deleted: true; channelId: string } {
     const channelId = typeof params === "object" && params && "channelId" in params ? String((params as { channelId: unknown }).channelId) : "";
+    const oldAdapter = this.adapters.get(channelId);
+    if (oldAdapter) {
+      oldAdapter.stop();
+    }
     this.adapters.delete(channelId);
     return this.store.deleteConfig(channelId);
   }
@@ -205,6 +220,24 @@ export class ChannelService {
               channelId,
               config: patch,
             }),
+        });
+      case "telegram":
+        return new TelegramChannelAdapter(config, this.fetchImpl, {
+          onIngest: (params) => this.manager.ingest(params),
+        });
+      case "dingtalk":
+        return new DingtalkChannelAdapter(config, this.fetchImpl);
+      case "slack":
+        return new SlackChannelAdapter(config, this.fetchImpl, {
+          onIngest: (params) => this.manager.ingest(params),
+        });
+      case "wecom":
+        return new WecomChannelAdapter(config, {
+          onIngest: (params) => this.manager.ingest(params),
+        });
+      case "discord":
+        return new DiscordChannelAdapter(config, this.fetchImpl, {
+          onIngest: (params) => this.manager.ingest(params),
         });
       default:
         throw new Error(`Channel kind '${config.kind}' is not implemented yet.`);
