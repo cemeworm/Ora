@@ -39,6 +39,7 @@ import {
   TaskListHeader,
 } from "./ai-elements/task";
 import { MarkdownContent } from "./MarkdownContent";
+import { PlanCard } from "./PlanCard";
 import { StageTranscript } from "./StageTranscript";
 import {
   Dialog,
@@ -215,7 +216,9 @@ export function AssistantTurnCard({
             </CollapsibleCard>
           ) : null}
 
-          {!isPlaceholder && planList.length > 0 ? (
+          {!isPlaceholder && planList.length > 0 && turn?.hasProposedPlan ? (
+            <PlanCard planSteps={planList} planContent={content} />
+          ) : !isPlaceholder && planList.length > 0 ? (
             <CollapsibleCard
               open={planListOpen}
               onToggle={() => setPlanListOpen((current) => !current)}
@@ -233,12 +236,14 @@ export function AssistantTurnCard({
             <StageTranscript messages={stageTranscriptMessages} />
           ) : null}
 
-          <MessageContent className="w-full">
-            <MarkdownContent
-              content={content}
-              className={cn(isPlaceholder && "text-muted-foreground")}
-            />
-          </MessageContent>
+          {turn?.hasProposedPlan ? null : (
+            <MessageContent className="w-full">
+              <MarkdownContent
+                content={content}
+                className={cn(isPlaceholder && "text-muted-foreground")}
+              />
+            </MessageContent>
+          )}
 
           {visibleArtifacts.length > 0 ? (
             <div className="space-y-3">

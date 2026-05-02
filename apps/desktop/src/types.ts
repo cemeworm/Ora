@@ -9,6 +9,7 @@ export type RunStatus =
   | "running"
   | "approval_required"
   | "clarification_required"
+  | "decision_needed"
   | "checkpointed"
   | "done"
   | "failed";

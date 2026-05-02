@@ -39,6 +39,8 @@ const ZH_COPY: Record<string, string> = {
   "Awaiting reply": "等待回复",
   "Needs approval": "需要审批",
   "Needs clarification": "需要澄清",
+  "Needs decision": "需要决策",
+  Decision: "决策",
   Failed: "失败",
   Running: "运行中",
   Done: "已完成",

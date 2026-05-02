@@ -4,6 +4,7 @@ const statusLabels: Record<RunStatus, string> = {
   running: "Running",
   approval_required: "Approval",
   clarification_required: "Clarification",
+  decision_needed: "Decision",
   checkpointed: "Checkpoint",
   done: "Done",
   failed: "Failed",
@@ -12,7 +13,7 @@ const statusLabels: Record<RunStatus, string> = {
 export { statusLabels };
 
 export function StatusPill({ status }: { status: RunStatus }) {
-  const attention = status === "running" || status === "approval_required" || status === "clarification_required";
+  const attention = status === "running" || status === "approval_required" || status === "clarification_required" || status === "decision_needed";
   return (
     <span
       className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${

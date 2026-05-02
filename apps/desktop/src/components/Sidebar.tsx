@@ -34,7 +34,8 @@ const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
 const MAX_SESSION_SEARCH_RESULTS = 9;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
-function statusFromSession(status: string | undefined, hasPendingClarifications?: boolean): RunStatus {
+function statusFromSession(status: string | undefined, hasPendingClarifications?: boolean, hasPendingPlanDecision?: boolean): RunStatus {
+  if (hasPendingPlanDecision) return "decision_needed";
   if (status === "interrupted") return hasPendingClarifications ? "clarification_required" : "approval_required";
   if (status === "failed" || status === "cancelled") return "failed";
   if (status === "running" || status === "queued") return "running";
@@ -234,6 +235,14 @@ function SessionStatusBadge({ status }: { status: RunStatus }) {
     );
   }
 
+  if (status === "decision_needed") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-purple-100/75 px-2 py-0.5 text-[10px] font-medium text-purple-800">
+        Needs decision
+      </span>
+    );
+  }
+
   if (status === "failed") {
     return (
       <span className="inline-flex items-center rounded-full bg-rose-100/75 px-2 py-0.5 text-[10px] font-medium text-rose-700">
@@ -256,6 +265,10 @@ function SessionLeadingIndicator({ status }: { status: RunStatus }) {
 
   if (status === "clarification_required") {
     return <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500/80" />;
+  }
+
+  if (status === "decision_needed") {
+    return <span className="h-2 w-2 shrink-0 rounded-full bg-purple-500/80" />;
   }
 
   if (status === "failed") {
@@ -460,9 +473,9 @@ export function Sidebar() {
       .map((session) => ({
         id: session.sessionId,
         title: session.title,
-        status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId]),
+        status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId]),
       })),
-  })), [state.expandedProjectIds, state.projects, state.sessions, state.sessionPendingClarifications]);
+  })), [state.expandedProjectIds, state.projects, state.sessions, state.sessionPendingClarifications, state.sessionPendingPlanDecision]);
   const sessionSearchResults = useMemo(
     () => buildSessionSearchResults(state.sessions, state.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
     [sessionSearchQuery, state.projects, state.sessions],
@@ -473,8 +486,8 @@ export function Sidebar() {
     .map((session) => ({
       id: session.sessionId,
       title: session.title,
-      status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId]),
-    })), [state.sessions, state.sessionPendingClarifications]);
+      status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId]),
+    })), [state.sessions, state.sessionPendingClarifications, state.sessionPendingPlanDecision]);
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = state.activeView === "chat";
   const visiblePrefetchSessionIds = useMemo(() => {

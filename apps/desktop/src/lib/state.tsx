@@ -97,6 +97,7 @@ export interface WorkbenchState {
   selectedArtifactId: string | undefined;
   language: AppLanguage;
   sessionPendingClarifications: Record<string, boolean>;
+  sessionPendingPlanDecision: Record<string, boolean>;
 }
 
 export type WorkbenchAction =
@@ -176,6 +177,7 @@ export type WorkbenchAction =
   | { type: "TOGGLE_ARTIFACT_PANEL" }
   | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
   | { type: "CLOSE_ARTIFACT_PANEL" }
+  | { type: "SET_PLAN_DECISION_PENDING"; sessionId: string; pending: boolean }
   | { type: "SET_LANGUAGE"; language: AppLanguage };
 
 const initialSelectedPattern = CoordinationPatternSchema.options[0] as CoordinationPattern;
@@ -235,6 +237,7 @@ export const initialWorkbenchState: WorkbenchState = {
   selectedArtifactId: undefined,
   language: readStoredLanguage(),
   sessionPendingClarifications: {},
+  sessionPendingPlanDecision: {},
 };
 
 function replaceSessionSummary(sessions: OraSessionSummary[], session: OraSessionSummary): OraSessionSummary[] {
@@ -837,6 +840,18 @@ function readActionStatus(value: unknown): OraActionRecord["status"] | undefined
   }
 }
 
+function snapshotContainsProposedPlan(snapshot: OraStateSnapshot): boolean {
+  for (let i = snapshot.events.length - 1; i >= 0; i--) {
+    const event = snapshot.events[i];
+    if (event?.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string") {
+      if (event.payload.content.includes("<proposed_plan>")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function streamRunStatus(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): OraStateSnapshot["status"] | undefined {
   if (snapshot?.runId === stream.runId) {
     return snapshot.status;
@@ -1051,6 +1066,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           ...state.sessionPendingClarifications,
           [action.detail.session.sessionId]: (snapshot?.pendingClarifications?.length ?? 0) > 0,
         },
+        sessionPendingPlanDecision: {
+          ...state.sessionPendingPlanDecision,
+          [action.detail.session.sessionId]: snapshot ? snapshotContainsProposedPlan(snapshot) : false,
+        },
         pendingRun: undefined,
         isLoading: false,
         busyCommand: undefined,
@@ -1068,6 +1087,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "ARCHIVE_SESSION_OPTIMISTIC": {
       const archivedSession = state.sessions.find((session) => session.sessionId === action.sessionId);
+      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } = state.sessionPendingPlanDecision;
       return {
         ...state,
         sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
@@ -1077,6 +1097,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
         sessionPermissionModes: clearSessionPermissionMode(state, action.sessionId),
         sessionTaskIntents: clearSessionTaskIntent(state, action.sessionId),
+        sessionPendingPlanDecision: restPlanDecision,
         promptText: state.selectedSessionId === action.sessionId ? "" : state.promptText,
         selectedSkillIds: state.selectedSessionId === action.sessionId ? [] : state.selectedSkillIds,
         permissionMode: state.selectedSessionId === action.sessionId ? "default" as PermissionMode : state.permissionMode,
@@ -1347,6 +1368,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             [pendingClarificationsSessionId]: (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
           }
         : state.sessionPendingClarifications;
+      const pendingPlanDecisionSessionId = isSettled && state.taskIntent === "plan" && streamSnapshot && snapshotContainsProposedPlan(streamSnapshot)
+        ? streamSnapshot.sessionId
+        : undefined;
+      const sessionPendingPlanDecision = pendingPlanDecisionSessionId
+        ? { ...state.sessionPendingPlanDecision, [pendingPlanDecisionSessionId]: true }
+        : state.sessionPendingPlanDecision;
       return {
         ...state,
         sessions,
@@ -1356,6 +1383,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           : state.sessionDetailsById,
         activeSnapshot,
         sessionPendingClarifications,
+        sessionPendingPlanDecision,
         selectedTurnRunId: state.selectedTurnRunId ?? (streamBelongsToActiveTurn ? action.stream.runId : undefined),
         selectedBeatId: streamBelongsToActiveTurn ? action.stream.events.at(-1)?.id ?? state.selectedBeatId : state.selectedBeatId,
         pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? undefined : state.pendingRun,
@@ -1453,7 +1481,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           }
         : state;
 
-    case "BEGIN_RUN_REQUEST":
+    case "BEGIN_RUN_REQUEST": {
+      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } = state.sessionPendingPlanDecision;
       return {
         ...state,
         pendingRun: {
@@ -1466,7 +1495,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         lastRunTaskIntent: undefined,
         isLoading: true,
+        sessionPendingPlanDecision: restPlanDecision,
       };
+    }
 
     case "SET_PENDING_RUN_PROGRESS":
       if (!state.pendingRun || state.pendingRun.sessionId !== action.sessionId) {
@@ -1518,6 +1549,17 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "CLOSE_ARTIFACT_PANEL":
       return { ...state, artifactPanelOpen: false };
+
+    case "SET_PLAN_DECISION_PENDING":
+      return {
+        ...state,
+        sessionPendingPlanDecision: action.pending
+          ? { ...state.sessionPendingPlanDecision, [action.sessionId]: true }
+          : (() => {
+              const { [action.sessionId]: _cleared, ...rest } = state.sessionPendingPlanDecision;
+              return rest;
+            })(),
+      };
 
     case "SET_LANGUAGE":
       if (typeof window !== "undefined") {

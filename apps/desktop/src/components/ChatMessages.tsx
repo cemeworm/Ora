@@ -12,6 +12,7 @@ interface ChatMessagesProps {
   planItems?: PlanItem[];
   hasApprovalTray?: boolean;
   hasClarificationTray?: boolean;
+  hasPlanDecisionTray?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
 }
@@ -23,6 +24,7 @@ export function ChatMessages({
   planItems: _planItems,
   hasApprovalTray = false,
   hasClarificationTray = false,
+  hasPlanDecisionTray = false,
   onOpenArtifact,
   onSubmitFeedback,
 }: ChatMessagesProps) {
@@ -37,7 +39,7 @@ export function ChatMessages({
   return (
     <div ref={scrollRef} className="min-h-0 w-full flex-1 overflow-y-auto">
       <Conversation className="min-h-0 flex-1">
-        <ConversationContent className={cn("mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8", hasApprovalTray || hasClarificationTray ? "pb-60" : "pb-44")}>
+        <ConversationContent className={cn("mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8", hasApprovalTray || hasClarificationTray || hasPlanDecisionTray ? "pb-60" : "pb-44")}>
         {chatMessages.map((message) => {
           if (message.role === "assistant") {
             return (

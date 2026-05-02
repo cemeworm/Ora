@@ -524,8 +524,24 @@ function WorkbenchInner() {
         scopedSnapshots[runId] = snapshot;
       }
     }
+
+    const latestSnapshot = state.activeSnapshot;
+    if (latestSnapshot && latestSnapshot.sessionId === activeSessionId) {
+      for (const turn of detail.turns) {
+        if (scopedSnapshots[turn.runId]) continue;
+        if (latestSnapshot.runId === turn.runId) {
+          scopedSnapshots[turn.runId] = latestSnapshot;
+        } else {
+          const turnEvents = latestSnapshot.events.filter((e) => e.runId === turn.runId);
+          if (turnEvents.length > 0) {
+            scopedSnapshots[turn.runId] = { ...latestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents };
+          }
+        }
+      }
+    }
+
     return scopedSnapshots;
-  }, [state.activeSessionDetail, turnSnapshots]);
+  }, [state.activeSessionDetail, turnSnapshots, state.activeSnapshot]);
 
   // Chat messages derived from events
   const pendingRunMessages = useMemo(() => {

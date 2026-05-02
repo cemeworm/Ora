@@ -101,6 +101,7 @@ export function ChatView({
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
   const pendingApprovalActions = actionRecords.filter((action) => action.state === "approval_required");
+  const planDecisionPending = state.sessionPendingPlanDecision[selectedSession.id] ?? false;
 
   async function openLocalFiles() {
     try {
@@ -149,6 +150,7 @@ export function ChatView({
             actionRecords={actionRecords}
             hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
             hasClarificationTray={Boolean(activeSnapshot?.pendingClarifications && activeSnapshot.pendingClarifications.length > 0)}
+            hasPlanDecisionTray={planDecisionPending}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
           />
@@ -203,6 +205,15 @@ export function ChatView({
           onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
           lastRunTaskIntent={state.lastRunTaskIntent}
           hasProposedPlan={chatMessages.some((msg) => msg.turn?.hasProposedPlan)}
+          planDecisionPending={planDecisionPending}
+          onConfirmPlanDecision={() => {
+            dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
+            dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
+            onComposerPromptChange("请按照上述计划开始执行");
+          }}
+          onDeclinePlanDecision={() => {
+            dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
+          }}
           onConfirmPlan={() => {
             dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
             onComposerPromptChange("请按照上述计划开始执行");

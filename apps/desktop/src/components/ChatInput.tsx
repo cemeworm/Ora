@@ -31,6 +31,7 @@ import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from 
 import type { ModeSelection, PermissionMode, TaskIntent } from "@cemeworm/shared";
 import { ApprovalRequestCard } from "./ApprovalRequestCard";
 import { ClarificationPanel } from "./ClarificationPanel";
+import { PlanDecisionPanel } from "./PlanDecisionPanel";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
@@ -72,6 +73,9 @@ interface ChatInputProps {
   lastRunTaskIntent?: TaskIntent;
   hasProposedPlan?: boolean;
   onConfirmPlan?: () => void;
+  planDecisionPending?: boolean;
+  onConfirmPlanDecision?: () => void;
+  onDeclinePlanDecision?: () => void;
   onStartRun: () => void;
   onStopRun: () => void;
 }
@@ -131,6 +135,9 @@ export function ChatInput({
   lastRunTaskIntent,
   hasProposedPlan,
   onConfirmPlan,
+  planDecisionPending,
+  onConfirmPlanDecision,
+  onDeclinePlanDecision,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
@@ -327,6 +334,16 @@ export function ChatInput({
             />
           </div>
         ) : null}
+        {planDecisionPending && onConfirmPlanDecision && onDeclinePlanDecision ? (
+          <div className="mb-2">
+            <PlanDecisionPanel
+              onConfirm={onConfirmPlanDecision}
+              onDecline={onDeclinePlanDecision}
+              disabled={isLoading}
+            />
+          </div>
+        ) : null}
+        {planDecisionPending ? null : (
         <div className="rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
           <div className={cn("relative", hasTopChips ? "min-h-[148px]" : "min-h-[96px]")}>
             {hasTopChips && (
@@ -479,7 +496,7 @@ export function ChatInput({
                     </button>
                   ))}
                 </Picker>
-                {taskIntent === "plan" && (lastRunTaskIntent === "plan" || hasProposedPlan) && onConfirmPlan ? (
+                {!planDecisionPending && taskIntent === "plan" && (lastRunTaskIntent === "plan" || hasProposedPlan) && onConfirmPlan ? (
                   <button
                     type="button"
                     onClick={onConfirmPlan}
@@ -648,6 +665,7 @@ export function ChatInput({
             </div>
           </div>
         </div>
+        )}
         <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
           Ora may be wrong, check the results before adoption.
         </p>

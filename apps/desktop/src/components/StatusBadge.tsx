@@ -10,6 +10,7 @@ const STATUS_COLORS: Record<string, string> = {
   succeeded: "bg-emerald-100 text-emerald-800 ring-1 ring-inset ring-emerald-300",
   proposed: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",
   checkpointed: "bg-emerald-100 text-emerald-800 ring-1 ring-inset ring-emerald-300",
+  decision_needed: "bg-purple-100 text-purple-800 ring-1 ring-inset ring-purple-300",
 };
 
 const SIZE_CLASSES: Record<string, string> = {
