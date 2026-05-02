@@ -87,7 +87,7 @@ import {
   SystemAgentOverrideUpdateParams,
   UserTaskInput,
   UserTaskInputSchema
-} from "@ora/shared";
+} from "@cemeworm/shared";
 import { TodoService } from "./capabilities.js";
 import { ChannelService } from "./channels/service.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
@@ -184,7 +184,8 @@ import {
   defaultPublicSkillsDir,
   defaultRuntimeStoreDir,
   defaultSkillsDir,
-  defaultSystemAgentOverridesDir
+  defaultSystemAgentOverridesDir,
+  defaultBundledSkillsDir
 } from "./runtime-store-paths.js";
 import {
   DEFAULT_SESSION_TITLE,
@@ -304,6 +305,7 @@ export class LocalRunStore {
     this.skillRegistry = new RuntimeSkillRegistry({
       privateRootDir: defaultSkillsDir(dataDir),
       publicRootDir: defaultPublicSkillsDir(dataDir),
+      bundledPublicRootDir: defaultBundledSkillsDir(),
       clock: this.clock,
     });
     this.evaluationStore = new LocalEvaluationStore(

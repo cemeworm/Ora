@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -57,4 +58,19 @@ export function defaultMemoryDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "memory")
     : path.join(runtimeDataDir, "memory");
+}
+
+export function defaultBundledSkillsDir(): string {
+  const cwdBased = path.join(process.cwd(), "skills");
+  if (fs.existsSync(cwdBased)) return cwdBased;
+  // Fallback: walk up to repo root (dev / test environments)
+  let current = process.cwd();
+  while (true) {
+    const candidate = path.join(current, "skills");
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return cwdBased;
 }

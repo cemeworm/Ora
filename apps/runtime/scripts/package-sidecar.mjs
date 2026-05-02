@@ -28,6 +28,8 @@ const nodeSource = process.execPath;
 const nodeBinaryName = process.platform === "win32" ? "node.exe" : "node";
 const stagedNodePath = path.join(stageBinDir, nodeBinaryName);
 const bundledRuntimePath = path.join(stageAppDir, "runtime-sidecar.cjs");
+const skillsSourceDir = path.join(repoRoot, "skills");
+const stageSkillsDir = path.join(stageAppDir, "skills");
 
 rmSync(stageRoot, { recursive: true, force: true });
 rmSync(langfuseStageRoot, { recursive: true, force: true });
@@ -59,6 +61,7 @@ for (const packageName of runtimePackageNames()) {
 }
 
 copyLangfuseBundle();
+copySkillsBundle();
 
 if (!existsSync(bundledRuntimePath)) {
   throw new Error(`Missing packaged sidecar bundle at ${bundledRuntimePath}`);
@@ -124,6 +127,17 @@ function copyLangfuseBundle() {
     throw new Error(`Missing managed Langfuse compose file at ${composeSource}`);
   }
   copyFileSync(composeSource, composeDestination);
+}
+
+function copySkillsBundle() {
+  if (!existsSync(skillsSourceDir)) {
+    throw new Error(`Missing skills directory at ${skillsSourceDir}`);
+  }
+  cpSync(skillsSourceDir, stageSkillsDir, {
+    recursive: true,
+    force: true,
+    filter: (src) => !path.basename(src).startsWith("."),
+  });
 }
 
 function resolveInstalledPackageDir(packageName) {
