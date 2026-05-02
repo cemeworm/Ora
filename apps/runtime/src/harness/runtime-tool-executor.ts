@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
-import { ActionApprovalRequestCopySchema, UpdatePlanArgsSchema } from "@ora/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor } from "@ora/shared";
+import { ActionApprovalRequestCopySchema, UpdatePlanArgsSchema } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import { createSearchProvider, type SearchProvider } from "./search-providers/index.js";
@@ -130,16 +130,16 @@ interface McpServerConfig {
 }
 
 const IMPLEMENTED_TOOL_SET = new Set<string>(IMPLEMENTED_RUNTIME_TOOL_IDS);
-const FILE_READ_MAX_BYTES = 96_000;
+const FILE_READ_MAX_BYTES = 1_000_000;
 const FILE_LIST_MAX_ENTRIES = 500;
 const FILE_SEARCH_MAX_FILES = 2_000;
 const FILE_SEARCH_MAX_MATCHES = 200;
-const FILE_SEARCH_MAX_BYTES = 128_000;
-const FILE_WRITE_MAX_BYTES = 512_000;
-const WEB_MAX_BYTES = 128_000;
+const FILE_SEARCH_MAX_BYTES = 1_000_000;
+const FILE_WRITE_MAX_BYTES = 1_000_000;
+const WEB_MAX_BYTES = 1_000_000;
 const DOCUMENT_EXTRACT_MAX_BYTES = 128_000;
 const DOCUMENT_SOURCE_MAX_BYTES = 25_000_000;
-const SHELL_MAX_OUTPUT_BYTES = 96_000;
+const SHELL_MAX_OUTPUT_BYTES = 1_000_000;
 const SHELL_TIMEOUT_MS = 60_000;
 const SHELL_READ_ONLY_COMMANDS = new Set(["cat", "find", "ls", "pwd", "rg", "wc"]);
 const SHELL_APPROVED_COMMANDS = new Set([
