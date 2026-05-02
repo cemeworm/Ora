@@ -19,7 +19,7 @@ export function ClarificationPanel({ pendingClarifications, onSubmitOption, disa
           key={option.id}
           type="button"
           disabled={disabled}
-          onClick={() => onSubmitOption(option.label.trim())}
+          onClick={() => onSubmitOption((option.value ?? option.label).trim())}
           title={option.description}
           className="rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-60"
         >

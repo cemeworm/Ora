@@ -1627,13 +1627,15 @@ function restoreTruncatedAgentMessageContent(content: string, fullContent?: stri
 }
 
 function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
-  const events = snapshot.events.filter(shouldShowProcessEvent);
+  const events = snapshot.events.filter(
+    (event) => event.runId === snapshot.runId && shouldShowProcessEvent(event),
+  );
   const hasWorkEvent = events.some(isWorkProcessEvent);
   const visibleEvents = events.filter(
     (event) => hasWorkEvent || !isLifecycleProcessEvent(event),
   );
 
-  const baseTime = snapshot.events[0]?.createdAt ?? snapshot.updatedAt;
+  const baseTime = events[0]?.createdAt ?? snapshot.updatedAt;
 
   type TimedStep = { rawTime: number; step: TurnProcessStep };
 

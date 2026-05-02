@@ -525,13 +525,17 @@ describe("desktop composer pending-run behavior", () => {
     expect(messages[1]).toMatchObject({
       role: "assistant",
       content: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
+    });
+    expect(messages[2]).toMatchObject({
+      role: "assistant",
+      content: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
       clarificationOptions: [
         { id: "acquirer", label: "收单机构", value: "我们是收单机构。", description: "按收单机构口径判断" },
         { id: "merchant", label: "跨境商户", value: "我们是跨境商户。" },
       ],
       isPlaceholder: false,
     });
-    expect(clarificationOptionAnswer(messages[1]!.clarificationOptions![0]!)).toBe("我们是收单机构。");
+    expect(clarificationOptionAnswer(messages[2]!.clarificationOptions![0]!)).toBe("我们是收单机构。");
     expect(buildPendingClarificationResumePatch(snapshot, "我们是收单机构，月交易额约 3000 万。")).toEqual({
       clarifications: {
         intent_guard: "我们是收单机构，月交易额约 3000 万。",
