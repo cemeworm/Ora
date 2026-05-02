@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          # 代码签名待后续配置：
+          # 1. 加入 Apple Developer Program ($99/年)
+          # 2. 设置 GitHub Secrets: APPLE_SIGNING_IDENTITY, APPLE_CERTIFICATE,
+          #    APPLE_CERTIFICATE_PASSWORD, APPLE_NOTARY_USER, APPLE_NOTARY_PASSWORD, APPLE_TEAM_ID
+          # 3. 取消下面注释启用签名：
+          # args: --sign
+          # tauriScript: pnpm tauri
