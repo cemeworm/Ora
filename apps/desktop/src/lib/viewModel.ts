@@ -1298,18 +1298,33 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
   if (snapshot.pattern === "generator_verifier") {
     return undefined;
   }
-  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
-    const event = snapshot.events[index];
+  if (snapshot.status !== "queued" && snapshot.status !== "running") {
+    return undefined;
+  }
+  const parts: string[] = [];
+  let activeAgentId: string | undefined;
+  for (const event of snapshot.events) {
     if (event?.type !== "message.delta" || !isRecord(event.payload)) {
       continue;
     }
     if (isInternalVerifierDelta(snapshot, event)) {
       continue;
     }
-    const content = event.payload.content;
-    if (typeof content === "string" && content.trim()) {
-      return content;
+    const agentId = event.agentId ?? "__default__";
+    if (activeAgentId !== undefined && agentId !== activeAgentId) {
+      parts.length = 0;
     }
+    activeAgentId = agentId;
+    const delta = typeof event.payload.delta === "string" ? event.payload.delta : undefined;
+    const content = typeof event.payload.content === "string" ? event.payload.content : undefined;
+    const text = delta ?? content;
+    if (text) {
+      parts.push(text);
+    }
+  }
+  const text = parts.join("");
+  if (text.trim()) {
+    return text;
   }
   return undefined;
 }

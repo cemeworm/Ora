@@ -1,9 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { initialWorkbenchState, type WorkbenchState } from "./state";
-import { buildClarificationSubmissionPrompt, buildDesktopRunContext, isDisposableEmptySession } from "./useRunActions";
+import { buildClarificationSubmissionPrompt, buildDesktopRunContext, isDisposableEmptySession, lightweightRunBudgetForTask, shouldEnableProgressNarration } from "./useRunActions";
 import type { OraSessionSummary } from "./runtimeClient";
 
 describe("desktop run actions", () => {
+  it("keeps cosmetic progress narration off for chat and plan runs", () => {
+    expect(shouldEnableProgressNarration("implement")).toBe(true);
+    expect(shouldEnableProgressNarration("chat")).toBe(false);
+    expect(shouldEnableProgressNarration("plan")).toBe(false);
+  });
+
+  it("caps lightweight chat and plan tool budgets without changing implement runs", () => {
+    const budget = {
+      maxTokens: 18_000,
+      maxToolCalls: 64,
+      maxRuntimeMs: 300_000,
+      maxCostUsd: 3,
+    };
+
+    expect(lightweightRunBudgetForTask("chat", budget)?.maxToolCalls).toBe(8);
+    expect(lightweightRunBudgetForTask("plan", { ...budget, maxToolCalls: 4 })?.maxToolCalls).toBe(4);
+    expect(lightweightRunBudgetForTask("implement", budget)).toBeUndefined();
+  });
+
   it("includes attached project files in run context", () => {
     expect(buildDesktopRunContext([
       {

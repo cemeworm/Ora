@@ -608,10 +608,9 @@ export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, s
   if (!snapshot || snapshot.runId !== stream.runId) {
     return snapshot;
   }
-  const eventBySeq = new Map(snapshot.events.map((event) => [event.seq, event]));
-  for (const event of stream.events) {
-    eventBySeq.set(event.seq, event);
-  }
+  const events = canAppendStreamEvents(snapshot.events, stream.events)
+    ? [...snapshot.events, ...stream.events]
+    : mergeEventsBySeq(snapshot.events, stream.events);
   const merged = mergeStreamActionUpdates(snapshot, stream);
   const pendingClarifications = mergeStreamClarificationUpdates(snapshot, stream);
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
@@ -622,9 +621,38 @@ export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, s
     pendingApprovals: merged.pendingApprovals,
     pendingClarifications,
     agentMessages,
-    events: [...eventBySeq.values()].sort((left, right) => left.seq - right.seq),
+    events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
   };
+}
+
+function canAppendStreamEvents(
+  existingEvents: readonly OraStateSnapshot["events"][number][],
+  incomingEvents: readonly OraRunEventStream["events"][number][],
+): boolean {
+  if (incomingEvents.length === 0) {
+    return true;
+  }
+  const lastExistingSeq = existingEvents.at(-1)?.seq ?? -1;
+  let previousSeq = lastExistingSeq;
+  for (const event of incomingEvents) {
+    if (event.seq <= previousSeq) {
+      return false;
+    }
+    previousSeq = event.seq;
+  }
+  return true;
+}
+
+function mergeEventsBySeq(
+  existingEvents: readonly OraStateSnapshot["events"][number][],
+  incomingEvents: readonly OraRunEventStream["events"][number][],
+): OraStateSnapshot["events"] {
+  const eventBySeq = new Map(existingEvents.map((event) => [event.seq, event]));
+  for (const event of incomingEvents) {
+    eventBySeq.set(event.seq, event);
+  }
+  return [...eventBySeq.values()].sort((left, right) => left.seq - right.seq);
 }
 
 function markDesktopLatencyForStream(
@@ -1071,7 +1099,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         },
         sessionPendingPlanDecision: {
           ...state.sessionPendingPlanDecision,
-          [action.detail.session.sessionId]: snapshot ? snapshotContainsProposedPlan(snapshot) : false,
+          [action.detail.session.sessionId]: sessionTaskIntent(state, action.detail.session.sessionId) === "plan" && snapshot ? snapshotContainsProposedPlan(snapshot) : false,
         },
         pendingRun: undefined,
         isLoading: false,
@@ -1371,7 +1399,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             [pendingClarificationsSessionId]: (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
           }
         : state.sessionPendingClarifications;
-      const pendingPlanDecisionSessionId = isSettled && state.taskIntent === "plan" && streamSnapshot && snapshotContainsProposedPlan(streamSnapshot)
+      const pendingPlanDecisionSessionId = isSettled && sessionTaskIntent(state, streamSessionId) === "plan" && streamSnapshot && snapshotContainsProposedPlan(streamSnapshot)
         ? streamSnapshot.sessionId
         : undefined;
       const sessionPendingPlanDecision = pendingPlanDecisionSessionId

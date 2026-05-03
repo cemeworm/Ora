@@ -27,6 +27,24 @@ const FILE_MODIFICATION_TOOL_IDS = [
 ];
 
 type DesktopLatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
+type RunBudget = NonNullable<OraStateSnapshot["config"]["budget"]>;
+
+export function shouldEnableProgressNarration(taskIntent: WorkbenchState["taskIntent"]): boolean {
+  return taskIntent === "implement";
+}
+
+export function lightweightRunBudgetForTask(
+  taskIntent: WorkbenchState["taskIntent"],
+  defaultBudget: RunBudget | undefined,
+): RunBudget | undefined {
+  if (!defaultBudget || taskIntent === "implement") {
+    return undefined;
+  }
+  return {
+    ...defaultBudget,
+    maxToolCalls: Math.min(defaultBudget.maxToolCalls, 8),
+  };
+}
 
 function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
   const toolIds = [...new Set(modeToolIds ?? [])];
@@ -590,6 +608,7 @@ export function useRunActions() {
       const filteredToolIds = (state.taskIntent === "chat" || state.taskIntent === "plan")
         ? resolvedToolIds.filter((id) => !(FILE_MODIFICATION_TOOL_IDS as readonly string[]).includes(id))
         : resolvedToolIds;
+      const lightweightBudget = lightweightRunBudgetForTask(state.taskIntent, selectedMode?.defaultBudget);
       desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
       const handle = await runtimeClient.startStreamingRun(
         {
@@ -607,12 +626,13 @@ export function useRunActions() {
           modelRef: provider?.modelId ?? "local/smoke-model",
           ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
           toolIds: filteredToolIds,
+          ...(lightweightBudget ? { budget: lightweightBudget } : {}),
           permissionMode: state.permissionMode,
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
             clarificationPreflight: true,
-            progressNarration: true,
+            progressNarration: shouldEnableProgressNarration(state.taskIntent),
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             taskIntent: state.taskIntent,
             ...searchConfig.metadata,

@@ -41,8 +41,8 @@ const ZH_COPY: Record<string, string> = {
   "Needs clarification": "需要澄清",
   "Needs decision": "需要决策",
   Decision: "决策",
-  Failed: "失败",
-  Running: "运行中",
+  Failed: "任务失败",
+  Running: "正在运行",
   Done: "已完成",
   Approval: "审批",
   Checkpoint: "检查点",
@@ -738,8 +738,7 @@ const ZH_COPY: Record<string, string> = {
   "API Keys": "API 密钥",
   Remove: "移除",
   Models: "模型",
-  "Stored in the runtime layer and Keychain.":
-    "存储在运行时层和 Keychain 中。",
+  "Stored in the runtime layer and Keychain.": "存储在运行时层和 Keychain 中。",
   "Enable one or more models for this provider. Enter a custom model ID when it is not listed.":
     "为此提供方启用一个或多个模型。未列出时可输入自定义模型 ID。",
   "Use custom model ID": "使用自定义模型 ID",
@@ -753,12 +752,9 @@ const ZH_COPY: Record<string, string> = {
   "Add model": "添加模型",
   "Fetching...": "正在获取...",
   "Fetch models": "获取模型列表",
-  "Provider does not expose model discovery.":
-    "该提供方不支持模型发现。",
-  "Failed to fetch provider models.":
-    "获取提供方模型列表失败。",
-  "Showing fallback model suggestions.":
-    "正在显示备选模型建议。",
+  "Provider does not expose model discovery.": "该提供方不支持模型发现。",
+  "Failed to fetch provider models.": "获取提供方模型列表失败。",
+  "Showing fallback model suggestions.": "正在显示备选模型建议。",
   "Provider details changed after the last fetch.":
     "上次获取后提供方详情已变更。",
   "Save Details": "保存详情",
@@ -781,8 +777,7 @@ const ZH_COPY: Record<string, string> = {
   "Save Search Settings": "保存搜索设置",
   "Web search settings saved for future turns.":
     "网页搜索设置已保存，将在后续轮次中生效。",
-  "Web search settings reset to auto.":
-    "网页搜索设置已重置为自动。",
+  "Web search settings reset to auto.": "网页搜索设置已重置为自动。",
   Auto: "自动",
   "Use provider default env": "使用提供方默认环境变量",
 
@@ -1088,11 +1083,26 @@ const ZH_PATTERNS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   ],
   [/^(.+) skill saved\.$/, (match) => `${match[1]} 技能已保存。`],
   [/^Deleted skill (.+)\.$/, (match) => `已删除技能 ${match[1]}。`],
-  [/^Connect Ora to (.+) for messaging$/, (match) => `将 Ora 连接到 ${match[1]} 进行消息通信`],
-  [/^AI model for (.+) conversations\. Falls back to global default if not set\.$/, (match) => `${match[1]} 对话使用的 AI 模型。未设置时回退到全局默认。`],
-  [/^Fetched (\d+) remote models\.$/, (match) => `已获取 ${match[1]} 个远程模型。`],
-  [/^Saving will replace (.+) with (.+)\.$/, (match) => `保存将把 ${match[1]} 替换为 ${match[2]}。`],
-  [/^Provider (.+) already exists\. Choose a different model ID\.$/, (match) => `提供方 ${match[1]} 已存在。请选择不同的模型 ID。`],
+  [
+    /^Connect Ora to (.+) for messaging$/,
+    (match) => `将 Ora 连接到 ${match[1]} 进行消息通信`,
+  ],
+  [
+    /^AI model for (.+) conversations\. Falls back to global default if not set\.$/,
+    (match) => `${match[1]} 对话使用的 AI 模型。未设置时回退到全局默认。`,
+  ],
+  [
+    /^Fetched (\d+) remote models\.$/,
+    (match) => `已获取 ${match[1]} 个远程模型。`,
+  ],
+  [
+    /^Saving will replace (.+) with (.+)\.$/,
+    (match) => `保存将把 ${match[1]} 替换为 ${match[2]}。`,
+  ],
+  [
+    /^Provider (.+) already exists\. Choose a different model ID\.$/,
+    (match) => `提供方 ${match[1]} 已存在。请选择不同的模型 ID。`,
+  ],
   [/^Verify and enable (.+)$/, (match) => `验证并启用 ${match[1]}`],
 ];
 

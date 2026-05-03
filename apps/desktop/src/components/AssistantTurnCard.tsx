@@ -216,7 +216,7 @@ export function AssistantTurnCard({
             </CollapsibleCard>
           ) : null}
 
-          {!isPlaceholder && planList.length > 0 && turn?.hasProposedPlan ? (
+          {!isPlaceholder && turn?.hasProposedPlan ? (
             <PlanCard planSteps={planList} planContent={content} />
           ) : !isPlaceholder && planList.length > 0 ? (
             <CollapsibleCard

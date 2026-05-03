@@ -533,6 +533,58 @@ describe("desktop workbench state", () => {
     ]);
   });
 
+  it("merges sequential delta streams by appending delta-sized content", () => {
+    const snapshot = testSnapshot({
+      runId: "run-stream-text",
+      events: [{
+        id: "run-stream-text:event:0",
+        runId: "run-stream-text",
+        seq: 0,
+        type: "message.delta",
+        createdAt: 1_714_000_000_000,
+        payload: { role: "assistant", content: "Hel", delta: "Hel", streaming: true },
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+    const stream = {
+      runId: "run-stream-text",
+      fromSeq: 1,
+      nextSeq: 3,
+      status: "running",
+      events: [
+        {
+          id: "run-stream-text:event:1",
+          runId: "run-stream-text",
+          seq: 1,
+          type: "message.delta",
+          createdAt: 1_714_000_000_001,
+          payload: { role: "assistant", content: "lo", delta: "lo", streaming: true },
+        },
+        {
+          id: "run-stream-text:event:2",
+          runId: "run-stream-text",
+          seq: 2,
+          type: "token.delta",
+          createdAt: 1_714_000_000_002,
+          payload: { text: "!", tokenCount: 1, streaming: true },
+        },
+      ],
+    } as unknown as OraRunEventStream;
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+    const assistantText = merged?.events
+      .filter((event) => event.type === "message.delta")
+      .map((event) => {
+        const payload = event.payload;
+        return payload && typeof payload === "object" && !Array.isArray(payload) && typeof (payload as { content?: unknown }).content === "string"
+          ? (payload as { content: string }).content
+          : "";
+      })
+      .join("");
+
+    expect(merged?.events.map((event) => event.seq)).toEqual([0, 1, 2]);
+    expect(assistantText).toBe("Hello");
+  });
+
   it("recovers debate transcript messages from snapshot agent.message events", () => {
     const messages = [
       debateTranscriptMessage({
@@ -822,5 +874,177 @@ describe("desktop workbench state", () => {
     expect(merged?.agentMessages[0]?.toAgentIds).toEqual(["builder"]);
     expect(merged?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
     expect(merged?.agentMessages[0]?.transcript?.sequence).toBe(0);
+  });
+
+  describe("plan mode decision detection", () => {
+    const PROPOSED_PLAN = [
+      "<proposed_plan>",
+      "计划标题",
+      "## 背景",
+      "这是一个测试计划。",
+      "## 实施步骤",
+      "1. 步骤一 - 涉及文件: src/a.ts",
+      "2. 步骤二 - 涉及文件: src/b.ts",
+      "## 验证方式",
+      "- 运行测试",
+      "</proposed_plan>",
+    ].join("\n");
+
+    function planModeEvent(seq: number, content: string, agentId?: string) {
+      return {
+        id: `run-plan:event:${seq}`,
+        runId: "run-plan",
+        seq,
+        type: "message.delta",
+        createdAt: 1_714_000_000_000 + seq,
+        agentId,
+        payload: { role: "assistant", content, delta: content, streaming: true },
+      } as unknown as OraStateSnapshot["events"][number];
+    }
+
+    it("sets sessionPendingPlanDecision when a settled stream contains a proposed plan in plan mode", () => {
+      const sessionId = "session-plan";
+      const snapshot = testSnapshot({
+        runId: "run-plan",
+        sessionId,
+        events: [planModeEvent(0, PROPOSED_PLAN)],
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        taskIntent: "plan",
+        sessionTaskIntents: { [sessionId]: "plan" },
+        selectedSessionId: sessionId,
+        selectedTurnRunId: snapshot.runId,
+        activeSnapshot: snapshot,
+        activeSessionDetail: {
+          session: sessionSummary(sessionId),
+          turns: [{
+            runId: snapshot.runId,
+            sessionId,
+            turnIndex: 1,
+            status: "running",
+            pattern: snapshot.pattern,
+            prompt: snapshot.input.prompt,
+            startedAt: snapshot.updatedAt,
+            updatedAt: snapshot.updatedAt,
+            eventCount: 1,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+      };
+
+      const settledStream = {
+        runId: "run-plan",
+        fromSeq: 1,
+        nextSeq: 1,
+        status: "succeeded",
+        events: [],
+        snapshot,
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
+      expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
+    });
+
+    it("does NOT set sessionPendingPlanDecision when taskIntent is implement", () => {
+      const sessionId = "session-implement";
+      const snapshot = testSnapshot({
+        runId: "run-impl",
+        sessionId,
+        events: [planModeEvent(0, PROPOSED_PLAN)],
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        taskIntent: "implement",
+        selectedSessionId: sessionId,
+        selectedTurnRunId: snapshot.runId,
+        activeSnapshot: snapshot,
+        activeSessionDetail: {
+          session: sessionSummary(sessionId),
+          turns: [{
+            runId: snapshot.runId,
+            sessionId,
+            turnIndex: 1,
+            status: "running",
+            pattern: snapshot.pattern,
+            prompt: snapshot.input.prompt,
+            startedAt: snapshot.updatedAt,
+            updatedAt: snapshot.updatedAt,
+            eventCount: 1,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+      };
+
+      const settledStream = {
+        runId: "run-impl",
+        fromSeq: 1,
+        nextSeq: 1,
+        status: "succeeded",
+        events: [],
+        snapshot,
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
+      expect(next.sessionPendingPlanDecision[sessionId]).toBeUndefined();
+    });
+
+    it("detects proposed plan even when another agent writes text after the XML block", () => {
+      const sessionId = "session-plan-extra-text";
+      // Single event that includes both the plan and extra text after it.
+      // This simulates the case where content from all agents is concatenated.
+      const combinedContent = PROPOSED_PLAN + "\n验证完成，方案可行。";
+      const snapshot = testSnapshot({
+        runId: "run-plan-extra-text",
+        sessionId,
+        events: [
+          planModeEvent(0, combinedContent),
+        ],
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        taskIntent: "plan",
+        sessionTaskIntents: { [sessionId]: "plan" },
+        selectedSessionId: sessionId,
+        selectedTurnRunId: snapshot.runId,
+        activeSnapshot: snapshot,
+        activeSessionDetail: {
+          session: sessionSummary(sessionId),
+          turns: [{
+            runId: snapshot.runId,
+            sessionId,
+            turnIndex: 1,
+            status: "running",
+            pattern: snapshot.pattern,
+            prompt: snapshot.input.prompt,
+            startedAt: snapshot.updatedAt,
+            updatedAt: snapshot.updatedAt,
+            eventCount: 1,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+      };
+
+      const settledStream = {
+        runId: "run-plan-extra-text",
+        fromSeq: 1,
+        nextSeq: 1,
+        status: "succeeded",
+        events: [],
+        snapshot,
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
+      expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
+    });
   });
 });

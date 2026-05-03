@@ -82,6 +82,8 @@ import type {
   RunConfig as OraRunConfig,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
+  RuntimeMaintenanceParams as OraRuntimeMaintenanceParams,
+  RuntimeMaintenanceResult as OraRuntimeMaintenanceResult,
   RunTrail as OraRunTrail,
   RunTrailMetrics as OraRunTrailMetrics,
   SessionCreateParams as OraSessionCreateParams,
@@ -188,6 +190,8 @@ export type {
   OraRunConfig,
   OraRunEventStream,
   OraRunHandle,
+  OraRuntimeMaintenanceParams,
+  OraRuntimeMaintenanceResult,
   OraRunTraceMetadata,
   OraRunTrail,
   OraRunTrailMetrics,
@@ -761,6 +765,9 @@ export function createRuntimeClient() {
     async replayRun(runId: string, checkpointId?: string): Promise<OraRunEventStream> {
       return call<OraRunEventStream>("runs.replay", { runId, checkpointId });
     },
+    async runtimeMaintenance(params: Partial<OraRuntimeMaintenanceParams> = {}): Promise<OraRuntimeMaintenanceResult> {
+      return call<OraRuntimeMaintenanceResult>("runtime.maintenance", params);
+    },
     async forkRun(
       runId: string,
       checkpointId: string,
@@ -1178,6 +1185,23 @@ class LocalJsonRpcRuntime {
           providers: {
             providers: DEFAULT_PROVIDERS,
             defaultProviderId: "local-smoke",
+          },
+        };
+      case "runtime.maintenance":
+        return {
+          compactStreamingEvents: true,
+          vacuum: false,
+          runsScanned: 0,
+          runsCompacted: 0,
+          messageDeltaEventsCompacted: 0,
+          rawPayloadsRemoved: 0,
+          estimatedSnapshotBytesBefore: 0,
+          estimatedSnapshotBytesAfter: 0,
+          storage: {
+            backend: "json-file",
+            vacuumed: false,
+            beforeBytes: 0,
+            afterBytes: 0,
           },
         };
       case "patterns.list":

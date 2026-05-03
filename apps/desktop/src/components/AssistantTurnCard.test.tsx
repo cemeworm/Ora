@@ -665,4 +665,36 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("Triage");
     expect(html).toContain("Process");
   });
+
+  it("renders PlanCard when hasProposedPlan is true even if planList is empty", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+    };
+    const planContent = [
+      "## 背景",
+      "计划模式下的计划输出。",
+      "## 实施步骤",
+      "1. 步骤一",
+      "2. 步骤二",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={planContent} turn={turn} />,
+    );
+
+    expect(html).toContain("任务计划");
+    expect(html).toContain("计划模式下的计划输出");
+    expect(html).toContain("步骤一");
+  });
 });
