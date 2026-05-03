@@ -5,6 +5,7 @@ export const JsonRpcIdSchema = z.union([z.string(), z.number().int()]);
 export const RuntimeJsonRpcMethodSchema = z.enum([
   "runtime.health",
   "runtime.bootstrap",
+  "runtime.maintenance",
   "patterns.list",
   "modes.list",
   "modes.get",

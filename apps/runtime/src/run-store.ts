@@ -187,6 +187,7 @@ import {
   modeStudioBuilderResultFromSnapshot,
   startModeStudioBuilderSnapshot
 } from "./mode-studio-builder-run.js";
+import { runRuntimeMaintenance } from "./run-maintenance.js";
 import {
   defaultCustomAgentsDir,
   defaultEvaluationStoreDir,
@@ -364,6 +365,13 @@ export class LocalRunStore {
       deterministic: false,
       persistence: this.persistenceType
     };
+  }
+
+  runtimeMaintenance(params: unknown = {}) {
+    return runRuntimeMaintenance(params, {
+      runs: this.runs,
+      backend: this.backend,
+    });
   }
 
   listPatterns(): PatternDefinition[] {

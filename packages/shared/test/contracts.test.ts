@@ -1178,6 +1178,7 @@ describe("Ora shared contracts", () => {
 
     expect(RuntimeJsonRpcMethodSchema.parse("channels.wechat.requestQrCode")).toBe("channels.wechat.requestQrCode");
     expect(RuntimeJsonRpcMethodSchema.parse("channels.wechat.pollQrCodeStatus")).toBe("channels.wechat.pollQrCodeStatus");
+    expect(RuntimeJsonRpcMethodSchema.parse("runtime.maintenance")).toBe("runtime.maintenance");
 
     expect(RuntimeJsonRpcMethodSchema.parse("selfIteration.scan")).toBe("selfIteration.scan");
     expect(RuntimeJsonRpcMethodSchema.parse("selfIteration.candidates.apply")).toBe("selfIteration.candidates.apply");

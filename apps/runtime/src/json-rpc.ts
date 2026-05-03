@@ -46,6 +46,8 @@ export function createRuntimeMethodHandler(
           skills: store.listSkills(),
           providers: providerRegistry
         });
+      case "runtime.maintenance":
+        return store.runtimeMaintenance(request.params);
       case "patterns.list":
         return store.listPatterns();
       case "modes.list":

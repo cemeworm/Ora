@@ -814,6 +814,33 @@ export const RunStreamParamsSchema = z.object({
 });
 export type RunStreamParams = z.infer<typeof RunStreamParamsSchema>;
 
+export const RuntimeMaintenanceParamsSchema = z.object({
+  compactStreamingEvents: z.boolean().default(true),
+  vacuum: z.boolean().default(true),
+}).default({});
+export type RuntimeMaintenanceParams = z.infer<typeof RuntimeMaintenanceParamsSchema>;
+
+export const RuntimeStorageOptimizationResultSchema = z.object({
+  backend: z.enum(["sqlite", "json-file"]),
+  vacuumed: z.boolean(),
+  beforeBytes: z.number().int().nonnegative().optional(),
+  afterBytes: z.number().int().nonnegative().optional(),
+});
+export type RuntimeStorageOptimizationResult = z.infer<typeof RuntimeStorageOptimizationResultSchema>;
+
+export const RuntimeMaintenanceResultSchema = z.object({
+  compactStreamingEvents: z.boolean(),
+  vacuum: z.boolean(),
+  runsScanned: z.number().int().nonnegative(),
+  runsCompacted: z.number().int().nonnegative(),
+  messageDeltaEventsCompacted: z.number().int().nonnegative(),
+  rawPayloadsRemoved: z.number().int().nonnegative(),
+  estimatedSnapshotBytesBefore: z.number().int().nonnegative(),
+  estimatedSnapshotBytesAfter: z.number().int().nonnegative(),
+  storage: RuntimeStorageOptimizationResultSchema.optional(),
+});
+export type RuntimeMaintenanceResult = z.infer<typeof RuntimeMaintenanceResultSchema>;
+
 export const RunResumeParamsSchema = z.object({
   runId: z.string().min(1),
   patch: z.record(z.unknown()).optional(),

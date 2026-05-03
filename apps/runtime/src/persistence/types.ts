@@ -6,6 +6,7 @@ import type {
   ChannelDelivery,
   ChannelMessageRecord,
   ProjectSummary,
+  RuntimeStorageOptimizationResult,
   SessionSummary,
   StateSnapshot
 } from "@cemeworm/shared";
@@ -33,6 +34,7 @@ export interface PersistedArtifact {
 
 export interface RuntimePersistenceBackend {
   load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] };
+  optimizeStorage(): RuntimeStorageOptimizationResult;
   saveManifest(manifest: StoreManifest): void;
   saveRun(run: StoredRun): void;
   saveSession(session: StoredSession): void;

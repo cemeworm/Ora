@@ -9,6 +9,7 @@ import {
   ChannelMessageRecordSchema,
   ProjectSummarySchema,
   SessionSummarySchema,
+  RuntimeStorageOptimizationResultSchema,
   StateSnapshotSchema
 } from "@cemeworm/shared";
 import type { ArtifactRef } from "@cemeworm/shared";
@@ -139,6 +140,14 @@ SELECT ?, ?, ?, ?
 WHERE NOT EXISTS (SELECT 1 FROM manifest);
 `;
 
+function fileSize(filePath: string): number {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
 export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly db: Database.Database;
 
@@ -167,7 +176,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtListChannelDeliveries: Database.Statement;
   private readonly stmtGetChannelDelivery: Database.Statement;
 
-  constructor(dbPath: string) {
+  constructor(private readonly dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     this.db = new Database(dbPath);
@@ -300,6 +309,19 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     };
   }
 
+  optimizeStorage() {
+    const beforeBytes = this.databaseFileBytes();
+    this.db.pragma("wal_checkpoint(TRUNCATE)");
+    this.db.exec("VACUUM");
+    const afterBytes = this.databaseFileBytes();
+    return RuntimeStorageOptimizationResultSchema.parse({
+      backend: "sqlite",
+      vacuumed: true,
+      beforeBytes,
+      afterBytes,
+    });
+  }
+
   saveManifest(manifest: StoreManifest): void {
     this.stmtSaveManifest.run(
       manifest.schemaVersion,
@@ -307,6 +329,11 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       manifest.nextSessionNumber,
       manifest.nextProjectNumber,
     );
+  }
+
+  private databaseFileBytes(): number {
+    return [this.dbPath, `${this.dbPath}-wal`, `${this.dbPath}-shm`]
+      .reduce((total, filePath) => total + fileSize(filePath), 0);
   }
 
   saveRun(run: StoredRun): void {

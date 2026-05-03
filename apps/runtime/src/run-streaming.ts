@@ -123,6 +123,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {
+  if (event.type === "message.delta" || event.type === "token.delta") {
+    return event.seq % 128 === 0;
+  }
   return event.seq % 8 === 0 || event.type.startsWith("run.");
 }
 

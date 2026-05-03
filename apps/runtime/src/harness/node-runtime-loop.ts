@@ -242,10 +242,9 @@ export async function runNodeRuntimeLoop(
             "message.delta",
             {
               role: "assistant",
-              content: chunk.text,
+              content: chunk.delta,
               delta: chunk.delta,
               streaming: true,
-              raw: chunk.raw,
             },
             { agentId: params.agentId, nodeId: params.agentId },
           );

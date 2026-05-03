@@ -11,6 +11,7 @@ import {
   ChannelMessageRecordSchema,
   ProjectSummarySchema,
   SessionSummarySchema,
+  RuntimeStorageOptimizationResultSchema,
   StateSnapshotSchema
 } from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
@@ -89,9 +90,35 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     };
   }
 
+  optimizeStorage() {
+    const bytes = this.directoryBytes(this.dataDir);
+    return RuntimeStorageOptimizationResultSchema.parse({
+      backend: "json-file",
+      vacuumed: false,
+      beforeBytes: bytes,
+      afterBytes: bytes,
+    });
+  }
+
   saveManifest(manifest: StoreManifest): void {
     this.ensureDirs();
     this.writeJsonFile(this.manifestPath, StoreManifestSchema.parse(manifest));
+  }
+
+  private directoryBytes(dir: string): number {
+    if (!fs.existsSync(dir)) {
+      return 0;
+    }
+    return fs.readdirSync(dir, { withFileTypes: true }).reduce((total, entry) => {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        return total + this.directoryBytes(entryPath);
+      }
+      if (!entry.isFile()) {
+        return total;
+      }
+      return total + fs.statSync(entryPath).size;
+    }, 0);
   }
 
   saveRun(run: StoredRun): void {
