@@ -816,7 +816,7 @@ export async function executeRuntimeKernel(
           "- [如何验证实施结果]",
           "</proposed_plan>",
           "",
-          "输出 <proposed_plan> 后，不要继续调用任何工具。停止并等待用户确认。",
+          "输出上述 XML 块后，立即停止——不要继续调用任何工具，不要追加解释文字。",
         ].join("\n");
       default:
         return undefined;
