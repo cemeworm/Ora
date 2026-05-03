@@ -43,6 +43,7 @@ import type {
   OraTopologyNode,
 } from "./runtimeClient";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
+import { parseProposedPlan } from "./proposedPlanParser";
 
 const APPROVAL_INTERRUPT_MESSAGE = "需要你确认后，我才能继续。";
 const APPROVAL_INTERRUPT_MESSAGE_EN = "Waiting for your approval before continuing.";
@@ -1166,8 +1167,11 @@ export function adaptChatMessages(
       const assistantTurn = turn.snapshot
         ? buildAssistantTurnAttachment(turn.snapshot)
         : undefined;
-      const snapshotAssistant = turn.snapshot
+      const rawAssistantText = turn.snapshot
         ? assistantTextFromSnapshot(turn.snapshot)
+        : undefined;
+      const snapshotAssistant = rawAssistantText
+        ? parseProposedPlan(rawAssistantText).displayText
         : undefined;
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
@@ -1554,8 +1558,17 @@ function buildAssistantTurnAttachment(
 }
 
 function hasProposedPlanInSnapshot(snapshot: OraStateSnapshot): boolean {
-  const text = assistantTextFromSnapshot(snapshot);
-  return text ? text.includes("<proposed_plan>") : false;
+  const parts: string[] = [];
+  for (const event of snapshot.events) {
+    if (
+      event?.type === "message.delta" &&
+      isRecord(event.payload) &&
+      typeof event.payload.content === "string"
+    ) {
+      parts.push(event.payload.content);
+    }
+  }
+  return parseProposedPlan(parts.join("")).hasCompletePlan;
 }
 
 function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {

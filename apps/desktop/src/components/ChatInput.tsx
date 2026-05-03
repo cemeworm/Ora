@@ -70,9 +70,6 @@ interface ChatInputProps {
   onPermissionModeChange: (mode: PermissionMode) => void;
   taskIntent: TaskIntent;
   onTaskIntentChange: (taskIntent: TaskIntent) => void;
-  lastRunTaskIntent?: TaskIntent;
-  hasProposedPlan?: boolean;
-  onConfirmPlan?: () => void;
   planDecisionPending?: boolean;
   onConfirmPlanDecision?: () => void;
   onDeclinePlanDecision?: () => void;
@@ -132,9 +129,6 @@ export function ChatInput({
   onPermissionModeChange,
   taskIntent,
   onTaskIntentChange,
-  lastRunTaskIntent,
-  hasProposedPlan,
-  onConfirmPlan,
   planDecisionPending,
   onConfirmPlanDecision,
   onDeclinePlanDecision,
@@ -496,16 +490,7 @@ export function ChatInput({
                     </button>
                   ))}
                 </Picker>
-                {!planDecisionPending && taskIntent === "plan" && (lastRunTaskIntent === "plan" || hasProposedPlan) && onConfirmPlan ? (
-                  <button
-                    type="button"
-                    onClick={onConfirmPlan}
-                    className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100"
-                  >
-                    <Play size={13} />
-                    <span>确认执行</span>
-                  </button>
-                ) : null}
+
                 {selectedCustomAgentId && (
                   <button
                     type="button"

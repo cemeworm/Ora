@@ -2,6 +2,7 @@ import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MOD
 import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
 import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
 import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
+import { parseProposedPlan } from "./proposedPlanParser";
 import { chooseEnabledProviderId } from "./providerSelection";
 import type {
   OraModeSpec,
@@ -841,15 +842,17 @@ function readActionStatus(value: unknown): OraActionRecord["status"] | undefined
 }
 
 function snapshotContainsProposedPlan(snapshot: OraStateSnapshot): boolean {
-  for (let i = snapshot.events.length - 1; i >= 0; i--) {
-    const event = snapshot.events[i];
-    if (event?.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string") {
-      if (event.payload.content.includes("<proposed_plan>")) {
-        return true;
-      }
+  const parts: string[] = [];
+  for (const event of snapshot.events) {
+    if (
+      event?.type === "message.delta" &&
+      isRecord(event.payload) &&
+      typeof event.payload.content === "string"
+    ) {
+      parts.push(event.payload.content);
     }
   }
-  return false;
+  return parseProposedPlan(parts.join("")).hasCompletePlan;
 }
 
 function streamRunStatus(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): OraStateSnapshot["status"] | undefined {

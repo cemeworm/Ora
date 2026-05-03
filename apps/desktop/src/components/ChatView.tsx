@@ -203,8 +203,6 @@ export function ChatView({
           onPermissionModeChange={(mode) => dispatch({ type: "SET_PERMISSION_MODE", permissionMode: mode })}
           taskIntent={state.taskIntent}
           onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
-          lastRunTaskIntent={state.lastRunTaskIntent}
-          hasProposedPlan={chatMessages.some((msg) => msg.turn?.hasProposedPlan)}
           planDecisionPending={planDecisionPending}
           onConfirmPlanDecision={() => {
             dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
@@ -213,10 +211,6 @@ export function ChatView({
           }}
           onDeclinePlanDecision={() => {
             dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
-          }}
-          onConfirmPlan={() => {
-            dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
-            onComposerPromptChange("请按照上述计划开始执行");
           }}
           onOpenLocalFiles={() => void openLocalFiles()}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
