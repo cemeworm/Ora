@@ -222,7 +222,7 @@ export function ChatView({
           onOpenLocalFiles={() => void openLocalFiles()}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}
-          onStopRun={onInterruptRun}
+          onStopRun={onCancelRun}
         />
       </main>
     </div>

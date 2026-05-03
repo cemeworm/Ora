@@ -3,10 +3,12 @@ import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
+import { XCircle } from "lucide-react";
 
 interface ClarificationPanelProps {
   pendingClarifications: OraStateSnapshot["pendingClarifications"];
   onSubmitAll: (answers: Record<string, string>) => void;
+  onCancel?: () => void;
   disabled?: boolean;
 }
 
