@@ -2,8 +2,15 @@ import type { ActionRecord, PendingClarification } from "@cemeworm/shared";
 import { stableJson } from "./runtime-tool-loop.js";
 
 export class ClarificationInterruptError extends Error {
-  constructor(public readonly clarification: PendingClarification) {
-    super(clarification.question);
+  public readonly clarifications: PendingClarification[];
+  constructor(clarifications: PendingClarification[] | PendingClarification) {
+    const list = Array.isArray(clarifications) ? clarifications : [clarifications];
+    super(list.map((c) => c.question).join(" | "));
+    this.clarifications = list;
+  }
+
+  get clarification(): PendingClarification {
+    return this.clarifications[0]!;
   }
 }
 

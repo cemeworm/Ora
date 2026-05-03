@@ -124,6 +124,14 @@ export interface RunNodeRuntimeLoopDeps {
     question: string;
     options?: PendingClarificationOption[];
   }) => Promise<unknown>;
+  ensureClarifications: (requests: Array<{
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+    options?: PendingClarificationOption[];
+  }>) => Promise<unknown[]>;
   coerceNoToolResponse: (
     response: ModelResponse,
     reason: CompletionStopReason,
@@ -253,6 +261,7 @@ export async function runNodeRuntimeLoop(
     emitRejectedFinalToolIntent,
     clarificationAnswer,
     ensureClarification,
+    ensureClarifications,
     coerceNoToolResponse,
     runForcedFinalProviderCall,
     publishRecoveryArtifact,
@@ -490,6 +499,218 @@ export async function runNodeRuntimeLoop(
       });
       return response;
     }
+
+    const allNativeToolCalls = (response.toolCalls
+      ?.map(providerToolCallToAttempt)
+      .filter(Boolean) as RuntimeToolAttempt[]) ?? [];
+
+    if (allNativeToolCalls.length > 1) {
+      const clarifyToolCalls = allNativeToolCalls.filter((tc) => tc.tool === "user.clarify");
+      if (clarifyToolCalls.length > 1) {
+        const clarificationRequests = clarifyToolCalls.map((tc, index) => {
+          const question = stringToolArg(tc.args, "question");
+          if (!question) {
+            throw new Error("user.clarify requires a non-empty question.");
+          }
+          const fallbackKey = `dynamic_${params.agentId}_${events.length + index}`;
+          const key = sanitizeClarificationKey(stringToolArg(tc.args, "key") ?? fallbackKey);
+          return {
+            id: `clarification:${params.agentId}:${events.length + index}`,
+            key,
+            nodeId: params.nodeId,
+            nodeLabel: params.title,
+            question,
+            options: parseClarificationOptions(tc.args.options),
+            toolCall: tc,
+          };
+        });
+
+        const unanswered = clarificationRequests.filter(
+          (req) => clarificationAnswer(req.key, req.id) === undefined,
+        );
+
+        if (unanswered.length > 0) {
+          const batchAction = actionLedger.propose({
+            id: `${params.agentId}-tool-${events.length}`,
+            type: "user.clarify",
+            riskLevel: "low",
+            input: { batch: unanswered.map((r) => ({ key: r.key, question: r.question })) },
+            agentId: params.agentId,
+          });
+          const batchToolCallRecord = appendToolCall({
+            providerCallId: clarifyToolCalls[0]!.providerCallId,
+            toolId: "user.clarify",
+            args: { batch: unanswered.map((r) => r.question) },
+            source: clarifyToolCalls[0]!.source,
+            status: "proposed",
+            actionId: batchAction.id,
+            agentId: params.agentId,
+            nodeId: params.agentId,
+          });
+          emit(
+            "action.updated",
+            { actionId: batchAction.id, status: "proposed", record: batchAction },
+            { agentId: params.agentId, nodeId: params.agentId },
+          );
+          emitNodeRuntimeState("tool_running", {
+            agentId: params.agentId,
+            title: params.title,
+            actionId: batchAction.id,
+            toolId: "user.clarify",
+            iteration,
+          });
+
+          for (const req of unanswered) {
+            recordRuntimeToolActionSucceeded({
+              action: batchAction,
+              context: { agentId: params.agentId, nodeId: params.agentId },
+              deps: actionDeps(),
+              toolCall: req.toolCall,
+              output: {
+                status: "clarification_requested",
+                clarification: req,
+              },
+              toolCallRecord: batchToolCallRecord,
+              now,
+            });
+          }
+
+          emitNodeRuntimeState("interrupted", {
+            agentId: params.agentId,
+            title: params.title,
+            actionId: batchAction.id,
+            toolId: "user.clarify",
+            detail: `${unanswered.length} clarification questions pending`,
+            iteration,
+          });
+
+          await ensureClarifications(
+            unanswered.map((req) => ({
+              id: req.id,
+              key: req.key,
+              nodeId: req.nodeId,
+              nodeLabel: req.nodeLabel,
+              question: req.question,
+              options: req.options,
+            })),
+          );
+        }
+
+        // On resume: all are answered. Build tool results for all clarify calls.
+        const clarifyAnswers: Array<{
+          call: RuntimeToolAttempt;
+          req: { id: string; key: string; question: string };
+          answer: unknown;
+        }> = [];
+        for (const req of clarificationRequests) {
+          const answer = await ensureClarification({
+            id: req.id,
+            key: req.key,
+            nodeId: req.nodeId,
+            nodeLabel: req.nodeLabel,
+            question: req.question,
+            options: req.options,
+          });
+          clarifyAnswers.push({ call: req.toolCall, req, answer });
+        }
+
+        if (toolCall.source === "provider_native" && toolCall.providerCallId) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: response.text,
+              reasoningContent: response.reasoningContent,
+              toolCalls: response.toolCalls?.filter(
+                (call) => clarifyToolCalls.some((tc) => tc.providerCallId === call.id),
+              ),
+            },
+          ];
+        }
+
+        for (const { call: tc, req, answer } of clarifyAnswers) {
+          const resultText = JSON.stringify({
+            status: "clarification_answered",
+            question: req.question,
+            answer,
+          });
+
+          if (tc.source === "provider_native" && tc.providerCallId) {
+            messages.push({
+              role: "tool",
+              toolCallId: tc.providerCallId,
+              toolName: tc.tool,
+              content: resultText,
+            });
+          } else {
+            messages.push({
+              role: "user",
+              content: `Workspace tool result for ${tc.tool}:\n${resultText}`,
+            });
+          }
+
+          emitNodeRuntimeState("tool_result_observed", {
+            agentId: params.agentId,
+            title: params.title,
+            toolId: tc.tool,
+            iteration,
+          });
+        }
+
+        await emitProgressNarration({
+          trigger: "tool.succeeded",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+          detail: `${clarifyAnswers.length} clarification(s) answered.`,
+        });
+
+        messages = repairDanglingToolCalls(messages);
+
+        completion.markToolResultObserved(toolCall, false, completionScope);
+
+        if (completion.forcedFinalIsActive(completionScope)) {
+          const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
+          emitNodeRuntimeState("finalizing", {
+            agentId: params.agentId,
+            title: params.title,
+            reason: stopReason,
+            iteration,
+          });
+          return runForcedFinalProviderCall({
+            invokeProvider,
+            config,
+            messages,
+            system: params.system,
+            nativeTools,
+            streamCallbacks,
+            reason: stopReason,
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+            title: params.title,
+          });
+        }
+
+        emitNodeRuntimeState("running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          iteration: iteration + 1,
+        });
+        response = await invokeProvider(
+          config,
+          {
+            messages,
+            system: params.system,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+          },
+          streamCallbacks,
+        );
+        continue;
+      }
+    }
+
     emitNodeRuntimeState("tool_requested", {
       agentId: params.agentId,
       title: params.title,

@@ -165,6 +165,111 @@ export async function ensureRuntimeClarification(
   throw new ClarificationInterruptError(clarification);
 }
 
+export async function ensureRuntimeClarifications(
+  requests: Array<{
+    id: string;
+    key: string;
+    nodeId: string;
+    nodeLabel: string;
+    question: string;
+    options?: PendingClarificationOption[];
+    narrate?: boolean;
+  }>,
+  deps: {
+    answer: (key: string, id: string) => unknown;
+    pendingClarifications: PendingClarification[];
+    now: () => number;
+    emit: RuntimeClarificationEmit;
+    emitProgressNarration: (params: {
+      trigger: string;
+      nodeId?: string;
+      title?: string;
+      detail?: string;
+    }) => Promise<void>;
+    resumeClarifications?: Record<string, unknown>;
+  },
+): Promise<unknown[]> {
+  const results: Array<{ index: number; answer: unknown }> = [];
+  const unanswered: typeof requests = [];
+
+  for (let i = 0; i < requests.length; i++) {
+    const req = requests[i]!;
+    const answered = deps.answer(req.key, req.id);
+    if (answered !== undefined) {
+      results.push({ index: i, answer: answered });
+      const resumeClarifications = deps.resumeClarifications;
+      if (
+        resumeClarifications &&
+        (req.id in resumeClarifications || req.key in resumeClarifications)
+      ) {
+        deps.emit(
+          "clarification.resolved",
+          {
+            clarificationId: req.id,
+            nodeId: req.nodeId,
+            answer: answered,
+            mode: "resume",
+          },
+          { nodeId: req.nodeId, agentId: req.nodeId },
+        );
+      }
+    } else {
+      unanswered.push(req);
+    }
+  }
+
+  if (unanswered.length === 0) {
+    results.sort((a, b) => a.index - b.index);
+    return results.map((r) => r.answer);
+  }
+
+  const newClarifications = unanswered.map((req) =>
+    PendingClarificationSchema.parse({
+      id: req.id,
+      nodeId: req.nodeId,
+      nodeLabel: req.nodeLabel,
+      key: req.key,
+      question: req.question,
+      options: req.options ?? [],
+      requestedAt: deps.now(),
+    }),
+  );
+
+  deps.pendingClarifications.push(...newClarifications);
+
+  for (const clarification of newClarifications) {
+    deps.emit(
+      "clarification.required",
+      {
+        clarification,
+        pending: deps.pendingClarifications.length,
+      },
+      { nodeId: clarification.nodeId, agentId: clarification.nodeId },
+    );
+  }
+
+  if (unanswered.length === 1) {
+    const req = unanswered[0]!;
+    if (req.narrate !== false) {
+      await deps.emitProgressNarration({
+        trigger: "clarification.required",
+        nodeId: req.nodeId,
+        title: req.nodeLabel,
+        detail: req.question,
+      });
+    }
+  } else {
+    await deps.emitProgressNarration({
+      trigger: "clarification.required",
+      nodeId: requests[0]!.nodeId,
+      title: requests[0]!.nodeLabel,
+      detail: `${unanswered.length} clarification questions pending`,
+    });
+  }
+
+  throw new ClarificationInterruptError(newClarifications);
+}
+
 function parseIntentClarificationQuestion(text: string): string | undefined {
   const trimmed = text.trim();
   const jsonText = trimmed.startsWith("{")

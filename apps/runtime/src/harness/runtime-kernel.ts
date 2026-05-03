@@ -83,6 +83,7 @@ import {
   INTENT_CLARIFICATION_NODE_ID,
   INTENT_CLARIFICATION_NODE_LABEL,
   ensureRuntimeClarification,
+  ensureRuntimeClarifications,
   requestIntentClarificationQuestion,
   resolveClarificationAnswer,
 } from "./runtime-clarifications.js";
@@ -874,6 +875,7 @@ export async function executeRuntimeKernel(
       emitRejectedFinalToolIntent,
       clarificationAnswer,
       ensureClarification,
+      ensureClarifications,
       coerceNoToolResponse,
       runForcedFinalProviderCall,
       publishRecoveryArtifact,
@@ -1244,6 +1246,27 @@ export async function executeRuntimeKernel(
     narrate?: boolean;
   }) => {
     return ensureRuntimeClarification(params, {
+      answer: clarificationAnswer,
+      pendingClarifications,
+      now,
+      emit,
+      emitProgressNarration,
+      resumeClarifications: options.resumeContext?.clarifications,
+    });
+  };
+
+  const ensureClarifications = async (
+    requests: Array<{
+      id: string;
+      key: string;
+      nodeId: string;
+      nodeLabel: string;
+      question: string;
+      options?: PendingClarificationOption[];
+      narrate?: boolean;
+    }>,
+  ) => {
+    return ensureRuntimeClarifications(requests, {
       answer: clarificationAnswer,
       pendingClarifications,
       now,
@@ -1661,8 +1684,12 @@ export async function executeRuntimeKernel(
             ? "approval_required"
             : undefined,
       clarificationId:
-        caught instanceof ClarificationInterruptError
+        caught instanceof ClarificationInterruptError && caught.clarifications.length === 1
           ? caught.clarification.id
+          : undefined,
+      clarificationIds:
+        caught instanceof ClarificationInterruptError
+          ? caught.clarifications.map((c) => c.id)
           : undefined,
       actionId:
         caught instanceof ApprovalInterruptError ? caught.actionId : undefined,
