@@ -50,6 +50,7 @@ const DEV_RUNTIME_COMMAND_DISPLAY: &str =
     "node <workspace-tsx>/cli.mjs apps/runtime/src/sidecar-entry.ts";
 const PROD_RUNTIME_COMMAND_DISPLAY: &str =
     "runtime-sidecar/bin/node runtime-sidecar/app/runtime-sidecar.cjs";
+const CHANNEL_DAEMON_ARG: &str = "--channel-daemon";
 const MANAGED_LANGFUSE_BASE_URL: &str = "http://localhost:3000";
 const MANAGED_LANGFUSE_PUBLIC_KEY: &str = "lf_pk_ora_local_runtime";
 const MANAGED_LANGFUSE_SECRET_KEY: &str = "lf_sk_ora_local_runtime";
@@ -82,6 +83,7 @@ pub struct RuntimeSidecarManager {
     configured_from_env: bool,
     managed_langfuse: Mutex<ManagedLangfuseStatus>,
     active_streaming_children: StreamingChildRegistry,
+    channel_daemon_child: Mutex<Option<Child>>,
 }
 
 impl Default for RuntimeSidecarManager {
@@ -92,6 +94,7 @@ impl Default for RuntimeSidecarManager {
             configured_from_env: false,
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
             active_streaming_children: StreamingChildRegistry::default(),
+            channel_daemon_child: Mutex::new(None),
         }
     }
 }
@@ -104,13 +107,18 @@ impl RuntimeSidecarManager {
             .as_ref()
             .map(|command| command_is_available(command.executable()))
             .unwrap_or(false);
-        Self {
+        let manager = Self {
             configured_command,
             process_spawn_available: Mutex::new(process_spawn_available),
             configured_from_env,
             managed_langfuse: Mutex::new(managed_langfuse),
             active_streaming_children: StreamingChildRegistry::default(),
+            channel_daemon_child: Mutex::new(None),
+        };
+        if process_spawn_available {
+            manager.ensure_channel_daemon();
         }
+        manager
     }
 
     #[cfg(test)]
@@ -125,6 +133,7 @@ impl RuntimeSidecarManager {
             configured_from_env,
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
             active_streaming_children: StreamingChildRegistry::default(),
+            channel_daemon_child: Mutex::new(None),
         }
     }
 
@@ -200,6 +209,7 @@ impl RuntimeSidecarManager {
             return None;
         }
 
+        self.ensure_channel_daemon();
         let command = self.configured_command.clone()?;
         match run_process_json_rpc_for_app(
             &command,
@@ -242,6 +252,53 @@ impl RuntimeSidecarManager {
 
     pub fn cleanup_streaming_children(&self) {
         self.active_streaming_children.kill_all();
+        self.stop_channel_daemon();
+    }
+
+    fn ensure_channel_daemon(&self) {
+        let Some(command) = self.configured_command.as_ref() else {
+            return;
+        };
+        let Ok(mut child_slot) = self.channel_daemon_child.lock() else {
+            return;
+        };
+        if let Some(child) = child_slot.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                return;
+            }
+        }
+
+        let daemon_command = channel_daemon_command(command);
+        match spawn_background_child(&daemon_command) {
+            Ok(child) => {
+                *child_slot = Some(child);
+            }
+            Err(error) => {
+                eprintln!("[Ora] failed to start channel daemon: {error}");
+                *child_slot = None;
+            }
+        }
+    }
+
+    fn stop_channel_daemon(&self) {
+        let child = self
+            .channel_daemon_child
+            .lock()
+            .ok()
+            .and_then(|mut child_slot| child_slot.take());
+        if let Some(mut child) = child {
+            match child.try_wait() {
+                Ok(Some(_status)) => {}
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                Err(_error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
     }
 }
 
@@ -2625,6 +2682,10 @@ fn compose_file_exists(path: &Path) -> bool {
 }
 
 fn spawn_background_command(command: &RuntimeCommandSpec) -> Result<(), String> {
+    spawn_background_child(command).map(|_| ())
+}
+
+fn spawn_background_child(command: &RuntimeCommandSpec) -> Result<Child, String> {
     let mut process = Command::new(command.executable());
     process
         .args(command.args())
@@ -2639,8 +2700,19 @@ fn spawn_background_command(command: &RuntimeCommandSpec) -> Result<(), String> 
     }
     process
         .spawn()
-        .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+fn channel_daemon_command(command: &RuntimeCommandSpec) -> RuntimeCommandSpec {
+    let mut args = command.args.clone();
+    args.push(CHANNEL_DAEMON_ARG.to_string());
+    RuntimeCommandSpec::new(
+        format!("{} {}", command.display, CHANNEL_DAEMON_ARG),
+        command.executable.clone(),
+        args,
+        command.working_directory.clone(),
+        command.environment.clone(),
+    )
 }
 
 fn run_process_json_rpc_for_app(

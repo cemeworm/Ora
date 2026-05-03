@@ -1,6 +1,21 @@
 import { runStdioServer } from "./stdio.js";
+import { LocalRunStore } from "./run-store.js";
+import { shutdownLangfuseTelemetry } from "./telemetry/langfuse.js";
 
-runStdioServer().catch((error) => {
+async function runChannelDaemon(): Promise<void> {
+  new LocalRunStore();
+  await new Promise<void>((resolve) => {
+    process.once("SIGINT", resolve);
+    process.once("SIGTERM", resolve);
+  });
+  await shutdownLangfuseTelemetry();
+}
+
+const entrypoint = process.argv.includes("--channel-daemon")
+  ? runChannelDaemon
+  : runStdioServer;
+
+entrypoint().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   process.exitCode = 1;
 });

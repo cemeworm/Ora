@@ -118,6 +118,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
   ): Promise<
     { ok: true; externalMessageId?: string } | { ok: false; error: string }
   > {
+    this.persistWechatUinIfMissing();
     const baseUrl = this.getBaseUrl();
     const botToken = this.getBotToken();
     if (!baseUrl || !botToken) {
@@ -168,6 +169,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
   // -----------------------------------------------------------------------
 
   async requestQrCode(): Promise<QrCodeResponse> {
+    this.persistWechatUinIfMissing();
     const baseUrl = this.getBaseUrl();
     if (!baseUrl) {
       throw new Error("WeChat baseUrl not configured");
@@ -219,6 +221,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
     botToken?: string;
     baseUrl?: string;
   }> {
+    this.persistWechatUinIfMissing();
     if (!this.qrCodeKey) {
       throw new Error("No active QR code session");
     }
@@ -266,6 +269,7 @@ export class WechatChannelAdapter implements ChannelAdapter {
 
   private async pollLoop(): Promise<void> {
     if (!this.running) return;
+    this.persistWechatUinIfMissing();
 
     const baseUrl = this.getBaseUrl();
     const botToken = this.getBotToken();
@@ -366,6 +370,14 @@ export class WechatChannelAdapter implements ChannelAdapter {
     return typeof this.config.config.botToken === "string"
       ? this.config.config.botToken
       : undefined;
+  }
+
+  private persistWechatUinIfMissing(): void {
+    if (typeof this.config.config.wechatUin === "string" && this.config.config.wechatUin.trim()) {
+      return;
+    }
+    this.config.config.wechatUin = this.wechatUin;
+    this.deps?.onConfigUpdate(this.channelId, { wechatUin: this.wechatUin });
   }
 }
 

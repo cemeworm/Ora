@@ -140,6 +140,12 @@ describe("WechatChannelAdapter QR code flow", () => {
       "wechat-test",
       expect.objectContaining({ qrCodeKey: "qr-key-123" }),
     );
+    const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers["x-wechat-uin"]).toMatch(/^UIN[0-9a-f]{16}$/);
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      "wechat-test",
+      expect.objectContaining({ wechatUin: headers["x-wechat-uin"] }),
+    );
   });
 
   it("requestQrCode accepts qrcode_img_content from the iLink API", async () => {
@@ -355,7 +361,7 @@ describe("WechatChannelAdapter QR code flow", () => {
 
     // Simulate a new process: adapter reads qrCodeKey from persisted config
     const adapter = new WechatChannelAdapter(
-      makeConfig({ qrCodeKey: "persisted-qr-key" }),
+      makeConfig({ qrCodeKey: "persisted-qr-key", wechatUin: "persisted-uin" }),
       fetchImpl,
     );
     const result = await adapter.pollQrCodeStatus();
@@ -363,6 +369,8 @@ describe("WechatChannelAdapter QR code flow", () => {
 
     const calledUrl = String((fetchImpl.mock.calls[0] as unknown[])[0]);
     expect(calledUrl).toContain("persisted-qr-key");
+    const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(headers["x-wechat-uin"]).toBe("persisted-uin");
   });
 
   it("pollQrCodeStatus returns confirmed with botToken and baseUrl", async () => {
@@ -520,11 +528,12 @@ describe("WechatChannelAdapter lifecycle", () => {
     const ingested = new Promise<ChannelIngestParams>((resolve) => {
       resolveIngest = resolve;
     });
+    const onConfigUpdate = vi.fn();
     const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
       onIngest: async (params) => {
         resolveIngest(params);
       },
-      onConfigUpdate: vi.fn(),
+      onConfigUpdate,
     });
 
     adapter.start();
@@ -532,6 +541,12 @@ describe("WechatChannelAdapter lifecycle", () => {
     adapter.stop();
 
     expect(inbound.externalChatId).toBe("user-wx-1");
+    const getUpdatesHeaders = (fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+    expect(getUpdatesHeaders["x-wechat-uin"]).toMatch(/^UIN[0-9a-f]{16}$/);
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      "wechat-test",
+      expect.objectContaining({ wechatUin: getUpdatesHeaders["x-wechat-uin"] }),
+    );
     const result = await adapter.send({
       id: "outbound-ctx-1",
       channelId: "wechat-test",
