@@ -32,6 +32,8 @@ export const ProviderConfigSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
   contextWindow: z.number().int().positive().optional(),
+  maxContextWindow: z.number().int().positive().optional(),
+  autoCompactTokenLimit: z.number().int().positive().optional(),
   capabilities: z.array(ProviderCapabilitySchema).default(["chat"]),
   dropParams: z.array(z.string().min(1)).default([]),
   headers: z.record(z.string().min(1)).default({}),

@@ -1,4 +1,4 @@
-import type { ModeReasoningEffort, ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@cemeworm/shared";
+import type { ModeReasoningEffort, ModelTokenUsage, ProviderConfig, ProviderModelsResult, ProviderRegistry as SharedProviderRegistry, ProviderType } from "@cemeworm/shared";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -47,6 +47,7 @@ export interface ModelResponse {
   text: string;
   reasoningContent?: string;
   raw: unknown;
+  usage?: ModelTokenUsage;
   toolCalls?: ModelToolCall[];
   finishReason?: string;
 }

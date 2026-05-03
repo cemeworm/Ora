@@ -326,6 +326,15 @@ describe("Ora shared contracts", () => {
 
   it("validates provider model discovery contracts", () => {
     expect(RuntimeJsonRpcMethodSchema.parse("providers.models")).toBe("providers.models");
+    expect(ProviderConfigSchema.parse({
+      id: "context-aware",
+      type: "openai",
+      label: "Context Aware",
+      modelId: "gpt-context",
+      contextWindow: 100000,
+      maxContextWindow: 120000,
+      autoCompactTokenLimit: 95000,
+    }).autoCompactTokenLimit).toBe(95000);
     expect(ProviderModelSchema.parse({ id: "gpt-4o", source: "remote", created: 1 }).id).toBe("gpt-4o");
     expect(ProviderModelsParamsSchema.parse({ provider: DEFAULT_PROVIDERS[0] }).provider.id).toBe(DEFAULT_PROVIDERS[0]?.id);
 

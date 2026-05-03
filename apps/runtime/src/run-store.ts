@@ -89,7 +89,19 @@ import {
   UserTaskInputSchema
 } from "@cemeworm/shared";
 import { TodoService } from "./capabilities.js";
+import type { ChannelSessionUpdateEvent } from "./channels/manager.js";
 import { ChannelService } from "./channels/service.js";
+import {
+  activeUsageForMessages,
+  buildLocalCompactionRequest,
+  compactedContextFromSummary,
+  contextMessages,
+  normalizeContextState,
+  resolveAutoCompactTokenLimit,
+  resolvedContextWindow,
+  resolveRunProviderConfig,
+  shouldCompactContext,
+} from "./context-manager.js";
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
@@ -119,6 +131,7 @@ import type {
   StoredSession
 } from "./persistence/types.js";
 import type { ModelMessage } from "./providers/index.js";
+import { invokeRunProvider } from "./providers/index.js";
 import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
@@ -262,6 +275,7 @@ export interface LocalRunStoreOptions {
   dataDir?: string;
   clock?: () => number;
   fetchImpl?: typeof fetch;
+  onChannelSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
 }
 
 interface StreamingRunOptions {
@@ -321,7 +335,11 @@ export class LocalRunStore {
     this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) =>
       processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
     );
-    this.channelService = new ChannelService(this.backend, this, { clock: this.clock, fetchImpl: options.fetchImpl });
+    this.channelService = new ChannelService(this.backend, this, {
+      clock: this.clock,
+      fetchImpl: options.fetchImpl,
+      onSessionUpdate: options.onChannelSessionUpdate,
+    });
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
@@ -751,6 +769,12 @@ export class LocalRunStore {
     const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
+    const conversationMessages = await this.prepareConversationMessagesForRun(
+      session.sessionId,
+      input.prompt,
+      fullConfig,
+      turnIndex,
+    );
     if (fullConfig.metadata.evaluationRouterOnly === true) {
       const baseSnapshot = createRunningRunSnapshot({
         runId,
@@ -802,9 +826,9 @@ export class LocalRunStore {
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
-      conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
+      conversationMessages,
     });
-    const tracedSnapshot = attachTraceMetadata(sessionBoundSnapshot);
+    const tracedSnapshot = attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot));
     await this.persistRunWithGeneratedTitle(tracedSnapshot);
     return toRunHandle(tracedSnapshot);
   }
@@ -834,7 +858,12 @@ export class LocalRunStore {
     });
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
-    const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
+    const conversationMessages = await this.prepareConversationMessagesForRun(
+      session.sessionId,
+      input.prompt,
+      fullConfig,
+      turnIndex,
+    );
     markRuntimeLatency("conversationMessages.done", { messageCount: conversationMessages.length });
     let liveSnapshot = createRunningRunSnapshot({
       runId,
@@ -892,7 +921,7 @@ export class LocalRunStore {
       streamProvider: true,
       onEvent: applyLiveEvent,
     }).then(async (snapshot) => {
-      const finalSnapshot = attachTraceMetadata(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? []));
+      const finalSnapshot = attachTraceMetadata(this.withSnapshotContextState(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? [])));
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -1079,6 +1108,12 @@ export class LocalRunStore {
     const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
+    const conversationMessages = await this.prepareConversationMessagesForRun(
+      session.sessionId,
+      input.prompt,
+      fullConfig,
+      turnIndex,
+    );
     const sessionBoundSnapshot = await executeTracedKernelRun({
       runId,
       input,
@@ -1096,9 +1131,9 @@ export class LocalRunStore {
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
       forkedFrom,
-      conversationMessages: this.buildConversationMessages(session.sessionId, input.prompt),
+      conversationMessages,
     });
-    const tracedSnapshot = attachTraceMetadata(sessionBoundSnapshot);
+    const tracedSnapshot = attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot));
     await this.persistRunWithGeneratedTitle(tracedSnapshot);
     return toRunHandle(tracedSnapshot);
   }
@@ -1130,7 +1165,12 @@ export class LocalRunStore {
     const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
-    const conversationMessages = this.buildConversationMessages(session.sessionId, input.prompt);
+    const conversationMessages = await this.prepareConversationMessagesForRun(
+      session.sessionId,
+      input.prompt,
+      fullConfig,
+      turnIndex,
+    );
     const snapshot = await createSnapshot({
       runId,
       input,
@@ -1148,14 +1188,14 @@ export class LocalRunStore {
       return undefined;
     }
 
-    const sessionBoundSnapshot = attachTraceMetadata(StateSnapshotSchema.parse({
+    const sessionBoundSnapshot = attachTraceMetadata(this.withSnapshotContextState(StateSnapshotSchema.parse({
       ...snapshot,
       sessionId: session.sessionId,
       turnIndex,
       coordinationKind: snapshot.coordinationKind ?? snapshot.pattern,
       modeId: snapshot.modeId ?? modeSpec.id,
       modeSpec: snapshot.modeSpec ?? modeSpec,
-    }));
+    })));
     await this.persistRunWithGeneratedTitle(sessionBoundSnapshot);
     return toRunHandle(sessionBoundSnapshot);
   }
@@ -1923,6 +1963,7 @@ export class LocalRunStore {
       latestProviderId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : existing?.latestProviderId,
       latestModelRef: snapshot.config.modelRef ?? existing?.latestModelRef,
       turnCount,
+      contextState: snapshot.contextState ?? existing?.contextState,
       createdAt: existing?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
       updatedAt: snapshot.updatedAt,
       archivedAt: existing?.archivedAt,
@@ -1947,11 +1988,105 @@ export class LocalRunStore {
     this.backend.saveProject(nextProject);
   }
 
+  private async prepareConversationMessagesForRun(
+    sessionId: string,
+    currentPrompt: string,
+    config: RunConfig,
+    turnIndex: number,
+  ): Promise<ModelMessage[]> {
+    const session = this.getSessionOrThrow(sessionId);
+    const provider = resolveRunProviderConfig(config);
+    const priorMessages = this.buildConversationMessages(sessionId, "");
+    let messages = this.buildConversationMessages(sessionId, currentPrompt);
+    const check = shouldCompactContext({
+      contextState: session.contextState,
+      provider,
+      messages,
+    });
+    this.persistSessionContextState(sessionId, {
+      ...normalizeContextState(session.contextState),
+      activeTokenUsage: check.usage,
+      contextWindow: check.contextWindow,
+      autoCompactTokenLimit: check.limit,
+    });
+    if (!check.shouldCompact || !check.limit || priorMessages.length === 0) {
+      return messages;
+    }
+
+    const compactRequest = buildLocalCompactionRequest(priorMessages, check.limit);
+    const response = await invokeRunProvider(config, compactRequest);
+    const compacted = compactedContextFromSummary({
+      summary: response.text,
+      phase: "pre_turn",
+      beforeTokens: check.usage.totalTokens,
+      limit: check.limit,
+      contextWindow: check.contextWindow,
+      previousState: session.contextState,
+      compactedThroughTurnIndex: Math.max(0, turnIndex - 1),
+      now: this.now(),
+    });
+    this.persistSessionContextState(sessionId, compacted.contextState);
+    messages = [
+      ...compacted.messages,
+      ...(currentPrompt.trim() ? [{ role: "user" as const, content: currentPrompt.trim() }] : []),
+    ];
+    return messages;
+  }
+
+  private persistSessionContextState(sessionId: string, contextState: SessionSummary["contextState"]): void {
+    const existing = this.getSessionOrThrow(sessionId);
+    this.persistSession(SessionSummarySchema.parse({
+      ...existing,
+      contextState,
+      updatedAt: Math.max(existing.updatedAt, this.now()),
+    }));
+  }
+
+  private withSnapshotContextState(snapshot: StateSnapshot): StateSnapshot {
+    if (!snapshot.sessionId) {
+      return snapshot;
+    }
+    const provider = resolveRunProviderConfig(snapshot.config);
+    const existing = this.sessions.get(snapshot.sessionId)?.contextState;
+    const messages = this.buildCompletedSnapshotMessages(snapshot);
+    const usage = activeUsageForMessages(messages);
+    const contextState = {
+      ...normalizeContextState(existing),
+      activeTokenUsage: usage,
+      contextWindow: resolvedContextWindow(provider),
+      autoCompactTokenLimit: resolveAutoCompactTokenLimit(provider),
+    };
+    return StateSnapshotSchema.parse({
+      ...snapshot,
+      contextState,
+    });
+  }
+
+  private buildCompletedSnapshotMessages(snapshot: StateSnapshot): ModelMessage[] {
+    if (!snapshot.sessionId) {
+      return [];
+    }
+    const messages = this.buildConversationMessages(snapshot.sessionId, snapshot.input.prompt, snapshot.runId);
+    if (snapshot.conversation.length > 0) {
+      messages.push(...runtimeConversationToModelMessages(snapshot.conversation));
+    }
+    const assistant = assistantTextForRun(snapshot);
+    if (assistant) {
+      messages.push({ role: "assistant", content: assistant });
+    }
+    return messages;
+  }
+
   private buildConversationMessages(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] {
+    const session = this.sessions.get(sessionId);
+    const contextState = normalizeContextState(session?.contextState);
     const priorTurns = this.runsForSession(sessionId);
-    const messages: ModelMessage[] = [];
+    const messages: ModelMessage[] = contextMessages(contextState);
     for (const turn of priorTurns) {
       if (turn.runId === excludeRunId) {
+        continue;
+      }
+      if (turn.turnIndex <= contextState.compactedThroughTurnIndex) {
         continue;
       }
       const prompt = turn.input.prompt.trim();

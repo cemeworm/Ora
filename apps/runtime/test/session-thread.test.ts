@@ -34,8 +34,11 @@ vi.mock("../src/providers/index.js", async () => {
         && requestText.includes("Count markdown with shell")
         && !hasToolResult;
       const isTitleRequest = request.system?.includes("Ora's conversation title generator");
+      const isCompactRequest = request.system?.includes("compressing an Ora session history");
       const text = isTitleRequest
         ? titleResponses.shift() ?? "Generated Session Title"
+        : isCompactRequest
+        ? "SUMMARY: preserve the earlier long user goal and assistant answer."
         : shouldEscapeShell
         ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
         : shouldCallShell
@@ -207,6 +210,58 @@ describe("session thread runtime behavior", () => {
     expect(detail.session.title).toBe("Initial Session Title");
     expect(titleRequests).toHaveLength(1);
     expect(titleResponses).toEqual(["Second Session Title"]);
+  });
+
+  it("auto-compacts prior session context before a new turn crosses the provider window", async () => {
+    titleResponses.push("Long Context Session");
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+    const providerConfig = {
+      id: "tiny-context",
+      type: "openai" as const,
+      label: "Tiny Context",
+      modelId: "tiny-context-model",
+      contextWindow: 120,
+      autoCompactTokenLimit: 100,
+      capabilities: ["chat"] as const,
+      dropParams: [],
+      headers: {},
+    };
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: `First long prompt ${"context ".repeat(180)}` },
+      config: {
+        pattern: "generator_verifier",
+        providerId: providerConfig.id,
+        modelRef: providerConfig.modelId,
+        providerConfig,
+      },
+    });
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Second short prompt" },
+      config: {
+        pattern: "generator_verifier",
+        providerId: providerConfig.id,
+        modelRef: providerConfig.modelId,
+        providerConfig,
+      },
+    });
+
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const compactRequest = capturedRequests.find((request) =>
+      request.system.includes("compressing an Ora session history")
+    );
+    const secondRuntimeRequest = capturedRequests.find((request) =>
+      request.messages.some((message) => message.content.includes("Compacted prior session context"))
+        && request.messages.some((message) => message.content.includes("Second short prompt"))
+    );
+
+    expect(compactRequest?.prompt).toContain("First long prompt");
+    expect(detail.session.contextState?.compactionCount).toBe(1);
+    expect(detail.session.contextState?.compactedThroughTurnIndex).toBe(1);
+    expect(secondRuntimeRequest).toBeDefined();
   });
 
   it("falls back to a local first-prompt title when title generation fails", async () => {

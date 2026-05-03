@@ -1,5 +1,5 @@
 import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@cemeworm/shared";
-import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
+import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractOpenAiUsage, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
 
@@ -155,6 +155,7 @@ export function createOpenAIProvider(
       modelId: config.modelId,
       text,
       raw,
+      usage: extractOpenAiUsage(raw),
       toolCalls: extractOpenAiResponsesToolCalls(raw, request.tools),
       finishReason: typeof (raw as Record<string, unknown>).status === "string"
         ? (raw as Record<string, unknown>).status as string
@@ -235,6 +236,7 @@ export function createOpenAIProvider(
         streamMode: "sse",
         events: rawEvents,
       },
+      usage: extractOpenAiUsage(rawEvents),
       toolCalls: extractOpenAiResponsesStreamToolCalls(rawEvents, request.tools),
     } satisfies ModelResponse;
   };

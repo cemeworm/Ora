@@ -394,6 +394,10 @@ export const OraEventTypeSchema = z.enum([
   "message.published",
   "message.routed",
   "token.delta",
+  "context.usage.updated",
+  "context.compaction.started",
+  "context.compaction.completed",
+  "context.compaction.failed",
   "queue.updated",
   "shared_state.updated",
   "worker.claimed",
@@ -587,6 +591,42 @@ export const RuntimeConversationEntrySchema = z.discriminatedUnion("role", [
 ]);
 export type RuntimeConversationEntry = z.infer<typeof RuntimeConversationEntrySchema>;
 
+export const ModelTokenUsageSourceSchema = z.enum(["provider", "estimate"]);
+export type ModelTokenUsageSource = z.infer<typeof ModelTokenUsageSourceSchema>;
+
+export const ModelTokenUsageSchema = z.object({
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  reasoningTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative(),
+  source: ModelTokenUsageSourceSchema.default("estimate"),
+});
+export type ModelTokenUsage = z.infer<typeof ModelTokenUsageSchema>;
+
+export const SessionContextStateSchema = z.object({
+  activeTokenUsage: ModelTokenUsageSchema.default({
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    source: "estimate",
+  }),
+  contextWindow: z.number().int().positive().optional(),
+  autoCompactTokenLimit: z.number().int().positive().optional(),
+  compactedHistory: z.array(RuntimeConversationEntrySchema).default([]),
+  compactedThroughTurnIndex: z.number().int().nonnegative().default(0),
+  compactionCount: z.number().int().nonnegative().default(0),
+  lastCompactedAt: z.number().int().nonnegative().optional(),
+  lastCompaction: z.object({
+    phase: z.enum(["pre_turn", "mid_turn"]),
+    implementation: z.enum(["local"]),
+    beforeTokens: z.number().int().nonnegative(),
+    afterTokens: z.number().int().nonnegative(),
+    limit: z.number().int().positive(),
+    reason: z.enum(["context_limit"]),
+  }).optional(),
+}).default({});
+export type SessionContextState = z.infer<typeof SessionContextStateSchema>;
+
 export const RuntimeToolResultLedgerEntrySchema = z.object({
   key: z.string().min(1),
   toolId: z.string().min(1),
@@ -729,6 +769,7 @@ export const SessionSummarySchema = z.object({
   latestProviderId: z.string().min(1).optional(),
   latestModelRef: z.string().min(1).optional(),
   turnCount: z.number().int().nonnegative(),
+  contextState: SessionContextStateSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   archivedAt: z.number().int().nonnegative().optional(),
@@ -955,6 +996,7 @@ export const StateSnapshotSchema = z.object({
   toolCalls: z.array(OraToolCallEnvelopeSchema).default([]),
   continuation: RunContinuationSchema.default({ frames: [] }),
   conversation: z.array(RuntimeConversationEntrySchema).default([]),
+  contextState: SessionContextStateSchema.optional(),
   toolResults: z.array(RuntimeToolResultLedgerEntrySchema).default([]),
   policyDecisions: z.array(PolicyDecisionSchema).default([]),
   checkpoints: z.array(CheckpointMetaSchema),

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { ProviderConfig } from "@cemeworm/shared";
+import type { ModelTokenUsage, ProviderConfig } from "@cemeworm/shared";
 import type { ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
 
 export function normalizeMessages(request: ModelRequest): ModelMessage[] {
@@ -141,6 +141,76 @@ export function extractOpenAiChatToolCalls(raw: unknown, tools: readonly ModelTo
     }
   }
   return calls;
+}
+
+function numericToken(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function usageRecord(raw: unknown): Record<string, unknown> | undefined {
+  if (Array.isArray(raw)) {
+    for (let index = raw.length - 1; index >= 0; index -= 1) {
+      const found = usageRecord(raw[index]);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const usage = record.usage;
+  if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+    return usage as Record<string, unknown>;
+  }
+  const response = record.response;
+  if (response && typeof response === "object" && !Array.isArray(response)) {
+    return usageRecord(response);
+  }
+  return undefined;
+}
+
+export function extractOpenAiUsage(raw: unknown): ModelTokenUsage | undefined {
+  const usage = usageRecord(raw);
+  if (!usage) return undefined;
+
+  const inputTokens = numericToken(usage.input_tokens) ?? numericToken(usage.prompt_tokens) ?? 0;
+  const outputTokens = numericToken(usage.output_tokens) ?? numericToken(usage.completion_tokens) ?? 0;
+  const totalTokens = numericToken(usage.total_tokens) ?? inputTokens + outputTokens;
+  const outputDetails = usage.output_tokens_details && typeof usage.output_tokens_details === "object"
+    ? usage.output_tokens_details as Record<string, unknown>
+    : usage.completion_tokens_details && typeof usage.completion_tokens_details === "object"
+      ? usage.completion_tokens_details as Record<string, unknown>
+      : undefined;
+  const reasoningTokens = numericToken(outputDetails?.reasoning_tokens);
+
+  return {
+    inputTokens,
+    outputTokens,
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    totalTokens,
+    source: "provider",
+  };
+}
+
+export function extractAnthropicUsage(raw: unknown): ModelTokenUsage | undefined {
+  const usage = usageRecord(raw);
+  if (!usage) return undefined;
+
+  const inputTokens = (numericToken(usage.input_tokens) ?? 0)
+    + (numericToken(usage.cache_creation_input_tokens) ?? 0)
+    + (numericToken(usage.cache_read_input_tokens) ?? 0);
+  const outputTokens = numericToken(usage.output_tokens) ?? 0;
+  const totalTokens = numericToken(usage.total_tokens) ?? inputTokens + outputTokens;
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    source: "provider",
+  };
 }
 
 export function extractOpenAiChatReasoningContent(raw: unknown): string | undefined {

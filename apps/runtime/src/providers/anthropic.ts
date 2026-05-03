@@ -1,5 +1,5 @@
 import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@cemeworm/shared";
-import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractTextFromValue, failMissingApiKey, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
+import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractAnthropicUsage, extractTextFromValue, failMissingApiKey, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelMessage, ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { anthropicTextDelta, emitTextDelta, readSseMessages } from "./streaming.js";
 
@@ -255,6 +255,7 @@ export function createAnthropicStyleProvider(
       modelId: config.modelId,
       text,
       raw,
+      usage: extractAnthropicUsage(raw),
       toolCalls: extractAnthropicToolCalls(raw, request.tools),
       finishReason: typeof (raw as Record<string, unknown>).stop_reason === "string"
         ? (raw as Record<string, unknown>).stop_reason as string
@@ -309,6 +310,7 @@ export function createAnthropicStyleProvider(
         streamMode: "sse",
         events: rawEvents,
       },
+      usage: extractAnthropicUsage(rawEvents),
     } satisfies ModelResponse;
   };
 

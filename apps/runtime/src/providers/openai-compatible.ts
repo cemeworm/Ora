@@ -8,6 +8,7 @@ import {
   extractOpenAiChatStreamToolCalls,
   extractOpenAiResponsesToolCalls,
   extractOpenAiResponsesStreamToolCalls,
+  extractOpenAiUsage,
   extractTextFromValue,
   failMissingApiKey,
   normalizeMessages,
@@ -334,6 +335,7 @@ export function createOpenAICompatibleProvider(
       text,
       reasoningContent,
       raw,
+      usage: extractOpenAiUsage(raw),
       toolCalls,
       finishReason: typeof choice?.finish_reason === "string"
         ? choice.finish_reason
@@ -411,6 +413,7 @@ export function createOpenAICompatibleProvider(
         protocol,
         events: rawEvents,
       },
+      usage: extractOpenAiUsage(rawEvents),
       toolCalls: protocol === "responses"
         ? extractOpenAiResponsesStreamToolCalls(rawEvents, request.tools)
         : extractOpenAiChatStreamToolCalls(rawEvents, request.tools),

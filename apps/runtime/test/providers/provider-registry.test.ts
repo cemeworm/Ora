@@ -370,6 +370,45 @@ describe("provider adapters", () => {
     expect(response.raw).toMatchObject({ output_text: "OpenAI says hello." });
   });
 
+  it("normalizes OpenAI Responses token usage", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      output_text: "OpenAI says hello.",
+      usage: {
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+        output_tokens_details: { reasoning_tokens: 2 },
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const provider = createModelProvider(
+      {
+        id: "openai-gpt",
+        type: "openai",
+        label: "GPT",
+        modelId: "gpt-test",
+        headers: {},
+      },
+      {
+        env: { OPENAI_API_KEY: "test-openai-key" },
+        fetchImpl,
+      }
+    );
+
+    const response = await provider({ prompt: "Say hello." });
+
+    expect(response.usage).toEqual({
+      inputTokens: 12,
+      outputTokens: 5,
+      reasoningTokens: 2,
+      totalTokens: 17,
+      source: "provider",
+    });
+  });
+
   it("parses OpenAI Responses API streaming text deltas", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { stream?: boolean };
@@ -895,6 +934,44 @@ describe("provider adapters", () => {
     expect(response.text).toBe("Anthropic says hello.");
     expect(response.raw).toMatchObject({
       content: [{ type: "text", text: "Anthropic says hello." }],
+    });
+  });
+
+  it("normalizes Anthropic token usage", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: "Anthropic says hello." }],
+      usage: {
+        input_tokens: 30,
+        cache_creation_input_tokens: 2,
+        cache_read_input_tokens: 3,
+        output_tokens: 9,
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const provider = createModelProvider(
+      {
+        id: "anthropic-claude",
+        type: "anthropic",
+        label: "Claude",
+        modelId: "claude-test",
+        headers: {},
+      },
+      {
+        env: { ANTHROPIC_API_KEY: "test-anthropic-key" },
+        fetchImpl,
+      }
+    );
+
+    const response = await provider({ prompt: "Say hello." });
+
+    expect(response.usage).toEqual({
+      inputTokens: 35,
+      outputTokens: 9,
+      totalTokens: 44,
+      source: "provider",
     });
   });
 

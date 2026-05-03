@@ -7,6 +7,14 @@ import type {
   PendingClarificationOption,
   RunConfig,
 } from "@cemeworm/shared";
+import {
+  buildLocalCompactionRequest,
+  compactedContextFromSummary,
+  resolveAutoCompactTokenLimit,
+  resolvedContextWindow,
+  resolveRunProviderConfig,
+  usageForModelResponse,
+} from "../context-manager.js";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
 import {
@@ -290,6 +298,70 @@ export async function runNodeRuntimeLoop(
   const invokeProvider = options.streamProvider
     ? invokeRunProviderStream
     : invokeRunProvider;
+  const compactMessagesBeforeFollowUp = async (
+    latestResponse: ModelResponse,
+    reason: string,
+  ): Promise<void> => {
+    const provider = resolveRunProviderConfig(config);
+    const limit = resolveAutoCompactTokenLimit(provider);
+    const contextWindow = resolvedContextWindow(provider);
+    const usage = usageForModelResponse(latestResponse, {
+      messages,
+      system: params.system,
+    });
+    emit(
+      "context.usage.updated",
+      {
+        phase: "mid_turn",
+        reason,
+        providerId: latestResponse.providerId,
+        modelId: latestResponse.modelId,
+        usage,
+        limit,
+        contextWindow,
+      },
+      { agentId: params.agentId, nodeId: params.nodeId },
+    );
+    if (!limit || usage.totalTokens < limit) {
+      return;
+    }
+    emit(
+      "context.compaction.started",
+      {
+        phase: "mid_turn",
+        implementation: "local",
+        reason: "context_limit",
+        beforeTokens: usage.totalTokens,
+        limit,
+        contextWindow,
+      },
+      { agentId: params.agentId, nodeId: params.nodeId },
+    );
+    const compactResponse = await invokeRunProvider(config, buildLocalCompactionRequest(messages, limit));
+    const compacted = compactedContextFromSummary({
+      summary: compactResponse.text,
+      phase: "mid_turn",
+      beforeTokens: usage.totalTokens,
+      limit,
+      contextWindow,
+      compactedThroughTurnIndex: 0,
+      now: now(),
+    });
+    messages = compacted.messages;
+    emit(
+      "context.compaction.completed",
+      {
+        phase: "mid_turn",
+        implementation: "local",
+        reason: "context_limit",
+        beforeTokens: usage.totalTokens,
+        afterTokens: compacted.contextState.activeTokenUsage.totalTokens,
+        limit,
+        contextWindow,
+      },
+      { agentId: params.agentId, nodeId: params.nodeId },
+    );
+  };
   const streamCallbacks = options.streamProvider
     ? {
         onTextDelta: (chunk: {
@@ -696,6 +768,7 @@ export async function runNodeRuntimeLoop(
           title: params.title,
           iteration: iteration + 1,
         });
+        await compactMessagesBeforeFollowUp(response, "tool_follow_up");
         response = await invokeProvider(
           config,
           {
@@ -940,6 +1013,7 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration: iteration + 1,
       });
+      await compactMessagesBeforeFollowUp(response, "tool_follow_up");
       response = await invokeProvider(
         config,
         {
@@ -1151,6 +1225,7 @@ export async function runNodeRuntimeLoop(
           title: params.title,
           iteration: iteration + 1,
         });
+        await compactMessagesBeforeFollowUp(response, "tool_follow_up");
         response = await invokeProvider(
           config,
           {
@@ -1226,6 +1301,7 @@ export async function runNodeRuntimeLoop(
           toolId: toolCall.tool,
           detail: incident.detail,
         });
+        await compactMessagesBeforeFollowUp(response, "tool_recovery_follow_up");
         response = await invokeProvider(
           config,
           {
