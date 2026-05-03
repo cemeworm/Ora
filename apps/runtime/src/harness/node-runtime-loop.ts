@@ -7,16 +7,8 @@ import type {
   PendingClarificationOption,
   RunConfig,
 } from "@cemeworm/shared";
-import {
-  buildLocalCompactionRequest,
-  compactedContextFromSummary,
-  resolveAutoCompactTokenLimit,
-  resolvedContextWindow,
-  resolveRunProviderConfig,
-  usageForModelResponse,
-} from "../context-manager.js";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
-import type { ModelMessage, ModelResponse, ModelToolCall } from "../providers/index.js";
+import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import {
   classifyRecoveryError,
   type RecoveryCoordinator,
@@ -41,18 +33,18 @@ import {
 } from "./runtime-tool-loop.js";
 import { RuntimeToolExecutor, type RuntimeFileChangeMetadata, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
-
-const TOOL_REPAIR_CONTENT =
-  "Tool call was interrupted before a result was produced. Continue from available context or choose another action.";
-
-interface DynamicClarificationRequest {
-  id: string;
-  key: string;
-  nodeId: string;
-  nodeLabel: string;
-  question: string;
-  options: PendingClarificationOption[];
-}
+import {
+  buildRuntimeMiddlewares,
+  invokeRuntimeModelCall,
+  invokeRuntimeModelResponse,
+  invokeRuntimeToolExecution,
+  invokeRuntimeToolFailure,
+  type RuntimeModelResponseContext,
+  type RuntimeMiddlewareContext,
+  type RuntimeToolExecutionContext,
+  type RuntimeToolFailureContext,
+  type RuntimeToolFailureRequest,
+} from "./runtime-middleware.js";
 
 export type NodeRuntimeLoopState =
   | "pending"
@@ -190,65 +182,6 @@ function emitRuntimeStatusProgress(
   );
 }
 
-function dynamicClarificationRequest(
-  call: RuntimeToolAttempt,
-  params: RunNodeRuntimeLoopParams,
-  eventCount: number,
-): DynamicClarificationRequest {
-  const question = stringToolArg(call.args, "question");
-  if (!question) {
-    throw new Error("user.clarify requires a non-empty question.");
-  }
-  const fallbackKey = `dynamic_${params.agentId}_${eventCount}`;
-  const key = sanitizeClarificationKey(stringToolArg(call.args, "key") ?? fallbackKey);
-  return {
-    id: `clarification:${params.agentId}:${eventCount}`,
-    key,
-    nodeId: params.nodeId,
-    nodeLabel: params.title,
-    question,
-    options: parseClarificationOptions(call.args.options),
-  };
-}
-
-function stringToolArg(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function sanitizeClarificationKey(key: string): string {
-  const sanitized = key.trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").replace(/^_+|_+$/g, "");
-  return (sanitized || "clarification").slice(0, 120);
-}
-
-function parseClarificationOptions(value: unknown): PendingClarificationOption[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.slice(0, 6).flatMap((item, index): PendingClarificationOption[] => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      return [];
-    }
-    const record = item as Record<string, unknown>;
-    const label = typeof record.label === "string" && record.label.trim()
-      ? record.label.trim()
-      : undefined;
-    if (!label) {
-      return [];
-    }
-    const id = typeof record.id === "string" && record.id.trim()
-      ? record.id.trim()
-      : `option_${index + 1}`;
-    const value = typeof record.value === "string" && record.value.trim()
-      ? record.value.trim()
-      : undefined;
-    const description = typeof record.description === "string" && record.description.trim()
-      ? record.description.trim()
-      : undefined;
-    return [{ id, label, ...(value ? { value } : {}), ...(description ? { description } : {}) }];
-  });
-}
-
 export async function runNodeRuntimeLoop(
   params: RunNodeRuntimeLoopParams,
   deps: RunNodeRuntimeLoopDeps,
@@ -298,70 +231,6 @@ export async function runNodeRuntimeLoop(
   const invokeProvider = options.streamProvider
     ? invokeRunProviderStream
     : invokeRunProvider;
-  const compactMessagesBeforeFollowUp = async (
-    latestResponse: ModelResponse,
-    reason: string,
-  ): Promise<void> => {
-    const provider = resolveRunProviderConfig(config);
-    const limit = resolveAutoCompactTokenLimit(provider);
-    const contextWindow = resolvedContextWindow(provider);
-    const usage = usageForModelResponse(latestResponse, {
-      messages,
-      system: params.system,
-    });
-    emit(
-      "context.usage.updated",
-      {
-        phase: "mid_turn",
-        reason,
-        providerId: latestResponse.providerId,
-        modelId: latestResponse.modelId,
-        usage,
-        limit,
-        contextWindow,
-      },
-      { agentId: params.agentId, nodeId: params.nodeId },
-    );
-    if (!limit || usage.totalTokens < limit) {
-      return;
-    }
-    emit(
-      "context.compaction.started",
-      {
-        phase: "mid_turn",
-        implementation: "local",
-        reason: "context_limit",
-        beforeTokens: usage.totalTokens,
-        limit,
-        contextWindow,
-      },
-      { agentId: params.agentId, nodeId: params.nodeId },
-    );
-    const compactResponse = await invokeRunProvider(config, buildLocalCompactionRequest(messages, limit));
-    const compacted = compactedContextFromSummary({
-      summary: compactResponse.text,
-      phase: "mid_turn",
-      beforeTokens: usage.totalTokens,
-      limit,
-      contextWindow,
-      compactedThroughTurnIndex: 0,
-      now: now(),
-    });
-    messages = compacted.messages;
-    emit(
-      "context.compaction.completed",
-      {
-        phase: "mid_turn",
-        implementation: "local",
-        reason: "context_limit",
-        beforeTokens: usage.totalTokens,
-        afterTokens: compacted.contextState.activeTokenUsage.totalTokens,
-        limit,
-        contextWindow,
-      },
-      { agentId: params.agentId, nodeId: params.nodeId },
-    );
-  };
   const streamCallbacks = options.streamProvider
     ? {
         onTextDelta: (chunk: {
@@ -413,72 +282,418 @@ export async function runNodeRuntimeLoop(
         },
       }
     : undefined;
-  const repairDanglingToolCalls = (candidateMessages: ModelMessage[]) => {
-    const pending = new Map<
-      string,
-      { call: ModelToolCall; messageIndex: number }
-    >();
-    for (let index = 0; index < candidateMessages.length; index += 1) {
-      const message = candidateMessages[index];
-      if (message.role === "assistant" && message.toolCalls?.length) {
-        for (const call of message.toolCalls) {
-          pending.set(call.id, { call, messageIndex: index });
+  const runtimeMiddlewares = buildRuntimeMiddlewares();
+  const middlewareContext: RuntimeMiddlewareContext = {
+    config,
+    agentId: params.agentId,
+    nodeId: params.agentId,
+    modelNodeId: params.nodeId,
+    title: params.title,
+    now,
+    appendToolCall,
+    emit,
+    replaceMessages: (nextMessages) => {
+      messages = [...nextMessages];
+    },
+  };
+  const invokeModel = (request: ModelRequest) =>
+    invokeRuntimeModelCall({
+      request,
+      context: middlewareContext,
+      middlewares: runtimeMiddlewares,
+      terminal: (nextRequest) => invokeProvider(config, nextRequest, streamCallbacks),
+    });
+  const invokeFollowUpModel = (
+    request: ModelRequest,
+    latestResponse: ModelResponse,
+    reason: string,
+  ) =>
+    invokeRuntimeModelCall({
+      request,
+      context: middlewareContext,
+      middlewares: runtimeMiddlewares,
+      terminal: (nextRequest) => invokeProvider(config, nextRequest, streamCallbacks),
+      metadata: {
+        compaction: { latestResponse, reason },
+      },
+    });
+  const toolExecutionContext: RuntimeToolExecutionContext = {
+    ...middlewareContext,
+    actionDeps,
+    emitNodeRuntimeState,
+    eventsLength: () => events.length,
+    clarificationAnswer,
+    ensureClarification,
+  };
+  const invokeToolExecution = (request: Parameters<typeof invokeRuntimeToolExecution>[0]["request"]) =>
+    invokeRuntimeToolExecution({
+      request,
+      context: toolExecutionContext,
+      middlewares: runtimeMiddlewares,
+      terminal: async ({ toolCall, allowRisky }) => {
+        const cacheKey = cacheKeyForRuntimeTool(toolCall);
+        const cacheHit =
+          cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
+        const execution = cacheHit
+          ? { output: runtimeToolResultCache.get(cacheKey) }
+          : await runtimeToolExecutor.executeWithMetadata(toolCall, {
+              allowRisky,
+            });
+        if (cacheKey && !cacheHit) {
+          runtimeToolResultCache.set(cacheKey, execution.output);
         }
-        continue;
-      }
-      if (message.role === "tool" && message.toolCallId) {
-        pending.delete(message.toolCallId);
-      }
+        const artifact = execution.fileChange
+          ? publishFileChangeArtifact(execution.fileChange, {
+              actionId: request.action.id,
+              agentId: params.agentId,
+              nodeId: params.agentId,
+            })
+          : undefined;
+        return {
+          output: execution.output,
+          fileChange: execution.fileChange,
+          artifact,
+          cacheKey,
+          cacheHit,
+        };
+      },
+    });
+  const recoverToolFailure = async (
+    failure: RuntimeToolFailureRequest,
+  ): Promise<Awaited<ReturnType<RuntimeToolFailureContext["recoverToolFailure"]>>> => {
+    const { action, toolCall, toolCallRecord, error, iteration } = failure;
+    const detail = error instanceof Error ? error.message : String(error);
+    recordRuntimeToolActionFailed({
+      action,
+      context: { agentId: params.agentId, nodeId: params.agentId },
+      deps: actionDeps(),
+      toolCall,
+      detail,
+      toolCallRecord,
+      now,
+    });
+    emitNodeRuntimeState("degraded", {
+      agentId: params.agentId,
+      title: params.title,
+      actionId: action.id,
+      toolId: toolCall.tool,
+      detail,
+    });
+    await emitProgressNarration({
+      trigger: "tool.failed",
+      agentId: params.agentId,
+      nodeId: params.agentId,
+      title: params.title,
+      detail,
+    });
+
+    const incident = classifyRecoveryError(error, {
+      surface: "tool",
+      nodeId: params.agentId,
+      agentId: params.agentId,
+      toolId: toolCall.tool,
+      actionId: action.id,
+    });
+    const recoveryDecision = recoveryCoordinator.resolve(incident);
+    emitRecoveryDecision(incident, recoveryDecision);
+    await emitProgressNarration({
+      trigger: "recovery.updated",
+      agentId: params.agentId,
+      nodeId: params.agentId,
+      title: params.title,
+      detail: recoveryDecision.summary,
+    });
+
+    if (recoveryDecision.action === "retry") {
+      await sleep(recoveryDecision.retryDelayMs ?? 0);
+      return { kind: "retry" };
     }
-    if (pending.size === 0) {
-      return candidateMessages;
-    }
-    const repairedMessages = [...candidateMessages];
-    for (const { call } of pending.values()) {
-      appendToolCall({
-        providerCallId: call.id,
-        toolId: call.toolId,
-        args: call.args,
-        source: "manual_repair",
-        status: "repaired",
+
+    if (
+      recoveryDecision.action === "alternate_tool" &&
+      recoveryDecision.alternateToolId
+    ) {
+      const alternateCall: RuntimeToolCall = {
+        tool: recoveryDecision.alternateToolId as RuntimeToolCall["tool"],
+        args: toolCall.args,
+      };
+      const alternateAttemptDecision =
+        completion.registerToolAttempt(alternateCall, completionScope);
+      if (!alternateAttemptDecision.allowed) {
+        emitNodeRuntimeState("finalizing", {
+          agentId: params.agentId,
+          title: params.title,
+          toolId: alternateCall.tool,
+          reason: alternateAttemptDecision.reason,
+          iteration,
+        });
+        return {
+          kind: "return",
+          response: await runForcedFinalProviderCall({
+            invokeProvider,
+            config,
+            messages,
+            system: params.system,
+            nativeTools,
+            streamCallbacks,
+            reason: alternateAttemptDecision.reason,
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+            title: params.title,
+          }),
+        };
+      }
+      const alternateRiskLevel =
+        runtimeToolExecutor.riskLevel(alternateCall);
+      const alternateAction = actionLedger.propose({
+        id: `${params.agentId}-tool-recovery-${events.length}`,
+        type: alternateCall.tool,
+        riskLevel: alternateRiskLevel,
+        input: alternateCall.args,
+        approvalRequest:
+          alternateRiskLevel === "high"
+            ? runtimeToolExecutor.approvalRequest(
+                alternateCall,
+                input.prompt,
+              )
+            : undefined,
         agentId: params.agentId,
-        nodeId: params.agentId,
-        result: {
-          status: "interrupted",
-          error: TOOL_REPAIR_CONTENT,
-          content: TOOL_REPAIR_CONTENT,
-          createdAt: now(),
-          updatedAt: now(),
-        },
-        error: TOOL_REPAIR_CONTENT,
-        repairReason: "missing_provider_tool_result",
       });
       emit(
-        "tool.repaired",
+        "action.updated",
         {
-          providerCallId: call.id,
-          toolId: call.toolId,
-          status: "repaired",
-          resultStatus: "interrupted",
-          repairReason: "missing_provider_tool_result",
-          content: TOOL_REPAIR_CONTENT,
+          actionId: alternateAction.id,
+          status: "proposed",
+          record: alternateAction,
         },
         { agentId: params.agentId, nodeId: params.agentId },
       );
-      repairedMessages.push({
-        role: "tool",
-        toolCallId: call.id,
-        toolName: call.toolId,
-        content: TOOL_REPAIR_CONTENT,
+      const alternateApproval = await resolveRuntimeActionApproval({
+        action: alternateAction,
+        context: {
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+        },
+        deps: actionDeps(),
       });
+      transitionRuntimeAction({
+        action: alternateAction,
+        status: "running",
+        context: { agentId: params.agentId, nodeId: params.agentId },
+        deps: actionDeps(),
+      });
+      emitNodeRuntimeState("tool_running", {
+        agentId: params.agentId,
+        title: params.title,
+        actionId: alternateAction.id,
+        toolId: alternateCall.tool,
+        iteration,
+      });
+      const alternateExecution = await runtimeToolExecutor.executeWithMetadata(
+        alternateCall,
+        {
+          allowRisky:
+            alternateApproval.approvedForRiskyExecution,
+        },
+      );
+      const alternateOutput = alternateExecution.output;
+      const alternateArtifact = alternateExecution.fileChange
+        ? publishFileChangeArtifact(alternateExecution.fileChange, {
+            actionId: alternateAction.id,
+            agentId: params.agentId,
+            nodeId: params.agentId,
+          })
+        : undefined;
+      completion.markToolResultObserved(alternateCall, false, completionScope);
+      const { resultText: alternateResultText } =
+        recordRuntimeToolActionSucceeded({
+          action: alternateAction,
+          context: { agentId: params.agentId, nodeId: params.agentId },
+          deps: actionDeps(),
+          toolCall: alternateCall,
+          output: alternateOutput,
+          fileChange: alternateExecution.fileChange,
+          artifactIds: alternateArtifact ? [alternateArtifact.id] : undefined,
+          recoveredFrom: toolCall.tool,
+          now,
+        });
+      emitNodeRuntimeState("tool_result_observed", {
+        agentId: params.agentId,
+        title: params.title,
+        actionId: alternateAction.id,
+        toolId: alternateCall.tool,
+        iteration,
+      });
+      messages = [
+        ...messages,
+        { role: "assistant", content: failure.response.text },
+        {
+          role: "user",
+          content: `Workspace tool result for ${alternateCall.tool}:\n${alternateResultText}`,
+        },
+      ];
+      if (completion.forcedFinalIsActive(completionScope)) {
+        const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
+        emitNodeRuntimeState("finalizing", {
+          agentId: params.agentId,
+          title: params.title,
+          toolId: alternateCall.tool,
+          reason: stopReason,
+          iteration,
+        });
+        return {
+          kind: "return",
+          response: await runForcedFinalProviderCall({
+            invokeProvider,
+            config,
+            messages,
+            system: params.system,
+            nativeTools,
+            streamCallbacks,
+            reason: stopReason,
+            agentId: params.agentId,
+            nodeId: params.nodeId,
+            title: params.title,
+          }),
+        };
+      }
+      emitNodeRuntimeState("running_model", {
+        agentId: params.agentId,
+        title: params.title,
+        iteration: iteration + 1,
+      });
+      return {
+        kind: "continue",
+        response: await invokeFollowUpModel({
+          messages,
+          system: params.system,
+          maxTokens: config.budget?.maxTokens,
+          tools: nativeTools,
+          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+        }, failure.response, "tool_follow_up"),
+      };
     }
-    return repairedMessages;
+
+    if (recoveryDecision.action === "fallback_artifact") {
+      const recoveryArtifact = publishRecoveryArtifact(
+        incident,
+        recoveryDecision,
+      );
+      const fallbackPrefix = modeSpec.runtimeAtoms.includes(
+        "tool_error_boundary",
+      )
+        ? "[tool-error-boundary]"
+        : "[recovery:fallback]";
+      emit(
+        "message.delta",
+        {
+          role: "assistant",
+          content: `${fallbackPrefix} ${toolCall.tool} degraded after ${incident.errorType}: ${incident.detail}`,
+          boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
+            ? "recovery_policy"
+            : "tool_error_boundary",
+        },
+        { agentId: params.agentId, nodeId: params.agentId },
+      );
+      const fallbackOutput = recoveryDecision.usableOutput ?? {
+        degraded: true,
+        recoveryArtifactId: recoveryArtifact.id,
+        errorType: incident.errorType,
+        error: incident.detail,
+      };
+      const degradedToolContent = `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`;
+      messages =
+        toolCall.source === "provider_native" && toolCall.providerCallId
+          ? [
+              ...messages,
+              {
+                role: "assistant",
+                content: failure.response.text,
+                reasoningContent: failure.response.reasoningContent,
+                toolCalls: failure.response.toolCalls?.filter(
+                  (call) => call.id === toolCall.providerCallId,
+                ),
+              },
+              {
+                role: "tool",
+                toolCallId: toolCall.providerCallId,
+                toolName: toolCall.tool,
+                content: degradedToolContent,
+              },
+            ]
+          : [
+              ...messages,
+              { role: "assistant", content: failure.response.text },
+              {
+                role: "user",
+                content: degradedToolContent,
+              },
+            ];
+      emitNodeRuntimeState("repairing", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        detail: incident.detail,
+      });
+      return {
+        kind: "continue",
+        response: await invokeFollowUpModel({
+          messages,
+          system: params.system,
+          maxTokens: config.budget?.maxTokens,
+          tools: nativeTools,
+          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+        }, failure.response, "tool_recovery_follow_up"),
+      };
+    }
+
+    return { kind: "throw", error };
   };
+  const toolFailureContext: RuntimeToolFailureContext = {
+    ...toolExecutionContext,
+    recoverToolFailure,
+  };
+  const invokeToolFailure = (request: RuntimeToolFailureRequest) =>
+    invokeRuntimeToolFailure({
+      request,
+      context: toolFailureContext,
+      middlewares: runtimeMiddlewares,
+      terminal: async ({ error }) => ({ kind: "throw", error }),
+    });
+  const modelResponseContext: RuntimeModelResponseContext = {
+    ...toolExecutionContext,
+    system: params.system,
+    ensureClarifications,
+    emitProgressNarration,
+    completion,
+    runForcedFinalProviderCall: ({ messages: nextMessages, reason, nativeTools: nextNativeTools }) =>
+      runForcedFinalProviderCall({
+        invokeProvider,
+        config,
+        messages: [...nextMessages],
+        system: params.system,
+        nativeTools: [...nextNativeTools],
+        streamCallbacks,
+        reason,
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        title: params.title,
+      }),
+    invokeFollowUpModel,
+  };
+  const invokeModelResponse = (request: Parameters<typeof invokeRuntimeModelResponse>[0]["request"]) =>
+    invokeRuntimeModelResponse({
+      request,
+      context: modelResponseContext,
+      middlewares: runtimeMiddlewares,
+      terminal: async () => ({ kind: "unhandled" }),
+    });
+
   emitNodeRuntimeState("pending", {
     agentId: params.agentId,
     title: params.title,
   });
-  messages = repairDanglingToolCalls(messages);
   const initialToolsAllowed = completion.toolsAllowed(completionScope);
   if (!initialToolsAllowed && completion.toolAttempts >= completion.maxToolCalls) {
     completion.forceFinalAnswer("tool_budget_exhausted");
@@ -487,28 +702,25 @@ export async function runNodeRuntimeLoop(
     agentId: params.agentId,
     title: params.title,
   });
-  let response = await invokeProvider(
-    config,
-    {
-      prompt: params.prompt,
-      messages,
-      system: initialToolsAllowed
-        ? params.system
-        : forcedFinalSystemPrompt(
-            params.system,
-            completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
-          ),
-      maxTokens: config.budget?.maxTokens,
-      tools: nativeTools,
-      toolChoice:
-        nativeTools.length > 0
-          ? initialToolsAllowed
-            ? "auto"
-            : "none"
-          : undefined,
-    },
-    streamCallbacks,
-  );
+  const initialRequest: ModelRequest = {
+    prompt: params.prompt,
+    messages,
+    system: initialToolsAllowed
+      ? params.system
+      : forcedFinalSystemPrompt(
+          params.system,
+          completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
+        ),
+    maxTokens: config.budget?.maxTokens,
+    tools: nativeTools,
+    toolChoice:
+      nativeTools.length > 0
+        ? initialToolsAllowed
+          ? "auto"
+          : "none"
+        : undefined,
+  };
+  let response = await invokeModel(initialRequest);
   if (!initialToolsAllowed) {
     const finalResponse = coerceNoToolResponse(
       response,
@@ -576,212 +788,20 @@ export async function runNodeRuntimeLoop(
       ?.map(providerToolCallToAttempt)
       .filter(Boolean) as RuntimeToolAttempt[]) ?? [];
 
-    if (allNativeToolCalls.length > 1) {
-      const clarifyToolCalls = allNativeToolCalls.filter((tc) => tc.tool === "user.clarify");
-      if (clarifyToolCalls.length > 1) {
-        const clarificationRequests = clarifyToolCalls.map((tc, index) => {
-          const question = stringToolArg(tc.args, "question");
-          if (!question) {
-            throw new Error("user.clarify requires a non-empty question.");
-          }
-          const fallbackKey = `dynamic_${params.agentId}_${events.length + index}`;
-          const key = sanitizeClarificationKey(stringToolArg(tc.args, "key") ?? fallbackKey);
-          return {
-            id: `clarification:${params.agentId}:${events.length + index}`,
-            key,
-            nodeId: params.nodeId,
-            nodeLabel: params.title,
-            question,
-            options: parseClarificationOptions(tc.args.options),
-            toolCall: tc,
-          };
-        });
-
-        const unanswered = clarificationRequests.filter(
-          (req) => clarificationAnswer(req.key, req.id) === undefined,
-        );
-
-        if (unanswered.length > 0) {
-          const batchAction = actionLedger.propose({
-            id: `${params.agentId}-tool-${events.length}`,
-            type: "user.clarify",
-            riskLevel: "low",
-            input: { batch: unanswered.map((r) => ({ key: r.key, question: r.question })) },
-            agentId: params.agentId,
-          });
-          const batchToolCallRecord = appendToolCall({
-            providerCallId: clarifyToolCalls[0]!.providerCallId,
-            toolId: "user.clarify",
-            args: { batch: unanswered.map((r) => r.question) },
-            source: clarifyToolCalls[0]!.source,
-            status: "proposed",
-            actionId: batchAction.id,
-            agentId: params.agentId,
-            nodeId: params.agentId,
-          });
-          emit(
-            "action.updated",
-            { actionId: batchAction.id, status: "proposed", record: batchAction },
-            { agentId: params.agentId, nodeId: params.agentId },
-          );
-          emitNodeRuntimeState("tool_running", {
-            agentId: params.agentId,
-            title: params.title,
-            actionId: batchAction.id,
-            toolId: "user.clarify",
-            iteration,
-          });
-
-          for (const req of unanswered) {
-            recordRuntimeToolActionSucceeded({
-              action: batchAction,
-              context: { agentId: params.agentId, nodeId: params.agentId },
-              deps: actionDeps(),
-              toolCall: req.toolCall,
-              output: {
-                status: "clarification_requested",
-                clarification: req,
-              },
-              toolCallRecord: batchToolCallRecord,
-              now,
-            });
-          }
-
-          emitNodeRuntimeState("interrupted", {
-            agentId: params.agentId,
-            title: params.title,
-            actionId: batchAction.id,
-            toolId: "user.clarify",
-            detail: `${unanswered.length} clarification questions pending`,
-            iteration,
-          });
-
-          await ensureClarifications(
-            unanswered.map((req) => ({
-              id: req.id,
-              key: req.key,
-              nodeId: req.nodeId,
-              nodeLabel: req.nodeLabel,
-              question: req.question,
-              options: req.options,
-            })),
-          );
-        }
-
-        // On resume: all are answered. Build tool results for all clarify calls.
-        const clarifyAnswers: Array<{
-          call: RuntimeToolAttempt;
-          req: { id: string; key: string; question: string };
-          answer: unknown;
-        }> = [];
-        for (const req of clarificationRequests) {
-          const answer = await ensureClarification({
-            id: req.id,
-            key: req.key,
-            nodeId: req.nodeId,
-            nodeLabel: req.nodeLabel,
-            question: req.question,
-            options: req.options,
-          });
-          clarifyAnswers.push({ call: req.toolCall, req, answer });
-        }
-
-        if (toolCall.source === "provider_native" && toolCall.providerCallId) {
-          messages = [
-            ...messages,
-            {
-              role: "assistant",
-              content: response.text,
-              reasoningContent: response.reasoningContent,
-              toolCalls: response.toolCalls?.filter(
-                (call) => clarifyToolCalls.some((tc) => tc.providerCallId === call.id),
-              ),
-            },
-          ];
-        }
-
-        for (const { call: tc, req, answer } of clarifyAnswers) {
-          const resultText = JSON.stringify({
-            status: "clarification_answered",
-            question: req.question,
-            answer,
-          });
-
-          if (tc.source === "provider_native" && tc.providerCallId) {
-            messages.push({
-              role: "tool",
-              toolCallId: tc.providerCallId,
-              toolName: tc.tool,
-              content: resultText,
-            });
-          } else {
-            messages.push({
-              role: "user",
-              content: `Workspace tool result for ${tc.tool}:\n${resultText}`,
-            });
-          }
-
-          emitNodeRuntimeState("tool_result_observed", {
-            agentId: params.agentId,
-            title: params.title,
-            toolId: tc.tool,
-            iteration,
-          });
-        }
-
-        await emitProgressNarration({
-          trigger: "tool.succeeded",
-          agentId: params.agentId,
-          nodeId: params.agentId,
-          title: params.title,
-          detail: `${clarifyAnswers.length} clarification(s) answered.`,
-        });
-
-        messages = repairDanglingToolCalls(messages);
-
-        completion.markToolResultObserved(toolCall, false, completionScope);
-
-        if (completion.forcedFinalIsActive(completionScope)) {
-          const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
-          emitNodeRuntimeState("finalizing", {
-            agentId: params.agentId,
-            title: params.title,
-            reason: stopReason,
-            iteration,
-          });
-          return runForcedFinalProviderCall({
-            invokeProvider,
-            config,
-            messages,
-            system: params.system,
-            nativeTools,
-            streamCallbacks,
-            reason: stopReason,
-            agentId: params.agentId,
-            nodeId: params.nodeId,
-            title: params.title,
-          });
-        }
-
-        emitNodeRuntimeState("running_model", {
-          agentId: params.agentId,
-          title: params.title,
-          iteration: iteration + 1,
-        });
-        await compactMessagesBeforeFollowUp(response, "tool_follow_up");
-        response = await invokeProvider(
-          config,
-          {
-            messages,
-            system: params.system,
-            maxTokens: config.budget?.maxTokens,
-            tools: nativeTools,
-            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-          },
-          streamCallbacks,
-        );
-        continue;
-      }
+    const responseResult = await invokeModelResponse({
+      response,
+      iteration,
+      messages,
+      selectedToolCall: toolCall,
+      allNativeToolCalls,
+      nativeTools,
+    });
+    if (responseResult.kind === "handled_return") {
+      return responseResult.response;
+    }
+    if (responseResult.kind === "handled_continue") {
+      response = responseResult.response;
+      continue;
     }
 
     emitNodeRuntimeState("tool_requested", {
@@ -869,63 +889,15 @@ export async function runNodeRuntimeLoop(
     });
 
     try {
-      const clarificationRequest = toolCall.tool === "user.clarify"
-        ? dynamicClarificationRequest(toolCall, params, events.length)
-        : undefined;
-      const existingClarificationAnswer = clarificationRequest
-        ? clarificationAnswer(clarificationRequest.key, clarificationRequest.id)
-        : undefined;
-      if (clarificationRequest && existingClarificationAnswer === undefined) {
-        recordRuntimeToolActionSucceeded({
-          action,
-          context: { agentId: params.agentId, nodeId: params.agentId },
-          deps: actionDeps(),
-          toolCall,
-          output: {
-            status: "clarification_requested",
-            clarification: clarificationRequest,
-          },
-          toolCallRecord,
-          now,
-        });
-        emitNodeRuntimeState("interrupted", {
-          agentId: params.agentId,
-          title: params.title,
-          actionId: action.id,
-          toolId: toolCall.tool,
-          detail: clarificationRequest.question,
-          iteration,
-        });
-        await ensureClarification(clarificationRequest);
-      }
-      const cacheKey = clarificationRequest ? undefined : cacheKeyForRuntimeTool(toolCall);
-      const cacheHit =
-        cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
-      const execution = clarificationRequest
-        ? {
-            output: {
-              status: "clarification_answered",
-              question: clarificationRequest.question,
-              answer: await ensureClarification(clarificationRequest),
-            },
-          }
-        : cacheHit
-          ? { output: runtimeToolResultCache.get(cacheKey) }
-          : await runtimeToolExecutor.executeWithMetadata(toolCall, {
-              allowRisky: approvedForRiskyExecution,
-            });
+      const execution = await invokeToolExecution({
+        action,
+        toolCall,
+        toolCallRecord,
+        allowRisky: approvedForRiskyExecution,
+        iteration,
+      });
       const output = execution.output;
-      if (cacheKey && !cacheHit) {
-        runtimeToolResultCache.set(cacheKey, output);
-      }
-      const artifact = execution.fileChange
-        ? publishFileChangeArtifact(execution.fileChange, {
-            actionId: action.id,
-            agentId: params.agentId,
-            nodeId: params.agentId,
-          })
-        : undefined;
-      completion.markToolResultObserved(toolCall, cacheHit, completionScope);
+      completion.markToolResultObserved(toolCall, execution.cacheHit ?? false, completionScope);
       const { resultText } = recordRuntimeToolActionSucceeded({
         action,
         context: { agentId: params.agentId, nodeId: params.agentId },
@@ -933,8 +905,8 @@ export async function runNodeRuntimeLoop(
         toolCall,
         output,
         fileChange: execution.fileChange,
-        artifactIds: artifact ? [artifact.id] : undefined,
-        cacheHit,
+        artifactIds: execution.artifact ? [execution.artifact.id] : undefined,
+        cacheHit: execution.cacheHit,
         toolCallRecord,
         now,
       });
@@ -984,7 +956,6 @@ export async function runNodeRuntimeLoop(
                 content: `Workspace tool result for ${toolCall.tool}:\n${resultText}`,
               },
             ];
-      messages = repairDanglingToolCalls(messages);
       if (completion.forcedFinalIsActive(completionScope)) {
         const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
         emitNodeRuntimeState("finalizing", {
@@ -1013,310 +984,37 @@ export async function runNodeRuntimeLoop(
         title: params.title,
         iteration: iteration + 1,
       });
-      await compactMessagesBeforeFollowUp(response, "tool_follow_up");
-      response = await invokeProvider(
-        config,
-        {
-          messages,
-          system: params.system,
-          maxTokens: config.budget?.maxTokens,
-          tools: nativeTools,
-          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-        },
-        streamCallbacks,
-      );
+      response = await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        maxTokens: config.budget?.maxTokens,
+        tools: nativeTools,
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "tool_follow_up");
     } catch (error) {
       if (error instanceof ClarificationInterruptError) {
         throw error;
       }
-      const detail = error instanceof Error ? error.message : String(error);
-      recordRuntimeToolActionFailed({
+      const failureResult = await invokeToolFailure({
+        error,
         action,
-        context: { agentId: params.agentId, nodeId: params.agentId },
-        deps: actionDeps(),
         toolCall,
-        detail,
         toolCallRecord,
-        now,
+        allowRisky: approvedForRiskyExecution,
+        iteration,
+        response,
       });
-      emitNodeRuntimeState("degraded", {
-        agentId: params.agentId,
-        title: params.title,
-        actionId: action.id,
-        toolId: toolCall.tool,
-        detail,
-      });
-      await emitProgressNarration({
-        trigger: "tool.failed",
-        agentId: params.agentId,
-        nodeId: params.agentId,
-        title: params.title,
-        detail,
-      });
-
-      const incident = classifyRecoveryError(error, {
-        surface: "tool",
-        nodeId: params.agentId,
-        agentId: params.agentId,
-        toolId: toolCall.tool,
-        actionId: action.id,
-      });
-      const recoveryDecision = recoveryCoordinator.resolve(incident);
-      emitRecoveryDecision(incident, recoveryDecision);
-      await emitProgressNarration({
-        trigger: "recovery.updated",
-        agentId: params.agentId,
-        nodeId: params.agentId,
-        title: params.title,
-        detail: recoveryDecision.summary,
-      });
-
-      if (recoveryDecision.action === "retry") {
-        await sleep(recoveryDecision.retryDelayMs ?? 0);
+      if (failureResult.kind === "retry") {
         continue;
       }
-
-      if (
-        recoveryDecision.action === "alternate_tool" &&
-        recoveryDecision.alternateToolId
-      ) {
-        const alternateCall: RuntimeToolCall = {
-          tool: recoveryDecision.alternateToolId as RuntimeToolCall["tool"],
-          args: toolCall.args,
-        };
-        const alternateAttemptDecision =
-          completion.registerToolAttempt(alternateCall, completionScope);
-        if (!alternateAttemptDecision.allowed) {
-          emitNodeRuntimeState("finalizing", {
-            agentId: params.agentId,
-            title: params.title,
-            toolId: alternateCall.tool,
-            reason: alternateAttemptDecision.reason,
-            iteration,
-          });
-          return runForcedFinalProviderCall({
-            invokeProvider,
-            config,
-            messages,
-            system: params.system,
-            nativeTools,
-            streamCallbacks,
-            reason: alternateAttemptDecision.reason,
-            agentId: params.agentId,
-            nodeId: params.nodeId,
-            title: params.title,
-          });
-        }
-        const alternateRiskLevel =
-          runtimeToolExecutor.riskLevel(alternateCall);
-        const alternateAction = actionLedger.propose({
-          id: `${params.agentId}-tool-recovery-${events.length}`,
-          type: alternateCall.tool,
-          riskLevel: alternateRiskLevel,
-          input: alternateCall.args,
-          approvalRequest:
-            alternateRiskLevel === "high"
-              ? runtimeToolExecutor.approvalRequest(
-                  alternateCall,
-                  input.prompt,
-                )
-              : undefined,
-          agentId: params.agentId,
-        });
-        emit(
-          "action.updated",
-          {
-            actionId: alternateAction.id,
-            status: "proposed",
-            record: alternateAction,
-          },
-          { agentId: params.agentId, nodeId: params.agentId },
-        );
-        const alternateApproval = await resolveRuntimeActionApproval({
-          action: alternateAction,
-          context: {
-            agentId: params.agentId,
-            nodeId: params.agentId,
-            title: params.title,
-          },
-          deps: actionDeps(),
-        });
-        transitionRuntimeAction({
-          action: alternateAction,
-          status: "running",
-          context: { agentId: params.agentId, nodeId: params.agentId },
-          deps: actionDeps(),
-        });
-        emitNodeRuntimeState("tool_running", {
-          agentId: params.agentId,
-          title: params.title,
-          actionId: alternateAction.id,
-          toolId: alternateCall.tool,
-          iteration,
-        });
-        const alternateExecution = await runtimeToolExecutor.executeWithMetadata(
-          alternateCall,
-          {
-            allowRisky:
-              alternateApproval.approvedForRiskyExecution,
-          },
-        );
-        const alternateOutput = alternateExecution.output;
-        const alternateArtifact = alternateExecution.fileChange
-          ? publishFileChangeArtifact(alternateExecution.fileChange, {
-              actionId: alternateAction.id,
-              agentId: params.agentId,
-              nodeId: params.agentId,
-            })
-          : undefined;
-        completion.markToolResultObserved(alternateCall, false, completionScope);
-        const { resultText: alternateResultText } =
-          recordRuntimeToolActionSucceeded({
-            action: alternateAction,
-            context: { agentId: params.agentId, nodeId: params.agentId },
-            deps: actionDeps(),
-            toolCall: alternateCall,
-            output: alternateOutput,
-            fileChange: alternateExecution.fileChange,
-            artifactIds: alternateArtifact ? [alternateArtifact.id] : undefined,
-            recoveredFrom: toolCall.tool,
-            now,
-          });
-        emitNodeRuntimeState("tool_result_observed", {
-          agentId: params.agentId,
-          title: params.title,
-          actionId: alternateAction.id,
-          toolId: alternateCall.tool,
-          iteration,
-        });
-        messages = [
-          ...messages,
-            { role: "assistant", content: response.text },
-            {
-              role: "user",
-              content: `Workspace tool result for ${alternateCall.tool}:\n${alternateResultText}`,
-            },
-          ];
-        if (completion.forcedFinalIsActive(completionScope)) {
-          const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
-          emitNodeRuntimeState("finalizing", {
-            agentId: params.agentId,
-            title: params.title,
-            toolId: alternateCall.tool,
-            reason: stopReason,
-            iteration,
-          });
-          response = await runForcedFinalProviderCall({
-            invokeProvider,
-            config,
-            messages,
-            system: params.system,
-            nativeTools,
-            streamCallbacks,
-            reason: stopReason,
-            agentId: params.agentId,
-            nodeId: params.nodeId,
-            title: params.title,
-          });
-          return response;
-        }
-        emitNodeRuntimeState("running_model", {
-          agentId: params.agentId,
-          title: params.title,
-          iteration: iteration + 1,
-        });
-        await compactMessagesBeforeFollowUp(response, "tool_follow_up");
-        response = await invokeProvider(
-          config,
-          {
-            messages,
-            system: params.system,
-            maxTokens: config.budget?.maxTokens,
-            tools: nativeTools,
-            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-          },
-          streamCallbacks,
-        );
+      if (failureResult.kind === "return") {
+        return failureResult.response;
+      }
+      if (failureResult.kind === "continue") {
+        response = failureResult.response;
         continue;
       }
-
-      if (recoveryDecision.action === "fallback_artifact") {
-        const recoveryArtifact = publishRecoveryArtifact(
-          incident,
-          recoveryDecision,
-        );
-        const fallbackPrefix = modeSpec.runtimeAtoms.includes(
-          "tool_error_boundary",
-        )
-          ? "[tool-error-boundary]"
-          : "[recovery:fallback]";
-        emit(
-          "message.delta",
-          {
-            role: "assistant",
-            content: `${fallbackPrefix} ${toolCall.tool} degraded after ${incident.errorType}: ${incident.detail}`,
-            boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
-              ? "recovery_policy"
-              : "tool_error_boundary",
-          },
-          { agentId: params.agentId, nodeId: params.agentId },
-        );
-        const fallbackOutput = recoveryDecision.usableOutput ?? {
-          degraded: true,
-          recoveryArtifactId: recoveryArtifact.id,
-          errorType: incident.errorType,
-          error: incident.detail,
-        };
-        const degradedToolContent = `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`;
-        messages =
-          toolCall.source === "provider_native" && toolCall.providerCallId
-            ? [
-                ...messages,
-                {
-                  role: "assistant",
-                  content: response.text,
-                  reasoningContent: response.reasoningContent,
-                  toolCalls: response.toolCalls?.filter(
-                    (call) => call.id === toolCall.providerCallId,
-                  ),
-                },
-                {
-                  role: "tool",
-                  toolCallId: toolCall.providerCallId,
-                  toolName: toolCall.tool,
-                  content: degradedToolContent,
-                },
-              ]
-            : [
-                ...messages,
-                { role: "assistant", content: response.text },
-                {
-                  role: "user",
-                  content: degradedToolContent,
-                },
-              ];
-        emitNodeRuntimeState("repairing", {
-          agentId: params.agentId,
-          title: params.title,
-          toolId: toolCall.tool,
-          detail: incident.detail,
-        });
-        await compactMessagesBeforeFollowUp(response, "tool_recovery_follow_up");
-        response = await invokeProvider(
-          config,
-          {
-            messages,
-            system: params.system,
-            maxTokens: config.budget?.maxTokens,
-            tools: nativeTools,
-            toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-          },
-          streamCallbacks,
-        );
-        continue;
-      }
-
-      throw error;
+      throw failureResult.error;
     }
   }
 
