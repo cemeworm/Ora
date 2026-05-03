@@ -13,8 +13,23 @@ interface ChatMessagesProps {
   hasApprovalTray?: boolean;
   hasClarificationTray?: boolean;
   hasPlanDecisionTray?: boolean;
+  bottomInsetPx?: number;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
+}
+
+export function messageBottomPaddingPx({
+  hasTray,
+  bottomInsetPx,
+}: {
+  hasTray: boolean;
+  bottomInsetPx?: number;
+}): number {
+  const fallback = hasTray ? 240 : 176;
+  if (typeof bottomInsetPx !== "number" || !Number.isFinite(bottomInsetPx) || bottomInsetPx <= 0) {
+    return fallback;
+  }
+  return Math.max(Math.ceil(bottomInsetPx) + 24, fallback);
 }
 
 export function ChatMessages({
@@ -25,10 +40,13 @@ export function ChatMessages({
   hasApprovalTray = false,
   hasClarificationTray = false,
   hasPlanDecisionTray = false,
+  bottomInsetPx,
   onOpenArtifact,
   onSubmitFeedback,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasTray = hasApprovalTray || hasClarificationTray || hasPlanDecisionTray;
+  const paddingBottom = messageBottomPaddingPx({ hasTray, bottomInsetPx });
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -39,7 +57,10 @@ export function ChatMessages({
   return (
     <div ref={scrollRef} className="min-h-0 w-full flex-1 overflow-y-auto">
       <Conversation className="min-h-0 flex-1">
-        <ConversationContent className={cn("mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8", hasApprovalTray || hasClarificationTray || hasPlanDecisionTray ? "pb-60" : "pb-44")}>
+        <ConversationContent
+          className="mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8"
+          style={{ paddingBottom }}
+        >
         {chatMessages.map((message) => {
           if (message.role === "assistant") {
             return (

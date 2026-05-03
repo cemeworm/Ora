@@ -56,7 +56,7 @@ interface ChatInputProps {
   onApprove?: () => void;
   onCancelApproval?: () => void;
   clarificationQuestions?: OraStateSnapshot["pendingClarifications"];
-  onSubmitClarificationOption?: (answer: string) => void;
+  onSubmitAllClarifications?: (answers: Record<string, string>) => void;
   onModeChange: (modeId: string) => void;
   onModeSelectionChange: (selection: ModeSelection) => void;
   onProviderChange: (providerId: string) => void;
@@ -73,6 +73,7 @@ interface ChatInputProps {
   planDecisionPending?: boolean;
   onConfirmPlanDecision?: () => void;
   onDeclinePlanDecision?: () => void;
+  onOverlayHeightChange?: (height: number) => void;
   onStartRun: () => void;
   onStopRun: () => void;
 }
@@ -88,6 +89,25 @@ export function getComposerInteractivity({
     canEditText: true,
     canSubmit: composerPrompt.trim().length > 0 && !isLoading,
   };
+}
+
+export function getComposerTrayVisibility({
+  isLoading,
+  clarificationCount,
+  canSubmitClarifications,
+  hasPlanDecision,
+  canResolvePlanDecision,
+}: {
+  isLoading: boolean;
+  clarificationCount: number;
+  canSubmitClarifications: boolean;
+  hasPlanDecision: boolean;
+  canResolvePlanDecision: boolean;
+}) {
+  const showClarificationTray = !isLoading && clarificationCount > 0 && canSubmitClarifications;
+  const showPlanDecisionTray = !showClarificationTray && hasPlanDecision && canResolvePlanDecision;
+  const hideComposer = showPlanDecisionTray || Boolean(hasPlanDecision && showClarificationTray);
+  return { showClarificationTray, showPlanDecisionTray, hideComposer };
 }
 
 function resizeComposerTextarea(target: HTMLTextAreaElement) {
@@ -115,7 +135,7 @@ export function ChatInput({
   onApprove,
   onCancelApproval,
   clarificationQuestions = [],
-  onSubmitClarificationOption,
+  onSubmitAllClarifications,
   onModeChange,
   onModeSelectionChange,
   onProviderChange,
@@ -132,10 +152,13 @@ export function ChatInput({
   planDecisionPending,
   onConfirmPlanDecision,
   onDeclinePlanDecision,
+  onOverlayHeightChange,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lastOverlayHeightRef = useRef<number | undefined>();
   const [openPicker, setOpenPicker] = useState<
     "pattern" | "provider" | "skills" | "taskIntent" | "permissionMode" | undefined
   >();
@@ -180,7 +203,13 @@ export function ChatInput({
     && filteredSkillOptions.length > 0;
   const hasTopChips = selectedSkills.length > 0 || projectFileAttachments.length > 0 || localFileAttachments.length > 0;
   const showApprovalTray = approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
-  const showClarificationTray = !isLoading && clarificationQuestions.length > 0 && Boolean(onSubmitClarificationOption);
+  const { showClarificationTray, showPlanDecisionTray, hideComposer } = getComposerTrayVisibility({
+    isLoading,
+    clarificationCount: clarificationQuestions.length,
+    canSubmitClarifications: Boolean(onSubmitAllClarifications),
+    hasPlanDecision: Boolean(planDecisionPending),
+    canResolvePlanDecision: Boolean(onConfirmPlanDecision && onDeclinePlanDecision),
+  });
 
   useLayoutEffect(() => {
     const target = textareaRef.current;
@@ -199,6 +228,38 @@ export function ChatInput({
     target.scrollLeft = 0;
     target.scrollTop = 0;
   }, [sessionId]);
+
+  useLayoutEffect(() => {
+    const target = overlayRef.current;
+    if (!target || !onOverlayHeightChange) return;
+
+    const reportHeight = () => {
+      const height = Math.ceil(target.getBoundingClientRect().height);
+      if (lastOverlayHeightRef.current === height) return;
+      lastOverlayHeightRef.current = height;
+      onOverlayHeightChange(height);
+    };
+
+    reportHeight();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [
+    onOverlayHeightChange,
+    showApprovalTray,
+    showClarificationTray,
+    showPlanDecisionTray,
+    hideComposer,
+    hasTopChips,
+    composerPrompt,
+    clarificationQuestions,
+    approvalActions,
+    planDecisionPending,
+  ]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Escape" && openPicker === "skills") {
@@ -276,7 +337,7 @@ export function ChatInput({
   ];
 
   return (
-    <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
+    <div ref={overlayRef} className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
       <div className="pointer-events-auto relative w-full max-w-[88rem]">
         {showSkillPicker && (
           <div className="absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
@@ -323,21 +384,21 @@ export function ChatInput({
           <div className="mb-2">
             <ClarificationPanel
               pendingClarifications={clarificationQuestions}
-              onSubmitOption={onSubmitClarificationOption!}
+              onSubmitAll={onSubmitAllClarifications!}
               disabled={isLoading}
             />
           </div>
         ) : null}
-        {planDecisionPending && onConfirmPlanDecision && onDeclinePlanDecision ? (
+        {showPlanDecisionTray ? (
           <div className="mb-2">
             <PlanDecisionPanel
-              onConfirm={onConfirmPlanDecision}
-              onDecline={onDeclinePlanDecision}
+              onConfirm={onConfirmPlanDecision!}
+              onDecline={onDeclinePlanDecision!}
               disabled={isLoading}
             />
           </div>
         ) : null}
-        {planDecisionPending ? null : (
+        {hideComposer ? null : (
         <div className="rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
           <div className={cn("relative", hasTopChips ? "min-h-[148px]" : "min-h-[96px]")}>
             {hasTopChips && (

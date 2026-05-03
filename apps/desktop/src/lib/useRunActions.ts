@@ -116,6 +116,36 @@ export function clarificationOptionAnswer(option: { label: string; value?: strin
   return (option.value ?? option.label).trim();
 }
 
+export function buildClarificationSubmissionPrompt(
+  answers: Record<string, string>,
+  pendingClarifications: Pick<OraStateSnapshot, "pendingClarifications">["pendingClarifications"] = [],
+): string {
+  const entries = Object.entries(answers)
+    .map(([key, value]) => [key, value.trim()] as const)
+    .filter(([, value]) => value.length > 0);
+  if (entries.length === 0) return "";
+  if (entries.length === 1) return entries[0]![1];
+
+  const questionByKey = new Map(
+    pendingClarifications.map((clarification) => [clarification.key, clarification.question.trim()] as const),
+  );
+  const orderedKeys = [
+    ...pendingClarifications.map((clarification) => clarification.key),
+    ...entries.map(([key]) => key),
+  ];
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const key of orderedKeys) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const answer = answers[key]?.trim();
+    if (!answer) continue;
+    const label = questionByKey.get(key) ?? key;
+    lines.push(`- ${label}: ${answer}`);
+  }
+  return ["已补充：", ...lines].join("\n");
+}
+
 export function waitForPendingRunPaint(): Promise<void> {
   if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
     return Promise.resolve();
@@ -457,6 +487,36 @@ export function useRunActions() {
         clarificationPatch,
       );
       await refreshCurrentSession(snapshot, `Clarification submitted for ${snapshot.runId}.`);
+    } catch (error) {
+      dispatch({
+        type: "SET_BRIDGE_STATUS",
+        status: { mode: "error", ok: false, label: "Resume failed", detail: error instanceof Error ? error.message : "Unable to resume run." },
+      });
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  }
+
+  async function submitAllClarifications(answers: Record<string, string>) {
+    if (!state.selectedSessionId || !state.selectedTurnRunId) return;
+    if (Object.keys(answers).length === 0) return;
+
+    const submittedPrompt = buildClarificationSubmissionPrompt(answers, state.activeSnapshot?.pendingClarifications ?? []);
+    flushSync(() => {
+      dispatch({
+        type: "BEGIN_RUN_REQUEST",
+        sessionId: state.selectedSessionId!,
+        prompt: submittedPrompt,
+        createdAt: Date.now(),
+      });
+    });
+    await waitForPendingRunPaint();
+    try {
+      const snapshot = await runtimeClient.resumeRun(
+        state.selectedTurnRunId,
+        USER_RESUMED_MESSAGE,
+        { clarifications: answers },
+      );
+      await refreshCurrentSession(snapshot, `Clarifications submitted for ${snapshot.runId}.`);
     } catch (error) {
       dispatch({
         type: "SET_BRIDGE_STATUS",
@@ -826,6 +886,7 @@ export function useRunActions() {
       selectTurn,
       startRun,
       submitClarificationOption,
+      submitAllClarifications,
       interruptRun,
       resumeRun,
       cancelRun,

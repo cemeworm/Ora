@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialWorkbenchState, type WorkbenchState } from "./state";
-import { buildDesktopRunContext, isDisposableEmptySession } from "./useRunActions";
+import { buildClarificationSubmissionPrompt, buildDesktopRunContext, isDisposableEmptySession } from "./useRunActions";
 import type { OraSessionSummary } from "./runtimeClient";
 
 describe("desktop run actions", () => {
@@ -29,6 +29,43 @@ describe("desktop run actions", () => {
 
   it("omits attached project files when none are pending", () => {
     expect(buildDesktopRunContext()).toEqual({ source: "desktop-workbench" });
+  });
+
+  it("summarizes multiple clarification answers for the pending user message", () => {
+    expect(buildClarificationSubmissionPrompt(
+      {
+        target_environment: "staging",
+        time_window: "最近 30 天",
+      },
+      [
+        {
+          id: "clarification:env",
+          nodeId: "root",
+          nodeLabel: "Ora",
+          key: "target_environment",
+          question: "目标环境",
+          options: [],
+          requestedAt: 1,
+        },
+        {
+          id: "clarification:time",
+          nodeId: "root",
+          nodeLabel: "Ora",
+          key: "time_window",
+          question: "时间范围",
+          options: [],
+          requestedAt: 2,
+        },
+      ],
+    )).toBe([
+      "已补充：",
+      "- 目标环境: staging",
+      "- 时间范围: 最近 30 天",
+    ].join("\n"));
+  });
+
+  it("keeps single clarification answer as the pending user message", () => {
+    expect(buildClarificationSubmissionPrompt({ intent_guard: "我们是收单机构。" })).toBe("我们是收单机构。");
   });
 
   it("includes attached local files in run context", () => {

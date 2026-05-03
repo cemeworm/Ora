@@ -1,4 +1,5 @@
 import type { ModeSelection } from "@cemeworm/shared";
+import { useCallback, useState } from "react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
@@ -52,7 +53,7 @@ interface ChatViewProps {
     message: ChatMessage,
     feedbackText: string,
   ) => Promise<void>;
-  onSubmitClarificationOption: (answer: string) => void;
+  onSubmitAllClarifications: (answers: Record<string, string>) => void;
   onSelectMode: (modeId: string) => void;
   onSelectModeSelection: (selection: ModeSelection) => void;
   onSelectNode: (id: string) => void;
@@ -84,7 +85,7 @@ export function ChatView({
   onExportReport,
   onOpenArtifact,
   onSubmitFeedback,
-  onSubmitClarificationOption,
+  onSubmitAllClarifications,
   onToggleDetailDrawer,
   detailDrawer,
   onSelectMode,
@@ -102,6 +103,10 @@ export function ChatView({
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
   const pendingApprovalActions = actionRecords.filter((action) => action.state === "approval_required");
   const planDecisionPending = state.sessionPendingPlanDecision[selectedSession.id] ?? false;
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  const handleOverlayHeightChange = useCallback((height: number) => {
+    setComposerOverlayHeight((current) => current === height ? current : height);
+  }, []);
 
   async function openLocalFiles() {
     try {
@@ -151,6 +156,7 @@ export function ChatView({
             hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
             hasClarificationTray={Boolean(activeSnapshot?.pendingClarifications && activeSnapshot.pendingClarifications.length > 0)}
             hasPlanDecisionTray={planDecisionPending}
+            bottomInsetPx={composerOverlayHeight}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
           />
@@ -175,7 +181,7 @@ export function ChatView({
           onApprove={onResumeRun}
           onCancelApproval={onCancelRun}
           clarificationQuestions={activeSnapshot?.pendingClarifications ?? []}
-          onSubmitClarificationOption={onSubmitClarificationOption}
+          onSubmitAllClarifications={onSubmitAllClarifications}
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}
           onProviderChange={(providerId) =>
@@ -212,6 +218,7 @@ export function ChatView({
           onDeclinePlanDecision={() => {
             dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
           }}
+          onOverlayHeightChange={handleOverlayHeightChange}
           onOpenLocalFiles={() => void openLocalFiles()}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}

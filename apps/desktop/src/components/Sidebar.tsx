@@ -34,9 +34,10 @@ const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
 const MAX_SESSION_SEARCH_RESULTS = 9;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
-function statusFromSession(status: string | undefined, hasPendingClarifications?: boolean, hasPendingPlanDecision?: boolean): RunStatus {
+export function statusFromSession(status: string | undefined, hasPendingClarifications?: boolean, hasPendingPlanDecision?: boolean): RunStatus {
+  if (hasPendingClarifications) return "clarification_required";
+  if (status === "interrupted") return "approval_required";
   if (hasPendingPlanDecision) return "decision_needed";
-  if (status === "interrupted") return hasPendingClarifications ? "clarification_required" : "approval_required";
   if (status === "failed" || status === "cancelled") return "failed";
   if (status === "running" || status === "queued") return "running";
   return "done";

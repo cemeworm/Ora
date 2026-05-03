@@ -1350,9 +1350,14 @@ function extractClarificationAnswers(
 }
 
 function clarificationTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
-  const clarification = snapshotPendingClarifications(snapshot)[0];
-  if (clarification?.question.trim()) {
-    return clarification.question.trim();
+  const clarifications = snapshotPendingClarifications(snapshot);
+  if (clarifications.length > 0) {
+    const questions = clarifications
+      .map((c) => c.question.trim())
+      .filter(Boolean);
+    if (questions.length > 0) {
+      return questions.join("\n");
+    }
   }
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
     const event = snapshot.events[index];
@@ -1368,10 +1373,10 @@ function clarificationTextFromSnapshot(snapshot: OraStateSnapshot): string | und
 }
 
 function clarificationOptionsFromSnapshot(snapshot: OraStateSnapshot): ClarificationOption[] | undefined {
-  const directOptions = snapshotPendingClarifications(snapshot)[0]?.options;
-  const normalizedDirect = normalizeClarificationOptions(directOptions);
-  if (normalizedDirect.length > 0) {
-    return normalizedDirect;
+  const clarifications = snapshotPendingClarifications(snapshot);
+  for (const c of clarifications) {
+    const normalized = normalizeClarificationOptions(c.options);
+    if (normalized.length > 0) return normalized;
   }
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
     const event = snapshot.events[index];
