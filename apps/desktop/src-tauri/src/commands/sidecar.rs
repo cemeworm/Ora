@@ -53,8 +53,14 @@ const PROD_RUNTIME_COMMAND_DISPLAY: &str =
 const CHANNEL_DAEMON_ARG: &str = "--channel-daemon";
 const CHANNEL_SESSION_UPDATED_EVENT: &str = "ora://runtime/channel-session-updated";
 const MANAGED_LANGFUSE_BASE_URL: &str = "http://localhost:3000";
-const MANAGED_LANGFUSE_PUBLIC_KEY: &str = "lf_pk_ora_local_runtime";
-const MANAGED_LANGFUSE_SECRET_KEY: &str = "lf_sk_ora_local_runtime";
+
+fn managed_langfuse_public_key() -> String {
+    env::var("ORA_LANGFUSE_PUBLIC_KEY").unwrap_or_else(|_| "lf_pk_ora_local_runtime".to_string())
+}
+
+fn managed_langfuse_secret_key() -> String {
+    env::var("ORA_LANGFUSE_SECRET_KEY").unwrap_or_else(|_| "lf_sk_ora_local_runtime".to_string())
+}
 const MANAGED_LANGFUSE_SERVICE_ENV: &str = "ORA_MANAGED_LANGFUSE_SERVICE";
 const MANAGED_LANGFUSE_COMMAND_ENV: &str = "ORA_MANAGED_LANGFUSE_COMMAND";
 const MANAGED_LANGFUSE_COMPOSE_DIR_ENV: &str = "ORA_MANAGED_LANGFUSE_COMPOSE_DIR";
@@ -2653,11 +2659,11 @@ fn managed_langfuse_bootstrap_env() -> Vec<(String, String)> {
         ),
         (
             "LANGFUSE_INIT_PROJECT_PUBLIC_KEY".to_string(),
-            MANAGED_LANGFUSE_PUBLIC_KEY.to_string(),
+            managed_langfuse_public_key(),
         ),
         (
             "LANGFUSE_INIT_PROJECT_SECRET_KEY".to_string(),
-            MANAGED_LANGFUSE_SECRET_KEY.to_string(),
+            managed_langfuse_secret_key(),
         ),
         (
             "LANGFUSE_INIT_USER_EMAIL".to_string(),
@@ -3005,11 +3011,11 @@ fn managed_langfuse_runtime_env() -> Vec<(String, String)> {
         ),
         (
             "LANGFUSE_PUBLIC_KEY".to_string(),
-            MANAGED_LANGFUSE_PUBLIC_KEY.to_string(),
+            managed_langfuse_public_key(),
         ),
         (
             "LANGFUSE_SECRET_KEY".to_string(),
-            MANAGED_LANGFUSE_SECRET_KEY.to_string(),
+            managed_langfuse_secret_key(),
         ),
         (
             "LANGFUSE_TRACING_ENVIRONMENT".to_string(),
@@ -4992,10 +4998,10 @@ mod tests {
             .any(|(key, value)| key == "LANGFUSE_BASE_URL"
                 && value == MANAGED_LANGFUSE_BASE_URL));
         assert!(environment.iter().any(|(key, value)| {
-            key == "LANGFUSE_PUBLIC_KEY" && value == MANAGED_LANGFUSE_PUBLIC_KEY
+            key == "LANGFUSE_PUBLIC_KEY" && value == managed_langfuse_public_key()
         }));
         assert!(environment.iter().any(|(key, value)| {
-            key == "LANGFUSE_SECRET_KEY" && value == MANAGED_LANGFUSE_SECRET_KEY
+            key == "LANGFUSE_SECRET_KEY" && value == managed_langfuse_secret_key()
         }));
     }
 
@@ -5055,7 +5061,7 @@ mod tests {
             .iter()
             .any(|(key, value)| key == "LANGFUSE_INIT_PROJECT_ID" && value == "ora-runtime"));
         assert!(command.environment.iter().any(|(key, value)| {
-            key == "LANGFUSE_INIT_PROJECT_PUBLIC_KEY" && value == MANAGED_LANGFUSE_PUBLIC_KEY
+            key == "LANGFUSE_INIT_PROJECT_PUBLIC_KEY" && value == managed_langfuse_public_key()
         }));
 
         let _ = fs::remove_file(compose_dir.join("docker-compose.yml"));
