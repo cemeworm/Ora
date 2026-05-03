@@ -5,7 +5,7 @@ import type {
 } from "@cemeworm/shared";
 import { ChannelStatusResultSchema } from "@cemeworm/shared";
 import type { RuntimePersistenceBackend } from "../persistence/types.js";
-import type { ChannelRunRuntime } from "./manager.js";
+import type { ChannelRunRuntime, ChannelSessionUpdateEvent } from "./manager.js";
 import { ChannelManager } from "./manager.js";
 import { ChannelMessageBus } from "./message-bus.js";
 import { ChannelStore } from "./store.js";
@@ -23,6 +23,7 @@ export interface ChannelServiceOptions {
   clock?: () => number;
   idFactory?: () => string;
   fetchImpl?: typeof fetch;
+  onSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
 }
 
 export class ChannelService {

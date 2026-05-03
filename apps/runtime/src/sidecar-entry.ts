@@ -3,7 +3,15 @@ import { LocalRunStore } from "./run-store.js";
 import { shutdownLangfuseTelemetry } from "./telemetry/langfuse.js";
 
 async function runChannelDaemon(): Promise<void> {
-  new LocalRunStore();
+  new LocalRunStore({
+    onChannelSessionUpdate(event) {
+      process.stdout.write(`${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "channels.sessionUpdated",
+        params: event,
+      })}\n`);
+    },
+  });
   await new Promise<void>((resolve) => {
     process.once("SIGINT", resolve);
     process.once("SIGTERM", resolve);

@@ -51,6 +51,7 @@ const DEV_RUNTIME_COMMAND_DISPLAY: &str =
 const PROD_RUNTIME_COMMAND_DISPLAY: &str =
     "runtime-sidecar/bin/node runtime-sidecar/app/runtime-sidecar.cjs";
 const CHANNEL_DAEMON_ARG: &str = "--channel-daemon";
+const CHANNEL_SESSION_UPDATED_EVENT: &str = "ora://runtime/channel-session-updated";
 const MANAGED_LANGFUSE_BASE_URL: &str = "http://localhost:3000";
 const MANAGED_LANGFUSE_PUBLIC_KEY: &str = "lf_pk_ora_local_runtime";
 const MANAGED_LANGFUSE_SECRET_KEY: &str = "lf_sk_ora_local_runtime";
@@ -116,7 +117,7 @@ impl RuntimeSidecarManager {
             channel_daemon_child: Mutex::new(None),
         };
         if process_spawn_available {
-            manager.ensure_channel_daemon();
+            manager.ensure_channel_daemon(Some(&app));
         }
         manager
     }
@@ -209,7 +210,7 @@ impl RuntimeSidecarManager {
             return None;
         }
 
-        self.ensure_channel_daemon();
+        self.ensure_channel_daemon(app);
         let command = self.configured_command.clone()?;
         match run_process_json_rpc_for_app(
             &command,
@@ -255,7 +256,7 @@ impl RuntimeSidecarManager {
         self.stop_channel_daemon();
     }
 
-    fn ensure_channel_daemon(&self) {
+    fn ensure_channel_daemon(&self, app: Option<&AppHandle>) {
         let Some(command) = self.configured_command.as_ref() else {
             return;
         };
@@ -269,7 +270,7 @@ impl RuntimeSidecarManager {
         }
 
         let daemon_command = channel_daemon_command(command);
-        match spawn_background_child(&daemon_command) {
+        match spawn_channel_daemon_child(&daemon_command, app.cloned()) {
             Ok(child) => {
                 *child_slot = Some(child);
             }
@@ -2701,6 +2702,54 @@ fn spawn_background_child(command: &RuntimeCommandSpec) -> Result<Child, String>
     process
         .spawn()
         .map_err(|error| error.to_string())
+}
+
+fn spawn_channel_daemon_child(
+    command: &RuntimeCommandSpec,
+    app: Option<AppHandle>,
+) -> Result<Child, String> {
+    let mut process = Command::new(command.executable());
+    process
+        .args(command.args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    if let Some(working_directory) = command.working_directory.as_ref() {
+        process.current_dir(working_directory);
+    }
+    for (key, value) in &command.environment {
+        process.env(key, value);
+    }
+    let mut child = process.spawn().map_err(|error| error.to_string())?;
+    if let Some(stdout) = child.stdout.take() {
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if let Some(payload) = parse_channel_session_update_notification(line.trim()) {
+                            if let Some(app) = app.as_ref() {
+                                let _ = app.emit(CHANNEL_SESSION_UPDATED_EVENT, payload);
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    Ok(child)
+}
+
+fn parse_channel_session_update_notification(line: &str) -> Option<Value> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("method").and_then(Value::as_str) == Some("channels.sessionUpdated") {
+        return value.get("params").cloned();
+    }
+    None
 }
 
 fn channel_daemon_command(command: &RuntimeCommandSpec) -> RuntimeCommandSpec {

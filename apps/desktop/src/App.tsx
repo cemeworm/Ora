@@ -213,6 +213,16 @@ function WorkbenchInner() {
   const [detailPanelWidth, setDetailPanelWidth] = useState(
     DEFAULT_DETAIL_PANEL_WIDTH,
   );
+  const projectsRef = useRef(state.projects);
+  const selectedSessionIdRef = useRef(state.selectedSessionId);
+
+  useEffect(() => {
+    projectsRef.current = state.projects;
+  }, [state.projects]);
+
+  useEffect(() => {
+    selectedSessionIdRef.current = state.selectedSessionId;
+  }, [state.selectedSessionId]);
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(
     DEFAULT_ARTIFACT_PANEL_WIDTH,
   );
@@ -432,6 +442,50 @@ function WorkbenchInner() {
           const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
           return merged ? { ...current, [stream.runId]: merged } : current;
         });
+      })
+      .then((nextUnsubscribe) => {
+        if (cancelled) {
+          nextUnsubscribe();
+          return;
+        }
+        unsubscribe = nextUnsubscribe;
+      });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [runtimeClient, dispatch]);
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
+    void runtimeClient
+      .subscribeChannelSessionUpdates(async (event) => {
+        try {
+          const sessions = await runtimeClient.listSessions();
+          if (cancelled) return;
+          dispatch({
+            type: "SET_COLLECTIONS",
+            projects: projectsRef.current,
+            sessions,
+          });
+
+          if (!event.sessionId) return;
+          const detail = await runtimeClient.getSession(event.sessionId);
+          if (cancelled) return;
+          if (selectedSessionIdRef.current === event.sessionId) {
+            dispatch({
+              type: "HYDRATE_SESSION",
+              projects: projectsRef.current,
+              sessions,
+              detail,
+            });
+          } else {
+            dispatch({ type: "CACHE_SESSION_DETAIL", detail });
+          }
+        } catch {
+          // Channel updates are best-effort UI sync; the next bootstrap/manual refresh will catch up.
+        }
       })
       .then((nextUnsubscribe) => {
         if (cancelled) {

@@ -39,9 +39,20 @@ export interface ChannelManagerOptions {
   runTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   maxAttachmentBytes?: number;
+  onSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
 }
 
 const FINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
+
+export interface ChannelSessionUpdateEvent {
+  channelId: string;
+  channelKind: ChannelConfig["kind"];
+  bindingId: string;
+  sessionId: string;
+  runId?: string;
+  inboundMessageId: string;
+  deliveryId?: string;
+}
 
 export class ChannelManager {
   private readonly clock: () => number;
@@ -50,6 +61,7 @@ export class ChannelManager {
   private readonly runTimeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly maxAttachmentBytes: number | undefined;
+  private readonly onSessionUpdate: ((event: ChannelSessionUpdateEvent) => void) | undefined;
   private readonly bindingQueues = new Map<string, Promise<ChannelIngestResult>>();
 
   constructor(
@@ -64,6 +76,7 @@ export class ChannelManager {
     this.runTimeoutMs = options.runTimeoutMs ?? 60_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.maxAttachmentBytes = options.maxAttachmentBytes;
+    this.onSessionUpdate = options.onSessionUpdate;
   }
 
   async ingest(params: unknown): Promise<ChannelIngestResult> {
@@ -185,6 +198,13 @@ export class ChannelManager {
     const outbound = this.createOutboundFromSnapshot(enrichedInbound, channel, binding, handle.runId, snapshot);
     const delivery = this.store.createDelivery(outbound, "queued");
     await this.bus.publishOutbound(outbound);
+    this.publishSessionUpdate({
+      channel,
+      binding,
+      inboundMessageId: enrichedInbound.id,
+      runId: handle.runId,
+      deliveryId: delivery.deliveryId,
+    });
     return ChannelIngestResultSchema.parse({
       accepted: true,
       duplicate: false,
@@ -220,6 +240,12 @@ export class ChannelManager {
     const outbound = this.createOutbound(inbound, channel, binding, result.text, "command_response", true);
     const delivery = this.store.createDelivery(outbound, "queued");
     await this.bus.publishOutbound(outbound);
+    this.publishSessionUpdate({
+      channel,
+      binding,
+      inboundMessageId: inbound.id,
+      deliveryId: delivery.deliveryId,
+    });
     return ChannelIngestResultSchema.parse({
       accepted: true,
       duplicate: false,
@@ -326,6 +352,13 @@ export class ChannelManager {
     const outbound = this.createOutboundFromSnapshot(inbound, channel, binding, runId, snapshot);
     const delivery = this.store.createDelivery(outbound, "queued");
     await this.bus.publishOutbound(outbound);
+    this.publishSessionUpdate({
+      channel,
+      binding,
+      inboundMessageId: inbound.id,
+      runId,
+      deliveryId: delivery.deliveryId,
+    });
     return ChannelIngestResultSchema.parse({
       accepted: true,
       duplicate: false,
@@ -448,6 +481,12 @@ export class ChannelManager {
     const outbound = this.createOutbound(inbound, channel, resolvedBinding, "Ora is busy processing this channel. Please try again shortly.", "error", true);
     const delivery = this.store.createDelivery(outbound, "queued");
     await this.bus.publishOutbound(outbound);
+    this.publishSessionUpdate({
+      channel,
+      binding: resolvedBinding,
+      inboundMessageId: inbound.id,
+      deliveryId: delivery.deliveryId,
+    });
     return ChannelIngestResultSchema.parse({
       accepted: false,
       duplicate: false,
@@ -456,6 +495,24 @@ export class ChannelManager {
       sessionId: resolvedBinding.sessionId,
       deliveryId: delivery.deliveryId,
       outboundMessage: outbound,
+    });
+  }
+
+  private publishSessionUpdate(args: {
+    channel: ChannelConfig;
+    binding: ChannelBinding;
+    inboundMessageId: string;
+    runId?: string;
+    deliveryId?: string;
+  }): void {
+    this.onSessionUpdate?.({
+      channelId: args.channel.channelId,
+      channelKind: args.channel.kind,
+      bindingId: args.binding.bindingId,
+      sessionId: args.binding.sessionId,
+      runId: args.runId,
+      inboundMessageId: args.inboundMessageId,
+      deliveryId: args.deliveryId,
     });
   }
 }

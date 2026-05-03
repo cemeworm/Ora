@@ -241,7 +241,18 @@ export interface RuntimeBootstrap {
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown };
 const CUSTOM_PROVIDER_STORAGE_KEY = "ora.customProviders.v1";
 export const RUN_EVENT_NOTIFICATION = "ora://runtime/run-event";
+export const CHANNEL_SESSION_UPDATED_NOTIFICATION = "ora://runtime/channel-session-updated";
 let sharedRuntimeClient: ReturnType<typeof createRuntimeClient> | undefined;
+
+export interface OraChannelSessionUpdate {
+  channelId: string;
+  channelKind: string;
+  bindingId: string;
+  sessionId: string;
+  runId?: string;
+  inboundMessageId: string;
+  deliveryId?: string;
+}
 
 export function createRuntimeClient() {
   const local = new LocalJsonRpcRuntime();
@@ -715,6 +726,13 @@ export function createRuntimeClient() {
       }
       const { listen } = await import("@tauri-apps/api/event");
       return listen<OraRunEventStream>(RUN_EVENT_NOTIFICATION, (event) => callback(event.payload));
+    },
+    async subscribeChannelSessionUpdates(callback: (event: OraChannelSessionUpdate) => void): Promise<() => void> {
+      if (!isTauriAvailable()) {
+        return () => {};
+      }
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<OraChannelSessionUpdate>(CHANNEL_SESSION_UPDATED_NOTIFICATION, (event) => callback(event.payload));
     },
     async getRunState(runId: string): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.state", { runId });
