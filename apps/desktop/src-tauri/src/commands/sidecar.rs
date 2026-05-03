@@ -7,8 +7,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -81,6 +81,7 @@ pub struct RuntimeSidecarManager {
     process_spawn_available: Mutex<bool>,
     configured_from_env: bool,
     managed_langfuse: Mutex<ManagedLangfuseStatus>,
+    active_streaming_children: StreamingChildRegistry,
 }
 
 impl Default for RuntimeSidecarManager {
@@ -90,6 +91,7 @@ impl Default for RuntimeSidecarManager {
             process_spawn_available: Mutex::new(false),
             configured_from_env: false,
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
+            active_streaming_children: StreamingChildRegistry::default(),
         }
     }
 }
@@ -107,6 +109,7 @@ impl RuntimeSidecarManager {
             process_spawn_available: Mutex::new(process_spawn_available),
             configured_from_env,
             managed_langfuse: Mutex::new(managed_langfuse),
+            active_streaming_children: StreamingChildRegistry::default(),
         }
     }
 
@@ -121,6 +124,7 @@ impl RuntimeSidecarManager {
             process_spawn_available: Mutex::new(process_spawn_available),
             configured_from_env,
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
+            active_streaming_children: StreamingChildRegistry::default(),
         }
     }
 
@@ -197,7 +201,12 @@ impl RuntimeSidecarManager {
         }
 
         let command = self.configured_command.clone()?;
-        match run_process_json_rpc_for_app(&command, request, app) {
+        match run_process_json_rpc_for_app(
+            &command,
+            request,
+            app,
+            self.active_streaming_children.clone(),
+        ) {
             Ok(response) => Some(response),
             Err(_) => {
                 self.disable_process_bridge();
@@ -228,6 +237,65 @@ impl RuntimeSidecarManager {
             if status.available {
                 status.reason = "Managed Langfuse is reachable.".to_string();
             }
+        }
+    }
+
+    pub fn cleanup_streaming_children(&self) {
+        self.active_streaming_children.kill_all();
+    }
+}
+
+#[derive(Clone, Default)]
+struct StreamingChildRegistry {
+    children: Arc<Mutex<HashMap<u32, Arc<Mutex<Child>>>>>,
+}
+
+impl StreamingChildRegistry {
+    fn register(&self, pid: u32, child: Arc<Mutex<Child>>) {
+        if let Ok(mut children) = self.children.lock() {
+            children.insert(pid, child);
+        }
+    }
+
+    fn unregister(&self, pid: u32) {
+        if let Ok(mut children) = self.children.lock() {
+            children.remove(&pid);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.children
+            .lock()
+            .map(|children| children.len())
+            .unwrap_or(0)
+    }
+
+    fn kill_all(&self) {
+        let children = self
+            .children
+            .lock()
+            .map(|children| children.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        for child in children {
+            if let Ok(mut child) = child.lock() {
+                match child.try_wait() {
+                    Ok(Some(_status)) => {}
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    Err(_error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut children) = self.children.lock() {
+            children.clear();
         }
     }
 }
@@ -2579,6 +2647,7 @@ fn run_process_json_rpc_for_app(
     command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,
     app: Option<&AppHandle>,
+    active_streaming_children: StreamingChildRegistry,
 ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
     run_process_json_rpc_internal(
         command,
@@ -2593,6 +2662,7 @@ fn run_process_json_rpc_for_app(
         } else {
             None
         },
+        Some(active_streaming_children),
     )
 }
 
@@ -2602,13 +2672,14 @@ fn run_process_json_rpc_with_notifications(
     request: &RuntimeJsonRpcRequest,
     on_notification: Box<dyn Fn(Value) + Send + 'static>,
 ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
-    run_process_json_rpc_internal(command, request, Some(on_notification))
+    run_process_json_rpc_internal(command, request, Some(on_notification), None)
 }
 
 fn run_process_json_rpc_internal(
     command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,
     on_notification: Option<Box<dyn Fn(Value) + Send + 'static>>,
+    active_streaming_children: Option<StreamingChildRegistry>,
 ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
     let mut process = Command::new(command.executable());
     process
@@ -2721,9 +2792,13 @@ fn run_process_json_rpc_internal(
     })?;
 
     if let Some(on_notification) = on_notification {
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        if let Some(active_streaming_children) = active_streaming_children.as_ref() {
+            active_streaming_children.register(pid, child.clone());
+        }
         thread::spawn(move || {
             let mut reader = reader;
-            let mut child = child;
             let mut line = String::new();
             loop {
                 line.clear();
@@ -2737,7 +2812,12 @@ fn run_process_json_rpc_internal(
                     Err(_) => break,
                 }
             }
-            let _ = child.wait();
+            if let Ok(mut child) = child.lock() {
+                let _ = child.wait();
+            }
+            if let Some(active_streaming_children) = active_streaming_children {
+                active_streaming_children.unregister(pid);
+            }
         });
     } else {
         // The sidecar process is one-shot; once a valid JSON-RPC response is read,
@@ -4914,6 +4994,67 @@ mod tests {
         assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
         assert_eq!(response.id, Some(json!(1)));
         assert_eq!(response.result.unwrap()["bridge"], json!("process"));
+    }
+
+    #[test]
+    fn non_streaming_process_bridge_does_not_register_active_child() {
+        let registry = StreamingChildRegistry::default();
+        let command = RuntimeCommandSpec::new(
+            "sh -c one-shot-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+
+        let response = run_process_json_rpc_internal(
+            &command,
+            &request("runtime.health", None),
+            None,
+            Some(registry.clone()),
+        )
+        .expect("non-streaming process bridge should return a response");
+
+        assert_eq!(response.result.unwrap()["bridge"], json!("process"));
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn streaming_process_bridge_cleanup_kills_active_child() {
+        let registry = StreamingChildRegistry::default();
+        let command = RuntimeCommandSpec::new(
+            "sh -c long-running-streaming-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"running\"}}'; sleep 30".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+
+        let started = std::time::Instant::now();
+        let response = run_process_json_rpc_internal(
+            &command,
+            &request("runs.startStreaming", Some(json!({ "input": { "prompt": "hello" } }))),
+            Some(Box::new(|_payload| {})),
+            Some(registry.clone()),
+        )
+        .expect("streaming process bridge should return the initial handle response");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "streaming bridge should not wait for the long-running child"
+        );
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        assert_eq!(registry.len(), 1);
+
+        registry.kill_all();
+
+        assert_eq!(registry.len(), 0);
     }
 
     #[test]

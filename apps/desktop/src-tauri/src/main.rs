@@ -10,6 +10,18 @@ fn main() {
             app.manage(commands::sidecar::RuntimeSidecarManager::new(app.handle().clone()));
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                if let Some(manager) =
+                    window.try_state::<commands::sidecar::RuntimeSidecarManager>()
+                {
+                    manager.cleanup_streaming_children();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::sidecar::runtime_sidecar_status,
             commands::sidecar::preview_sidecar_command,

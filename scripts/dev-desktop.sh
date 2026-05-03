@@ -7,6 +7,8 @@ VITE_PATTERN='vite --host 127.0.0.1 --port 1420'
 TAURI_PATTERN='@tauri-apps/cli/tauri.js dev'
 DESKTOP_PATTERN='target/debug/ora-desktop'
 DESKTOP_BUNDLE_PATTERN='target/release/bundle/macos/Ora.app/Contents/MacOS/ora-desktop'
+INSTALLED_RUNTIME_SIDECAR_PATTERN='/Applications/Ora.app/Contents/Resources/runtime-sidecar/bin/node .*/runtime-sidecar.cjs'
+DEV_RUNTIME_SIDECAR_PATTERN='node .*/tsx.*/cli.mjs .*/apps/runtime/src/sidecar-entry.ts'
 ORA_BUNDLE_ID='dev.ora.workbench'
 PNPM_STATE_FILE="$ROOT_DIR/node_modules/.modules.yaml"
 RUNTIME_SIDECAR_DIR="$ROOT_DIR/apps/desktop/src-tauri/resources/runtime-sidecar"
@@ -28,6 +30,8 @@ APPLESCRIPT
 
 cleanup_stale_dev_processes() {
   quit_installed_ora_app
+  pkill -f "$INSTALLED_RUNTIME_SIDECAR_PATTERN" >/dev/null 2>&1 || true
+  pkill -f "$DEV_RUNTIME_SIDECAR_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$VITE_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$TAURI_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$DESKTOP_PATTERN" >/dev/null 2>&1 || true
