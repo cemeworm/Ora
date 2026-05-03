@@ -1,14 +1,26 @@
 name: Build
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        default: main
+      tag_name:
+        description: Existing GitHub release tag to upload assets to
+        required: true
+
+permissions:
+  contents: write
 
 jobs:
   build-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -26,6 +38,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
+          tagName: ${{ inputs.tag_name }}
           # 代码签名待后续配置：
           # 1. 加入 Apple Developer Program ($99/年)
           # 2. 设置 GitHub Secrets: APPLE_SIGNING_IDENTITY, APPLE_CERTIFICATE,

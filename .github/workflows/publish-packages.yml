@@ -1,8 +1,12 @@
 name: Publish Packages
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to publish from
+        required: true
+        default: main
 
 permissions:
   contents: read
@@ -13,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: pnpm/action-setup@v4
         with:
