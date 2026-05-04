@@ -25,13 +25,14 @@ import {
 } from "react";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import type { ActionRecord, ModeCard } from "../types";
+import type { ActionRecord, ModeCard, TurnPlanListStep } from "../types";
 import type { OraProviderConfig, OraSkillRegistry } from "../lib/runtimeClient";
 import type { ComposerLocalFileAttachment, ComposerProjectFileAttachment } from "../lib/state";
 import type { ModeSelection, PermissionMode, TaskIntent } from "@cemeworm/shared";
 import { ApprovalRequestCard } from "./ApprovalRequestCard";
 import { ClarificationPanel } from "./ClarificationPanel";
 import { PlanDecisionPanel } from "./PlanDecisionPanel";
+import { PlanStepsTray } from "./PlanStepsTray";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
@@ -45,6 +46,7 @@ interface ChatInputProps {
   modeOptions: ModeCard[];
   selectedModeSelection: ModeSelection;
   activeProvider?: OraProviderConfig;
+  contextState?: OraStateSnapshot["contextState"];
   providerOptions: OraProviderConfig[];
   skillOptions: SkillDescriptor[];
   selectedSkillIds: string[];
@@ -65,12 +67,14 @@ interface ChatInputProps {
   onRemoveProjectFileAttachment: (path: string) => void;
   onRemoveLocalFileAttachment: (path: string) => void;
   onOpenLocalFiles: () => void;
+  onFilesDropped?: (files: FileList) => void;
   onClearSelectedCustomAgent?: () => void;
   permissionMode: PermissionMode;
   onPermissionModeChange: (mode: PermissionMode) => void;
   taskIntent: TaskIntent;
   onTaskIntentChange: (taskIntent: TaskIntent) => void;
   planDecisionPending?: boolean;
+  planSteps?: TurnPlanListStep[];
   onConfirmPlanDecision?: () => void;
   onDeclinePlanDecision?: () => void;
   onOverlayHeightChange?: (height: number) => void;
@@ -124,6 +128,7 @@ export function ChatInput({
   modeOptions,
   selectedModeSelection,
   activeProvider,
+  contextState,
   providerOptions,
   skillOptions,
   selectedSkillIds,
@@ -144,18 +149,31 @@ export function ChatInput({
   onRemoveProjectFileAttachment,
   onRemoveLocalFileAttachment,
   onOpenLocalFiles,
+  onFilesDropped,
   onClearSelectedCustomAgent,
   permissionMode,
   onPermissionModeChange,
   taskIntent,
   onTaskIntentChange,
   planDecisionPending,
+  planSteps = [],
   onConfirmPlanDecision,
   onDeclinePlanDecision,
   onOverlayHeightChange,
   onStartRun,
   onStopRun,
 }: ChatInputProps) {
+  const contextWindow =
+    contextState?.contextWindow ??
+    activeProvider?.contextWindow ??
+    activeProvider?.maxContextWindow;
+  const activeTokens = contextState?.activeTokenUsage?.totalTokens ?? 0;
+  const showContextRing =
+    contextWindow != null && contextWindow > 0 && activeTokens > 0;
+  const contextPct = showContextRing
+    ? Math.min(activeTokens / contextWindow, 1)
+    : 0;
+
   const overlayRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastOverlayHeightRef = useRef<number | undefined>();
@@ -163,6 +181,7 @@ export function ChatInput({
     "pattern" | "provider" | "skills" | "taskIntent" | "permissionMode" | undefined
   >();
   const [skillListExpanded, setSkillListExpanded] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
   const selectedSkillIdSet = useMemo(
     () => new Set(selectedSkillIds),
@@ -259,6 +278,7 @@ export function ChatInput({
     clarificationQuestions,
     approvalActions,
     planDecisionPending,
+    planSteps,
   ]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -370,6 +390,9 @@ export function ChatInput({
             )}
           </div>
         )}
+        {planSteps.length > 0 ? (
+          <PlanStepsTray planSteps={planSteps} />
+        ) : null}
         {showApprovalTray ? (
           <div className="mb-2">
             <ApprovalRequestCard
@@ -399,7 +422,30 @@ export function ChatInput({
           </div>
         ) : null}
         {hideComposer ? null : (
-        <div className="rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
+        <div
+          className={cn(
+            "rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
+            isDragOver ? "border-amber-200 ring-2 ring-amber-200/50" : "border-border",
+          )}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!isDragOver) setIsDragOver(true);
+          }}
+          onDragLeave={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+            setIsDragOver(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDragOver(false);
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && onFilesDropped) {
+              onFilesDropped(files);
+            }
+          }}
+        >
           <div className={cn("relative", hasTopChips ? "min-h-[148px]" : "min-h-[96px]")}>
             {hasTopChips && (
               <div className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1">
@@ -691,6 +737,51 @@ export function ChatInput({
                   ))}
                 </Picker>
               </div>
+              {showContextRing && (
+                <div
+                  className="flex-shrink-0"
+                  title={`${activeTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${Math.round(contextPct * 100)}%)`}
+                >
+                  <svg
+                    width={28}
+                    height={28}
+                    viewBox="0 0 32 32"
+                    className="block"
+                  >
+                    <circle
+                      cx={16}
+                      cy={16}
+                      r={12}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                      className="text-muted-foreground/25"
+                    />
+                    <circle
+                      cx={16}
+                      cy={16}
+                      r={12}
+                      fill="none"
+                      stroke={
+                        contextPct <= 0.5
+                          ? "#22c55e"
+                          : contextPct <= 0.8
+                            ? "#eab308"
+                            : "#ef4444"
+                      }
+                      strokeWidth={3}
+                      strokeLinecap="round"
+                      strokeDasharray={`${2 * Math.PI * 12} ${2 * Math.PI * 12}`}
+                      strokeDashoffset={2 * Math.PI * 12 * (1 - contextPct)}
+                      transform="rotate(-90 16 16)"
+                      style={{
+                        transition:
+                          "stroke-dashoffset 0.3s ease, stroke 0.3s ease",
+                      }}
+                    />
+                  </svg>
+                </div>
+              )}
               <Button
                 type="button"
                 size="icon"

@@ -1,5 +1,5 @@
 import type { ModeSelection } from "@cemeworm/shared";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput } from "./ChatInput";
@@ -13,6 +13,7 @@ import type {
   StreamLine,
   TopologyEdge,
   TopologyNode,
+  TurnPlanListStep,
 } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import { runnableProviderOptions } from "../lib/providerOptions";
@@ -113,6 +114,21 @@ export function ChatView({
     setComposerOverlayHeight((current) => current === height ? current : height);
   }, []);
 
+  const currentPlanSteps = useMemo<TurnPlanListStep[]>(() => {
+    const snapshotPlan = activeSnapshot?.planList;
+    if (snapshotPlan && snapshotPlan.length > 0) {
+      return snapshotPlan.map((item) => ({
+        step: item.step,
+        status: item.status,
+      }));
+    }
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const planList = chatMessages[i]?.turn?.planList;
+    if (planList && planList.length > 0) return planList;
+    }
+    return [];
+  }, [activeSnapshot?.planList, chatMessages]);
+
   async function openLocalFiles() {
     try {
       const files = await pickLocalChatFiles();
@@ -131,6 +147,30 @@ export function ChatView({
           error instanceof Error
             ? error.message
             : "File selection failed.",
+      });
+    }
+  }
+
+  async function handleFilesDropped(fileList: FileList) {
+    try {
+      const files = await Promise.all(
+        Array.from(fileList).map(readBrowserFileAttachment),
+      );
+      if (files.length === 0) return;
+      files.forEach((file) => {
+        dispatch({
+          type: "ADD_LOCAL_FILE_ATTACHMENT",
+          sessionId: selectedSession.id,
+          file,
+        });
+      });
+    } catch (error) {
+      dispatch({
+        type: "SET_COMMAND_FEEDBACK",
+        feedback:
+          error instanceof Error
+            ? error.message
+            : "File drop failed.",
       });
     }
   }
@@ -161,6 +201,7 @@ export function ChatView({
             hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
             hasClarificationTray={Boolean(activeSnapshot?.pendingClarifications && activeSnapshot.pendingClarifications.length > 0)}
             hasPlanDecisionTray={planDecisionPending}
+            hasPlanStepsTray={currentPlanSteps.length > 0}
             bottomInsetPx={composerOverlayHeight}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
@@ -175,6 +216,7 @@ export function ChatView({
           modeOptions={modeCards}
           selectedModeSelection={state.selectedModeSelection}
           activeProvider={activeProvider}
+          contextState={activeSnapshot?.contextState}
           providerOptions={providerOptions}
           skillOptions={state.skillRegistry?.skills ?? []}
           selectedSkillIds={state.selectedSkillIds}
@@ -215,6 +257,7 @@ export function ChatView({
           taskIntent={state.taskIntent}
           onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
           planDecisionPending={planDecisionPending}
+          planSteps={currentPlanSteps}
           onConfirmPlanDecision={() => {
             onResolvePlanDecision("accepted");
             dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
@@ -225,6 +268,7 @@ export function ChatView({
           }}
           onOverlayHeightChange={handleOverlayHeightChange}
           onOpenLocalFiles={() => void openLocalFiles()}
+          onFilesDropped={handleFilesDropped}
           onClearSelectedCustomAgent={onClearSelectedCustomAgent}
           onStartRun={onStartRun}
           onStopRun={onCancelRun}

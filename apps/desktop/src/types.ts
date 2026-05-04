@@ -313,6 +313,13 @@ export interface ClarificationOption {
   description?: string;
 }
 
+export interface ChatMessageAttachment {
+  name: string;
+  path: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -322,4 +329,5 @@ export interface ChatMessage {
   turn?: AssistantTurnAttachment;
   clarificationOptions?: ClarificationOption[];
   isPlaceholder?: boolean;
+  attachments?: ChatMessageAttachment[];
 }

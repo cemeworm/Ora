@@ -5,6 +5,7 @@ import type {
   AssistantTurnAttachment,
   ArtifactRecord,
   ChatMessage,
+  ChatMessageAttachment,
   ClarificationOption,
   CheckpointRecord,
   CoordinationPattern,
@@ -1093,6 +1094,43 @@ function snapshotPendingClarifications(
     : [];
 }
 
+function extractAttachmentsFromSnapshot(
+  context: Record<string, unknown> | undefined,
+): ChatMessageAttachment[] | undefined {
+  if (!context) return undefined;
+  const attachments: ChatMessageAttachment[] = [];
+
+  const projectFiles = context.attachedProjectFiles;
+  if (Array.isArray(projectFiles)) {
+    for (const file of projectFiles) {
+      if (file && typeof file === "object" && typeof (file as Record<string, unknown>).name === "string") {
+        attachments.push({
+          name: (file as Record<string, string>).name,
+          path: (file as Record<string, string>).path ?? (file as Record<string, string>).name,
+          mimeType: (file as Record<string, string>).mimeType ?? "application/octet-stream",
+          sizeBytes: typeof (file as Record<string, number>).sizeBytes === "number" ? (file as Record<string, number>).sizeBytes : 0,
+        });
+      }
+    }
+  }
+
+  const localFiles = context.attachedLocalFiles;
+  if (Array.isArray(localFiles)) {
+    for (const file of localFiles) {
+      if (file && typeof file === "object" && typeof (file as Record<string, unknown>).name === "string") {
+        attachments.push({
+          name: (file as Record<string, string>).name,
+          path: (file as Record<string, string>).path ?? (file as Record<string, string>).name,
+          mimeType: (file as Record<string, string>).mimeType ?? "application/octet-stream",
+          sizeBytes: typeof (file as Record<string, number>).sizeBytes === "number" ? (file as Record<string, number>).sizeBytes : 0,
+        });
+      }
+    }
+  }
+
+  return attachments.length > 0 ? attachments : undefined;
+}
+
 export function adaptChatMessages(
   transcript: OraSessionTranscriptMessage[],
   turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
@@ -1144,6 +1182,10 @@ export function adaptChatMessages(
     .flatMap((turn) => {
       const messages: ChatMessage[] = [];
 
+      const attachments = turn.snapshot
+        ? extractAttachmentsFromSnapshot(turn.snapshot.input.context as Record<string, unknown> | undefined)
+        : undefined;
+
       if (turn.user) {
         messages.push({
           id: turn.user.id,
@@ -1155,6 +1197,7 @@ export function adaptChatMessages(
             turnIndex: turn.user.turnIndex,
             pattern: turn.user.pattern,
           },
+          attachments,
         });
       } else if (turn.snapshot?.input.prompt.trim()) {
         messages.push({
@@ -1167,6 +1210,7 @@ export function adaptChatMessages(
             turnIndex: turn.turnIndex,
             pattern: turn.pattern,
           },
+          attachments,
         });
       }
 

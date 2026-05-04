@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
+import { FileText } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import { AssistantTurnCard } from "./AssistantTurnCard";
 import type { ActionRecord, AgentProfile, ChatMessage, PlanItem } from "../types";
@@ -13,6 +14,7 @@ interface ChatMessagesProps {
   hasApprovalTray?: boolean;
   hasClarificationTray?: boolean;
   hasPlanDecisionTray?: boolean;
+  hasPlanStepsTray?: boolean;
   bottomInsetPx?: number;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
@@ -32,6 +34,12 @@ export function messageBottomPaddingPx({
   return Math.max(Math.ceil(bottomInsetPx) + 24, fallback);
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function ChatMessages({
   chatMessages,
   agents: _agents,
@@ -40,13 +48,14 @@ export function ChatMessages({
   hasApprovalTray = false,
   hasClarificationTray = false,
   hasPlanDecisionTray = false,
+  hasPlanStepsTray = false,
   bottomInsetPx,
   onOpenArtifact,
   onSubmitFeedback,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
-  const hasTray = hasApprovalTray || hasClarificationTray || hasPlanDecisionTray;
+  const hasTray = hasApprovalTray || hasClarificationTray || hasPlanDecisionTray || hasPlanStepsTray;
   const paddingBottom = messageBottomPaddingPx({ hasTray, bottomInsetPx });
 
   const handleScroll = useCallback(() => {
@@ -91,7 +100,24 @@ export function ChatMessages({
               key={message.id}
               role={message.role}
               content={message.content}
-            />
+            >
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {message.attachments.map((attachment, index) => (
+                    <div
+                      key={`${attachment.path}-${index}`}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/80 px-2.5 py-1 text-xs text-muted-foreground"
+                    >
+                      <FileText size={11} />
+                      <span className="max-w-[200px] truncate">{attachment.name}</span>
+                      <span className="whitespace-nowrap text-[10px] text-muted-foreground/60">
+                        {formatFileSize(attachment.sizeBytes)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </MessageBubble>
           );
         })}
         <div className={cn("h-1", chatMessages.length === 0 && "flex-1")} />

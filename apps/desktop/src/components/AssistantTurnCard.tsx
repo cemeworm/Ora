@@ -18,7 +18,6 @@ import type {
   AssistantTurnAttachment,
   TurnArtifactAttachment,
   TurnFileChangeAttachment,
-  TurnPlanListStep,
   TurnProcessStep,
   TurnTodoItem,
 } from "../types";
@@ -74,7 +73,6 @@ export function AssistantTurnCard({
     (message) => message.transcript,
   );
   const [processOpen, setProcessOpen] = useState(false);
-  const [planListOpen, setPlanListOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
@@ -114,22 +112,6 @@ export function AssistantTurnCard({
       setProcessOpen(false);
     }
   }, [content, contentIsLiveProgress, isPlaceholder, turn?.status]);
-
-  useEffect(() => {
-    if (planList.length > 0) {
-      setPlanListOpen(true);
-    }
-  }, [planList]);
-
-  useEffect(() => {
-    if (
-      !isPlaceholder &&
-      turn?.status !== "running" &&
-      planList.every((s) => s.status === "completed")
-    ) {
-      setPlanListOpen(false);
-    }
-  }, [isPlaceholder, planList, turn?.status]);
 
   async function handleSubmitFeedback() {
     if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
@@ -218,18 +200,6 @@ export function AssistantTurnCard({
 
           {!isPlaceholder && turn?.hasProposedPlan ? (
             <PlanCard planSteps={planList} planContent={content} />
-          ) : !isPlaceholder && planList.length > 0 ? (
-            <CollapsibleCard
-              open={planListOpen}
-              onToggle={() => setPlanListOpen((current) => !current)}
-              title={`Plan ${planList.filter((s) => s.status === "completed").length}/${planList.length}`}
-              icon={<ListTodo size={14} />}
-              summary={planSummary(planList)}
-            >
-              {planList.map((item, index) => (
-                <PlanListStepItem key={index} item={item} />
-              ))}
-            </CollapsibleCard>
           ) : null}
 
           {hasStageTranscript ? (
@@ -748,56 +718,6 @@ function lcsTable(beforeLines: string[], afterLines: string[]): number[][] {
 
 function isContentArtifact(artifact: TurnArtifactAttachment): boolean {
   return artifact.label !== "Recovery artifact";
-}
-
-function PlanListStepItem({ item }: { item: TurnPlanListStep }) {
-  return (
-    <TaskItem className="flex items-start gap-3">
-      <PlanStepStatusIcon status={item.status} />
-      <div className="min-w-0 flex-1">
-        <p
-          className={cn(
-            "font-medium",
-            item.status === "completed" && "text-muted-foreground line-through",
-          )}
-        >
-          {item.step}
-        </p>
-        <TaskItemMeta>
-          <span>{item.status === "in_progress" ? "进行中" : item.status === "completed" ? "已完成" : "待处理"}</span>
-        </TaskItemMeta>
-      </div>
-    </TaskItem>
-  );
-}
-
-function PlanStepStatusIcon({ status }: { status: TurnPlanListStep["status"] }) {
-  switch (status) {
-    case "completed":
-      return (
-        <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" />
-      );
-    case "in_progress":
-      return (
-        <LoaderCircle
-          size={16}
-          className="mt-0.5 shrink-0 animate-spin text-muted-foreground"
-        />
-      );
-    default:
-      return (
-        <Circle size={16} className="mt-0.5 shrink-0 text-muted-foreground" />
-      );
-  }
-}
-
-function planSummary(items: TurnPlanListStep[]) {
-  const done = items.filter((s) => s.status === "completed").length;
-  const active = items.find((s) => s.status === "in_progress");
-  if (active) {
-    return `${done}/${items.length} done - ${active.step}`;
-  }
-  return `${done}/${items.length} done`;
 }
 
 function TodoItemRow({ todo }: { todo: TurnTodoItem }) {
