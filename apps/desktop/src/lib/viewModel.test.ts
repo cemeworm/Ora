@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
 import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
@@ -194,6 +194,276 @@ describe("desktop session view model", () => {
     expect(assistant?.content).toContain("## 实施步骤");
     expect(assistant?.content).not.toContain("现在我已经充分了解了代码结构");
     expect(assistant?.content).not.toContain("<proposed_plan>");
+  });
+
+  it("uses partial proposed plan content while plan mode output is still streaming", () => {
+    const createdAt = 1_714_000_000_000;
+    const partialPlanOutput = [
+      "我先整理成可执行计划：",
+      "",
+      "<proposed_plan>",
+      "## 流式计划卡片",
+      "",
+      "## 实施步骤",
+      "1. opening tag 出现后立即渲染卡片",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-streaming-plan",
+      sessionId: "session-streaming-plan",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "优化计划流式渲染", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-streaming-proposed-plan-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-streaming-plan:evt-0",
+        runId: "run-streaming-plan",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", content: partialPlanOutput },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: partialPlanOutput },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-streaming-plan:user",
+        sessionId: "session-streaming-plan",
+        runId: "run-streaming-plan",
+        turnIndex: 1,
+        role: "user",
+        content: "优化计划流式渲染",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-streaming-plan": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.content).toContain("## 流式计划卡片");
+    expect(assistant?.content).toContain("opening tag 出现后立即渲染卡片");
+    expect(assistant?.content).not.toContain("我先整理成可执行计划");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+  });
+
+  it("does not promote a completed but invalid short proposed plan into a plan card", () => {
+    const createdAt = 1_714_000_000_000;
+    const invalidPlanOutput = [
+      "计划内容太短，我需要重新整理。",
+      "",
+      "<proposed_plan>",
+      "太短",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-invalid-short-plan",
+      sessionId: "session-invalid-short-plan",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "优化计划流式渲染", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-invalid-short-proposed-plan-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-invalid-short-plan:evt-0",
+        runId: "run-invalid-short-plan",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", content: invalidPlanOutput },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: invalidPlanOutput },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-invalid-short-plan:user",
+        sessionId: "session-invalid-short-plan",
+        runId: "run-invalid-short-plan",
+        turnIndex: 1,
+        role: "user",
+        content: "优化计划流式渲染",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-invalid-short-plan": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(false);
+    expect(assistant?.content).toContain("计划内容太短，我需要重新整理。");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+  });
+
+  it("keeps internal agent message content out of the assistant timeline", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-internal-agent-message",
+      sessionId: "session-internal-agent-message",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      input: { prompt: "fix the code", createdAt, context: {} },
+      config: {
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-internal-agent-message-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [
+        {
+          id: "run-internal-agent-message:agent-message:0",
+          runId: "run-internal-agent-message",
+          createdAt,
+          fromAgentId: "orchestrator",
+          toAgentIds: ["builder"],
+          threadId: "agent-teams:build",
+          nodeId: "triage",
+          planItemId: "triage",
+          kind: "mention",
+          status: "done",
+          content: "{\"tool\": \"file.read\", \"args\": {\"path\": \".ora/runtime.db\"}}\n<result><omitted /></result>",
+          artifactIds: [],
+        },
+        {
+          id: "run-internal-agent-message:agent-message:1",
+          runId: "run-internal-agent-message",
+          createdAt: createdAt + 1,
+          fromAgentId: "builder",
+          toAgentIds: ["orchestrator"],
+          threadId: "agent-teams:build",
+          nodeId: "build",
+          planItemId: "build",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Orchestrator。\n\nBuilder 已完成代码修改。",
+          artifactIds: [],
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-internal-agent-message:user",
+        sessionId: "session-internal-agent-message",
+        runId: "run-internal-agent-message",
+        turnIndex: 1,
+        role: "user",
+        content: "fix the code",
+        pattern: "agent_teams",
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-internal-agent-message": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.map((item) => "content" in item ? item.content : "")
+      .join("\n") ?? "";
+
+    expect(timelineText).toContain("Builder 已完成代码修改。");
+    expect(timelineText).not.toContain("\"tool\"");
+    expect(timelineText).not.toContain("<result>");
+    expect(assistant?.turn?.timelineItems?.filter((item) => item.kind === "agent_message")).toHaveLength(1);
   });
 
   it("renders approval denial instead of stale resume progress after cancelled approvals", () => {
@@ -1419,6 +1689,175 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[2]?.fromAgentLabel).toBe("Orchestrator");
     expect(assistant?.turn?.agentMessages[2]?.toAgentLabels).toEqual([ORA_ROOT_AGENT_LABEL]);
     expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    const agentTimelineItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "agent_message") ?? [];
+    const agentTimelineText = agentTimelineItems
+      .map((item) => "content" in item ? item.content : "")
+      .join("\n");
+    expect(agentTimelineItems).toHaveLength(2);
+    expect(agentTimelineText).toContain(`${ORA_ROOT_AGENT_LABEL} is handing this request to orchestrator.`);
+    expect(agentTimelineText).toContain("Orchestrator returned its mode output to Ora.");
+    expect(agentTimelineText).not.toContain(`${ORA_ROOT_AGENT_LABEL} observed the handoff.`);
+  });
+
+  it("keeps Code Development main-agent handoff content visible in the turn timeline", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-code-development-handoff",
+      sessionId: "session-code-development-handoff",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      input: { prompt: "fix the code", createdAt, context: {} },
+      config: {
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder", "reviewer", "debugger"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-code-development-handoff-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "reviewer", label: "Reviewer", role: "Review", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "debugger", label: "Debugger", role: "Debug", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-code-development-handoff:evt-0",
+        runId: "run-code-development-handoff",
+        seq: 0,
+        type: "task.started",
+        createdAt,
+        payload: { nodeId: "triage", label: "Plan development task" },
+      }],
+      agentMessages: [
+        {
+          id: "run-code-development-handoff:agent-message:0",
+          runId: "run-code-development-handoff",
+          createdAt: createdAt + 1,
+          fromAgentId: "orchestrator",
+          toAgentIds: ["builder"],
+          threadId: "agent-teams:build",
+          nodeId: "triage",
+          planItemId: "triage",
+          kind: "mention",
+          status: "done",
+          content: "接下来交给 Builder。\n\nOrchestrator 已完成任务拆解。",
+          artifactIds: [],
+        },
+        {
+          id: "run-code-development-handoff:agent-message:1",
+          runId: "run-code-development-handoff",
+          createdAt: createdAt + 2,
+          fromAgentId: "builder",
+          toAgentIds: ["reviewer"],
+          threadId: "agent-teams:build",
+          nodeId: "build",
+          planItemId: "build",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Reviewer。\n\nBuilder 已完成代码修改。",
+          artifactIds: [],
+        },
+        {
+          id: "run-code-development-handoff:agent-message:2",
+          runId: "run-code-development-handoff",
+          createdAt: createdAt + 3,
+          fromAgentId: "reviewer",
+          toAgentIds: ["debugger"],
+          threadId: "agent-teams:build",
+          nodeId: "review",
+          planItemId: "review",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Debugger。\n\nReviewer 发现需要复核失败测试。",
+          artifactIds: [],
+        },
+        {
+          id: "run-code-development-handoff:agent-message:3",
+          runId: "run-code-development-handoff",
+          createdAt: createdAt + 4,
+          fromAgentId: "debugger",
+          toAgentIds: ["orchestrator"],
+          threadId: "agent-teams:build",
+          nodeId: "debug",
+          planItemId: "debug",
+          kind: "reply",
+          status: "done",
+          content: "接下来交给 Orchestrator。\n\nDebugger 已确认失败原因。",
+          artifactIds: [],
+        },
+        {
+          id: "run-code-development-handoff:agent-message:4",
+          runId: "run-code-development-handoff",
+          createdAt: createdAt + 5,
+          fromAgentId: "orchestrator",
+          toAgentIds: [],
+          threadId: "agent-teams:build",
+          nodeId: "handoff",
+          planItemId: "handoff",
+          kind: "handoff",
+          status: "done",
+          content: "最终交付已整理。\n\nOrchestrator 已完成最终总结。",
+          artifactIds: [],
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 4, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 4,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-code-development-handoff:user",
+        sessionId: "session-code-development-handoff",
+        runId: "run-code-development-handoff",
+        turnIndex: 1,
+        role: "user",
+        content: "fix the code",
+        pattern: "agent_teams",
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-code-development-handoff": snapshot },
+    ).find((message) => message.role === "assistant");
+    const agentItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "agent_message") ?? [];
+    const timelineText = agentItems.map((item) => "content" in item ? item.content : "").join("\n");
+
+    expect(agentItems.map((item) => item.kind)).toEqual(["agent_message", "agent_message", "agent_message", "agent_message"]);
+    expect(timelineText).toContain("接下来交给 Builder。");
+    expect(timelineText).toContain("Orchestrator 已完成任务拆解。");
+    expect(timelineText).toContain("接下来交给 Reviewer。");
+    expect(timelineText).toContain("Builder 已完成代码修改。");
+    expect(timelineText).toContain("接下来交给 Debugger。");
+    expect(timelineText).toContain("Reviewer 发现需要复核失败测试。");
+    expect(timelineText).toContain("接下来交给 Orchestrator。");
+    expect(timelineText).toContain("Debugger 已确认失败原因。");
+    expect(timelineText).not.toContain("最终交付已整理。");
+    expect(timelineText).not.toContain("Orchestrator 已完成最终总结。");
+    expect(timelineText.indexOf("Orchestrator 已完成任务拆解。")).toBeLessThan(timelineText.indexOf("Builder 已完成代码修改。"));
+    expect(timelineText.indexOf("Builder 已完成代码修改。")).toBeLessThan(timelineText.indexOf("Reviewer 发现需要复核失败测试。"));
+    expect(timelineText.indexOf("Reviewer 发现需要复核失败测试。")).toBeLessThan(timelineText.indexOf("Debugger 已确认失败原因。"));
   });
 
   it("falls back to Ora as the assistant turn agent label", () => {

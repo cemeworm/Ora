@@ -20,6 +20,7 @@ import {
   ProjectInsightSchema,
   ProjectSignalSchema,
   RunTrailSchema,
+  CODE_DEVELOPMENT_MODE_ID,
   DEBATE_MODE_ID,
   DEERFLOW_HARNESS_MODE_ID,
   createModeSpecFromPattern,
@@ -750,13 +751,64 @@ describe("LocalRunStore", () => {
     }));
     const teamHandoff = state.agentMessages.find((message) =>
       message.fromAgentId === "team_lead" &&
-      message.kind === "handoff" &&
-      message.toAgentIds.includes("builder") &&
-      message.toAgentIds.includes("reviewer")
+      message.kind === "handoff"
     );
 
-    expect(teamHandoff?.content).toContain("接下来交给 Builder 和 Reviewer。");
+    expect(teamHandoff?.toAgentIds).toEqual([]);
+    expect(teamHandoff?.content).toContain("最终交付已整理。");
     expect(teamHandoff?.content).not.toContain("@builder");
+  });
+
+  it("emits Code Development stage handoffs with natural main-agent targets", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Fix a focused bug." },
+        config: { pattern: "agent_teams", modeId: CODE_DEVELOPMENT_MODE_ID }
+      }
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const messages = state.agentMessages.filter((message) => message.threadId === "agent-teams:build");
+    const contents = messages.map((message) => message.content).join("\n");
+
+    expect(messages.some((message) =>
+      message.fromAgentId === "orchestrator" &&
+      message.toAgentIds.includes("builder") &&
+      message.content.includes("接下来交给 Builder。")
+    )).toBe(true);
+    expect(messages.some((message) =>
+      message.fromAgentId === "builder" &&
+      message.toAgentIds.includes("reviewer") &&
+      message.content.includes("接下来交给 Reviewer。")
+    )).toBe(true);
+    expect(messages.some((message) =>
+      message.fromAgentId === "reviewer" &&
+      message.toAgentIds.includes("debugger") &&
+      message.content.includes("接下来交给 Debugger。")
+    )).toBe(true);
+    expect(messages.some((message) =>
+      message.fromAgentId === "debugger" &&
+      message.toAgentIds.includes("orchestrator") &&
+      message.content.includes("接下来交给 Orchestrator。")
+    )).toBe(true);
+    expect(messages.some((message) =>
+      message.fromAgentId === "orchestrator" &&
+      message.kind === "handoff" &&
+      message.toAgentIds.length === 0 &&
+      message.content.includes("最终交付已整理。")
+    )).toBe(true);
+    expect(contents).not.toContain("@builder");
+    expect(contents).not.toContain("@reviewer");
+    expect(contents).not.toContain("接下来交给 Builder 和 Reviewer。");
   });
 
   it("injects custom agent persona overlays from mode node bindings", async () => {

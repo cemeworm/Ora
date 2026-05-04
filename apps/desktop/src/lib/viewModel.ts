@@ -1253,7 +1253,10 @@ export function adaptChatMessages(
       const parsedAssistantPlan = rawAssistantText
         ? parseProposedPlan(rawAssistantText)
         : undefined;
-      const snapshotAssistant = parsedAssistantPlan?.hasCompletePlan
+      const canDisplayPlanBody = parsedAssistantPlan
+        ? parsedAssistantPlan.status === "streaming" || parsedAssistantPlan.hasCompletePlan
+        : false;
+      const snapshotAssistant = parsedAssistantPlan && canDisplayPlanBody
         ? parsedAssistantPlan.planContent
         : parsedAssistantPlan?.displayText;
       const suppressStoredAssistant = turn.snapshot
@@ -1660,7 +1663,10 @@ function isInternalAssistantText(text: string): boolean {
   if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
     return true;
   }
-  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=/i.test(trimmed)) {
+  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=|<\/?previous_tool_call\b|<\/?result\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/<file\.(?:read|list|grep|glob)\b[^>]*\/?>/i.test(trimmed)) {
     return true;
   }
   return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
@@ -1751,7 +1757,8 @@ function hasProposedPlanInSnapshot(snapshot: OraStateSnapshot): boolean {
       parts.push(event.payload.content);
     }
   }
-  return parseProposedPlan(parts.join("")).hasCompletePlan;
+  const parsed = parseProposedPlan(parts.join(""));
+  return parsed.status === "streaming" || parsed.hasCompletePlan;
 }
 
 function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {
@@ -2059,6 +2066,32 @@ function deriveTimelineItems(
 
   flushPendingText();
   flushPendingSteps();
+
+  const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
+  for (const [index, message] of (snapshot.agentMessages ?? []).entries()) {
+    if (
+      message.transcript ||
+      message.kind === "status" ||
+      (message.kind === "handoff" && message.toAgentIds.length === 0) ||
+      !message.content.trim() ||
+      isInternalAssistantText(message.content)
+    ) {
+      continue;
+    }
+    items.push({
+      rawTime: message.createdAt,
+      eventSeq: Number.MAX_SAFE_INTEGER - 1 + index / 1000,
+      item: {
+        id: `${message.id}:timeline`,
+        kind: "agent_message",
+        messageKind: message.kind,
+        fromAgentLabel: profiles.get(message.fromAgentId) ?? message.fromAgentId,
+        toAgentLabels: message.toAgentIds.map((agentId) => profiles.get(agentId) ?? agentId),
+        content: message.content.trim(),
+        timestamp: formatElapsed(baseTime, message.createdAt),
+      },
+    });
+  }
 
   const finalText = outputTextFromSnapshot(snapshot);
   if (finalText && !items.some(({ item }) => "content" in item && item.content.trim() === finalText.trim())) {

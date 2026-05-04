@@ -6,9 +6,10 @@ import { MarkdownContent } from "./MarkdownContent";
 interface PlanCardProps {
   planSteps: TurnPlanListStep[];
   planContent?: string;
+  isStreaming?: boolean;
 }
 
-export function PlanCard({ planSteps, planContent }: PlanCardProps) {
+export function PlanCard({ planSteps, planContent, isStreaming = false }: PlanCardProps) {
   return (
     <div className="space-y-2 rounded-2xl border border-border bg-card/96 px-4 py-3 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -19,6 +20,12 @@ export function PlanCard({ planSteps, planContent }: PlanCardProps) {
             {planSteps.filter((s) => s.status === "completed").length}/{planSteps.length} 步
           </span>
         ) : null}
+        {isStreaming ? (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <LoaderCircle size={12} className="animate-spin" />
+            正在生成
+          </span>
+        ) : null}
       </div>
       {planContent ? (
         <div>
@@ -27,6 +34,8 @@ export function PlanCard({ planSteps, planContent }: PlanCardProps) {
             className="text-sm leading-6 text-foreground [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h1]:leading-6 [&_h2]:mb-1.5 [&_h2]:mt-3 [&_h2]:text-sm [&_h2]:leading-6 [&_h3]:mb-1 [&_h3]:mt-2.5 [&_h3]:text-sm [&_h3]:leading-6 [&_ol]:my-1.5 [&_p]:my-1.5 [&_ul]:my-1.5"
           />
         </div>
+      ) : isStreaming ? (
+        <p className="text-sm text-muted-foreground">正在生成计划内容...</p>
       ) : null}
       {planSteps.length > 0 ? (
         <div className="border-l border-border/80 pl-4">

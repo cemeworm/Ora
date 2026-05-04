@@ -332,11 +332,19 @@ export async function executeRuntimeKernel(
 
   let planList: PlanListStep[] = [];
 
+  const cloneEventPayload = <T,>(value: T): T => {
+    if (value === undefined || value === null) {
+      return value;
+    }
+    return JSON.parse(JSON.stringify(value)) as T;
+  };
+
   const emit = (
     type: OraEventEnvelope["type"],
     payload: unknown,
     extra: Partial<OraEventEnvelope> = {},
   ) => {
+    const payloadSnapshot = cloneEventPayload(payload);
     const envelope = OraEventEnvelopeSchema.parse({
       id: `${runId}:evt-${events.length}`,
       runId,
@@ -344,12 +352,12 @@ export async function executeRuntimeKernel(
       type,
       createdAt: now(),
       pattern: config.pattern,
-      payload,
+      payload: payloadSnapshot,
       ...extra,
     });
     events.push(envelope);
     if (type === "plan_list.updated") {
-      const planData = payload as { plan?: PlanListStep[] };
+      const planData = payloadSnapshot as { plan?: PlanListStep[] };
       if (planData.plan) {
         planList = planData.plan;
       }

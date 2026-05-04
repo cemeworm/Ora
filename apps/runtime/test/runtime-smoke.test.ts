@@ -136,6 +136,193 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("blocks code development plan mode before implementation when triage is not a proposed plan", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.INVALID_PLAN_PROVIDER_KEY;
+    process.env.INVALID_PLAN_PROVIDER_KEY = "test";
+    const providerBodies: string[] = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      providerBodies.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: {
+            content: [
+              "{\"tool\": \"file.read\", \"args\": {\"path\": \"apps/desktop/src/components/onboarding/ProviderOnboardingStep.tsx\"}}",
+              "",
+              "<result><omitted /></result>",
+              "</previous_tool_call>",
+            ].join("\n"),
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请先输出任务计划，不要实施。" },
+          config: {
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: "invalid-plan-provider",
+            modelRef: "invalid-plan-model",
+            providerConfig: {
+              id: "invalid-plan-provider",
+              label: "Invalid Plan Provider",
+              type: "openai_compatible",
+              modelId: "invalid-plan-model",
+              baseUrl: "https://invalid-plan-provider.test/v1",
+              apiKeyEnv: "INVALID_PLAN_PROVIDER_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            metadata: { taskIntent: "plan" },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const firstPlanEvent = state.events.find((event) => event.type === "plan.updated");
+      const firstPlanItems = firstPlanEvent?.payload && typeof firstPlanEvent.payload === "object"
+        ? (firstPlanEvent.payload as { items?: Array<{ status?: string; linkedActionIds?: string[] }> }).items ?? []
+        : [];
+
+      expect(run.status).toBe("failed");
+      expect(state.status).toBe("failed");
+      expect(providerBodies.join("\n")).not.toContain("Build assigned work");
+      expect(providerBodies.join("\n")).not.toContain("Validate assigned work");
+      expect(state.agentMessages.some((message) => message.nodeId === "build")).toBe(false);
+      expect(state.agentMessages.some((message) => message.nodeId === "review")).toBe(false);
+      expect(state.agentMessages.map((message) => message.content).join("\n")).not.toContain("<previous_tool_call>");
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Mode progress is incomplete"),
+        modeOutput: expect.objectContaining({
+          stoppedAfterInvalidPlan: true,
+          invalidPlanReason: "invalid_or_internal_triage_output",
+        }),
+      });
+      expect(state.plan.find((item) => item.id === `${run.runId}:triage`)?.status).toBe("blocked");
+      expect(state.plan.filter((item) => item.status === "skipped").map((item) => item.id)).toEqual([
+        `${run.runId}:build`,
+        `${run.runId}:review`,
+        `${run.runId}:debug`,
+        `${run.runId}:handoff`,
+      ]);
+      expect(firstPlanItems.map((item) => item.status)).toEqual(["ready", "planned", "planned", "planned", "planned"]);
+      expect(firstPlanItems.every((item) => (item.linkedActionIds ?? []).length === 0)).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.INVALID_PLAN_PROVIDER_KEY;
+      } else {
+        process.env.INVALID_PLAN_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
+  it("blocks code development plan mode when a complete proposed plan also contains internal tool text", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.INTERNAL_PLAN_PROVIDER_KEY;
+    process.env.INTERNAL_PLAN_PROVIDER_KEY = "test";
+    const providerBodies: string[] = [];
+    const proposedPlanWithInternalText = [
+      "<proposed_plan>",
+      "# Provider onboarding model fetch",
+      "## Summary",
+      "Add a fetch button and model list loading state.",
+      "## Key Changes",
+      "- Wire provider credentials into a model-list request.",
+      "- Render loading, success, and error states.",
+      "## Test Plan",
+      "- Run focused desktop tests.",
+      "</proposed_plan>",
+      "{\"tool\": \"file.read\", \"args\": {\"path\": \".ora/runtime.db\"}}",
+      "<result><omitted /></result>",
+    ].join("\n");
+
+    globalThis.fetch = (async (_input, init) => {
+      providerBodies.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: proposedPlanWithInternalText },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请先输出任务计划，不要实施。" },
+          config: {
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: "internal-plan-provider",
+            modelRef: "internal-plan-model",
+            providerConfig: {
+              id: "internal-plan-provider",
+              label: "Internal Plan Provider",
+              type: "openai_compatible",
+              modelId: "internal-plan-model",
+              baseUrl: "https://internal-plan-provider.test/v1",
+              apiKeyEnv: "INTERNAL_PLAN_PROVIDER_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            metadata: { taskIntent: "plan" },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("failed");
+      expect(state.status).toBe("failed");
+      expect(providerBodies.join("\n")).not.toContain("Build assigned work");
+      expect(providerBodies.join("\n")).not.toContain("Validate assigned work");
+      expect(state.planDecisions).toHaveLength(0);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Mode progress is incomplete"),
+        modeOutput: expect.objectContaining({
+          stoppedAfterInvalidPlan: true,
+          invalidPlanReason: "invalid_or_internal_triage_output",
+        }),
+      });
+      expect(state.plan.find((item) => item.id === `${run.runId}:triage`)?.status).toBe("blocked");
+      expect(state.plan.filter((item) => item.status === "skipped").map((item) => item.id)).toEqual([
+        `${run.runId}:build`,
+        `${run.runId}:review`,
+        `${run.runId}:debug`,
+        `${run.runId}:handoff`,
+      ]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.INTERNAL_PLAN_PROVIDER_KEY;
+      } else {
+        process.env.INTERNAL_PLAN_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
   it("derives effective runtime strategy from selected modes", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
 

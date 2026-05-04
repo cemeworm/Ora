@@ -952,6 +952,59 @@ describe("desktop workbench state", () => {
       expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
     });
 
+    it("does not set sessionPendingPlanDecision for an unfinished streaming proposed plan", () => {
+      const sessionId = "session-streaming-plan";
+      const streamingPlan = [
+        "<proposed_plan>",
+        "计划标题",
+        "## 实施步骤",
+        "1. 先显示任务计划卡片",
+      ].join("\n");
+      const snapshot = testSnapshot({
+        runId: "run-streaming-plan",
+        sessionId,
+        events: [planModeEvent(0, streamingPlan)],
+      });
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        taskIntent: "plan",
+        sessionTaskIntents: { [sessionId]: "plan" },
+        selectedSessionId: sessionId,
+        selectedTurnRunId: snapshot.runId,
+        activeSnapshot: snapshot,
+        activeSessionDetail: {
+          session: sessionSummary(sessionId),
+          turns: [{
+            runId: snapshot.runId,
+            sessionId,
+            turnIndex: 1,
+            status: "running",
+            pattern: snapshot.pattern,
+            prompt: snapshot.input.prompt,
+            startedAt: snapshot.updatedAt,
+            updatedAt: snapshot.updatedAt,
+            eventCount: 1,
+            checkpointCount: 0,
+            artifactCount: 0,
+          }],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+      };
+
+      const settledStream = {
+        runId: "run-streaming-plan",
+        fromSeq: 1,
+        nextSeq: 1,
+        status: "succeeded",
+        events: [],
+        snapshot,
+      } as unknown as OraRunEventStream;
+
+      const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
+      expect(next.sessionPendingPlanDecision[sessionId]).toBeUndefined();
+    });
+
     it("restores pending plan decision from durable attention during hydrate", () => {
       const sessionId = "session-attention-plan";
       const snapshot = testSnapshot({

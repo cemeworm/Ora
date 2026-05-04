@@ -19,6 +19,8 @@ const PLAN = [
 describe("parseProposedPlan", () => {
   it("detects a complete proposed plan from planner output", () => {
     const result = parseProposedPlan(PLAN);
+    expect(result.status).toBe("complete");
+    expect(result.hasStartedPlan).toBe(true);
     expect(result.hasCompletePlan).toBe(true);
     expect(result.planContent).toContain("计划标题");
     expect(result.planContent).toContain("## 实施步骤");
@@ -46,6 +48,8 @@ describe("parseProposedPlan", () => {
 
   it("returns false for text without proposed_plan tags", () => {
     const result = parseProposedPlan("只是一段普通文本，没有计划标签。");
+    expect(result.status).toBe("none");
+    expect(result.hasStartedPlan).toBe(false);
     expect(result.hasCompletePlan).toBe(false);
   });
 
@@ -56,6 +60,10 @@ describe("parseProposedPlan", () => {
 
   it("returns false when the closing tag is missing (streaming in progress)", () => {
     const result = parseProposedPlan("<proposed_plan>\n## 未完成的计划\n内容...");
+    expect(result.status).toBe("streaming");
+    expect(result.hasStartedPlan).toBe(true);
     expect(result.hasCompletePlan).toBe(false);
+    expect(result.planContent).toBe("## 未完成的计划\n内容...");
+    expect(result.displayText).not.toContain("<proposed_plan>");
   });
 });

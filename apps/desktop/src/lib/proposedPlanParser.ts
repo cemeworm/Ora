@@ -3,8 +3,11 @@ const CLOSE_TAG = "</proposed_plan>";
 const MIN_PLAN_CONTENT_LENGTH = 50;
 
 type ParseState = "normal" | "inside" | "completed";
+type ProposedPlanStatus = "none" | "streaming" | "complete";
 
 interface ProposedPlanParseResult {
+  status: ProposedPlanStatus;
+  hasStartedPlan: boolean;
   hasCompletePlan: boolean;
   planContent: string;
   displayText: string;
@@ -38,6 +41,9 @@ export function parseProposedPlan(text: string): ProposedPlanParseResult {
 
   const planContent = planLines.join("\n");
   const contentLength = planContent.replace(/\s/g, "").length;
+  const status: ProposedPlanStatus =
+    state === "inside" ? "streaming" : state === "completed" ? "complete" : "none";
+  const hasStartedPlan = status !== "none";
   const hasCompletePlan =
     state === "completed" &&
     contentLength >= MIN_PLAN_CONTENT_LENGTH;
@@ -45,15 +51,11 @@ export function parseProposedPlan(text: string): ProposedPlanParseResult {
   console.log("[plan:parser] parseState=%s contentLength=%d hasCompletePlan=%s",
     state, contentLength, hasCompletePlan);
 
-  // 如果未闭合（streaming 中途），回退到 displayText，避免丢失文本
-  const finalDisplayText =
-    state === "inside"
-      ? [...displayLines, OPEN_TAG, ...planLines].join("\n")
-      : displayLines.join("\n");
-
   return {
+    status,
+    hasStartedPlan,
     hasCompletePlan,
     planContent,
-    displayText: finalDisplayText,
+    displayText: displayLines.join("\n"),
   };
 }

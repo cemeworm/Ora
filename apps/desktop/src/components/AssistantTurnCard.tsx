@@ -97,6 +97,16 @@ export function AssistantTurnCard({
   );
   const canShowActions = canCopyContent || canSubmitFeedback;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
+  const hasAgentMessageTimeline = timelineItems.some(
+    (item) => item.kind === "agent_message",
+  );
+  const showThinkingIndicator = shouldShowThinkingIndicator({
+    content,
+    hasTimeline,
+    isPlaceholder,
+    timelineItems,
+    turn,
+  });
 
   async function handleSubmitFeedback() {
     if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
@@ -152,14 +162,18 @@ export function AssistantTurnCard({
     <Message from="assistant" className="w-full">
       <div className="max-w-full">
         <div className="min-w-0 flex-1 space-y-3 pt-1">
-          {currentAgentLabel ? (
+          {currentAgentLabel && !hasAgentMessageTimeline ? (
             <p className="text-sm font-semibold leading-6 text-foreground">
               {currentAgentLabel}
             </p>
           ) : null}
 
-          {turn?.hasProposedPlan && content.trim() ? (
-            <PlanCard planSteps={planList} planContent={content} />
+          {turn?.hasProposedPlan ? (
+            <PlanCard
+              planSteps={planList}
+              planContent={content}
+              isStreaming={turn.status === "running"}
+            />
           ) : null}
 
           {hasStageTranscript ? (
@@ -178,6 +192,8 @@ export function AssistantTurnCard({
               />
             </MessageContent>
           )}
+
+          {showThinkingIndicator ? <ThinkingIndicator /> : null}
 
           {visibleArtifacts.length > 0 ? (
             <div className="space-y-3">
@@ -311,6 +327,40 @@ function legacyTimelineStatus(processSteps: TurnProcessStep[]): TurnProcessStep[
   return "complete";
 }
 
+function shouldShowThinkingIndicator({
+  content,
+  hasTimeline,
+  isPlaceholder,
+  timelineItems,
+  turn,
+}: {
+  content: string;
+  hasTimeline: boolean;
+  isPlaceholder: boolean;
+  timelineItems: TurnTimelineItem[];
+  turn?: AssistantTurnAttachment;
+}) {
+  if (!turn || turn.status !== "running" || turn.hasProposedPlan || isPlaceholder) {
+    return false;
+  }
+
+  if (hasTimeline) {
+    const latestItem = timelineItems[timelineItems.length - 1];
+    return latestItem?.kind === "assistant_text" || latestItem?.kind === "final_text";
+  }
+
+  return Boolean(content.trim());
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <LoaderCircle size={14} className="animate-spin" />
+      <span>正在思考</span>
+    </div>
+  );
+}
+
 function TurnTimeline({
   items,
   onOpenArtifact,
@@ -346,11 +396,13 @@ function TurnTimelineRow({
           <MarkdownContent content={item.content} />
         </MessageContent>
       );
+    case "agent_message":
+      return <AgentMessageTimelineItem item={item} />;
     case "status_group":
       return <TimelineStatusGroup item={item} />;
     case "artifact": {
       const content = (
-        <InlineTimelineMeta icon={<FileText size={14} />} tone="accent">
+        <InlineTimelineMeta icon={<FileText size={14} />}>
           {item.summary}
         </InlineTimelineMeta>
       );
@@ -365,11 +417,33 @@ function TurnTimelineRow({
     }
     case "plan_update":
       return (
-        <InlineTimelineMeta icon={<ListTodo size={14} />} tone="neutral">
+        <InlineTimelineMeta icon={<ListTodo size={14} />}>
           {item.summary}
         </InlineTimelineMeta>
       );
   }
+}
+
+function AgentMessageTimelineItem({
+  item,
+}: {
+  item: Extract<TurnTimelineItem, { kind: "agent_message" }>;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold leading-6 text-foreground">
+        <span>{item.fromAgentLabel}</span>
+        {item.messageKind === "handoff" && item.toAgentLabels.length > 0 ? (
+          <span className="text-xs font-medium text-muted-foreground">
+            接下来交给 {item.toAgentLabels.join(" 和 ")}
+          </span>
+        ) : null}
+      </div>
+      <MessageContent className="w-full">
+        <MarkdownContent content={item.content} />
+      </MessageContent>
+    </div>
+  );
 }
 
 function TimelineStatusGroup({
@@ -379,7 +453,6 @@ function TimelineStatusGroup({
 }) {
   const [open, setOpen] = useState(false);
   const active = item.status === "active";
-  const blocked = item.status === "blocked";
 
   return (
     <div className="space-y-2">
@@ -389,16 +462,7 @@ function TimelineStatusGroup({
         className="group flex w-full items-center justify-between gap-3 text-left"
       >
         <InlineTimelineMeta
-          icon={
-            active ? (
-              <LoaderCircle size={14} className="animate-spin" />
-            ) : blocked ? (
-              <AlertCircle size={14} />
-            ) : (
-              <CheckCircle2 size={14} />
-            )
-          }
-          tone={blocked ? "warning" : active ? "neutral" : "muted"}
+          icon={active ? <LoaderCircle size={14} className="animate-spin" /> : null}
         >
           {item.summary}
         </InlineTimelineMeta>
@@ -425,27 +489,18 @@ function TimelineStatusGroup({
 
 function InlineTimelineMeta({
   icon,
-  tone,
   children,
 }: {
-  icon: ReactNode;
-  tone: "muted" | "neutral" | "accent" | "warning";
+  icon?: ReactNode;
   children: ReactNode;
 }) {
-  const toneClassName =
-    tone === "warning"
-      ? "text-amber-700"
-      : tone === "accent"
-        ? "text-emerald-700"
-        : tone === "neutral"
-          ? "text-muted-foreground"
-          : "text-muted-foreground/80";
-
   return (
-    <div className={cn("flex min-w-0 items-center gap-2 text-sm", toneClassName)}>
-      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
-        {icon}
-      </span>
+    <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+      {icon ? (
+        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+          {icon}
+        </span>
+      ) : null}
       <span className="min-w-0 break-words">{children}</span>
     </div>
   );
@@ -500,12 +555,6 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
   if (step.eventType === "agent.handoff") {
     return <HandoffStepItem step={step} />;
   }
-  const toneClassName =
-    step.tone === "warning"
-      ? "text-amber-700"
-      : step.tone === "accent"
-        ? "text-emerald-700"
-        : "text-foreground";
   const detail = step.detail.trim();
 
   return (
@@ -513,7 +562,7 @@ function ProcessStepItem({ step }: { step: TurnProcessStep }) {
       <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className={cn("font-medium", toneClassName)}>{step.label}</p>
+          <p className="font-medium text-foreground">{step.label}</p>
           {detail ? (
             <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
               {detail}
@@ -535,10 +584,10 @@ function HandoffStepItem({ step }: { step: TurnProcessStep }) {
 
   return (
     <TaskItem className="relative">
-      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-emerald-400" />
+      <div className="absolute -left-[1.05rem] top-3.5 h-2 w-2 rounded-full bg-border" />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-medium text-emerald-700">{step.label}</p>
+          <p className="font-medium text-foreground">{step.label}</p>
           {detail ? (
             <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
               {detail}
@@ -556,9 +605,6 @@ function HandoffStepItem({ step }: { step: TurnProcessStep }) {
 }
 
 function StepStatusIcon({ step }: { step: TurnProcessStep }) {
-  if (step.status === "blocked") {
-    return <AlertCircle size={14} className="mt-0.5 shrink-0 text-amber-600" />;
-  }
   if (step.status === "active") {
     return (
       <LoaderCircle
@@ -567,9 +613,7 @@ function StepStatusIcon({ step }: { step: TurnProcessStep }) {
       />
     );
   }
-  return (
-    <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />
-  );
+  return null;
 }
 
 function ArtifactCard({

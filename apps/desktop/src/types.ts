@@ -202,6 +202,16 @@ export type TurnTimelineItem =
     }
   | {
       id: string;
+      kind: "agent_message";
+      messageKind: TurnAgentConversationMessage["kind"];
+      fromAgentLabel: string;
+      toAgentLabels: string[];
+      content: string;
+      timestamp: string;
+      eventSeq?: number;
+    }
+  | {
+      id: string;
       kind: "status_group";
       summary: string;
       steps: TurnProcessStep[];

@@ -75,6 +75,35 @@ export function agentMessageContent(prefix: string, value: unknown): string {
   return text ? `${prefix}${text}` : prefix.trimEnd();
 }
 
+export function isInternalAgentMessageText(value: unknown): boolean {
+  const trimmed = asText(value).trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/I need to stop using tools here\. Based on the available context/i.test(trimmed)) {
+    return true;
+  }
+  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|<\/?previous_tool_call\b|<\/?result\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/<file\.(?:read|list|grep|glob)\b[^>]*\/?>/i.test(trimmed)) {
+    return true;
+  }
+  return /(?:^|\n)\s*\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
+}
+
+export function publicAgentMessageContent(
+  prefix: string,
+  value: unknown,
+  fallback: string,
+): string {
+  const text = asText(value).trim();
+  if (!text || isInternalAgentMessageText(text)) {
+    return `${prefix}${fallback}`.trimEnd();
+  }
+  return `${prefix}${text}`;
+}
+
 export function ownerForTemplate(
   nodes: ModeNodeSpec[],
   template: ModeNodeSpec["template"],
