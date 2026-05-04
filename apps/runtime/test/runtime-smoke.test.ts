@@ -37,6 +37,105 @@ describe("Ora runtime smoke path", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
   });
 
+  it("stops code development after a complete proposed plan in plan mode", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.PLAN_MODE_PROVIDER_KEY;
+    process.env.PLAN_MODE_PROVIDER_KEY = "test";
+    const providerBodies: string[] = [];
+    const proposedPlan = [
+      "<proposed_plan>",
+      "# PlanDecisionPanel 决策状态 UI 调整",
+      "## Summary",
+      "调整计划模式的决策状态 UI。",
+      "## Key Changes",
+      "- 更新 PlanDecisionPanel 的按钮颜色和键盘导航。",
+      "## Test Plan",
+      "- 运行相关组件测试。",
+      "</proposed_plan>",
+    ].join("\n");
+
+    globalThis.fetch = (async (_input, init) => {
+      providerBodies.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: proposedPlan },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请先输出任务计划，不要实施。" },
+          config: {
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: "plan-mode-provider",
+            modelRef: "plan-mode-model",
+            providerConfig: {
+              id: "plan-mode-provider",
+              label: "Plan Mode Provider",
+              type: "openai_compatible",
+              modelId: "plan-mode-model",
+              baseUrl: "https://plan-mode-provider.test/v1",
+              apiKeyEnv: "PLAN_MODE_PROVIDER_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            metadata: { taskIntent: "plan" },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(providerBodies.join("\n")).not.toContain("Build assigned work");
+      expect(providerBodies.join("\n")).not.toContain("Validate assigned work");
+      expect(providerBodies.join("\n")).not.toContain("Diagnose failures");
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("<proposed_plan>"),
+        stoppedAfterProposedPlan: true,
+      });
+      expect(state.attention).toMatchObject({
+        kind: "needs_plan_decision",
+        blocking: true,
+      });
+      expect(state.planDecisions).toHaveLength(1);
+      expect(state.planDecisions[0]).toMatchObject({
+        status: "pending",
+        sessionId: state.sessionId,
+      });
+      expect(state.plan.filter((item) => item.status === "done").map((item) => item.id)).toEqual([`${run.runId}:triage`]);
+      expect(state.plan.filter((item) => item.status === "skipped").map((item) => item.id)).toEqual([
+        `${run.runId}:build`,
+        `${run.runId}:review`,
+        `${run.runId}:debug`,
+        `${run.runId}:handoff`,
+      ]);
+      expect(state.agentMessages.some((message) => message.nodeId === "build")).toBe(false);
+      expect(state.agentMessages.some((message) => message.nodeId === "review")).toBe(false);
+      expect(state.agentMessages.some((message) => message.nodeId === "debug")).toBe(false);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.PLAN_MODE_PROVIDER_KEY;
+      } else {
+        process.env.PLAN_MODE_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
   it("derives effective runtime strategy from selected modes", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
 

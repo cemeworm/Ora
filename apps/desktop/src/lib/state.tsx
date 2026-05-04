@@ -963,6 +963,40 @@ function syncSessionStateForSettledStream(
   };
 }
 
+function applyStreamToSessionDetail(
+  detail: OraSessionDetail,
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+): OraSessionDetail {
+  const status = streamRunStatus(stream, snapshot);
+  const updatedAt = streamUpdatedAt(stream, snapshot);
+
+  const turns = detail.turns.map((turn) => {
+    if (turn.runId !== stream.runId) return turn;
+    return {
+      ...turn,
+      status: status ?? turn.status,
+      eventCount: snapshot?.events.length ?? turn.eventCount,
+      checkpointCount: snapshot?.checkpoints.length ?? turn.checkpointCount,
+      artifactCount: snapshot?.artifacts.length ?? turn.artifactCount,
+      updatedAt: updatedAt ?? turn.updatedAt,
+      trace: snapshot?.trace ?? turn.trace,
+    };
+  });
+
+  return {
+    ...detail,
+    session: {
+      ...detail.session,
+      status: status ?? detail.session.status,
+      latestRunId: stream.runId,
+      updatedAt: updatedAt ?? detail.session.updatedAt,
+    },
+    turns,
+    latestSnapshot: snapshot ?? detail.latestSnapshot,
+  };
+}
+
 function streamMatchesPendingRun(
   pendingRun: WorkbenchState["pendingRun"],
   stream: OraRunEventStream,
@@ -1331,8 +1365,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "SELECT_SESSION":
     {
       const cachedDetail = state.sessionDetailsById[action.sessionId];
-      const session = cachedDetail?.session ?? state.sessions.find((item) => item.sessionId === action.sessionId);
-      const detail = cachedDetail ?? (session ? emptySessionDetail(session) : undefined);
+      const sessionSummary = state.sessions.find((item) => item.sessionId === action.sessionId);
+      const session = cachedDetail?.session ?? sessionSummary;
+      const detail = cachedDetail && sessionSummary && sessionSummary.updatedAt > cachedDetail.session.updatedAt
+        ? { ...cachedDetail, session: { ...cachedDetail.session, ...sessionSummary } }
+        : (cachedDetail ?? (session ? emptySessionDetail(session) : undefined));
       const snapshot = detail ? selectedSnapshotFromDetail(detail, undefined, undefined) : undefined;
       const latestTurn = detail?.turns.at(-1);
       return {
@@ -1400,8 +1437,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             [pendingClarificationsSessionId]: (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
           }
         : state.sessionPendingClarifications;
-      const pendingPlanDecisionSessionId = isSettled && sessionTaskIntent(state, streamSessionId) === "plan" && streamSnapshot && snapshotContainsProposedPlan(streamSnapshot)
-        ? streamSnapshot.sessionId
+      const planTaskIntent = sessionTaskIntent(state, streamSessionId);
+      const planHasProposed = streamSnapshot ? snapshotContainsProposedPlan(streamSnapshot) : false;
+      const pendingPlanDecisionSessionId = isSettled && planTaskIntent === "plan" && planHasProposed
+        ? streamSnapshot!.sessionId
         : undefined;
       const attentionPlanDecisionSessionId = streamSnapshot?.attention?.kind === "needs_plan_decision"
         ? streamSnapshot.sessionId
@@ -1411,13 +1450,27 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         : attentionPlanDecisionSessionId
           ? { ...state.sessionPendingPlanDecision, [attentionPlanDecisionSessionId]: true }
         : state.sessionPendingPlanDecision;
+      if (isSettled && planTaskIntent === "plan") {
+        console.log("[plan:state:APPLY_RUN_STREAM] isSettled=%s taskIntent=%s hasProposedPlan=%s attentionKind=%s sessionId=%s -> pending=%s",
+          isSettled, planTaskIntent, planHasProposed, streamSnapshot?.attention?.kind, streamSnapshot?.sessionId,
+          Boolean(pendingPlanDecisionSessionId || attentionPlanDecisionSessionId));
+      }
       return {
         ...state,
         sessions,
         activeSessionDetail,
-        sessionDetailsById: activeSessionDetail
-          ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
-          : state.sessionDetailsById,
+        sessionDetailsById: (() => {
+          let next = activeSessionDetail
+            ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
+            : state.sessionDetailsById;
+          if (streamSessionId && streamSessionId !== activeSessionId) {
+            const cachedDetail = state.sessionDetailsById[streamSessionId];
+            if (cachedDetail) {
+              next = cacheSessionDetail(next, applyStreamToSessionDetail(cachedDetail, action.stream, streamSnapshot));
+            }
+          }
+          return next;
+        })(),
         activeSnapshot,
         sessionPendingClarifications,
         sessionPendingPlanDecision,

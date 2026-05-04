@@ -1158,6 +1158,10 @@ export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
       planDecisionId: planDecision.id,
     });
   }
+  if (snapshot.planDecisions.length > 0 || snapshot.config.metadata.taskIntent === "plan") {
+    console.log("[plan:attention] planDecisions=%d pendingClarifications=%d pendingApprovals=%d taskIntent=%s -> no pending plan decision",
+      snapshot.planDecisions.length, pendingClarificationIds.length, pendingActionIds.length, snapshot.config.metadata.taskIntent);
+  }
 
   if (snapshot.status === "queued" || snapshot.status === "running") {
     return RunAttentionSchema.parse({

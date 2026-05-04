@@ -40,6 +40,26 @@ interface ModeExecutionInput {
 
 type ExecutionBag = Record<string, unknown>;
 
+function containsCompleteProposedPlan(value: unknown): boolean {
+  return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(asText(value));
+}
+
+function finishPlanModeAfterProposedPlan(
+  context: PatternExecutionContext,
+  nodes: ModeNodeSpec[],
+  currentIndex: number,
+  totalActiveNodes: number,
+): void {
+  for (const remaining of nodes.slice(currentIndex + 1)) {
+    context.setPlanStatus(remaining.id, "skipped");
+  }
+  context.setQueueSummary({
+    pending: 0,
+    inProgress: 0,
+    completed: totalActiveNodes,
+  });
+}
+
 async function runNode(
   context: PatternExecutionContext,
   modeSpec: ModeSpec,
@@ -586,7 +606,7 @@ async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<P
 }
 
 async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExecutionResult> {
-  const { context, prompt, modeSpec } = input;
+  const { context, prompt, config, modeSpec } = input;
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
@@ -596,7 +616,7 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
   const reviewerId = ownerForTemplate(nodes, "check", "reviewer");
   let completedNodes = 0;
 
-  for (const node of nodes) {
+  for (const [nodeIndex, node] of nodes.entries()) {
       completedNodes = await runNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "triage") {
           const agentId = node.ownerAgentId ?? leadId;
@@ -735,6 +755,23 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
         return bag.handoff;
       }
     });
+    if (config.metadata.taskIntent === "plan" && containsCompleteProposedPlan(bag.handoff || bag.check || bag.build || bag.triage)) {
+      finishPlanModeAfterProposedPlan(context, nodes, nodeIndex, totalActiveNodes);
+      return {
+        output: {
+          text: asText(bag.handoff || bag.check || bag.build || bag.triage),
+          pattern: "agent_teams",
+          modeId: modeSpec.id,
+          stoppedAfterProposedPlan: true,
+          backlog: nodes.map((entry) => entry.template),
+          triage: bag.triage,
+          workers: {
+            builder: bag.build,
+            reviewer: bag.check,
+          },
+        },
+      };
+    }
   }
 
   return {

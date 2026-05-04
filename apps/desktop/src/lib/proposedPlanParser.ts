@@ -37,9 +37,13 @@ export function parseProposedPlan(text: string): ProposedPlanParseResult {
   }
 
   const planContent = planLines.join("\n");
+  const contentLength = planContent.replace(/\s/g, "").length;
   const hasCompletePlan =
     state === "completed" &&
-    planContent.replace(/\s/g, "").length >= MIN_PLAN_CONTENT_LENGTH;
+    contentLength >= MIN_PLAN_CONTENT_LENGTH;
+
+  console.log("[plan:parser] parseState=%s contentLength=%d hasCompletePlan=%s",
+    state, contentLength, hasCompletePlan);
 
   // 如果未闭合（streaming 中途），回退到 displayText，避免丢失文本
   const finalDisplayText =

@@ -4597,19 +4597,25 @@ class LocalJsonRpcRuntime {
 
   private normalizeMockSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
     let normalized = snapshot;
-    if (
-      normalized.sessionId &&
-      normalized.status === "succeeded" &&
-      normalized.config.metadata.taskIntent === "plan" &&
-      snapshotContainsCompleteProposedPlan(normalized) &&
-      normalized.planDecisions.length === 0
-    ) {
+    const planCheck = {
+      hasSessionId: Boolean(normalized.sessionId),
+      isSucceeded: normalized.status === "succeeded",
+      taskIntent: normalized.config.metadata.taskIntent,
+      hasProposedPlan: snapshotContainsCompleteProposedPlan(normalized),
+      noExistingDecision: normalized.planDecisions.length === 0,
+    };
+    const shouldInject = planCheck.hasSessionId && planCheck.isSucceeded && planCheck.taskIntent === "plan" && planCheck.hasProposedPlan && planCheck.noExistingDecision;
+    if (!shouldInject) {
+      console.log("[plan:mock-snapshot] skip planDecision injection checks=%o", planCheck);
+    }
+    if (shouldInject) {
+      console.log("[plan:mock-snapshot] injecting planDecision runId=%s", normalized.runId);
       normalized = {
         ...normalized,
         planDecisions: [{
           id: `${normalized.runId}:plan-decision`,
           runId: normalized.runId,
-          sessionId: normalized.sessionId,
+          sessionId: normalized.sessionId!,
           status: "pending",
           createdAt: normalized.updatedAt,
         }],
