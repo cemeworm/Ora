@@ -92,6 +92,7 @@ import {
   UserTaskInput,
 } from "@cemeworm/shared";
 import { z } from "zod";
+import { buildAgenticEfficiencyLedger } from "./agentic-efficiency.js";
 import { parseJsonObject } from "./provider-json.js";
 import { invokeRunProvider } from "./providers/index.js";
 
@@ -2334,12 +2335,14 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
     ? snapshot.config.metadata.autoModeRouter as Record<string, unknown>
     : {};
   const effectiveStrategy = snapshot.config.effectiveStrategy;
+  const efficiencyLedger = buildAgenticEfficiencyLedger(snapshot, runtimeMs);
   return {
     run: {
       status: snapshot.status,
       outputText: extractOutputText(snapshot),
       runtimeMs,
-      costUsd: estimateCostUsd(snapshot),
+      costUsd: efficiencyLedger.estimatedCostUsd,
+      agenticCost: efficiencyLedger,
     },
     runtime: {
       modeId: snapshot.modeId,
@@ -2351,6 +2354,7 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
         reason: stringValue(autoModeRouter.reason),
       },
       ...(effectiveStrategy ? { effectiveStrategy } : {}),
+      efficiencyLedger,
     },
     trace: {
       eventTypes: snapshot.events.map((event) => event.type),
@@ -2384,7 +2388,7 @@ function defaultMetricsForObjective(objective: EvaluationObjective): EvaluationM
     case "latency":
       return ["latency_score"];
     case "cost":
-      return ["cost_score"];
+      return ["agentic_cost_score", "token_efficiency", "tool_efficiency", "coordination_overhead", "recovery_overhead"];
     case "regression":
       return ["assertion_pass_rate"];
     case "outcome":
@@ -2416,6 +2420,16 @@ function scoreMetric(
       return latencyMetric(observations);
     case "cost_score":
       return costMetric(observations);
+    case "agentic_cost_score":
+      return agenticCostMetric(observations);
+    case "token_efficiency":
+      return tokenEfficiencyMetric(observations);
+    case "tool_efficiency":
+      return toolEfficiencyMetric(observations);
+    case "coordination_overhead":
+      return coordinationOverheadMetric(observations);
+    case "recovery_overhead":
+      return recoveryOverheadMetric(observations);
     case "trace_coverage":
       return traceCoverageMetric(observations);
   }
@@ -2590,6 +2604,78 @@ function costMetric(observations: EvaluationObservation): EvaluationMetricScore 
   });
 }
 
+function agenticCostMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const costUsd = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.estimatedCostUsd")) ?? 0;
+  const score = Math.max(0, 1 - costUsd / 0.025);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "agentic_cost_score",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored completion cost using Ora's agentic efficiency ledger.",
+    failureTags: score >= 0.75 ? [] : ["high_agentic_cost"],
+    details: { costUsd },
+  });
+}
+
+function tokenEfficiencyMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const totalTokens = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.totalTokens")) ?? 0;
+  const modelCallCount = Math.max(1, numberValue(getObservationPath(observations, "runtime.efficiencyLedger.modelCallCount")) ?? 1);
+  const tokensPerModelCall = totalTokens / modelCallCount;
+  const score = Math.max(0, 1 - tokensPerModelCall / 12_000);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "token_efficiency",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored token use per model call.",
+    failureTags: score >= 0.75 ? [] : ["high_token_load"],
+    details: { totalTokens, modelCallCount, tokensPerModelCall: Math.round(tokensPerModelCall) },
+  });
+}
+
+function toolEfficiencyMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const toolCallCount = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.toolCallCount")) ?? 0;
+  const failedToolCallCount = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.failedToolCallCount")) ?? 0;
+  const repairedToolCallCount = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.repairedToolCallCount")) ?? 0;
+  const score = Math.max(0, 1 - (toolCallCount + failedToolCallCount + repairedToolCallCount) / 16);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "tool_efficiency",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored tool volume and wasted tool attempts.",
+    failureTags: score >= 0.75 ? [] : ["high_tool_overhead"],
+    details: { toolCallCount, failedToolCallCount, repairedToolCallCount },
+  });
+}
+
+function coordinationOverheadMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const coordinationEventCount = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.coordinationEventCount")) ?? 0;
+  const modelCallCount = Math.max(1, numberValue(getObservationPath(observations, "runtime.efficiencyLedger.modelCallCount")) ?? 1);
+  const coordinationPerModelCall = coordinationEventCount / modelCallCount;
+  const score = Math.max(0, 1 - coordinationPerModelCall / 8);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "coordination_overhead",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored coordination event overhead relative to model work.",
+    failureTags: score >= 0.75 ? [] : ["high_coordination_overhead"],
+    details: { coordinationEventCount, modelCallCount, coordinationPerModelCall },
+  });
+}
+
+function recoveryOverheadMetric(observations: EvaluationObservation): EvaluationMetricScore {
+  const recoveryEventCount = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.recoveryEventCount")) ?? 0;
+  const toolRetryCount = numberValue(getObservationPath(observations, "runtime.efficiencyLedger.toolRetryCount")) ?? 0;
+  const score = Math.max(0, 1 - (recoveryEventCount + toolRetryCount) / 6);
+  return EvaluationMetricScoreSchema.parse({
+    metricId: "recovery_overhead",
+    score: roundScore(score),
+    passed: score >= 0.75,
+    rationale: "Scored repair and retry overhead.",
+    failureTags: score >= 0.75 ? [] : ["high_recovery_overhead"],
+    details: { recoveryEventCount, toolRetryCount },
+  });
+}
+
 function traceCoverageMetric(observations: EvaluationObservation): EvaluationMetricScore {
   const eventCount = numberValue(getObservationPath(observations, "trace.eventCount")) ?? 0;
   const score = Math.min(1, 0.45 + Math.min(eventCount, 4) * 0.12);
@@ -2622,7 +2708,15 @@ function aggregateMetricScores(metricScores: EvaluationMetricScore[], profileId:
   const overallScore = roundScore(average(metricScores.map((metric) => metric.score)));
   const outcomeScore = roundScore(scoreFor(["text_similarity", "exact_match", "acceptable_match", "assertion_pass_rate"], overallScore));
   const processScore = roundScore(scoreFor(["fallback_rate", "trace_coverage"], overallScore));
-  const efficiencyScore = roundScore(scoreFor(["latency_score", "cost_score"], runtimeFailed ? 0.25 : 0.9));
+  const efficiencyScore = roundScore(scoreFor([
+    "latency_score",
+    "cost_score",
+    "agentic_cost_score",
+    "token_efficiency",
+    "tool_efficiency",
+    "coordination_overhead",
+    "recovery_overhead",
+  ], runtimeFailed ? 0.25 : 0.9));
   const safetyScore = runtimeFailed ? 0.2 : metricScores.some((metric) => metric.failureTags.includes("reject_value") || metric.failureTags.includes("wrong_mode")) ? 0.55 : 0.92;
   const failureTags = [
     ...(runtimeFailed ? ["runtime_failed"] : []),
@@ -2933,8 +3027,7 @@ function tokenize(value: string) {
 }
 
 function estimateCostUsd(snapshot: StateSnapshot) {
-  const base = snapshot.events.length * 0.0002;
-  return Number(base.toFixed(4));
+  return buildAgenticEfficiencyLedger(snapshot).estimatedCostUsd;
 }
 
 function metadataTags(metadata: Record<string, unknown>) {

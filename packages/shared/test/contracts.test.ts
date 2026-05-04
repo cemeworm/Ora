@@ -67,6 +67,7 @@ import {
   FeedbackLoopRulesListParamsSchema,
   FeedbackLoopSignalsListParamsSchema,
   EvaluationImportParamsSchema,
+  EvaluationMetricIdSchema,
   EvaluationRunDetailSchema,
   EvaluationRunSchema,
   EvaluationRunStreamSchema,
@@ -322,6 +323,14 @@ describe("Ora shared contracts", () => {
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
+  });
+
+  it("accepts agentic efficiency evaluation metric ids", () => {
+    expect(EvaluationMetricIdSchema.parse("agentic_cost_score")).toBe("agentic_cost_score");
+    expect(EvaluationMetricIdSchema.parse("token_efficiency")).toBe("token_efficiency");
+    expect(EvaluationMetricIdSchema.parse("tool_efficiency")).toBe("tool_efficiency");
+    expect(EvaluationMetricIdSchema.parse("coordination_overhead")).toBe("coordination_overhead");
+    expect(EvaluationMetricIdSchema.parse("recovery_overhead")).toBe("recovery_overhead");
   });
 
   it("validates provider model discovery contracts", () => {

@@ -35,6 +35,11 @@ export const EvaluationMetricIdSchema = z.enum([
   "confidence_calibration",
   "latency_score",
   "cost_score",
+  "agentic_cost_score",
+  "token_efficiency",
+  "tool_efficiency",
+  "coordination_overhead",
+  "recovery_overhead",
   "trace_coverage",
 ]);
 export type EvaluationMetricId = z.infer<typeof EvaluationMetricIdSchema>;
