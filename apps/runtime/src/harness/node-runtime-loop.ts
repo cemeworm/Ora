@@ -4,6 +4,7 @@ import type {
   ModeSpec,
   OraEventEnvelope,
   OraToolCallEnvelope,
+  PlanListStep,
   PendingClarificationOption,
   RunConfig,
 } from "@cemeworm/shared";
@@ -16,6 +17,7 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from "./runtime-completion.js";
+import { evaluateRuntimeCompletionGuards } from "./runtime-completion-guards.js";
 import { ApprovalInterruptError, ClarificationInterruptError } from "./runtime-interrupts.js";
 import { forcedFinalSystemPrompt } from "./runtime-output.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
@@ -29,6 +31,7 @@ import {
   providerSupportsNativeTools,
   providerToolCallToAttempt,
   cacheKeyForRuntimeTool,
+  invalidatesRuntimeToolCache,
   type RuntimeToolAttempt,
 } from "./runtime-tool-loop.js";
 import { RuntimeToolExecutor, type RuntimeFileChangeMetadata, type RuntimeToolCall } from "./runtime-tool-executor.js";
@@ -82,6 +85,8 @@ export interface RunNodeRuntimeLoopDeps {
   inputPrompt: string;
   now: () => number;
   eventsLength: () => number;
+  planList: () => readonly PlanListStep[];
+  toolCalls: () => readonly OraToolCallEnvelope[];
   runtimeToolExecutor: RuntimeToolExecutor;
   completion: RuntimeCompletionController;
   runtimeToolResultCache: Map<string, unknown>;
@@ -330,7 +335,8 @@ export async function runNodeRuntimeLoop(
       context: toolExecutionContext,
       middlewares: runtimeMiddlewares,
       terminal: async ({ toolCall, allowRisky }) => {
-        const cacheKey = cacheKeyForRuntimeTool(toolCall);
+        const invalidatesCache = invalidatesRuntimeToolCache(toolCall);
+        const cacheKey = invalidatesCache ? undefined : cacheKeyForRuntimeTool(toolCall);
         const cacheHit =
           cacheKey !== undefined && runtimeToolResultCache.has(cacheKey);
         const execution = cacheHit
@@ -340,6 +346,9 @@ export async function runNodeRuntimeLoop(
             });
         if (cacheKey && !cacheHit) {
           runtimeToolResultCache.set(cacheKey, execution.output);
+        }
+        if (invalidatesCache) {
+          runtimeToolResultCache.clear();
         }
         const artifact = execution.fileChange
           ? publishFileChangeArtifact(execution.fileChange, {
@@ -688,6 +697,54 @@ export async function runNodeRuntimeLoop(
       middlewares: runtimeMiddlewares,
       terminal: async () => ({ kind: "unhandled" }),
     });
+  const continueOrCompleteNaturally = async (
+    currentResponse: ModelResponse,
+    iteration: number,
+  ): Promise<{ kind: "continue"; response: ModelResponse } | { kind: "complete"; response: ModelResponse }> => {
+    const guardResult = evaluateRuntimeCompletionGuards({
+      actions: actionLedger.list(),
+      planList: deps.planList(),
+      toolCalls: deps.toolCalls(),
+    });
+    if (guardResult.allowComplete) {
+      emitNodeRuntimeState("completed", {
+        agentId: params.agentId,
+        title: params.title,
+        iteration,
+      });
+      return { kind: "complete", response: currentResponse };
+    }
+
+    emitRuntimeStatusProgress(
+      emit,
+      params,
+      guardResult.progressTrigger,
+      guardResult.progressSummary,
+      Math.max(0, events.length - 1),
+    );
+    emitNodeRuntimeState("running_model", {
+      agentId: params.agentId,
+      title: params.title,
+      reason: guardResult.reason,
+      detail: guardResult.detail,
+      iteration: iteration + 1,
+    });
+    messages = [
+      ...messages,
+      { role: "assistant", content: currentResponse.text },
+      { role: "user", content: guardResult.followUpContent },
+    ];
+    return {
+      kind: "continue",
+      response: await invokeFollowUpModel({
+        messages,
+        system: params.system,
+        maxTokens: config.budget?.maxTokens,
+        tools: nativeTools,
+        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+      }, currentResponse, guardResult.followUpReason),
+    };
+  };
 
   emitNodeRuntimeState("pending", {
     agentId: params.agentId,
@@ -733,11 +790,11 @@ export async function runNodeRuntimeLoop(
   }
 
   if (enabledTools.length === 0) {
-    emitNodeRuntimeState("completed", {
-      agentId: params.agentId,
-      title: params.title,
-    });
-    return response;
+    const completionResult = await continueOrCompleteNaturally(response, 0);
+    if (completionResult.kind === "complete") {
+      return completionResult.response;
+    }
+    response = completionResult.response;
   }
 
   const remainingToolBudget = Number.isFinite(completion.maxToolCalls)
@@ -775,12 +832,12 @@ export async function runNodeRuntimeLoop(
         ? { ...fallbackToolCall, source: "json_fallback" }
         : undefined);
     if (!toolCall) {
-      emitNodeRuntimeState("completed", {
-        agentId: params.agentId,
-        title: params.title,
-        iteration,
-      });
-      return response;
+      const completionResult = await continueOrCompleteNaturally(response, iteration);
+      if (completionResult.kind === "continue") {
+        response = completionResult.response;
+        continue;
+      }
+      return completionResult.response;
     }
 
     const allNativeToolCalls = (response.toolCalls

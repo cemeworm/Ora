@@ -3167,15 +3167,23 @@ describe("Ora runtime smoke path", () => {
         expect.objectContaining({ agentId: "team_lead", status: "succeeded" }),
         expect.objectContaining({ agentId: "team_lead", status: "succeeded" }),
         expect.objectContaining({ agentId: "builder", status: "succeeded" }),
+        expect.objectContaining({ agentId: "builder", status: "succeeded" }),
       ]);
-      expect(forceFinalEvents).toHaveLength(1);
-      expect(forceFinalEvents[0]?.payload).toMatchObject({
+      expect(forceFinalEvents).toHaveLength(2);
+      expect(forceFinalEvents.map((event) => event.payload)).toEqual([
+        expect.objectContaining({
         reason: "repeated_tool_blocked",
         scopeKey: "agent:team_lead|node:triage",
-      });
-      expect(state.agentMessages.some((message) =>
-        message.fromAgentId === "builder"
-        && message.content.includes("Builder completed with README evidence.")
+        }),
+        expect.objectContaining({
+          reason: "repeated_tool_blocked",
+          scopeKey: "agent:builder|node:build",
+        }),
+      ]);
+      expect(forceFinalEvents.some((event) =>
+        typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).scopeKey === "agent:builder|node:build"
       )).toBe(true);
     } finally {
       globalThis.fetch = previousFetch;

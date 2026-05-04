@@ -29,7 +29,9 @@ import {
   ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
   type TaskIntent,
+  type PlanItem,
   type PlanListStep,
+  type TodoItem,
 } from "@cemeworm/shared";
 import {
   ActionLedger,
@@ -151,6 +153,24 @@ function sleep(ms: number): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function modeProgressFinalizationError(
+  planItems: readonly PlanItem[],
+  todoItems: readonly TodoItem[],
+): string | undefined {
+  const unfinishedPlans = planItems.filter((item) => item.status !== "done" && item.status !== "skipped");
+  const unfinishedTodos = todoItems.filter((item) => item.status !== "done" && item.status !== "skipped");
+  if (unfinishedPlans.length === 0 && unfinishedTodos.length === 0) {
+    return undefined;
+  }
+  const planDetail = unfinishedPlans.map((item) => `plan:${item.id} [${item.status}] ${item.title}`);
+  const todoDetail = unfinishedTodos.map((item) => `todo:${item.id} [${item.status}] ${item.label}`);
+  return [
+    "Mode progress is incomplete; refusing to emit run.done.",
+    ...planDetail,
+    ...todoDetail,
+  ].join("\n");
 }
 
 function selectedModeProgressText(modeSpec: ModeSpec, checkingRequest: boolean): string {
@@ -863,6 +883,8 @@ export async function executeRuntimeKernel(
       inputPrompt: input.prompt,
       now,
       eventsLength: () => events.length,
+      planList: () => planList,
+      toolCalls: () => toolCallLedger.list(),
       runtimeToolExecutor,
       completion,
       runtimeToolResultCache,
@@ -1625,11 +1647,14 @@ export async function executeRuntimeKernel(
       });
     }
     inferCompletionStopReason(result.output);
-    output = outputWithCompletionMetadata(await finalizeAsOra(result.output), completionMetadata());
-    const incompleteError = incompleteForcedFinalError(output, completionMetadata());
-    if (incompleteError) {
+    const modeProgressError = modeProgressFinalizationError(planService.list(), todoService.list());
+    if (modeProgressError) {
       status = "failed";
-      error = incompleteError;
+      error = modeProgressError;
+      output = outputWithCompletionMetadata({
+        text: modeProgressError,
+        modeOutput: result.output,
+      }, completionMetadata());
       emit("run.failed", {
         status,
         error,
@@ -1638,12 +1663,26 @@ export async function executeRuntimeKernel(
         completion: completionMetadata(),
       });
     } else {
-      emit("run.done", {
-        status: "succeeded",
-        output,
-        stopReason: completionMetadata().stopReason,
-        completion: completionMetadata(),
-      });
+      output = outputWithCompletionMetadata(await finalizeAsOra(result.output), completionMetadata());
+      const incompleteError = incompleteForcedFinalError(output, completionMetadata());
+      if (incompleteError) {
+        status = "failed";
+        error = incompleteError;
+        emit("run.failed", {
+          status,
+          error,
+          output,
+          stopReason: completionMetadata().stopReason,
+          completion: completionMetadata(),
+        });
+      } else {
+        emit("run.done", {
+          status: "succeeded",
+          output,
+          stopReason: completionMetadata().stopReason,
+          completion: completionMetadata(),
+        });
+      }
     }
   } catch (caught) {
     error = caught instanceof Error ? caught.message : String(caught);

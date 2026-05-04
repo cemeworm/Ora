@@ -22,6 +22,11 @@ import { RuntimeSkillRegistry } from "./harness/capability-registries.js";
 import { LongTermMemoryManager } from "./memory.js";
 import { ModeSpecFileStore } from "./modes.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
+import {
+  resolveAgenticRuntimeScheduling,
+  routerCostHintForMode,
+  taskIntentFromMetadata,
+} from "./runtime-scheduling.js";
 
 const AUTO_MODE_ROUTER_CONFIDENCE_THRESHOLD = 0.55;
 const AUTO_MODE_ROUTER_MAX_TOKENS = 800;
@@ -87,7 +92,13 @@ export async function resolveModeSelection(
     : withDefaultWebToolIds(configuredToolIds);
   const skillWarnings = deps.skillRegistry.warnings(skillIds);
   const skillPromptOverlay = deps.skillRegistry.promptSnippets(skillIds).join("\n\n");
-  const budget = parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family];
+  const baseBudget = parsed.budget ?? modeSpec.defaultBudget ?? DEFAULT_RESOURCE_BUDGETS[modeSpec.family];
+  const scheduling = resolveAgenticRuntimeScheduling({
+    budget: baseBudget,
+    explicitBudget: config?.budget !== undefined,
+    metadata: parsed.metadata,
+  });
+  const budget = scheduling.budget;
   const effectiveStrategy = resolveEffectiveRunStrategy(modeSpec, {
     ...parsed,
     modeSelection: parsed.modeSelection,
@@ -117,6 +128,7 @@ export async function resolveModeSelection(
           ...(autoRoute?.metadata.handoffSummary ? { handoffSummary: autoRoute.metadata.handoffSummary } : {}),
         },
         effectiveStrategy,
+        ...(scheduling.metadata ? { agenticScheduling: scheduling.metadata } : {}),
         ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
       ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
       ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
@@ -259,6 +271,7 @@ async function routeAutoMode(
       recommendedUse: mode.recommendedUse,
       failureMode: mode.failureMode,
       systemPreset: mode.systemPreset,
+      agenticCostHint: routerCostHintForMode(mode),
     }));
   const candidateIds = new Set(candidates.map((mode) => mode.id));
   const fallbackModeId = candidateIds.has(SINGLE_AGENT_MODE_ID)
@@ -289,6 +302,8 @@ async function routeAutoMode(
         "Return only compact JSON with keys modeId, confidence, and reason.",
         "confidence must be a number from 0 to 1.",
         "reason must be a short plain string under 120 characters.",
+        "When multiple modes fit equally well, prefer lower agenticCostHint costTier and coordinationTier.",
+        "For chat or planning requests, prefer single_agent unless the task clearly needs verification, delegation, persistent workers, message routing, or shared state.",
         "If the task is underspecified, choose the fallbackModeId with confidence below the threshold.",
         "Do not include markdown or extra text.",
       ].join(" "),
@@ -296,6 +311,7 @@ async function routeAutoMode(
         task: input.prompt,
         projectId: input.projectId,
         context: input.context ?? {},
+        taskIntent: taskIntentFromMetadata(config.metadata),
         recentMessages: resolveAutoRouterRecentMessages(input, session, deps),
         candidates,
         fallbackModeId,

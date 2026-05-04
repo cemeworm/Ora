@@ -32,7 +32,28 @@ export function providerToolCallToAttempt(call: ModelToolCall): RuntimeToolAttem
   };
 }
 
-export function cacheKeyForRuntimeTool(call: RuntimeToolCall): string | undefined {
+export function cacheKeyForRuntimeTool(
+  call: RuntimeToolCall,
+  options: { readOnlyFileTools?: boolean } = { readOnlyFileTools: true },
+): string | undefined {
+  const readOnlyFileTools = options.readOnlyFileTools !== false;
+  if (readOnlyFileTools && call.tool === "file.read") {
+    const filePath = typeof call.args.path === "string" ? call.args.path.trim() : "";
+    return filePath ? `${call.tool}:${filePath}` : undefined;
+  }
+  if (readOnlyFileTools && call.tool === "file.list") {
+    const filePath = typeof call.args.path === "string" ? call.args.path.trim() : ".";
+    return `${call.tool}:${filePath}`;
+  }
+  if (readOnlyFileTools && call.tool === "file.glob") {
+    const pattern = typeof call.args.pattern === "string" ? call.args.pattern.trim() : "";
+    return pattern ? `${call.tool}:${pattern}` : undefined;
+  }
+  if (readOnlyFileTools && call.tool === "file.grep") {
+    const pattern = typeof call.args.pattern === "string" ? call.args.pattern.trim() : "";
+    const include = typeof call.args.include === "string" ? call.args.include.trim() : "";
+    return pattern ? `${call.tool}:${pattern}:${include}` : undefined;
+  }
   if (call.tool === "web.fetch") {
     const url = typeof call.args.url === "string" ? call.args.url.trim() : "";
     return url ? `${call.tool}:${url}` : undefined;
@@ -43,6 +64,16 @@ export function cacheKeyForRuntimeTool(call: RuntimeToolCall): string | undefine
     return query ? `${call.tool}:${query}:${limit}` : undefined;
   }
   return undefined;
+}
+
+export function invalidatesRuntimeToolCache(call: RuntimeToolCall): boolean {
+  return call.tool === "file.write"
+    || call.tool === "file.patch"
+    || call.tool === "shell.execute"
+    || call.tool.startsWith("skills.")
+    || call.tool.startsWith("package.")
+    || call.tool === "modes.applyDraft"
+    || call.tool === "selfIteration.apply";
 }
 
 export function stableJson(value: unknown): string {
