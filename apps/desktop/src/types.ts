@@ -11,6 +11,8 @@ export type RunStatus =
   | "clarification_required"
   | "decision_needed"
   | "checkpointed"
+  | "paused"
+  | "cancelled"
   | "done"
   | "failed";
 

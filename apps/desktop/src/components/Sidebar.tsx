@@ -21,6 +21,7 @@ import { useWorkbench } from "../lib/state";
 import {
   getSharedRuntimeClient,
   type OraPackageManifest,
+  type OraRunAttention,
 } from "../lib/runtimeClient";
 import { buildSessionSearchResults, type SessionSearchResult } from "../lib/sessionSearch";
 import { useRunActions } from "../lib/useRunActions";
@@ -34,11 +35,37 @@ const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
 const MAX_SESSION_SEARCH_RESULTS = 9;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
-export function statusFromSession(status: string | undefined, hasPendingClarifications?: boolean, hasPendingPlanDecision?: boolean): RunStatus {
+export function statusFromSession(
+  status: string | undefined,
+  hasPendingClarifications?: boolean,
+  hasPendingPlanDecision?: boolean,
+  attention?: OraRunAttention,
+): RunStatus {
+  if (attention) {
+    switch (attention.kind) {
+      case "needs_clarification":
+        return "clarification_required";
+      case "needs_approval":
+        return "approval_required";
+      case "needs_plan_decision":
+        return "decision_needed";
+      case "running":
+        return "running";
+      case "paused":
+        return "paused";
+      case "cancelled":
+        return "cancelled";
+      case "failed":
+        return "failed";
+      case "idle":
+        return "done";
+    }
+  }
   if (hasPendingClarifications) return "clarification_required";
   if (status === "interrupted") return "approval_required";
   if (hasPendingPlanDecision) return "decision_needed";
-  if (status === "failed" || status === "cancelled") return "failed";
+  if (status === "cancelled") return "cancelled";
+  if (status === "failed") return "failed";
   if (status === "running" || status === "queued") return "running";
   return "done";
 }
@@ -248,6 +275,22 @@ function SessionStatusBadge({ status }: { status: RunStatus }) {
     return (
       <span className="inline-flex items-center rounded-full bg-rose-100/75 px-2 py-0.5 text-[10px] font-medium text-rose-700">
         Failed
+      </span>
+    );
+  }
+
+  if (status === "cancelled") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-bench-100 px-2 py-0.5 text-[10px] font-medium text-bench-700">
+        Cancelled
+      </span>
+    );
+  }
+
+  if (status === "paused") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-bench-100 px-2 py-0.5 text-[10px] font-medium text-bench-700">
+        Paused
       </span>
     );
   }
@@ -474,7 +517,7 @@ export function Sidebar() {
       .map((session) => ({
         id: session.sessionId,
         title: session.title,
-        status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId]),
+        status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId], session.attention),
       })),
   })), [state.expandedProjectIds, state.projects, state.sessions, state.sessionPendingClarifications, state.sessionPendingPlanDecision]);
   const sessionSearchResults = useMemo(
@@ -487,7 +530,7 @@ export function Sidebar() {
     .map((session) => ({
       id: session.sessionId,
       title: session.title,
-      status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId]),
+      status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId], session.attention),
     })), [state.sessions, state.sessionPendingClarifications, state.sessionPendingPlanDecision]);
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = state.activeView === "chat";

@@ -80,6 +80,7 @@ import type {
   SelfIterationPolicy as OraSelfIterationPolicy,
   SelfIterationScanResult as OraSelfIterationScanResult,
   RunConfig as OraRunConfig,
+  RunAttention as OraRunAttention,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
   RuntimeMaintenanceParams as OraRuntimeMaintenanceParams,
@@ -88,6 +89,7 @@ import type {
   RunTrailMetrics as OraRunTrailMetrics,
   SessionCreateParams as OraSessionCreateParams,
   SessionDetail as OraSessionDetail,
+  SessionPlanDecisionResolveParams as OraSessionPlanDecisionResolveParams,
   SessionSummary as OraSessionSummary,
   SessionTranscriptMessage as OraSessionTranscriptMessage,
   SessionTurn as OraSessionTurn,
@@ -109,7 +111,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, legacySystemAgentIdsFor, modeSpecToPatternDefinition, validateModeSpec } from "@cemeworm/shared";
+import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, legacySystemAgentIdsFor, modeSpecToPatternDefinition, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -188,6 +190,7 @@ export type {
   OraProjectFilesResult,
   OraProjectSummary,
   OraRunConfig,
+  OraRunAttention,
   OraRunEventStream,
   OraRunHandle,
   OraRuntimeMaintenanceParams,
@@ -199,6 +202,7 @@ export type {
   OraSelfIterationPolicy,
   OraSelfIterationScanResult,
   OraSessionCreateParams,
+  OraSessionPlanDecisionResolveParams,
   OraSessionDetail,
   OraSessionSummary,
   OraSessionTranscriptMessage,
@@ -459,6 +463,9 @@ export function createRuntimeClient() {
     },
     async archiveSession(sessionId: string): Promise<OraSessionSummary> {
       return call<OraSessionSummary>("sessions.archive", { sessionId });
+    },
+    async resolvePlanDecision(params: OraSessionPlanDecisionResolveParams): Promise<OraSessionDetail> {
+      return call<OraSessionDetail>("sessions.resolvePlanDecision", params);
     },
     async importEvaluationDataset(params: {
       name?: string;
@@ -1385,9 +1392,12 @@ class LocalJsonRpcRuntime {
             if (typeof params !== "object" || params === null || !("projectId" in params)) return true;
             return typeof params.projectId === "string" ? session.projectId === params.projectId : true;
           })
+          .map((session) => this.sessionWithLatestAttention(session))
           .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
       case "sessions.get":
         return this.getSessionDetail(params);
+      case "sessions.resolvePlanDecision":
+        return this.resolvePlanDecision(params);
       case "sessions.archive":
         return this.archiveSession(params);
       case "channels.list":
@@ -3487,6 +3497,7 @@ class LocalJsonRpcRuntime {
         sessionId: snapshot.sessionId!,
         turnIndex: snapshot.turnIndex ?? 1,
         status: snapshot.status,
+        attention: deriveRunAttention(snapshot),
         pattern: snapshot.pattern,
         modeId: snapshot.modeId,
         providerId: snapshot.config.providerId,
@@ -3529,11 +3540,59 @@ class LocalJsonRpcRuntime {
     });
     const latestRunId = turns.at(-1)?.runId;
     return {
-      session,
+      session: this.sessionWithLatestAttention(session),
       turns,
       transcript,
       latestSnapshot: latestRunId ? this.runs.get(latestRunId) : undefined,
     };
+  }
+
+  private resolvePlanDecision(params: unknown): OraSessionDetail {
+    if (
+      typeof params !== "object" ||
+      params === null ||
+      !("sessionId" in params) ||
+      typeof params.sessionId !== "string" ||
+      !("decisionId" in params) ||
+      typeof params.decisionId !== "string" ||
+      !("status" in params) ||
+      (params.status !== "accepted" && params.status !== "declined")
+    ) {
+      throw new Error("Invalid plan decision resolution.");
+    }
+    const detail = this.getSessionDetail({ sessionId: params.sessionId });
+    const snapshot = detail.latestSnapshot;
+    if (!snapshot) {
+      throw new Error(`Session has no plan decision: ${params.sessionId}`);
+    }
+    if (!snapshot.planDecisions.some((decision) => decision.id === params.decisionId)) {
+      throw new Error(`Plan decision does not exist: ${params.decisionId}`);
+    }
+    const status = params.status;
+    const updated = this.normalizeMockSnapshot({
+      ...snapshot,
+      planDecisions: snapshot.planDecisions.map((decision) =>
+        decision.id === params.decisionId
+          ? { ...decision, status, resolvedAt: Date.now() }
+          : decision
+      ),
+      updatedAt: Date.now(),
+    });
+    this.runs.set(updated.runId, updated);
+    this.updateSessionFromSnapshot(updated);
+    return this.getSessionDetail({ sessionId: params.sessionId });
+  }
+
+  private sessionWithLatestAttention(session: OraSessionSummary): OraSessionSummary {
+    const latestRun = session.latestRunId
+      ? this.runs.get(session.latestRunId)
+      : [...this.runs.values()]
+          .filter((run) => run.sessionId === session.sessionId)
+          .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt)
+          .at(-1);
+    return latestRun
+      ? { ...session, attention: deriveRunAttention(latestRun) }
+      : session;
   }
 
   private startRun(params: unknown): OraRunHandle {
@@ -4423,6 +4482,7 @@ class LocalJsonRpcRuntime {
       actions: [sidecarAction, reportAction],
       toolCalls: [],
       continuation: { frames: [] },
+      planDecisions: [],
       conversation: [],
       toolResults: [],
       policyDecisions: [],
@@ -4508,6 +4568,8 @@ class LocalJsonRpcRuntime {
   }
 
   private updateSessionFromSnapshot(snapshot: OraStateSnapshot) {
+    snapshot = this.normalizeMockSnapshot(snapshot);
+    this.runs.set(snapshot.runId, snapshot);
     const sessionId = snapshot.sessionId;
     if (!sessionId) return;
     const existing = this.sessions.get(sessionId);
@@ -4516,6 +4578,7 @@ class LocalJsonRpcRuntime {
       ...existing,
       title: existing.turnCount > 0 && existing.title !== "New Chat" ? existing.title : snapshot.input.prompt,
       status: snapshot.status,
+      attention: deriveRunAttention(snapshot),
       latestRunId: snapshot.runId,
       latestPattern: snapshot.pattern,
       latestModeId: snapshot.modeId,
@@ -4530,6 +4593,32 @@ class LocalJsonRpcRuntime {
     if (updatedSession.projectId) {
       this.syncProjectSummary(updatedSession.projectId);
     }
+  }
+
+  private normalizeMockSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
+    let normalized = snapshot;
+    if (
+      normalized.sessionId &&
+      normalized.status === "succeeded" &&
+      normalized.config.metadata.taskIntent === "plan" &&
+      snapshotContainsCompleteProposedPlan(normalized) &&
+      normalized.planDecisions.length === 0
+    ) {
+      normalized = {
+        ...normalized,
+        planDecisions: [{
+          id: `${normalized.runId}:plan-decision`,
+          runId: normalized.runId,
+          sessionId: normalized.sessionId,
+          status: "pending",
+          createdAt: normalized.updatedAt,
+        }],
+      };
+    }
+    return {
+      ...normalized,
+      attention: deriveRunAttention(normalized),
+    };
   }
 
   private assistantTextForRun(snapshot: OraStateSnapshot): string {

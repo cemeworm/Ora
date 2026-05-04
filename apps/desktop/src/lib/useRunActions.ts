@@ -708,6 +708,34 @@ export function useRunActions() {
     }
   }
 
+  async function resolvePlanDecision(status: "accepted" | "declined") {
+    const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
+    const decisionId = state.activeSessionDetail?.session.attention?.planDecisionId ?? state.activeSnapshot?.attention?.planDecisionId;
+    if (!sessionId || !decisionId) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
+      return;
+    }
+    dispatch({ type: "SET_BUSY_COMMAND", command: status === "accepted" ? "Accept plan" : "Decline plan" });
+    try {
+      const detail = await runtimeClient.resolvePlanDecision({ sessionId, decisionId, status });
+      const [projects, sessions] = await Promise.all([
+        runtimeClient.listProjects(),
+        runtimeClient.listSessions(),
+      ]);
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects,
+        sessions,
+        detail,
+        feedback: status === "accepted" ? "Plan accepted." : "Plan decision dismissed.",
+      });
+      dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId, pending: false });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Plan decision update failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
   async function forkRun() {
     if (!state.selectedTurnRunId || !selectedCheckpoint) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Select a checkpoint before forking." });
@@ -910,6 +938,7 @@ export function useRunActions() {
       interruptRun,
       resumeRun,
       cancelRun,
+      resolvePlanDecision,
       forkRun,
       replaySelection,
       exportReport,

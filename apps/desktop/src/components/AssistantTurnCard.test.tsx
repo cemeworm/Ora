@@ -696,5 +696,8 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("任务计划");
     expect(html).toContain("计划模式下的计划输出");
     expect(html).toContain("步骤一");
+    expect(html).toContain("bg-card/96");
+    expect(html).toContain("shadow-lift");
+    expect(html).not.toContain("border-b border-border");
   });
 });

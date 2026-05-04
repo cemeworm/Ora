@@ -553,6 +553,50 @@ export const RunContinuationSchema = z.object({
 });
 export type RunContinuation = z.infer<typeof RunContinuationSchema>;
 
+export const PlanDecisionStatusSchema = z.enum(["pending", "accepted", "declined"]);
+export type PlanDecisionStatus = z.infer<typeof PlanDecisionStatusSchema>;
+
+export const PlanDecisionGateSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1),
+  status: PlanDecisionStatusSchema.default("pending"),
+  createdAt: z.number().int().nonnegative(),
+  resolvedAt: z.number().int().nonnegative().optional(),
+});
+export type PlanDecisionGate = z.infer<typeof PlanDecisionGateSchema>;
+
+export const SessionPlanDecisionResolveParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  decisionId: z.string().min(1),
+  status: z.enum(["accepted", "declined"]),
+});
+export type SessionPlanDecisionResolveParams = z.infer<typeof SessionPlanDecisionResolveParamsSchema>;
+
+export const RunAttentionKindSchema = z.enum([
+  "idle",
+  "running",
+  "paused",
+  "needs_clarification",
+  "needs_approval",
+  "needs_plan_decision",
+  "cancelled",
+  "failed",
+]);
+export type RunAttentionKind = z.infer<typeof RunAttentionKindSchema>;
+
+export const RunAttentionSchema = z.object({
+  kind: RunAttentionKindSchema,
+  blocking: z.boolean().default(false),
+  sourceRunId: z.string().min(1).optional(),
+  reason: z.string().min(1).optional(),
+  pendingActionIds: z.array(z.string().min(1)).default([]),
+  pendingToolCallIds: z.array(z.string().min(1)).default([]),
+  pendingClarificationIds: z.array(z.string().min(1)).default([]),
+  planDecisionId: z.string().min(1).optional(),
+});
+export type RunAttention = z.infer<typeof RunAttentionSchema>;
+
 export const RuntimeConversationToolCallRefSchema = z.object({
   id: z.string().min(1),
   providerCallId: z.string().min(1).optional(),
@@ -763,6 +807,7 @@ export const SessionSummarySchema = z.object({
   title: z.string().min(1),
   projectId: z.string().min(1).optional(),
   status: RunStatusSchema.optional(),
+  attention: RunAttentionSchema.optional(),
   latestRunId: z.string().min(1).optional(),
   latestPattern: CoordinationPatternSchema.optional(),
   latestModeId: ModeIdSchema.optional(),
@@ -781,6 +826,7 @@ export const SessionTurnSchema = z.object({
   sessionId: z.string().min(1),
   turnIndex: z.number().int().positive(),
   status: RunStatusSchema,
+  attention: RunAttentionSchema.optional(),
   pattern: CoordinationPatternSchema,
   modeId: ModeIdSchema.optional(),
   providerId: z.string().min(1).optional(),
@@ -1005,6 +1051,7 @@ export const StateSnapshotSchema = z.object({
   sessionId: z.string().min(1).optional(),
   turnIndex: z.number().int().positive().default(1),
   status: RunStatusSchema,
+  attention: RunAttentionSchema.optional(),
   pattern: CoordinationPatternSchema,
   coordinationKind: CoordinationKindSchema.optional(),
   modeId: ModeIdSchema.optional(),
@@ -1022,6 +1069,7 @@ export const StateSnapshotSchema = z.object({
   actions: z.array(ActionRecordSchema),
   toolCalls: z.array(OraToolCallEnvelopeSchema).default([]),
   continuation: RunContinuationSchema.default({ frames: [] }),
+  planDecisions: z.array(PlanDecisionGateSchema).default([]),
   conversation: z.array(RuntimeConversationEntrySchema).default([]),
   contextState: SessionContextStateSchema.optional(),
   toolResults: z.array(RuntimeToolResultLedgerEntrySchema).default([]),
@@ -1044,6 +1092,110 @@ export const StateSnapshotSchema = z.object({
   updatedAt: z.number().int().nonnegative()
 });
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
+
+export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapshot, "events">): boolean {
+  const content = snapshot.events
+    .filter((event) =>
+      event.type === "message.delta" &&
+      Boolean(event.payload) &&
+      typeof event.payload === "object" &&
+      typeof (event.payload as { content?: unknown }).content === "string"
+    )
+    .map((event) => (event.payload as { content: string }).content)
+    .join("");
+  return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(content);
+}
+
+export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
+  const activeFrame = snapshot.continuation.frames.find((frame) => frame.id === snapshot.continuation.activeFrameId);
+  const pendingClarificationIds = [
+    ...new Set([
+      ...snapshot.pendingClarifications.map((clarification) => clarification.id),
+      ...(activeFrame?.reason === "clarification_required" ? activeFrame.pendingClarificationIds : []),
+    ]),
+  ];
+  if (pendingClarificationIds.length > 0) {
+    return RunAttentionSchema.parse({
+      kind: "needs_clarification",
+      blocking: true,
+      sourceRunId: snapshot.runId,
+      reason: "clarification_required",
+      pendingClarificationIds,
+    });
+  }
+
+  const pendingActionIds = [
+    ...new Set([
+      ...snapshot.pendingApprovals,
+      ...snapshot.actions.filter((action) => action.status === "approval_required").map((action) => action.id),
+      ...(activeFrame?.reason === "approval_required" ? activeFrame.pendingActionIds : []),
+    ]),
+  ];
+  const pendingToolCallIds = [
+    ...new Set([
+      ...snapshot.toolCalls.filter((call) => call.status === "approval_required").map((call) => call.id),
+      ...(activeFrame?.reason === "approval_required" ? activeFrame.pendingToolCallIds : []),
+    ]),
+  ];
+  if (pendingActionIds.length > 0 || pendingToolCallIds.length > 0) {
+    return RunAttentionSchema.parse({
+      kind: "needs_approval",
+      blocking: true,
+      sourceRunId: snapshot.runId,
+      reason: "approval_required",
+      pendingActionIds,
+      pendingToolCallIds,
+    });
+  }
+
+  const planDecision = snapshot.planDecisions.find((decision) => decision.status === "pending");
+  if (planDecision) {
+    return RunAttentionSchema.parse({
+      kind: "needs_plan_decision",
+      blocking: true,
+      sourceRunId: snapshot.runId,
+      reason: "plan_decision_required",
+      planDecisionId: planDecision.id,
+    });
+  }
+
+  if (snapshot.status === "queued" || snapshot.status === "running") {
+    return RunAttentionSchema.parse({
+      kind: "running",
+      blocking: false,
+      sourceRunId: snapshot.runId,
+    });
+  }
+  if (snapshot.status === "interrupted") {
+    return RunAttentionSchema.parse({
+      kind: "paused",
+      blocking: false,
+      sourceRunId: snapshot.runId,
+      reason: activeFrame?.reason ?? "manual_interrupt",
+    });
+  }
+  if (snapshot.status === "failed") {
+    return RunAttentionSchema.parse({
+      kind: "failed",
+      blocking: false,
+      sourceRunId: snapshot.runId,
+      reason: snapshot.error,
+    });
+  }
+  if (snapshot.status === "cancelled") {
+    return RunAttentionSchema.parse({
+      kind: "cancelled",
+      blocking: false,
+      sourceRunId: snapshot.runId,
+      reason: snapshot.error,
+    });
+  }
+  return RunAttentionSchema.parse({
+    kind: "idle",
+    blocking: false,
+    sourceRunId: snapshot.runId,
+  });
+}
 
 export const SessionDetailSchema = z.object({
   session: SessionSummarySchema,

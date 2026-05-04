@@ -6,6 +6,8 @@ const statusLabels: Record<RunStatus, string> = {
   clarification_required: "Clarification",
   decision_needed: "Decision",
   checkpointed: "Checkpoint",
+  paused: "Paused",
+  cancelled: "Cancelled",
   done: "Done",
   failed: "Failed",
 };

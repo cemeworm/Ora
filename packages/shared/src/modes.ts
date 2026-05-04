@@ -1896,7 +1896,7 @@ function createSingleAgentModeSpec(): ModeSpec {
       allowDisable: false,
     },
     defaultBudget: SINGLE_AGENT_RESOURCE_BUDGET,
-    completionPolicy: completionPolicyForPreset("decisive"),
+    completionPolicy: completionPolicyForPreset("balanced"),
     runtimePolicy: runtimePolicyForPreset("balanced"),
     profiles: [
       profile(

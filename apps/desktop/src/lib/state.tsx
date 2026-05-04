@@ -1066,6 +1066,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "HYDRATE_SESSION": {
       const snapshot = selectedSnapshotFromDetail(action.detail, action.snapshot, state.selectedTurnRunId);
       const latestTurn = action.detail.turns.at(-1);
+      const attention = action.detail.session.attention ?? snapshot?.attention;
       return {
         ...state,
         projects: action.projects,
@@ -1095,11 +1096,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         commandFeedback: action.feedback ?? state.commandFeedback,
         sessionPendingClarifications: {
           ...state.sessionPendingClarifications,
-          [action.detail.session.sessionId]: (snapshot?.pendingClarifications?.length ?? 0) > 0,
+          [action.detail.session.sessionId]: attention?.kind === "needs_clarification" || (snapshot?.pendingClarifications?.length ?? 0) > 0,
         },
         sessionPendingPlanDecision: {
           ...state.sessionPendingPlanDecision,
-          [action.detail.session.sessionId]: sessionTaskIntent(state, action.detail.session.sessionId) === "plan" && snapshot ? snapshotContainsProposedPlan(snapshot) : false,
+          [action.detail.session.sessionId]: attention?.kind === "needs_plan_decision" || (sessionTaskIntent(state, action.detail.session.sessionId) === "plan" && snapshot ? snapshotContainsProposedPlan(snapshot) : false),
         },
         pendingRun: undefined,
         isLoading: false,
@@ -1402,8 +1403,13 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       const pendingPlanDecisionSessionId = isSettled && sessionTaskIntent(state, streamSessionId) === "plan" && streamSnapshot && snapshotContainsProposedPlan(streamSnapshot)
         ? streamSnapshot.sessionId
         : undefined;
+      const attentionPlanDecisionSessionId = streamSnapshot?.attention?.kind === "needs_plan_decision"
+        ? streamSnapshot.sessionId
+        : undefined;
       const sessionPendingPlanDecision = pendingPlanDecisionSessionId
         ? { ...state.sessionPendingPlanDecision, [pendingPlanDecisionSessionId]: true }
+        : attentionPlanDecisionSessionId
+          ? { ...state.sessionPendingPlanDecision, [attentionPlanDecisionSessionId]: true }
         : state.sessionPendingPlanDecision;
       return {
         ...state,

@@ -64,7 +64,7 @@ export function stableKeyForRuntimeTool(call: RuntimeToolCall): string {
     return cacheKey;
   }
   const salientArgs = Object.fromEntries(
-    ["path", "url", "query", "command", "pattern", "glob", "cmd", "name"]
+    ["path", "url", "query", "command", "pattern", "glob", "cmd", "name", "include"]
       .filter((key) => call.args[key] !== undefined)
       .map((key) => [key, call.args[key]]),
   );

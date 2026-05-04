@@ -10,10 +10,10 @@ interface PlanCardProps {
 
 export function PlanCard({ planSteps, planContent }: PlanCardProps) {
   return (
-    <div className="rounded-xl border border-border bg-card shadow-lift">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <ListTodo size={16} className="text-primary" />
-        <span className="text-sm font-semibold text-foreground">任务计划</span>
+    <div className="space-y-2 rounded-2xl border border-border bg-card/96 px-4 py-3 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <ListTodo size={16} className="text-muted-foreground" />
+        <span className="font-medium text-foreground">任务计划</span>
         {planSteps.length > 0 ? (
           <span className="text-xs text-muted-foreground">
             {planSteps.filter((s) => s.status === "completed").length}/{planSteps.length} 步
@@ -21,15 +21,19 @@ export function PlanCard({ planSteps, planContent }: PlanCardProps) {
         ) : null}
       </div>
       {planContent ? (
-        <div className="px-4 pt-4">
-          <MarkdownContent content={planContent} />
+        <div>
+          <MarkdownContent
+            content={planContent}
+            className="text-sm leading-6 text-foreground [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h1]:leading-6 [&_h2]:mb-1.5 [&_h2]:mt-3 [&_h2]:text-sm [&_h2]:leading-6 [&_h3]:mb-1 [&_h3]:mt-2.5 [&_h3]:text-sm [&_h3]:leading-6 [&_ol]:my-1.5 [&_p]:my-1.5 [&_ul]:my-1.5"
+          />
         </div>
       ) : null}
       {planSteps.length > 0 ? (
-        <div className="px-4 py-3">
+        <div className="border-l border-border/80 pl-4">
           <ol className="space-y-2">
             {planSteps.map((item, index) => (
-              <li key={index} className="flex items-start gap-3">
+              <li key={index} className="relative flex items-start gap-3 py-1">
+                <span className="absolute -left-[1.05rem] top-3 h-2 w-2 rounded-full bg-border" />
                 <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-muted/50 text-[11px] font-medium text-muted-foreground">
                   {index + 1}
                 </span>
@@ -59,7 +63,7 @@ export function PlanCard({ planSteps, planContent }: PlanCardProps) {
 function PlanStepStatusIcon({ status }: { status: TurnPlanListStep["status"] }) {
   switch (status) {
     case "completed":
-      return <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" />;
+      return <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-muted-foreground" />;
     case "in_progress":
       return <LoaderCircle size={16} className="mt-0.5 shrink-0 animate-spin text-muted-foreground" />;
     default:

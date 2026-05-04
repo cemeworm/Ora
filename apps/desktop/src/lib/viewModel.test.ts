@@ -100,6 +100,102 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("Cancelled by caller.");
   });
 
+  it("uses proposed plan content instead of the preamble for decision plan cards", () => {
+    const createdAt = 1_714_000_000_000;
+    const planOutput = [
+      "现在我已经充分了解了代码结构。以下是决策完备的实施计划：",
+      "",
+      "<proposed_plan>",
+      "## PlanDecisionPanel 决策状态 UI 调整",
+      "",
+      "## 背景",
+      "当前组件需要调整决策状态交互。",
+      "",
+      "## 实施步骤",
+      "1. 提示文字左对齐",
+      "2. 统一按钮颜色",
+      "3. 增加键盘导航与激活态",
+      "",
+      "## 验证方式",
+      "- 运行组件测试",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-plan",
+      sessionId: "session-plan",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "调整决策状态 UI", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-proposed-plan-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-plan:evt-0",
+        runId: "run-plan",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", content: planOutput },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: planOutput },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-plan:user",
+        sessionId: "session-plan",
+        runId: "run-plan",
+        turnIndex: 1,
+        role: "user",
+        content: "调整决策状态 UI",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-plan": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.content).toContain("## PlanDecisionPanel 决策状态 UI 调整");
+    expect(assistant?.content).toContain("## 实施步骤");
+    expect(assistant?.content).not.toContain("现在我已经充分了解了代码结构");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+  });
+
   it("renders approval denial instead of stale resume progress after cancelled approvals", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
@@ -230,7 +326,7 @@ describe("desktop session view model", () => {
 
     const processSteps = assistant?.turn?.processSteps ?? [];
 
-    expect(assistant?.turn?.status).toBe("failed");
+    expect(assistant?.turn?.status).toBe("cancelled");
     expect(assistant?.turn?.liveProgressText).toBeUndefined();
     expect(processSteps.map((step) => step.label)).toEqual([
       "等待确认",

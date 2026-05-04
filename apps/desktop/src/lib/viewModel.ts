@@ -35,6 +35,7 @@ import type {
   OraModeSpec,
   OraPatternDefinition,
   OraPlanItem,
+  OraRunAttention,
   OraSessionDetail,
   OraSessionSummary,
   OraStateSnapshot,
@@ -199,6 +200,7 @@ function createEmptySessionPreview(
     actions: [],
     toolCalls: [],
     continuation: { frames: [] },
+    planDecisions: [],
     conversation: [],
     toolResults: [],
     policyDecisions: [],
@@ -333,12 +335,15 @@ function adaptSession(
   snapshot?: OraStateSnapshot,
 ): SessionRun {
   const status = snapshot?.status ?? session.status ?? "succeeded";
+  const attention = snapshot?.attention ?? session.attention;
   return {
     id: session.sessionId,
     title: session.title,
     project: session.projectId ?? "Recent chat",
     projectId: session.projectId,
-    status: adaptRunStatus(status, { hasPendingClarifications: snapshot?.pendingClarifications && snapshot.pendingClarifications.length > 0 }),
+    status: snapshot
+      ? adaptSnapshotRunStatus(snapshot)
+      : adaptAttentionStatus(attention) ?? adaptRunStatus(status),
     pattern: snapshot?.pattern ?? session.latestPattern ?? fallbackPattern,
     modeId: snapshot?.modeId ?? session.latestModeId,
     updatedAt: formatClock(snapshot?.updatedAt ?? session.updatedAt),
@@ -353,7 +358,7 @@ function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
     runId: turn.runId,
     sessionId: turn.sessionId,
     turnIndex: turn.turnIndex,
-    status: adaptRunStatus(turn.status),
+    status: adaptAttentionStatus(turn.attention) ?? adaptRunStatus(turn.status),
     pattern: turn.pattern,
     modeId: turn.modeId,
     providerId: turn.providerId,
@@ -363,15 +368,45 @@ function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
   };
 }
 
+function adaptAttentionStatus(attention: OraRunAttention | undefined): RunStatus | undefined {
+  if (!attention) return undefined;
+  switch (attention.kind) {
+    case "needs_clarification":
+      return "clarification_required";
+    case "needs_approval":
+      return "approval_required";
+    case "needs_plan_decision":
+      return "decision_needed";
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    case "idle":
+      return "done";
+  }
+}
+
+function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
+  if (snapshot.status === "queued" || snapshot.status === "running") {
+    return "running";
+  }
+  return adaptAttentionStatus(snapshot.attention) ??
+    adaptRunStatus(snapshot.status, { hasPendingClarifications: snapshot.pendingClarifications.length > 0 });
+}
+
 function adaptRunStatus(status: OraStateSnapshot["status"], opts?: { hasPendingClarifications?: boolean }): RunStatus {
   switch (status) {
     case "queued":
     case "running":
       return "running";
     case "interrupted":
-      return opts?.hasPendingClarifications ? "clarification_required" : "approval_required";
+      return opts?.hasPendingClarifications ? "clarification_required" : "paused";
     case "cancelled":
-      return "failed";
+      return "cancelled";
     case "succeeded":
       return "done";
     case "failed":
@@ -1170,9 +1205,12 @@ export function adaptChatMessages(
       const rawAssistantText = turn.snapshot
         ? assistantTextFromSnapshot(turn.snapshot)
         : undefined;
-      const snapshotAssistant = rawAssistantText
-        ? parseProposedPlan(rawAssistantText).displayText
+      const parsedAssistantPlan = rawAssistantText
+        ? parseProposedPlan(rawAssistantText)
         : undefined;
+      const snapshotAssistant = parsedAssistantPlan?.hasCompletePlan
+        ? parsedAssistantPlan.planContent
+        : parsedAssistantPlan?.displayText;
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
@@ -1559,7 +1597,7 @@ function buildAssistantTurnAttachment(
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
-    status: adaptRunStatus(snapshot.status, { hasPendingClarifications: snapshot.pendingClarifications && snapshot.pendingClarifications.length > 0 }),
+    status: adaptSnapshotRunStatus(snapshot),
     pattern: snapshot.pattern,
     liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps: deriveProcessSteps(snapshot),

@@ -23,7 +23,8 @@ import {
   SessionSummarySchema,
   SessionTranscriptMessage,
   SessionTurn,
-  StateSnapshot
+  StateSnapshot,
+  deriveRunAttention
 } from "@cemeworm/shared";
 import {
   listProjectFilesForProject,
@@ -124,7 +125,7 @@ export function listSessions(params: unknown, deps: ProjectSessionOperationDeps)
     .filter((session) => (parsed.projectId ? session.projectId === parsed.projectId : true))
     .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
     .slice(0, parsed.limit)
-    .map((session) => SessionSummarySchema.parse(session));
+    .map((session) => SessionSummarySchema.parse(sessionWithLatestAttention(session, deps)));
 }
 
 export function archiveSession(params: unknown, deps: ProjectSessionOperationDeps): SessionSummary {
@@ -142,7 +143,7 @@ export function archiveSession(params: unknown, deps: ProjectSessionOperationDep
 
 export function getSession(params: unknown, deps: ProjectSessionOperationDeps): SessionDetail {
   const parsed = SessionGetParamsSchema.parse(params);
-  const session = deps.getSessionOrThrow(parsed.sessionId);
+  const session = sessionWithLatestAttention(deps.getSessionOrThrow(parsed.sessionId), deps);
   const turns: SessionTurn[] = deps.runsForSession(parsed.sessionId).map((run) => toSessionTurn(attachTraceMetadata(run)));
   const latestSnapshot = turns.length > 0
     ? attachTraceMetadata(deps.getRunOrThrow(turns.at(-1)!.runId))
@@ -152,6 +153,17 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
     turns,
     transcript: deps.sessionTranscript(parsed.sessionId),
     latestSnapshot,
+  });
+}
+
+function sessionWithLatestAttention(session: SessionSummary, deps: ProjectSessionOperationDeps): SessionSummary {
+  const latestRun = session.latestRunId ? deps.runs.get(session.latestRunId) : deps.runsForSession(session.sessionId).at(-1);
+  if (!latestRun) {
+    return SessionSummarySchema.parse(session);
+  }
+  return SessionSummarySchema.parse({
+    ...session,
+    attention: deriveRunAttention(latestRun),
   });
 }
 

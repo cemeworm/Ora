@@ -35,10 +35,19 @@ vi.mock("../src/providers/index.js", async () => {
         && !hasToolResult;
       const isTitleRequest = request.system?.includes("Ora's conversation title generator");
       const isCompactRequest = request.system?.includes("compressing an Ora session history");
+      const shouldReturnProposedPlan = requestText.includes("Return a proposed plan");
       const text = isTitleRequest
         ? titleResponses.shift() ?? "Generated Session Title"
         : isCompactRequest
         ? "SUMMARY: preserve the earlier long user goal and assistant answer."
+        : shouldReturnProposedPlan
+          ? [
+              "<proposed_plan>",
+              "## Runtime status plan",
+              "1. Add shared attention projection.",
+              "2. Persist plan decision gates.",
+              "</proposed_plan>",
+            ].join("\n")
         : shouldEscapeShell
         ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
         : shouldCallShell
@@ -184,6 +193,41 @@ describe("session thread runtime behavior", () => {
     expect(titleRequest?.messages[0]?.content).toContain("这个项目里有多少 Markdown 文件？");
     expect(titleRequest?.messages[0]?.content).toContain("Assistant response:");
     expect(titleRequest?.messages[0]?.content).toContain("Markdown 文件");
+  });
+
+  it("persists and resolves plan-decision attention for completed plan runs", async () => {
+    titleResponses.push("Plan Gate Session");
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Return a proposed plan for session state." },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        modelRef: "gpt-plan-test",
+        metadata: {
+          taskIntent: "plan",
+        },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    expect(planned.session.attention?.kind).toBe("needs_plan_decision");
+    expect(planned.latestSnapshot?.planDecisions[0]).toMatchObject({
+      status: "pending",
+      sessionId: session.sessionId,
+    });
+
+    const resolved = SessionDetailSchema.parse(store.resolvePlanDecision({
+      sessionId: session.sessionId,
+      decisionId: planned.session.attention?.planDecisionId,
+      status: "accepted",
+    }));
+
+    expect(resolved.session.attention?.kind).toBe("idle");
+    expect(resolved.latestSnapshot?.planDecisions[0]?.status).toBe("accepted");
   });
 
   it("keeps the generated title stable across later turns", async () => {

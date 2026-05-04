@@ -164,6 +164,8 @@ export function createRuntimeMethodHandler(
         return store.listSessions(request.params);
       case "sessions.get":
         return store.getSession(request.params);
+      case "sessions.resolvePlanDecision":
+        return store.resolvePlanDecision(request.params);
       case "sessions.archive":
         return store.archiveSession(request.params);
       case "channels.create":

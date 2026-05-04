@@ -48,6 +48,7 @@ interface ChatViewProps {
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
+  onResolvePlanDecision: (status: "accepted" | "declined") => void;
   onOpenArtifact: (artifactId: string) => void;
   onSubmitFeedback: (
     message: ChatMessage,
@@ -81,6 +82,7 @@ export function ChatView({
   onClearSelectedCustomAgent,
   onInterruptRun,
   onResumeRun,
+  onResolvePlanDecision,
   onCancelRun,
   onExportReport,
   onOpenArtifact,
@@ -102,7 +104,10 @@ export function ChatView({
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
   const pendingApprovalActions = actionRecords.filter((action) => action.state === "approval_required");
-  const planDecisionPending = state.sessionPendingPlanDecision[selectedSession.id] ?? false;
+  const planDecisionPending =
+    state.activeSessionDetail?.session.attention?.kind === "needs_plan_decision" ||
+    activeSnapshot?.attention?.kind === "needs_plan_decision" ||
+    (state.sessionPendingPlanDecision[selectedSession.id] ?? false);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
@@ -211,12 +216,12 @@ export function ChatView({
           onTaskIntentChange={(ti) => dispatch({ type: "SET_TASK_INTENT", taskIntent: ti })}
           planDecisionPending={planDecisionPending}
           onConfirmPlanDecision={() => {
-            dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
+            onResolvePlanDecision("accepted");
             dispatch({ type: "SET_TASK_INTENT", taskIntent: "implement" });
             onComposerPromptChange("请按照上述计划开始执行");
           }}
           onDeclinePlanDecision={() => {
-            dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId: selectedSession.id, pending: false });
+            onResolvePlanDecision("declined");
           }}
           onOverlayHeightChange={handleOverlayHeightChange}
           onOpenLocalFiles={() => void openLocalFiles()}

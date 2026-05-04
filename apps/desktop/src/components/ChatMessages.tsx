@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import { MessageBubble } from "./MessageBubble";
 import { AssistantTurnCard } from "./AssistantTurnCard";
 import type { ActionRecord, AgentProfile, ChatMessage, PlanItem } from "../types";
@@ -45,17 +45,25 @@ export function ChatMessages({
   onSubmitFeedback,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const hasTray = hasApprovalTray || hasClarificationTray || hasPlanDecisionTray;
   const paddingBottom = messageBottomPaddingPx({ hasTray, bottomInsetPx });
 
-  useEffect(() => {
-    if (scrollRef.current) {
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom < 64;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (scrollRef.current && shouldAutoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [chatMessages.length]);
+  }, [chatMessages]);
 
   return (
-    <div ref={scrollRef} className="min-h-0 w-full flex-1 overflow-y-auto">
+    <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 w-full flex-1 overflow-y-auto">
       <Conversation className="min-h-0 flex-1">
         <ConversationContent
           className="mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8"

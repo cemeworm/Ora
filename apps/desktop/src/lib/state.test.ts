@@ -21,6 +21,7 @@ function testSnapshot(params: {
   agentMessages?: OraStateSnapshot["agentMessages"];
   events?: OraStateSnapshot["events"];
   latency?: OraStateSnapshot["latency"];
+  attention?: OraStateSnapshot["attention"];
 } = {}): OraStateSnapshot {
   const runId = params.runId ?? "run-debate";
   const sessionId = params.sessionId ?? "session-debate";
@@ -55,6 +56,7 @@ function testSnapshot(params: {
     actions: [],
     toolCalls: [],
     continuation: { frames: [] },
+    planDecisions: [],
     conversation: [],
     toolResults: [],
     policyDecisions: [],
@@ -68,6 +70,7 @@ function testSnapshot(params: {
     busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
     pendingClarifications: [],
     pendingApprovals: [],
+    attention: params.attention,
     latency: params.latency,
     updatedAt,
   } as unknown as OraStateSnapshot;
@@ -946,6 +949,45 @@ describe("desktop workbench state", () => {
       } as unknown as OraRunEventStream;
 
       const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
+      expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
+    });
+
+    it("restores pending plan decision from durable attention during hydrate", () => {
+      const sessionId = "session-attention-plan";
+      const snapshot = testSnapshot({
+        runId: "run-attention-plan",
+        sessionId,
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: "run-attention-plan",
+          reason: "plan_decision_required",
+          planDecisionId: "run-attention-plan:plan-decision",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      });
+      const session: OraSessionSummary = {
+        ...sessionSummary(sessionId),
+        attention: snapshot.attention,
+        latestRunId: snapshot.runId,
+        status: "succeeded",
+        turnCount: 1,
+      };
+
+      const next = workbenchReducer(initialWorkbenchState, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [session],
+        detail: {
+          session,
+          turns: [],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+      });
+
       expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
     });
 

@@ -2,6 +2,8 @@ const STATUS_COLORS: Record<string, string> = {
   running: "bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300",
   done: "bg-emerald-100 text-emerald-800 ring-1 ring-inset ring-emerald-300",
   failed: "bg-red-100 text-red-800 ring-1 ring-inset ring-red-300",
+  cancelled: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",
+  paused: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",
   blocked: "bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300",
   idle: "bg-bench-100 text-bench-700 ring-1 ring-inset ring-bench-200",
   approval_required: "bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-300",

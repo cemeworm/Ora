@@ -13,6 +13,7 @@ import {
   CustomAgentSummary,
   CustomAgentUpdateParams,
   CustomAgentCreateParamsSchema,
+  deriveRunAttention,
   EvaluationConfigSummary,
   EvaluationFeedbackRecord,
   EvaluationSpecSchema,
@@ -62,6 +63,7 @@ import {
   RunTrailParamsSchema,
   RunTrailSchema,
   RunSummary,
+  SessionPlanDecisionResolveParamsSchema,
   SessionDetail,
   SessionSummary,
   SessionSummarySchema,
@@ -79,6 +81,7 @@ import {
   SkillSetEnabledParams,
   SkillUpdateParams,
   SelfIterationEnvironmentObserverPolicy,
+  snapshotContainsCompleteProposedPlan,
   StateSnapshot,
   StateSnapshotSchema,
   SystemAgentOverride,
@@ -640,6 +643,41 @@ export class LocalRunStore {
 
   getSession(params: unknown): SessionDetail {
     return getSessionOperation(params, this.projectSessionOperationDeps());
+  }
+
+  resolvePlanDecision(params: unknown): SessionDetail {
+    const parsed = SessionPlanDecisionResolveParamsSchema.parse(params);
+    const session = this.getSessionOrThrow(parsed.sessionId);
+    const latestRunId = session.latestRunId;
+    if (!latestRunId) {
+      throw new OraRuntimeError(`Session '${parsed.sessionId}' has no run to resolve.`, -32004, {
+        sessionId: parsed.sessionId,
+      });
+    }
+    const snapshot = this.getRunOrThrow(latestRunId);
+    const existing = snapshot.planDecisions.find((decision) => decision.id === parsed.decisionId);
+    if (!existing) {
+      throw new OraRuntimeError(`Plan decision '${parsed.decisionId}' does not exist.`, -32004, {
+        sessionId: parsed.sessionId,
+        decisionId: parsed.decisionId,
+      });
+    }
+    const now = this.now();
+    const updatedSnapshot = this.normalizeSnapshotForPersistence(StateSnapshotSchema.parse({
+      ...snapshot,
+      planDecisions: snapshot.planDecisions.map((decision) =>
+        decision.id === parsed.decisionId
+          ? {
+              ...decision,
+              status: parsed.status,
+              resolvedAt: now,
+            }
+          : decision
+      ),
+      updatedAt: Math.max(snapshot.updatedAt, now),
+    }));
+    this.cacheRun(updatedSnapshot, true);
+    return this.getSession({ sessionId: parsed.sessionId });
   }
 
   listRuns(params: unknown = {}): RunSummary[] {
@@ -1751,19 +1789,21 @@ export class LocalRunStore {
   }
 
   private persistRun(snapshot: StateSnapshot): void {
-    this.cacheRun(snapshot, true);
-    scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps());
-    this.queueSelfIterationAfterTerminalRun(snapshot);
+    const normalized = this.normalizeSnapshotForPersistence(snapshot);
+    this.cacheRun(normalized, true);
+    scheduleLongTermMemoryUpdate(normalized, this.memoryUpdateDeps());
+    this.queueSelfIterationAfterTerminalRun(normalized);
   }
 
   private async persistRunWithGeneratedTitle(snapshot: StateSnapshot): Promise<void> {
+    const normalized = this.normalizeSnapshotForPersistence(snapshot);
     const titleOverride = await generateSessionTitle(
-      snapshot,
-      snapshot.sessionId ? this.sessions.get(snapshot.sessionId)?.title : undefined,
+      normalized,
+      normalized.sessionId ? this.sessions.get(normalized.sessionId)?.title : undefined,
     );
-    this.cacheRun(snapshot, true, { titleOverride });
-    scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps());
-    this.queueSelfIterationAfterTerminalRun(snapshot);
+    this.cacheRun(normalized, true, { titleOverride });
+    scheduleLongTermMemoryUpdate(normalized, this.memoryUpdateDeps());
+    this.queueSelfIterationAfterTerminalRun(normalized);
   }
 
   private queueSelfIterationAfterTerminalRun(snapshot: StateSnapshot): void {
@@ -1809,6 +1849,7 @@ export class LocalRunStore {
     flush: boolean,
     options: { titleOverride?: string; deferInitialTitle?: boolean } = {}
   ): void {
+    snapshot = this.normalizeSnapshotForPersistence(snapshot);
     this.runs.set(snapshot.runId, snapshot);
     if (snapshot.sessionId) {
       const session = this.upsertSessionFromRun(snapshot, options);
@@ -1965,6 +2006,7 @@ export class LocalRunStore {
       title,
       projectId: snapshot.input.projectId ?? existing?.projectId,
       status: snapshot.status,
+      attention: deriveRunAttention(snapshot),
       latestRunId: snapshot.runId,
       latestPattern: snapshot.pattern,
       latestModeId: snapshot.modeId ?? existing?.latestModeId,
@@ -1975,6 +2017,32 @@ export class LocalRunStore {
       createdAt: existing?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
       updatedAt: snapshot.updatedAt,
       archivedAt: existing?.archivedAt,
+    });
+  }
+
+  private normalizeSnapshotForPersistence(snapshot: StateSnapshot): StateSnapshot {
+    let normalized = StateSnapshotSchema.parse(snapshot);
+    if (
+      normalized.sessionId &&
+      normalized.status === "succeeded" &&
+      normalized.config.metadata.taskIntent === "plan" &&
+      snapshotContainsCompleteProposedPlan(normalized) &&
+      normalized.planDecisions.length === 0
+    ) {
+      normalized = StateSnapshotSchema.parse({
+        ...normalized,
+        planDecisions: [{
+          id: `${normalized.runId}:plan-decision`,
+          runId: normalized.runId,
+          sessionId: normalized.sessionId,
+          status: "pending",
+          createdAt: normalized.updatedAt,
+        }],
+      });
+    }
+    return StateSnapshotSchema.parse({
+      ...normalized,
+      attention: deriveRunAttention(normalized),
     });
   }
 

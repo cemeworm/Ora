@@ -1,4 +1,5 @@
 import {
+  deriveRunAttention,
   RunHandle,
   RunHandleSchema,
   RunSummary,
@@ -42,11 +43,13 @@ export function toRunSummary(snapshot: StateSnapshot): RunSummary {
 }
 
 export function toSessionTurn(snapshot: StateSnapshot): SessionTurn {
+  const attention = deriveRunAttention(snapshot);
   return SessionTurnSchema.parse({
     runId: snapshot.runId,
     sessionId: snapshot.sessionId,
     turnIndex: snapshot.turnIndex,
     status: snapshot.status,
+    attention,
     pattern: snapshot.pattern,
     modeId: snapshot.modeId,
     providerId: typeof snapshot.config.providerId === "string" ? snapshot.config.providerId : undefined,
