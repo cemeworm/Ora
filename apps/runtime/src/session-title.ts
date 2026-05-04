@@ -64,12 +64,23 @@ export function assistantTextForRun(snapshot: StateSnapshot): string {
     if (!event || event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
       continue;
     }
-    const content = (event.payload as Record<string, unknown>).content;
+    const payload = event.payload as Record<string, unknown>;
+    const content = payload.content;
     if (typeof content === "string" && content.trim()) {
       return content.trim();
     }
   }
-  return "";
+  const parts: string[] = [];
+  for (const event of snapshot.events) {
+    if (!event || event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
+      continue;
+    }
+    const delta = (event.payload as Record<string, unknown>).delta;
+    if (typeof delta === "string") {
+      parts.push(delta);
+    }
+  }
+  return parts.join("").trim();
 }
 
 export function defaultSessionTitle(prompt: string): string {

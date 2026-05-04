@@ -2,6 +2,11 @@ import { runStdioServer } from "./stdio.js";
 import { LocalRunStore } from "./run-store.js";
 import { shutdownLangfuseTelemetry } from "./telemetry/langfuse.js";
 
+// Redirect console.log/info/warn to stderr so they don't corrupt the JSON-RPC protocol on stdout
+console.log = console.error;
+console.info = console.error;
+console.warn = console.error;
+
 async function runChannelDaemon(): Promise<void> {
   new LocalRunStore({
     onChannelSessionUpdate(event) {
