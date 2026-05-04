@@ -38,9 +38,13 @@ export function scheduleLongTermMemoryUpdate(snapshot: StateSnapshot, deps: Memo
     policy,
     invokeModel: policy.updater === "provider"
       ? async (request) => {
+          const toolModelProviderId = snapshot.config.metadata?.toolModelProviderId;
+          const effectiveProviderId = policy.updaterProviderId
+            ?? (typeof toolModelProviderId === "string" && toolModelProviderId !== "auto" ? toolModelProviderId : undefined)
+            ?? snapshot.config.providerId;
           const response = await invokeRunProvider({
             ...snapshot.config,
-            providerId: policy.updaterProviderId ?? snapshot.config.providerId,
+            providerId: effectiveProviderId,
           }, request);
           return response.text;
         }

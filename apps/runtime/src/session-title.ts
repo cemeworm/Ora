@@ -18,7 +18,11 @@ export async function generateSessionTitle(
   const userMsg = snapshot.input.prompt.trim();
   const assistantMsg = assistantTextForRun(snapshot);
   try {
-    const response = await invokeRunProvider(snapshot.config, {
+    const toolProviderId = snapshot.config.metadata?.toolModelProviderId;
+    const titleConfig = toolProviderId && toolProviderId !== "auto"
+      ? { ...snapshot.config, providerId: toolProviderId as string }
+      : snapshot.config;
+    const response = await invokeRunProvider(titleConfig, {
       system: [
         "You are Ora's conversation title generator.",
         "Generate a concise title in the same language as the user message.",

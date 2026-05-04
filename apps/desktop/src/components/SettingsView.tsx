@@ -39,6 +39,11 @@ import {
   type DesktopSearchProviderId,
   type DesktopSearchSettings,
 } from "../lib/searchSettings";
+import {
+  loadDesktopToolModelSettings,
+  saveDesktopToolModelSettings,
+  type DesktopToolModelSettings,
+} from "../lib/toolModelSettings";
 import { useRunActions } from "../lib/useRunActions";
 import type { OraChannelConfig, OraLongTermMemoryProfile, OraProviderModelsResult } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -363,6 +368,9 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const [searchSettings, setSearchSettings] = useState<DesktopSearchSettings>(
     () => loadDesktopSearchSettings(),
   );
+  const [toolModelSettings, setToolModelSettings] = useState<DesktopToolModelSettings>(
+    () => loadDesktopToolModelSettings(),
+  );
   const [longTermMemory, setLongTermMemory] = useState<
     OraLongTermMemoryProfile | undefined
   >();
@@ -400,6 +408,18 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     updateDraft,
     verifyAndEnableProvider,
   } = providerSetup;
+  const enabledToolModelProviders = useMemo(() => {
+    return (state.providerRegistry?.providers ?? []).filter(
+      (provider) => provider.enabled !== false && provider.type !== "local_smoke",
+    );
+  }, [state.providerRegistry?.providers]);
+
+  const handleToolModelChange = (providerId: string) => {
+    const next: DesktopToolModelSettings = { providerId };
+    setToolModelSettings(next);
+    saveDesktopToolModelSettings(next);
+  };
+
   const filteredProviderCatalog = useMemo(() => {
     const query = providerSearch.trim().toLowerCase();
     if (!query) {
@@ -1060,39 +1080,66 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
           <div className="min-h-0 overflow-y-auto overscroll-contain bg-background px-5 py-5 lg:px-6 lg:py-6">
             <div className="space-y-6">
               {activeSection === "general" && (
-                <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Globe2 size={18} />
-                        <h3 className="text-sm font-semibold">Language</h3>
+                <>
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Globe2 size={18} />
+                          <h3 className="text-sm font-semibold">Language</h3>
+                        </div>
+                      </div>
+                      <div className="inline-flex rounded-xl bg-bench-50 p-1 ring-1 ring-inset ring-bench-200">
+                        {LANGUAGE_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() =>
+                              dispatch({
+                                type: "SET_LANGUAGE",
+                                language: option.id,
+                              })
+                            }
+                            className={cn(
+                              "h-9 rounded-lg px-3 text-sm font-semibold transition",
+                              state.language === option.id
+                                ? "bg-bench-900 text-white shadow-xs"
+                                : "text-bench-700 hover:bg-white",
+                            )}
+                            aria-pressed={state.language === option.id}
+                          >
+                            {option.nativeLabel}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                    <div className="inline-flex rounded-xl bg-bench-50 p-1 ring-1 ring-inset ring-bench-200">
-                      {LANGUAGE_OPTIONS.map((option) => (
-                        <button
-                          key={option.id}
-                          type="button"
-                          onClick={() =>
-                            dispatch({
-                              type: "SET_LANGUAGE",
-                              language: option.id,
-                            })
-                          }
-                          className={cn(
-                            "h-9 rounded-lg px-3 text-sm font-semibold transition",
-                            state.language === option.id
-                              ? "bg-bench-900 text-white shadow-xs"
-                              : "text-bench-700 hover:bg-white",
-                          )}
-                          aria-pressed={state.language === option.id}
-                        >
-                          {option.nativeLabel}
-                        </button>
-                      ))}
+                  </section>
+                  <section className="rounded-[22px] bg-card p-5 shadow-pane ring-1 ring-inset ring-bench-200">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Zap size={18} />
+                          <h3 className="text-sm font-semibold">工具模型</h3>
+                        </div>
+                        <p className="mt-1 text-xs text-bench-500">
+                          为模式路由、标题生成、记忆提取等后台流程选用更快的模型
+                        </p>
+                      </div>
+                      <Select
+                        value={toolModelSettings.providerId}
+                        onChange={(e) => handleToolModelChange((e.target as HTMLSelectElement).value)}
+                        className="min-w-[220px]"
+                      >
+                        <option value="auto">跟随主模型</option>
+                        {enabledToolModelProviders.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.label} / {provider.modelId}
+                          </option>
+                        ))}
+                      </Select>
                     </div>
-                  </div>
-                </section>
+                  </section>
+                </>
               )}
 
               {activeSection === "providers" && (

@@ -295,7 +295,11 @@ async function routeAutoMode(
   }
 
   try {
-    const response = await invokeRunProvider(config, {
+    const toolProviderId = config.metadata?.toolModelProviderId;
+    const routerConfig = toolProviderId && toolProviderId !== "auto"
+      ? { ...config, providerId: toolProviderId as string }
+      : config;
+    const response = await invokeRunProvider(routerConfig, {
       system: [
         "You are Ora, Ora's root conversation agent and agent mode router.",
         "Choose exactly one modeId from the provided candidates for the next run.",

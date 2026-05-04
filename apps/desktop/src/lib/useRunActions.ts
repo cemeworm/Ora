@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
+import { loadDesktopToolModelSettings } from "./toolModelSettings";
 import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
 import { buildWorkbenchViewModel } from "./viewModel";
 
@@ -599,6 +600,7 @@ export function useRunActions() {
     const provider = state.providerRegistry?.providers.find((entry) => entry.id === state.selectedProviderId);
     const projectId = state.activeSessionDetail?.session.projectId;
     const searchConfig = buildRunSearchConfig();
+    const toolModelSettings = loadDesktopToolModelSettings();
     const selectedRunSkillIds = [...new Set([
       ...(selectedMode?.capabilityFlags.skillIds ?? []),
       ...state.selectedSkillIds,
@@ -635,6 +637,7 @@ export function useRunActions() {
             progressNarration: shouldEnableProgressNarration(state.taskIntent),
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             taskIntent: state.taskIntent,
+            toolModelProviderId: toolModelSettings.providerId,
             ...searchConfig.metadata,
             ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
             ...(state.selectedCustomAgentId ? { customAgentId: state.selectedCustomAgentId } : {}),
