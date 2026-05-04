@@ -22,6 +22,7 @@ import type {
   TurnFileChangeAttachment,
   TurnAgentConversationMessage,
   TurnProcessStep,
+  TurnTimelineItem,
   TurnTodoItem,
   TopologyEdge,
   TopologyNode,
@@ -1638,13 +1639,15 @@ function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): bool
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
 ): AssistantTurnAttachment {
+  const processSteps = deriveProcessSteps(snapshot);
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
     status: adaptSnapshotRunStatus(snapshot),
     pattern: snapshot.pattern,
     liveProgressText: progressTextFromSnapshot(snapshot),
-    processSteps: deriveProcessSteps(snapshot),
+    processSteps,
+    timelineItems: deriveTimelineItems(snapshot, processSteps),
     planList: (snapshot.planList ?? []).map((item) => ({
       step: item.step,
       status: item.status,
@@ -1742,13 +1745,7 @@ function restoreTruncatedAgentMessageContent(content: string, fullContent?: stri
 }
 
 function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
-  const events = snapshot.events.filter(
-    (event) => event.runId === snapshot.runId && shouldShowProcessEvent(event),
-  );
-  const hasWorkEvent = events.some(isWorkProcessEvent);
-  const visibleEvents = events.filter(
-    (event) => hasWorkEvent || !isLifecycleProcessEvent(event),
-  );
+  const { events, visibleEvents } = visibleProcessEvents(snapshot);
 
   const baseTime = events[0]?.createdAt ?? snapshot.updatedAt;
 
@@ -1756,21 +1753,12 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
 
   const timed: TimedStep[] = visibleEvents.map((event, index) => ({
     rawTime: event.createdAt,
-    step: {
-      id: event.id,
-      eventType: event.type,
-      label: processStepLabel(event),
-      detail: processStepDetail(event),
-      timestamp: formatElapsed(baseTime, event.createdAt),
-      status: processStepStatus(
-        event,
-        snapshot.status,
-        index === visibleEvents.length - 1,
-      ),
-      tone: processStepTone(event),
-      agentId: event.agentId,
-      contextLabel: processContextLabel(event),
-    },
+    step: processStepFromEvent(
+      event,
+      baseTime,
+      snapshot.status,
+      index === visibleEvents.length - 1,
+    ),
   }));
 
   if (hasDeniedApproval(snapshot)) {
@@ -1813,6 +1801,232 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
   }
 
   return timed.sort((a, b) => a.rawTime - b.rawTime).map((t) => t.step);
+}
+
+function visibleProcessEvents(snapshot: OraStateSnapshot): {
+  events: OraEventEnvelope[];
+  visibleEvents: OraEventEnvelope[];
+} {
+  const events = snapshot.events.filter(
+    (event) => event.runId === snapshot.runId && shouldShowProcessEvent(event),
+  );
+  const hasWorkEvent = events.some(isWorkProcessEvent);
+  return {
+    events,
+    visibleEvents: events.filter(
+      (event) => hasWorkEvent || !isLifecycleProcessEvent(event),
+    ),
+  };
+}
+
+function processStepFromEvent(
+  event: OraEventEnvelope,
+  baseTime: number,
+  runStatus: OraStateSnapshot["status"],
+  isLatestProcessEvent: boolean,
+): TurnProcessStep {
+  return {
+    id: event.id,
+    eventType: event.type,
+    label: processStepLabel(event),
+    detail: processStepDetail(event),
+    timestamp: formatElapsed(baseTime, event.createdAt),
+    status: processStepStatus(event, runStatus, isLatestProcessEvent),
+    tone: processStepTone(event),
+    agentId: event.agentId,
+    contextLabel: processContextLabel(event),
+  };
+}
+
+function deriveTimelineItems(
+  snapshot: OraStateSnapshot,
+  processSteps: TurnProcessStep[],
+): TurnTimelineItem[] {
+  const { events, visibleEvents } = visibleProcessEvents(snapshot);
+  const baseTime = events[0]?.createdAt ?? snapshot.events[0]?.createdAt ?? snapshot.updatedAt;
+  const processStepByEventId = new Map(processSteps.map((step) => [step.id, step]));
+  const items: Array<{ rawTime: number; eventSeq: number; item: TurnTimelineItem }> = [];
+  let pendingSteps: TurnProcessStep[] = [];
+  let pendingStartedAt = baseTime;
+  let pendingSeq = 0;
+
+  function flushPendingSteps() {
+    if (pendingSteps.length === 0) {
+      return;
+    }
+    const steps = pendingSteps;
+    const itemStatus = aggregateStepStatus(steps);
+    items.push({
+      rawTime: pendingStartedAt,
+      eventSeq: pendingSeq,
+      item: {
+        id: `${snapshot.runId}:timeline:status:${pendingSeq}:${steps.at(-1)?.id ?? "group"}`,
+        kind: "status_group",
+        summary: summarizeProcessSteps(steps),
+        steps,
+        timestamp: formatElapsed(baseTime, pendingStartedAt),
+        status: itemStatus,
+        eventSeq: pendingSeq,
+      },
+    });
+    pendingSteps = [];
+  }
+
+  for (const event of snapshot.events.filter((event) => event.runId === snapshot.runId)) {
+    if (isChatProgressEvent(event) && isRecord(event.payload)) {
+      const summary = typeof event.payload.summary === "string" ? event.payload.summary.trim() : "";
+      if (summary && !isPlaceholderProgressText(summary)) {
+        flushPendingSteps();
+        items.push({
+          rawTime: event.createdAt,
+          eventSeq: event.seq,
+          item: {
+            id: `${event.id}:text`,
+            kind: "assistant_text",
+            content: summary,
+            timestamp: formatElapsed(baseTime, event.createdAt),
+            eventSeq: event.seq,
+          },
+        });
+      }
+      continue;
+    }
+
+    if (event.type === "plan_list.updated") {
+      flushPendingSteps();
+      items.push({
+        rawTime: event.createdAt,
+        eventSeq: event.seq,
+        item: {
+          id: `${event.id}:plan-update`,
+          kind: "plan_update",
+          summary: planUpdateSummary(event.payload),
+          timestamp: formatElapsed(baseTime, event.createdAt),
+          eventSeq: event.seq,
+        },
+      });
+      continue;
+    }
+
+    if (event.type === "artifact.exported" || event.type === "artifact.degraded") {
+      flushPendingSteps();
+      items.push({
+        rawTime: event.createdAt,
+        eventSeq: event.seq,
+        item: {
+          id: `${event.id}:artifact`,
+          kind: "artifact",
+          summary: processStepDetail(event) || processStepLabel(event),
+          artifactId: artifactIdFromEvent(event),
+          timestamp: formatElapsed(baseTime, event.createdAt),
+          eventSeq: event.seq,
+        },
+      });
+      continue;
+    }
+
+    if (!visibleEvents.some((visibleEvent) => visibleEvent.id === event.id)) {
+      continue;
+    }
+    const step = processStepByEventId.get(event.id);
+    if (!step) {
+      continue;
+    }
+    if (pendingSteps.length === 0) {
+      pendingStartedAt = event.createdAt;
+      pendingSeq = event.seq;
+    }
+    pendingSteps.push(step);
+  }
+
+  flushPendingSteps();
+
+  const finalText = outputTextFromSnapshot(snapshot);
+  if (finalText && !items.some(({ item }) => "content" in item && item.content.trim() === finalText.trim())) {
+    items.push({
+      rawTime: snapshot.updatedAt,
+      eventSeq: Number.MAX_SAFE_INTEGER,
+      item: {
+        id: `${snapshot.runId}:timeline:final`,
+        kind: "final_text",
+        content: finalText,
+        timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+      },
+    });
+  }
+
+  return items
+    .sort((left, right) => left.rawTime - right.rawTime || left.eventSeq - right.eventSeq)
+    .map(({ item }) => item);
+}
+
+function aggregateStepStatus(steps: TurnProcessStep[]): TurnProcessStep["status"] {
+  if (steps.some((step) => step.status === "blocked")) {
+    return "blocked";
+  }
+  if (steps.some((step) => step.status === "active")) {
+    return "active";
+  }
+  return "complete";
+}
+
+function summarizeProcessSteps(steps: TurnProcessStep[]): string {
+  const fileCount = steps.filter((step) => ["读取文件", "搜索文件", "匹配文件"].includes(step.label)).length;
+  const listCount = steps.filter((step) => step.label === "列出文件").length;
+  const commandCount = steps.filter((step) => step.label === "运行命令").length;
+  const webCount = steps.filter((step) => step.label === "浏览网页" || step.label === "搜索网页").length;
+  const approvalCount = steps.filter((step) => step.label === "等待确认").length;
+  const blockedCount = steps.filter((step) => step.status === "blocked").length;
+  const active = steps.find((step) => step.status === "active");
+  const parts: string[] = [];
+  if (fileCount > 0) {
+    parts.push(`已探索 ${fileCount} 个文件`);
+  }
+  if (listCount > 0) {
+    parts.push(`${listCount} 个列表`);
+  }
+  if (commandCount > 0) {
+    parts.push(`已运行 ${commandCount} 条命令`);
+  }
+  if (webCount > 0) {
+    parts.push(`已访问 ${webCount} 个网页/搜索`);
+  }
+  if (approvalCount > 0) {
+    parts.push(`等待 ${approvalCount} 个确认`);
+  }
+  if (blockedCount > 0 && approvalCount === 0) {
+    parts.push(`${blockedCount} 个步骤需要处理`);
+  }
+  if (parts.length > 0) {
+    return active ? `${parts.join("，")}，正在${active.label}` : parts.join("，");
+  }
+  if (steps.length === 1) {
+    return steps[0]?.detail || steps[0]?.label || "已更新执行状态";
+  }
+  return `已更新 ${steps.length} 条执行状态`;
+}
+
+function planUpdateSummary(payload: unknown): string {
+  if (!isRecord(payload) || !Array.isArray(payload.plan)) {
+    return "已更新任务计划";
+  }
+  const plan = payload.plan.filter(isRecord);
+  const completed = plan.filter((item) => item.status === "completed").length;
+  const active = plan.find((item) => item.status === "in_progress");
+  const activeStep = isRecord(active) && typeof active.step === "string" ? active.step : undefined;
+  return activeStep
+    ? `已更新任务计划：${completed}/${plan.length} 完成，正在 ${activeStep}`
+    : `已更新任务计划：${completed}/${plan.length} 完成`;
+}
+
+function artifactIdFromEvent(event: OraEventEnvelope): string | undefined {
+  if (!isRecord(event.payload)) {
+    return undefined;
+  }
+  if (isRecord(event.payload.artifact) && typeof event.payload.artifact.id === "string") {
+    return event.payload.artifact.id;
+  }
+  return typeof event.payload.artifactId === "string" ? event.payload.artifactId : undefined;
 }
 
 function handoffStepStatus(

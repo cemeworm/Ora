@@ -23,4 +23,11 @@ describe("ChatMessages bottom inset", () => {
 
     expect(html).toContain("padding-bottom:324px");
   });
+
+  it("keeps the message list as the only scroll container", () => {
+    const html = renderToStaticMarkup(<ChatMessages chatMessages={[]} />);
+
+    expect(html).toContain("overflow-y-auto overscroll-contain");
+    expect(html).not.toContain("relative flex flex-1 flex-col overflow-y-auto");
+  });
 });

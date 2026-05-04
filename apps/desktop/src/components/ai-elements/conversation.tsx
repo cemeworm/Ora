@@ -6,7 +6,7 @@ export const Conversation = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEle
   { className, ...props },
   ref,
 ) {
-  return <div ref={ref} role="log" className={cn("relative flex flex-1 flex-col overflow-y-auto", className)} {...props} />;
+  return <div ref={ref} role="log" className={cn("relative flex flex-1 flex-col", className)} {...props} />;
 });
 
 export function ConversationContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {

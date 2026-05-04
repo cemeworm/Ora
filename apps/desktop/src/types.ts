@@ -192,6 +192,39 @@ export interface TurnProcessStep {
   contextLabel?: string;
 }
 
+export type TurnTimelineItem =
+  | {
+      id: string;
+      kind: "assistant_text" | "final_text";
+      content: string;
+      timestamp: string;
+      eventSeq?: number;
+    }
+  | {
+      id: string;
+      kind: "status_group";
+      summary: string;
+      steps: TurnProcessStep[];
+      timestamp: string;
+      status: "complete" | "active" | "blocked";
+      eventSeq?: number;
+    }
+  | {
+      id: string;
+      kind: "plan_update";
+      summary: string;
+      timestamp: string;
+      eventSeq?: number;
+    }
+  | {
+      id: string;
+      kind: "artifact";
+      summary: string;
+      artifactId?: string;
+      timestamp: string;
+      eventSeq?: number;
+    };
+
 export interface TurnPlanListStep {
   step: string;
   status: "pending" | "in_progress" | "completed";
@@ -285,6 +318,7 @@ export interface AssistantTurnAttachment {
   pattern?: CoordinationPattern;
   liveProgressText?: string;
   processSteps: TurnProcessStep[];
+  timelineItems?: TurnTimelineItem[];
   planList: TurnPlanListStep[];
   agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];

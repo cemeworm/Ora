@@ -1,11 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Check,
   CheckCircle2,
   ChevronDown,
   Circle,
-  Clock3,
   Copy,
   FileImage,
   FileText,
@@ -19,6 +18,7 @@ import type {
   TurnArtifactAttachment,
   TurnFileChangeAttachment,
   TurnProcessStep,
+  TurnTimelineItem,
   TurnTodoItem,
 } from "../types";
 import { cn } from "../lib/utils";
@@ -67,12 +67,12 @@ export function AssistantTurnCard({
   onSubmitFeedback,
 }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
+  const timelineItems = turn?.timelineItems ?? legacyTimelineItems(processSteps);
   const planList = turn?.planList ?? [];
   const agentMessages = turn?.agentMessages ?? [];
   const stageTranscriptMessages = agentMessages.filter(
     (message) => message.transcript,
   );
-  const [processOpen, setProcessOpen] = useState(false);
   const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
@@ -81,14 +81,8 @@ export function AssistantTurnCard({
   );
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const liveProgressText = turn?.liveProgressText?.trim();
   const hasProcessSteps = processSteps.length > 0;
-  const latestProcessStep = hasProcessSteps
-    ? processSteps[processSteps.length - 1]
-    : undefined;
-  const contentIsLiveProgress = Boolean(
-    liveProgressText && content.trim() === liveProgressText,
-  );
+  const hasTimeline = timelineItems.length > 0;
   const hasStageTranscript = stageTranscriptMessages.length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
@@ -103,15 +97,6 @@ export function AssistantTurnCard({
     content.trim(),
   );
   const canShowActions = canCopyContent || canSubmitFeedback;
-
-  useEffect(() => {
-    if (
-      !isPlaceholder &&
-      (turn?.status !== "running" || (content.trim() && !contentIsLiveProgress))
-    ) {
-      setProcessOpen(false);
-    }
-  }, [content, contentIsLiveProgress, isPlaceholder, turn?.status]);
 
   async function handleSubmitFeedback() {
     if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
@@ -169,35 +154,12 @@ export function AssistantTurnCard({
         <div
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs",
-            hasProcessSteps ? "mt-[13px]" : "mt-1",
+            hasTimeline || hasProcessSteps ? "mt-[13px]" : "mt-1",
           )}
         >
           <TurnStatusIcon status={turn?.status} isPlaceholder={isPlaceholder} />
         </div>
         <div className="min-w-0 flex-1 space-y-3 pt-1">
-          {hasProcessSteps ? (
-            <CollapsibleCard
-              open={processOpen}
-              onToggle={() => setProcessOpen((current) => !current)}
-              title="运行进度"
-              icon={<Clock3 size={14} />}
-              summary={
-                processSteps.length > 0
-                  ? processSummary(processSteps, turn?.status, isPlaceholder)
-                  : undefined
-              }
-              collapsedPreview={
-                latestProcessStep ? (
-                  <ProcessStepItem step={latestProcessStep} />
-                ) : undefined
-              }
-            >
-              {processSteps.map((step) => (
-                <ProcessStepItem key={step.id} step={step} />
-              ))}
-            </CollapsibleCard>
-          ) : null}
-
           {!isPlaceholder && turn?.hasProposedPlan ? (
             <PlanCard planSteps={planList} planContent={content} />
           ) : null}
@@ -206,7 +168,11 @@ export function AssistantTurnCard({
             <StageTranscript messages={stageTranscriptMessages} />
           ) : null}
 
-          {turn?.hasProposedPlan ? null : (
+          {!turn?.hasProposedPlan && hasTimeline ? (
+            <TurnTimeline items={timelineItems} onOpenArtifact={onOpenArtifact} />
+          ) : null}
+
+          {turn?.hasProposedPlan || hasTimeline ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={content}
@@ -313,6 +279,177 @@ export function AssistantTurnCard({
         </DialogContent>
       </Dialog>
     </Message>
+  );
+}
+
+function legacyTimelineItems(processSteps: TurnProcessStep[]): TurnTimelineItem[] {
+  if (processSteps.length === 0) {
+    return [];
+  }
+  const latest = processSteps[processSteps.length - 1];
+  const summaryParts = [
+    latest?.eventType === "agent.handoff" ? latest.label : undefined,
+    latest?.detail || (latest?.eventType === "agent.handoff" ? undefined : latest?.label),
+    latest?.contextLabel ? `对象：${latest.contextLabel}` : undefined,
+    latest?.eventType === "agent.handoff" ? "交接" : undefined,
+  ].filter(Boolean);
+  return [{
+    id: `legacy-status:${latest?.id ?? "process"}`,
+    kind: "status_group",
+    summary: summaryParts.join(" ") || `${processSteps.length} 条执行状态`,
+    steps: processSteps,
+    timestamp: latest?.timestamp ?? "",
+    status: legacyTimelineStatus(processSteps),
+  }];
+}
+
+function legacyTimelineStatus(processSteps: TurnProcessStep[]): TurnProcessStep["status"] {
+  if (processSteps.some((step) => step.status === "blocked")) {
+    return "blocked";
+  }
+  if (processSteps.some((step) => step.status === "active")) {
+    return "active";
+  }
+  return "complete";
+}
+
+function TurnTimeline({
+  items,
+  onOpenArtifact,
+}: {
+  items: TurnTimelineItem[];
+  onOpenArtifact?: (artifactId: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {items.map((item) => (
+        <TurnTimelineRow
+          key={item.id}
+          item={item}
+          onOpenArtifact={onOpenArtifact}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TurnTimelineRow({
+  item,
+  onOpenArtifact,
+}: {
+  item: TurnTimelineItem;
+  onOpenArtifact?: (artifactId: string) => void;
+}) {
+  switch (item.kind) {
+    case "assistant_text":
+    case "final_text":
+      return (
+        <MessageContent className="w-full">
+          <MarkdownContent content={item.content} />
+        </MessageContent>
+      );
+    case "status_group":
+      return <TimelineStatusGroup item={item} />;
+    case "artifact": {
+      const content = (
+        <InlineTimelineMeta icon={<FileText size={14} />} tone="accent">
+          {item.summary}
+        </InlineTimelineMeta>
+      );
+      if (item.artifactId && onOpenArtifact) {
+        return (
+          <button type="button" onClick={() => onOpenArtifact(item.artifactId!)} className="block w-full text-left">
+            {content}
+          </button>
+        );
+      }
+      return content;
+    }
+    case "plan_update":
+      return (
+        <InlineTimelineMeta icon={<ListTodo size={14} />} tone="neutral">
+          {item.summary}
+        </InlineTimelineMeta>
+      );
+  }
+}
+
+function TimelineStatusGroup({
+  item,
+}: {
+  item: Extract<TurnTimelineItem, { kind: "status_group" }>;
+}) {
+  const [open, setOpen] = useState(false);
+  const active = item.status === "active";
+  const blocked = item.status === "blocked";
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="group flex w-full items-center justify-between gap-3 text-left"
+      >
+        <InlineTimelineMeta
+          icon={
+            active ? (
+              <LoaderCircle size={14} className="animate-spin" />
+            ) : blocked ? (
+              <AlertCircle size={14} />
+            ) : (
+              <CheckCircle2 size={14} />
+            )
+          }
+          tone={blocked ? "warning" : active ? "neutral" : "muted"}
+        >
+          {item.summary}
+        </InlineTimelineMeta>
+        <ChevronDown
+          size={14}
+          className={cn(
+            "mr-1 shrink-0 text-muted-foreground transition-transform group-hover:text-foreground",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open ? (
+        <div className="ml-5 border-l border-border/70 pl-4">
+          <div className="space-y-2">
+            {item.steps.map((step) => (
+              <ProcessStepItem key={step.id} step={step} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function InlineTimelineMeta({
+  icon,
+  tone,
+  children,
+}: {
+  icon: ReactNode;
+  tone: "muted" | "neutral" | "accent" | "warning";
+  children: ReactNode;
+}) {
+  const toneClassName =
+    tone === "warning"
+      ? "text-amber-700"
+      : tone === "accent"
+        ? "text-emerald-700"
+        : tone === "neutral"
+          ? "text-muted-foreground"
+          : "text-muted-foreground/80";
+
+  return (
+    <div className={cn("flex min-w-0 items-center gap-2 text-sm", toneClassName)}>
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+        {icon}
+      </span>
+      <span className="min-w-0 break-words">{children}</span>
+    </div>
   );
 }
 

@@ -358,9 +358,9 @@ export function ChatInput({
 
   return (
     <div ref={overlayRef} className="pointer-events-none absolute bottom-0 left-0 right-0 z-30 flex justify-center px-4">
-      <div className="pointer-events-auto relative w-full max-w-[88rem]">
+      <div className="pointer-events-none relative w-full max-w-[88rem]">
         {showSkillPicker && (
-          <div className="absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
+          <div className="pointer-events-auto absolute bottom-full left-3 z-50 mb-2 max-h-[min(32rem,calc(100vh-12rem))] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lift">
             {visibleSkillOptions.map((skill) => (
               <button
                 key={skill.id}
@@ -391,10 +391,12 @@ export function ChatInput({
           </div>
         )}
         {planSteps.length > 0 ? (
-          <PlanStepsTray planSteps={planSteps} />
+          <div className="pointer-events-auto">
+            <PlanStepsTray planSteps={planSteps} />
+          </div>
         ) : null}
         {showApprovalTray ? (
-          <div className="mb-2">
+          <div className="pointer-events-auto mb-2">
             <ApprovalRequestCard
               actions={approvalActions}
               onResume={onApprove!}
@@ -404,7 +406,7 @@ export function ChatInput({
           </div>
         ) : null}
         {showClarificationTray ? (
-          <div className="mb-2">
+          <div className="pointer-events-auto mb-2">
             <ClarificationPanel
               pendingClarifications={clarificationQuestions}
               onSubmitAll={onSubmitAllClarifications!}
@@ -413,7 +415,7 @@ export function ChatInput({
           </div>
         ) : null}
         {showPlanDecisionTray ? (
-          <div className="mb-2">
+          <div className="pointer-events-auto mb-2">
             <PlanDecisionPanel
               onConfirm={onConfirmPlanDecision!}
               onDecline={onDeclinePlanDecision!}
@@ -424,7 +426,7 @@ export function ChatInput({
         {hideComposer ? null : (
         <div
           className={cn(
-            "rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
+            "pointer-events-auto rounded-2xl border bg-card/96 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300",
             isDragOver ? "border-amber-200 ring-2 ring-amber-200/50" : "border-border",
           )}
           onDragOver={(e) => {

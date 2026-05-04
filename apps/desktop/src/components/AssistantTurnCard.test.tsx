@@ -161,6 +161,59 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("我会先读取这些 skill。");
   });
 
+  it("renders turn timeline paragraphs and collapsed aggregated status without the old progress card", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "text-1",
+          kind: "assistant_text",
+          content: "我会先追踪本地运行记录。",
+          timestamp: "00:00",
+        },
+        {
+          id: "status-1",
+          kind: "status_group",
+          summary: "已探索 1 个文件，已运行 1 条命令",
+          timestamp: "00:01",
+          status: "active",
+          steps: [
+            processStep("step-1", "complete", "已读取 .ora/runtime.db。", { label: "读取文件" }),
+            processStep("step-2", "active", "正在运行 sqlite3 查询。", { label: "运行命令" }),
+          ],
+        },
+        {
+          id: "text-2",
+          kind: "assistant_text",
+          content: "现在我会把 trace 的消息拼起来。",
+          timestamp: "00:04",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="现在我会把 trace 的消息拼起来。" turn={turn} />,
+    );
+
+    expect(html).toContain("我会先追踪本地运行记录。");
+    expect(html).toContain("已探索 1 个文件，已运行 1 条命令");
+    expect(html).toContain("现在我会把 trace 的消息拼起来。");
+    expect(html).not.toContain("已读取 .ora/runtime.db。");
+    expect(html).not.toContain("正在运行 sqlite3 查询。");
+    expect(html).not.toContain("运行进度");
+  });
+
   it("hides recovery artifacts from the assistant content stream", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
@@ -308,7 +361,8 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="正文内容。" turn={turn} />,
     );
 
-    expect(html).toContain("运行进度");
+    expect(html).toContain("正在规划回答。");
+    expect(html).not.toContain("运行进度");
     expect(html).not.toContain("协作轨迹");
   });
 

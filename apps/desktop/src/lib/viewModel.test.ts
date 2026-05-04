@@ -1251,6 +1251,179 @@ describe("desktop session view model", () => {
     expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
   });
 
+  it("derives a turn timeline with multiple progress paragraphs, aggregated tools, plan updates, and final text", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-turn-timeline",
+      sessionId: "session-turn-timeline",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "调查 runtime 记录", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-turn-timeline-test",
+        skillIds: [],
+        toolIds: ["file.read", "file.list", "shell.execute", "plan.update"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [
+        { step: "定位日志", status: "completed" },
+        { step: "汇总结论", status: "in_progress" },
+      ],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-turn-timeline:evt-0",
+          runId: "run-turn-timeline",
+          seq: 0,
+          type: "task.progress",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "tool.succeeded",
+            summary: "我会先追踪本地运行记录，确认问题链路。",
+          },
+        },
+        {
+          id: "run-turn-timeline:evt-1",
+          runId: "run-turn-timeline",
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: { path: ".ora/runtime.db" },
+            output: { path: ".ora/runtime.db", sizeBytes: 128 },
+          },
+        },
+        {
+          id: "run-turn-timeline:evt-2",
+          runId: "run-turn-timeline",
+          seq: 2,
+          type: "tool.called",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.list",
+            status: "succeeded",
+            input: { path: "sessions/runs" },
+            output: { path: "sessions/runs", entries: ["run-1"] },
+          },
+        },
+        {
+          id: "run-turn-timeline:evt-3",
+          runId: "run-turn-timeline",
+          seq: 3,
+          type: "tool.called",
+          createdAt: createdAt + 3_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "shell.execute",
+            status: "succeeded",
+            input: { command: "sqlite3 .ora/runtime.db SELECT 1" },
+            output: { command: "sqlite3 .ora/runtime.db SELECT 1", exitCode: 0 },
+          },
+        },
+        {
+          id: "run-turn-timeline:evt-4",
+          runId: "run-turn-timeline",
+          seq: 4,
+          type: "task.progress",
+          createdAt: createdAt + 4_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "tool.succeeded",
+            summary: "现在我会把 trace 的事件和最终状态拼起来。",
+          },
+        },
+        {
+          id: "run-turn-timeline:evt-5",
+          runId: "run-turn-timeline",
+          seq: 5,
+          type: "plan_list.updated",
+          createdAt: createdAt + 5_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            plan: [
+              { step: "定位日志", status: "completed" },
+              { step: "汇总结论", status: "in_progress" },
+            ],
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "最终结论：run 没有停在计划阶段。" },
+      updatedAt: createdAt + 6_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-turn-timeline:user",
+        sessionId: "session-turn-timeline",
+        runId: "run-turn-timeline",
+        turnIndex: 1,
+        role: "user",
+        content: "调查 runtime 记录",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-turn-timeline": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+
+    expect(timeline.map((item) => item.kind)).toEqual([
+      "assistant_text",
+      "status_group",
+      "assistant_text",
+      "plan_update",
+      "final_text",
+    ]);
+    expect(timeline[0]).toMatchObject({ content: "我会先追踪本地运行记录，确认问题链路。" });
+    expect(timeline[1]).toMatchObject({
+      summary: "已探索 1 个文件，1 个列表，已运行 1 条命令",
+      steps: expect.arrayContaining([
+        expect.objectContaining({ label: "读取文件", contextLabel: ".ora/runtime.db" }),
+        expect.objectContaining({ label: "列出文件", contextLabel: "sessions/runs" }),
+        expect.objectContaining({ label: "运行命令" }),
+      ]),
+    });
+    expect(timeline[2]).toMatchObject({ content: "现在我会把 trace 的事件和最终状态拼起来。" });
+    expect(timeline[3]).toMatchObject({ summary: "已更新任务计划：1/2 完成，正在 汇总结论" });
+    expect(timeline[4]).toMatchObject({ content: "最终结论：run 没有停在计划阶段。" });
+    expect(assistant?.content).toBe("最终结论：run 没有停在计划阶段。");
+  });
+
   it("keeps historical progress narration out of process steps after the run finishes", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

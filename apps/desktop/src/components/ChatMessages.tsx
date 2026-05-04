@@ -72,7 +72,7 @@ export function ChatMessages({
   }, [chatMessages]);
 
   return (
-    <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 w-full flex-1 overflow-y-auto">
+    <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain">
       <Conversation className="min-h-0 flex-1">
         <ConversationContent
           className="mx-auto min-h-full w-full max-w-[88rem] gap-8 px-4 pt-8 md:px-6 xl:px-8"
