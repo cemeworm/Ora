@@ -746,6 +746,385 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Builder"]);
     expect(assistant?.turn?.agentMessages[0]?.content).toContain("Full team lead assignment with the ending preserved.");
     expect(assistant?.turn?.agentMessages[0]?.content.endsWith("...")).toBe(false);
+    expect(assistant?.turn?.currentAgentLabel).toBe("Team Lead");
+  });
+
+  it("keeps assistant body text in the turn timeline before running work steps", () => {
+    const createdAt = 1_714_000_000_000;
+    const baseSnapshot = {
+      runId: "run-live-body",
+      sessionId: "session-live-body",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "检查决策 UI", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-body-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{
+        id: "orchestrator",
+        label: "Orchestrator",
+        role: "Coordinate stages.",
+        modelRef: "local/smoke-model",
+        toolPolicyId: "orchestrator_subagent.default_policy",
+        memoryNamespaces: ["session"],
+        budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+      }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2_000,
+    };
+    const firstEvents = [
+      {
+        id: "run-live-body:evt-0",
+        runId: "run-live-body",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        agentId: "orchestrator",
+        nodeId: "orchestrator",
+        payload: { role: "assistant", content: "我会先确认现有决策面板和输入框结构。" },
+      },
+      {
+        id: "run-live-body:evt-1",
+        runId: "run-live-body",
+        seq: 1,
+        type: "tool.called",
+        createdAt: createdAt + 1_000,
+        agentId: "orchestrator",
+        nodeId: "orchestrator",
+        payload: {
+          toolId: "file.grep",
+          status: "succeeded",
+          input: { pattern: "PlanDecisionPanel" },
+          output: { pattern: "PlanDecisionPanel", matches: 21 },
+        },
+      },
+    ];
+    const secondEvents = [
+      ...firstEvents,
+      {
+        id: "run-live-body:evt-2",
+        runId: "run-live-body",
+        seq: 2,
+        type: "tool.called",
+        createdAt: createdAt + 2_000,
+        agentId: "orchestrator",
+        nodeId: "orchestrator",
+        payload: {
+          toolId: "file.read",
+          status: "running",
+          input: { path: "apps/desktop/src/components/PlanDecisionPanel.tsx" },
+        },
+      },
+    ];
+    const firstSnapshot = { ...baseSnapshot, events: firstEvents } as unknown as OraStateSnapshot;
+    const secondSnapshot = { ...baseSnapshot, events: secondEvents } as unknown as OraStateSnapshot;
+
+    const [firstAssistant] = adaptChatMessages(
+      [{
+        id: "run-live-body:user",
+        sessionId: "session-live-body",
+        runId: "run-live-body",
+        turnIndex: 1,
+        role: "user",
+        content: "检查决策 UI",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-live-body": firstSnapshot },
+    ).filter((message) => message.role === "assistant");
+    const [secondAssistant] = adaptChatMessages(
+      [{
+        id: "run-live-body:user",
+        sessionId: "session-live-body",
+        runId: "run-live-body",
+        turnIndex: 1,
+        role: "user",
+        content: "检查决策 UI",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-live-body": secondSnapshot },
+    ).filter((message) => message.role === "assistant");
+
+    const firstTimeline = firstAssistant?.turn?.timelineItems ?? [];
+    const secondTimeline = secondAssistant?.turn?.timelineItems ?? [];
+    const firstStatus = firstTimeline.find((item) => item.kind === "status_group");
+    const secondStatus = secondTimeline.find((item) => item.kind === "status_group");
+
+    expect(firstTimeline[0]).toMatchObject({
+      kind: "assistant_text",
+      content: "我会先确认现有决策面板和输入框结构。",
+    });
+    expect(firstStatus?.id).toBe(secondStatus?.id);
+    expect(secondStatus?.summary).toBe("正在读取文件：apps/desktop/src/components/PlanDecisionPanel.tsx");
+    expect(secondStatus?.summary).not.toContain("已探索");
+  });
+
+  it("keeps the root handoff target as turn agent while subagents stream body text", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-subagent-owner",
+      sessionId: "session-subagent-owner",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "researcher", "reviewer"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-subagent-owner-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: ORA_ROOT_AGENT_ID,
+          label: ORA_ROOT_AGENT_LABEL,
+          role: "Root conversation agent.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "root.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "orchestrator",
+          label: "Orchestrator",
+          role: "Coordinate stages.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "researcher",
+          label: "Researcher",
+          role: "Research delegated context.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "reviewer",
+          label: "Reviewer",
+          role: "Review delegated findings.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+      ],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-subagent-owner:evt-0",
+          runId: "run-subagent-owner",
+          seq: 0,
+          type: "message.delta",
+          createdAt: createdAt + 1,
+          agentId: "researcher",
+          nodeId: "research",
+          payload: { role: "assistant", content: "Researcher is checking the relevant files." },
+        },
+        {
+          id: "run-subagent-owner:evt-1",
+          runId: "run-subagent-owner",
+          seq: 1,
+          type: "message.delta",
+          createdAt: createdAt + 2,
+          agentId: "reviewer",
+          nodeId: "review",
+          payload: { role: "assistant", content: "Reviewer is validating the findings." },
+        },
+      ],
+      agentMessages: [{
+        id: "run-subagent-owner:agent-message:0",
+        runId: "run-subagent-owner",
+        createdAt,
+        fromAgentId: ORA_ROOT_AGENT_ID,
+        toAgentIds: ["orchestrator"],
+        threadId: "run-subagent-owner:ora-handoff",
+        nodeId: ORA_ROOT_AGENT_ID,
+        kind: "handoff",
+        status: "done",
+        content: "接下来交给 Orchestrator。",
+        artifactIds: [],
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-subagent-owner:user",
+        sessionId: "session-subagent-owner",
+        runId: "run-subagent-owner",
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-subagent-owner": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item && item.kind === "assistant_text" ? [item.content] : [])
+      .join("\n");
+
+    expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(timelineText).toContain("Researcher is checking the relevant files.");
+    expect(timelineText).toContain("Reviewer is validating the findings.");
+  });
+
+  it("uses the primary profile as turn agent when subagents stream without a root handoff", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-primary-owner",
+      sessionId: "session-primary-owner",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      input: { prompt: "coordinate subagents", createdAt, context: {} },
+      config: {
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "researcher"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-primary-owner-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: "orchestrator",
+          label: "Orchestrator",
+          role: "Coordinate stages.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+        {
+          id: "researcher",
+          label: "Researcher",
+          role: "Research delegated context.",
+          modelRef: "local/smoke-model",
+          toolPolicyId: "orchestrator_subagent.default_policy",
+          memoryNamespaces: ["session"],
+          budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 },
+        },
+      ],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-primary-owner:evt-0",
+        runId: "run-primary-owner",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        agentId: "researcher",
+        nodeId: "research",
+        payload: { role: "assistant", content: "Researcher is reading delegated files." },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-primary-owner:user",
+        sessionId: "session-primary-owner",
+        runId: "run-primary-owner",
+        turnIndex: 1,
+        role: "user",
+        content: "coordinate subagents",
+        pattern: "orchestrator_subagent",
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        createdAt,
+      }],
+      { "run-primary-owner": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(assistant?.turn?.timelineItems?.[0]).toMatchObject({
+      kind: "assistant_text",
+      content: "Researcher is reading delegated files.",
+    });
   });
 
   it("preserves stage transcript metadata on assistant turns", () => {
@@ -1039,6 +1418,71 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.agentMessages[0]?.toAgentLabels).toEqual(["Orchestrator"]);
     expect(assistant?.turn?.agentMessages[2]?.fromAgentLabel).toBe("Orchestrator");
     expect(assistant?.turn?.agentMessages[2]?.toAgentLabels).toEqual([ORA_ROOT_AGENT_LABEL]);
+    expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+  });
+
+  it("falls back to Ora as the assistant turn agent label", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-fallback-agent",
+      sessionId: "session-fallback-agent",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "hello", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: [],
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-agent-label-fallback-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "done" },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-fallback-agent:user",
+        sessionId: "session-fallback-agent",
+        runId: "run-fallback-agent",
+        turnIndex: 1,
+        role: "user",
+        content: "hello",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-fallback-agent": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.currentAgentLabel).toBe(ORA_ROOT_AGENT_LABEL);
   });
 
   it("shows progress narration as assistant content without process steps", () => {
@@ -1249,6 +1693,133 @@ describe("desktop session view model", () => {
     expect(deltaMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
     expect(placeholderMessage?.content).toBe("");
     expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
+  });
+
+  it("keeps internal agent tool-policy output out of the assistant body", () => {
+    const createdAt = 1_714_000_000_000;
+    const leakedToolIntent = "{\"tool\":\"file.grep\",\"args\":{\"pattern\":\"按该计划实施|需要决策\",\"include\":\"**/*.tsx,**/*.ts\"}}\n\n<file_grep_policy> 1. Always run a quick second grep.\n</file_grep_policy>";
+    const snapshot = {
+      runId: "run-internal-leak",
+      sessionId: "session-internal-leak",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "调整决策 UI", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["builder", "reviewer"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-internal-leak-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "builder", label: "Builder", role: "Build", modelRef: "local/smoke-model", toolPolicyId: "builder", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "reviewer", label: "Reviewer", role: "Review", modelRef: "local/smoke-model", toolPolicyId: "reviewer", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-internal-leak:evt-0",
+          runId: "run-internal-leak",
+          seq: 0,
+          type: "task.progress",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "runtime_status",
+            trigger: "running_model",
+            summary: "正在检查决策 UI。",
+          },
+        },
+        {
+          id: "run-internal-leak:evt-1",
+          runId: "run-internal-leak",
+          seq: 1,
+          type: "message.delta",
+          createdAt: createdAt + 1_000,
+          agentId: "builder",
+          nodeId: "builder",
+          pattern: "orchestrator_subagent",
+          payload: {
+            role: "assistant",
+            content: "<tool_plan_mode_reminder>\n你处于计划模式。\n</tool_plan_mode_reminder>",
+          },
+        },
+        ...leakedToolIntent.match(/.{1,24}/gs)!.map((delta, index) => ({
+          id: `run-internal-leak:evt-${index + 2}`,
+          runId: "run-internal-leak",
+          seq: index + 2,
+          type: "message.delta",
+          createdAt: createdAt + 2_000 + index,
+          agentId: "reviewer",
+          nodeId: "reviewer",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: delta, delta, streaming: true },
+        })),
+        {
+          id: "run-internal-leak:evt-final",
+          runId: "run-internal-leak",
+          seq: 200,
+          type: "message.delta",
+          createdAt: createdAt + 3_000,
+          agentId: "reviewer",
+          nodeId: "reviewer",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: leakedToolIntent },
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 3_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-internal-leak:user",
+        sessionId: "session-internal-leak",
+        runId: "run-internal-leak",
+        turnIndex: 1,
+        role: "user",
+        content: "调整决策 UI",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-internal-leak": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item && item.kind === "assistant_text" ? [item.content] : [])
+      .join("\n") ?? "";
+
+    expect(assistant?.content).toBe("正在检查决策 UI。");
+    expect(assistant?.content).not.toContain("tool_plan_mode_reminder");
+    expect(assistant?.content).not.toContain("file_grep_policy");
+    expect(assistant?.content).not.toContain("\"tool\":\"file.grep\"");
+    expect(timelineText).not.toContain("tool_plan_mode_reminder");
+    expect(timelineText).not.toContain("file_grep_policy");
   });
 
   it("derives a turn timeline with multiple progress paragraphs, aggregated tools, plan updates, and final text", () => {

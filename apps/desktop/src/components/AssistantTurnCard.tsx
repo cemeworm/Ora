@@ -81,7 +81,6 @@ export function AssistantTurnCard({
   );
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const hasProcessSteps = processSteps.length > 0;
   const hasTimeline = timelineItems.length > 0;
   const hasStageTranscript = stageTranscriptMessages.length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
@@ -97,6 +96,7 @@ export function AssistantTurnCard({
     content.trim(),
   );
   const canShowActions = canCopyContent || canSubmitFeedback;
+  const currentAgentLabel = turn?.currentAgentLabel?.trim();
 
   async function handleSubmitFeedback() {
     if (!turn || !onSubmitFeedback || !feedbackText.trim()) {
@@ -150,17 +150,15 @@ export function AssistantTurnCard({
 
   return (
     <Message from="assistant" className="w-full">
-      <div className="flex max-w-full gap-3">
-        <div
-          className={cn(
-            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-xs",
-            hasTimeline || hasProcessSteps ? "mt-[13px]" : "mt-1",
-          )}
-        >
-          <TurnStatusIcon status={turn?.status} isPlaceholder={isPlaceholder} />
-        </div>
+      <div className="max-w-full">
         <div className="min-w-0 flex-1 space-y-3 pt-1">
-          {!isPlaceholder && turn?.hasProposedPlan ? (
+          {currentAgentLabel ? (
+            <p className="text-sm font-semibold leading-6 text-foreground">
+              {currentAgentLabel}
+            </p>
+          ) : null}
+
+          {turn?.hasProposedPlan && content.trim() ? (
             <PlanCard planSteps={planList} planContent={content} />
           ) : null}
 
@@ -451,28 +449,6 @@ function InlineTimelineMeta({
       <span className="min-w-0 break-words">{children}</span>
     </div>
   );
-}
-
-function TurnStatusIcon({
-  status,
-  isPlaceholder,
-}: {
-  status?: AssistantTurnAttachment["status"];
-  isPlaceholder: boolean;
-}) {
-  if (status === "approval_required") {
-    return <AlertCircle size={14} className="text-amber-600" />;
-  }
-  if (status === "failed") {
-    return <AlertCircle size={14} className="text-rose-600" />;
-  }
-  if (status === "done") {
-    return <CheckCircle2 size={14} />;
-  }
-  if (isPlaceholder || status === "running") {
-    return <LoaderCircle size={14} className="animate-spin" />;
-  }
-  return <CheckCircle2 size={14} />;
 }
 
 function CollapsibleCard({

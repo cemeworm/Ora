@@ -70,6 +70,86 @@ function artifact(
 }
 
 describe("assistant turn display helpers", () => {
+  it("renders the current agent label as the first line of an assistant turn", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      currentAgentLabel: "Team Lead",
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正文内容。" turn={turn} />,
+    );
+
+    expect(html.indexOf("Team Lead")).toBeLessThan(html.indexOf("正文内容"));
+  });
+
+  it("keeps the turn label on the primary agent while subagent content renders in the timeline", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      currentAgentLabel: "Orchestrator",
+      processSteps: [],
+      timelineItems: [{
+        id: "run-1:timeline:assistant:2",
+        kind: "assistant_text",
+        content: "Researcher 正在读取相关文件。",
+        timestamp: "+1s",
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html.indexOf("Orchestrator")).toBeLessThan(html.indexOf("Researcher 正在读取相关文件。"));
+    expect(html).toContain("Researcher 正在读取相关文件。");
+  });
+
+  it("does not render the assistant status rail icon", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      currentAgentLabel: "Team Lead",
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="正在处理。" turn={turn} />,
+    );
+
+    expect(html).toContain("Team Lead");
+    expect(html).not.toContain("animate-spin");
+  });
+
   it("does not repeat the latest running process action in the progress header", () => {
     expect(processSummary([
       processStep("step-1", "complete", "已完成资料收集。"),
@@ -310,7 +390,7 @@ describe("assistant turn display helpers", () => {
         processStep("step-2", "complete", "正在生成回答。"),
         processStep("handoff-1", "complete", "请完成最终回答。", {
           eventType: "agent.handoff",
-          label: "Lead → Builder",
+          label: "接下来交给 Builder。",
           tone: "accent",
         }),
       ],
@@ -327,7 +407,7 @@ describe("assistant turn display helpers", () => {
       <AssistantTurnCard content="最终回答" turn={turn} />,
     );
 
-    expect(html).toContain("Lead → Builder");
+    expect(html).toContain("接下来交给 Builder。");
     expect(html).toContain("请完成最终回答。");
     expect(html).toContain("交接");
     expect(html).not.toContain("协作轨迹");
@@ -753,5 +833,37 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("bg-card/96");
     expect(html).toContain("shadow-lift");
     expect(html).not.toContain("border-b border-border");
+  });
+
+  it("renders PlanCard for pending plan decisions even when the turn is a placeholder", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      currentAgentLabel: "Orchestrator",
+      processSteps: [],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+    };
+    const planContent = [
+      "## 决策状态 UI 调整",
+      "",
+      "1. 将确认问题左对齐",
+      "2. 保留计划内容",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={planContent} turn={turn} isPlaceholder />,
+    );
+
+    expect(html).toContain("Orchestrator");
+    expect(html).toContain("任务计划");
+    expect(html).toContain("决策状态 UI 调整");
   });
 });

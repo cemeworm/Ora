@@ -1,4 +1,4 @@
-import { modeSpecToPatternDefinition } from "@cemeworm/shared";
+import { modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } from "@cemeworm/shared";
 import type {
   ActionRecord,
   AgentProfile,
@@ -1363,10 +1363,7 @@ function assistantTextFromSnapshot(
 
   for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
     const event = snapshot.events[index];
-    if (event?.type !== "message.delta" || !isRecord(event.payload)) {
-      continue;
-    }
-    if (isInternalVerifierDelta(snapshot, event)) {
+    if (!isPublicAssistantDelta(snapshot, event)) {
       continue;
     }
     const content = event.payload.content;
@@ -1387,10 +1384,7 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
   const parts: string[] = [];
   let activeAgentId: string | undefined;
   for (const event of snapshot.events) {
-    if (event?.type !== "message.delta" || !isRecord(event.payload)) {
-      continue;
-    }
-    if (isInternalVerifierDelta(snapshot, event)) {
+    if (!isPublicAssistantDelta(snapshot, event)) {
       continue;
     }
     const agentId = event.agentId ?? "__default__";
@@ -1406,7 +1400,7 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
     }
   }
   const text = parts.join("");
-  if (text.trim()) {
+  if (text.trim() && !isInternalAssistantText(text)) {
     return text;
   }
   return undefined;
@@ -1618,6 +1612,60 @@ function isInternalVerifierDelta(
   return agentId === "verifier" || nodeId === "verifier";
 }
 
+function isPublicAssistantDelta(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope | undefined,
+): event is OraEventEnvelope & { payload: Record<string, unknown> } {
+  return Boolean(
+    event?.type === "message.delta" &&
+    isRecord(event.payload) &&
+    !isInternalAssistantDelta(snapshot, event),
+  );
+}
+
+function isInternalAssistantDelta(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope,
+): boolean {
+  if (isInternalVerifierDelta(snapshot, event)) {
+    return true;
+  }
+  if (!isRecord(event.payload)) {
+    return false;
+  }
+  if (
+    event.payload.visibility === "internal" ||
+    event.payload.audience === "internal" ||
+    event.payload.public === false
+  ) {
+    return true;
+  }
+  return isInternalAssistantText(assistantDeltaText(event));
+}
+
+function assistantDeltaText(event: OraEventEnvelope): string {
+  if (!isRecord(event.payload)) {
+    return "";
+  }
+  const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
+  const content = typeof event.payload.content === "string" ? event.payload.content : "";
+  return delta || content;
+}
+
+function isInternalAssistantText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=/i.test(trimmed)) {
+    return true;
+  }
+  return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
+}
+
 function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {
   return snapshot.events.some(
     (event) =>
@@ -1645,6 +1693,7 @@ function buildAssistantTurnAttachment(
     turnIndex: snapshot.turnIndex ?? 1,
     status: adaptSnapshotRunStatus(snapshot),
     pattern: snapshot.pattern,
+    currentAgentLabel: currentAgentLabelFromSnapshot(snapshot),
     liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps,
     timelineItems: deriveTimelineItems(snapshot, processSteps),
@@ -1662,14 +1711,43 @@ function buildAssistantTurnAttachment(
   };
 }
 
+function currentAgentLabelFromSnapshot(snapshot: OraStateSnapshot): string {
+  const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
+  const handoffTargetId = rootHandoffTargetId(snapshot);
+  if (handoffTargetId) {
+    return profiles.get(handoffTargetId) ?? handoffTargetId;
+  }
+
+  const primaryAgentId = primaryTurnAgentId(snapshot);
+  if (primaryAgentId) {
+    return profiles.get(primaryAgentId) ?? primaryAgentId;
+  }
+
+  return profiles.get(ORA_ROOT_AGENT_ID) ?? ORA_ROOT_AGENT_LABEL;
+}
+
+function rootHandoffTargetId(snapshot: OraStateSnapshot): string | undefined {
+  for (let index = (snapshot.agentMessages ?? []).length - 1; index >= 0; index -= 1) {
+    const message = snapshot.agentMessages[index];
+    if (
+      message?.kind === "handoff" &&
+      message.fromAgentId === ORA_ROOT_AGENT_ID &&
+      message.toAgentIds.length > 0
+    ) {
+      return message.toAgentIds[0];
+    }
+  }
+  return undefined;
+}
+
+function primaryTurnAgentId(snapshot: OraStateSnapshot): string | undefined {
+  return snapshot.profiles.find((profile) => profile.id !== ORA_ROOT_AGENT_ID)?.id;
+}
+
 function hasProposedPlanInSnapshot(snapshot: OraStateSnapshot): boolean {
   const parts: string[] = [];
   for (const event of snapshot.events) {
-    if (
-      event?.type === "message.delta" &&
-      isRecord(event.payload) &&
-      typeof event.payload.content === "string"
-    ) {
+    if (isPublicAssistantDelta(snapshot, event) && typeof event.payload.content === "string") {
       parts.push(event.payload.content);
     }
   }
@@ -1849,6 +1927,29 @@ function deriveTimelineItems(
   let pendingSteps: TurnProcessStep[] = [];
   let pendingStartedAt = baseTime;
   let pendingSeq = 0;
+  let pendingTextParts: string[] = [];
+  let pendingTextStartedAt = baseTime;
+  let pendingTextSeq = 0;
+
+  function flushPendingText() {
+    const content = pendingTextParts.join("").trim();
+    if (!content || isInternalAssistantText(content)) {
+      pendingTextParts = [];
+      return;
+    }
+    items.push({
+      rawTime: pendingTextStartedAt,
+      eventSeq: pendingTextSeq,
+      item: {
+        id: `${snapshot.runId}:timeline:assistant:${pendingTextSeq}`,
+        kind: "assistant_text",
+        content,
+        timestamp: formatElapsed(baseTime, pendingTextStartedAt),
+        eventSeq: pendingTextSeq,
+      },
+    });
+    pendingTextParts = [];
+  }
 
   function flushPendingSteps() {
     if (pendingSteps.length === 0) {
@@ -1860,9 +1961,9 @@ function deriveTimelineItems(
       rawTime: pendingStartedAt,
       eventSeq: pendingSeq,
       item: {
-        id: `${snapshot.runId}:timeline:status:${pendingSeq}:${steps.at(-1)?.id ?? "group"}`,
+        id: `${snapshot.runId}:timeline:status:${pendingSeq}`,
         kind: "status_group",
-        summary: summarizeProcessSteps(steps),
+        summary: summarizeProcessSteps(steps, snapshot.status),
         steps,
         timestamp: formatElapsed(baseTime, pendingStartedAt),
         status: itemStatus,
@@ -1873,9 +1974,23 @@ function deriveTimelineItems(
   }
 
   for (const event of snapshot.events.filter((event) => event.runId === snapshot.runId)) {
+    if (isPublicAssistantDelta(snapshot, event)) {
+      const text = assistantDeltaText(event);
+      if (text) {
+        flushPendingSteps();
+        if (pendingTextParts.length === 0) {
+          pendingTextStartedAt = event.createdAt;
+          pendingTextSeq = event.seq;
+        }
+        pendingTextParts.push(text);
+      }
+      continue;
+    }
+
     if (isChatProgressEvent(event) && isRecord(event.payload)) {
       const summary = typeof event.payload.summary === "string" ? event.payload.summary.trim() : "";
       if (summary && !isPlaceholderProgressText(summary)) {
+        flushPendingText();
         flushPendingSteps();
         items.push({
           rawTime: event.createdAt,
@@ -1893,6 +2008,7 @@ function deriveTimelineItems(
     }
 
     if (event.type === "plan_list.updated") {
+      flushPendingText();
       flushPendingSteps();
       items.push({
         rawTime: event.createdAt,
@@ -1909,6 +2025,7 @@ function deriveTimelineItems(
     }
 
     if (event.type === "artifact.exported" || event.type === "artifact.degraded") {
+      flushPendingText();
       flushPendingSteps();
       items.push({
         rawTime: event.createdAt,
@@ -1932,6 +2049,7 @@ function deriveTimelineItems(
     if (!step) {
       continue;
     }
+    flushPendingText();
     if (pendingSteps.length === 0) {
       pendingStartedAt = event.createdAt;
       pendingSeq = event.seq;
@@ -1939,6 +2057,7 @@ function deriveTimelineItems(
     pendingSteps.push(step);
   }
 
+  flushPendingText();
   flushPendingSteps();
 
   const finalText = outputTextFromSnapshot(snapshot);
@@ -1970,14 +2089,23 @@ function aggregateStepStatus(steps: TurnProcessStep[]): TurnProcessStep["status"
   return "complete";
 }
 
-function summarizeProcessSteps(steps: TurnProcessStep[]): string {
+function summarizeProcessSteps(steps: TurnProcessStep[], runStatus?: OraStateSnapshot["status"]): string {
+  const active = steps.find((step) => step.status === "active");
+  if (active && (runStatus === "running" || runStatus === "queued")) {
+    return runningStepSummary(active);
+  }
+  if (runStatus === "running" || runStatus === "queued") {
+    const latest = steps.at(-1);
+    if (latest) {
+      return runningStepSummary(latest);
+    }
+  }
   const fileCount = steps.filter((step) => ["读取文件", "搜索文件", "匹配文件"].includes(step.label)).length;
   const listCount = steps.filter((step) => step.label === "列出文件").length;
   const commandCount = steps.filter((step) => step.label === "运行命令").length;
   const webCount = steps.filter((step) => step.label === "浏览网页" || step.label === "搜索网页").length;
   const approvalCount = steps.filter((step) => step.label === "等待确认").length;
   const blockedCount = steps.filter((step) => step.status === "blocked").length;
-  const active = steps.find((step) => step.status === "active");
   const parts: string[] = [];
   if (fileCount > 0) {
     parts.push(`已探索 ${fileCount} 个文件`);
@@ -2004,6 +2132,14 @@ function summarizeProcessSteps(steps: TurnProcessStep[]): string {
     return steps[0]?.detail || steps[0]?.label || "已更新执行状态";
   }
   return `已更新 ${steps.length} 条执行状态`;
+}
+
+function runningStepSummary(step: TurnProcessStep): string {
+  const context = step.contextLabel ? `：${step.contextLabel}` : "";
+  if (step.status === "active") {
+    return `正在${step.label}${context}`;
+  }
+  return step.detail.trim() || `${step.label}${context}`;
 }
 
 function planUpdateSummary(payload: unknown): string {

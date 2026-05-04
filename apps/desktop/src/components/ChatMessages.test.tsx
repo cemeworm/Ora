@@ -30,4 +30,20 @@ describe("ChatMessages bottom inset", () => {
     expect(html).toContain("overflow-y-auto overscroll-contain");
     expect(html).not.toContain("relative flex flex-1 flex-col overflow-y-auto");
   });
+
+  it("renders user messages without an avatar icon", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "user-1",
+          role: "user",
+          content: "你好",
+          timestamp: "18:30",
+        }]}
+      />,
+    );
+
+    expect(html).toContain("你好");
+    expect(html).not.toContain("<svg");
+  });
 });

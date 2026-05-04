@@ -316,6 +316,7 @@ export interface AssistantTurnAttachment {
   turnIndex: number;
   status: RunStatus;
   pattern?: CoordinationPattern;
+  currentAgentLabel?: string;
   liveProgressText?: string;
   processSteps: TurnProcessStep[];
   timelineItems?: TurnTimelineItem[];
