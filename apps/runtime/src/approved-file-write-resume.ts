@@ -5,6 +5,7 @@ import { fileChangeArtifact } from "./harness/file-change-artifact.js";
 import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolId } from "./harness/runtime-tool-executor.js";
 import { PackageManager } from "./package-manager.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
+import { evaluateRuntimeCompletionGuards } from "./harness/runtime-completion-guards.js";
 
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 
@@ -367,7 +368,90 @@ export async function completeApprovedToolContinuation(
     }
   }
 
+  function completeInterruptedModeProgress(): void {
+    const nextPlan = working.plan.map((item) =>
+      item.status === "done" || item.status === "skipped"
+        ? item
+        : item.status === "blocked"
+          ? { ...item, status: "done" as const }
+          : item
+    );
+    const nextTodos = working.todos.map((item) =>
+      item.status === "done" || item.status === "skipped"
+        ? item
+        : item.status === "blocked"
+          ? { ...item, status: "done" as const, updatedAt: deps.now() }
+          : item
+    );
+    const planChanged = nextPlan.some((item, index) => item.status !== working.plan[index]?.status);
+    const todoChanged = nextTodos.some((item, index) => item.status !== working.todos[index]?.status);
+    if (planChanged) {
+      working = StateSnapshotSchema.parse({ ...working, plan: nextPlan });
+      append("plan.updated", { items: nextPlan, reason: "approved_tool_resume.completed" });
+    }
+    if (todoChanged) {
+      working = StateSnapshotSchema.parse({ ...working, todos: nextTodos });
+      append("todo.updated", { items: nextTodos, reason: "approved_tool_resume.completed" });
+    }
+  }
+
+  function incompleteModeProgressError(): string | undefined {
+    const unfinishedPlans = working.plan.filter((item) => item.status !== "done" && item.status !== "skipped");
+    const unfinishedTodos = working.todos.filter((item) => item.status !== "done" && item.status !== "skipped");
+    if (unfinishedPlans.length === 0 && unfinishedTodos.length === 0) {
+      return undefined;
+    }
+    return [
+      "Mode progress is incomplete; refusing to emit run.done.",
+      ...unfinishedPlans.map((item) => `plan:${item.id} [${item.status}] ${item.title}`),
+      ...unfinishedTodos.map((item) => `todo:${item.id} [${item.status}] ${item.label}`),
+    ].join("\n");
+  }
+
   updateContinuationStatus("awaiting_model");
+  const guardResult = evaluateRuntimeCompletionGuards({
+    actions: working.actions,
+    planList: working.planList,
+    toolCalls: working.toolCalls,
+  });
+  if (!guardResult.allowComplete) {
+    const output = { text: guardResult.followUpContent };
+    append("run.failed", {
+      status: "failed",
+      error: guardResult.progressSummary,
+      output,
+    });
+    updateContinuationStatus("failed");
+    return deps.attachTraceMetadata(StateSnapshotSchema.parse({
+      ...working,
+      status: "failed",
+      error: guardResult.progressSummary,
+      activeAgents: [],
+      output,
+      updatedAt: deps.now(),
+    }));
+  }
+
+  completeInterruptedModeProgress();
+  const modeProgressError = incompleteModeProgressError();
+  if (modeProgressError) {
+    const output = { text: modeProgressError };
+    append("run.failed", {
+      status: "failed",
+      error: modeProgressError,
+      output,
+    });
+    updateContinuationStatus("failed");
+    return deps.attachTraceMetadata(StateSnapshotSchema.parse({
+      ...working,
+      status: "failed",
+      error: modeProgressError,
+      activeAgents: [],
+      output,
+      updatedAt: deps.now(),
+    }));
+  }
+
   const finalText = await finalTextForApprovedToolContinuation(snapshot, toolResults, deps);
   append("message.delta", { role: "assistant", content: finalText });
   const output = { text: finalText };

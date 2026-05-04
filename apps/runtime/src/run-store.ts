@@ -1113,7 +1113,7 @@ export class LocalRunStore {
       clarificationPatch,
       approvedActionIds,
       approvedActions,
-      resumeSnapshot: approvedActionIds.length === 0 ? snapshot : undefined,
+      resumeSnapshot: snapshot,
       onEvent: applyLiveEvent,
     }).then(async (nextSnapshot) => {
       const finalSnapshot = this.appendResolvedClarificationEvents(
@@ -1297,8 +1297,8 @@ export class LocalRunStore {
         turnIndex: snapshot.turnIndex,
         clock: this.clock,
         skillRegistry: this.skillRegistry,
-      modeRegistry: this,
-      selfIterationRegistry: this,
+        modeRegistry: this,
+        selfIterationRegistry: this,
         customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
         customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
         systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1310,7 +1310,7 @@ export class LocalRunStore {
         clarificationPatch,
         approvedActionIds,
         approvedActions,
-        resumeSnapshot: approvedActionIds.length === 0 ? snapshot : undefined,
+        resumeSnapshot: snapshot,
       });
       const tracedSnapshot = this.appendResolvedClarificationEvents(
         attachTraceMetadata(resumedSnapshot),

@@ -929,24 +929,34 @@ export async function executeRuntimeKernel(
       title: params.title,
     });
 
-    const action = actionLedger.propose({
+    const actionType = `agent.${params.agentId}.invoke`;
+    const expectedPlanItemId = params.planItemId
+      ? `${runId}:${params.planItemId}`
+      : undefined;
+    const resumeAction = actionLedger.list().find((record) =>
+      record.type === actionType &&
+      record.agentId === params.agentId &&
+      record.status === "approval_required" &&
+      (expectedPlanItemId === undefined || record.planItemId === expectedPlanItemId)
+    );
+    const action = resumeAction ?? actionLedger.propose({
       id: `${params.agentId}-${events.length}`,
-      type: `agent.${params.agentId}.invoke`,
+      type: actionType,
       riskLevel: params.riskLevel ?? "low",
       input: { prompt: params.prompt, title: params.title },
-      planItemId: params.planItemId
-        ? `${runId}:${params.planItemId}`
-        : undefined,
+      planItemId: expectedPlanItemId,
       agentId: params.agentId,
     });
     if (params.planItemId) {
       planService.linkAction(`${runId}:${params.planItemId}`, action.id);
     }
-    emit(
-      "action.updated",
-      { actionId: action.id, status: "proposed", record: action },
-      { agentId: params.agentId, nodeId: params.agentId },
-    );
+    if (!resumeAction) {
+      emit(
+        "action.updated",
+        { actionId: action.id, status: "proposed", record: action },
+        { agentId: params.agentId, nodeId: params.agentId },
+      );
+    }
 
     const decision = policyService.evaluate(action);
     const requiresManualGate =
