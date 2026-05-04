@@ -28,6 +28,7 @@ import {
   PlanItemSchema,
   PolicyDecisionSchema,
   ORA_ROOT_AGENT_ID,
+  ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema
 } from "@cemeworm/shared";
@@ -714,16 +715,48 @@ describe("LocalRunStore", () => {
       toAgentIds: ["orchestrator"],
       kind: "handoff",
     });
+    expect(state.agentMessages[0]?.content).toContain("接下来交给 Orchestrator。");
+    expect(state.agentMessages[0]?.content).not.toContain("orchestrator through");
     expect(state.agentMessages.some((message) =>
       message.fromAgentId === ORA_ROOT_AGENT_ID &&
       message.kind === "status" &&
-      message.content.includes("observed")
+      message.content.includes(`已交给 Orchestrator`)
     )).toBe(true);
     expect(state.agentMessages.some((message) =>
       message.fromAgentId === "orchestrator" &&
       message.toAgentIds.includes(ORA_ROOT_AGENT_ID) &&
-      message.kind === "reply"
+      message.kind === "reply" &&
+      message.content.includes(`交回 ${ORA_ROOT_AGENT_LABEL}`)
     )).toBe(true);
+  });
+
+  it("emits team handoff messages with natural target labels", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const result = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Coordinate a team handoff." },
+        config: { pattern: "agent_teams" }
+      }
+    }) as { runId: string };
+
+    const state = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.state",
+      params: { runId: result.runId }
+    }));
+    const teamHandoff = state.agentMessages.find((message) =>
+      message.fromAgentId === "team_lead" &&
+      message.kind === "handoff" &&
+      message.toAgentIds.includes("builder") &&
+      message.toAgentIds.includes("reviewer")
+    );
+
+    expect(teamHandoff?.content).toContain("接下来交给 Builder 和 Reviewer。");
+    expect(teamHandoff?.content).not.toContain("@builder");
   });
 
   it("injects custom agent persona overlays from mode node bindings", async () => {

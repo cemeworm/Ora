@@ -208,7 +208,8 @@ import {
   DEFAULT_SESSION_TITLE,
   assistantTextForRun,
   defaultSessionTitle,
-  generateSessionTitle
+  generateSessionTitle,
+  generateSessionTitleFromPrompt,
 } from "./session-title.js";
 import {
   resolveModeSelection,
@@ -304,6 +305,7 @@ export class LocalRunStore {
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
   private runs = new Map<string, StoredRun>();
+  private activeStreamingAbortControllers = new Map<string, AbortController>();
   private manifest: StoreManifest;
 
   constructor(options: LocalRunStoreOptions = {}) {
@@ -815,6 +817,12 @@ export class LocalRunStore {
     const { modeSpec, definition } = resolved;
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
+    if (turnIndex === 1) {
+      const earlyTitle = await generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title);
+      if (earlyTitle) {
+        this.updateSessionTitle(session.sessionId, earlyTitle);
+      }
+    }
     const conversationMessages = await this.prepareConversationMessagesForRun(
       session.sessionId,
       input.prompt,
@@ -904,6 +912,11 @@ export class LocalRunStore {
     });
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
+    if (turnIndex === 1) {
+      generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title).then((earlyTitle) => {
+        if (earlyTitle) this.updateSessionTitle(session.sessionId, earlyTitle);
+      });
+    }
     const conversationMessages = await this.prepareConversationMessagesForRun(
       session.sessionId,
       input.prompt,
@@ -927,6 +940,8 @@ export class LocalRunStore {
     liveSnapshot = appendFirstRunLatencyMark(liveSnapshot, runLatencyMark("runtime", "snapshotPersisted", this.now()));
     liveSnapshot = appendFirstRunLatencyMark(liveSnapshot, runLatencyMark("runtime", "kernelScheduled", this.now()));
     this.cacheRun(liveSnapshot, false, { deferInitialTitle: true });
+    const abortController = new AbortController();
+    this.activeStreamingAbortControllers.set(runId, abortController);
 
     const publishStream = (events: OraEventEnvelope[], snapshot?: StateSnapshot) => {
       publishRunStream({
@@ -939,6 +954,9 @@ export class LocalRunStore {
     };
 
     const applyLiveEvent = (event: OraEventEnvelope) => {
+      if (abortController.signal.aborted || this.isRunCancelled(runId)) {
+        return;
+      }
       liveSnapshot = markLatencyForRunEvent(liveSnapshot, event, this.now());
       liveSnapshot = applyStreamingRunEvent(liveSnapshot, event);
       this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
@@ -965,12 +983,27 @@ export class LocalRunStore {
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
       conversationMessages,
       streamProvider: true,
+      signal: abortController.signal,
       onEvent: applyLiveEvent,
     }).then(async (snapshot) => {
+      this.activeStreamingAbortControllers.delete(runId);
+      const cancelled = this.cancelledSnapshot(runId);
+      if (cancelled) {
+        liveSnapshot = cancelled;
+        publishStream([], cancelled);
+        return;
+      }
       const finalSnapshot = attachTraceMetadata(this.withSnapshotContextState(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? [])));
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
+      this.activeStreamingAbortControllers.delete(runId);
+      const cancelled = this.cancelledSnapshot(runId);
+      if (cancelled) {
+        liveSnapshot = cancelled;
+        publishStream([], cancelled);
+        return;
+      }
       const failure = createStreamingFailure({
         liveSnapshot,
         runId,
@@ -1030,6 +1063,8 @@ export class LocalRunStore {
 
     let liveSnapshot = runningSnapshotForApprovedActions(snapshot, approvedActionIds, this.now());
     this.persistRun(liveSnapshot);
+    const abortController = new AbortController();
+    this.activeStreamingAbortControllers.set(snapshot.runId, abortController);
 
     const publishStream = (events: OraEventEnvelope[], streamSnapshot?: StateSnapshot) => {
       publishRunStream({
@@ -1049,6 +1084,9 @@ export class LocalRunStore {
         { reason: parsed.reason, patch: parsed.patch },
         this.approvedFileWriteResumeDeps(),
         (event, nextSnapshot) => {
+          if (abortController.signal.aborted || this.isRunCancelled(snapshot.runId)) {
+            return;
+          }
           liveSnapshot = nextSnapshot;
           this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
             deferInitialTitle: true,
@@ -1056,13 +1094,27 @@ export class LocalRunStore {
           publishStream([event], liveSnapshot);
         },
       ).then(async (completed) => {
+        this.activeStreamingAbortControllers.delete(snapshot.runId);
         if (!completed) {
+          return;
+        }
+        const cancelled = this.cancelledSnapshot(snapshot.runId);
+        if (cancelled) {
+          liveSnapshot = cancelled;
+          publishStream([], cancelled);
           return;
         }
         liveSnapshot = completed;
         await this.persistRunWithGeneratedTitle(completed);
         publishStream([], completed);
       }).catch(async (error) => {
+        this.activeStreamingAbortControllers.delete(snapshot.runId);
+        const cancelled = this.cancelledSnapshot(snapshot.runId);
+        if (cancelled) {
+          liveSnapshot = cancelled;
+          publishStream([], cancelled);
+          return;
+        }
         const failure = createStreamingFailure({
           liveSnapshot,
           runId: snapshot.runId,
@@ -1082,6 +1134,9 @@ export class LocalRunStore {
     const definition = modeSpecToPatternDefinition(modeSpec);
     const baseSeq = snapshot.events.length;
     const applyLiveEvent = (event: OraEventEnvelope) => {
+      if (abortController.signal.aborted || this.isRunCancelled(snapshot.runId)) {
+        return;
+      }
       const rebasedEvent = rebaseRunEvent(event, snapshot.runId, baseSeq);
       liveSnapshot = applyStreamingRunEvent(liveSnapshot, rebasedEvent);
       this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(rebasedEvent), {
@@ -1114,8 +1169,16 @@ export class LocalRunStore {
       approvedActionIds,
       approvedActions,
       resumeSnapshot: snapshot,
+      signal: abortController.signal,
       onEvent: applyLiveEvent,
     }).then(async (nextSnapshot) => {
+      this.activeStreamingAbortControllers.delete(snapshot.runId);
+      const cancelled = this.cancelledSnapshot(snapshot.runId);
+      if (cancelled) {
+        liveSnapshot = cancelled;
+        publishStream([], cancelled);
+        return;
+      }
       const finalSnapshot = this.appendResolvedClarificationEvents(
         attachTraceMetadata(nextSnapshot),
         snapshot.pendingClarifications,
@@ -1124,6 +1187,13 @@ export class LocalRunStore {
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
+      this.activeStreamingAbortControllers.delete(snapshot.runId);
+      const cancelled = this.cancelledSnapshot(snapshot.runId);
+      if (cancelled) {
+        liveSnapshot = cancelled;
+        publishStream([], cancelled);
+        return;
+      }
       const failure = createStreamingFailure({
         liveSnapshot,
         runId: snapshot.runId,
@@ -1154,6 +1224,12 @@ export class LocalRunStore {
     const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
+    if (turnIndex === 1) {
+      const earlyTitle = await generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title);
+      if (earlyTitle) {
+        this.updateSessionTitle(session.sessionId, earlyTitle);
+      }
+    }
     const conversationMessages = await this.prepareConversationMessagesForRun(
       session.sessionId,
       input.prompt,
@@ -1358,6 +1434,9 @@ export class LocalRunStore {
   }
 
   cancelRun(params: unknown): StateSnapshot {
+    const runId = this.requireRunId(params);
+    this.activeStreamingAbortControllers.get(runId)?.abort(USER_CANCELLED_MESSAGE);
+    this.activeStreamingAbortControllers.delete(runId);
     return cancelRun(params, this.runStateOperationDeps(), USER_CANCELLED_MESSAGE);
   }
 
@@ -1911,6 +1990,15 @@ export class LocalRunStore {
     return RunIdParamsSchema.parse(params).runId;
   }
 
+  private cancelledSnapshot(runId: string): StateSnapshot | undefined {
+    const snapshot = this.runs.get(runId);
+    return snapshot?.status === "cancelled" ? snapshot : undefined;
+  }
+
+  private isRunCancelled(runId: string): boolean {
+    return this.cancelledSnapshot(runId) !== undefined;
+  }
+
   private getRunOrThrow(runId: string): StateSnapshot {
     const snapshot = this.runs.get(runId);
     if (!snapshot) {
@@ -1985,6 +2073,18 @@ export class LocalRunStore {
     });
   }
 
+  private updateSessionTitle(sessionId: string, title: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const updated = SessionSummarySchema.parse({
+      ...session,
+      title,
+      updatedAt: this.now(),
+    });
+    this.sessions.set(sessionId, updated);
+    this.backend.saveSession(updated);
+  }
+
   private upsertSessionFromRun(
     snapshot: StateSnapshot,
     options: { titleOverride?: string; deferInitialTitle?: boolean } = {}
@@ -1996,7 +2096,7 @@ export class LocalRunStore {
     const existing = this.sessions.get(sessionId);
     const turnCount = this.runsForSession(sessionId).filter((run) => run.runId !== snapshot.runId).length + 1;
     const title = options.titleOverride
-      ?? (existing && existing.turnCount > 0
+      ?? (existing && existing.title !== DEFAULT_SESSION_TITLE
         ? existing.title
         : snapshot.status === "queued" || snapshot.status === "running" || options.deferInitialTitle
           ? existing?.title ?? DEFAULT_SESSION_TITLE

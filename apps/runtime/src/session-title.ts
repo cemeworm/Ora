@@ -1,4 +1,4 @@
-import { StateSnapshot } from "@cemeworm/shared";
+import { RunConfig, StateSnapshot } from "@cemeworm/shared";
 import { invokeRunProvider } from "./providers/index.js";
 
 export const DEFAULT_SESSION_TITLE = "New Chat";
@@ -47,6 +47,48 @@ export async function generateSessionTitle(
   } catch {
     return fallbackSessionTitle(userMsg);
   }
+}
+
+export async function generateSessionTitleFromPrompt(
+  prompt: string,
+  config: RunConfig,
+  existingTitle: string | undefined,
+): Promise<string | undefined> {
+  if (!prompt.trim()) return undefined;
+  if (existingTitle && existingTitle !== DEFAULT_SESSION_TITLE) return undefined;
+  const toolProviderId = dedicatedToolProviderId(config);
+  if (!toolProviderId) return undefined;
+
+  try {
+    const titleConfig = { ...config, providerId: toolProviderId };
+    const response = await invokeRunProvider(titleConfig, {
+      system: [
+        "You are Ora's conversation title generator.",
+        "Generate a concise title in the same language as the user message.",
+        "Use at most 6 English words or roughly 16 Chinese characters, and never exceed 60 characters.",
+        "Return only the title, with no quotes, markdown, label, or explanation.",
+      ].join(" "),
+      messages: [{
+        role: "user",
+        content: truncateForTitlePrompt(prompt.trim()),
+      }],
+      temperature: 0,
+      maxTokens: 80,
+      toolChoice: "none",
+    });
+    return parseGeneratedSessionTitle(response.text) ?? fallbackSessionTitle(prompt);
+  } catch {
+    return fallbackSessionTitle(prompt);
+  }
+}
+
+function dedicatedToolProviderId(config: RunConfig): string | undefined {
+  const toolProviderId = config.metadata?.toolModelProviderId;
+  return typeof toolProviderId === "string" &&
+    toolProviderId !== "auto" &&
+    toolProviderId !== config.providerId
+    ? toolProviderId
+    : undefined;
 }
 
 export function assistantTextForRun(snapshot: StateSnapshot): string {

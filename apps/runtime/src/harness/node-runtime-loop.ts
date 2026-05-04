@@ -82,6 +82,7 @@ export interface RunNodeRuntimeLoopDeps {
   modeSpec: ModeSpec;
   conversationMessages?: ModelMessage[];
   streamProvider?: boolean;
+  signal?: AbortSignal;
   inputPrompt: string;
   now: () => number;
   eventsLength: () => number;
@@ -166,6 +167,20 @@ export interface RunNodeRuntimeLoopDeps {
   actionDeps: () => RuntimeActionDeps;
 }
 
+export function isInternalProviderAssistantText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/<\/?tool_plan_mode_reminder\b|<\/?file_grep_policy\b/i.test(trimmed)) {
+    return true;
+  }
+  if (/<[^>]*DSML[^>]*tool_calls|<tool_call\b|parameter\s+name=/i.test(trimmed)) {
+    return true;
+  }
+  return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
+}
+
 function emitRuntimeStatusProgress(
   emit: RuntimeLoopEmit,
   params: RunNodeRuntimeLoopParams,
@@ -243,6 +258,9 @@ export async function runNodeRuntimeLoop(
           text: string;
           raw?: unknown;
         }) => {
+          const visibility = isInternalProviderAssistantText(chunk.text)
+            ? "internal"
+            : undefined;
           emit(
             "message.delta",
             {
@@ -250,6 +268,7 @@ export async function runNodeRuntimeLoop(
               content: chunk.delta,
               delta: chunk.delta,
               streaming: true,
+              ...(visibility ? { visibility } : {}),
             },
             { agentId: params.agentId, nodeId: params.agentId },
           );
@@ -300,9 +319,14 @@ export async function runNodeRuntimeLoop(
       messages = [...nextMessages];
     },
   };
+  const withAbortSignal = (request: ModelRequest): ModelRequest => ({
+    ...request,
+    signal: request.signal ?? deps.signal,
+  });
+
   const invokeModel = (request: ModelRequest) =>
     invokeRuntimeModelCall({
-      request,
+      request: withAbortSignal(request),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProvider(config, nextRequest, streamCallbacks),
@@ -313,7 +337,7 @@ export async function runNodeRuntimeLoop(
     reason: string,
   ) =>
     invokeRuntimeModelCall({
-      request,
+      request: withAbortSignal(request),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
       terminal: (nextRequest) => invokeProvider(config, nextRequest, streamCallbacks),

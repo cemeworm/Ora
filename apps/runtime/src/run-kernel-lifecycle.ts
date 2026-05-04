@@ -44,7 +44,11 @@ interface KernelResumeParams extends KernelLifecycleBaseParams {
   resumeSnapshot?: StateSnapshot;
 }
 
-export async function executeTracedKernelRun(params: KernelLifecycleBaseParams): Promise<StateSnapshot> {
+interface CancellableKernelLifecycleParams {
+  signal?: AbortSignal;
+}
+
+export async function executeTracedKernelRun(params: KernelLifecycleBaseParams & CancellableKernelLifecycleParams): Promise<StateSnapshot> {
   return withLangfuseRunTrace(
     { runId: params.runId, input: params.input, config: params.config },
     async () => {
@@ -54,7 +58,7 @@ export async function executeTracedKernelRun(params: KernelLifecycleBaseParams):
   );
 }
 
-export async function executeTracedKernelResume(params: KernelResumeParams): Promise<StateSnapshot> {
+export async function executeTracedKernelResume(params: KernelResumeParams & CancellableKernelLifecycleParams): Promise<StateSnapshot> {
   return withLangfuseRunTrace(
     { runId: params.runId, input: params.input, config: params.config },
     async () => {
@@ -72,7 +76,7 @@ export async function executeTracedKernelResume(params: KernelResumeParams): Pro
   );
 }
 
-function kernelOptions(params: KernelLifecycleBaseParams): RuntimeKernelOptions {
+function kernelOptions(params: KernelLifecycleBaseParams & CancellableKernelLifecycleParams): RuntimeKernelOptions {
   return {
     clock: params.clock,
     modeSpec: params.modeSpec,
@@ -87,6 +91,7 @@ function kernelOptions(params: KernelLifecycleBaseParams): RuntimeKernelOptions 
     forkedFrom: params.forkedFrom,
     conversationMessages: params.conversationMessages,
     streamProvider: params.streamProvider,
+    signal: params.signal,
     onEvent: params.onEvent,
   };
 }

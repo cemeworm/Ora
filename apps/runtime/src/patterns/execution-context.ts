@@ -38,6 +38,7 @@ export interface PatternExecutionContext {
   }): Promise<unknown>;
   claimWorker(agentId: string): void;
   releaseWorker(agentId: string): void;
+  agentLabel(agentId: string): string;
   callAgent(params: {
     agentId: string;
     planItemId?: string;

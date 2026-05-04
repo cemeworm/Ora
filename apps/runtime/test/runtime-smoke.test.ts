@@ -2813,6 +2813,92 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("cancels active streaming provider work without letting the final failure overwrite cancellation", async () => {
+    const store = createTempStore();
+    const streams: unknown[] = [];
+    const handle = createRuntimeMethodHandler(store, undefined, {
+      onRunStream(stream) {
+        streams.push(stream);
+      },
+    });
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.STREAM_CANCEL_PROVIDER_KEY;
+    let abortObserved = false;
+    process.env.STREAM_CANCEL_PROVIDER_KEY = "test";
+    globalThis.fetch = (async (_input, init) => {
+      if (init?.signal?.aborted) {
+        abortObserved = true;
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        throw error;
+      }
+      await new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          abortObserved = true;
+          const error = new Error("The operation was aborted.");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+      throw new Error("unreachable");
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.startStreaming",
+        params: {
+          input: { prompt: "Keep working until cancelled." },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "stream-cancel-provider",
+            modelRef: "stream-cancel-model",
+            providerConfig: {
+              id: "stream-cancel-provider",
+              label: "Stream Cancel Provider",
+              type: "openai_compatible",
+              modelId: "stream-cancel-model",
+              baseUrl: "https://stream-cancel.test/v1",
+              apiKeyEnv: "STREAM_CANCEL_PROVIDER_KEY",
+              capabilities: ["chat"],
+              headers: {},
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const cancelled = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.cancel",
+        params: { runId: run.runId, reason: "Stopped processing as instructed." },
+      }));
+
+      await waitFor(() => abortObserved);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const latest = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("running");
+      expect(cancelled.status).toBe("cancelled");
+      expect(latest.status).toBe("cancelled");
+      expect(latest.error).toBe("Stopped processing as instructed.");
+      expect(streams.some((stream) => JSON.stringify(stream).includes("\"status\":\"failed\""))).toBe(false);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.STREAM_CANCEL_PROVIDER_KEY;
+      } else {
+        process.env.STREAM_CANCEL_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
   it("has enough single_agent budget to fetch, check, and create a multi-skill install batch", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;

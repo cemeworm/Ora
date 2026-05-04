@@ -750,7 +750,10 @@ async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExec
           planItemId: node.id,
           kind: "handoff",
           status: "done",
-          content: agentMessageContent(`Team handoff recorded for ${mention(builderId)} and ${mention(reviewerId)}:\n\n`, bag.handoff),
+          content: agentMessageContent(
+            `接下来交给 ${[builderId, reviewerId].map((id) => context.agentLabel(id)).join(" 和 ")}。\n\n`,
+            bag.handoff,
+          ),
         });
         return bag.handoff;
       }

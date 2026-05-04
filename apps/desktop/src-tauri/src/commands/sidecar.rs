@@ -218,6 +218,11 @@ impl RuntimeSidecarManager {
 
         self.ensure_channel_daemon(app);
         let command = self.configured_command.clone()?;
+        if request.method == "runs.cancel" {
+            if let Some(run_id) = request_run_id(request) {
+                self.active_streaming_children.kill_run(&run_id);
+            }
+        }
         match run_process_json_rpc_for_app(
             &command,
             request,
@@ -312,18 +317,27 @@ impl RuntimeSidecarManager {
 #[derive(Clone, Default)]
 struct StreamingChildRegistry {
     children: Arc<Mutex<HashMap<u32, Arc<Mutex<Child>>>>>,
+    run_children: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl StreamingChildRegistry {
-    fn register(&self, pid: u32, child: Arc<Mutex<Child>>) {
+    fn register(&self, pid: u32, child: Arc<Mutex<Child>>, run_id: Option<String>) {
         if let Ok(mut children) = self.children.lock() {
             children.insert(pid, child);
+        }
+        if let Some(run_id) = run_id {
+            if let Ok(mut run_children) = self.run_children.lock() {
+                run_children.insert(run_id, pid);
+            }
         }
     }
 
     fn unregister(&self, pid: u32) {
         if let Ok(mut children) = self.children.lock() {
             children.remove(&pid);
+        }
+        if let Ok(mut run_children) = self.run_children.lock() {
+            run_children.retain(|_, child_pid| *child_pid != pid);
         }
     }
 
@@ -360,6 +374,36 @@ impl StreamingChildRegistry {
 
         if let Ok(mut children) = self.children.lock() {
             children.clear();
+        }
+        if let Ok(mut run_children) = self.run_children.lock() {
+            run_children.clear();
+        }
+    }
+
+    fn kill_run(&self, run_id: &str) {
+        let pid = self
+            .run_children
+            .lock()
+            .ok()
+            .and_then(|mut run_children| run_children.remove(run_id));
+        let Some(pid) = pid else {
+            return;
+        };
+        let child = self.children.lock().ok().and_then(|mut children| children.remove(&pid));
+        if let Some(child) = child {
+            if let Ok(mut child) = child.lock() {
+                match child.try_wait() {
+                    Ok(Some(_status)) => {}
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    Err(_error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+            }
         }
     }
 }
@@ -455,6 +499,26 @@ pub struct RuntimeJsonRpcResponse {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<RuntimeJsonRpcError>,
+}
+
+fn request_run_id(request: &RuntimeJsonRpcRequest) -> Option<String> {
+    request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("runId"))
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn response_run_id(response: &RuntimeJsonRpcResponse) -> Option<String> {
+    response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("runId"))
+        .and_then(Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2922,7 +2986,7 @@ fn run_process_json_rpc_internal(
         let pid = child.id();
         let child = Arc::new(Mutex::new(child));
         if let Some(active_streaming_children) = active_streaming_children.as_ref() {
-            active_streaming_children.register(pid, child.clone());
+            active_streaming_children.register(pid, child.clone(), response_run_id(&response));
         }
         thread::spawn(move || {
             let mut reader = reader;
@@ -4998,10 +5062,10 @@ mod tests {
             .any(|(key, value)| key == "LANGFUSE_BASE_URL"
                 && value == MANAGED_LANGFUSE_BASE_URL));
         assert!(environment.iter().any(|(key, value)| {
-            key == "LANGFUSE_PUBLIC_KEY" && value == managed_langfuse_public_key()
+            key == "LANGFUSE_PUBLIC_KEY" && value.as_str() == managed_langfuse_public_key()
         }));
         assert!(environment.iter().any(|(key, value)| {
-            key == "LANGFUSE_SECRET_KEY" && value == managed_langfuse_secret_key()
+            key == "LANGFUSE_SECRET_KEY" && value.as_str() == managed_langfuse_secret_key()
         }));
     }
 
@@ -5061,7 +5125,7 @@ mod tests {
             .iter()
             .any(|(key, value)| key == "LANGFUSE_INIT_PROJECT_ID" && value == "ora-runtime"));
         assert!(command.environment.iter().any(|(key, value)| {
-            key == "LANGFUSE_INIT_PROJECT_PUBLIC_KEY" && value == managed_langfuse_public_key()
+            key == "LANGFUSE_INIT_PROJECT_PUBLIC_KEY" && value.as_str() == managed_langfuse_public_key()
         }));
 
         let _ = fs::remove_file(compose_dir.join("docker-compose.yml"));
@@ -5180,6 +5244,36 @@ mod tests {
         assert_eq!(registry.len(), 1);
 
         registry.kill_all();
+
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn streaming_process_bridge_can_kill_active_child_by_run_id() {
+        let registry = StreamingChildRegistry::default();
+        let command = RuntimeCommandSpec::new(
+            "sh -c long-running-streaming-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"running\"}}'; sleep 30".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+
+        let response = run_process_json_rpc_internal(
+            &command,
+            &request("runs.startStreaming", Some(json!({ "input": { "prompt": "hello" } }))),
+            Some(Box::new(|_payload| {})),
+            Some(registry.clone()),
+        )
+        .expect("streaming process bridge should return the initial handle response");
+
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        assert_eq!(registry.len(), 1);
+
+        registry.kill_run("run-0001");
 
         assert_eq!(registry.len(), 0);
     }

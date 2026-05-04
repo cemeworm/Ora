@@ -109,6 +109,7 @@ import {
 } from "./runtime-action-runner.js";
 import { PackageManager } from "../package-manager.js";
 import {
+  isInternalProviderAssistantText,
   type NodeRuntimeLoopState,
   runNodeRuntimeLoop,
   type RunNodeRuntimeLoopParams,
@@ -145,6 +146,7 @@ export interface RuntimeKernelOptions {
   };
   resumeState?: Pick<StateSnapshot, "plan" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation">;
   streamProvider?: boolean;
+  signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
 }
 
@@ -326,6 +328,7 @@ export async function executeRuntimeKernel(
   if (!profilesById.has(ORA_ROOT_AGENT_ID)) {
     profilesById.set(ORA_ROOT_AGENT_ID, rootProfile);
   }
+  const agentLabel = (agentId: string): string => profilesById.get(agentId)?.label ?? agentId;
 
   let planList: PlanListStep[] = [];
 
@@ -604,6 +607,7 @@ export async function executeRuntimeKernel(
         maxTokens: params.config.budget?.maxTokens,
         tools: params.nativeTools,
         toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
+        signal: options.signal,
       },
       params.streamCallbacks,
     );
@@ -631,6 +635,7 @@ export async function executeRuntimeKernel(
           maxTokens: params.config.budget?.maxTokens,
           tools: params.nativeTools,
           toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
+          signal: options.signal,
         },
         params.streamCallbacks,
       );
@@ -880,6 +885,7 @@ export async function executeRuntimeKernel(
       modeSpec,
       conversationMessages: options.conversationMessages,
       streamProvider: options.streamProvider,
+      signal: options.signal,
       inputPrompt: input.prompt,
       now,
       eventsLength: () => events.length,
@@ -1027,7 +1033,13 @@ export async function executeRuntimeKernel(
         );
         emit(
           "message.delta",
-          { role: "assistant", content: response.text },
+          {
+            role: "assistant",
+            content: response.text,
+            ...(isInternalProviderAssistantText(response.text)
+              ? { visibility: "internal" }
+              : {}),
+          },
           { agentId: params.agentId, nodeId: params.agentId },
         );
         emit(
@@ -1602,13 +1614,13 @@ export async function executeRuntimeKernel(
         nodeId: ORA_ROOT_AGENT_ID,
         kind: "handoff",
         status: "done",
-        content: `${ORA_ROOT_AGENT_LABEL} is handing this request to ${handoffTargetId} through ${modeSpec.label}.`,
+        content: `接下来交给 ${agentLabel(handoffTargetId)}。\n\n${ORA_ROOT_AGENT_LABEL} 会通过 ${modeSpec.label} 跟进这次请求。`,
       }).id;
       emitOraObservation({
         phase: "handoff-accepted",
         observedAgentId: handoffTargetId,
         observedNodeId: handoffTargetId,
-        content: `${ORA_ROOT_AGENT_LABEL} has handed the work to ${handoffTargetId} and is watching for stage-level progress.`,
+        content: `${ORA_ROOT_AGENT_LABEL} 已交给 ${agentLabel(handoffTargetId)}，并会继续观察阶段进展。`,
       });
     }
 
@@ -1629,6 +1641,7 @@ export async function executeRuntimeKernel(
         ensureClarification,
         claimWorker,
         releaseWorker,
+        agentLabel,
         callAgent,
         remember,
         captureMemory,
@@ -1653,7 +1666,7 @@ export async function executeRuntimeKernel(
         nodeId: handoffTargetId,
         kind: "reply",
         status: "done",
-        content: `${modeSpec.label} returned its mode output to ${ORA_ROOT_AGENT_LABEL}.`,
+        content: `${agentLabel(handoffTargetId)} 已将处理结果交回 ${ORA_ROOT_AGENT_LABEL}。`,
       });
     }
     inferCompletionStopReason(result.output);
