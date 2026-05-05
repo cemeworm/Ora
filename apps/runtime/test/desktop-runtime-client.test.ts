@@ -141,7 +141,12 @@ describe("desktop browser-mock runtime lifecycle", () => {
 
     const assistant = messages.find((message) => message.role === "assistant");
     expect(assistant?.content).toBe("");
-    expect(assistant?.isPlaceholder).toBe(true);
+    expect(assistant?.isPlaceholder).toBe(false);
+    expect(assistant?.turn?.timelineItems.some((item) =>
+      item.kind === "assistant_text" &&
+      "content" in item &&
+      item.content.includes("answer")
+    )).toBe(true);
   });
 
   it("blocks in-flight todos after cancelling an approval-required run", async () => {

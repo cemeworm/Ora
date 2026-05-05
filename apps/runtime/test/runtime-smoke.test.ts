@@ -22,9 +22,9 @@ function expectOrderedEvents(eventTypes: string[], expected: string[]) {
   }
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000) {
   const start = Date.now();
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() - start > timeoutMs) {
       throw new Error("Timed out waiting for condition");
     }
@@ -35,6 +35,119 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
 describe("Ora runtime smoke path", () => {
   it("defaults run config mode selection to manual", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
+  });
+
+  it("keeps branch candidates hidden until an empty-start candidate is adopted", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const session = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sessions.create",
+      params: {},
+    }) as { sessionId: string };
+
+    const group = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sessions.branchGroups.createAndRun",
+      params: {
+        sessionId: session.sessionId,
+        target: "empty_start",
+        prompt: "Compare first answers.",
+        candidates: [
+          { label: "Single", config: { modeId: SINGLE_AGENT_MODE_ID, modelRef: "local/smoke-model" } },
+          { label: "Debate", config: { modeId: DEBATE_MODE_ID, modelRef: "local/smoke-model" } },
+        ],
+      },
+    }) as { branchGroupId: string; candidateRunIds: string[] };
+
+    let detail = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "sessions.get",
+      params: { sessionId: session.sessionId },
+    }) as { turns: unknown[]; branchGroups: { status: string; candidateRunIds: string[] }[] };
+    expect(detail.turns).toHaveLength(0);
+    expect(detail.branchGroups[0]?.candidateRunIds).toHaveLength(2);
+
+    await waitFor(async () => {
+      const current = await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "sessions.branchGroups.get",
+        params: { sessionId: session.sessionId, branchGroupId: group.branchGroupId },
+      }) as { status: string };
+      return current.status === "ready";
+    });
+
+    detail = await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "sessions.branchGroups.adopt",
+      params: { sessionId: session.sessionId, branchGroupId: group.branchGroupId, runId: group.candidateRunIds[0] },
+    }) as { session: { latestRunId?: string; turnCount: number }; turns: { runId: string }[] };
+    expect(detail.session.latestRunId).toBe(group.candidateRunIds[0]);
+    expect(detail.session.turnCount).toBe(1);
+    expect(detail.turns.map((turn) => turn.runId)).toEqual([group.candidateRunIds[0]]);
+  });
+
+  it("replaces the latest turn with a branch candidate without increasing turn count", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const first = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "First turn." },
+        config: { modeId: SINGLE_AGENT_MODE_ID, modelRef: "local/smoke-model" },
+      },
+    }) as { sessionId: string; runId: string };
+    const second = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runs.start",
+      params: {
+        sessionId: first.sessionId,
+        input: { prompt: "Second turn." },
+        config: { modeId: SINGLE_AGENT_MODE_ID, modelRef: "local/smoke-model" },
+      },
+    }) as { runId: string };
+
+    const group = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "sessions.branchGroups.createAndRun",
+      params: {
+        sessionId: first.sessionId,
+        target: "replace_latest",
+        candidates: [
+          { label: "Replacement", config: { modeId: DEBATE_MODE_ID, modelRef: "local/smoke-model" } },
+        ],
+      },
+    }) as { branchGroupId: string; candidateRunIds: string[] };
+
+    await waitFor(async () => {
+      const current = await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "sessions.branchGroups.get",
+        params: { sessionId: first.sessionId, branchGroupId: group.branchGroupId },
+      }) as { status: string };
+      return current.status === "ready";
+    });
+
+    const detail = await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "sessions.branchGroups.adopt",
+      params: { sessionId: first.sessionId, branchGroupId: group.branchGroupId, runId: group.candidateRunIds[0] },
+    }) as { session: { latestRunId?: string; turnCount: number }; turns: { runId: string; turnIndex: number }[] };
+
+    expect(detail.session.latestRunId).toBe(group.candidateRunIds[0]);
+    expect(detail.session.turnCount).toBe(2);
+    expect(detail.turns.map((turn) => turn.runId)).toEqual([first.runId, group.candidateRunIds[0]]);
+    expect(detail.turns.at(-1)?.turnIndex).toBe(2);
+    expect(detail.turns.map((turn) => turn.runId)).not.toContain(second.runId);
   });
 
   it("stops code development after a complete proposed plan in plan mode", async () => {
@@ -103,6 +216,7 @@ describe("Ora runtime smoke path", () => {
       expect(providerBodies.join("\n")).not.toContain("Build assigned work");
       expect(providerBodies.join("\n")).not.toContain("Validate assigned work");
       expect(providerBodies.join("\n")).not.toContain("Diagnose failures");
+      expect(providerBodies.join("\n")).not.toContain("The selected mode has returned its work product");
       expect(state.output).toMatchObject({
         text: expect.stringContaining("<proposed_plan>"),
         stoppedAfterProposedPlan: true,
@@ -923,6 +1037,135 @@ describe("Ora runtime smoke path", () => {
         delete process.env.PROGRESS_LANGUAGE_KEY;
       } else {
         process.env.PROGRESS_LANGUAGE_KEY = previousKey;
+      }
+    }
+  });
+
+  it("asks agent responses to follow the user's language outside progress narration", async () => {
+    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.AGENT_LANGUAGE_KEY;
+    process.env.AGENT_LANGUAGE_KEY = "test";
+    const providerBodies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      providerBodies.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "我会用中文回答正文。" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      await executeRuntimeKernel(
+        "run-agent-language",
+        { prompt: "请检查这个项目的测试情况。", createdAt: 1, context: {} },
+        {
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          providerId: "agent-language",
+          modelRef: "agent-language-model",
+          providerConfig: {
+            id: "agent-language",
+            type: "openai_compatible",
+            label: "Agent Language",
+            modelId: "agent-language-model",
+            baseUrl: "https://agent-language.test/v1",
+            apiKeyEnv: "AGENT_LANGUAGE_KEY",
+            capabilities: ["chat"],
+            headers: {},
+          },
+          metadata: {},
+          deterministicSeed: "agent-language-test",
+          profileIds: ["solo_agent"],
+          skillIds: [],
+          toolIds: [],
+          approvalMode: "auto",
+          budget: {
+            maxTokens: 1024,
+            maxToolCalls: 4,
+            maxRuntimeMs: 60_000,
+          },
+        },
+        { modeSpec, definition },
+      );
+
+      expect(providerBodies.some((body) =>
+        body.includes("User-facing output follows current user message language")
+      )).toBe(true);
+      expect(providerBodies.some((body) =>
+        body.includes("Match the user's language")
+      )).toBe(false);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.AGENT_LANGUAGE_KEY;
+      } else {
+        process.env.AGENT_LANGUAGE_KEY = previousKey;
+      }
+    }
+  });
+
+  it("asks Ora finalization to follow the user's language after multi-agent mode output", async () => {
+    const modeSpec = getModePreset(DEBATE_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.FINALIZER_LANGUAGE_KEY;
+    process.env.FINALIZER_LANGUAGE_KEY = "test";
+    const providerBodies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      providerBodies.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "中文阶段输出。" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      await executeRuntimeKernel(
+        "run-finalizer-language",
+        { prompt: "请用辩论方式分析这个方案是否值得做。", createdAt: 1, context: {} },
+        {
+          pattern: "orchestrator_subagent",
+          modeId: DEBATE_MODE_ID,
+          providerId: "finalizer-language",
+          modelRef: "finalizer-language-model",
+          providerConfig: {
+            id: "finalizer-language",
+            type: "openai_compatible",
+            label: "Finalizer Language",
+            modelId: "finalizer-language-model",
+            baseUrl: "https://finalizer-language.test/v1",
+            apiKeyEnv: "FINALIZER_LANGUAGE_KEY",
+            capabilities: ["chat"],
+            headers: {},
+          },
+          metadata: {},
+          deterministicSeed: "finalizer-language-test",
+          profileIds: modeSpec.profiles.map((profile) => profile.id),
+          skillIds: [],
+          toolIds: [],
+          approvalMode: "auto",
+          budget: {
+            maxTokens: 1024,
+            maxToolCalls: 4,
+            maxRuntimeMs: 60_000,
+          },
+        },
+        { modeSpec, definition },
+      );
+
+      const finalizerBodies = providerBodies.filter((body) =>
+        body.includes("The selected mode has returned its work product")
+      );
+      expect(finalizerBodies.length).toBeGreaterThan(0);
+      expect(finalizerBodies.some((body) =>
+        body.includes("User-facing output follows current user message language")
+      )).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.FINALIZER_LANGUAGE_KEY;
+      } else {
+        process.env.FINALIZER_LANGUAGE_KEY = previousKey;
       }
     }
   });
@@ -2100,6 +2343,106 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("pauses scheduled task creation with user-facing approval copy", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.AUTOMATION_APPROVAL_COPY_KEY;
+    process.env.AUTOMATION_APPROVAL_COPY_KEY = "test";
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "call-automation-create",
+            type: "function",
+            function: {
+              name: "automations__create",
+              arguments: JSON.stringify({
+                title: "每日项目复盘",
+                prompt: "总结项目状态和阻塞事项。",
+                schedule: {
+                  kind: "rrule",
+                  rrule: "FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0",
+                  timezone: "Asia/Shanghai",
+                },
+                status: "active",
+                modeSelection: "manual",
+                taskIntent: "plan",
+                skillIds: [],
+                toolIds: [],
+                runConfig: {},
+                approvalRequest: {
+                  title: "需要你确认创建定时任务",
+                  summary: "我准备创建“每日项目复盘”。",
+                  whatWillChange: "Ora 会在每天 9 点自动运行这个 agent 任务。",
+                  whyNeeded: "这是完成你要求设置定时任务的必要步骤。",
+                  riskNote: "请确认调度时间和任务目标正确。",
+                  confirmLabel: "批准并继续",
+                },
+              }),
+            },
+          }],
+        },
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请每天早上 9 点做一次项目复盘。" },
+          config: {
+            modeId: "single_agent",
+            providerId: "automation-approval-copy",
+            modelRef: "automation-approval-copy-model",
+            providerConfig: {
+              id: "automation-approval-copy",
+              label: "Automation Approval Copy",
+              type: "openai_compatible",
+              modelId: "automation-approval-copy-model",
+              baseUrl: "https://automation-approval-copy.test/v1",
+              apiKeyEnv: "AUTOMATION_APPROVAL_COPY_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            approvalMode: "high_risk_only",
+            toolIds: ["automations.create"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const pendingAction = state.actions.find((action) => action.id === state.pendingApprovals[0]);
+
+      expect(run.status).toBe("interrupted");
+      expect(pendingAction).toMatchObject({
+        type: "automations.create",
+        status: "approval_required",
+        approvalRequest: {
+          title: "需要你确认创建定时任务",
+          summary: "我准备创建“每日项目复盘”。",
+        },
+      });
+      expect(JSON.stringify(pendingAction?.approvalRequest)).not.toContain("automations.create");
+      expect(state.toolCalls.find((call) => call.toolId === "automations.create")).toMatchObject({ status: "approval_required" });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.AUTOMATION_APPROVAL_COPY_KEY;
+      } else {
+        process.env.AUTOMATION_APPROVAL_COPY_KEY = previousKey;
+      }
+    }
+  });
+
   it("does not ask again when a resumed high-risk tool action gets a replayed action id", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
@@ -3190,7 +3533,7 @@ describe("Ora runtime smoke path", () => {
       }));
 
       expect(run.status).toBe("succeeded");
-      expect(state.config.budget?.maxToolCalls).toBe(64);
+      expect(state.config.budget?.maxToolCalls).toBe(256);
       expect(fetchedUrls).toHaveLength(10);
       expect(state.toolCalls.filter((call) => call.toolId === "skills.create" && call.status === "succeeded")).toHaveLength(8);
       expect(state.output?.text).toContain("Installed all 8 Waza skills");
@@ -3632,7 +3975,7 @@ describe("Ora runtime smoke path", () => {
             toolIds: ["web.fetch"],
             budget: {
               maxTokens: 1024,
-              maxToolCalls: 80,
+              maxToolCalls: 300,
               maxRuntimeMs: 60_000,
             },
             completionPolicy: {
@@ -3654,8 +3997,8 @@ describe("Ora runtime smoke path", () => {
       }));
 
       expect(run.status).toBe("succeeded");
-      expect(webFetchCalls).toBe(63);
-      expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(63);
+      expect(webFetchCalls).toBe(255);
+      expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(255);
       expect(state.events.some((event) =>
         event.type === "completion.updated"
         && typeof event.payload === "object"
@@ -3795,7 +4138,7 @@ describe("Ora runtime smoke path", () => {
           choices: [{
             finish_reason: "tool_calls",
             message: {
-              content: null,
+              content: "Final answer from prior budget content without more tools.",
               tool_calls: [{
                 id: "call-ignored",
                 type: "function",
@@ -3872,9 +4215,9 @@ describe("Ora runtime smoke path", () => {
         params: { runId: run.runId },
       }));
 
-      expect(run.status).toBe("failed");
+      expect(run.status).toBe("succeeded");
       expect(webFetchCalls).toBe(1);
-      expect(state.status).toBe("failed");
+      expect(state.status).toBe("succeeded");
       expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(1);
       expect(state.events.some((event) =>
         event.type === "completion.updated"
@@ -3883,12 +4226,14 @@ describe("Ora runtime smoke path", () => {
         && (event.payload as Record<string, unknown>).state === "tool_calls_ignored"
       )).toBe(true);
       expect(state.output).toMatchObject({
-        text: expect.stringContaining("I need to stop using tools here."),
+        text: expect.stringContaining("Final answer from prior budget content"),
         metadata: { completion: expect.objectContaining({ stopReason: "tool_budget_exhausted", toolAttempts: 1 }) },
       });
-      expect(state.error).toContain("forced-final fallback");
-      expect(state.events.some((event) => event.type === "run.failed")).toBe(true);
-      expect(state.events.some((event) => event.type === "run.done")).toBe(false);
+      expect(state.output?.text).not.toContain("I need to stop using tools here.");
+      expect(state.output?.text).not.toContain("https://example.com/ignored");
+      expect(state.error).toBeUndefined();
+      expect(state.events.some((event) => event.type === "run.failed")).toBe(false);
+      expect(state.events.some((event) => event.type === "run.done")).toBe(true);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
@@ -4309,6 +4654,7 @@ describe("Ora runtime smoke path", () => {
       const content = isRouterRequest
         ? `router result:\n${JSON.stringify({
             modeId: cloned.id,
+            taskIntent: "implement",
             confidence: 0.91,
             reason: "This task benefits from a team workflow.",
           })}\n`
@@ -4337,7 +4683,7 @@ describe("Ora runtime smoke path", () => {
             modeSelection: "auto",
             providerId: "auto-router",
             modelRef: "auto-router-model",
-            metadata: { providerId: "auto-router" },
+            metadata: { providerId: "auto-router", taskIntentMode: "auto" },
             providerConfig: {
               id: "auto-router",
               label: "Auto Router",
@@ -4366,9 +4712,12 @@ describe("Ora runtime smoke path", () => {
       expect(state.modeSpec?.id).toBe(cloned.id);
       expect(state.config.metadata.autoModeRouter).toMatchObject({
         selectedModeId: cloned.id,
+        selectedTaskIntent: "implement",
         status: "selected",
       });
+      expect(state.config.metadata.taskIntent).toBe("implement");
       expect(routerRequest?.max_tokens).toBe(800);
+      expect(routerPrompt?.taskIntentMode).toBe("auto");
       expect(routerCandidateIds).toContain(cloned.id);
       expect(routerCandidateIds).not.toContain(MODE_STUDIO_BUILDER_MODE_ID);
       expect(routerPrompt?.recentMessages).toEqual([

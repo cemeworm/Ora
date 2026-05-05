@@ -54,14 +54,15 @@ export class ChannelStore {
       createdAt: now,
       updatedAt: now,
     });
-    this.backend.saveChannelConfig(config);
-    return this.redactConfig(config);
+    const normalized = normalizeChannelConfig(config);
+    this.backend.saveChannelConfig(normalized);
+    return this.redactConfig(normalized);
   }
 
   updateConfig(params: ChannelUpdateParams | unknown): ChannelConfig {
     const parsed = ChannelUpdateParamsSchema.parse(params);
     const existing = this.getConfigOrThrow(parsed.channelId, { redact: false });
-    const next = ChannelConfigSchema.parse({
+    const next = normalizeChannelConfig(ChannelConfigSchema.parse({
       ...existing,
       label: parsed.label ?? existing.label,
       enabled: parsed.enabled ?? existing.enabled,
@@ -69,7 +70,7 @@ export class ChannelStore {
       config: parsed.config ? { ...existing.config, ...parsed.config } : existing.config,
       secretRefs: parsed.secretRefs ? { ...existing.secretRefs, ...parsed.secretRefs } : existing.secretRefs,
       updatedAt: this.clock(),
-    });
+    }));
     this.backend.saveChannelConfig(next);
     return this.redactConfig(next);
   }
@@ -80,7 +81,7 @@ export class ChannelStore {
       .filter((config) => parsed.kind ? config.kind === parsed.kind : true)
       .filter((config) => parsed.enabled === undefined ? true : config.enabled === parsed.enabled)
       .slice(0, parsed.limit)
-      .map((config) => this.redactConfig(config));
+      .map((config) => this.redactConfig(this.normalizeStoredConfig(config)));
   }
 
   getConfig(channelId: string, options: { redact?: boolean } = {}): ChannelConfig | undefined {
@@ -88,7 +89,8 @@ export class ChannelStore {
     if (!config) {
       return undefined;
     }
-    return options.redact === false ? config : this.redactConfig(config);
+    const normalized = this.normalizeStoredConfig(config);
+    return options.redact === false ? normalized : this.redactConfig(normalized);
   }
 
   getConfigOrThrow(channelId: string, options: { redact?: boolean } = {}): ChannelConfig {
@@ -240,9 +242,49 @@ export class ChannelStore {
   }
 
   private redactConfig(config: ChannelConfig): ChannelConfig {
+    const normalized = normalizeChannelConfig(config);
     const redactedConfig = Object.fromEntries(
-      Object.entries(config.config).map(([key, value]) => [key, SECRET_KEY_PATTERN.test(key) ? "[redacted]" : value])
+      Object.entries(normalized.config).map(([key, value]) => [key, SECRET_KEY_PATTERN.test(key) ? "[redacted]" : value])
     );
-    return ChannelConfigSchema.parse({ ...config, config: redactedConfig });
+    return ChannelConfigSchema.parse({ ...normalized, config: redactedConfig });
   }
+
+  private normalizeStoredConfig(config: ChannelConfig): ChannelConfig {
+    const normalized = normalizeChannelConfig(config);
+    if (JSON.stringify(normalized) !== JSON.stringify(config)) {
+      this.backend.saveChannelConfig(normalized);
+    }
+    return normalized;
+  }
+}
+
+function normalizeChannelConfig(config: ChannelConfig): ChannelConfig {
+  const runConfig = config.config.runConfig;
+  if (!runConfig || typeof runConfig !== "object" || Array.isArray(runConfig)) {
+    return config;
+  }
+  const metadata = (runConfig as Record<string, unknown>).metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return config;
+  }
+  const metadataRecord = metadata as Record<string, unknown>;
+  if (metadataRecord.taskIntent !== "chat" || metadataRecord.taskIntentMode !== undefined) {
+    return config;
+  }
+
+  const restMetadata = { ...metadataRecord };
+  delete restMetadata.taskIntent;
+  return ChannelConfigSchema.parse({
+    ...config,
+    config: {
+      ...config.config,
+      runConfig: {
+        ...(runConfig as Record<string, unknown>),
+        metadata: {
+          ...restMetadata,
+          taskIntentMode: "auto",
+        },
+      },
+    },
+  });
 }

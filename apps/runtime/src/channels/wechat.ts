@@ -40,9 +40,27 @@ interface WechatInboundItem {
   timestamp?: number;
 }
 
+interface WechatInboundMsg {
+  seq?: number;
+  message_id?: string | number;
+  from_user_id?: string;
+  to_user_id?: string;
+  create_time_ms?: number;
+  message_type?: number;
+  item_list?: Array<{
+    type?: number;
+    text_item?: { text?: string };
+  }>;
+  context_token?: string;
+}
+
 interface GetUpdatesResponse {
-  item_list: WechatInboundItem[];
-  get_updates_buf: string;
+  item_list?: WechatInboundItem[];
+  msgs?: WechatInboundMsg[];
+  get_updates_buf?: string;
+  sync_buf?: string;
+  errcode?: number;
+  errmsg?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,13 +154,22 @@ export class WechatChannelAdapter implements ChannelAdapter {
         headers: {
           "content-type": "application/json",
           "x-wechat-uin": this.wechatUin,
+          authorizationtype: "ilink_bot_token",
           authorization: `Bearer ${botToken}`,
         },
         body: JSON.stringify({
-          to_user: message.externalChatId,
-          content: message.text,
-          context_token: contextToken,
-          msg_type: 1,
+          msg: {
+            to_user_id: message.externalChatId,
+            client_id: `ora-wechat-${message.id}`,
+            message_type: 2,
+            message_state: 2,
+            item_list: [{
+              type: 1,
+              text_item: { text: message.text },
+            }],
+            context_token: contextToken,
+          },
+          base_info: { channel_version: "1.0.0" },
         }),
       });
 
@@ -152,9 +179,16 @@ export class WechatChannelAdapter implements ChannelAdapter {
       }
 
       const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof data.ret === "number" && data.ret !== 0) {
+        return { ok: false, error: `sendmessage ret ${data.ret}` };
+      }
       return {
         ok: true,
-        externalMessageId: typeof data.msg_id === "string" ? data.msg_id : undefined,
+        externalMessageId: typeof data.msg_id === "string"
+          ? data.msg_id
+          : typeof data.message_id === "string"
+            ? data.message_id
+            : undefined,
       };
     } catch (err) {
       return {
@@ -287,11 +321,13 @@ export class WechatChannelAdapter implements ChannelAdapter {
         headers: {
           "content-type": "application/json",
           "x-wechat-uin": this.wechatUin,
+          authorizationtype: "ilink_bot_token",
           authorization: `Bearer ${botToken}`,
         },
         body: JSON.stringify({
           get_updates_buf: this.updatesBuf,
           timeout: 35,
+          base_info: { channel_version: "1.0.0" },
         }),
         signal: this.abortController.signal,
       });
@@ -313,6 +349,25 @@ export class WechatChannelAdapter implements ChannelAdapter {
       this.consecutiveErrors = 0;
 
       const data = (await res.json()) as GetUpdatesResponse;
+      if (typeof data.errcode === "number" && data.errcode !== 0) {
+        this.consecutiveErrors++;
+        const message = typeof data.errmsg === "string" && data.errmsg.trim()
+          ? data.errmsg.trim()
+          : "unknown iLink error";
+        console.error(`[WeChat:${this.channelId}] poll iLink 错误 ${data.errcode}: ${message}`);
+        if (data.errcode === -14) {
+          console.error(`[WeChat:${this.channelId}] WeChat bot session timeout，请重新绑定该 WeChat channel`);
+          this.deps?.onConfigUpdate(this.channelId, {
+            bound: false,
+            botToken: "",
+            updatesBuf: "",
+          });
+          this.running = false;
+          return;
+        }
+        this.pollHandle = setTimeout(() => void this.pollLoop(), 5_000);
+        return;
+      }
 
       if (data.get_updates_buf) {
         this.updatesBuf = data.get_updates_buf;
@@ -321,8 +376,9 @@ export class WechatChannelAdapter implements ChannelAdapter {
         });
       }
 
-      if (data.item_list?.length && this.deps?.onIngest) {
-        for (const item of data.item_list) {
+      const inboundItems = normalizeGetUpdatesItems(data);
+      if (inboundItems.length && this.deps?.onIngest) {
+        for (const item of inboundItems) {
           const normalized = normalizeWechatMessage(item);
           if (normalized) {
             if (typeof item.context_token === "string" && item.context_token.trim()) {
@@ -599,4 +655,30 @@ export function normalizeWechatMessage(
       timestamp: item.timestamp,
     },
   };
+}
+
+function normalizeGetUpdatesItems(data: GetUpdatesResponse): WechatInboundItem[] {
+  if (Array.isArray(data.item_list)) {
+    return data.item_list;
+  }
+  if (!Array.isArray(data.msgs)) {
+    return [];
+  }
+  const items: WechatInboundItem[] = [];
+  for (const msg of data.msgs) {
+    const textItem = msg.item_list?.find((item) => item.type === 1 && item.text_item?.text);
+    const content = textItem?.text_item?.text ?? "";
+    items.push({
+      msg_id: String(msg.message_id ?? msg.seq ?? `wechat-${Date.now()}`),
+      type: msg.message_type ?? 1,
+      content,
+      from_user: msg.from_user_id ?? "",
+      to_user: msg.to_user_id ?? "",
+      context_token: msg.context_token,
+      timestamp: typeof msg.create_time_ms === "number"
+        ? Math.floor(msg.create_time_ms / 1000)
+        : undefined,
+    });
+  }
+  return items;
 }

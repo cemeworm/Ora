@@ -519,7 +519,19 @@ export class ChannelManager {
 
 function channelRunConfig(channel: ChannelConfig): Record<string, unknown> | undefined {
   const candidate = channel.config.runConfig;
-  return candidate && typeof candidate === "object" && !Array.isArray(candidate)
+  const existing = candidate && typeof candidate === "object" && !Array.isArray(candidate)
     ? candidate as Record<string, unknown>
-    : undefined;
+    : {};
+  const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+    ? existing.metadata as Record<string, unknown>
+    : {};
+  return {
+    modeSelection: "auto",
+    permissionMode: "default",
+    ...existing,
+    metadata: {
+      taskIntentMode: "auto",
+      ...metadata,
+    },
+  };
 }

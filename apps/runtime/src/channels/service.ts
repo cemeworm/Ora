@@ -24,6 +24,7 @@ export interface ChannelServiceOptions {
   idFactory?: () => string;
   fetchImpl?: typeof fetch;
   onSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
+  autoStartAdapters?: boolean;
 }
 
 export class ChannelService {
@@ -33,10 +34,12 @@ export class ChannelService {
   private readonly adapters = new Map<string, ChannelAdapter>();
   private readonly clock: () => number;
   private readonly fetchImpl: typeof fetch;
+  private readonly autoStartAdapters: boolean;
 
   constructor(backend: RuntimePersistenceBackend, runtime: ChannelRunRuntime, options: ChannelServiceOptions = {}) {
     this.clock = options.clock ?? Date.now;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.autoStartAdapters = options.autoStartAdapters ?? true;
     this.store = new ChannelStore(backend, options);
     this.bus = new ChannelMessageBus();
     this.manager = new ChannelManager(this.store, runtime, this.bus, options);
@@ -46,7 +49,9 @@ export class ChannelService {
     const config = this.store.createConfig(params);
     if (config.enabled) {
       const adapter = this.ensureAdapter(config.channelId);
-      adapter.start();
+      if (this.autoStartAdapters) {
+        adapter.start();
+      }
     }
     return config;
   }
@@ -69,7 +74,9 @@ export class ChannelService {
     this.adapters.delete(config.channelId);
     if (config.enabled) {
       const adapter = this.ensureAdapter(config.channelId);
-      adapter.start();
+      if (this.autoStartAdapters) {
+        adapter.start();
+      }
     }
     return config;
   }
@@ -134,6 +141,12 @@ export class ChannelService {
           result.reason instanceof Error ? result.reason.message : result.reason,
         );
       }
+    }
+  }
+
+  prepareAll(): void {
+    for (const config of this.store.listConfigs().filter((c) => c.enabled)) {
+      this.ensureAdapter(config.channelId);
     }
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MVP_MODES, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, MVP_MODES, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
   resolveAgenticRuntimeScheduling,
   routerCostHintForMode,
@@ -8,7 +8,7 @@ import {
 
 const defaultBudget = {
   maxTokens: 18_000,
-  maxToolCalls: 64,
+  maxToolCalls: 256,
   maxRuntimeMs: 300_000,
   maxCostUsd: 3,
 };
@@ -22,7 +22,7 @@ describe("agentic runtime scheduling", () => {
     });
     expect(chat.budget).toMatchObject({
       maxTokens: 12_000,
-      maxToolCalls: 4,
+      maxToolCalls: 8,
       maxCostUsd: 0.1,
     });
     expect(chat.metadata).toMatchObject({
@@ -38,6 +38,38 @@ describe("agentic runtime scheduling", () => {
     expect(explicitPlan.budget).toEqual(defaultBudget);
     expect(explicitPlan.metadata).toMatchObject({
       policy: "preserve_explicit_budget",
+      taskIntent: "plan",
+    });
+
+    const plan = resolveAgenticRuntimeScheduling({
+      budget: defaultBudget,
+      explicitBudget: false,
+      metadata: { taskIntent: "plan" },
+    });
+    expect(plan.budget).toMatchObject({
+      maxTokens: 18_000,
+      maxToolCalls: 16,
+      maxCostUsd: 0.5,
+    });
+  });
+
+  it("gives code development plan runs a larger planning budget", () => {
+    const codeDevelopmentMode = MVP_MODES.find((mode) => mode.id === CODE_DEVELOPMENT_MODE_ID)!;
+
+    const plan = resolveAgenticRuntimeScheduling({
+      budget: codeDevelopmentMode.defaultBudget,
+      explicitBudget: false,
+      metadata: { taskIntent: "plan" },
+      modeSpec: codeDevelopmentMode,
+    });
+
+    expect(plan.budget).toMatchObject({
+      maxTokens: 24_000,
+      maxToolCalls: 32,
+      maxCostUsd: 1,
+    });
+    expect(plan.metadata).toMatchObject({
+      policy: "lightweight_budget_cap",
       taskIntent: "plan",
     });
   });

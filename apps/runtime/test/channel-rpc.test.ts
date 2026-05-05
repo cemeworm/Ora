@@ -85,6 +85,77 @@ describe("channel JSON-RPC", () => {
     expect(status.channels[0]?.channelId).toBe(channel.channelId);
   });
 
+  it("passes channel runConfig into channel-originated runs", async () => {
+    const store = createStore();
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "channel-model",
+      label: "Model",
+      kind: "http_webhook",
+      config: {
+        runConfig: {
+          providerId: "local-smoke",
+          modelRef: "channel-selected-model",
+        },
+      },
+    }));
+
+    const result = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-model",
+      externalMessageId: "model-1",
+      externalChatId: "chat-model",
+      text: "Use the channel model.",
+    })));
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: result.runId }));
+    expect(snapshot.config.providerId).toBe("local-smoke");
+    expect(snapshot.config.modelRef).toBe("channel-selected-model");
+    expect(snapshot.config.modeSelection).toBe("auto");
+    expect(snapshot.config.permissionMode).toBe("default");
+    expect(snapshot.config.metadata.taskIntentMode).toBe("auto");
+    expect(snapshot.config.metadata.taskIntent).toBe("plan");
+    expect(snapshot.config.metadata.autoModeRouter).toMatchObject({
+      selectedTaskIntent: "plan",
+      status: "fallback",
+    });
+  });
+
+  it("migrates legacy channel chat targets to auto and preserves explicit fixed targets", async () => {
+    const store = createStore();
+    const handler = createRuntimeMethodHandler(store);
+    const migrated = await handler(request("channels.create", {
+      channelId: "channel-legacy-target",
+      label: "Legacy Target",
+      kind: "http_webhook",
+      config: {
+        runConfig: {
+          metadata: { taskIntent: "chat" },
+        },
+      },
+    })) as { config: { runConfig?: { metadata?: Record<string, unknown> } } };
+    expect(migrated.config.runConfig?.metadata).toMatchObject({ taskIntentMode: "auto" });
+    expect(migrated.config.runConfig?.metadata?.taskIntent).toBeUndefined();
+
+    await handler(request("channels.create", {
+      channelId: "channel-fixed-target",
+      label: "Fixed Target",
+      kind: "http_webhook",
+      config: {
+        runConfig: {
+          metadata: { taskIntentMode: "fixed", taskIntent: "chat" },
+        },
+      },
+    }));
+    const result = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-fixed-target",
+      externalMessageId: "fixed-1",
+      externalChatId: "chat-fixed",
+      text: "Keep this as chat.",
+    })));
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: result.runId }));
+    expect(snapshot.config.metadata.taskIntentMode).toBe("fixed");
+    expect(snapshot.config.metadata.taskIntent).toBe("chat");
+  });
+
   it("handles /help, /status, and /new without normal run execution", async () => {
     const store = createStore();
     const handler = createRuntimeMethodHandler(store);

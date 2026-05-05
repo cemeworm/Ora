@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MVP_TOOLS } from "@cemeworm/shared";
+import { MVP_TOOLS, getPermissionProfile } from "@cemeworm/shared";
 import {
   IMPLEMENTED_RUNTIME_TOOL_IDS,
   RuntimeToolExecutor,
@@ -257,6 +257,82 @@ describe("RuntimeToolExecutor", () => {
     expect(evaluated.evaluationRunId).toBe("eval-1");
     expect(applied.status).toBe("applied");
     expect(calls).toContainEqual({ method: "apply", params: { candidateId: "candidate-1", confirmed: true } });
+  });
+
+  it("exposes scheduled task tools and gates management actions", async () => {
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const automationRegistry = {
+      listAutomations: (params?: unknown) => {
+        calls.push({ method: "list", params });
+        return [{ id: "automation-1", title: "Daily review" }];
+      },
+      getAutomation: (params: unknown) => {
+        calls.push({ method: "get", params });
+        return { id: "automation-1", title: "Daily review" };
+      },
+      previewAutomationSchedule: (params: unknown) => {
+        calls.push({ method: "preview", params });
+        return { occurrences: [1_700_000_000_000] };
+      },
+      createAutomation: (params: unknown) => {
+        calls.push({ method: "create", params });
+        return { id: "automation-1", title: "Daily review" };
+      },
+      updateAutomation: (params: unknown) => {
+        calls.push({ method: "update", params });
+        return { id: "automation-1", title: "Updated review" };
+      },
+      pauseAutomation: (params: unknown) => {
+        calls.push({ method: "pause", params });
+        return { id: "automation-1", status: "paused" };
+      },
+      resumeAutomation: (params: unknown) => {
+        calls.push({ method: "resume", params });
+        return { id: "automation-1", status: "active" };
+      },
+      deleteAutomation: (params: unknown) => {
+        calls.push({ method: "delete", params });
+        return { deleted: true, id: "automation-1" };
+      },
+      runAutomationNow: (params: unknown) => {
+        calls.push({ method: "runNow", params });
+        return { id: "automation-run-1", status: "succeeded" };
+      },
+    };
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: MVP_TOOLS,
+      automationRegistry,
+      permissionProfile: getPermissionProfile("runtime.default_policy"),
+    });
+    const prompt = executor.systemPrompt(["automations.list", "automations.create", "automations.runNow"]) ?? "";
+    const createDefinition = executor.toolDefinitions(["automations.create"])[0];
+
+    expect(prompt).toContain("automations.create");
+    expect(prompt).toContain("include args.approvalRequest");
+    expect(createDefinition?.parameters?.properties).toMatchObject({
+      approvalRequest: expect.objectContaining({ required: ["title", "summary"] }),
+    });
+    expect(executor.riskLevel({ tool: "automations.create", args: { title: "Daily review" } })).toBe("high");
+    expect(executor.riskLevel({ tool: "automations.runNow", args: { id: "automation-1" } })).toBe("high");
+
+    const list = await executor.execute({ tool: "automations.list", args: { includePaused: true } }) as unknown[];
+    const preview = await executor.execute({
+      tool: "automations.previewSchedule",
+      args: {
+        schedule: { kind: "rrule", rrule: "FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0", timezone: "Asia/Shanghai" },
+        limit: 1,
+      },
+    }) as { occurrences: number[] };
+    await expect(executor.execute({ tool: "automations.create", args: { title: "Daily review" } })).rejects.toThrow("Waiting for your approval");
+    const created = await executor.execute({ tool: "automations.create", args: { title: "Daily review" } }, { allowRisky: true }) as { id: string };
+    const run = await executor.execute({ tool: "automations.runNow", args: { id: "automation-1" } }, { allowRisky: true }) as { status: string };
+
+    expect(list).toHaveLength(1);
+    expect(preview.occurrences).toHaveLength(1);
+    expect(created.id).toBe("automation-1");
+    expect(run.status).toBe("succeeded");
+    expect(calls).toContainEqual({ method: "create", params: { title: "Daily review" } });
+    expect(calls).toContainEqual({ method: "runNow", params: { id: "automation-1" } });
   });
 
   it("builds natural approval copy for high-risk local tools", () => {
@@ -624,6 +700,23 @@ rl.on("line", (line) => {
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS, toolLimits: { fileReadMaxBytes: 50 } });
 
     await expect(executor.execute({ tool: "file.read", args: { path: "big.txt" } })).rejects.toThrow("too large");
+  });
+
+  it("uses enlarged default file and shell output limits", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+    const content = "x".repeat(1_500_000);
+    fs.writeFileSync(path.join(rootPath, "large.txt"), content, "utf8");
+
+    const fileResult = await executor.execute({ tool: "file.read", args: { path: "large.txt" } }) as { content: string };
+    const shellResult = await executor.execute({
+      tool: "shell.execute",
+      args: { command: "node -e \"process.stdout.write('x'.repeat(1500000))\"" },
+    }, { allowRisky: true }) as { exitCode: number; stdout: string };
+
+    expect(fileResult.content).toHaveLength(1_500_000);
+    expect(shellResult.exitCode).toBe(0);
+    expect(shellResult.stdout).toHaveLength(1_500_000);
   });
 
   it("applies toolLimits.shellExtraApprovedCommands from mode config", async () => {

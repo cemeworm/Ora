@@ -416,7 +416,7 @@ describe("desktop composer pending-run behavior", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", content: "hello" });
-    expect(messages[1]).toMatchObject({ role: "assistant", content: "正在准备", isPlaceholder: true });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "", isPlaceholder: true });
   });
 
   it("keeps the submitted user message visible when a run snapshot arrives before transcript hydration", () => {

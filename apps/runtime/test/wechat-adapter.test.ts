@@ -543,6 +543,7 @@ describe("WechatChannelAdapter lifecycle", () => {
     expect(inbound.externalChatId).toBe("user-wx-1");
     const getUpdatesHeaders = (fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
     expect(getUpdatesHeaders["x-wechat-uin"]).toMatch(/^UIN[0-9a-f]{16}$/);
+    expect(getUpdatesHeaders.authorizationtype).toBe("ilink_bot_token");
     expect(onConfigUpdate).toHaveBeenCalledWith(
       "wechat-test",
       expect.objectContaining({ wechatUin: getUpdatesHeaders["x-wechat-uin"] }),
@@ -564,11 +565,71 @@ describe("WechatChannelAdapter lifecycle", () => {
 
     expect(result.ok).toBe(true);
     expect(sentBody).toEqual(expect.objectContaining({
-      to_user: "user-wx-1",
-      content: "Hello back!",
-      context_token: "ctx-token-abc",
-      msg_type: 1,
+      msg: expect.objectContaining({
+        to_user_id: "user-wx-1",
+        message_type: 2,
+        message_state: 2,
+        context_token: "ctx-token-abc",
+        item_list: [expect.objectContaining({
+          type: 1,
+          text_item: { text: "Hello back!" },
+        })],
+      }),
     }));
+  });
+
+  it("treats iLink sendmessage ret errors as failed delivery", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("getupdates")) {
+        return new Response(
+          JSON.stringify({
+            item_list: [{
+              msg_id: "msg-ctx-001",
+              type: 1,
+              content: "Hello from WeChat",
+              from_user: "user-wx-1",
+              to_user: "bot-001",
+              context_token: "ctx-token-abc",
+            }],
+            get_updates_buf: "buf-next",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ ret: -2 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    let resolveIngest!: (params: ChannelIngestParams) => void;
+    const ingested = new Promise<ChannelIngestParams>((resolve) => {
+      resolveIngest = resolve;
+    });
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
+      onIngest: async (params) => resolveIngest(params),
+      onConfigUpdate: vi.fn(),
+    });
+
+    adapter.start();
+    await ingested;
+    adapter.stop();
+    const result = await adapter.send({
+      id: "outbound-ret-1",
+      channelId: "wechat-test",
+      bindingId: "binding-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      externalChatId: "user-wx-1",
+      text: "Hello back!",
+      isFinal: true,
+      kind: "final",
+      attachments: [],
+      createdAt: clock(),
+      metadata: {},
+    });
+
+    expect(result).toEqual({ ok: false, error: "sendmessage ret -2" });
   });
 
   it("start and stop without errors", () => {
@@ -578,6 +639,79 @@ describe("WechatChannelAdapter lifecycle", () => {
     adapter.stop();
     expect(adapter.status().state).toBe("stopped");
   });
+
+  it("stops polling when iLink reports a session timeout", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({ errcode: -14, errmsg: "session timeout" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const onConfigUpdate = vi.fn();
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
+      onIngest: async () => undefined,
+      onConfigUpdate,
+    });
+
+    adapter.start();
+
+    await vi.waitFor(() => {
+      expect(adapter.status().state).toBe("stopped");
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[WeChat:wechat-test] WeChat bot session timeout，请重新绑定该 WeChat channel",
+    );
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      "wechat-test",
+      expect.objectContaining({
+        bound: false,
+        botToken: "",
+        updatesBuf: "",
+      }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("ingests iLink msgs responses from getupdates", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          msgs: [{
+            seq: 1,
+            message_id: 7457081304998865000,
+            from_user_id: "user-wx-1",
+            to_user_id: "bot-001",
+            create_time_ms: 1777906728893,
+            message_type: 1,
+            item_list: [{
+              type: 1,
+              text_item: { text: "hi" },
+            }],
+            context_token: "ctx-token-abc",
+          }],
+          get_updates_buf: "buf-next",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    let resolveIngest!: (params: ChannelIngestParams) => void;
+    const ingested = new Promise<ChannelIngestParams>((resolve) => {
+      resolveIngest = resolve;
+    });
+    const adapter = new WechatChannelAdapter(makeConfig(), fetchImpl, {
+      onIngest: async (params) => resolveIngest(params),
+      onConfigUpdate: vi.fn(),
+    });
+
+    adapter.start();
+    const inbound = await ingested;
+    adapter.stop();
+
+    expect(inbound.externalChatId).toBe("user-wx-1");
+    expect(inbound.text).toBe("hi");
+    expect(inbound.metadata.contextToken).toBe("ctx-token-abc");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -585,6 +719,29 @@ describe("WechatChannelAdapter lifecycle", () => {
 // ---------------------------------------------------------------------------
 
 describe("wechat JSON-RPC methods", () => {
+  it("does not auto-start wechat polling in one-shot runtime stores", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(JSON.stringify({ item_list: [], get_updates_buf: "" }));
+    });
+    const store = new LocalRunStore({
+      dataDir: path.join(tempDir, "runtime.db"),
+      fetchImpl,
+    });
+
+    store.createChannel({
+      channelId: "wechat-one-shot",
+      label: "WeChat One Shot",
+      kind: "wechat",
+      config: {
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        botToken: "test-bot-token",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("channels.wechat.requestQrCode delegates to adapter", async () => {
     const store = new LocalRunStore({
       dataDir: path.join(tempDir, "runtime.db"),

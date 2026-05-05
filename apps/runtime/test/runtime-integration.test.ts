@@ -29,7 +29,6 @@ import {
   PlanItemSchema,
   PolicyDecisionSchema,
   ORA_ROOT_AGENT_ID,
-  ORA_ROOT_AGENT_LABEL,
   SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema
 } from "@cemeworm/shared";
@@ -692,7 +691,7 @@ describe("LocalRunStore", () => {
     expect(synthesisPrompt).toContain("Do not default to saying both sides are equally valid");
   });
 
-  it("emits root Ora handoff and observer messages for orchestrator subagent runs", async () => {
+  it("keeps Ora routing metadata without emitting visible root handoff messages", async () => {
     const handle = createRuntimeMethodHandler(createStore());
     const result = await handle({
       jsonrpc: "2.0",
@@ -711,24 +710,21 @@ describe("LocalRunStore", () => {
       params: { runId: result.runId }
     }));
 
-    expect(state.agentMessages[0]).toMatchObject({
-      fromAgentId: ORA_ROOT_AGENT_ID,
-      toAgentIds: ["orchestrator"],
-      kind: "handoff",
-    });
-    expect(state.agentMessages[0]?.content).toContain("接下来交给 Orchestrator。");
-    expect(state.agentMessages[0]?.content).not.toContain("orchestrator through");
+    expect(state.topology.nodes.some((node) => node.id === ORA_ROOT_AGENT_ID)).toBe(true);
+    expect(state.topology.edges.some((edge) =>
+      edge.id === "ora-handoff" &&
+      edge.source === ORA_ROOT_AGENT_ID &&
+      edge.target === "orchestrator"
+    )).toBe(true);
     expect(state.agentMessages.some((message) =>
       message.fromAgentId === ORA_ROOT_AGENT_ID &&
-      message.kind === "status" &&
-      message.content.includes(`已交给 Orchestrator`)
-    )).toBe(true);
+      message.threadId === `${result.runId}:ora-handoff`
+    )).toBe(false);
     expect(state.agentMessages.some((message) =>
       message.fromAgentId === "orchestrator" &&
       message.toAgentIds.includes(ORA_ROOT_AGENT_ID) &&
-      message.kind === "reply" &&
-      message.content.includes(`交回 ${ORA_ROOT_AGENT_LABEL}`)
-    )).toBe(true);
+      message.threadId === `${result.runId}:ora-handoff`
+    )).toBe(false);
   });
 
   it("emits team handoff messages with natural target labels", async () => {
@@ -809,6 +805,131 @@ describe("LocalRunStore", () => {
     expect(contents).not.toContain("@builder");
     expect(contents).not.toContain("@reviewer");
     expect(contents).not.toContain("接下来交给 Builder 和 Reviewer。");
+  });
+
+  it("keeps Code Development file mutations in the Builder stage", async () => {
+    const handle = createRuntimeMethodHandler(createStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(tempDir, "code-dev-boundary-"));
+    fs.writeFileSync(path.join(workspaceRoot, "target.txt"), "old value\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.CODE_DEV_BOUNDARY_KEY;
+    process.env.CODE_DEV_BOUNDARY_KEY = "test";
+    const toolNamesByCall: string[][] = [];
+    let providerCalls = 0;
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        tools?: Array<{ function?: { name?: string } }>;
+      };
+      const toolNames = (body.tools ?? [])
+        .map((tool) => tool.function?.name)
+        .filter((name): name is string => typeof name === "string");
+      toolNamesByCall.push(toolNames);
+      if (providerCalls === 1) {
+        expect(toolNames).not.toContain("file__patch");
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Plan the focused file change and hand off to Builder." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 2) {
+        expect(toolNames).toContain("file__patch");
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-builder-patch",
+                type: "function",
+                function: {
+                  name: "file__patch",
+                  arguments: "{\"path\":\"target.txt\",\"search\":\"old value\",\"replace\":\"new value\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 3) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Builder changed target.txt and verified the patch result." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 4) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Reviewer passed the focused change." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 5) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Debugger confirms no failure remains." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Final handoff: target.txt changed and verified." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const result = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Change old value to new value.",
+            context: {
+              projectWorkspace: { label: "Code Dev Boundary", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            pattern: "agent_teams",
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: "code-dev-boundary",
+            modelRef: "code-dev-boundary-model",
+            providerConfig: {
+              id: "code-dev-boundary",
+              label: "Code Dev Boundary",
+              type: "openai_compatible",
+              modelId: "code-dev-boundary-model",
+              baseUrl: "https://code-dev-boundary.test/v1",
+              apiKeyEnv: "CODE_DEV_BOUNDARY_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read", "file.patch"],
+            approvalMode: "auto",
+            metadata: { taskIntent: "implement" },
+          },
+        },
+      }) as { runId: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: result.runId },
+      }));
+
+      expect(fs.readFileSync(path.join(workspaceRoot, "target.txt"), "utf8")).toBe("new value\n");
+      expect(state.actions.some((action) =>
+        action.type === "file.patch" &&
+        action.agentId === "orchestrator"
+      )).toBe(false);
+      expect(state.actions.some((action) =>
+        action.type === "file.patch" &&
+        action.agentId === "builder" &&
+        action.status === "succeeded"
+      )).toBe(true);
+      expect(toolNamesByCall[0]).not.toContain("file__patch");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.CODE_DEV_BOUNDARY_KEY;
+      } else {
+        process.env.CODE_DEV_BOUNDARY_KEY = previousKey;
+      }
+    }
   });
 
   it("injects custom agent persona overlays from mode node bindings", async () => {

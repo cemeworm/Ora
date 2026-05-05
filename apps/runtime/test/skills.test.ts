@@ -87,6 +87,51 @@ describe("managed skill runtime behavior", () => {
       skill.name === "bootstrap" &&
       skill.description.includes("Generate a personalized SOUL.md")
     )).toBe(true);
+    expect(listed.skills.some((skill) =>
+      skill.name === "agent-creator" &&
+      skill.category === "public" &&
+      skill.editable === true &&
+      skill.description.includes("Create, draft, update, delete, catalog, and configure Ora agents")
+    )).toBe(true);
+    expect(listed.skills.some((skill) =>
+      skill.name === "scheduled-task-manager" &&
+      skill.category === "public" &&
+      skill.editable === true &&
+      skill.description.includes("定时任务")
+    )).toBe(true);
+  });
+
+  it("reads the bundled scheduled task manager skill rules", () => {
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
+    const detail = handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.get",
+      params: { name: "scheduled-task-manager" },
+    }) as { name: string; content: string };
+
+    expect(detail.name).toBe("scheduled-task-manager");
+    expect(detail.content).toContain("先用 `automations.previewSchedule`");
+    expect(detail.content).toContain("如果调度时间、任务目标或影响范围缺失，先提一个聚焦问题");
+    expect(detail.content).toContain("必须附带用户可读的 `approvalRequest`");
+  });
+
+  it("documents agent creator skill binding boundaries", () => {
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir() }));
+    const loaded = handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "skills.get",
+      params: { name: "agent-creator" },
+    }) as { content: string; category: string; editable: boolean };
+
+    expect(loaded).toMatchObject({
+      category: "public",
+      editable: true,
+    });
+    expect(loaded.content).toContain("Keep it separate from `skill-creator`");
+    expect(loaded.content).toContain("Runtime behavior uses run-config intersection");
+    expect(loaded.content).toContain("Do not promise that adding a skillId to an agent alone makes that skill active in every run.");
   });
 
   it("creates, updates, reloads, toggles, and deletes private skills", () => {
