@@ -1,6 +1,8 @@
 import {
+  deriveRunAttention,
   OraEventEnvelope,
   OraEventEnvelopeSchema,
+  RunAttention,
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput,
@@ -38,14 +40,16 @@ export function parseResumePatch(patch: unknown): ParsedResumePatch {
 
 export function hasKernelResumeWork(snapshot: StateSnapshot): boolean {
   return snapshot.modeSpec !== undefined
-    && (snapshot.pendingClarifications.length > 0 || snapshot.actions.some((action) => action.status === "approval_required"));
+    && (currentPendingClarifications(snapshot).length > 0 || currentPendingApprovalActionIds(snapshot).length > 0);
 }
 
 export function approvedActionsForResume(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
 ): ApprovedResumeAction[] {
+  const currentApprovalIds = new Set(currentPendingApprovalActionIds(snapshot));
   return approvedActionIds
+    .filter((actionId) => currentApprovalIds.has(actionId))
     .map((actionId) => snapshot.actions.find((action) => action.id === actionId))
     .filter((action): action is NonNullable<typeof action> => action !== undefined)
     .map((action) => ({
@@ -98,6 +102,56 @@ export function runningSnapshotForApprovedActions(
     pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approvedIdSet.has(actionId)),
     updatedAt,
   });
+}
+
+export function snapshotCurrentAttention(snapshot: StateSnapshot): RunAttention {
+  return snapshot.attention ?? deriveRunAttention(snapshot);
+}
+
+export function currentPendingClarifications(snapshot: StateSnapshot): StateSnapshot["pendingClarifications"] {
+  const attention = snapshotCurrentAttention(snapshot);
+  if (attention.kind !== "needs_clarification") {
+    return [];
+  }
+  const currentIds = new Set(attention.pendingClarificationIds);
+  return snapshot.pendingClarifications.filter((clarification) => currentIds.has(clarification.id));
+}
+
+export function currentPendingApprovalActionIds(snapshot: StateSnapshot): string[] {
+  const attention = snapshotCurrentAttention(snapshot);
+  if (attention.kind !== "needs_approval") {
+    return [];
+  }
+  const currentIds = new Set(attention.pendingActionIds);
+  for (const toolCallId of attention.pendingToolCallIds) {
+    const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+    if (toolCall?.actionId) {
+      currentIds.add(toolCall.actionId);
+    }
+  }
+  return snapshot.actions
+    .filter((action) => action.status === "approval_required" && currentIds.has(action.id))
+    .map((action) => action.id);
+}
+
+export function currentPendingApprovalActions(snapshot: StateSnapshot): ActionRecord[] {
+  const currentIds = new Set(currentPendingApprovalActionIds(snapshot));
+  return snapshot.actions.filter((action) => currentIds.has(action.id));
+}
+
+export function currentPendingApprovalToolActionIds(snapshot: StateSnapshot): string[] {
+  const attention = snapshotCurrentAttention(snapshot);
+  if (attention.kind !== "needs_approval") {
+    return [];
+  }
+  const currentToolCallIds = new Set(attention.pendingToolCallIds);
+  const actionIds = new Set<string>();
+  for (const call of snapshot.toolCalls) {
+    if (call.actionId && call.status === "approval_required" && currentToolCallIds.has(call.id)) {
+      actionIds.add(call.actionId);
+    }
+  }
+  return [...actionIds];
 }
 
 export function statusForRunEvent(

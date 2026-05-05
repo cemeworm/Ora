@@ -71,6 +71,33 @@ interface ChatViewProps {
   detailDrawer: "trails" | "documents" | undefined;
 }
 
+export function getActiveChatProvider<T extends { id: string }>(
+  providerOptions: T[],
+  selectedProviderId: string,
+) {
+  return (
+    providerOptions.find((provider) => provider.id === selectedProviderId) ??
+    providerOptions[0]
+  );
+}
+
+export function getChatInputContextState({
+  activeSnapshot,
+  activeSessionDetail,
+}: {
+  activeSnapshot?: OraStateSnapshot;
+  activeSessionDetail?: {
+    latestSnapshot?: OraStateSnapshot;
+    session: { contextState?: OraStateSnapshot["contextState"] };
+  };
+}) {
+  return (
+    activeSnapshot?.contextState ??
+    activeSessionDetail?.latestSnapshot?.contextState ??
+    activeSessionDetail?.session.contextState
+  );
+}
+
 export function ChatView({
   activeMode,
   activeSnapshot,
@@ -108,17 +135,37 @@ export function ChatView({
   const showWelcome = chatMessages.length === 0 && !isRunning;
   const allProviders = state.providerRegistry?.providers ?? [];
   const providerOptions = runnableProviderOptions(allProviders, state.providerSecretStatuses);
-  const activeProvider =
-    providerOptions.find(
-      (provider) => provider.id === state.selectedProviderId,
-    );
+  const activeProvider = getActiveChatProvider(
+    providerOptions,
+    state.selectedProviderId,
+  );
+  const chatInputContextState = getChatInputContextState({
+    activeSnapshot,
+    activeSessionDetail: state.activeSessionDetail,
+  });
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
-  const pendingApprovalActions = actionRecords.filter((action) => action.state === "approval_required");
+  const attention = activeSnapshot?.attention ?? state.activeSessionDetail?.session.attention;
+  const pendingApprovalIds = new Set(attention?.kind === "needs_approval" ? attention.pendingActionIds : []);
+  const pendingApprovalActions = actionRecords.filter((action) =>
+    action.state === "approval_required" && pendingApprovalIds.has(action.id)
+  );
+  const pendingClarificationIds = new Set(attention?.kind === "needs_clarification" ? attention.pendingClarificationIds : []);
+  const pendingClarifications = (activeSnapshot?.pendingClarifications ?? []).filter((clarification) =>
+    pendingClarificationIds.has(clarification.id)
+  );
+  const pendingPlanDecisionId =
+    attention?.kind === "needs_plan_decision"
+      ? attention.planDecisionId
+      : undefined;
+  const hasPendingPlanDecisionEntity = Boolean(
+    pendingPlanDecisionId &&
+      activeSnapshot?.planDecisions?.some((decision) =>
+        decision.id === pendingPlanDecisionId && decision.status === "pending"
+      )
+  );
   const planDecisionPending =
-    state.activeSessionDetail?.session.attention?.kind === "needs_plan_decision" ||
-    activeSnapshot?.attention?.kind === "needs_plan_decision" ||
-    (state.sessionPendingPlanDecision[selectedSession.id] ?? false);
+    attention?.kind === "needs_plan_decision" && hasPendingPlanDecisionEntity;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
@@ -230,8 +277,8 @@ export function ChatView({
           <ChatMessages
             chatMessages={chatMessages}
             actionRecords={actionRecords}
-            hasApprovalTray={isApprovalRequired && pendingApprovalActions.length > 0}
-            hasClarificationTray={Boolean(activeSnapshot?.pendingClarifications && activeSnapshot.pendingClarifications.length > 0)}
+            hasApprovalTray={attention?.kind === "needs_approval" && pendingApprovalActions.length > 0}
+            hasClarificationTray={attention?.kind === "needs_clarification" && pendingClarifications.length > 0}
             hasPlanDecisionTray={planDecisionPending}
             hasPlanStepsTray={currentPlanSteps.length > 0}
             bottomInsetPx={composerOverlayHeight}
@@ -248,18 +295,18 @@ export function ChatView({
           modeOptions={modeCards}
           selectedModeSelection={state.selectedModeSelection}
           activeProvider={activeProvider}
-          contextState={activeSnapshot?.contextState}
+          contextState={chatInputContextState}
           providerOptions={providerOptions}
           skillOptions={state.skillRegistry?.skills ?? []}
           selectedSkillIds={state.selectedSkillIds}
           selectedCustomAgentId={selectedCustomAgentId}
           projectFileAttachments={projectFileAttachments}
           localFileAttachments={localFileAttachments}
-          approvalActions={isApprovalRequired ? pendingApprovalActions : []}
+          approvalActions={attention?.kind === "needs_approval" ? pendingApprovalActions : []}
           approvalDisabled={busyCommand !== undefined}
           onApprove={onResumeRun}
           onCancelApproval={onCancelRun}
-          clarificationQuestions={activeSnapshot?.pendingClarifications ?? []}
+          clarificationQuestions={pendingClarifications}
           onSubmitAllClarifications={onSubmitAllClarifications}
           onModeChange={onSelectMode}
           onModeSelectionChange={onSelectModeSelection}

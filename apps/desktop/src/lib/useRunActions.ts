@@ -686,7 +686,14 @@ export function useRunActions() {
 
   async function resumeRun() {
     if (!state.selectedTurnRunId) return;
-    const approvedActionIds = viewModel?.actions.filter((a) => a.state === "approval_required").map((a) => a.id) ?? [];
+    const pendingApprovalIds = new Set(
+      state.activeSnapshot?.attention?.kind === "needs_approval"
+        ? state.activeSnapshot.attention.pendingActionIds
+        : [],
+    );
+    const approvedActionIds = viewModel?.actions
+      .filter((a) => a.state === "approval_required" && pendingApprovalIds.has(a.id))
+      .map((a) => a.id) ?? [];
     flushSync(() => {
       dispatch({ type: "BEGIN_RUN_RESUME", runId: state.selectedTurnRunId!, approvedActionIds, updatedAt: Date.now() });
       dispatch({ type: "SET_BUSY_COMMAND", command: "Approve" });
@@ -720,7 +727,10 @@ export function useRunActions() {
 
   async function resolvePlanDecision(status: "accepted" | "declined"): Promise<boolean> {
     const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
-    const decisionId = state.activeSessionDetail?.session.attention?.planDecisionId ?? state.activeSnapshot?.attention?.planDecisionId;
+    const decisionId =
+      state.activeSessionDetail?.session.attention?.planDecisionId ??
+      state.activeSnapshot?.attention?.planDecisionId ??
+      state.activeSnapshot?.planDecisions.find((decision) => decision.status === "pending")?.id;
     if (!sessionId || !decisionId) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
       return false;
@@ -739,7 +749,6 @@ export function useRunActions() {
         detail,
         feedback: status === "accepted" ? "Plan accepted." : "Plan decision dismissed.",
       });
-      dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId, pending: false });
       return true;
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Plan decision update failed." });

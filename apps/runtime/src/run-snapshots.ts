@@ -3,6 +3,7 @@ import {
   ORA_ROOT_AGENT_ID,
   PatternDefinition,
   RunConfig,
+  deriveRunAttention,
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput
@@ -31,7 +32,7 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
     edges: params.definition.topology.edges,
   }, params.modeSpec);
   const profiles = withRootProfile(new AgentProfileRegistry(params.definition).list(params.config.profileIds));
-  return StateSnapshotSchema.parse({
+  return normalizeSnapshotAttention(StateSnapshotSchema.parse({
     runId: params.runId,
     status: "running",
     pattern: params.config.pattern,
@@ -73,7 +74,7 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
     pendingApprovals: [],
     modeSpec: params.modeSpec,
     updatedAt: startedAt,
-  });
+  }));
 }
 
 export function createRunningRunSnapshot(params: BaseSnapshotParams & {
@@ -100,7 +101,7 @@ export function createRunningRunSnapshot(params: BaseSnapshotParams & {
         ? "backlog"
         : "dag";
 
-  return StateSnapshotSchema.parse({
+  return normalizeSnapshotAttention(StateSnapshotSchema.parse({
     runId: params.runId,
     sessionId: params.sessionId,
     turnIndex: params.turnIndex,
@@ -144,7 +145,7 @@ export function createRunningRunSnapshot(params: BaseSnapshotParams & {
     pendingApprovals: [],
     modeSpec: params.modeSpec,
     updatedAt: startedAt,
-  });
+  }));
 }
 
 function withRootProfile(profiles: ReturnType<AgentProfileRegistry["list"]>) {
@@ -174,7 +175,7 @@ export function cancelledRunSnapshot(params: {
     status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
     updatedAt: params.updatedAt,
   }));
-  return StateSnapshotSchema.parse({
+  return normalizeSnapshotAttention(StateSnapshotSchema.parse({
     ...params.snapshot,
     status: "cancelled",
     topology: {
@@ -215,5 +216,13 @@ export function cancelledRunSnapshot(params: {
     },
     error: reason,
     updatedAt: params.updatedAt,
+  }));
+}
+
+function normalizeSnapshotAttention(snapshot: StateSnapshot): StateSnapshot {
+  const normalized = StateSnapshotSchema.parse(snapshot);
+  return StateSnapshotSchema.parse({
+    ...normalized,
+    attention: deriveRunAttention(normalized),
   });
 }

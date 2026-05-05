@@ -457,7 +457,8 @@ describe("session thread runtime behavior", () => {
       event.type === "message.delta" &&
       typeof event.payload === "object" &&
       event.payload !== null &&
-      String((event.payload as { content?: string }).content ?? "").includes("tool-error-boundary")
+      String((event.payload as { content?: string }).content ?? "").includes("tool-error-boundary") &&
+      (event.payload as { visibility?: string }).visibility === "internal"
     )).toBe(true);
   });
 

@@ -18,6 +18,7 @@ import {
   ProjectSignal,
   ProjectSignalAction,
   ProjectSignalSchema,
+  deriveRunAttention,
   type EvaluationFeedbackRecord,
   type EvaluationRun,
   type OraEventEnvelope,
@@ -369,14 +370,15 @@ function signalsForRun(projectId: string, run: StateSnapshot): ProjectSignal[] {
     if (signal) signals.push(signal);
   }
 
-  if (run.pendingApprovals.length > 0) {
+  const currentPendingApprovalIds = currentPendingApprovalActionIds(run);
+  if (currentPendingApprovalIds.length > 0) {
     signals.push(ProjectSignalSchema.parse({
       id: `${projectId}:signal:approval:${run.runId}:pending`,
       projectId,
       source: "approval_event",
       sourceRef: `${run.runId}:pending-approvals`,
       title: "Approval is pending",
-      summary: `${run.pendingApprovals.length} approval request${run.pendingApprovals.length === 1 ? "" : "s"} remain pending in ${run.runId}.`,
+      summary: `${currentPendingApprovalIds.length} approval request${currentPendingApprovalIds.length === 1 ? "" : "s"} remain pending in ${run.runId}.`,
       severity: "warning",
       confidence: 0.75,
       createdAt: run.updatedAt,
@@ -385,12 +387,15 @@ function signalsForRun(projectId: string, run: StateSnapshot): ProjectSignal[] {
       metadata: {
         runId: run.runId,
         modeId: run.modeId ?? run.pattern,
-        approvalCount: run.pendingApprovals.length,
+        approvalCount: currentPendingApprovalIds.length,
       },
     }));
   }
 
-  for (const action of run.actions.filter((item) => item.status === "approval_required" || item.status === "failed")) {
+  for (const action of run.actions.filter((item) =>
+    item.status === "failed" ||
+    (item.status === "approval_required" && currentPendingApprovalIds.includes(item.id))
+  )) {
     signals.push(ProjectSignalSchema.parse({
       id: `${projectId}:signal:action:${run.runId}:${action.id}`,
       projectId,
@@ -437,6 +442,23 @@ function signalsForRun(projectId: string, run: StateSnapshot): ProjectSignal[] {
   }
 
   return signals;
+}
+
+export function currentPendingApprovalActionIds(run: StateSnapshot): string[] {
+  const attention = run.attention ?? deriveRunAttention(run);
+  if (attention.kind !== "needs_approval") {
+    return [];
+  }
+  const pendingIds = new Set(attention.pendingActionIds);
+  for (const toolCallId of attention.pendingToolCallIds) {
+    const toolCall = run.toolCalls.find((call) => call.id === toolCallId);
+    if (toolCall?.actionId) {
+      pendingIds.add(toolCall.actionId);
+    }
+  }
+  return run.actions
+    .filter((action) => action.status === "approval_required" && pendingIds.has(action.id))
+    .map((action) => action.id);
 }
 
 function runStatusSignal(projectId: string, run: StateSnapshot): ProjectSignal {

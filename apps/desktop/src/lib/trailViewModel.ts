@@ -361,7 +361,7 @@ export function collectTrailFindings(
   snapshot: OraStateSnapshot,
   trailError: string | undefined,
   trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined,
-  actions: ActionRecord[],
+  _actions: ActionRecord[],
 ): TrailFinding[] {
   const findings: TrailFinding[] = [];
   const push = (finding: TrailFinding) => {
@@ -438,7 +438,7 @@ export function collectTrailFindings(
       });
     }
   }
-  if (actions.some((action) => action.state === "approval_required")) {
+  if (buildPendingApprovalItems(snapshot).length > 0) {
     push({
       id: "approval.pending",
       severity: "warning",
@@ -550,11 +550,8 @@ export function collectTrailFindings(
 export function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {
   const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   const pendingApprovals = snapshotPendingApprovals(snapshot);
-  const pendingActionIds = pendingApprovals.length > 0
-    ? pendingApprovals
-    : snapshot.actions.filter((action) => action.status === "approval_required").map((action) => action.id);
 
-  return pendingActionIds.map((actionId) => {
+  return pendingApprovals.map((actionId) => {
     const action = snapshot.actions.find((candidate) => candidate.id === actionId);
     const event = [...snapshot.events].reverse().find((candidate) =>
       candidate.type === "approval.required" && readApprovalEventActionId(candidate.payload) === actionId,
@@ -637,10 +634,32 @@ export function buildActiveMemorySummary(snapshot: OraStateSnapshot): ActiveMemo
 }
 
 export function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
+  if (snapshot.attention) {
+    if (snapshot.attention.kind !== "needs_clarification") {
+      return [];
+    }
+    const pendingIds = new Set(snapshot.attention.pendingClarificationIds);
+    return snapshot.pendingClarifications.filter((clarification) => pendingIds.has(clarification.id));
+  }
   return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
 }
 
 export function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
+  if (snapshot.attention) {
+    if (snapshot.attention.kind !== "needs_approval") {
+      return [];
+    }
+    const pendingIds = new Set(snapshot.attention.pendingActionIds);
+    for (const toolCallId of snapshot.attention.pendingToolCallIds) {
+      const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+      if (toolCall?.actionId) {
+        pendingIds.add(toolCall.actionId);
+      }
+    }
+    return snapshot.actions
+      .filter((action) => action.status === "approval_required" && pendingIds.has(action.id))
+      .map((action) => action.id);
+  }
   return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
 }
 
@@ -952,11 +971,23 @@ function latencyRecommendation(params: {
 }
 
 function currentBlockingGate(snapshot: OraStateSnapshot) {
-  const clarification = snapshotPendingClarifications(snapshot)[0];
+  const attention = snapshot.attention;
+  const clarification = attention?.kind === "needs_clarification"
+    ? snapshotPendingClarifications(snapshot).find((item) =>
+        attention.pendingClarificationIds.includes(item.id)
+      )
+    : !attention
+      ? snapshotPendingClarifications(snapshot)[0]
+      : undefined;
   if (clarification) {
     return `补充信息 · ${clarification.nodeLabel}`;
   }
-  const approval = buildPendingApprovalItems(snapshot)[0];
+  const approvalItems = buildPendingApprovalItems(snapshot);
+  const approval = attention?.kind === "needs_approval"
+    ? approvalItems.find((item) => attention.pendingActionIds.includes(item.actionId))
+    : !attention
+      ? approvalItems[0]
+      : undefined;
   if (approval) {
     return `确认 · ${approval.nodeLabel}`;
   }
@@ -970,7 +1001,11 @@ function inferCurrentStage(snapshot: OraStateSnapshot, lastImportantEvent?: Sema
   if (snapshot.status === "succeeded") {
     return stopReasonLabel(stopReasonFromSnapshot(snapshot)) ?? "已完成";
   }
-  if (snapshot.status === "interrupted" || snapshot.pendingApprovals.length > 0 || snapshot.pendingClarifications.length > 0) {
+  if (
+    snapshot.attention?.kind === "needs_approval" ||
+    snapshot.attention?.kind === "needs_clarification" ||
+    (!snapshot.attention && (snapshot.status === "interrupted" || snapshot.pendingApprovals.length > 0 || snapshot.pendingClarifications.length > 0))
+  ) {
     return "等待用户输入";
   }
   if (snapshot.activeAgents.length > 0) {

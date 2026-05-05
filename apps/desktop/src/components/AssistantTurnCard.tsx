@@ -101,10 +101,7 @@ export function AssistantTurnCard({
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
   const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
   const showThinkingIndicator = shouldShowThinkingIndicator({
-    content,
-    hasTimeline,
     isPlaceholder,
-    timelineItems,
     turn,
   });
 
@@ -175,7 +172,11 @@ export function AssistantTurnCard({
           {hasTimeline ? (
             <TurnTimeline
               items={timelineItems}
-              isRunning={turn?.status === "running"}
+              activeLoadingItemId={
+                turn?.activeLoadingTarget?.kind === "timeline"
+                  ? turn.activeLoadingTarget.itemId
+                  : undefined
+              }
               onOpenArtifact={onOpenArtifact}
             />
           ) : null}
@@ -188,7 +189,7 @@ export function AssistantTurnCard({
             <PlanCard
               planSteps={planList}
               planContent={content}
-              isStreaming={turn.proposedPlanStatus === "streaming"}
+              isStreaming={turn.activeLoadingTarget?.kind === "proposed_plan"}
             />
           ) : null}
 
@@ -375,38 +376,19 @@ function legacyTimelineStatus(processSteps: TurnProcessStep[]): TurnProcessStep[
 }
 
 function shouldShowThinkingIndicator({
-  content,
-  hasTimeline,
   isPlaceholder,
-  timelineItems,
   turn,
 }: {
-  content: string;
-  hasTimeline: boolean;
   isPlaceholder: boolean;
-  timelineItems: TurnTimelineItem[];
   turn?: AssistantTurnAttachment;
 }) {
-  if (isPlaceholder && !content.trim()) {
+  if (turn) {
+    return turn.activeLoadingTarget?.kind === "thinking";
+  }
+  if (isPlaceholder) {
     return true;
   }
-  if (!turn || turn.status !== "running") {
-    return false;
-  }
-
-  if (hasTimeline) {
-    if (latestProgressLoadingItemId(timelineItems)) {
-      return false;
-    }
-    const latestItem = timelineItems[timelineItems.length - 1];
-    return latestItem?.kind === "assistant_text" || latestItem?.kind === "final_text";
-  }
-
-  if (turn.hasProposedPlan) {
-    return turn.proposedPlanStatus === "complete";
-  }
-
-  return Boolean(content.trim());
+  return false;
 }
 
 function ThinkingIndicator() {
@@ -420,15 +402,14 @@ function ThinkingIndicator() {
 
 function TurnTimeline({
   items,
-  isRunning = false,
+  activeLoadingItemId,
   onOpenArtifact,
 }: {
   items: TurnTimelineItem[];
-  isRunning?: boolean;
+  activeLoadingItemId?: string;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
   const groups = groupTimelineItemsByAgent(items);
-  const progressLoadingItemId = latestProgressLoadingItemId(items);
   return (
     <div className="space-y-3">
       {groups.map((group) => (
@@ -443,7 +424,7 @@ function TurnTimeline({
               <TurnTimelineRow
                 key={item.id}
                 item={item}
-                showProgressLoading={isRunning && progressLoadingItemId === item.id}
+                showProgressLoading={activeLoadingItemId === item.id}
                 onOpenArtifact={onOpenArtifact}
               />
             ))}
@@ -452,16 +433,6 @@ function TurnTimeline({
       ))}
     </div>
   );
-}
-
-function latestProgressLoadingItemId(items: TurnTimelineItem[]): string | undefined {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item?.kind === "status_group" && item.status !== "blocked") {
-      return item.id;
-    }
-  }
-  return undefined;
 }
 
 function groupTimelineItemsByAgent(items: TurnTimelineItem[]): Array<{

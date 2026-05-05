@@ -177,12 +177,17 @@ const SHELL_TIMEOUT_MS = 300_000;
 const SHELL_READ_ONLY_COMMANDS = new Set(["cat", "find", "ls", "pwd", "rg", "wc"]);
 const SHELL_APPROVED_COMMANDS = new Set([
   ...SHELL_READ_ONLY_COMMANDS,
+  "bash",
   "cargo",
+  "curl",
   "git",
   "make",
   "node",
   "npm",
+  "npx",
   "pnpm",
+  "python3",
+  "sh",
   "tsx",
   "tsc",
   "vitest",

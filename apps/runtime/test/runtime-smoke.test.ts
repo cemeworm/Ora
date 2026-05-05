@@ -5032,9 +5032,20 @@ describe("Ora runtime smoke path", () => {
         (event.payload as Record<string, unknown>).status === "failed",
       ),
     ).toBe(true);
-    expect(state.output).toMatchObject({
-      text: expect.stringContaining("[tool-error-boundary]"),
-    });
+    expect(state.output?.text).toContain("continued with limited context");
+    expect(state.output?.text).not.toContain("[tool-error-boundary]");
+    expect(state.actions.some((action) =>
+      action.status === "failed" &&
+      typeof (action.output as Record<string, unknown> | undefined)?.text === "string" &&
+      String((action.output as Record<string, unknown>).text).includes("[tool-error-boundary]")
+    )).toBe(true);
+    expect(state.events.some((event) =>
+      event.type === "message.delta" &&
+      typeof event.payload === "object" &&
+      event.payload !== null &&
+      String((event.payload as { content?: string }).content ?? "").includes("[tool-error-boundary]") &&
+      (event.payload as { visibility?: string }).visibility === "internal"
+    )).toBe(true);
   });
 
   it("retries transient provider failures before completing the run", async () => {

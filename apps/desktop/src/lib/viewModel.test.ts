@@ -197,6 +197,64 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("Cancelled by caller.");
   });
 
+  it("renders pending clarification entities even when the event log has not caught up", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-pending-clarification-entity",
+      sessionId: "session-pending-clarification-entity",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Need a decision.", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-pending-clarification-entity",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [{
+        id: "clarification:scope",
+        nodeId: "solo_agent",
+        nodeLabel: "Solo Agent",
+        key: "scope",
+        question: "Which scope should I use?",
+        requestedAt: createdAt + 1,
+      }],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages([], { [snapshot.runId]: snapshot });
+
+    expect(messages.map((message) => `${message.role}:${message.content}`)).toContain(
+      "assistant:Which scope should I use?",
+    );
+  });
+
   it("nests resolved clarification exchanges inside the interrupted assistant turn without changing top-level timeline order", () => {
     const createdAt = 1_714_000_000_000;
     const firstSnapshot = {
@@ -455,6 +513,100 @@ describe("desktop session view model", () => {
     )).toBe(false);
   });
 
+  it("hides raw recovery boundary diagnostics from user-visible text", () => {
+    const createdAt = 1_714_000_000_000;
+    const rawDiagnostic = "[tool-error-boundary] Plan development task degraded after provider_transient: Code Development boundary violation: Orchestrator may plan and finalize, but code mutations must run in the Builder stage.";
+    const snapshot = {
+      runId: "run-boundary-diagnostic",
+      sessionId: "session-boundary-diagnostic",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "agent_teams",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      input: { prompt: "fix boundary leak", createdAt, context: {} },
+      config: {
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-boundary-diagnostic-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "Orchestrator", role: "Coordinate", modelRef: "local/smoke-model", toolPolicyId: "code.default", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-boundary-diagnostic:evt-0",
+          runId: "run-boundary-diagnostic",
+          seq: 0,
+          type: "message.delta",
+          createdAt,
+          pattern: "agent_teams",
+          agentId: "orchestrator",
+          payload: { role: "assistant", content: rawDiagnostic },
+        },
+        {
+          id: "run-boundary-diagnostic:evt-1",
+          runId: "run-boundary-diagnostic",
+          seq: 1,
+          type: "node.updated",
+          createdAt: createdAt + 1,
+          pattern: "agent_teams",
+          agentId: "orchestrator",
+          payload: { state: "degraded", detail: "Code Development boundary violation: Orchestrator may plan and finalize, but code mutations must run in the Builder stage." },
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: rawDiagnostic },
+      updatedAt: createdAt + 1,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-boundary-diagnostic:user",
+        sessionId: "session-boundary-diagnostic",
+        runId: "run-boundary-diagnostic",
+        turnIndex: 1,
+        role: "user",
+        content: "fix boundary leak",
+        pattern: "agent_teams",
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-boundary-diagnostic": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.map((item) => "content" in item ? item.content : "summary" in item ? item.summary : "")
+      .join("\n") ?? "";
+
+    expect(assistant?.content ?? "").not.toContain("[tool-error-boundary]");
+    expect(assistant?.content ?? "").not.toContain("boundary violation");
+    expect(timelineText).toContain("已在有限上下文下继续");
+    expect(timelineText).not.toContain("[tool-error-boundary]");
+    expect(timelineText).not.toContain("boundary violation");
+  });
+
   it("uses partial proposed plan content while plan mode output is still streaming", () => {
     const createdAt = 1_714_000_000_000;
     const partialPlanOutput = [
@@ -547,6 +699,88 @@ describe("desktop session view model", () => {
     expect(timelineText).not.toContain("## 流式计划卡片");
     expect(timelineText).not.toContain("opening tag 出现后立即渲染卡片");
     expect(assistant?.turn?.proposedPlanStatus).toBe("streaming");
+    expect(assistant?.turn?.activeLoadingTarget).toEqual({ kind: "proposed_plan" });
+  });
+
+  it("uses the latest timeline status group as the active loading target when no plan is streaming", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-timeline-loading-target",
+      sessionId: "session-timeline-loading-target",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "检查进度 loading", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-timeline-loading-target-test",
+        skillIds: [],
+        toolIds: ["file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-timeline-loading-target:evt-0",
+        runId: "run-timeline-loading-target",
+        seq: 0,
+        type: "tool.called",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          toolId: "file.read",
+          status: "succeeded",
+          input: { path: "apps/desktop/src/components/AssistantTurnCard.tsx" },
+          output: { path: "apps/desktop/src/components/AssistantTurnCard.tsx", sizeBytes: 128 },
+        },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: undefined,
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-timeline-loading-target:user",
+        sessionId: "session-timeline-loading-target",
+        runId: "run-timeline-loading-target",
+        turnIndex: 1,
+        role: "user",
+        content: "检查进度 loading",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-timeline-loading-target": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.activeLoadingTarget).toEqual({
+      kind: "timeline",
+      itemId: "run-timeline-loading-target:timeline:status:0",
+    });
   });
 
   it("uses tagged delta proposed plans instead of untagged final plan summaries", () => {

@@ -173,6 +173,9 @@ import {
   SkillRegistrySchema,
   TodoItemSchema,
   autoLayoutModeSpec,
+  deriveRunInteraction,
+  deriveSessionBranchGroupStatus,
+  deriveSessionBranchGroupsForSession,
   ensureModeNodePositions,
   getModeNodeRuntimeTemplateDefinition,
   projectModeRuntimeTopology,
@@ -948,6 +951,216 @@ describe("Ora shared contracts", () => {
     expect(snapshotWithDefaults.continuation).toEqual({ frames: [] });
     expect(snapshotWithDefaults.conversation).toEqual([]);
     expect(snapshotWithDefaults.toolResults).toEqual([]);
+  });
+
+  it("derives canonical run interaction attention with fixed priority", () => {
+    const baseSnapshot = StateSnapshotSchema.parse({
+      runId: "run-attention",
+      sessionId: "session-attention",
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Need attention", createdAt: 1, context: {} },
+      config: { pattern: "orchestrator_subagent", modeId: "single_agent" },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      actions: [{
+        id: "run-attention:action-1",
+        runId: "run-attention",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      checkpoints: [],
+      events: [],
+      pendingClarifications: [{
+        id: "run-attention:clarification-1",
+        nodeId: "node-1",
+        nodeLabel: "Node 1",
+        key: "scope",
+        question: "Which scope?",
+        requestedAt: 1,
+      }],
+      planDecisions: [{
+        id: "run-attention:plan-decision",
+        runId: "run-attention",
+        sessionId: "session-attention",
+        status: "pending",
+        createdAt: 1,
+      }],
+      updatedAt: 1,
+    });
+
+    expect(deriveRunInteraction(baseSnapshot).attention).toMatchObject({
+      kind: "needs_clarification",
+      pendingClarificationIds: ["run-attention:clarification-1"],
+    });
+    expect(deriveRunInteraction({
+      ...baseSnapshot,
+      pendingClarifications: [],
+    }).attention).toMatchObject({
+      kind: "needs_approval",
+      pendingActionIds: ["run-attention:action-1"],
+    });
+    expect(deriveRunInteraction({
+      ...baseSnapshot,
+      pendingClarifications: [],
+      actions: baseSnapshot.actions.map((action) => ({ ...action, status: "succeeded" as const })),
+    }).attention).toMatchObject({
+      kind: "needs_plan_decision",
+      planDecisionId: "run-attention:plan-decision",
+    });
+    expect(deriveRunInteraction({
+      ...baseSnapshot,
+      status: "interrupted",
+      pendingClarifications: [],
+      actions: baseSnapshot.actions.map((action) => ({ ...action, status: "succeeded" as const })),
+      planDecisions: [],
+    }).attention).toMatchObject({
+      kind: "paused",
+      reason: "manual_interrupt",
+    });
+  });
+
+  it("ignores stale continuation pending ids after a run resumes or completes", () => {
+    const staleFrame = {
+      id: "run-stale-frame:continuation:0",
+      runId: "run-stale-frame",
+      status: "completed" as const,
+      reason: "approval_required" as const,
+      conversationCursor: 0,
+      pendingActionIds: ["run-stale-frame:action-1"],
+      pendingToolCallIds: ["run-stale-frame:tool-call-1"],
+      pendingClarificationIds: ["run-stale-frame:clarification-1"],
+      approvedActionIds: ["run-stale-frame:action-1"],
+      resolvedClarificationIds: ["run-stale-frame:clarification-1"],
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const baseSnapshot = StateSnapshotSchema.parse({
+      runId: "run-stale-frame",
+      sessionId: "session-stale-frame",
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Resume stale frame", createdAt: 1, context: {} },
+      config: { pattern: "orchestrator_subagent", modeId: "single_agent" },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      actions: [],
+      checkpoints: [],
+      events: [],
+      pendingClarifications: [],
+      pendingApprovals: [],
+      continuation: {
+        activeFrameId: staleFrame.id,
+        frames: [staleFrame],
+      },
+      updatedAt: 2,
+    });
+
+    expect(deriveRunInteraction(baseSnapshot).attention).toMatchObject({
+      kind: "idle",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    });
+    expect(deriveRunInteraction({ ...baseSnapshot, status: "running" }).attention).toMatchObject({
+      kind: "running",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    });
+    expect(deriveRunInteraction({
+      ...baseSnapshot,
+      status: "interrupted",
+      continuation: {
+        activeFrameId: staleFrame.id,
+        frames: [{ ...staleFrame, status: "resuming" as const }],
+      },
+    }).attention).toMatchObject({
+      kind: "paused",
+      reason: "manual_interrupt",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    });
+  });
+
+  it("derives session branch groups from runtime snapshots", () => {
+    const baseRun = StateSnapshotSchema.parse({
+      runId: "run-branch-a",
+      sessionId: "session-branch",
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Compare branches", createdAt: 1, context: {} },
+      config: {
+        pattern: "orchestrator_subagent",
+        modeId: "single_agent",
+        providerId: "provider-a",
+        modelRef: "model-a",
+        metadata: {
+          branchGroupId: "branch-group-1",
+          branchRole: "candidate",
+          branchTarget: "replace_latest",
+          branchPrompt: "Compare branches",
+          branchBaseTurnIndex: 0,
+          branchGroupCreatedAt: 1,
+          branchCandidateLabel: "Candidate A",
+        },
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      actions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-branch-a:evt-0",
+        runId: "run-branch-a",
+        seq: 0,
+        type: "message.delta",
+        createdAt: 2,
+        pattern: "orchestrator_subagent",
+        payload: { content: "Candidate output" },
+      }],
+      updatedAt: 2,
+    });
+    const adoptedRun = StateSnapshotSchema.parse({
+      ...baseRun,
+      runId: "run-branch-b",
+      config: {
+        ...baseRun.config,
+        providerId: "provider-b",
+        modelRef: "model-b",
+        metadata: {
+          ...baseRun.config.metadata,
+          branchRole: "adopted",
+          branchCandidateLabel: "Candidate B",
+        },
+      },
+      updatedAt: 3,
+    });
+
+    const [group] = deriveSessionBranchGroupsForSession("session-branch", [baseRun, adoptedRun]);
+
+    expect(group).toMatchObject({
+      branchGroupId: "branch-group-1",
+      sessionId: "session-branch",
+      target: "replace_latest",
+      status: "adopted",
+      adoptedRunId: "run-branch-b",
+    });
+    expect(group?.candidates.map((candidate) => candidate.label)).toEqual(["Candidate A", "Candidate B"]);
+    expect(group?.candidates[0]?.outputPreview).toBe("Candidate output");
+    expect(deriveSessionBranchGroupStatus({ ...group!, adoptedRunId: undefined, candidates: group!.candidates.map((candidate) => ({ ...candidate, adopted: false })) })).toBe("ready");
   });
 
   it("validates continuation, conversation, and tool result ledger contracts", () => {

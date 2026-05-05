@@ -22,6 +22,7 @@ function testSnapshot(params: {
   events?: OraStateSnapshot["events"];
   latency?: OraStateSnapshot["latency"];
   attention?: OraStateSnapshot["attention"];
+  planDecisions?: OraStateSnapshot["planDecisions"];
 } = {}): OraStateSnapshot {
   const runId = params.runId ?? "run-debate";
   const sessionId = params.sessionId ?? "session-debate";
@@ -56,7 +57,7 @@ function testSnapshot(params: {
     actions: [],
     toolCalls: [],
     continuation: { frames: [] },
-    planDecisions: [],
+    planDecisions: params.planDecisions ?? [],
     conversation: [],
     toolResults: [],
     policyDecisions: [],
@@ -905,12 +906,29 @@ describe("desktop workbench state", () => {
       } as unknown as OraStateSnapshot["events"][number];
     }
 
-    it("sets sessionPendingPlanDecision when a settled stream contains a proposed plan in plan mode", () => {
+    it("does not create local shadow plan decision state when a settled stream carries a plan decision", () => {
       const sessionId = "session-plan";
       const snapshot = testSnapshot({
         runId: "run-plan",
         sessionId,
         events: [planModeEvent(0, PROPOSED_PLAN)],
+        planDecisions: [{
+          id: "run-plan:plan-decision",
+          runId: "run-plan",
+          sessionId,
+          status: "pending",
+          createdAt: 1_714_000_000_000,
+        }],
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: "run-plan",
+          reason: "plan_decision_required",
+          planDecisionId: "run-plan:plan-decision",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
       });
       const state: WorkbenchState = {
         ...initialWorkbenchState,
@@ -920,7 +938,7 @@ describe("desktop workbench state", () => {
         selectedTurnRunId: snapshot.runId,
         activeSnapshot: snapshot,
         activeSessionDetail: {
-          session: sessionSummary(sessionId),
+          session: { ...sessionSummary(sessionId), latestRunId: snapshot.runId },
           turns: [{
             runId: snapshot.runId,
             sessionId,
@@ -949,10 +967,10 @@ describe("desktop workbench state", () => {
       } as unknown as OraRunEventStream;
 
       const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
-      expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
+      expect("sessionPendingPlanDecision" in next).toBe(false);
     });
 
-    it("does not set sessionPendingPlanDecision for an unfinished streaming proposed plan", () => {
+    it("does not create durable plan decision attention for an unfinished streaming proposed plan", () => {
       const sessionId = "session-streaming-plan";
       const streamingPlan = [
         "<proposed_plan>",
@@ -1002,7 +1020,7 @@ describe("desktop workbench state", () => {
       } as unknown as OraRunEventStream;
 
       const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
-      expect(next.sessionPendingPlanDecision[sessionId]).toBeUndefined();
+      expect(next.activeSessionDetail?.session.attention?.kind).not.toBe("needs_plan_decision");
     });
 
     it("restores pending plan decision from durable attention during hydrate", () => {
@@ -1010,6 +1028,13 @@ describe("desktop workbench state", () => {
       const snapshot = testSnapshot({
         runId: "run-attention-plan",
         sessionId,
+        planDecisions: [{
+          id: "run-attention-plan:plan-decision",
+          runId: "run-attention-plan",
+          sessionId,
+          status: "pending",
+          createdAt: 1_714_000_000_000,
+        }],
         attention: {
           kind: "needs_plan_decision",
           blocking: true,
@@ -1041,10 +1066,10 @@ describe("desktop workbench state", () => {
         },
       });
 
-      expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
+      expect(next.activeSessionDetail?.session.attention?.kind).toBe("needs_plan_decision");
     });
 
-    it("does NOT set sessionPendingPlanDecision when taskIntent is implement", () => {
+    it("does not create durable plan decision attention when taskIntent is implement", () => {
       const sessionId = "session-implement";
       const snapshot = testSnapshot({
         runId: "run-impl",
@@ -1087,10 +1112,10 @@ describe("desktop workbench state", () => {
       } as unknown as OraRunEventStream;
 
       const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
-      expect(next.sessionPendingPlanDecision[sessionId]).toBeUndefined();
+      expect(next.activeSessionDetail?.session.attention?.kind).not.toBe("needs_plan_decision");
     });
 
-    it("detects proposed plan even when another agent writes text after the XML block", () => {
+    it("does not create a plan decision from proposed plan text alone", () => {
       const sessionId = "session-plan-extra-text";
       // Single event that includes both the plan and extra text after it.
       // This simulates the case where content from all agents is concatenated.
@@ -1139,7 +1164,7 @@ describe("desktop workbench state", () => {
       } as unknown as OraRunEventStream;
 
       const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
-      expect(next.sessionPendingPlanDecision[sessionId]).toBe(true);
+      expect(next.activeSessionDetail?.session.attention?.kind).not.toBe("needs_plan_decision");
     });
   });
 });

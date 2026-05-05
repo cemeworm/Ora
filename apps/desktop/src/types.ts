@@ -340,6 +340,11 @@ export interface TurnAgentConversationMessage {
   timestamp: string;
 }
 
+export type AssistantTurnActiveLoadingTarget =
+  | { kind: "timeline"; itemId: string }
+  | { kind: "proposed_plan" }
+  | { kind: "thinking" };
+
 export interface AssistantTurnAttachment {
   runId: string;
   turnIndex: number;
@@ -359,6 +364,7 @@ export interface AssistantTurnAttachment {
   clarificationCount: number;
   hasProposedPlan: boolean;
   proposedPlanStatus?: "streaming" | "complete";
+  activeLoadingTarget?: AssistantTurnActiveLoadingTarget;
 }
 
 export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "unavailable" | "error";

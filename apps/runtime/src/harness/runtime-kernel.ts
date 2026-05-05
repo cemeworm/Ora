@@ -1201,6 +1201,7 @@ export async function executeRuntimeKernel(
           ? "[tool-error-boundary]"
           : "[recovery:fallback]";
         const fallback = `${fallbackPrefix} ${params.title} degraded after ${incident.errorType}: ${detail}`;
+        const visibleFallback = `${params.title} continued with limited context after a recoverable runtime issue.`;
         const degraded = actionLedger.transition(action.id, "failed", {
           output: { recoveryArtifactId: recoveryArtifact.id, text: fallback },
           artifactIds: [recoveryArtifact.id],
@@ -1215,6 +1216,7 @@ export async function executeRuntimeKernel(
           {
             role: "assistant",
             content: fallback,
+            visibility: "internal",
             boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
               ? "recovery_policy"
               : "tool_error_boundary",
@@ -1240,7 +1242,7 @@ export async function executeRuntimeKernel(
         });
         activeAgents.delete(params.agentId);
         setTopologyStatus(params.agentId, "done");
-        return fallback;
+        return visibleFallback;
       }
     }
   };

@@ -716,6 +716,11 @@ export const RunAttentionSchema = z.object({
 });
 export type RunAttention = z.infer<typeof RunAttentionSchema>;
 
+export const RunInteractionSchema = z.object({
+  attention: RunAttentionSchema,
+});
+export type RunInteraction = z.infer<typeof RunInteractionSchema>;
+
 export const RuntimeConversationToolCallRefSchema = z.object({
   id: z.string().min(1),
   providerCallId: z.string().min(1).optional(),
@@ -1291,6 +1296,106 @@ export const SessionBranchGroupSchema = z.object({
 });
 export type SessionBranchGroup = z.infer<typeof SessionBranchGroupSchema>;
 
+export function deriveSessionBranchGroupStatus(
+  group: Pick<SessionBranchGroup, "status" | "adoptedRunId" | "candidates">,
+): SessionBranchGroupStatus {
+  if (group.adoptedRunId || group.candidates.some((candidate) => candidate.adopted)) {
+    return "adopted";
+  }
+  if (group.status === "dismissed") {
+    return "dismissed";
+  }
+  return group.candidates.every((candidate) => candidate.status !== "queued" && candidate.status !== "running")
+    ? "ready"
+    : "running";
+}
+
+export function deriveSessionBranchGroupsForSession(
+  sessionId: string,
+  runs: readonly StateSnapshot[],
+): SessionBranchGroup[] {
+  const grouped = new Map<string, StateSnapshot[]>();
+  for (const run of runs) {
+    if (run.sessionId !== sessionId || typeof run.config.metadata.branchGroupId !== "string") {
+      continue;
+    }
+    const branchGroupId = String(run.config.metadata.branchGroupId);
+    grouped.set(branchGroupId, [...(grouped.get(branchGroupId) ?? []), run]);
+  }
+
+  return [...grouped.entries()]
+    .map(([branchGroupId, groupRuns]) => {
+      const sortedRuns = [...groupRuns].sort((a, b) => a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
+      const first = sortedRuns[0]!;
+      const metadata = first.config.metadata;
+      const adopted = sortedRuns.find((run) => run.config.metadata.branchRole === "adopted");
+      const dismissed = sortedRuns.every((run) => run.config.metadata.branchDismissed === true);
+      const allSettled = sortedRuns.every((run) => run.status !== "queued" && run.status !== "running");
+      const createdAt = numberBranchMetadata(metadata.branchGroupCreatedAt) ?? first.input.createdAt ?? first.updatedAt;
+      const updatedAt = sortedRuns.reduce((max, run) => Math.max(max, run.updatedAt), createdAt);
+      return SessionBranchGroupSchema.parse({
+        branchGroupId,
+        sessionId,
+        target: branchTargetMetadata(metadata.branchTarget),
+        baseRunId: stringBranchMetadata(metadata.branchBaseRunId),
+        replaceRunId: stringBranchMetadata(metadata.branchReplaceRunId),
+        baseTurnIndex: numberBranchMetadata(metadata.branchBaseTurnIndex) ?? 0,
+        prompt: stringBranchMetadata(metadata.branchPrompt) ?? first.input.prompt,
+        status: adopted ? "adopted" : dismissed ? "dismissed" : allSettled ? "ready" : "running",
+        candidateRunIds: sortedRuns.map((run) => run.runId),
+        candidates: sortedRuns.map((run) => ({
+          runId: run.runId,
+          status: run.status,
+          label: stringBranchMetadata(run.config.metadata.branchCandidateLabel),
+          modeId: run.modeId,
+          providerId: typeof run.config.providerId === "string" ? run.config.providerId : undefined,
+          modelRef: run.config.modelRef,
+          adopted: run.config.metadata.branchRole === "adopted",
+          prompt: run.input.prompt,
+          outputPreview: branchOutputPreviewForRun(run),
+          updatedAt: run.updatedAt,
+        })),
+        adoptedRunId: adopted?.runId,
+        createdAt,
+        updatedAt,
+      });
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.branchGroupId.localeCompare(b.branchGroupId));
+}
+
+function branchTargetMetadata(value: unknown): SessionBranchTarget {
+  return value === "empty_start" || value === "append_after_latest" || value === "replace_latest"
+    ? value
+    : "append_after_latest";
+}
+
+function stringBranchMetadata(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function numberBranchMetadata(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function branchOutputPreviewForRun(run: StateSnapshot): string | undefined {
+  if (typeof run.output === "object" && run.output !== null && typeof (run.output as { text?: unknown }).text === "string") {
+    return (run.output as { text: string }).text.slice(0, 500);
+  }
+  if (typeof run.output === "string") {
+    return run.output.slice(0, 500);
+  }
+  const content = run.events
+    .filter((event) => event.type === "message.delta")
+    .map((event) =>
+      event.payload && typeof event.payload === "object" && typeof (event.payload as { content?: unknown }).content === "string"
+        ? (event.payload as { content: string }).content
+        : ""
+    )
+    .join("")
+    .trim();
+  return content ? content.slice(0, 500) : undefined;
+}
+
 export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapshot, "events">): boolean {
   const content = snapshot.events
     .filter((event) =>
@@ -1304,8 +1409,13 @@ export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapsho
   return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(content);
 }
 
-export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
-  const activeFrame = snapshot.continuation.frames.find((frame) => frame.id === snapshot.continuation.activeFrameId);
+export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {
+  const activeFrame = snapshot.status === "interrupted"
+    ? snapshot.continuation.frames.find((frame) =>
+        frame.id === snapshot.continuation.activeFrameId &&
+        frame.status === "paused"
+      )
+    : undefined;
   const pendingClarificationIds = [
     ...new Set([
       ...snapshot.pendingClarifications.map((clarification) => clarification.id),
@@ -1313,12 +1423,14 @@ export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
     ]),
   ];
   if (pendingClarificationIds.length > 0) {
-    return RunAttentionSchema.parse({
-      kind: "needs_clarification",
-      blocking: true,
-      sourceRunId: snapshot.runId,
-      reason: "clarification_required",
-      pendingClarificationIds,
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "needs_clarification",
+        blocking: true,
+        sourceRunId: snapshot.runId,
+        reason: "clarification_required",
+        pendingClarificationIds,
+      },
     });
   }
 
@@ -1336,66 +1448,88 @@ export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
     ]),
   ];
   if (pendingActionIds.length > 0 || pendingToolCallIds.length > 0) {
-    return RunAttentionSchema.parse({
-      kind: "needs_approval",
-      blocking: true,
-      sourceRunId: snapshot.runId,
-      reason: "approval_required",
-      pendingActionIds,
-      pendingToolCallIds,
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: snapshot.runId,
+        reason: "approval_required",
+        pendingActionIds,
+        pendingToolCallIds,
+      },
     });
   }
 
   const planDecision = snapshot.planDecisions.find((decision) => decision.status === "pending");
   if (planDecision) {
-    return RunAttentionSchema.parse({
-      kind: "needs_plan_decision",
-      blocking: true,
-      sourceRunId: snapshot.runId,
-      reason: "plan_decision_required",
-      planDecisionId: planDecision.id,
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: snapshot.runId,
+        reason: "plan_decision_required",
+        planDecisionId: planDecision.id,
+      },
     });
-  }
-  if (snapshot.planDecisions.length > 0 || snapshot.config.metadata.taskIntent === "plan") {
-    console.log("[plan:attention] planDecisions=%d pendingClarifications=%d pendingApprovals=%d taskIntent=%s -> no pending plan decision",
-      snapshot.planDecisions.length, pendingClarificationIds.length, pendingActionIds.length, snapshot.config.metadata.taskIntent);
   }
 
   if (snapshot.status === "queued" || snapshot.status === "running") {
-    return RunAttentionSchema.parse({
-      kind: "running",
-      blocking: false,
-      sourceRunId: snapshot.runId,
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+      },
     });
   }
   if (snapshot.status === "interrupted") {
-    return RunAttentionSchema.parse({
-      kind: "paused",
-      blocking: false,
-      sourceRunId: snapshot.runId,
-      reason: activeFrame?.reason ?? "manual_interrupt",
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "paused",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: activeFrame?.reason ?? "manual_interrupt",
+      },
     });
   }
   if (snapshot.status === "failed") {
-    return RunAttentionSchema.parse({
-      kind: "failed",
-      blocking: false,
-      sourceRunId: snapshot.runId,
-      reason: snapshot.error,
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "failed",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: snapshot.error,
+      },
     });
   }
   if (snapshot.status === "cancelled") {
-    return RunAttentionSchema.parse({
-      kind: "cancelled",
-      blocking: false,
-      sourceRunId: snapshot.runId,
-      reason: snapshot.error,
+    return RunInteractionSchema.parse({
+      attention: {
+        kind: "cancelled",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: snapshot.error,
+      },
     });
   }
-  return RunAttentionSchema.parse({
-    kind: "idle",
-    blocking: false,
-    sourceRunId: snapshot.runId,
+  return RunInteractionSchema.parse({
+    attention: {
+      kind: "idle",
+      blocking: false,
+      sourceRunId: snapshot.runId,
+    },
+  });
+}
+
+export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
+  return deriveRunInteraction(snapshot).attention;
+}
+
+export function normalizeRunAttention(snapshot: StateSnapshot): StateSnapshot {
+  const normalized = StateSnapshotSchema.parse(snapshot);
+  return StateSnapshotSchema.parse({
+    ...normalized,
+    attention: deriveRunAttention(normalized),
   });
 }
 

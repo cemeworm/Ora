@@ -11,6 +11,11 @@ import {
   patternOutput,
   withTopologyStatus
 } from "./run-deterministic-patterns.js";
+import {
+  currentPendingApprovalActions,
+  currentPendingApprovalActionIds,
+  currentPendingClarifications,
+} from "./run-orchestration.js";
 
 export type AppendRunEvent = (
   snapshot: StateSnapshot,
@@ -44,12 +49,13 @@ export function resolveNonKernelResumeClarifications(params: {
   appendEvent: AppendRunEvent;
 }): StateSnapshot {
   let working = params.snapshot;
-  if (working.pendingClarifications.length === 0) {
+  const pendingClarifications = currentPendingClarifications(working);
+  if (pendingClarifications.length === 0) {
     return working;
   }
 
   const resolvedIds = new Set<string>();
-  for (const clarification of working.pendingClarifications) {
+  for (const clarification of pendingClarifications) {
     const answer = params.clarificationPatch[clarification.id] ?? params.clarificationPatch[clarification.key];
     if (answer === undefined) {
       continue;
@@ -89,7 +95,7 @@ export function applyNonKernelResumeApprovals(
   deps: Pick<NonKernelResumeMutationDeps, "appendEvent" | "now">,
 ): StateSnapshot {
   let working = snapshot;
-  const pendingApprovalActions = working.actions.filter((action) => action.status === "approval_required");
+  const pendingApprovalActions = currentPendingApprovalActions(working);
   for (const action of pendingApprovalActions) {
     working = deps.appendEvent(working, "approval.resolved", {
       actionId: action.id,
@@ -149,8 +155,8 @@ export function applyNonKernelResumeApprovals(
 }
 
 export function nonKernelResumeNeedsInput(snapshot: StateSnapshot): boolean {
-  return snapshot.pendingClarifications.length > 0
-    || snapshot.actions.some((action) => action.status === "approval_required");
+  return currentPendingClarifications(snapshot).length > 0
+    || currentPendingApprovalActionIds(snapshot).length > 0;
 }
 
 export function interruptedNonKernelResumeSnapshot(snapshot: StateSnapshot, updatedAt: number): StateSnapshot {

@@ -162,6 +162,7 @@ import {
 } from "./mode-studio-store.js";
 import {
   approvedActionsForResume,
+  currentPendingClarifications,
   hasKernelResumeWork,
   parseResumePatch,
   rebaseRunEvent,
@@ -1213,6 +1214,10 @@ export class LocalRunStore {
     });
     markRuntimeLatency("snapshot.created");
     liveSnapshot = withRunLatencyMarks(liveSnapshot, latencyMarks);
+    const sessionCtx = this.sessions.get(session.sessionId)?.contextState;
+    if (sessionCtx) {
+      liveSnapshot = { ...liveSnapshot, contextState: normalizeContextState(sessionCtx) };
+    }
     this.persistRun(liveSnapshot);
     liveSnapshot = appendFirstRunLatencyMark(liveSnapshot, runLatencyMark("runtime", "snapshotPersisted", this.now()));
     liveSnapshot = appendFirstRunLatencyMark(liveSnapshot, runLatencyMark("runtime", "kernelScheduled", this.now()));
@@ -1271,7 +1276,9 @@ export class LocalRunStore {
         publishStream([], cancelled);
         return;
       }
-      const finalSnapshot = attachTraceMetadata(this.withSnapshotContextState(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? [])));
+      const finalSnapshot = this.normalizeSnapshotForPersistence(
+        attachTraceMetadata(this.withSnapshotContextState(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? []))),
+      );
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -1382,9 +1389,9 @@ export class LocalRunStore {
           publishStream([], cancelled);
           return;
         }
-        liveSnapshot = completed;
-        await this.persistRunWithGeneratedTitle(completed);
-        publishStream([], completed);
+        liveSnapshot = this.normalizeSnapshotForPersistence(completed);
+        await this.persistRunWithGeneratedTitle(liveSnapshot);
+        publishStream([], liveSnapshot);
       }).catch(async (error) => {
         this.activeStreamingAbortControllers.delete(snapshot.runId);
         const cancelled = this.cancelledSnapshot(snapshot.runId);
@@ -1458,11 +1465,11 @@ export class LocalRunStore {
         publishStream([], cancelled);
         return;
       }
-      const finalSnapshot = this.appendResolvedClarificationEvents(
+      const finalSnapshot = this.normalizeSnapshotForPersistence(this.appendResolvedClarificationEvents(
         attachTraceMetadata(nextSnapshot),
-        snapshot.pendingClarifications,
+        currentPendingClarifications(snapshot),
         clarificationPatch,
-      );
+      ));
       await this.persistRunWithGeneratedTitle(finalSnapshot);
       publishStream([], finalSnapshot);
     }).catch(async (error) => {
@@ -1671,7 +1678,7 @@ export class LocalRunStore {
       });
       const tracedSnapshot = this.appendResolvedClarificationEvents(
         attachTraceMetadata(resumedSnapshot),
-        snapshot.pendingClarifications,
+        currentPendingClarifications(snapshot),
         clarificationPatch,
       );
       await this.persistRunWithGeneratedTitle(tracedSnapshot);

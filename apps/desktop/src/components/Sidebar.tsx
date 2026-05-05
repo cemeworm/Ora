@@ -3,7 +3,6 @@ import {
   Archive,
   Bot,
   ChartNoAxesColumn,
-  CheckCircle2,
   ChevronDown,
   Clock,
   Folder,
@@ -12,20 +11,19 @@ import {
   MessageSquare,
   MessageSquarePlus,
   Plus,
-  RotateCcw,
   Search,
   Settings,
   Sparkles,
-  Trash2,
 } from "lucide-react";
 import { useWorkbench } from "../lib/state";
 import {
   getSharedRuntimeClient,
-  type OraPackageManifest,
   type OraRunAttention,
 } from "../lib/runtimeClient";
+import { checkOraReleaseUpdate, type ReleaseUpdateStatus } from "../lib/releaseUpdate";
 import { buildSessionSearchResults, type SessionSearchResult } from "../lib/sessionSearch";
 import { useRunActions } from "../lib/useRunActions";
+import { translateCopy } from "../lib/i18n";
 import { cn } from "../lib/utils";
 import type { RunStatus } from "../types";
 import { Dialog, DialogContent } from "./ui/dialog";
@@ -38,8 +36,6 @@ const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
 
 export function statusFromSession(
   status: string | undefined,
-  hasPendingClarifications?: boolean,
-  hasPendingPlanDecision?: boolean,
   attention?: OraRunAttention,
 ): RunStatus {
   if (attention) {
@@ -62,9 +58,7 @@ export function statusFromSession(
         return "done";
     }
   }
-  if (hasPendingClarifications) return "clarification_required";
-  if (status === "interrupted") return "approval_required";
-  if (hasPendingPlanDecision) return "decision_needed";
+  if (status === "interrupted") return "paused";
   if (status === "cancelled") return "cancelled";
   if (status === "failed") return "failed";
   if (status === "running" || status === "queued") return "running";
@@ -86,157 +80,42 @@ function SidebarSectionHeader({
   );
 }
 
-function VersionSelector() {
-  const { state, dispatch } = useWorkbench();
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState<string | undefined>();
-  const store = state.packageStore;
-  const active = store?.packages.find((item) => item.versionId === store.active.activeVersionId)
-    ?? store?.packages.find((item) => item.status === "active");
-  const packages = store?.packages ?? [];
-
-  async function refresh(nextFeedback?: string) {
-    const packageStore = await getSharedRuntimeClient().activePackage();
-    dispatch({ type: "SET_PACKAGE_STORE", packageStore });
-    if (nextFeedback) {
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: nextFeedback });
-    }
-  }
-
-  async function runVersionAction(key: string, action: () => Promise<void>) {
-    setBusy(key);
-    try {
-      await action();
-    } finally {
-      setBusy(undefined);
-    }
-  }
-
-  if (!store) {
-    return (
-      <span className="inline-flex h-6 items-center rounded-md bg-sidebar-accent/70 px-2 text-[11px] font-medium text-muted-foreground">
-        v...
-      </span>
-    );
-  }
-
+function SidebarIconSlot({ children }: { children: ReactNode }) {
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        className="inline-flex h-6 max-w-[116px] items-center gap-1 rounded-md bg-sidebar-accent/75 px-1.5 text-[11px] font-medium text-sidebar-accent-foreground transition hover:bg-sidebar-accent active:scale-95"
-        title="Ora package version"
-        aria-label="Ora package version"
-      >
-        <span className="truncate">{active ? `v${active.semver}` : "bundled"}</span>
-        <ChevronDown size={12} className={cn("transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="absolute left-0 top-[calc(100%+6px)] z-40 w-72 rounded-lg bg-popover p-2 text-popover-foreground shadow-lift">
-          <div className="flex items-center justify-between px-2 pb-2 pt-1">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Versions</span>
-            <button
-              type="button"
-              onClick={() => void runVersionAction("rollback", async () => refreshAfterRollback(dispatch, setOpen))}
-              disabled={!store.active.previousVersionId || busy !== undefined}
-              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-95"
-              title="Rollback"
-            >
-              <RotateCcw size={12} />
-              Rollback
-            </button>
-          </div>
-          <div className="max-h-64 overflow-y-auto pr-1">
-            {packages.map((item) => (
-              <VersionRow
-                key={item.versionId}
-                item={item}
-                active={item.versionId === store.active.activeVersionId}
-                busy={busy !== undefined}
-                onSwitch={() => void runVersionAction(item.versionId, async () => {
-                  await getSharedRuntimeClient().switchPackage(item.versionId);
-                  setOpen(false);
-                  await refresh(`Ora package ${item.semver} is active.`);
-                })}
-              />
-            ))}
-            {packages.length === 0 && (
-              <div className="px-2 py-3 text-sm text-muted-foreground">No package slots yet.</div>
-            )}
-          </div>
-          <div className="mt-2 flex justify-end border-t border-border/70 pt-2">
-            <button
-              type="button"
-              onClick={() => void runVersionAction("prune", async () => {
-                const packageStore = await getSharedRuntimeClient().prunePackages(true);
-                dispatch({ type: "SET_PACKAGE_STORE", packageStore });
-                dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Failed package slots pruned." });
-              })}
-              disabled={busy !== undefined}
-              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-40 active:scale-95"
-              title="Prune failed slots"
-            >
-              <Trash2 size={12} />
-              Prune failed
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+    <span className="flex h-5 w-5 shrink-0 items-center justify-center [&_svg]:block">
+      {children}
+    </span>
   );
 }
 
-function VersionRow({
-  item,
-  active,
-  busy,
-  onSwitch,
-}: {
-  item: OraPackageManifest;
-  active: boolean;
-  busy: boolean;
-  onSwitch: () => void;
-}) {
-  const statusTone = item.status === "failed"
-    ? "text-rose-700 bg-rose-100/75"
-    : item.status === "previous"
-      ? "text-amber-800 bg-amber-100/75"
-      : active
-        ? "text-emerald-800 bg-emerald-100/80"
-        : "text-muted-foreground bg-sidebar-accent/70";
-  return (
-    <div className="flex min-h-[44px] items-center gap-2 rounded-md px-2 py-1.5 text-sm transition hover:bg-sidebar-accent/80">
-      <CheckCircle2 size={14} className={active ? "text-emerald-700" : "text-muted-foreground/55"} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium text-foreground">v{item.semver}</div>
-        <div className="truncate text-[11px] text-muted-foreground">{item.versionId}</div>
-      </div>
-      <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusTone)}>
-        {active ? "active" : item.status}
-      </span>
-      {!active && item.verification.status === "passed" && (
-        <button
-          type="button"
-          onClick={onSwitch}
-          disabled={busy}
-          className="h-7 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-background/85 hover:text-foreground disabled:opacity-40 active:scale-95"
-        >
-          Switch
-        </button>
-      )}
-    </div>
-  );
-}
+function ReleaseUpdatePill() {
+  const [status, setStatus] = useState<ReleaseUpdateStatus>({ available: false });
 
-async function refreshAfterRollback(
-  dispatch: ReturnType<typeof useWorkbench>["dispatch"],
-  setOpen: (open: boolean) => void,
-) {
-  const packageStore = await getSharedRuntimeClient().rollbackPackage();
-  dispatch({ type: "SET_PACKAGE_STORE", packageStore });
-  dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Rolled back to the previous Ora package slot." });
-  setOpen(false);
+  useEffect(() => {
+    let cancelled = false;
+    void checkOraReleaseUpdate().then((nextStatus) => {
+      if (!cancelled) {
+        setStatus(nextStatus);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!status.available || !status.releaseUrl) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => void getSharedRuntimeClient().openExternalUrl(status.releaseUrl!)}
+      className="inline-flex h-5 shrink-0 items-center rounded-full bg-amber-100/75 px-1.5 text-[10px] font-medium text-amber-800 transition hover:bg-amber-100 hover:text-amber-900 active:scale-95"
+      title={`Ora ${status.latestVersion ?? ""} is available`}
+      aria-label={`Ora ${status.latestVersion ?? ""} is available on GitHub`}
+    >
+      更新
+    </button>
+  );
 }
 
 function SessionStatusBadge({ status }: { status: RunStatus }) {
@@ -498,6 +377,7 @@ export function Sidebar() {
   const { actions } = useRunActions();
   const { open } = useSidebar();
   const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
+  const [navigationExpanded, setNavigationExpanded] = useState(false);
   const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<string | undefined>();
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
@@ -510,9 +390,9 @@ export function Sidebar() {
       .map((session) => ({
         id: session.sessionId,
         title: session.title,
-        status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId], session.attention),
+        status: statusFromSession(session.status, session.attention),
       })),
-  })), [state.expandedProjectIds, state.projects, state.sessions, state.sessionPendingClarifications, state.sessionPendingPlanDecision]);
+  })), [state.expandedProjectIds, state.projects, state.sessions]);
   const sessionSearchResults = useMemo(
     () => buildSessionSearchResults(state.sessions, state.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
     [sessionSearchQuery, state.projects, state.sessions],
@@ -523,8 +403,8 @@ export function Sidebar() {
     .map((session) => ({
       id: session.sessionId,
       title: session.title,
-      status: statusFromSession(session.status, state.sessionPendingClarifications[session.sessionId], state.sessionPendingPlanDecision[session.sessionId], session.attention),
-    })), [state.sessions, state.sessionPendingClarifications, state.sessionPendingPlanDecision]);
+      status: statusFromSession(session.status, session.attention),
+    })), [state.sessions]);
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = state.activeView === "chat";
   const visiblePrefetchSessionIds = useMemo(() => {
@@ -562,6 +442,66 @@ export function Sidebar() {
     void actions.selectSession(sessionId);
   }
 
+  const navigationItems = [
+    {
+      key: "search",
+      label: "Search",
+      title: "Search",
+      icon: <Search size={14} />,
+      active: false,
+      onClick: openSessionSearch,
+    },
+    {
+      key: "agents",
+      label: "Agents",
+      title: "Agents",
+      icon: <Bot size={16} />,
+      active: state.activeView === "agents",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "agents" }),
+      gapClass: "mt-2",
+    },
+    {
+      key: "modes",
+      label: "Modes",
+      title: "Modes",
+      icon: <GitBranchPlus size={16} />,
+      active: state.activeView === "modes",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "modes" }),
+      gapClass: "mt-1",
+    },
+    {
+      key: "skills",
+      label: "Skills",
+      title: "Skills",
+      icon: <Sparkles size={16} />,
+      active: state.activeView === "skills",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "skills" }),
+      gapClass: "mt-1",
+    },
+    {
+      key: "evaluation",
+      label: "Evaluation",
+      title: "Evaluation",
+      icon: <ChartNoAxesColumn size={16} />,
+      active: state.activeView === "evaluation",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "evaluation" }),
+      gapClass: "mt-1",
+    },
+    {
+      key: "automations",
+      label: "定时任务",
+      title: "定时任务",
+      icon: <Clock size={16} />,
+      active: state.activeView === "automations",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "automations" }),
+      gapClass: "mt-1",
+    },
+  ];
+  const navigationToggleLabel = state.language === "zh"
+    ? navigationExpanded ? "折叠" : "展开"
+    : navigationExpanded ? "Less" : "More";
+  const collapsedNavigationMask = "linear-gradient(to bottom, #000 0%, #000 58%, rgba(0,0,0,0.72) 72%, rgba(0,0,0,0.28) 88%, transparent 100%)";
+
   return (
     <aside
       data-state={open ? "expanded" : "collapsed"}
@@ -575,7 +515,7 @@ export function Sidebar() {
           <div className="flex items-center justify-between gap-2">
             <div className="ml-1 flex min-w-0 items-center gap-2">
               <div className="cursor-default font-serif text-[15px] text-primary">Ora</div>
-              <VersionSelector />
+              <ReleaseUpdatePill />
             </div>
             <SidebarTrigger />
           </div>
@@ -599,89 +539,64 @@ export function Sidebar() {
           )}
           title="New chat"
         >
-          <MessageSquarePlus size={16} />
+          <SidebarIconSlot>
+            <MessageSquarePlus size={16} />
+          </SidebarIconSlot>
           {open && <span>New Chat</span>}
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <div className="px-2 pb-2">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="shrink-0 px-2 pb-2">
+          <div className="relative">
+            <div
+              className={cn(
+                "overflow-hidden transition-[max-height] duration-200 ease-out",
+                navigationExpanded ? "max-h-80" : "max-h-[150px]",
+              )}
+              style={navigationExpanded
+                ? undefined
+                : { maskImage: collapsedNavigationMask, WebkitMaskImage: collapsedNavigationMask }}
+            >
+              {navigationItems.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={item.onClick}
+                  className={cn(
+                    "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                    item.active && "bg-sidebar-accent text-sidebar-accent-foreground",
+                    item.gapClass,
+                    !open && "justify-center px-0",
+                  )}
+                  title={translateCopy(state.language, item.title)}
+                >
+                  <SidebarIconSlot>{item.icon}</SidebarIconSlot>
+                  {open && <span>{translateCopy(state.language, item.label)}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
           <button
             type="button"
-            onClick={openSessionSearch}
+            onClick={() => setNavigationExpanded((current) => !current)}
             className={cn(
-              "flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              !open && "justify-center px-0",
+              "mt-1 flex h-7 w-full items-center justify-center gap-1 rounded-md text-[12px] font-medium text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-95",
+              !open && "px-0",
             )}
-            title="Search"
+            title={state.language === "zh" ? navigationToggleLabel : navigationExpanded ? "Collapse navigation" : "Expand navigation"}
+            aria-expanded={navigationExpanded}
           >
-            <Search size={14} />
-            {open && <span>Search</span>}
-          </button>
-          <button
-            onClick={() => dispatch({ type: "SET_VIEW", view: "agents" })}
-            className={cn(
-              "mt-2 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              state.activeView === "agents" && "bg-sidebar-accent text-sidebar-accent-foreground",
-              !open && "justify-center px-0",
-            )}
-            title="Agents"
-          >
-            <Bot size={16} />
-            {open && <span>Agents</span>}
-          </button>
-          <button
-            onClick={() => dispatch({ type: "SET_VIEW", view: "skills" })}
-            className={cn(
-              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              state.activeView === "skills" && "bg-sidebar-accent text-sidebar-accent-foreground",
-              !open && "justify-center px-0",
-            )}
-            title="Skills"
-          >
-            <Sparkles size={16} />
-            {open && <span>Skills</span>}
-          </button>
-          <button
-            onClick={() => dispatch({ type: "SET_VIEW", view: "modes" })}
-            className={cn(
-              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              state.activeView === "modes" && "bg-sidebar-accent text-sidebar-accent-foreground",
-              !open && "justify-center px-0",
-            )}
-            title="Modes"
-          >
-            <GitBranchPlus size={16} />
-            {open && <span>Modes</span>}
-          </button>
-          <button
-            onClick={() => dispatch({ type: "SET_VIEW", view: "evaluation" })}
-            className={cn(
-              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              state.activeView === "evaluation" && "bg-sidebar-accent text-sidebar-accent-foreground",
-              !open && "justify-center px-0",
-            )}
-            title="Evaluation"
-          >
-            <ChartNoAxesColumn size={16} />
-            {open && <span>Evaluation</span>}
-          </button>
-          <button
-            onClick={() => dispatch({ type: "SET_VIEW", view: "automations" })}
-            className={cn(
-              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              state.activeView === "automations" && "bg-sidebar-accent text-sidebar-accent-foreground",
-              !open && "justify-center px-0",
-            )}
-            title="定时任务"
-          >
-            <Clock size={16} />
-            {open && <span>定时任务</span>}
+            <ChevronDown
+              size={14}
+              className={cn("transition-transform duration-200", navigationExpanded && "rotate-180")}
+            />
+            {open && <span>{navigationToggleLabel}</span>}
           </button>
         </div>
 
         {open && (
-          <div className="flex h-full min-h-0 flex-col overflow-hidden px-2 pb-2">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-2">
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <section>
                 <SidebarSectionHeader
@@ -854,7 +769,9 @@ export function Sidebar() {
             )}
             title="Settings"
           >
-            <Settings size={16} />
+            <SidebarIconSlot>
+              <Settings size={16} />
+            </SidebarIconSlot>
             {open && <span>Settings</span>}
           </button>
         </div>

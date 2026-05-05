@@ -86,6 +86,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
     };
 
     const html = renderToStaticMarkup(
@@ -117,6 +118,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "timeline", itemId: "status-1" },
     };
 
     const html = renderToStaticMarkup(
@@ -149,6 +151,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "timeline", itemId: "status-1" },
     };
 
     const html = renderToStaticMarkup(
@@ -284,6 +287,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
     };
 
     const html = renderToStaticMarkup(
@@ -346,6 +350,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
     };
 
     const html = renderToStaticMarkup(
@@ -373,6 +378,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
     };
 
     const html = renderToStaticMarkup(
@@ -1204,6 +1210,7 @@ describe("assistant turn display helpers", () => {
       clarificationCount: 0,
       hasProposedPlan: true,
       proposedPlanStatus: "streaming",
+      activeLoadingTarget: { kind: "proposed_plan" },
     };
 
     const html = renderToStaticMarkup(
@@ -1214,6 +1221,44 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("正在生成");
     expect(html).toContain("流式计划");
     expect(html).toContain("先显示卡片");
+  });
+
+  it("uses the proposed plan as the only active loading target while plan output streams", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [{
+        id: "progress-1",
+        kind: "status_group",
+        summary: "已探索 2 个文件",
+        timestamp: "00:01",
+        status: "complete",
+        steps: [
+          processStep("grep", "complete", "已搜索 PlanCard。", { label: "搜索文件" }),
+        ],
+      }],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+      proposedPlanStatus: "streaming",
+      activeLoadingTarget: { kind: "proposed_plan" },
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="## 流式计划\n1. 先显示卡片" turn={turn} />,
+    );
+
+    expect(html).toContain("已探索 2 个文件");
+    expect(html).toContain("正在生成");
+    expect(html.match(/animate-spin/g)).toHaveLength(1);
+    expect(html).not.toContain("正在思考");
   });
 
   it("renders an empty streaming PlanCard while only the plan opening tag has arrived", () => {
@@ -1231,6 +1276,7 @@ describe("assistant turn display helpers", () => {
       clarificationCount: 0,
       hasProposedPlan: true,
       proposedPlanStatus: "streaming",
+      activeLoadingTarget: { kind: "proposed_plan" },
     };
 
     const html = renderToStaticMarkup(
@@ -1266,6 +1312,7 @@ describe("assistant turn display helpers", () => {
       clarificationCount: 0,
       hasProposedPlan: true,
       proposedPlanStatus: "complete",
+      activeLoadingTarget: { kind: "thinking" },
     };
     const planContent = "## 完整计划\n1. 只在计划卡片显示";
 
@@ -1299,6 +1346,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "thinking" },
     };
 
     const html = renderToStaticMarkup(
@@ -1334,6 +1382,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "timeline", itemId: "progress-1" },
     };
 
     const html = renderToStaticMarkup(
@@ -1379,6 +1428,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: false,
+      activeLoadingTarget: { kind: "timeline", itemId: "progress-1" },
     };
 
     const html = renderToStaticMarkup(

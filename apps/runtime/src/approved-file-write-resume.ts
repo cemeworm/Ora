@@ -6,6 +6,11 @@ import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolId } fro
 import { PackageManager } from "./package-manager.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import { evaluateRuntimeCompletionGuards } from "./harness/runtime-completion-guards.js";
+import {
+  currentPendingApprovalActions,
+  currentPendingApprovalToolActionIds,
+  currentPendingClarifications,
+} from "./run-orchestration.js";
 
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 
@@ -39,16 +44,12 @@ export function approvedToolContinuationActions(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
 ): ActionRecord[] {
-  if (snapshot.pendingClarifications.length > 0) {
+  if (currentPendingClarifications(snapshot).length > 0) {
     return [];
   }
   const approvedIds = new Set(approvedActionIds);
-  const pendingActions = snapshot.actions.filter((action) => action.status === "approval_required");
-  const pendingToolActionIds = new Set(
-    snapshot.toolCalls
-      .filter((call) => call.actionId && call.status === "approval_required")
-      .map((call) => call.actionId!),
-  );
+  const pendingActions = currentPendingApprovalActions(snapshot);
+  const pendingToolActionIds = new Set(currentPendingApprovalToolActionIds(snapshot));
   const approvedTools = pendingActions.filter((action) =>
     approvedIds.has(action.id) &&
     pendingToolActionIds.has(action.id) &&

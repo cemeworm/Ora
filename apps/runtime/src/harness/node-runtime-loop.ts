@@ -653,6 +653,7 @@ export async function runNodeRuntimeLoop(
         {
           role: "assistant",
           content: `${fallbackPrefix} ${toolCall.tool} degraded after ${incident.errorType}: ${incident.detail}`,
+          visibility: "internal",
           boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
             ? "recovery_policy"
             : "tool_error_boundary",
@@ -699,6 +700,9 @@ export async function runNodeRuntimeLoop(
         toolId: toolCall.tool,
         detail: incident.detail,
       });
+      if (/boundary violation/i.test(detail)) {
+        return { kind: "throw", error };
+      }
       return {
         kind: "continue",
         response: await invokeFollowUpModel({

@@ -29,6 +29,8 @@ export interface ProviderPreset {
   anthropicVersion?: string;
   capabilities: ProviderCapability[];
   maxTokens?: number;
+  contextWindow?: number;
+  maxContextWindow?: number;
   temperature?: number;
   headers?: Record<string, string>;
 }
@@ -65,6 +67,7 @@ export interface ProviderCatalogEntry {
 export const BUILT_IN_PROVIDER_IDS = new Set(["openai-gpt", "anthropic-claude", "local-smoke"]);
 
 const MODEL_PROVIDER_SEPARATOR = "--model-";
+const DEEPSEEK_V4_CONTEXT_WINDOW = 1_048_576;
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
@@ -196,6 +199,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     protocol: "chat_completions",
     capabilities: ["chat", "tool_use", "reasoning", "json_mode"],
     maxTokens: 8192,
+    contextWindow: DEEPSEEK_V4_CONTEXT_WINDOW,
   },
   {
     id: "zhipu",
@@ -375,6 +379,39 @@ export function createProviderId(base: string, existingProviders: readonly OraPr
 
 export function findPresetById(presetId: string) {
   return PROVIDER_PRESETS.find((preset) => preset.id === presetId) ?? PROVIDER_PRESETS[0];
+}
+
+export function inferProviderContextWindow(
+  provider: Pick<
+    OraProviderConfig,
+    "baseUrl" | "contextWindow" | "id" | "maxContextWindow" | "modelId" | "type"
+  >,
+): number | undefined {
+  const explicitContextWindow = provider.contextWindow ?? provider.maxContextWindow;
+  if (explicitContextWindow) {
+    return explicitContextWindow;
+  }
+
+  const normalizedModelId = provider.modelId.toLowerCase();
+  const normalizedBaseUrl = provider.baseUrl?.toLowerCase() ?? "";
+  const preset = findPresetForProvider(provider as OraProviderConfig);
+  if (
+    preset.id === "deepseek" &&
+    (normalizedModelId === "deepseek-v4-pro" ||
+      normalizedModelId === "deepseek-v4-flash" ||
+      normalizedModelId.startsWith("deepseek-v4"))
+  ) {
+    return preset.contextWindow;
+  }
+
+  if (
+    normalizedBaseUrl.includes("api.deepseek.com") &&
+    normalizedModelId.startsWith("deepseek-v4")
+  ) {
+    return DEEPSEEK_V4_CONTEXT_WINDOW;
+  }
+
+  return preset.contextWindow ?? preset.maxContextWindow;
 }
 
 export function findPresetForProvider(provider: OraProviderConfig) {

@@ -2,6 +2,9 @@ import {
   CoordinationPatternSchema,
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
+  StateSnapshotSchema,
+  deriveRunAttention,
+  deriveSessionBranchGroupStatus,
   type ModeSelection,
   type PermissionMode,
   type TaskIntent,
@@ -25,7 +28,6 @@ import {
   readStoredLanguage,
   type AppLanguage,
 } from "./i18n";
-import { parseProposedPlan } from "./proposedPlanParser";
 import { chooseEnabledProviderId } from "./providerSelection";
 import type {
   OraModeSpec,
@@ -124,8 +126,6 @@ export interface WorkbenchState {
   artifactPanelOpen: boolean;
   selectedArtifactId: string | undefined;
   language: AppLanguage;
-  sessionPendingClarifications: Record<string, boolean>;
-  sessionPendingPlanDecision: Record<string, boolean>;
 }
 
 export type WorkbenchAction =
@@ -235,7 +235,6 @@ export type WorkbenchAction =
   | { type: "TOGGLE_ARTIFACT_PANEL" }
   | { type: "OPEN_ARTIFACT_PANEL"; artifactId: string }
   | { type: "CLOSE_ARTIFACT_PANEL" }
-  | { type: "SET_PLAN_DECISION_PENDING"; sessionId: string; pending: boolean }
   | { type: "SET_LANGUAGE"; language: AppLanguage };
 
 const initialSelectedPattern = CoordinationPatternSchema
@@ -296,8 +295,6 @@ export const initialWorkbenchState: WorkbenchState = {
   artifactPanelOpen: false,
   selectedArtifactId: undefined,
   language: readStoredLanguage(),
-  sessionPendingClarifications: {},
-  sessionPendingPlanDecision: {},
 };
 
 function replaceSessionSummary(
@@ -806,7 +803,8 @@ export function mergeRunStreamSnapshot(
   stream: OraRunEventStream,
 ): OraStateSnapshot | undefined {
   if (stream.snapshot) {
-    return mergeStateSnapshot(snapshot, stream.snapshot);
+    const merged = mergeStateSnapshot(snapshot, stream.snapshot);
+    return merged ? normalizeDesktopSnapshot(merged) : undefined;
   }
   if (!snapshot || snapshot.runId !== stream.runId) {
     return snapshot;
@@ -820,7 +818,7 @@ export function mergeRunStreamSnapshot(
     stream,
   );
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
-  return {
+  return normalizeDesktopSnapshot({
     ...snapshot,
     status: stream.status ?? snapshot.status,
     actions: merged.actions,
@@ -829,7 +827,7 @@ export function mergeRunStreamSnapshot(
     agentMessages,
     events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
-  };
+  });
 }
 
 function canAppendStreamEvents(
@@ -1154,18 +1152,12 @@ function readActionStatus(
   }
 }
 
-function snapshotContainsProposedPlan(snapshot: OraStateSnapshot): boolean {
-  const parts: string[] = [];
-  for (const event of snapshot.events) {
-    if (
-      event?.type === "message.delta" &&
-      isRecord(event.payload) &&
-      typeof event.payload.content === "string"
-    ) {
-      parts.push(event.payload.content);
-    }
-  }
-  return parseProposedPlan(parts.join("")).hasCompletePlan;
+function normalizeDesktopSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
+  const normalized = StateSnapshotSchema.parse(snapshot);
+  return StateSnapshotSchema.parse({
+    ...normalized,
+    attention: deriveRunAttention(normalized),
+  }) as OraStateSnapshot;
 }
 
 function streamRunStatus(
@@ -1219,6 +1211,7 @@ function syncSessionStateForSettledStream(
     return {
       ...session,
       status,
+      attention: snapshot?.attention ?? session.attention,
       latestRunId: snapshot?.runId ?? session.latestRunId,
       latestPattern: snapshot?.pattern ?? session.latestPattern,
       latestModeId: snapshot?.modeId ?? session.latestModeId,
@@ -1285,6 +1278,7 @@ function applyStreamToSessionDetail(
     session: {
       ...detail.session,
       status: status ?? detail.session.status,
+      attention: snapshot?.attention ?? detail.session.attention,
       latestRunId: stream.runId,
       updatedAt: updatedAt ?? detail.session.updatedAt,
     },
@@ -1342,15 +1336,7 @@ function branchGroupStatus(
   group: OraSessionBranchGroup,
   candidates: OraSessionBranchGroup["candidates"],
 ): OraSessionBranchGroup["status"] {
-  if (group.adoptedRunId || candidates.some((candidate) => candidate.adopted))
-    return "adopted";
-  if (group.status === "dismissed") return "dismissed";
-  return candidates.every(
-    (candidate) =>
-      candidate.status !== "queued" && candidate.status !== "running",
-  )
-    ? "ready"
-    : "running";
+  return deriveSessionBranchGroupStatus({ ...group, candidates });
 }
 
 function branchOutputPreview(
@@ -1397,7 +1383,7 @@ function markSnapshotResuming(
   }
 
   const approved = new Set(approvedActionIds);
-  return {
+  return normalizeDesktopSnapshot({
     ...snapshot,
     status: "running",
     actions: snapshot.actions.map((action) => {
@@ -1413,7 +1399,7 @@ function markSnapshotResuming(
       (actionId) => !approved.has(actionId),
     ),
     updatedAt,
-  };
+  });
 }
 
 export function workbenchReducer(
@@ -1487,8 +1473,17 @@ export function workbenchReducer(
         action.snapshot,
         state.selectedTurnRunId,
       );
+      const normalizedSnapshot = snapshot ? normalizeDesktopSnapshot(snapshot) : undefined;
       const latestTurn = action.detail.turns.at(-1);
-      const attention = action.detail.session.attention ?? snapshot?.attention;
+      const attention = normalizedSnapshot?.attention ?? action.detail.session.attention;
+      const normalizedDetail = {
+        ...action.detail,
+        session: {
+          ...action.detail.session,
+          attention,
+        },
+        latestSnapshot: normalizedSnapshot ?? action.detail.latestSnapshot,
+      };
       return {
         ...state,
         projects: action.projects,
@@ -1496,7 +1491,7 @@ export function workbenchReducer(
           action.sessions.filter(
             (session) => session.sessionId !== action.detail.session.sessionId,
           ),
-          action.detail.session,
+          normalizedDetail.session,
         ),
         selectedProjectId: action.detail.session.projectId,
         expandedProjectIds: action.detail.session.projectId
@@ -1505,25 +1500,25 @@ export function workbenchReducer(
               [action.detail.session.projectId]: true,
             }
           : state.expandedProjectIds,
-        activeSessionDetail: action.detail,
-        activeSnapshot: snapshot,
+        activeSessionDetail: normalizedDetail,
+        activeSnapshot: normalizedSnapshot,
         sessionDetailsById: cacheSessionDetail(
           state.sessionDetailsById,
-          action.detail,
+          normalizedDetail,
         ),
         selectedSessionId: action.detail.session.sessionId,
-        selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
-        selectedPattern: snapshot?.pattern ?? state.selectedPattern,
-        selectedModeId: snapshot?.modeId ?? state.selectedModeId,
+        selectedTurnRunId: normalizedSnapshot?.runId ?? latestTurn?.runId,
+        selectedPattern: normalizedSnapshot?.pattern ?? state.selectedPattern,
+        selectedModeId: normalizedSnapshot?.modeId ?? state.selectedModeId,
         selectedModeSelection:
-          snapshot?.config.modeSelection ?? state.selectedModeSelection,
+          normalizedSnapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId:
-          snapshot?.config.providerId ?? state.selectedProviderId,
+          normalizedSnapshot?.config.providerId ?? state.selectedProviderId,
         selectedNodeId:
-          snapshot?.topology.nodes[1]?.id ??
-          snapshot?.topology.nodes[0]?.id ??
+          normalizedSnapshot?.topology.nodes[1]?.id ??
+          normalizedSnapshot?.topology.nodes[0]?.id ??
           "run",
-        selectedBeatId: snapshot?.events.at(-1)?.id,
+        selectedBeatId: normalizedSnapshot?.events.at(-1)?.id,
         promptText: sessionPromptText(state, action.detail.session.sessionId),
         selectedSkillIds: sessionSkillIds(
           state,
@@ -1535,21 +1530,6 @@ export function workbenchReducer(
         ),
         taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
-        sessionPendingClarifications: {
-          ...state.sessionPendingClarifications,
-          [action.detail.session.sessionId]:
-            attention?.kind === "needs_clarification" ||
-            (snapshot?.pendingClarifications?.length ?? 0) > 0,
-        },
-        sessionPendingPlanDecision: {
-          ...state.sessionPendingPlanDecision,
-          [action.detail.session.sessionId]:
-            attention?.kind === "needs_plan_decision" ||
-            (sessionTaskIntent(state, action.detail.session.sessionId) ===
-              "plan" && snapshot
-              ? snapshotContainsProposedPlan(snapshot)
-              : false),
-        },
         pendingRun: undefined,
         isLoading: false,
         busyCommand: undefined,
@@ -1569,8 +1549,6 @@ export function workbenchReducer(
       const archivedSession = state.sessions.find(
         (session) => session.sessionId === action.sessionId,
       );
-      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } =
-        state.sessionPendingPlanDecision;
       return {
         ...state,
         sessions: state.sessions.filter(
@@ -1591,7 +1569,6 @@ export function workbenchReducer(
           action.sessionId,
         ),
         sessionTaskIntents: clearSessionTaskIntent(state, action.sessionId),
-        sessionPendingPlanDecision: restPlanDecision,
         promptText:
           state.selectedSessionId === action.sessionId ? "" : state.promptText,
         selectedSkillIds:
@@ -1956,51 +1933,6 @@ export function workbenchReducer(
       const isSettled =
         action.stream.status === "succeeded" ||
         action.stream.status === "failed";
-      const pendingClarificationsSessionId =
-        activeSnapshot?.sessionId ?? streamSessionId;
-      const sessionPendingClarifications = pendingClarificationsSessionId
-        ? {
-            ...state.sessionPendingClarifications,
-            [pendingClarificationsSessionId]:
-              (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
-          }
-        : state.sessionPendingClarifications;
-      const planTaskIntent = sessionTaskIntent(state, streamSessionId);
-      const planHasProposed = streamSnapshot
-        ? snapshotContainsProposedPlan(streamSnapshot)
-        : false;
-      const pendingPlanDecisionSessionId =
-        isSettled && planTaskIntent === "plan" && planHasProposed
-          ? streamSnapshot!.sessionId
-          : undefined;
-      const attentionPlanDecisionSessionId =
-        streamSnapshot?.attention?.kind === "needs_plan_decision"
-          ? streamSnapshot.sessionId
-          : undefined;
-      const sessionPendingPlanDecision = pendingPlanDecisionSessionId
-        ? {
-            ...state.sessionPendingPlanDecision,
-            [pendingPlanDecisionSessionId]: true,
-          }
-        : attentionPlanDecisionSessionId
-          ? {
-              ...state.sessionPendingPlanDecision,
-              [attentionPlanDecisionSessionId]: true,
-            }
-          : state.sessionPendingPlanDecision;
-      if (isSettled && planTaskIntent === "plan") {
-        console.log(
-          "[plan:state:APPLY_RUN_STREAM] isSettled=%s taskIntent=%s hasProposedPlan=%s attentionKind=%s sessionId=%s -> pending=%s",
-          isSettled,
-          planTaskIntent,
-          planHasProposed,
-          streamSnapshot?.attention?.kind,
-          streamSnapshot?.sessionId,
-          Boolean(
-            pendingPlanDecisionSessionId || attentionPlanDecisionSessionId,
-          ),
-        );
-      }
       return {
         ...state,
         sessions,
@@ -2029,8 +1961,6 @@ export function workbenchReducer(
           return next;
         })(),
         activeSnapshot,
-        sessionPendingClarifications,
-        sessionPendingPlanDecision,
         selectedTurnRunId:
           state.selectedTurnRunId ??
           (streamBelongsToActiveTurn ? action.stream.runId : undefined),
@@ -2181,8 +2111,6 @@ export function workbenchReducer(
         : state;
 
     case "BEGIN_RUN_REQUEST": {
-      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } =
-        state.sessionPendingPlanDecision;
       return {
         ...state,
         pendingRun: {
@@ -2195,7 +2123,6 @@ export function workbenchReducer(
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         lastRunTaskIntent: undefined,
         isLoading: true,
-        sessionPendingPlanDecision: restPlanDecision,
       };
     }
 
@@ -2264,18 +2191,6 @@ export function workbenchReducer(
 
     case "CLOSE_ARTIFACT_PANEL":
       return { ...state, artifactPanelOpen: false };
-
-    case "SET_PLAN_DECISION_PENDING":
-      return {
-        ...state,
-        sessionPendingPlanDecision: action.pending
-          ? { ...state.sessionPendingPlanDecision, [action.sessionId]: true }
-          : (() => {
-              const { [action.sessionId]: _cleared, ...rest } =
-                state.sessionPendingPlanDecision;
-              return rest;
-            })(),
-      };
 
     case "SET_LANGUAGE":
       if (typeof window !== "undefined") {

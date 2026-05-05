@@ -124,7 +124,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, legacySystemAgentIdsFor, modeSpecToPatternDefinition, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
+import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, legacySystemAgentIdsFor, modeSpecToPatternDefinition, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -5005,11 +5005,7 @@ class LocalJsonRpcRuntime {
       noExistingDecision: normalized.planDecisions.length === 0,
     };
     const shouldInject = planCheck.hasSessionId && planCheck.isSucceeded && planCheck.taskIntent === "plan" && planCheck.hasProposedPlan && planCheck.noExistingDecision;
-    if (!shouldInject) {
-      console.log("[plan:mock-snapshot] skip planDecision injection checks=%o", planCheck);
-    }
     if (shouldInject) {
-      console.log("[plan:mock-snapshot] injecting planDecision runId=%s", normalized.runId);
       normalized = {
         ...normalized,
         planDecisions: [{
@@ -5355,67 +5351,13 @@ function previousVisibleMockRunBefore(sessionId: string, runId: string, runs: Or
 }
 
 function buildMockBranchGroups(sessionId: string, runs: OraStateSnapshot[]): OraSessionBranchGroup[] {
-  const grouped = new Map<string, OraStateSnapshot[]>();
-  runs
-    .filter((run) => run.sessionId === sessionId && typeof run.config.metadata.branchGroupId === "string")
-    .forEach((run) => {
-      const branchGroupId = String(run.config.metadata.branchGroupId);
-      grouped.set(branchGroupId, [...(grouped.get(branchGroupId) ?? []), run]);
-    });
-  return [...grouped.entries()].map(([branchGroupId, groupRuns]) => {
-    const sortedRuns = groupRuns.sort((a, b) => a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
-    const first = sortedRuns[0]!;
-    const adopted = sortedRuns.find((run) => run.config.metadata.branchRole === "adopted");
-    const dismissed = sortedRuns.every((run) => run.config.metadata.branchDismissed === true);
-    const allSettled = sortedRuns.every((run) => run.status !== "queued" && run.status !== "running");
-    const status: OraSessionBranchGroup["status"] = adopted ? "adopted" : dismissed ? "dismissed" : allSettled ? "ready" : "running";
-    return {
-      branchGroupId,
-      sessionId,
-      target: branchTargetValue(first.config.metadata.branchTarget),
-      baseRunId: stringRecordValue(first.config.metadata.branchBaseRunId),
-      replaceRunId: stringRecordValue(first.config.metadata.branchReplaceRunId),
-      baseTurnIndex: numberRecordValue(first.config.metadata.branchBaseTurnIndex) ?? 0,
-      prompt: stringRecordValue(first.config.metadata.branchPrompt) ?? first.input.prompt,
-      status,
-      candidateRunIds: sortedRuns.map((run) => run.runId),
-      candidates: sortedRuns.map((run) => ({
-        runId: run.runId,
-        status: run.status,
-        label: stringRecordValue(run.config.metadata.branchCandidateLabel),
-        modeId: run.modeId,
-        providerId: run.config.providerId,
-        modelRef: run.config.modelRef,
-        adopted: run.config.metadata.branchRole === "adopted",
-        prompt: run.input.prompt,
-        outputPreview: mockOutputPreview(run),
-        updatedAt: run.updatedAt,
-      })),
-      adoptedRunId: adopted?.runId,
-      createdAt: numberRecordValue(first.config.metadata.branchGroupCreatedAt) ?? first.input.createdAt ?? first.updatedAt,
-      updatedAt: sortedRuns.reduce((max, run) => Math.max(max, run.updatedAt), first.updatedAt),
-    };
-  }).sort((a, b) => b.updatedAt - a.updatedAt || a.branchGroupId.localeCompare(b.branchGroupId));
+  return deriveSessionBranchGroupsForSession(sessionId, runs);
 }
 
 function branchTargetValue(value: unknown): OraSessionBranchGroup["target"] {
   return value === "empty_start" || value === "append_after_latest" || value === "replace_latest"
     ? value
     : "append_after_latest";
-}
-
-function stringRecordValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-function numberRecordValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function mockOutputPreview(run: OraStateSnapshot): string | undefined {
-  if (isRecord(run.output) && typeof run.output.text === "string") return run.output.text.slice(0, 500);
-  if (typeof run.output === "string") return run.output.slice(0, 500);
-  return undefined;
 }
 
 function createMockPackageStore(): OraPackageStoreSnapshot {

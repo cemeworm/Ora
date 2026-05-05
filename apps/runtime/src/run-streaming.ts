@@ -1,6 +1,8 @@
 import {
   AgentConversationMessageSchema,
+  deriveRunAttention,
   OraEventEnvelope,
+  PendingClarificationSchema,
   RunEventStream,
   RunEventStreamSchema,
   StateSnapshot,
@@ -19,15 +21,20 @@ export function publishRunStream(params: {
   if (params.events.length === 0 && !params.snapshot) {
     return;
   }
+  const snapshot = params.snapshot
+    ? normalizeSnapshotAttention(params.snapshot)
+    : undefined;
+  const liveSnapshot = normalizeSnapshotAttention(params.liveSnapshot);
+  const streamSnapshot = snapshot ?? (shouldAttachLiveSnapshot(params.events) ? liveSnapshot : undefined);
   params.onStream?.(RunEventStreamSchema.parse({
     runId: params.runId,
-    fromSeq: params.events[0]?.seq ?? params.liveSnapshot.events.length,
+    fromSeq: params.events[0]?.seq ?? liveSnapshot.events.length,
     events: params.events,
     nextSeq: params.events.length > 0
       ? params.events.at(-1)!.seq + 1
-      : params.liveSnapshot.events.length,
-    status: params.snapshot?.status ?? params.liveSnapshot.status,
-    snapshot: params.snapshot,
+      : liveSnapshot.events.length,
+    status: streamSnapshot?.status ?? liveSnapshot.status,
+    snapshot: streamSnapshot,
   }));
 }
 
@@ -36,13 +43,13 @@ export function applyStreamingRunEvent(
   event: OraEventEnvelope,
 ): StateSnapshot {
   const projected = projectStreamingEvent(liveSnapshot, event);
-  return StateSnapshotSchema.parse({
+  return normalizeSnapshotAttention(StateSnapshotSchema.parse({
     ...projected,
     status: statusForRunEvent(event.type, liveSnapshot.status),
     events: [...liveSnapshot.events, event],
     agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
-  });
+  }));
 }
 
 function projectStreamingEvent(
@@ -77,10 +84,85 @@ function projectStreamingEvent(
     };
   }
 
+  if (event.type === "clarification.required" && isRecord(event.payload.clarification)) {
+    const parsed = PendingClarificationSchema.safeParse(event.payload.clarification);
+    if (!parsed.success) {
+      return snapshot;
+    }
+    return {
+      ...snapshot,
+      pendingClarifications: upsertById(snapshot.pendingClarifications, parsed.data),
+    };
+  }
+
+  if (event.type === "clarification.resolved" && typeof event.payload.clarificationId === "string") {
+    const clarificationId = event.payload.clarificationId;
+    return {
+      ...snapshot,
+      pendingClarifications: snapshot.pendingClarifications.filter((clarification) => clarification.id !== clarificationId),
+    };
+  }
+
+  if (event.type === "plan.updated" && Array.isArray(event.payload.items)) {
+    return {
+      ...snapshot,
+      plan: event.payload.items as StateSnapshot["plan"],
+    };
+  }
+
+  if (event.type === "todo.updated" && Array.isArray(event.payload.items)) {
+    return {
+      ...snapshot,
+      todos: event.payload.items as StateSnapshot["todos"],
+    };
+  }
+
   if (event.type === "plan_list.updated" && Array.isArray(event.payload.plan)) {
     return {
       ...snapshot,
       planList: event.payload.plan as StateSnapshot["planList"],
+    };
+  }
+
+  if (event.type === "topology.updated" && Array.isArray(event.payload.nodes) && Array.isArray(event.payload.edges)) {
+    return {
+      ...snapshot,
+      topology: event.payload as StateSnapshot["topology"],
+    };
+  }
+
+  if (event.type === "queue.updated") {
+    return {
+      ...snapshot,
+      queueSummary: isRecord(event.payload.summary)
+        ? event.payload.summary as StateSnapshot["queueSummary"]
+        : snapshot.queueSummary,
+      busStats: isRecord(event.payload.busStats)
+        ? event.payload.busStats as StateSnapshot["busStats"]
+        : snapshot.busStats,
+    };
+  }
+
+  if (event.type === "shared_state.updated" && isRecord(event.payload.entry)) {
+    const entry = event.payload.entry as StateSnapshot["sharedStateSummary"]["entries"][number];
+    const entries = upsertSharedStateEntry(snapshot.sharedStateSummary.entries, entry);
+    return {
+      ...snapshot,
+      sharedStateSummary: {
+        ...snapshot.sharedStateSummary,
+        enabled: true,
+        storeKind: snapshot.sharedStateSummary.storeKind === "none" ? "blackboard" : snapshot.sharedStateSummary.storeKind,
+        version: Math.max(snapshot.sharedStateSummary.version, typeof entry.version === "number" ? entry.version : 0),
+        entries,
+        stopReason: entry.key === "convergence" ? "converged" : snapshot.sharedStateSummary.stopReason,
+      },
+    };
+  }
+
+  if ((event.type === "artifact.exported" || event.type === "artifact.degraded") && isRecord(event.payload.artifact)) {
+    return {
+      ...snapshot,
+      artifacts: upsertById(snapshot.artifacts, event.payload.artifact as StateSnapshot["artifacts"][number]),
     };
   }
 
@@ -95,6 +177,15 @@ function upsertById<T extends { id: string }>(items: readonly T[], next: T): T[]
 
 function addUnique(items: readonly string[], next: string): string[] {
   return items.includes(next) ? [...items] : [...items, next];
+}
+
+function upsertSharedStateEntry(
+  entries: readonly StateSnapshot["sharedStateSummary"]["entries"][number][],
+  next: StateSnapshot["sharedStateSummary"]["entries"][number],
+): StateSnapshot["sharedStateSummary"]["entries"] {
+  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  byKey.set(next.key, next);
+  return [...byKey.values()].sort((left, right) => left.key.localeCompare(right.key));
 }
 
 function mergeStreamingAgentMessage(
@@ -129,6 +220,29 @@ export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {
   return event.seq % 8 === 0 || event.type.startsWith("run.");
 }
 
+function shouldAttachLiveSnapshot(events: readonly OraEventEnvelope[]): boolean {
+  return events.some((event) => {
+    if (event.type === "message.delta" || event.type === "token.delta") {
+      return false;
+    }
+    return event.type.startsWith("run.") ||
+      event.type === "action.updated" ||
+      event.type === "approval.required" ||
+      event.type === "approval.resolved" ||
+      event.type === "clarification.required" ||
+      event.type === "clarification.resolved" ||
+      event.type === "plan.updated" ||
+      event.type === "todo.updated" ||
+      event.type === "plan_list.updated" ||
+      event.type === "topology.updated" ||
+      event.type === "queue.updated" ||
+      event.type === "shared_state.updated" ||
+      event.type === "artifact.exported" ||
+      event.type === "artifact.degraded" ||
+      event.type === "agent.message";
+  });
+}
+
 export function createStreamingFailure(params: {
   liveSnapshot: StateSnapshot;
   runId: string;
@@ -147,12 +261,20 @@ export function createStreamingFailure(params: {
   return {
     detail,
     event,
-    snapshot: StateSnapshotSchema.parse({
+    snapshot: normalizeSnapshotAttention(StateSnapshotSchema.parse({
       ...params.liveSnapshot,
       status: "failed",
       error: detail,
       events: [...params.liveSnapshot.events, event],
       updatedAt: params.failedAt,
-    }),
+    })),
   };
+}
+
+function normalizeSnapshotAttention(snapshot: StateSnapshot): StateSnapshot {
+  const normalized = StateSnapshotSchema.parse(snapshot);
+  return StateSnapshotSchema.parse({
+    ...normalized,
+    attention: deriveRunAttention(normalized),
+  });
 }

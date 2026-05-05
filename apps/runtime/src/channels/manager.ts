@@ -9,6 +9,7 @@ import {
   type ChannelInboundMessage,
   type ChannelIngestResult,
   type ChannelOutboundMessage,
+  deriveRunAttention,
   type RunEventStream,
   type RunHandle,
   type RunSummary,
@@ -283,12 +284,15 @@ export class ChannelManager {
       return undefined;
     }
     const latestSnapshot = this.runtime.getRunState({ runId: latestRun.runId });
-    const pendingClarification = latestSnapshot.pendingClarifications[0];
-    const pendingApprovalIds = latestSnapshot.pendingApprovals.length > 0
-      ? latestSnapshot.pendingApprovals
-      : latestSnapshot.actions
-        .filter((action) => action.status === "approval_required")
-        .map((action) => action.id);
+    const attention = latestSnapshot.attention ?? deriveRunAttention(latestSnapshot);
+    const pendingClarification = attention.kind === "needs_clarification"
+      ? latestSnapshot.pendingClarifications.find((clarification) =>
+          attention.pendingClarificationIds.includes(clarification.id)
+        )
+      : undefined;
+    const pendingApprovalIds = attention.kind === "needs_approval"
+      ? pendingApprovalActionIds(latestSnapshot, attention.pendingActionIds, attention.pendingToolCallIds)
+      : [];
     const trimmed = inbound.text.trim();
 
     if (pendingApprovalIds.length > 0) {
@@ -515,6 +519,23 @@ export class ChannelManager {
       deliveryId: args.deliveryId,
     });
   }
+}
+
+function pendingApprovalActionIds(
+  snapshot: StateSnapshot,
+  pendingActionIds: readonly string[],
+  pendingToolCallIds: readonly string[],
+): string[] {
+  const approvedIds = new Set(pendingActionIds);
+  for (const toolCallId of pendingToolCallIds) {
+    const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+    if (toolCall?.actionId) {
+      approvedIds.add(toolCall.actionId);
+    }
+  }
+  return snapshot.actions
+    .filter((action) => action.status === "approval_required" && approvedIds.has(action.id))
+    .map((action) => action.id);
 }
 
 function channelRunConfig(channel: ChannelConfig): Record<string, unknown> | undefined {

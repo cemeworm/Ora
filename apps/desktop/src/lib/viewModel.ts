@@ -2,6 +2,7 @@ import { modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } 
 import type {
   ActionRecord,
   AgentProfile,
+  AssistantTurnActiveLoadingTarget,
   AssistantTurnAttachment,
   ArtifactRecord,
   ChatMessage,
@@ -1446,6 +1447,15 @@ function extractClarificationQuestions(
   snapshot: OraStateSnapshot,
 ): Array<{ id: string; question: string; requestedAt: number }> {
   const results: Array<{ id: string; question: string; requestedAt: number }> = [];
+  for (const clarification of snapshot.pendingClarifications ?? []) {
+    if (!results.some((r) => r.id === clarification.id)) {
+      results.push({
+        id: clarification.id,
+        question: clarification.question,
+        requestedAt: clarification.requestedAt,
+      });
+    }
+  }
   for (const event of snapshot.events) {
     if (event.type !== "clarification.required" || !isRecord(event.payload) || !isRecord(event.payload.clarification)) continue;
     const id = typeof event.payload.clarification.id === "string" ? event.payload.clarification.id : undefined;
@@ -1624,14 +1634,16 @@ function outputTextFromSnapshot(
   snapshot: OraStateSnapshot,
 ): string | undefined {
   if (typeof snapshot.output === "string" && snapshot.output.trim()) {
-    return snapshot.output.trim();
+    const output = snapshot.output.trim();
+    return isInternalRecoveryFallbackText(output) ? undefined : output;
   }
   if (
     isRecord(snapshot.output) &&
     typeof snapshot.output.text === "string" &&
     snapshot.output.text.trim()
   ) {
-    return snapshot.output.text.trim();
+    const output = snapshot.output.text.trim();
+    return isInternalRecoveryFallbackText(output) ? undefined : output;
   }
   return undefined;
 }
@@ -1676,7 +1688,8 @@ function isInternalAssistantDelta(
   ) {
     return true;
   }
-  return isInternalAssistantText(assistantDeltaText(event));
+  const text = assistantDeltaText(event);
+  return isInternalRecoveryFallbackText(text) || isInternalAssistantText(text);
 }
 
 function assistantDeltaText(event: OraEventEnvelope): string {
@@ -1705,6 +1718,14 @@ function isInternalAssistantText(text: string): boolean {
   return /^\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
 }
 
+function isInternalRecoveryFallbackText(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.startsWith("[tool-error-boundary]") ||
+    trimmed.startsWith("[recovery:fallback]")
+  );
+}
+
 function hasRejectedFinalToolCall(snapshot: OraStateSnapshot): boolean {
   return snapshot.events.some(
     (event) =>
@@ -1728,15 +1749,17 @@ function buildAssistantTurnAttachment(
 ): AssistantTurnAttachment {
   const processSteps = deriveProcessSteps(snapshot);
   const proposedPlan = proposedPlanFromSnapshot(snapshot);
+  const status = adaptSnapshotRunStatus(snapshot);
+  const timelineItems = deriveTimelineItems(snapshot, processSteps);
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
-    status: adaptSnapshotRunStatus(snapshot),
+    status,
     pattern: snapshot.pattern,
     currentAgentLabel: currentAgentLabelFromSnapshot(snapshot),
     liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps,
-    timelineItems: deriveTimelineItems(snapshot, processSteps),
+    timelineItems,
     clarificationExchanges: deriveClarificationExchanges(snapshot),
     planList: (snapshot.planList ?? []).map((item) => ({
       step: item.step,
@@ -1750,7 +1773,44 @@ function buildAssistantTurnAttachment(
     clarificationCount: snapshotPendingClarifications(snapshot).length,
     hasProposedPlan: Boolean(proposedPlan),
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
+    activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, proposedPlan, timelineItems),
   };
+}
+
+function activeLoadingTargetFromSnapshot(
+  snapshot: OraStateSnapshot,
+  status: RunStatus,
+  proposedPlan: ReturnType<typeof parseProposedPlan> | undefined,
+  timelineItems: TurnTimelineItem[],
+): AssistantTurnActiveLoadingTarget | undefined {
+  if (status !== "running") {
+    return undefined;
+  }
+  if (proposedPlan?.status === "streaming") {
+    return { kind: "proposed_plan" };
+  }
+  if (
+    snapshotPendingClarifications(snapshot).length > 0 ||
+    snapshotPendingApprovals(snapshot).length > 0 ||
+    snapshot.actions.some((action) => action.status === "approval_required")
+  ) {
+    return undefined;
+  }
+  const timelineLoadingItemId = latestTimelineLoadingItemId(timelineItems);
+  if (timelineLoadingItemId) {
+    return { kind: "timeline", itemId: timelineLoadingItemId };
+  }
+  return { kind: "thinking" };
+}
+
+function latestTimelineLoadingItemId(items: TurnTimelineItem[]): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === "status_group" && item.status !== "blocked") {
+      return item.id;
+    }
+  }
+  return undefined;
 }
 
 function deriveClarificationExchanges(snapshot: OraStateSnapshot): TurnClarificationExchange[] | undefined {
@@ -2747,10 +2807,7 @@ function processStepDetail(event: OraEventEnvelope): string {
     isRecord(event.payload) &&
     typeof event.payload.state === "string"
   ) {
-    const detail =
-      typeof event.payload.detail === "string" && event.payload.detail.trim()
-        ? ` ${event.payload.detail.trim()}`
-        : "";
+    const detail = visibleRuntimeDetail(event.payload.detail);
     switch (event.payload.state) {
       case "repairing":
         return `已恢复缺失的工具上下文${detail}。`;
@@ -3020,6 +3077,9 @@ function toolStatusLabel(status: string): string {
 }
 
 function humanizeActionError(error: string): string {
+  if (isInternalRuntimeDiagnosticText(error)) {
+    return "操作已转入恢复流程，正在使用有限上下文继续。";
+  }
   if (/tool call instead of a final answer after completion control disabled tools/i.test(error)) {
     return "Ora 已停止工具调用，但模型仍尝试继续调用工具；本轮已使用现有答案结束。";
   }
@@ -3033,6 +3093,18 @@ function humanizeActionError(error: string): string {
     return USER_CANCELLED_MESSAGE;
   }
   return `无法完成这个操作：${error}`;
+}
+
+function visibleRuntimeDetail(detail: unknown): string {
+  if (typeof detail !== "string" || !detail.trim()) {
+    return "";
+  }
+  const trimmed = detail.trim();
+  return isInternalRuntimeDiagnosticText(trimmed) ? "" : ` ${trimmed}`;
+}
+
+function isInternalRuntimeDiagnosticText(text: string): boolean {
+  return isInternalRecoveryFallbackText(text) || /boundary violation/i.test(text);
 }
 
 function stringValue(value: unknown): string | undefined {

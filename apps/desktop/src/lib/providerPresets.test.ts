@@ -6,6 +6,7 @@ import {
   createDraftFromPreset,
   createModelProviderId,
   findPresetById,
+  inferProviderContextWindow,
 } from "./providerPresets";
 import { runnableProviderOptions } from "./providerOptions";
 
@@ -79,6 +80,15 @@ describe("provider presets", () => {
       label: "DeepSeek",
     });
     expect(deepseekEntries[0].draft.modelId).toBe("deepseek-v4-pro");
+  });
+
+  it("infers context windows for saved DeepSeek v4 providers", () => {
+    expect(inferProviderContextWindow({
+      id: "deepseek",
+      type: "openai_compatible",
+      modelId: "deepseek-v4-pro",
+      baseUrl: "https://api.deepseek.com",
+    })).toBe(1_048_576);
   });
 
   it("does not reuse one saved provider for multiple presets with the same base URL", () => {

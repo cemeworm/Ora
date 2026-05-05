@@ -137,7 +137,9 @@ export function classifyRecoveryError(error: unknown, context: {
   const lowered = detail.toLowerCase();
   let errorType: RecoveryErrorType;
 
-  if (context.surface === "provider") {
+  if (/boundary violation/i.test(lowered)) {
+    errorType = "boundary_violation";
+  } else if (context.surface === "provider") {
     if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
       errorType = "provider_quota";
     } else if (matchesAny(lowered, ["unknown provider", "api key", "authentication", "unauthorized", "forbidden", "access denied", "permission", "requires a baseurl"])) {

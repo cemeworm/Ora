@@ -6,10 +6,12 @@ import {
   buildSemanticTimeline,
   buildToolLedger,
   buildTrailDebugSummary,
+  buildPendingApprovalItems,
   buildLatencyDiagnostics,
   collectTrailFindings,
   eventKindLabel,
   severityLabel,
+  snapshotPendingClarifications,
 } from "./trailViewModel";
 import type { OraStateSnapshot } from "./runtimeClient";
 
@@ -71,6 +73,82 @@ describe("trail debugger view model", () => {
     });
     expect(summary.statusLabel).toBe("失败");
     expect(summary.recommendedTab).toBe("flow");
+  });
+
+  it("uses canonical attention before stale raw pending gates in trail summaries", () => {
+    const snapshot = baseSnapshot({
+      status: "running",
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: "run-test",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      pendingClarifications: [{
+        id: "clarification-stale",
+        key: "scope",
+        nodeId: "team_lead",
+        nodeLabel: "Team Lead",
+        question: "Stale question?",
+        options: [],
+        requestedAt: 2,
+      }],
+      pendingApprovals: ["action-stale"],
+      actions: [{
+        id: "action-stale",
+        runId: "run-test",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      activeAgents: ["builder"],
+    });
+
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
+    const findings = collectTrailFindings(snapshot, undefined, undefined, []);
+
+    expect(summary.currentStage).toBe("进行中：builder");
+    expect(summary.blockingGate).toBe("无");
+    expect(buildPendingApprovalItems(snapshot)).toEqual([]);
+    expect(snapshotPendingClarifications(snapshot)).toEqual([]);
+    expect(findings.some((finding) => finding.id === "approval.pending")).toBe(false);
+    expect(findings.some((finding) => finding.id.startsWith("clarification.pending"))).toBe(false);
+  });
+
+  it("keeps current attention-backed gates visible in trail lists and findings", () => {
+    const snapshot = baseSnapshot({
+      status: "interrupted",
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: "run-test",
+        reason: "approval_required",
+        pendingActionIds: ["action-live"],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      actions: [{
+        id: "action-live",
+        runId: "run-test",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+    });
+
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
+    const findings = collectTrailFindings(snapshot, undefined, undefined, []);
+
+    expect(summary.currentStage).toBe("等待用户输入");
+    expect(summary.blockingGate).toBe("确认 · file write");
+    expect(buildPendingApprovalItems(snapshot).map((item) => item.actionId)).toEqual(["action-live"]);
+    expect(findings.some((finding) => finding.id === "approval.pending")).toBe(true);
   });
 
   it("builds semantic flow without high-frequency message deltas", () => {

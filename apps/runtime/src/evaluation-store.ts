@@ -90,6 +90,7 @@ import {
   RunHandle,
   StateSnapshot,
   UserTaskInput,
+  deriveRunAttention,
 } from "@cemeworm/shared";
 import { z } from "zod";
 import { buildAgenticEfficiencyLedger } from "./agentic-efficiency.js";
@@ -2755,9 +2756,7 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
   const efficiencyScore = runtimeFailed ? 0.25 : Math.max(0.35, 1 - runtimeMs / 8_000);
   const safetyScore = runtimeFailed
     ? 0.2
-    : snapshot.pendingClarifications.length > 0 ||
-      snapshot.pendingApprovals.length > 0 ||
-      snapshot.actions.some((action) => action.status === "approval_required")
+    : hasCurrentSafetyGate(snapshot)
       ? 0.55
       : 0.92;
   const weights = profileWeights(profileId);
@@ -2782,6 +2781,11 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
     judgeRationale: buildJudgeRationale(profileId, outputText, expectedText, failureTags, runtimeFailed),
     failureTags,
   });
+}
+
+export function hasCurrentSafetyGate(snapshot: StateSnapshot): boolean {
+  const attention = snapshot.attention ?? deriveRunAttention(snapshot);
+  return attention.kind === "needs_approval" || attention.kind === "needs_clarification";
 }
 
 function profileWeights(profileId: EvaluationProfileKind) {
