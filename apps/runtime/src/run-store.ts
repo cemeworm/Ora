@@ -51,6 +51,7 @@ import {
   ProjectSignalSchema,
   ProjectSummary,
   ProjectSummarySchema,
+  RuntimeSessionEntrySchema,
   RunConfig,
   RunConfigSchema,
   RunEventStream,
@@ -96,7 +97,11 @@ import {
   SystemAgentOverrideUpdateParamsSchema,
   SystemAgentOverrideUpdateParams,
   UserTaskInput,
-  UserTaskInputSchema
+  UserTaskInputSchema,
+  deriveRunSnapshot,
+  deriveSessionProjection,
+  type RuntimeSessionEntry,
+  type RuntimeSessionEntryType
 } from "@cemeworm/shared";
 import { AutomationService } from "./automation-service.js";
 import { TodoService } from "./capabilities.js";
@@ -845,11 +850,39 @@ export class LocalRunStore {
       },
       updatedAt: Math.max(candidate.updatedAt, now),
     });
+    if (this.isLedgerBackedSession(session.sessionId)) {
+      this.appendRunStartedToLedger({
+        sessionId: session.sessionId,
+        runId: adopted.runId,
+        turnIndex: adopted.turnIndex ?? turnIndex ?? 1,
+        input: adopted.input,
+        config: adopted.config,
+        modeId: adopted.modeId,
+        createdAt: adopted.input.createdAt,
+      });
+      this.appendRuntimeEventBatchToLedger(adopted, adopted.events, adopted.status);
+      this.appendAssistantMessageToLedger(adopted);
+      this.appendSessionLedgerEntry(session.sessionId, {
+        id: `${group.branchGroupId}:adopted:${adopted.runId}`,
+        type: "branch.adopted",
+        turnIndex: adopted.turnIndex ?? turnIndex ?? 1,
+        createdAt: now,
+        payload: {
+          ...group,
+          status: "adopted",
+          adoptedRunId: adopted.runId,
+          updatedAt: now,
+        },
+      });
+      this.refreshSessionFromLedger(session.sessionId);
+      this.backend.saveManifest(this.manifest);
+    }
     this.cacheRun(adopted, true);
 
     for (const runId of group.candidateRunIds) {
       if (runId === candidate.runId) continue;
-      const other = this.getRunOrThrow(runId);
+      const other = this.runs.get(runId);
+      if (!other) continue;
       this.cacheRun(StateSnapshotSchema.parse({
         ...other,
         config: {
@@ -920,6 +953,38 @@ export class LocalRunStore {
       ),
       updatedAt: Math.max(snapshot.updatedAt, now),
     }));
+    if (this.isLedgerBackedSession(parsed.sessionId)) {
+      this.appendSessionLedgerEntry(parsed.sessionId, {
+        id: `${latestRunId}:gate:${parsed.decisionId}:resolved`,
+        type: "gate.resolved",
+        runId: latestRunId,
+        turnIndex: snapshot.turnIndex ?? 1,
+        createdAt: now,
+        payload: {
+          gateId: parsed.decisionId,
+          status: parsed.status,
+          resolvedAt: now,
+        },
+      });
+      if (parsed.status === "accepted" && existing.planContent?.trim()) {
+        this.appendSessionLedgerEntry(parsed.sessionId, {
+          id: `${latestRunId}:handoff:${parsed.decisionId}`,
+          type: "handoff.accepted_plan",
+          runId: latestRunId,
+          turnIndex: snapshot.turnIndex ?? 1,
+          createdAt: now,
+          payload: {
+            decisionId: parsed.decisionId,
+            sourceRunId: latestRunId,
+            planContent: existing.planContent.trim(),
+            acceptedAt: now,
+          },
+        });
+      }
+      this.refreshSessionFromLedger(parsed.sessionId);
+      this.backend.saveManifest(this.manifest);
+      return this.getSession({ sessionId: parsed.sessionId });
+    }
     this.cacheRun(updatedSnapshot, true);
     return this.getSession({ sessionId: parsed.sessionId });
   }
@@ -1113,6 +1178,15 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
     );
+    this.appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex,
+      input,
+      config: fullConfig,
+      modeId: modeSpec.id,
+      createdAt: input.createdAt,
+    });
     if (fullConfig.metadata.evaluationRouterOnly === true) {
       const baseSnapshot = createRunningRunSnapshot({
         runId,
@@ -1144,9 +1218,11 @@ export class LocalRunStore {
         },
         updatedAt: completedAt,
       });
-      const tracedSnapshot = attachTraceMetadata(routerOnlySnapshot);
-      this.persistRun(tracedSnapshot);
-      return toRunHandle(tracedSnapshot);
+      const tracedSnapshot = this.normalizeSnapshotForPersistence(attachTraceMetadata(routerOnlySnapshot));
+      this.appendRuntimeEventBatchToLedger(tracedSnapshot, tracedSnapshot.events, tracedSnapshot.status);
+      const projectedSnapshot = this.appendAssistantMessageToLedger(tracedSnapshot);
+      this.persistRun(projectedSnapshot);
+      return toRunHandle(projectedSnapshot);
     }
     const sessionBoundSnapshot = await executeTracedKernelRun({
       runId,
@@ -1167,9 +1243,11 @@ export class LocalRunStore {
       customAgentContexts: this.customAgentContextsForMode(modeSpec),
       conversationMessages,
     });
-    const tracedSnapshot = attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot));
-    await this.persistRunWithGeneratedTitle(tracedSnapshot);
-    return toRunHandle(tracedSnapshot);
+    const tracedSnapshot = this.normalizeSnapshotForPersistence(attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot)));
+    this.appendRuntimeEventBatchToLedger(tracedSnapshot, tracedSnapshot.events, tracedSnapshot.status);
+    const projectedSnapshot = this.appendAssistantMessageToLedger(tracedSnapshot);
+    await this.persistRunWithGeneratedTitle(projectedSnapshot);
+    return toRunHandle(projectedSnapshot);
   }
 
   async startStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
@@ -1219,6 +1297,15 @@ export class LocalRunStore {
       definition,
       clock: this.clock,
     });
+    this.appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex,
+      input,
+      config: fullConfig,
+      modeId: modeSpec.id,
+      createdAt: input.createdAt,
+    });
     markRuntimeLatency("snapshot.created");
     liveSnapshot = withRunLatencyMarks(liveSnapshot, latencyMarks);
     const sessionCtx = this.sessions.get(session.sessionId)?.contextState;
@@ -1231,6 +1318,15 @@ export class LocalRunStore {
     this.cacheRun(liveSnapshot, false, { deferInitialTitle: true });
     const abortController = new AbortController();
     this.activeStreamingAbortControllers.set(runId, abortController);
+    let ledgeredEventCount = 0;
+    const flushLedgerEvents = (status = liveSnapshot.status) => {
+      const nextEvents = liveSnapshot.events.slice(ledgeredEventCount);
+      if (nextEvents.length === 0) {
+        return;
+      }
+      this.appendRuntimeEventBatchToLedger(liveSnapshot, nextEvents, status);
+      ledgeredEventCount = liveSnapshot.events.length;
+    };
 
     const publishStream = (events: OraEventEnvelope[], snapshot?: StateSnapshot) => {
       publishRunStream({
@@ -1251,10 +1347,13 @@ export class LocalRunStore {
       this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
         deferInitialTitle: true,
       });
+      if (shouldFlushStreamingEvent(event) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
+        flushLedgerEvents();
+      }
       publishStream([event]);
     };
 
-    void executeTracedKernelRun({
+    const runKernel = () => executeTracedKernelRun({
       runId,
       input,
       config: fullConfig,
@@ -1275,7 +1374,9 @@ export class LocalRunStore {
       streamProvider: true,
       signal: abortController.signal,
       onEvent: applyLiveEvent,
-    }).then(async (snapshot) => {
+    });
+    setTimeout(() => {
+      void runKernel().then(async (snapshot) => {
       this.activeStreamingAbortControllers.delete(runId);
       const cancelled = this.cancelledSnapshot(runId);
       if (cancelled) {
@@ -1286,8 +1387,11 @@ export class LocalRunStore {
       const finalSnapshot = this.normalizeSnapshotForPersistence(
         attachTraceMetadata(this.withSnapshotContextState(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? []))),
       );
-      await this.persistRunWithGeneratedTitle(finalSnapshot);
-      publishStream([], finalSnapshot);
+      liveSnapshot = finalSnapshot;
+      flushLedgerEvents(finalSnapshot.status);
+      const projectedSnapshot = this.appendAssistantMessageToLedger(finalSnapshot);
+      await this.persistRunWithGeneratedTitle(projectedSnapshot);
+      publishStream([], projectedSnapshot);
     }).catch(async (error) => {
       this.activeStreamingAbortControllers.delete(runId);
       const cancelled = this.cancelledSnapshot(runId);
@@ -1304,9 +1408,12 @@ export class LocalRunStore {
         failedAt: this.now(),
       });
       liveSnapshot = attachTraceMetadata(failure.snapshot);
-      await this.persistRunWithGeneratedTitle(liveSnapshot);
-      publishStream([failure.event], liveSnapshot);
-    });
+      flushLedgerEvents(liveSnapshot.status);
+      const projectedSnapshot = this.appendAssistantMessageToLedger(liveSnapshot);
+      await this.persistRunWithGeneratedTitle(projectedSnapshot);
+      publishStream([failure.event], projectedSnapshot);
+      });
+    }, 0);
 
     return toRunHandle(liveSnapshot);
   }
@@ -1391,6 +1498,7 @@ export class LocalRunStore {
     const snapshot = this.getRunOrThrow(parsed.runId);
     const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
     const hasKernelWork = hasKernelResumeWork(snapshot);
+    this.appendGateResolutionsForResume(snapshot, clarificationPatch, approvedActionIds);
 
     if (!hasKernelWork) {
       const resumed = await this.resumeRun(params);
@@ -1493,7 +1601,9 @@ export class LocalRunStore {
           publishStream([], cancelledAfterContinuation);
           return;
         }
-        liveSnapshot = this.normalizeSnapshotForPersistence(completedSnapshot);
+        liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+          this.withResumeResolutionEvents(completedSnapshot, snapshot, clarificationPatch, approvedActionIds),
+        ));
         await this.persistRunWithGeneratedTitle(liveSnapshot);
         publishStream([], liveSnapshot);
       }).catch(async (error) => {
@@ -1574,8 +1684,11 @@ export class LocalRunStore {
         currentPendingClarifications(snapshot),
         clarificationPatch,
       ));
-      await this.persistRunWithGeneratedTitle(finalSnapshot);
-      publishStream([], finalSnapshot);
+      liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+        this.withResumeResolutionEvents(finalSnapshot, snapshot, clarificationPatch, approvedActionIds),
+      ));
+      await this.persistRunWithGeneratedTitle(liveSnapshot);
+      publishStream([], liveSnapshot);
     }).catch(async (error) => {
       this.activeStreamingAbortControllers.delete(snapshot.runId);
       const cancelled = this.cancelledSnapshot(snapshot.runId);
@@ -1626,6 +1739,15 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
     );
+    this.appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex,
+      input,
+      config: fullConfig,
+      modeId: modeSpec.id,
+      createdAt: input.createdAt,
+    });
     const sessionBoundSnapshot = await executeTracedKernelRun({
       runId,
       input,
@@ -1646,9 +1768,11 @@ export class LocalRunStore {
       forkedFrom,
       conversationMessages,
     });
-    const tracedSnapshot = attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot));
-    await this.persistRunWithGeneratedTitle(tracedSnapshot);
-    return toRunHandle(tracedSnapshot);
+    const tracedSnapshot = this.normalizeSnapshotForPersistence(attachTraceMetadata(this.withSnapshotContextState(sessionBoundSnapshot)));
+    this.appendRuntimeEventBatchToLedger(tracedSnapshot, tracedSnapshot.events, tracedSnapshot.status);
+    const projectedSnapshot = this.appendAssistantMessageToLedger(tracedSnapshot);
+    await this.persistRunWithGeneratedTitle(projectedSnapshot);
+    return toRunHandle(projectedSnapshot);
   }
 
   async startRunWithSnapshot(
@@ -1684,6 +1808,15 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
     );
+    this.appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex,
+      input,
+      config: fullConfig,
+      modeId: modeSpec.id,
+      createdAt: input.createdAt,
+    });
     const snapshot = await createSnapshot({
       runId,
       input,
@@ -1701,16 +1834,18 @@ export class LocalRunStore {
       return undefined;
     }
 
-    const sessionBoundSnapshot = attachTraceMetadata(this.withSnapshotContextState(StateSnapshotSchema.parse({
+    const sessionBoundSnapshot = this.normalizeSnapshotForPersistence(attachTraceMetadata(this.withSnapshotContextState(StateSnapshotSchema.parse({
       ...snapshot,
       sessionId: session.sessionId,
       turnIndex,
       coordinationKind: snapshot.coordinationKind ?? snapshot.pattern,
       modeId: snapshot.modeId ?? modeSpec.id,
       modeSpec: snapshot.modeSpec ?? modeSpec,
-    })));
-    await this.persistRunWithGeneratedTitle(sessionBoundSnapshot);
-    return toRunHandle(sessionBoundSnapshot);
+    }))));
+    this.appendRuntimeEventBatchToLedger(sessionBoundSnapshot, sessionBoundSnapshot.events, sessionBoundSnapshot.status);
+    const projectedSnapshot = this.appendAssistantMessageToLedger(sessionBoundSnapshot);
+    await this.persistRunWithGeneratedTitle(projectedSnapshot);
+    return toRunHandle(projectedSnapshot);
   }
 
   streamRun(params: unknown): RunEventStream {
@@ -1726,6 +1861,7 @@ export class LocalRunStore {
     const snapshot = this.getRunOrThrow(parsed.runId);
     const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
     const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
+    this.appendGateResolutionsForResume(snapshot, clarificationPatch, approvedActionIds);
     const approvedToolContinuation = await completeApprovedToolContinuation(
       snapshot,
       approvedActionIds,
@@ -1741,8 +1877,11 @@ export class LocalRunStore {
           approvedActionIds,
         )
         : approvedToolContinuation.snapshot;
-      await this.persistRunWithGeneratedTitle(completedApprovedTool);
-      return completedApprovedTool;
+      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+        this.withResumeResolutionEvents(completedApprovedTool, snapshot, clarificationPatch, approvedActionIds),
+      ));
+      await this.persistRunWithGeneratedTitle(projected);
+      return projected;
     }
     const hasKernelWork = hasKernelResumeWork(snapshot);
 
@@ -1793,8 +1932,11 @@ export class LocalRunStore {
         currentPendingClarifications(snapshot),
         clarificationPatch,
       );
-      await this.persistRunWithGeneratedTitle(tracedSnapshot);
-      return tracedSnapshot;
+      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+        this.withResumeResolutionEvents(tracedSnapshot, snapshot, clarificationPatch, approvedActionIds),
+      ));
+      await this.persistRunWithGeneratedTitle(projected);
+      return projected;
     }
 
     const resumeMutationDeps = {
@@ -1823,14 +1965,20 @@ export class LocalRunStore {
 
     if (nonKernelResumeNeedsInput(working)) {
       const updated = interruptedNonKernelResumeSnapshot(working, this.now());
-      this.persistRun(updated);
-      return updated;
+      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+        this.withResumeResolutionEvents(updated, snapshot, clarificationPatch, approvedActionIds),
+      ));
+      this.persistRun(projected);
+      return projected;
     }
 
     const updated = completeNonKernelResumeMutation(working, resumeMutationDeps);
     const syncedTodos = this.syncSnapshotTodos(updated, "resume.completed");
-    await this.persistRunWithGeneratedTitle(syncedTodos);
-    return syncedTodos;
+    const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+      this.withResumeResolutionEvents(syncedTodos, snapshot, clarificationPatch, approvedActionIds),
+    ));
+    await this.persistRunWithGeneratedTitle(projected);
+    return projected;
   }
 
   cancelRun(params: unknown): StateSnapshot {
@@ -1845,7 +1993,25 @@ export class LocalRunStore {
   }
 
   persistExternalSnapshot(snapshot: StateSnapshot): StateSnapshot {
-    return persistExternalSnapshot(snapshot, this.runStateOperationDeps());
+    const parsed = StateSnapshotSchema.parse(snapshot);
+    if (parsed.sessionId && this.isLedgerBackedSession(parsed.sessionId)) {
+      const ledger = this.backend.getSessionLedger(parsed.sessionId);
+      if (!ledger || !deriveRunSnapshot(ledger, parsed.runId)) {
+        this.appendRunStartedToLedger({
+          sessionId: parsed.sessionId,
+          runId: parsed.runId,
+          turnIndex: parsed.turnIndex,
+          input: parsed.input,
+          config: parsed.config,
+          modeId: parsed.modeId,
+          createdAt: parsed.input.createdAt ?? parsed.updatedAt,
+        });
+      }
+      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(parsed));
+      this.persistRun(projected);
+      return projected;
+    }
+    return persistExternalSnapshot(parsed, this.runStateOperationDeps());
   }
 
   async getRunTrail(params: unknown): Promise<RunTrail> {
@@ -1939,8 +2105,9 @@ export class LocalRunStore {
       },
       updatedAt: this.now(),
     });
-    this.persistRun(updated);
-    return toRunHandle(updated);
+    const projected = this.appendRunSnapshotUpdateToLedger(updated);
+    this.persistRun(projected);
+    return toRunHandle(projected);
   }
 
   exportReport(params: unknown): ArtifactRef {
@@ -2155,7 +2322,11 @@ export class LocalRunStore {
       requireRunId: (params) => this.requireRunId(params),
       getRunOrThrow: (runId) => this.getRunOrThrow(runId),
       appendEvent: (snapshot, type, payload) => this.appendEvent(snapshot, type, payload),
-      persistRun: (snapshot) => this.persistRun(snapshot),
+      persistRun: (snapshot) => {
+        const normalized = this.normalizeSnapshotForPersistence(snapshot);
+        const projected = this.appendRunSnapshotUpdateToLedger(normalized);
+        this.persistRun(projected);
+      },
     };
   }
 
@@ -2169,12 +2340,359 @@ export class LocalRunStore {
       nextSessionId: () => this.nextSessionId(),
       persistProject: (project) => this.persistProject(project),
       persistSession: (session) => this.persistSession(session),
+      persistSessionCreated: (session) => this.persistSessionCreated(session),
       getProjectOrThrow: (projectId) => this.getProjectOrThrow(projectId),
       getSessionOrThrow: (sessionId) => this.getSessionOrThrow(sessionId),
       getRunOrThrow: (runId) => this.getRunOrThrow(runId),
       runsForSession: (sessionId) => this.runsForSession(sessionId),
       sessionTranscript: (sessionId) => this.sessionTranscript(sessionId),
     };
+  }
+
+  private persistSessionCreated(session: SessionSummary): SessionSummary {
+    const entry = this.appendSessionLedgerEntry(session.sessionId, {
+      id: `${session.sessionId}:session-created`,
+      type: "session.created",
+      turnIndex: 0,
+      createdAt: session.createdAt,
+      payload: {
+        title: session.title,
+        projectId: session.projectId,
+      },
+    });
+    const projection = this.refreshSessionFromLedger(session.sessionId, entry.id);
+    this.backend.saveManifest(this.manifest);
+    if (projection.projectId) {
+      this.syncProjectSummary(projection.projectId);
+    }
+    return projection;
+  }
+
+  private appendRunStartedToLedger(args: {
+    sessionId: string;
+    runId: string;
+    turnIndex: number;
+    input: UserTaskInput;
+    config: RunConfig;
+    modeId?: string;
+    createdAt?: number;
+  }): void {
+    if (args.config.metadata.branchRole === "candidate") {
+      return;
+    }
+    const createdAt = args.createdAt ?? args.input.createdAt ?? this.now();
+    this.appendSessionLedgerEntries(args.sessionId, [
+      {
+        id: `${args.runId}:user`,
+        type: "user.message",
+        runId: args.runId,
+        turnIndex: args.turnIndex,
+        createdAt,
+        payload: { content: args.input.prompt.trim() || args.input.prompt || " " },
+      },
+      {
+        id: `${args.runId}:started`,
+        type: "run.started",
+        runId: args.runId,
+        turnIndex: args.turnIndex,
+        createdAt,
+        payload: {
+          input: args.input,
+          config: args.config,
+          modeId: args.modeId,
+          status: "running",
+        },
+      },
+    ]);
+    this.refreshSessionFromLedger(args.sessionId);
+  }
+
+  private appendRuntimeEventBatchToLedger(snapshot: StateSnapshot, events: OraEventEnvelope[], status = snapshot.status): void {
+    if (!snapshot.sessionId || events.length === 0 || snapshot.config.metadata.branchRole === "candidate") {
+      return;
+    }
+    this.appendSessionLedgerEntry(snapshot.sessionId, {
+      id: `${snapshot.runId}:events-${events[0]?.seq ?? snapshot.events.length}-${events.at(-1)?.seq ?? snapshot.events.length}`,
+      type: "runtime.event_batch",
+      runId: snapshot.runId,
+      turnIndex: snapshot.turnIndex ?? 1,
+      createdAt: events.at(-1)?.createdAt ?? snapshot.updatedAt,
+      payload: {
+        events,
+        status,
+        output: snapshot.output,
+        error: snapshot.error,
+        snapshot,
+      },
+    });
+    this.refreshSessionFromLedger(snapshot.sessionId);
+  }
+
+  private appendRunSnapshotUpdateToLedger(snapshot: StateSnapshot): StateSnapshot {
+    if (!snapshot.sessionId || snapshot.config.metadata.branchRole === "candidate") {
+      return snapshot;
+    }
+    const ledger = this.backend.getSessionLedger(snapshot.sessionId);
+    const existing = ledger ? deriveRunSnapshot(ledger, snapshot.runId) : undefined;
+    const existingEventCount = existing?.events.length ?? 0;
+    const events = snapshot.events.slice(existingEventCount);
+    this.appendSessionLedgerEntry(snapshot.sessionId, {
+      id: `${snapshot.runId}:update-${snapshot.updatedAt}-${ledger?.entries.length ?? 0}`,
+      type: "runtime.event_batch",
+      runId: snapshot.runId,
+      turnIndex: snapshot.turnIndex ?? 1,
+      createdAt: snapshot.updatedAt,
+      payload: {
+        events,
+        status: snapshot.status,
+        output: snapshot.output,
+        error: snapshot.error,
+        snapshot,
+      },
+    });
+    return this.ledgerSnapshotOrFallback(snapshot);
+  }
+
+  private appendGateResolutionsForResume(
+    snapshot: StateSnapshot,
+    clarificationPatch: Record<string, unknown>,
+    approvedActionIds: string[],
+  ): void {
+    if (!snapshot.sessionId || !this.isLedgerBackedSession(snapshot.sessionId)) {
+      return;
+    }
+    const now = this.now();
+    const resolvedClarificationIds = new Set(
+      snapshot.pendingClarifications
+        .filter((clarification) =>
+          clarificationPatch[clarification.id] !== undefined || clarificationPatch[clarification.key] !== undefined
+        )
+        .map((clarification) => clarification.id),
+    );
+    for (const clarificationId of resolvedClarificationIds) {
+      this.appendSessionLedgerEntry(snapshot.sessionId, {
+        id: `${snapshot.runId}:gate:${clarificationId}:resolved-${now}`,
+        type: "gate.resolved",
+        runId: snapshot.runId,
+        turnIndex: snapshot.turnIndex ?? 1,
+        createdAt: now,
+        payload: { gateId: clarificationId, status: "resolved", resolvedAt: now },
+      });
+    }
+    if (approvedActionIds.length > 0) {
+      this.appendSessionLedgerEntry(snapshot.sessionId, {
+        id: `${snapshot.runId}:gate:approval:resolved-${now}`,
+        type: "gate.resolved",
+        runId: snapshot.runId,
+        turnIndex: snapshot.turnIndex ?? 1,
+        createdAt: now,
+        payload: { gateId: `${snapshot.runId}:approval`, status: "accepted", resolvedAt: now },
+      });
+    }
+  }
+
+  private withResumeResolutionEvents(
+    snapshot: StateSnapshot,
+    original: StateSnapshot,
+    clarificationPatch: Record<string, unknown>,
+    approvedActionIds: string[],
+  ): StateSnapshot {
+    let working = snapshot;
+    working = this.appendResolvedClarificationEvents(working, currentPendingClarifications(original), clarificationPatch);
+    for (const actionId of approvedActionIds) {
+      const hasApprovalResolved = working.events.some((event) =>
+        event.type === "approval.resolved" &&
+        event.payload &&
+        typeof event.payload === "object" &&
+        (event.payload as Record<string, unknown>).actionId === actionId
+      );
+      if (!hasApprovalResolved) {
+        working = this.appendEvent(working, "approval.resolved", {
+          actionId,
+          decision: "approved",
+          mode: "resume",
+        });
+      }
+      const action = working.actions.find((candidate) => candidate.id === actionId);
+      const call = working.toolCalls.find((candidate) => candidate.actionId === actionId);
+      const terminalStatus = action?.status === "succeeded" || action?.status === "failed"
+        ? action.status
+        : call?.status === "succeeded" || call?.status === "failed"
+          ? call.status
+          : undefined;
+      if (!action || !terminalStatus) {
+        continue;
+      }
+      const hasToolCalled = working.events.some((event) =>
+        event.type === "tool.called" &&
+        event.payload &&
+        typeof event.payload === "object" &&
+        (event.payload as Record<string, unknown>).actionId === actionId &&
+        (event.payload as Record<string, unknown>).status === terminalStatus
+      );
+      if (hasToolCalled) {
+        continue;
+      }
+      working = this.appendEvent(working, "tool.called", {
+        toolCallId: call?.id,
+        actionId,
+        toolId: action.type,
+        source: "resume",
+        status: terminalStatus,
+        input: action.input,
+        output: action.output,
+        error: action.error,
+        cacheHit: false,
+      });
+    }
+    return working;
+  }
+
+  private appendAssistantMessageToLedger(snapshot: StateSnapshot): StateSnapshot {
+    if (!snapshot.sessionId || snapshot.config.metadata.branchRole === "candidate") {
+      return snapshot;
+    }
+    this.appendSnapshotBusinessFactsToLedger(snapshot);
+    const content = assistantTextForRun(snapshot);
+    this.appendSessionLedgerEntry(snapshot.sessionId, {
+      id: `${snapshot.runId}:assistant`,
+      type: "assistant.message",
+      runId: snapshot.runId,
+      turnIndex: snapshot.turnIndex ?? 1,
+      createdAt: snapshot.updatedAt,
+      payload: {
+        content,
+        status: snapshot.status,
+        output: snapshot.output ?? (content ? { text: content } : undefined),
+        error: snapshot.error,
+        snapshot,
+      },
+    });
+    return this.ledgerSnapshotOrFallback(snapshot);
+  }
+
+  private appendSnapshotBusinessFactsToLedger(snapshot: StateSnapshot): void {
+    if (!snapshot.sessionId) {
+      return;
+    }
+    for (const clarification of snapshot.pendingClarifications) {
+      this.appendSessionLedgerEntry(snapshot.sessionId, {
+        id: `${snapshot.runId}:gate:${clarification.id}`,
+        type: "gate.opened",
+        runId: snapshot.runId,
+        turnIndex: snapshot.turnIndex ?? 1,
+        createdAt: clarification.requestedAt,
+        payload: {
+          gateId: clarification.id,
+          kind: "clarification",
+          pendingClarificationIds: [clarification.id],
+          clarification,
+        },
+      });
+    }
+    if (snapshot.pendingApprovals.length > 0) {
+      const pendingToolCallIds = snapshot.toolCalls
+        .filter((call) => call.actionId && snapshot.pendingApprovals.includes(call.actionId))
+        .map((call) => call.id);
+      this.appendSessionLedgerEntry(snapshot.sessionId, {
+        id: `${snapshot.runId}:gate:approval`,
+        type: "gate.opened",
+        runId: snapshot.runId,
+        turnIndex: snapshot.turnIndex ?? 1,
+        createdAt: snapshot.updatedAt,
+        payload: {
+          gateId: `${snapshot.runId}:approval`,
+          kind: "approval",
+          pendingActionIds: snapshot.pendingApprovals,
+          pendingToolCallIds,
+        },
+      });
+    }
+    for (const decision of snapshot.planDecisions) {
+      if (decision.status !== "pending") {
+        continue;
+      }
+      this.appendSessionLedgerEntry(snapshot.sessionId, {
+        id: `${snapshot.runId}:gate:${decision.id}`,
+        type: "gate.opened",
+        runId: snapshot.runId,
+        turnIndex: snapshot.turnIndex ?? 1,
+        createdAt: decision.createdAt,
+        payload: {
+          gateId: decision.id,
+          kind: "plan_decision",
+          planDecision: decision,
+        },
+      });
+    }
+  }
+
+  private appendSessionLedgerEntry(
+    sessionId: string,
+    entry: Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType },
+  ): RuntimeSessionEntry {
+    return this.appendSessionLedgerEntries(sessionId, [entry]).at(-1)!;
+  }
+
+  private appendSessionLedgerEntries(
+    sessionId: string,
+    entries: Array<Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType }>,
+  ): RuntimeSessionEntry[] {
+    const ledger = this.backend.getSessionLedger(sessionId);
+    const maxSeq = ledger?.entries.reduce((max, entry) => Math.max(max, entry.seq), -1) ?? -1;
+    let parentId = ledger?.leafEntryId;
+    const parsed = entries.map((entry, index) => {
+      const next = RuntimeSessionEntrySchema.parse({
+        ...entry,
+        sessionId,
+        parentId,
+        seq: maxSeq + index + 1,
+      });
+      parentId = next.id;
+      return next;
+    });
+    this.backend.appendSessionEntries(sessionId, parsed, parsed.at(-1)?.id);
+    return parsed;
+  }
+
+  private refreshSessionFromLedger(sessionId: string, leafEntryId?: string): SessionSummary {
+    const ledger = this.backend.getSessionLedger(sessionId);
+    if (!ledger) {
+      return this.getSessionOrThrow(sessionId);
+    }
+    const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
+    this.sessions.set(sessionId, projection.session);
+    const projectedRunIds = new Set(projection.runs.map((run) => run.runId));
+    for (const [runId, snapshot] of this.runs.entries()) {
+      if (snapshot.sessionId === sessionId && !projectedRunIds.has(runId)) {
+        this.runs.delete(runId);
+      }
+    }
+    for (const run of projection.runs) {
+      const snapshot = deriveRunSnapshot(ledger, run.runId, projection.leafEntryId);
+      if (snapshot) {
+        this.runs.set(snapshot.runId, snapshot);
+      }
+    }
+    return projection.session;
+  }
+
+  private ledgerSnapshotOrFallback(snapshot: StateSnapshot): StateSnapshot {
+    if (!snapshot.sessionId) {
+      return snapshot;
+    }
+    const ledger = this.backend.getSessionLedger(snapshot.sessionId);
+    const projected = ledger ? deriveRunSnapshot(ledger, snapshot.runId) : undefined;
+    if (!projected) {
+      return snapshot;
+    }
+    this.runs.set(projected.runId, projected);
+    this.refreshSessionFromLedger(snapshot.sessionId);
+    return projected;
+  }
+
+  private isLedgerBackedSession(sessionId: string | undefined): boolean {
+    return Boolean(sessionId && this.backend.getSessionLedger(sessionId));
   }
 
 
@@ -2283,6 +2801,9 @@ export class LocalRunStore {
       normalized,
       normalized.sessionId ? this.sessions.get(normalized.sessionId)?.title : undefined,
     );
+    if (normalized.sessionId && titleOverride && this.isLedgerBackedSession(normalized.sessionId)) {
+      this.updateSessionTitle(normalized.sessionId, titleOverride);
+    }
     this.cacheRun(normalized, true, { titleOverride });
     if (isUnadoptedBranchCandidate(normalized)) {
       return;
@@ -2337,17 +2858,15 @@ export class LocalRunStore {
     snapshot = this.normalizeSnapshotForPersistence(snapshot);
     this.runs.set(snapshot.runId, snapshot);
     if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
-      const session = this.upsertSessionFromRun(snapshot, options);
+      const session = this.isLedgerBackedSession(snapshot.sessionId)
+        ? this.refreshSessionFromLedger(snapshot.sessionId)
+        : this.upsertSessionFromRun(snapshot, options);
       this.sessions.set(session.sessionId, session);
-      if (flush) {
-        this.backend.saveSession(session);
-        if (session.projectId) {
-          this.syncProjectSummary(session.projectId);
-        }
+      if (flush && session.projectId) {
+        this.syncProjectSummary(session.projectId);
       }
     }
     if (flush) {
-      this.backend.saveRun(snapshot);
       this.backend.saveManifest(this.manifest);
     }
   }
@@ -2361,7 +2880,11 @@ export class LocalRunStore {
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
       getCachedRun: (runId) => this.runs.get(runId),
       appendEvent: (snapshot, type, payload, extra) => this.appendEvent(snapshot, type, payload, extra),
-      cacheRun: (snapshot, flush) => this.cacheRun(snapshot, flush),
+      cacheRun: (snapshot, flush) => {
+        const normalized = this.normalizeSnapshotForPersistence(snapshot);
+        const projected = this.appendRunSnapshotUpdateToLedger(normalized);
+        this.cacheRun(projected, flush);
+      },
     };
   }
 
@@ -2398,7 +2921,10 @@ export class LocalRunStore {
 
   private cancelledSnapshot(runId: string): StateSnapshot | undefined {
     const snapshot = this.runs.get(runId);
-    return snapshot?.status === "cancelled" ? snapshot : undefined;
+    if (snapshot?.status === "cancelled") {
+      return snapshot;
+    }
+    return undefined;
   }
 
   private isRunCancelled(runId: string): boolean {
@@ -2430,8 +2956,26 @@ export class LocalRunStore {
   }
 
   private persistSession(session: SessionSummary): void {
+    if (this.isLedgerBackedSession(session.sessionId)) {
+      this.appendSessionLedgerEntry(session.sessionId, {
+        id: `${session.sessionId}:info-${session.updatedAt}-${this.backend.getSessionLedger(session.sessionId)?.entries.length ?? 0}`,
+        type: "session.info",
+        turnIndex: 0,
+        createdAt: session.updatedAt,
+        payload: {
+          title: session.title,
+          projectId: session.projectId,
+          archivedAt: session.archivedAt,
+        },
+      });
+      const projection = this.refreshSessionFromLedger(session.sessionId);
+      if (projection.projectId) {
+        this.syncProjectSummary(projection.projectId);
+      }
+      this.backend.saveManifest(this.manifest);
+      return;
+    }
     this.sessions.set(session.sessionId, session);
-    this.backend.saveSession(session);
     if (session.projectId) {
       this.syncProjectSummary(session.projectId);
     }
@@ -2463,7 +3007,9 @@ export class LocalRunStore {
     if (sessionId) {
       return this.getSessionOrThrow(sessionId);
     }
-    return this.createSession({ projectId: input.projectId });
+    return this.createSession({
+      projectId: input.projectId,
+    });
   }
 
   private enrichInputForSession(input: UserTaskInput, session: SessionSummary): UserTaskInput {
@@ -2491,8 +3037,7 @@ export class LocalRunStore {
       title,
       updatedAt: this.now(),
     });
-    this.sessions.set(sessionId, updated);
-    this.backend.saveSession(updated);
+    this.persistSession(updated);
   }
 
   private upsertSessionFromRun(
@@ -2682,6 +3227,19 @@ export class LocalRunStore {
 
   private persistSessionContextState(sessionId: string, contextState: SessionSummary["contextState"]): void {
     const existing = this.getSessionOrThrow(sessionId);
+    if (this.isLedgerBackedSession(sessionId)) {
+      const now = this.now();
+      this.appendSessionLedgerEntry(sessionId, {
+        id: `${sessionId}:compaction-${now}-${this.backend.getSessionLedger(sessionId)?.entries.length ?? 0}`,
+        type: "compaction.summary",
+        turnIndex: 0,
+        createdAt: now,
+        payload: { contextState },
+      });
+      this.refreshSessionFromLedger(sessionId);
+      this.backend.saveManifest(this.manifest);
+      return;
+    }
     this.persistSession(SessionSummarySchema.parse({
       ...existing,
       contextState,

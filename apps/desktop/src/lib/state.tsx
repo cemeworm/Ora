@@ -3,7 +3,6 @@ import {
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema,
-  deriveRunAttention,
   deriveSessionBranchGroupStatus,
   type ModeSelection,
   type PermissionMode,
@@ -1154,10 +1153,7 @@ function readActionStatus(
 
 function normalizeDesktopSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
   const normalized = StateSnapshotSchema.parse(snapshot);
-  return StateSnapshotSchema.parse({
-    ...normalized,
-    attention: deriveRunAttention(normalized),
-  }) as OraStateSnapshot;
+  return normalized as OraStateSnapshot;
 }
 
 function streamRunStatus(

@@ -1166,10 +1166,14 @@ describe("LocalRunStore", () => {
       }
     }) as { runId: string };
 
-    // Verify file was written to disk
     const runsDir = path.join(dir, "runs");
-    const files = fs.readdirSync(runsDir).filter((f) => f.endsWith(".json"));
-    expect(files.length).toBeGreaterThanOrEqual(1);
+    const legacyRunFiles = fs.existsSync(runsDir)
+      ? fs.readdirSync(runsDir).filter((f) => f.endsWith(".json"))
+      : [];
+    expect(legacyRunFiles).toEqual([]);
+    const ledgersDir = path.join(dir, "sessions-ledger");
+    const ledgerFiles = fs.readdirSync(ledgersDir).filter((f) => f.endsWith(".jsonl"));
+    expect(ledgerFiles.length).toBeGreaterThanOrEqual(1);
 
     // Create a new store from the same dir
     const store2 = new LocalRunStore({ dataDir: dir, clock });
@@ -1191,9 +1195,12 @@ describe("LocalRunStore", () => {
     const dir = freshStoreDir();
     const dbPath = path.join(dir, "runtime.db");
     const store1 = new LocalRunStore({ dataDir: dbPath, clock });
+    const session = store1.createSession({});
     const runId = "run-sqlite-continuation";
     store1.persistExternalSnapshot(StateSnapshotSchema.parse({
       runId,
+      sessionId: session.sessionId,
+      turnIndex: 1,
       status: "succeeded",
       pattern: "orchestrator_subagent",
       input: { prompt: "Persist continuation sqlite.", createdAt: FIXED_TIME, context: {} },
