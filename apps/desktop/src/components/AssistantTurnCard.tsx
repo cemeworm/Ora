@@ -16,6 +16,7 @@ import {
 import type {
   AssistantTurnAttachment,
   TurnArtifactAttachment,
+  TurnClarificationExchange,
   TurnFileChangeAttachment,
   TurnProcessStep,
   TurnTimelineItem,
@@ -69,6 +70,7 @@ export function AssistantTurnCard({
   const processSteps = turn?.processSteps ?? [];
   const timelineItems = turn?.timelineItems ?? legacyTimelineItems(processSteps);
   const planList = turn?.planList ?? [];
+  const clarificationExchanges = turn?.clarificationExchanges ?? [];
   const agentMessages = turn?.agentMessages ?? [];
   const stageTranscriptMessages = agentMessages.filter(
     (message) => message.transcript,
@@ -97,9 +99,7 @@ export function AssistantTurnCard({
   );
   const canShowActions = canCopyContent || canSubmitFeedback;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
-  const hasAgentMessageTimeline = timelineItems.some(
-    (item) => item.kind === "agent_message",
-  );
+  const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
   const showThinkingIndicator = shouldShowThinkingIndicator({
     content,
     hasTimeline,
@@ -162,26 +162,34 @@ export function AssistantTurnCard({
     <Message from="assistant" className="w-full">
       <div className="max-w-full">
         <div className="min-w-0 flex-1 space-y-3 pt-1">
-          {currentAgentLabel && !hasAgentMessageTimeline ? (
+          {currentAgentLabel && !hasTimelineAgentLabel ? (
             <p className="text-sm font-semibold leading-6 text-foreground">
               {currentAgentLabel}
             </p>
-          ) : null}
-
-          {turn?.hasProposedPlan ? (
-            <PlanCard
-              planSteps={planList}
-              planContent={content}
-              isStreaming={turn.status === "running"}
-            />
           ) : null}
 
           {hasStageTranscript ? (
             <StageTranscript messages={stageTranscriptMessages} />
           ) : null}
 
-          {!turn?.hasProposedPlan && hasTimeline ? (
-            <TurnTimeline items={timelineItems} onOpenArtifact={onOpenArtifact} />
+          {hasTimeline ? (
+            <TurnTimeline
+              items={timelineItems}
+              isRunning={turn?.status === "running"}
+              onOpenArtifact={onOpenArtifact}
+            />
+          ) : null}
+
+          {clarificationExchanges.length > 0 ? (
+            <ClarificationExchangeList exchanges={clarificationExchanges} />
+          ) : null}
+
+          {turn?.hasProposedPlan ? (
+            <PlanCard
+              planSteps={planList}
+              planContent={content}
+              isStreaming={turn.proposedPlanStatus === "streaming"}
+            />
           ) : null}
 
           {turn?.hasProposedPlan || hasTimeline ? null : (
@@ -296,6 +304,45 @@ export function AssistantTurnCard({
   );
 }
 
+function ClarificationExchangeList({
+  exchanges,
+}: {
+  exchanges: TurnClarificationExchange[];
+}) {
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+      {exchanges.map((exchange) => (
+        <div key={exchange.id} className="space-y-2">
+          <div className="flex gap-2">
+            <span className="mt-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-background text-[11px] font-semibold text-muted-foreground">
+              Q
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm leading-6 text-foreground">{exchange.question}</p>
+              <p className="text-xs leading-5 text-muted-foreground">{exchange.requestedAt}</p>
+            </div>
+          </div>
+          {exchange.answer ? (
+            <div className="flex gap-2">
+              <span className="mt-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-bench-900 text-[11px] font-semibold text-white">
+                A
+              </span>
+              <div className="min-w-0 flex-1">
+                <MarkdownContent content={exchange.answer} className="text-sm leading-6" />
+                {exchange.answeredAt ? (
+                  <p className="text-xs leading-5 text-muted-foreground">{exchange.answeredAt}</p>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <p className="pl-7 text-xs leading-5 text-muted-foreground">等待补充信息</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function legacyTimelineItems(processSteps: TurnProcessStep[]): TurnTimelineItem[] {
   if (processSteps.length === 0) {
     return [];
@@ -340,13 +387,23 @@ function shouldShowThinkingIndicator({
   timelineItems: TurnTimelineItem[];
   turn?: AssistantTurnAttachment;
 }) {
-  if (!turn || turn.status !== "running" || turn.hasProposedPlan || isPlaceholder) {
+  if (isPlaceholder && !content.trim()) {
+    return true;
+  }
+  if (!turn || turn.status !== "running") {
     return false;
   }
 
   if (hasTimeline) {
+    if (latestProgressLoadingItemId(timelineItems)) {
+      return false;
+    }
     const latestItem = timelineItems[timelineItems.length - 1];
     return latestItem?.kind === "assistant_text" || latestItem?.kind === "final_text";
+  }
+
+  if (turn.hasProposedPlan) {
+    return turn.proposedPlanStatus === "complete";
   }
 
   return Boolean(content.trim());
@@ -363,29 +420,86 @@ function ThinkingIndicator() {
 
 function TurnTimeline({
   items,
+  isRunning = false,
   onOpenArtifact,
 }: {
   items: TurnTimelineItem[];
+  isRunning?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
+  const groups = groupTimelineItemsByAgent(items);
+  const progressLoadingItemId = latestProgressLoadingItemId(items);
   return (
     <div className="space-y-3">
-      {items.map((item) => (
-        <TurnTimelineRow
-          key={item.id}
-          item={item}
-          onOpenArtifact={onOpenArtifact}
-        />
+      {groups.map((group) => (
+        <div key={group.id} className="space-y-2">
+          {group.agentLabel ? (
+            <p className="text-sm font-semibold leading-6 text-foreground">
+              {group.agentLabel}
+            </p>
+          ) : null}
+          <div className="space-y-3">
+            {group.items.map((item) => (
+              <TurnTimelineRow
+                key={item.id}
+                item={item}
+                showProgressLoading={isRunning && progressLoadingItemId === item.id}
+                onOpenArtifact={onOpenArtifact}
+              />
+            ))}
+          </div>
+        </div>
       ))}
     </div>
   );
 }
 
+function latestProgressLoadingItemId(items: TurnTimelineItem[]): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === "status_group" && item.status !== "blocked") {
+      return item.id;
+    }
+  }
+  return undefined;
+}
+
+function groupTimelineItemsByAgent(items: TurnTimelineItem[]): Array<{
+  id: string;
+  agentLabel?: string;
+  items: TurnTimelineItem[];
+}> {
+  const groups: Array<{ id: string; agentLabel?: string; items: TurnTimelineItem[] }> = [];
+  for (const item of items) {
+    const agentLabel = timelineAgentLabel(item);
+    const latest = groups.at(-1);
+    if (latest && latest.agentLabel === agentLabel) {
+      latest.items.push(item);
+      continue;
+    }
+    groups.push({
+      id: `${item.id}:group`,
+      agentLabel,
+      items: [item],
+    });
+  }
+  return groups;
+}
+
+function timelineAgentLabel(item: TurnTimelineItem): string | undefined {
+  if (item.kind === "agent_message") {
+    return item.agentLabel ?? item.fromAgentLabel;
+  }
+  return item.agentLabel;
+}
+
 function TurnTimelineRow({
   item,
+  showProgressLoading = false,
   onOpenArtifact,
 }: {
   item: TurnTimelineItem;
+  showProgressLoading?: boolean;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
   switch (item.kind) {
@@ -399,7 +513,7 @@ function TurnTimelineRow({
     case "agent_message":
       return <AgentMessageTimelineItem item={item} />;
     case "status_group":
-      return <TimelineStatusGroup item={item} />;
+      return <TimelineStatusGroup item={item} showProgressLoading={showProgressLoading} />;
     case "artifact": {
       const content = (
         <InlineTimelineMeta icon={<FileText size={14} />}>
@@ -431,14 +545,6 @@ function AgentMessageTimelineItem({
 }) {
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold leading-6 text-foreground">
-        <span>{item.fromAgentLabel}</span>
-        {item.messageKind === "handoff" && item.toAgentLabels.length > 0 ? (
-          <span className="text-xs font-medium text-muted-foreground">
-            接下来交给 {item.toAgentLabels.join(" 和 ")}
-          </span>
-        ) : null}
-      </div>
       <MessageContent className="w-full">
         <MarkdownContent content={item.content} />
       </MessageContent>
@@ -448,11 +554,13 @@ function AgentMessageTimelineItem({
 
 function TimelineStatusGroup({
   item,
+  showProgressLoading = false,
 }: {
   item: Extract<TurnTimelineItem, { kind: "status_group" }>;
+  showProgressLoading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const active = item.status === "active";
+  const active = item.status === "active" || showProgressLoading;
 
   return (
     <div className="space-y-2">

@@ -1,7 +1,30 @@
-import { CoordinationPatternSchema, ModeTranscriptLayoutSchema, SINGLE_AGENT_MODE_ID, type ModeSelection, type PermissionMode, type TaskIntent } from "@cemeworm/shared";
-import { createContext, useContext, useMemo, useReducer, type Dispatch, type ReactNode } from "react";
-import type { AppView, CoordinationPattern, DockTab, RuntimeBridgeStatus } from "../types";
-import { LANGUAGE_STORAGE_KEY, readStoredLanguage, type AppLanguage } from "./i18n";
+import {
+  CoordinationPatternSchema,
+  ModeTranscriptLayoutSchema,
+  SINGLE_AGENT_MODE_ID,
+  type ModeSelection,
+  type PermissionMode,
+  type TaskIntent,
+} from "@cemeworm/shared";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useReducer,
+  type Dispatch,
+  type ReactNode,
+} from "react";
+import type {
+  AppView,
+  CoordinationPattern,
+  DockTab,
+  RuntimeBridgeStatus,
+} from "../types";
+import {
+  LANGUAGE_STORAGE_KEY,
+  readStoredLanguage,
+  type AppLanguage,
+} from "./i18n";
 import { parseProposedPlan } from "./proposedPlanParser";
 import { chooseEnabledProviderId } from "./providerSelection";
 import type {
@@ -16,6 +39,7 @@ import type {
   OraProviderStatus,
   OraRunEventStream,
   OraProjectSummary,
+  OraSessionBranchGroup,
   OraSessionDetail,
   OraSessionSummary,
   OraSkillRegistry,
@@ -83,7 +107,10 @@ export interface WorkbenchState {
   lastRunTaskIntent?: TaskIntent;
   selectedSkillIds: string[];
   sessionSkillIds: Record<string, string[]>;
-  sessionProjectFileAttachments: Record<string, ComposerProjectFileAttachment[]>;
+  sessionProjectFileAttachments: Record<
+    string,
+    ComposerProjectFileAttachment[]
+  >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   pendingRun: PendingRunState | undefined;
   isLoading: boolean;
@@ -130,7 +157,12 @@ export type WorkbenchAction =
       feedback?: string;
     }
   | { type: "CACHE_SESSION_DETAIL"; detail: OraSessionDetail }
-  | { type: "SET_COLLECTIONS"; projects: OraProjectSummary[]; sessions: OraSessionSummary[]; feedback?: string }
+  | {
+      type: "SET_COLLECTIONS";
+      projects: OraProjectSummary[];
+      sessions: OraSessionSummary[];
+      feedback?: string;
+    }
   | { type: "ARCHIVE_SESSION_OPTIMISTIC"; sessionId: string }
   | { type: "SET_PROJECTS"; projects: OraProjectSummary[] }
   | { type: "SET_MODES"; modes: OraModeSpec[] }
@@ -144,27 +176,52 @@ export type WorkbenchAction =
   | { type: "UPSERT_PROVIDER"; provider: OraProviderConfig }
   | { type: "DELETE_PROVIDER"; providerId: string }
   | { type: "SET_PROVIDER_SECRET_STATUS"; status: OraProviderSecretStatus }
-  | { type: "SET_PROVIDER_SECRET_STATUSES"; statuses: OraProviderSecretStatus[] }
+  | {
+      type: "SET_PROVIDER_SECRET_STATUSES";
+      statuses: OraProviderSecretStatus[];
+    }
   | { type: "SET_PROVIDER_STATUS"; status: OraProviderStatus }
   | { type: "SET_PROVIDER_STATUSES"; statuses: OraProviderStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
   | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream; receivedAt?: number }
-  | { type: "BEGIN_RUN_RESUME"; runId: string; approvedActionIds: string[]; updatedAt: number }
+  | {
+      type: "BEGIN_RUN_RESUME";
+      runId: string;
+      approvedActionIds: string[];
+      updatedAt: number;
+    }
   | { type: "SELECT_TAB"; tab: DockTab }
   | { type: "SELECT_BEAT"; beatId: string | undefined }
   | { type: "SELECT_NODE"; nodeId: string }
   | { type: "SET_PROMPT"; text: string }
   | { type: "SET_SELECTED_SKILL_IDS"; skillIds: string[] }
-  | { type: "ADD_PROJECT_FILE_ATTACHMENT"; sessionId: string; file: ComposerProjectFileAttachment }
+  | {
+      type: "ADD_PROJECT_FILE_ATTACHMENT";
+      sessionId: string;
+      file: ComposerProjectFileAttachment;
+    }
   | { type: "REMOVE_PROJECT_FILE_ATTACHMENT"; sessionId: string; path: string }
   | { type: "CLEAR_PROJECT_FILE_ATTACHMENTS"; sessionId: string }
-  | { type: "ADD_LOCAL_FILE_ATTACHMENT"; sessionId: string; file: ComposerLocalFileAttachment }
+  | {
+      type: "ADD_LOCAL_FILE_ATTACHMENT";
+      sessionId: string;
+      file: ComposerLocalFileAttachment;
+    }
   | { type: "REMOVE_LOCAL_FILE_ATTACHMENT"; sessionId: string; path: string }
   | { type: "CLEAR_LOCAL_FILE_ATTACHMENTS"; sessionId: string }
   | { type: "CLEAR_PROMPT_IF_MATCH"; text: string }
-  | { type: "BEGIN_RUN_REQUEST"; sessionId: string; prompt: string; createdAt: number }
-  | { type: "SET_PENDING_RUN_PROGRESS"; sessionId: string; progressText: string }
+  | {
+      type: "BEGIN_RUN_REQUEST";
+      sessionId: string;
+      prompt: string;
+      createdAt: number;
+    }
+  | {
+      type: "SET_PENDING_RUN_PROGRESS";
+      sessionId: string;
+      progressText: string;
+    }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_BUSY_COMMAND"; command: string | undefined }
   | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
@@ -181,7 +238,8 @@ export type WorkbenchAction =
   | { type: "SET_PLAN_DECISION_PENDING"; sessionId: string; pending: boolean }
   | { type: "SET_LANGUAGE"; language: AppLanguage };
 
-const initialSelectedPattern = CoordinationPatternSchema.options[0] as CoordinationPattern;
+const initialSelectedPattern = CoordinationPatternSchema
+  .options[0] as CoordinationPattern;
 
 export const initialWorkbenchState: WorkbenchState = {
   selectedPattern: initialSelectedPattern,
@@ -228,7 +286,8 @@ export const initialWorkbenchState: WorkbenchState = {
   pendingRun: undefined,
   isLoading: false,
   busyCommand: undefined,
-  commandFeedback: "Select a session to inspect its latest turn, checkpoints, and approvals.",
+  commandFeedback:
+    "Select a session to inspect its latest turn, checkpoints, and approvals.",
   filmstripExpanded: false,
   activeView: "chat",
   settingsOpen: false,
@@ -241,11 +300,21 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionPendingPlanDecision: {},
 };
 
-function replaceSessionSummary(sessions: OraSessionSummary[], session: OraSessionSummary): OraSessionSummary[] {
-  return [session, ...sessions.filter((item) => item.sessionId !== session.sessionId)];
+function replaceSessionSummary(
+  sessions: OraSessionSummary[],
+  session: OraSessionSummary,
+): OraSessionSummary[] {
+  return [
+    session,
+    ...sessions.filter((item) => item.sessionId !== session.sessionId),
+  ];
 }
 
-function selectedSnapshotFromDetail(detail: OraSessionDetail, snapshot?: OraStateSnapshot, selectedRunId?: string) {
+function selectedSnapshotFromDetail(
+  detail: OraSessionDetail,
+  snapshot?: OraStateSnapshot,
+  selectedRunId?: string,
+) {
   if (snapshot) {
     return mergeStateSnapshot(undefined, snapshot);
   }
@@ -264,27 +333,40 @@ function emptySessionDetail(session: OraSessionSummary): OraSessionDetail {
   };
 }
 
-function cacheSessionDetail(cache: Record<string, OraSessionDetail>, detail: OraSessionDetail): Record<string, OraSessionDetail> {
+function cacheSessionDetail(
+  cache: Record<string, OraSessionDetail>,
+  detail: OraSessionDetail,
+): Record<string, OraSessionDetail> {
   return {
     ...cache,
     [detail.session.sessionId]: detail,
   };
 }
 
-function sessionPromptText(state: WorkbenchState, sessionId: string | undefined): string {
+function sessionPromptText(
+  state: WorkbenchState,
+  sessionId: string | undefined,
+): string {
   return sessionId ? (state.sessionPromptTexts[sessionId] ?? "") : "";
 }
 
-function sessionSkillIds(state: WorkbenchState, sessionId: string | undefined): string[] {
+function sessionSkillIds(
+  state: WorkbenchState,
+  sessionId: string | undefined,
+): string[] {
   return sessionId ? (state.sessionSkillIds[sessionId] ?? []) : [];
 }
 
-function setSessionPromptText(state: WorkbenchState, text: string): Record<string, string> {
+function setSessionPromptText(
+  state: WorkbenchState,
+  text: string,
+): Record<string, string> {
   if (!state.selectedSessionId) {
     return state.sessionPromptTexts;
   }
   if (!text) {
-    const { [state.selectedSessionId]: _cleared, ...rest } = state.sessionPromptTexts;
+    const { [state.selectedSessionId]: _cleared, ...rest } =
+      state.sessionPromptTexts;
     return rest;
   }
   return {
@@ -293,17 +375,24 @@ function setSessionPromptText(state: WorkbenchState, text: string): Record<strin
   };
 }
 
-function clearSessionPromptText(state: WorkbenchState, sessionId: string): Record<string, string> {
+function clearSessionPromptText(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, string> {
   const { [sessionId]: _cleared, ...rest } = state.sessionPromptTexts;
   return rest;
 }
 
-function setSessionSkillIds(state: WorkbenchState, skillIds: string[]): Record<string, string[]> {
+function setSessionSkillIds(
+  state: WorkbenchState,
+  skillIds: string[],
+): Record<string, string[]> {
   if (!state.selectedSessionId) {
     return state.sessionSkillIds;
   }
   if (skillIds.length === 0) {
-    const { [state.selectedSessionId]: _cleared, ...rest } = state.sessionSkillIds;
+    const { [state.selectedSessionId]: _cleared, ...rest } =
+      state.sessionSkillIds;
     return rest;
   }
   return {
@@ -312,35 +401,63 @@ function setSessionSkillIds(state: WorkbenchState, skillIds: string[]): Record<s
   };
 }
 
-function clearSessionSkillIds(state: WorkbenchState, sessionId: string): Record<string, string[]> {
+function clearSessionSkillIds(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, string[]> {
   const { [sessionId]: _cleared, ...rest } = state.sessionSkillIds;
   return rest;
 }
 
-function sessionTaskIntent(state: WorkbenchState, sessionId: string | undefined): TaskIntent {
-  return sessionId ? (state.sessionTaskIntents[sessionId] ?? "implement") : "implement";
+function sessionTaskIntent(
+  state: WorkbenchState,
+  sessionId: string | undefined,
+): TaskIntent {
+  return sessionId
+    ? (state.sessionTaskIntents[sessionId] ?? "implement")
+    : "implement";
 }
 
-function setSessionTaskIntent(state: WorkbenchState, taskIntent: TaskIntent): Record<string, TaskIntent> {
+function setSessionTaskIntent(
+  state: WorkbenchState,
+  taskIntent: TaskIntent,
+): Record<string, TaskIntent> {
   if (!state.selectedSessionId) return state.sessionTaskIntents;
   return { ...state.sessionTaskIntents, [state.selectedSessionId]: taskIntent };
 }
 
-function clearSessionTaskIntent(state: WorkbenchState, sessionId: string): Record<string, TaskIntent> {
+function clearSessionTaskIntent(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, TaskIntent> {
   const { [sessionId]: _cleared, ...rest } = state.sessionTaskIntents;
   return rest;
 }
 
-function sessionPermissionMode(state: WorkbenchState, sessionId: string | undefined): PermissionMode {
-  return sessionId ? (state.sessionPermissionModes[sessionId] ?? "default") : "default";
+function sessionPermissionMode(
+  state: WorkbenchState,
+  sessionId: string | undefined,
+): PermissionMode {
+  return sessionId
+    ? (state.sessionPermissionModes[sessionId] ?? "default")
+    : "default";
 }
 
-function setSessionPermissionMode(state: WorkbenchState, permissionMode: PermissionMode): Record<string, PermissionMode> {
+function setSessionPermissionMode(
+  state: WorkbenchState,
+  permissionMode: PermissionMode,
+): Record<string, PermissionMode> {
   if (!state.selectedSessionId) return state.sessionPermissionModes;
-  return { ...state.sessionPermissionModes, [state.selectedSessionId]: permissionMode };
+  return {
+    ...state.sessionPermissionModes,
+    [state.selectedSessionId]: permissionMode,
+  };
 }
 
-function clearSessionPermissionMode(state: WorkbenchState, sessionId: string): Record<string, PermissionMode> {
+function clearSessionPermissionMode(
+  state: WorkbenchState,
+  sessionId: string,
+): Record<string, PermissionMode> {
   const { [sessionId]: _cleared, ...rest } = state.sessionPermissionModes;
   return rest;
 }
@@ -351,7 +468,11 @@ function addProjectFileAttachment(
   file: ComposerProjectFileAttachment,
 ): Record<string, ComposerProjectFileAttachment[]> {
   const current = state.sessionProjectFileAttachments[sessionId] ?? [];
-  if (current.some((item) => item.projectId === file.projectId && item.path === file.path)) {
+  if (
+    current.some(
+      (item) => item.projectId === file.projectId && item.path === file.path,
+    )
+  ) {
     return state.sessionProjectFileAttachments;
   }
   return {
@@ -365,9 +486,12 @@ function removeProjectFileAttachment(
   sessionId: string,
   path: string,
 ): Record<string, ComposerProjectFileAttachment[]> {
-  const nextFiles = (state.sessionProjectFileAttachments[sessionId] ?? []).filter((file) => file.path !== path);
+  const nextFiles = (
+    state.sessionProjectFileAttachments[sessionId] ?? []
+  ).filter((file) => file.path !== path);
   if (nextFiles.length === 0) {
-    const { [sessionId]: _cleared, ...rest } = state.sessionProjectFileAttachments;
+    const { [sessionId]: _cleared, ...rest } =
+      state.sessionProjectFileAttachments;
     return rest;
   }
   return {
@@ -380,7 +504,8 @@ function clearProjectFileAttachments(
   state: WorkbenchState,
   sessionId: string,
 ): Record<string, ComposerProjectFileAttachment[]> {
-  const { [sessionId]: _cleared, ...rest } = state.sessionProjectFileAttachments;
+  const { [sessionId]: _cleared, ...rest } =
+    state.sessionProjectFileAttachments;
   return rest;
 }
 
@@ -404,9 +529,12 @@ function removeLocalFileAttachment(
   sessionId: string,
   path: string,
 ): Record<string, ComposerLocalFileAttachment[]> {
-  const nextFiles = (state.sessionLocalFileAttachments[sessionId] ?? []).filter((file) => file.path !== path);
+  const nextFiles = (state.sessionLocalFileAttachments[sessionId] ?? []).filter(
+    (file) => file.path !== path,
+  );
   if (nextFiles.length === 0) {
-    const { [sessionId]: _cleared, ...rest } = state.sessionLocalFileAttachments;
+    const { [sessionId]: _cleared, ...rest } =
+      state.sessionLocalFileAttachments;
     return rest;
   }
   return {
@@ -423,7 +551,10 @@ function clearLocalFileAttachments(
   return rest;
 }
 
-function resolveSelectedMode(modes: OraModeSpec[], selectedModeId: string): OraModeSpec | undefined {
+function resolveSelectedMode(
+  modes: OraModeSpec[],
+  selectedModeId: string,
+): OraModeSpec | undefined {
   if (selectedModeId) {
     const selectedMode = modes.find((mode) => mode.id === selectedModeId);
     if (selectedMode) {
@@ -459,7 +590,10 @@ function mergeByKey<T>(
   return [...unkeyed, ...itemByKey.values()];
 }
 
-function mergeById<T extends { id: string }>(existing: readonly T[] | undefined, incoming: readonly T[] | undefined): T[] {
+function mergeById<T extends { id: string }>(
+  existing: readonly T[] | undefined,
+  incoming: readonly T[] | undefined,
+): T[] {
   return mergeByKey(existing, incoming, (item) => item.id);
 }
 
@@ -467,8 +601,9 @@ function mergeEvents(
   existing: OraStateSnapshot["events"],
   incoming: OraStateSnapshot["events"],
 ): OraStateSnapshot["events"] {
-  return mergeByKey(existing, incoming, (event) => event.seq)
-    .sort((left, right) => left.seq - right.seq);
+  return mergeByKey(existing, incoming, (event) => event.seq).sort(
+    (left, right) => left.seq - right.seq,
+  );
 }
 
 function mergeLatencyDiagnostics(
@@ -476,7 +611,12 @@ function mergeLatencyDiagnostics(
 ): OraStateSnapshot["latency"] | undefined {
   const marks = sources
     .flatMap((source) => source?.marks ?? [])
-    .sort((left, right) => left.at - right.at || left.source.localeCompare(right.source) || left.name.localeCompare(right.name));
+    .sort(
+      (left, right) =>
+        left.at - right.at ||
+        left.source.localeCompare(right.source) ||
+        left.name.localeCompare(right.name),
+    );
   if (marks.length === 0) {
     return undefined;
   }
@@ -496,20 +636,31 @@ function mergeLatencyDiagnostics(
 function mergeAgentMessages(
   ...sources: Array<OraStateSnapshot["agentMessages"] | undefined>
 ): OraStateSnapshot["agentMessages"] {
-  const messageById = new Map<string, OraStateSnapshot["agentMessages"][number]>();
+  const messageById = new Map<
+    string,
+    OraStateSnapshot["agentMessages"][number]
+  >();
   for (const source of sources) {
     for (const message of source ?? []) {
       messageById.set(message.id, message);
     }
   }
-  return [...messageById.values()]
-    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+  return [...messageById.values()].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  );
 }
 
-function agentMessagesFromEvents(events: OraStateSnapshot["events"]): OraStateSnapshot["agentMessages"] {
+function agentMessagesFromEvents(
+  events: OraStateSnapshot["events"],
+): OraStateSnapshot["agentMessages"] {
   const messages: OraStateSnapshot["agentMessages"] = [];
   for (const event of events) {
-    if (event.type !== "agent.message" || !isRecord(event.payload) || !isRecord(event.payload.message)) {
+    if (
+      event.type !== "agent.message" ||
+      !isRecord(event.payload) ||
+      !isRecord(event.payload.message)
+    ) {
       continue;
     }
     const message = readAgentConversationMessage(event.payload.message);
@@ -523,7 +674,10 @@ function agentMessagesFromEvents(events: OraStateSnapshot["events"]): OraStateSn
 function normalizeStateSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
   return {
     ...snapshot,
-    agentMessages: mergeAgentMessages(snapshot.agentMessages, agentMessagesFromEvents(snapshot.events)),
+    agentMessages: mergeAgentMessages(
+      snapshot.agentMessages,
+      agentMessagesFromEvents(snapshot.events),
+    ),
   };
 }
 
@@ -539,35 +693,73 @@ export function mergeStateSnapshot(
     return normalizedIncoming;
   }
   const normalizedExisting = normalizeStateSnapshot(existing);
-  if (normalizedExisting.sessionId && normalizedIncoming.sessionId && normalizedExisting.sessionId !== normalizedIncoming.sessionId) {
+  if (
+    normalizedExisting.sessionId &&
+    normalizedIncoming.sessionId &&
+    normalizedExisting.sessionId !== normalizedIncoming.sessionId
+  ) {
     return normalizedIncoming;
   }
 
-  const events = mergeEvents(normalizedExisting.events, normalizedIncoming.events);
+  const events = mergeEvents(
+    normalizedExisting.events,
+    normalizedIncoming.events,
+  );
   return {
     ...normalizedExisting,
     ...normalizedIncoming,
     sessionId: normalizedIncoming.sessionId ?? normalizedExisting.sessionId,
-    coordinationKind: normalizedIncoming.coordinationKind ?? normalizedExisting.coordinationKind,
+    coordinationKind:
+      normalizedIncoming.coordinationKind ??
+      normalizedExisting.coordinationKind,
     modeId: normalizedIncoming.modeId ?? normalizedExisting.modeId,
-    profiles: mergeById(normalizedExisting.profiles, normalizedIncoming.profiles),
+    profiles: mergeById(
+      normalizedExisting.profiles,
+      normalizedIncoming.profiles,
+    ),
     memory: mergeById(normalizedExisting.memory, normalizedIncoming.memory),
     plan: mergeById(normalizedExisting.plan, normalizedIncoming.plan),
     todos: mergeById(normalizedExisting.todos, normalizedIncoming.todos),
     actions: mergeById(normalizedExisting.actions, normalizedIncoming.actions),
-    toolCalls: mergeById(normalizedExisting.toolCalls, normalizedIncoming.toolCalls),
-    toolResults: mergeByKey(normalizedExisting.toolResults, normalizedIncoming.toolResults, (result) => result.key),
-    policyDecisions: mergeById(normalizedExisting.policyDecisions, normalizedIncoming.policyDecisions),
-    checkpoints: mergeById(normalizedExisting.checkpoints, normalizedIncoming.checkpoints),
+    toolCalls: mergeById(
+      normalizedExisting.toolCalls,
+      normalizedIncoming.toolCalls,
+    ),
+    toolResults: mergeByKey(
+      normalizedExisting.toolResults,
+      normalizedIncoming.toolResults,
+      (result) => result.key,
+    ),
+    policyDecisions: mergeById(
+      normalizedExisting.policyDecisions,
+      normalizedIncoming.policyDecisions,
+    ),
+    checkpoints: mergeById(
+      normalizedExisting.checkpoints,
+      normalizedIncoming.checkpoints,
+    ),
     events,
-    agentMessages: mergeAgentMessages(normalizedExisting.agentMessages, normalizedIncoming.agentMessages, agentMessagesFromEvents(events)),
-    artifacts: mergeById(normalizedExisting.artifacts, normalizedIncoming.artifacts),
+    agentMessages: mergeAgentMessages(
+      normalizedExisting.agentMessages,
+      normalizedIncoming.agentMessages,
+      agentMessagesFromEvents(events),
+    ),
+    artifacts: mergeById(
+      normalizedExisting.artifacts,
+      normalizedIncoming.artifacts,
+    ),
     trace: normalizedIncoming.trace ?? normalizedExisting.trace,
-    latency: mergeLatencyDiagnostics(normalizedExisting.latency, normalizedIncoming.latency),
+    latency: mergeLatencyDiagnostics(
+      normalizedExisting.latency,
+      normalizedIncoming.latency,
+    ),
     modeSpec: normalizedIncoming.modeSpec ?? normalizedExisting.modeSpec,
     output: normalizedIncoming.output ?? normalizedExisting.output,
     error: normalizedIncoming.error ?? normalizedExisting.error,
-    updatedAt: Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt),
+    updatedAt: Math.max(
+      normalizedExisting.updatedAt,
+      normalizedIncoming.updatedAt,
+    ),
   };
 }
 
@@ -577,12 +769,17 @@ function mergeStreamClarificationUpdates(
 ): OraStateSnapshot["pendingClarifications"] {
   const updated = [...(snapshot.pendingClarifications ?? [])];
   for (const event of stream.events) {
-    if (event.type === "clarification.required" && isRecord(event.payload) && isRecord(event.payload.clarification)) {
+    if (
+      event.type === "clarification.required" &&
+      isRecord(event.payload) &&
+      isRecord(event.payload.clarification)
+    ) {
       const payload = event.payload.clarification as Record<string, unknown>;
       const id = typeof payload.id === "string" ? payload.id : undefined;
       if (!id) continue;
       const existingIndex = updated.findIndex((c) => c.id === id);
-      const clarification = payload as unknown as OraStateSnapshot["pendingClarifications"][number];
+      const clarification =
+        payload as unknown as OraStateSnapshot["pendingClarifications"][number];
       if (existingIndex >= 0) {
         updated[existingIndex] = clarification;
       } else {
@@ -590,7 +787,10 @@ function mergeStreamClarificationUpdates(
       }
     }
     if (event.type === "clarification.resolved" && isRecord(event.payload)) {
-      const clarificationId = typeof event.payload.clarificationId === "string" ? event.payload.clarificationId : undefined;
+      const clarificationId =
+        typeof event.payload.clarificationId === "string"
+          ? event.payload.clarificationId
+          : undefined;
       if (!clarificationId) continue;
       const index = updated.findIndex((c) => c.id === clarificationId);
       if (index >= 0) {
@@ -601,7 +801,10 @@ function mergeStreamClarificationUpdates(
   return updated;
 }
 
-export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, stream: OraRunEventStream): OraStateSnapshot | undefined {
+export function mergeRunStreamSnapshot(
+  snapshot: OraStateSnapshot | undefined,
+  stream: OraRunEventStream,
+): OraStateSnapshot | undefined {
   if (stream.snapshot) {
     return mergeStateSnapshot(snapshot, stream.snapshot);
   }
@@ -612,7 +815,10 @@ export function mergeRunStreamSnapshot(snapshot: OraStateSnapshot | undefined, s
     ? [...snapshot.events, ...stream.events]
     : mergeEventsBySeq(snapshot.events, stream.events);
   const merged = mergeStreamActionUpdates(snapshot, stream);
-  const pendingClarifications = mergeStreamClarificationUpdates(snapshot, stream);
+  const pendingClarifications = mergeStreamClarificationUpdates(
+    snapshot,
+    stream,
+  );
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
   return {
     ...snapshot,
@@ -663,15 +869,40 @@ function markDesktopLatencyForStream(
   if (!snapshot || receivedAt === undefined) {
     return snapshot;
   }
-  let next = appendFirstDesktopLatencyMark(snapshot, "firstRunStreamReceivedAt", receivedAt, {
-    eventType: stream.events[0]?.type,
-    eventCount: stream.events.length,
-  });
-  if (stream.events.some((event) => event.type === "message.delta" || event.type === "token.delta")) {
-    next = appendFirstDesktopLatencyMark(next, "firstMessageDeltaAt", receivedAt);
+  let next = appendFirstDesktopLatencyMark(
+    snapshot,
+    "firstRunStreamReceivedAt",
+    receivedAt,
+    {
+      eventType: stream.events[0]?.type,
+      eventCount: stream.events.length,
+    },
+  );
+  if (
+    stream.events.some(
+      (event) => event.type === "message.delta" || event.type === "token.delta",
+    )
+  ) {
+    next = appendFirstDesktopLatencyMark(
+      next,
+      "firstMessageDeltaAt",
+      receivedAt,
+    );
   }
-  if (stream.events.some((event) => event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string" && event.payload.content.trim())) {
-    next = appendFirstDesktopLatencyMark(next, "firstNonProgressAssistantTextAt", receivedAt);
+  if (
+    stream.events.some(
+      (event) =>
+        event.type === "message.delta" &&
+        isRecord(event.payload) &&
+        typeof event.payload.content === "string" &&
+        event.payload.content.trim(),
+    )
+  ) {
+    next = appendFirstDesktopLatencyMark(
+      next,
+      "firstNonProgressAssistantTextAt",
+      receivedAt,
+    );
   }
   return next;
 }
@@ -682,7 +913,11 @@ function appendFirstDesktopLatencyMark(
   at: number,
   detail: Record<string, unknown> = {},
 ): OraStateSnapshot {
-  if (snapshot.latency?.marks.some((mark) => mark.source === "desktop" && mark.name === name)) {
+  if (
+    snapshot.latency?.marks.some(
+      (mark) => mark.source === "desktop" && mark.name === name,
+    )
+  ) {
     return snapshot;
   }
   return {
@@ -705,9 +940,15 @@ function mergeStreamAgentMessages(
   snapshot: OraStateSnapshot,
   stream: OraRunEventStream,
 ): OraStateSnapshot["agentMessages"] {
-  const messageById = new Map((snapshot.agentMessages ?? []).map((message) => [message.id, message]));
+  const messageById = new Map(
+    (snapshot.agentMessages ?? []).map((message) => [message.id, message]),
+  );
   for (const event of stream.events) {
-    if (event.type !== "agent.message" || !isRecord(event.payload) || !isRecord(event.payload.message)) {
+    if (
+      event.type !== "agent.message" ||
+      !isRecord(event.payload) ||
+      !isRecord(event.payload.message)
+    ) {
       continue;
     }
     const message = readAgentConversationMessage(event.payload.message);
@@ -715,10 +956,15 @@ function mergeStreamAgentMessages(
       messageById.set(message.id, message);
     }
   }
-  return [...messageById.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+  return [...messageById.values()].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  );
 }
 
-function readAgentConversationMessage(value: Record<string, unknown>): OraStateSnapshot["agentMessages"][number] | undefined {
+function readAgentConversationMessage(
+  value: Record<string, unknown>,
+): OraStateSnapshot["agentMessages"][number] | undefined {
   if (
     typeof value.id !== "string" ||
     typeof value.runId !== "string" ||
@@ -736,22 +982,35 @@ function readAgentConversationMessage(value: Record<string, unknown>): OraStateS
     runId: value.runId,
     createdAt: value.createdAt,
     fromAgentId: value.fromAgentId,
-    toAgentIds: Array.isArray(value.toAgentIds) ? value.toAgentIds.filter((item): item is string => typeof item === "string") : [],
-    replyToId: typeof value.replyToId === "string" ? value.replyToId : undefined,
+    toAgentIds: Array.isArray(value.toAgentIds)
+      ? value.toAgentIds.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [],
+    replyToId:
+      typeof value.replyToId === "string" ? value.replyToId : undefined,
     threadId: value.threadId,
     nodeId: typeof value.nodeId === "string" ? value.nodeId : undefined,
-    planItemId: typeof value.planItemId === "string" ? value.planItemId : undefined,
+    planItemId:
+      typeof value.planItemId === "string" ? value.planItemId : undefined,
     kind: value.kind as OraStateSnapshot["agentMessages"][number]["kind"],
     status: value.status as OraStateSnapshot["agentMessages"][number]["status"],
     content: value.content,
     topic: typeof value.topic === "string" ? value.topic : undefined,
-    correlationId: typeof value.correlationId === "string" ? value.correlationId : undefined,
-    artifactIds: Array.isArray(value.artifactIds) ? value.artifactIds.filter((item): item is string => typeof item === "string") : [],
+    correlationId:
+      typeof value.correlationId === "string" ? value.correlationId : undefined,
+    artifactIds: Array.isArray(value.artifactIds)
+      ? value.artifactIds.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [],
     transcript: readAgentConversationTranscript(value.transcript),
   };
 }
 
-function readAgentConversationTranscript(value: unknown): OraStateSnapshot["agentMessages"][number]["transcript"] | undefined {
+function readAgentConversationTranscript(
+  value: unknown,
+): OraStateSnapshot["agentMessages"][number]["transcript"] | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -765,29 +1024,41 @@ function readAgentConversationTranscript(value: unknown): OraStateSnapshot["agen
   ) {
     return undefined;
   }
-  const stance = typeof value.stance === "string" && value.stance.trim() ? value.stance : "neutral";
-  const status = value.status === "sent" ||
+  const stance =
+    typeof value.stance === "string" && value.stance.trim()
+      ? value.stance
+      : "neutral";
+  const status =
+    value.status === "sent" ||
     value.status === "running" ||
     value.status === "done" ||
     value.status === "failed"
-    ? value.status
-    : "done";
+      ? value.status
+      : "done";
   return {
     kind: "stage_transcript",
     groupId: value.groupId,
-    groupLabel: typeof value.groupLabel === "string" ? value.groupLabel : undefined,
+    groupLabel:
+      typeof value.groupLabel === "string" ? value.groupLabel : undefined,
     stageId: value.stageId,
     stageLabel: value.stageLabel,
     sequence: value.sequence,
     speakerLabel: value.speakerLabel,
-    speakerId: typeof value.speakerId === "string" ? value.speakerId : undefined,
+    speakerId:
+      typeof value.speakerId === "string" ? value.speakerId : undefined,
     stance,
     status,
     layout: readTranscriptLayout(value.layout),
   };
 }
 
-function readTranscriptLayout(value: unknown): NonNullable<OraStateSnapshot["agentMessages"][number]["transcript"]>["layout"] | undefined {
+function readTranscriptLayout(
+  value: unknown,
+):
+  | NonNullable<
+      OraStateSnapshot["agentMessages"][number]["transcript"]
+    >["layout"]
+  | undefined {
   const parsed = ModeTranscriptLayoutSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
@@ -796,7 +1067,9 @@ function mergeStreamActionUpdates(
   snapshot: OraStateSnapshot,
   stream: OraRunEventStream,
 ): Pick<OraStateSnapshot, "actions" | "pendingApprovals"> {
-  const actionById = new Map(snapshot.actions.map((action) => [action.id, action]));
+  const actionById = new Map(
+    snapshot.actions.map((action) => [action.id, action]),
+  );
   const pendingApprovals = new Set(snapshot.pendingApprovals);
 
   for (const event of stream.events) {
@@ -804,7 +1077,10 @@ function mergeStreamActionUpdates(
       continue;
     }
 
-    const actionId = typeof event.payload.actionId === "string" ? event.payload.actionId : undefined;
+    const actionId =
+      typeof event.payload.actionId === "string"
+        ? event.payload.actionId
+        : undefined;
     const status = readActionStatus(event.payload.status);
     const record = readActionRecord(event.payload.record);
     const id = record?.id ?? actionId;
@@ -841,20 +1117,29 @@ function readActionRecord(value: unknown): OraActionRecord | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  if (typeof value.id !== "string" || typeof value.runId !== "string" || typeof value.type !== "string") {
+  if (
+    typeof value.id !== "string" ||
+    typeof value.runId !== "string" ||
+    typeof value.type !== "string"
+  ) {
     return undefined;
   }
   const status = readActionStatus(value.status);
-  const riskLevel = value.riskLevel === "low" || value.riskLevel === "medium" || value.riskLevel === "high"
-    ? value.riskLevel
-    : undefined;
+  const riskLevel =
+    value.riskLevel === "low" ||
+    value.riskLevel === "medium" ||
+    value.riskLevel === "high"
+      ? value.riskLevel
+      : undefined;
   if (!status || !riskLevel || !Array.isArray(value.artifactIds)) {
     return undefined;
   }
   return value as OraActionRecord;
 }
 
-function readActionStatus(value: unknown): OraActionRecord["status"] | undefined {
+function readActionStatus(
+  value: unknown,
+): OraActionRecord["status"] | undefined {
   switch (value) {
     case "proposed":
     case "approval_required":
@@ -883,18 +1168,26 @@ function snapshotContainsProposedPlan(snapshot: OraStateSnapshot): boolean {
   return parseProposedPlan(parts.join("")).hasCompletePlan;
 }
 
-function streamRunStatus(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): OraStateSnapshot["status"] | undefined {
+function streamRunStatus(
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+): OraStateSnapshot["status"] | undefined {
   if (snapshot?.runId === stream.runId) {
     return snapshot.status;
   }
   return stream.status;
 }
 
-function isSettledRunStatus(status: OraStateSnapshot["status"] | undefined): status is OraStateSnapshot["status"] {
+function isSettledRunStatus(
+  status: OraStateSnapshot["status"] | undefined,
+): status is OraStateSnapshot["status"] {
   return status !== undefined && status !== "queued" && status !== "running";
 }
 
-function streamUpdatedAt(stream: OraRunEventStream, snapshot: OraStateSnapshot | undefined): number | undefined {
+function streamUpdatedAt(
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+): number | undefined {
   if (snapshot?.runId === stream.runId) {
     return snapshot.updatedAt;
   }
@@ -915,7 +1208,10 @@ function syncSessionStateForSettledStream(
   }
 
   const updatedAt = streamUpdatedAt(stream, snapshot);
-  const activeDetailHasRun = state.activeSessionDetail?.turns.some((turn) => turn.runId === stream.runId) ?? false;
+  const activeDetailHasRun =
+    state.activeSessionDetail?.turns.some(
+      (turn) => turn.runId === stream.runId,
+    ) ?? false;
   const updateSession = (session: OraSessionSummary): OraSessionSummary => {
     if (session.latestRunId !== stream.runId) {
       return session;
@@ -997,6 +1293,81 @@ function applyStreamToSessionDetail(
   };
 }
 
+function applyBranchStreamToSessionDetail(
+  detail: OraSessionDetail | undefined,
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+): OraSessionDetail | undefined {
+  const branchGroupId =
+    typeof snapshot?.config.metadata.branchGroupId === "string"
+      ? snapshot.config.metadata.branchGroupId
+      : undefined;
+  if (
+    !detail ||
+    !branchGroupId ||
+    !detail.branchGroups?.some((group) => group.branchGroupId === branchGroupId)
+  ) {
+    return detail;
+  }
+  const status = streamRunStatus(stream, snapshot) ?? snapshot?.status;
+  const updatedAt = streamUpdatedAt(stream, snapshot) ?? snapshot?.updatedAt;
+  const branchGroups = detail.branchGroups.map((group) => {
+    if (group.branchGroupId !== branchGroupId) return group;
+    const candidates = group.candidates.map((candidate) => {
+      if (candidate.runId !== stream.runId) return candidate;
+      return {
+        ...candidate,
+        status: status ?? candidate.status,
+        modeId: snapshot?.modeId ?? candidate.modeId,
+        providerId: snapshot?.config.providerId ?? candidate.providerId,
+        modelRef: snapshot?.config.modelRef ?? candidate.modelRef,
+        outputPreview: branchOutputPreview(snapshot) ?? candidate.outputPreview,
+        updatedAt: updatedAt ?? candidate.updatedAt,
+      };
+    });
+    return {
+      ...group,
+      candidates,
+      status: branchGroupStatus(group, candidates),
+      updatedAt: Math.max(group.updatedAt, updatedAt ?? group.updatedAt),
+    };
+  });
+  return {
+    ...detail,
+    branchGroups,
+  };
+}
+
+function branchGroupStatus(
+  group: OraSessionBranchGroup,
+  candidates: OraSessionBranchGroup["candidates"],
+): OraSessionBranchGroup["status"] {
+  if (group.adoptedRunId || candidates.some((candidate) => candidate.adopted))
+    return "adopted";
+  if (group.status === "dismissed") return "dismissed";
+  return candidates.every(
+    (candidate) =>
+      candidate.status !== "queued" && candidate.status !== "running",
+  )
+    ? "ready"
+    : "running";
+}
+
+function branchOutputPreview(
+  snapshot: OraStateSnapshot | undefined,
+): string | undefined {
+  if (!snapshot) return undefined;
+  if (typeof snapshot.output === "string") return snapshot.output.slice(0, 500);
+  if (
+    snapshot.output &&
+    typeof snapshot.output === "object" &&
+    typeof (snapshot.output as { text?: unknown }).text === "string"
+  ) {
+    return (snapshot.output as { text: string }).text.slice(0, 500);
+  }
+  return undefined;
+}
+
 function streamMatchesPendingRun(
   pendingRun: WorkbenchState["pendingRun"],
   stream: OraRunEventStream,
@@ -1006,8 +1377,13 @@ function streamMatchesPendingRun(
     return false;
   }
 
-  const snapshot = stream.snapshot ?? (activeSnapshot?.runId === stream.runId ? activeSnapshot : undefined);
-  return snapshot?.sessionId === pendingRun.sessionId && snapshot.input.prompt === pendingRun.prompt;
+  const snapshot =
+    stream.snapshot ??
+    (activeSnapshot?.runId === stream.runId ? activeSnapshot : undefined);
+  return (
+    snapshot?.sessionId === pendingRun.sessionId &&
+    snapshot.input.prompt === pendingRun.prompt
+  );
 }
 
 function markSnapshotResuming(
@@ -1033,12 +1409,17 @@ function markSnapshotResuming(
       }
       return { ...action, status: "approved" };
     }),
-    pendingApprovals: snapshot.pendingApprovals.filter((actionId) => !approved.has(actionId)),
+    pendingApprovals: snapshot.pendingApprovals.filter(
+      (actionId) => !approved.has(actionId),
+    ),
     updatedAt,
   };
 }
 
-export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
+export function workbenchReducer(
+  state: WorkbenchState,
+  action: WorkbenchAction,
+): WorkbenchState {
   switch (action.type) {
     case "RESET_RUNTIME_VIEW":
       return {
@@ -1071,7 +1452,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
 
     case "BOOTSTRAP": {
-      const selectedMode = resolveSelectedMode(action.modes, state.selectedModeId);
+      const selectedMode = resolveSelectedMode(
+        action.modes,
+        state.selectedModeId,
+      );
       return {
         ...state,
         patterns: action.patterns,
@@ -1098,43 +1482,73 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     }
 
     case "HYDRATE_SESSION": {
-      const snapshot = selectedSnapshotFromDetail(action.detail, action.snapshot, state.selectedTurnRunId);
+      const snapshot = selectedSnapshotFromDetail(
+        action.detail,
+        action.snapshot,
+        state.selectedTurnRunId,
+      );
       const latestTurn = action.detail.turns.at(-1);
       const attention = action.detail.session.attention ?? snapshot?.attention;
       return {
         ...state,
         projects: action.projects,
         sessions: replaceSessionSummary(
-          action.sessions.filter((session) => session.sessionId !== action.detail.session.sessionId),
+          action.sessions.filter(
+            (session) => session.sessionId !== action.detail.session.sessionId,
+          ),
           action.detail.session,
         ),
         selectedProjectId: action.detail.session.projectId,
         expandedProjectIds: action.detail.session.projectId
-          ? { ...state.expandedProjectIds, [action.detail.session.projectId]: true }
+          ? {
+              ...state.expandedProjectIds,
+              [action.detail.session.projectId]: true,
+            }
           : state.expandedProjectIds,
         activeSessionDetail: action.detail,
         activeSnapshot: snapshot,
-        sessionDetailsById: cacheSessionDetail(state.sessionDetailsById, action.detail),
+        sessionDetailsById: cacheSessionDetail(
+          state.sessionDetailsById,
+          action.detail,
+        ),
         selectedSessionId: action.detail.session.sessionId,
         selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
         selectedPattern: snapshot?.pattern ?? state.selectedPattern,
         selectedModeId: snapshot?.modeId ?? state.selectedModeId,
-        selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
-        selectedProviderId: snapshot?.config.providerId ?? state.selectedProviderId,
-        selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
+        selectedModeSelection:
+          snapshot?.config.modeSelection ?? state.selectedModeSelection,
+        selectedProviderId:
+          snapshot?.config.providerId ?? state.selectedProviderId,
+        selectedNodeId:
+          snapshot?.topology.nodes[1]?.id ??
+          snapshot?.topology.nodes[0]?.id ??
+          "run",
         selectedBeatId: snapshot?.events.at(-1)?.id,
         promptText: sessionPromptText(state, action.detail.session.sessionId),
-        selectedSkillIds: sessionSkillIds(state, action.detail.session.sessionId),
-        permissionMode: sessionPermissionMode(state, action.detail.session.sessionId),
+        selectedSkillIds: sessionSkillIds(
+          state,
+          action.detail.session.sessionId,
+        ),
+        permissionMode: sessionPermissionMode(
+          state,
+          action.detail.session.sessionId,
+        ),
         taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
         sessionPendingClarifications: {
           ...state.sessionPendingClarifications,
-          [action.detail.session.sessionId]: attention?.kind === "needs_clarification" || (snapshot?.pendingClarifications?.length ?? 0) > 0,
+          [action.detail.session.sessionId]:
+            attention?.kind === "needs_clarification" ||
+            (snapshot?.pendingClarifications?.length ?? 0) > 0,
         },
         sessionPendingPlanDecision: {
           ...state.sessionPendingPlanDecision,
-          [action.detail.session.sessionId]: attention?.kind === "needs_plan_decision" || (sessionTaskIntent(state, action.detail.session.sessionId) === "plan" && snapshot ? snapshotContainsProposedPlan(snapshot) : false),
+          [action.detail.session.sessionId]:
+            attention?.kind === "needs_plan_decision" ||
+            (sessionTaskIntent(state, action.detail.session.sessionId) ===
+              "plan" && snapshot
+              ? snapshotContainsProposedPlan(snapshot)
+              : false),
         },
         pendingRun: undefined,
         isLoading: false,
@@ -1152,28 +1566,55 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
 
     case "ARCHIVE_SESSION_OPTIMISTIC": {
-      const archivedSession = state.sessions.find((session) => session.sessionId === action.sessionId);
-      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } = state.sessionPendingPlanDecision;
+      const archivedSession = state.sessions.find(
+        (session) => session.sessionId === action.sessionId,
+      );
+      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } =
+        state.sessionPendingPlanDecision;
       return {
         ...state,
-        sessions: state.sessions.filter((session) => session.sessionId !== action.sessionId),
+        sessions: state.sessions.filter(
+          (session) => session.sessionId !== action.sessionId,
+        ),
         sessionPromptTexts: clearSessionPromptText(state, action.sessionId),
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
-        sessionProjectFileAttachments: clearProjectFileAttachments(state, action.sessionId),
-        sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
-        sessionPermissionModes: clearSessionPermissionMode(state, action.sessionId),
+        sessionProjectFileAttachments: clearProjectFileAttachments(
+          state,
+          action.sessionId,
+        ),
+        sessionLocalFileAttachments: clearLocalFileAttachments(
+          state,
+          action.sessionId,
+        ),
+        sessionPermissionModes: clearSessionPermissionMode(
+          state,
+          action.sessionId,
+        ),
         sessionTaskIntents: clearSessionTaskIntent(state, action.sessionId),
         sessionPendingPlanDecision: restPlanDecision,
-        promptText: state.selectedSessionId === action.sessionId ? "" : state.promptText,
-        selectedSkillIds: state.selectedSessionId === action.sessionId ? [] : state.selectedSkillIds,
-        permissionMode: state.selectedSessionId === action.sessionId ? "default" as PermissionMode : state.permissionMode,
-        taskIntent: state.selectedSessionId === action.sessionId ? "implement" as TaskIntent : state.taskIntent,
+        promptText:
+          state.selectedSessionId === action.sessionId ? "" : state.promptText,
+        selectedSkillIds:
+          state.selectedSessionId === action.sessionId
+            ? []
+            : state.selectedSkillIds,
+        permissionMode:
+          state.selectedSessionId === action.sessionId
+            ? ("default" as PermissionMode)
+            : state.permissionMode,
+        taskIntent:
+          state.selectedSessionId === action.sessionId
+            ? ("implement" as TaskIntent)
+            : state.taskIntent,
         projects: archivedSession?.projectId
           ? state.projects.map((project) =>
-            project.projectId === archivedSession.projectId
-              ? { ...project, sessionCount: Math.max(0, project.sessionCount - 1) }
-              : project
-          )
+              project.projectId === archivedSession.projectId
+                ? {
+                    ...project,
+                    sessionCount: Math.max(0, project.sessionCount - 1),
+                  }
+                : project,
+            )
           : state.projects,
         busyCommand: "Archive chat",
       };
@@ -1182,14 +1623,20 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "CACHE_SESSION_DETAIL":
       return {
         ...state,
-        sessionDetailsById: cacheSessionDetail(state.sessionDetailsById, action.detail),
+        sessionDetailsById: cacheSessionDetail(
+          state.sessionDetailsById,
+          action.detail,
+        ),
       };
 
     case "SET_PROJECTS":
       return { ...state, projects: action.projects };
 
     case "SET_MODES": {
-      const selectedMode = resolveSelectedMode(action.modes, state.selectedModeId);
+      const selectedMode = resolveSelectedMode(
+        action.modes,
+        state.selectedModeId,
+      );
       return {
         ...state,
         modes: action.modes,
@@ -1206,7 +1653,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         ...state,
         expandedProjectIds: {
           ...state.expandedProjectIds,
-          [action.projectId]: !(state.expandedProjectIds[action.projectId] ?? true),
+          [action.projectId]: !(
+            state.expandedProjectIds[action.projectId] ?? true
+          ),
         },
       };
 
@@ -1230,16 +1679,20 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return {
         ...state,
         selectedModeSelection: action.selection,
-        commandFeedback: action.selection === "auto"
-          ? "Auto mode selected for the next turn."
-          : "Manual mode selection restored for the next turn.",
+        commandFeedback:
+          action.selection === "auto"
+            ? "Auto mode selected for the next turn."
+            : "Manual mode selection restored for the next turn.",
       };
 
     case "SET_PERMISSION_MODE":
       return {
         ...state,
         permissionMode: action.permissionMode,
-        sessionPermissionModes: setSessionPermissionMode(state, action.permissionMode),
+        sessionPermissionModes: setSessionPermissionMode(
+          state,
+          action.permissionMode,
+        ),
       };
 
     case "SET_TASK_INTENT":
@@ -1250,17 +1703,23 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
 
     case "SET_PROVIDER": {
-      const provider = state.providerRegistry?.providers.find((entry) => entry.id === action.providerId);
-      const selectedProviderId = chooseEnabledProviderId(state.providerRegistry, {
-        preferredProviderId: action.providerId,
-        currentProviderId: state.selectedProviderId,
-      });
+      const provider = state.providerRegistry?.providers.find(
+        (entry) => entry.id === action.providerId,
+      );
+      const selectedProviderId = chooseEnabledProviderId(
+        state.providerRegistry,
+        {
+          preferredProviderId: action.providerId,
+          currentProviderId: state.selectedProviderId,
+        },
+      );
       return {
         ...state,
         selectedProviderId,
-        commandFeedback: provider && provider.enabled !== false
-          ? `${provider.label} selected for the next turn.`
-          : `Provider ${action.providerId} is not enabled for chat.`,
+        commandFeedback:
+          provider && provider.enabled !== false
+            ? `${provider.label} selected for the next turn.`
+            : `Provider ${action.providerId} is not enabled for chat.`,
       };
     }
 
@@ -1274,9 +1733,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
 
     case "SET_PROVIDER_REGISTRY": {
-      const selectedProviderId = chooseEnabledProviderId(action.providerRegistry, {
-        currentProviderId: state.selectedProviderId,
-      });
+      const selectedProviderId = chooseEnabledProviderId(
+        action.providerRegistry,
+        {
+          currentProviderId: state.selectedProviderId,
+        },
+      );
       return {
         ...state,
         providerRegistry: action.providerRegistry,
@@ -1304,13 +1766,15 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       ];
       const providerRegistry = {
         providers: nextProviders,
-        defaultProviderId: state.providerRegistry?.defaultProviderId ?? action.provider.id,
+        defaultProviderId:
+          state.providerRegistry?.defaultProviderId ?? action.provider.id,
       };
       return {
         ...state,
         providerRegistry,
         selectedProviderId: chooseEnabledProviderId(providerRegistry, {
-          preferredProviderId: action.provider.enabled !== false ? action.provider.id : undefined,
+          preferredProviderId:
+            action.provider.enabled !== false ? action.provider.id : undefined,
           currentProviderId: state.selectedProviderId,
         }),
         commandFeedback: `${action.provider.label} saved for future turns.`,
@@ -1318,8 +1782,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     }
 
     case "DELETE_PROVIDER": {
-      const providers = state.providerRegistry?.providers.filter((provider) => provider.id !== action.providerId) ?? [];
-      const defaultProviderId = state.providerRegistry?.defaultProviderId ?? "local-smoke";
+      const providers =
+        state.providerRegistry?.providers.filter(
+          (provider) => provider.id !== action.providerId,
+        ) ?? [];
+      const defaultProviderId =
+        state.providerRegistry?.defaultProviderId ?? "local-smoke";
       const providerRegistry = state.providerRegistry
         ? { providers, defaultProviderId }
         : state.providerRegistry;
@@ -1330,8 +1798,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           currentProviderId: state.selectedProviderId,
           previousProviderId: action.providerId,
         }),
-        providerSecretStatuses: state.providerSecretStatuses.filter((status) => status.providerId !== action.providerId),
-        providerStatuses: state.providerStatuses.filter((status) => status.providerId !== action.providerId),
+        providerSecretStatuses: state.providerSecretStatuses.filter(
+          (status) => status.providerId !== action.providerId,
+        ),
+        providerStatuses: state.providerStatuses.filter(
+          (status) => status.providerId !== action.providerId,
+        ),
         commandFeedback: `Removed provider ${action.providerId}.`,
       };
     }
@@ -1341,7 +1813,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         ...state,
         providerSecretStatuses: [
           action.status,
-          ...state.providerSecretStatuses.filter((status) => status.providerId !== action.status.providerId),
+          ...state.providerSecretStatuses.filter(
+            (status) => status.providerId !== action.status.providerId,
+          ),
         ],
         commandFeedback: action.status.detail,
       };
@@ -1354,7 +1828,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         ...state,
         providerStatuses: [
           action.status,
-          ...state.providerStatuses.filter((status) => status.providerId !== action.status.providerId),
+          ...state.providerStatuses.filter(
+            (status) => status.providerId !== action.status.providerId,
+          ),
         ],
         commandFeedback: action.status.detail,
       };
@@ -1362,15 +1838,25 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "SET_PROVIDER_STATUSES":
       return { ...state, providerStatuses: action.statuses };
 
-    case "SELECT_SESSION":
-    {
+    case "SELECT_SESSION": {
       const cachedDetail = state.sessionDetailsById[action.sessionId];
-      const sessionSummary = state.sessions.find((item) => item.sessionId === action.sessionId);
+      const sessionSummary = state.sessions.find(
+        (item) => item.sessionId === action.sessionId,
+      );
       const session = cachedDetail?.session ?? sessionSummary;
-      const detail = cachedDetail && sessionSummary && sessionSummary.updatedAt > cachedDetail.session.updatedAt
-        ? { ...cachedDetail, session: { ...cachedDetail.session, ...sessionSummary } }
-        : (cachedDetail ?? (session ? emptySessionDetail(session) : undefined));
-      const snapshot = detail ? selectedSnapshotFromDetail(detail, undefined, undefined) : undefined;
+      const detail =
+        cachedDetail &&
+        sessionSummary &&
+        sessionSummary.updatedAt > cachedDetail.session.updatedAt
+          ? {
+              ...cachedDetail,
+              session: { ...cachedDetail.session, ...sessionSummary },
+            }
+          : (cachedDetail ??
+            (session ? emptySessionDetail(session) : undefined));
+      const snapshot = detail
+        ? selectedSnapshotFromDetail(detail, undefined, undefined)
+        : undefined;
       const latestTurn = detail?.turns.at(-1);
       return {
         ...state,
@@ -1378,14 +1864,23 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         selectedSessionId: action.sessionId,
         selectedTurnRunId: snapshot?.runId ?? latestTurn?.runId,
         selectedBeatId: undefined,
-        selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? "run",
+        selectedNodeId:
+          snapshot?.topology.nodes[1]?.id ??
+          snapshot?.topology.nodes[0]?.id ??
+          "run",
         selectedProjectId: detail?.session.projectId,
         activeSessionDetail: detail,
         activeSnapshot: snapshot,
-        selectedPattern: snapshot?.pattern ?? session?.latestPattern ?? state.selectedPattern,
-        selectedModeId: snapshot?.modeId ?? session?.latestModeId ?? state.selectedModeId,
-        selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
-        selectedProviderId: snapshot?.config.providerId ?? session?.latestProviderId ?? state.selectedProviderId,
+        selectedPattern:
+          snapshot?.pattern ?? session?.latestPattern ?? state.selectedPattern,
+        selectedModeId:
+          snapshot?.modeId ?? session?.latestModeId ?? state.selectedModeId,
+        selectedModeSelection:
+          snapshot?.config.modeSelection ?? state.selectedModeSelection,
+        selectedProviderId:
+          snapshot?.config.providerId ??
+          session?.latestProviderId ??
+          state.selectedProviderId,
         promptText: sessionPromptText(state, action.sessionId),
         selectedSkillIds: sessionSkillIds(state, action.sessionId),
         permissionMode: sessionPermissionMode(state, action.sessionId),
@@ -1405,8 +1900,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSnapshot: snapshot ?? state.activeSnapshot,
         selectedPattern: snapshot?.pattern ?? state.selectedPattern,
         selectedModeId: snapshot?.modeId ?? state.selectedModeId,
-        selectedModeSelection: snapshot?.config.modeSelection ?? state.selectedModeSelection,
-        selectedNodeId: snapshot?.topology.nodes[1]?.id ?? snapshot?.topology.nodes[0]?.id ?? state.selectedNodeId,
+        selectedModeSelection:
+          snapshot?.config.modeSelection ?? state.selectedModeSelection,
+        selectedNodeId:
+          snapshot?.topology.nodes[1]?.id ??
+          snapshot?.topology.nodes[0]?.id ??
+          state.selectedNodeId,
         selectedBeatId: snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
         pendingRun: snapshot ? undefined : state.pendingRun,
       };
@@ -1414,12 +1913,23 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
 
     case "APPLY_RUN_STREAM": {
       const streamSessionId = action.stream.snapshot?.sessionId;
-      const activeSessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId ?? state.activeSnapshot?.sessionId;
-      const streamMatchesActiveSession = !streamSessionId || !activeSessionId || streamSessionId === activeSessionId;
-      const streamReferencesActiveRun = state.activeSnapshot?.runId === action.stream.runId ||
+      const activeSessionId =
+        state.activeSessionDetail?.session.sessionId ??
+        state.selectedSessionId ??
+        state.activeSnapshot?.sessionId;
+      const streamMatchesActiveSession =
+        !streamSessionId ||
+        !activeSessionId ||
+        streamSessionId === activeSessionId;
+      const streamReferencesActiveRun =
+        state.activeSnapshot?.runId === action.stream.runId ||
         state.selectedTurnRunId === action.stream.runId ||
-        (state.activeSessionDetail?.turns.some((turn) => turn.runId === action.stream.runId) ?? false);
-      const streamBelongsToActiveTurn = streamMatchesActiveSession && streamReferencesActiveRun;
+        (state.activeSessionDetail?.turns.some(
+          (turn) => turn.runId === action.stream.runId,
+        ) ??
+          false);
+      const streamBelongsToActiveTurn =
+        streamMatchesActiveSession && streamReferencesActiveRun;
       const activeSnapshot = streamBelongsToActiveTurn
         ? markDesktopLatencyForStream(
             mergeRunStreamSnapshot(state.activeSnapshot, action.stream),
@@ -1427,33 +1937,69 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             action.receivedAt,
           )
         : state.activeSnapshot;
-      const streamSnapshot = streamBelongsToActiveTurn ? activeSnapshot : action.stream.snapshot;
-      const { sessions, activeSessionDetail } = syncSessionStateForSettledStream(state, action.stream, streamSnapshot);
-      const isSettled = action.stream.status === "succeeded" || action.stream.status === "failed";
-      const pendingClarificationsSessionId = activeSnapshot?.sessionId ?? streamSessionId;
+      const streamSnapshot = streamBelongsToActiveTurn
+        ? activeSnapshot
+        : action.stream.snapshot;
+      const synced = syncSessionStateForSettledStream(
+        state,
+        action.stream,
+        streamSnapshot,
+      );
+      const sessions = synced.sessions;
+      const activeSessionDetail = streamMatchesActiveSession
+        ? applyBranchStreamToSessionDetail(
+            synced.activeSessionDetail ?? state.activeSessionDetail,
+            action.stream,
+            streamSnapshot,
+          )
+        : synced.activeSessionDetail;
+      const isSettled =
+        action.stream.status === "succeeded" ||
+        action.stream.status === "failed";
+      const pendingClarificationsSessionId =
+        activeSnapshot?.sessionId ?? streamSessionId;
       const sessionPendingClarifications = pendingClarificationsSessionId
         ? {
             ...state.sessionPendingClarifications,
-            [pendingClarificationsSessionId]: (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
+            [pendingClarificationsSessionId]:
+              (activeSnapshot?.pendingClarifications?.length ?? 0) > 0,
           }
         : state.sessionPendingClarifications;
       const planTaskIntent = sessionTaskIntent(state, streamSessionId);
-      const planHasProposed = streamSnapshot ? snapshotContainsProposedPlan(streamSnapshot) : false;
-      const pendingPlanDecisionSessionId = isSettled && planTaskIntent === "plan" && planHasProposed
-        ? streamSnapshot!.sessionId
-        : undefined;
-      const attentionPlanDecisionSessionId = streamSnapshot?.attention?.kind === "needs_plan_decision"
-        ? streamSnapshot.sessionId
-        : undefined;
+      const planHasProposed = streamSnapshot
+        ? snapshotContainsProposedPlan(streamSnapshot)
+        : false;
+      const pendingPlanDecisionSessionId =
+        isSettled && planTaskIntent === "plan" && planHasProposed
+          ? streamSnapshot!.sessionId
+          : undefined;
+      const attentionPlanDecisionSessionId =
+        streamSnapshot?.attention?.kind === "needs_plan_decision"
+          ? streamSnapshot.sessionId
+          : undefined;
       const sessionPendingPlanDecision = pendingPlanDecisionSessionId
-        ? { ...state.sessionPendingPlanDecision, [pendingPlanDecisionSessionId]: true }
+        ? {
+            ...state.sessionPendingPlanDecision,
+            [pendingPlanDecisionSessionId]: true,
+          }
         : attentionPlanDecisionSessionId
-          ? { ...state.sessionPendingPlanDecision, [attentionPlanDecisionSessionId]: true }
-        : state.sessionPendingPlanDecision;
+          ? {
+              ...state.sessionPendingPlanDecision,
+              [attentionPlanDecisionSessionId]: true,
+            }
+          : state.sessionPendingPlanDecision;
       if (isSettled && planTaskIntent === "plan") {
-        console.log("[plan:state:APPLY_RUN_STREAM] isSettled=%s taskIntent=%s hasProposedPlan=%s attentionKind=%s sessionId=%s -> pending=%s",
-          isSettled, planTaskIntent, planHasProposed, streamSnapshot?.attention?.kind, streamSnapshot?.sessionId,
-          Boolean(pendingPlanDecisionSessionId || attentionPlanDecisionSessionId));
+        console.log(
+          "[plan:state:APPLY_RUN_STREAM] isSettled=%s taskIntent=%s hasProposedPlan=%s attentionKind=%s sessionId=%s -> pending=%s",
+          isSettled,
+          planTaskIntent,
+          planHasProposed,
+          streamSnapshot?.attention?.kind,
+          streamSnapshot?.sessionId,
+          Boolean(
+            pendingPlanDecisionSessionId || attentionPlanDecisionSessionId,
+          ),
+        );
       }
       return {
         ...state,
@@ -1466,7 +2012,18 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           if (streamSessionId && streamSessionId !== activeSessionId) {
             const cachedDetail = state.sessionDetailsById[streamSessionId];
             if (cachedDetail) {
-              next = cacheSessionDetail(next, applyStreamToSessionDetail(cachedDetail, action.stream, streamSnapshot));
+              next = cacheSessionDetail(
+                next,
+                applyBranchStreamToSessionDetail(
+                  applyStreamToSessionDetail(
+                    cachedDetail,
+                    action.stream,
+                    streamSnapshot,
+                  ),
+                  action.stream,
+                  streamSnapshot,
+                )!,
+              );
             }
           }
           return next;
@@ -1474,22 +2031,52 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         activeSnapshot,
         sessionPendingClarifications,
         sessionPendingPlanDecision,
-        selectedTurnRunId: state.selectedTurnRunId ?? (streamBelongsToActiveTurn ? action.stream.runId : undefined),
-        selectedBeatId: streamBelongsToActiveTurn ? action.stream.events.at(-1)?.id ?? state.selectedBeatId : state.selectedBeatId,
-        pendingRun: streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? undefined : state.pendingRun,
-        selectedModeSelection: streamBelongsToActiveTurn ? activeSnapshot?.config.modeSelection ?? state.selectedModeSelection : state.selectedModeSelection,
-        lastRunTaskIntent: isSettled && streamMatchesPendingRun(state.pendingRun, action.stream, streamSnapshot) ? state.taskIntent : state.lastRunTaskIntent,
-        isLoading: streamBelongsToActiveTurn ? action.stream.status === "running" || action.stream.status === "queued" : state.isLoading,
-        commandFeedback: streamBelongsToActiveTurn && action.stream.status === "succeeded"
-          ? "Run completed."
-          : streamBelongsToActiveTurn && action.stream.status === "failed"
-            ? "Run failed."
-            : state.commandFeedback,
+        selectedTurnRunId:
+          state.selectedTurnRunId ??
+          (streamBelongsToActiveTurn ? action.stream.runId : undefined),
+        selectedBeatId: streamBelongsToActiveTurn
+          ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)
+          : state.selectedBeatId,
+        pendingRun: streamMatchesPendingRun(
+          state.pendingRun,
+          action.stream,
+          streamSnapshot,
+        )
+          ? undefined
+          : state.pendingRun,
+        selectedModeSelection: streamBelongsToActiveTurn
+          ? (activeSnapshot?.config.modeSelection ??
+            state.selectedModeSelection)
+          : state.selectedModeSelection,
+        lastRunTaskIntent:
+          isSettled &&
+          streamMatchesPendingRun(
+            state.pendingRun,
+            action.stream,
+            streamSnapshot,
+          )
+            ? state.taskIntent
+            : state.lastRunTaskIntent,
+        isLoading: streamBelongsToActiveTurn
+          ? action.stream.status === "running" ||
+            action.stream.status === "queued"
+          : state.isLoading,
+        commandFeedback:
+          streamBelongsToActiveTurn && action.stream.status === "succeeded"
+            ? "Run completed."
+            : streamBelongsToActiveTurn && action.stream.status === "failed"
+              ? "Run failed."
+              : state.commandFeedback,
       };
     }
 
     case "BEGIN_RUN_RESUME": {
-      const activeSnapshot = markSnapshotResuming(state.activeSnapshot, action.runId, action.approvedActionIds, action.updatedAt);
+      const activeSnapshot = markSnapshotResuming(
+        state.activeSnapshot,
+        action.runId,
+        action.approvedActionIds,
+        action.updatedAt,
+      );
       return {
         ...state,
         activeSnapshot,
@@ -1525,39 +2112,61 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     case "ADD_PROJECT_FILE_ATTACHMENT":
       return {
         ...state,
-        sessionProjectFileAttachments: addProjectFileAttachment(state, action.sessionId, action.file),
+        sessionProjectFileAttachments: addProjectFileAttachment(
+          state,
+          action.sessionId,
+          action.file,
+        ),
         commandFeedback: `Added ${action.file.path} to chat.`,
       };
 
     case "REMOVE_PROJECT_FILE_ATTACHMENT":
       return {
         ...state,
-        sessionProjectFileAttachments: removeProjectFileAttachment(state, action.sessionId, action.path),
+        sessionProjectFileAttachments: removeProjectFileAttachment(
+          state,
+          action.sessionId,
+          action.path,
+        ),
       };
 
     case "CLEAR_PROJECT_FILE_ATTACHMENTS":
       return {
         ...state,
-        sessionProjectFileAttachments: clearProjectFileAttachments(state, action.sessionId),
+        sessionProjectFileAttachments: clearProjectFileAttachments(
+          state,
+          action.sessionId,
+        ),
       };
 
     case "ADD_LOCAL_FILE_ATTACHMENT":
       return {
         ...state,
-        sessionLocalFileAttachments: addLocalFileAttachment(state, action.sessionId, action.file),
+        sessionLocalFileAttachments: addLocalFileAttachment(
+          state,
+          action.sessionId,
+          action.file,
+        ),
         commandFeedback: `Added ${action.file.name} to chat.`,
       };
 
     case "REMOVE_LOCAL_FILE_ATTACHMENT":
       return {
         ...state,
-        sessionLocalFileAttachments: removeLocalFileAttachment(state, action.sessionId, action.path),
+        sessionLocalFileAttachments: removeLocalFileAttachment(
+          state,
+          action.sessionId,
+          action.path,
+        ),
       };
 
     case "CLEAR_LOCAL_FILE_ATTACHMENTS":
       return {
         ...state,
-        sessionLocalFileAttachments: clearLocalFileAttachments(state, action.sessionId),
+        sessionLocalFileAttachments: clearLocalFileAttachments(
+          state,
+          action.sessionId,
+        ),
       };
 
     case "CLEAR_PROMPT_IF_MATCH":
@@ -1572,7 +2181,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         : state;
 
     case "BEGIN_RUN_REQUEST": {
-      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } = state.sessionPendingPlanDecision;
+      const { [action.sessionId]: _clearedPlanDecision, ...restPlanDecision } =
+        state.sessionPendingPlanDecision;
       return {
         ...state,
         pendingRun: {
@@ -1590,7 +2200,10 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     }
 
     case "SET_PENDING_RUN_PROGRESS":
-      if (!state.pendingRun || state.pendingRun.sessionId !== action.sessionId) {
+      if (
+        !state.pendingRun ||
+        state.pendingRun.sessionId !== action.sessionId
+      ) {
         return state;
       }
       return {
@@ -1602,7 +2215,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       };
 
     case "SET_LOADING":
-      return { ...state, isLoading: action.loading, pendingRun: action.loading ? state.pendingRun : undefined };
+      return {
+        ...state,
+        isLoading: action.loading,
+        pendingRun: action.loading ? state.pendingRun : undefined,
+      };
 
     case "SET_BUSY_COMMAND":
       return { ...state, busyCommand: action.command };
@@ -1626,7 +2243,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return { ...state, sidebarCollapsed: !state.sidebarCollapsed };
 
     case "TOGGLE_DETAIL_DRAWER":
-      return { ...state, detailDrawer: state.detailDrawer === action.drawer ? undefined : action.drawer };
+      return {
+        ...state,
+        detailDrawer:
+          state.detailDrawer === action.drawer ? undefined : action.drawer,
+      };
 
     case "CLOSE_DETAIL_DRAWER":
       return { ...state, detailDrawer: undefined };
@@ -1635,7 +2256,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return { ...state, artifactPanelOpen: !state.artifactPanelOpen };
 
     case "OPEN_ARTIFACT_PANEL":
-      return { ...state, selectedArtifactId: action.artifactId, artifactPanelOpen: true };
+      return {
+        ...state,
+        selectedArtifactId: action.artifactId,
+        artifactPanelOpen: true,
+      };
 
     case "CLOSE_ARTIFACT_PANEL":
       return { ...state, artifactPanelOpen: false };
@@ -1646,7 +2271,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         sessionPendingPlanDecision: action.pending
           ? { ...state.sessionPendingPlanDecision, [action.sessionId]: true }
           : (() => {
-              const { [action.sessionId]: _cleared, ...rest } = state.sessionPendingPlanDecision;
+              const { [action.sessionId]: _cleared, ...rest } =
+                state.sessionPendingPlanDecision;
               return rest;
             })(),
       };
@@ -1672,7 +2298,11 @@ const WorkbenchContext = createContext<WorkbenchContextValue | null>(null);
 export function WorkbenchProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
   const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
-  return <WorkbenchContext.Provider value={value}>{children}</WorkbenchContext.Provider>;
+  return (
+    <WorkbenchContext.Provider value={value}>
+      {children}
+    </WorkbenchContext.Provider>
+  );
 }
 
 export function useWorkbench() {

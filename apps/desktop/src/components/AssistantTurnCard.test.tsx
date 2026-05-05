@@ -47,6 +47,7 @@ function processStep(
     timestamp: "00:05",
     status,
     tone: extra.tone ?? "neutral",
+    agentId: extra.agentId,
     contextLabel: extra.contextLabel,
   };
 }
@@ -92,6 +93,39 @@ describe("assistant turn display helpers", () => {
     );
 
     expect(html.indexOf("Team Lead")).toBeLessThan(html.indexOf("正文内容"));
+  });
+
+  it("renders clarification exchanges inside the assistant turn", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-clarification",
+      turnIndex: 2,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      clarificationExchanges: [{
+        id: "clarification:scope",
+        question: "Which scope should I use?",
+        answer: "Use the current session only.",
+        requestedAt: "13:40",
+        answeredAt: "13:41",
+        status: "resolved",
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Continued after clarification" turn={turn} />,
+    );
+
+    expect(html).toContain("Which scope should I use?");
+    expect(html).toContain("Use the current session only.");
+    expect(html.indexOf("Which scope should I use?")).toBeLessThan(html.indexOf("Continued after clarification"));
   });
 
   it("keeps the turn label on the primary agent while subagent content renders in the timeline", () => {
@@ -232,6 +266,7 @@ describe("assistant turn display helpers", () => {
 
     expect(html.indexOf("Ora")).toBeLessThan(html.indexOf("接下来交给 Orchestrator。"));
     expect(html.indexOf("Orchestrator")).toBeGreaterThan(html.indexOf("Ora"));
+    expect(html.match(/接下来交给 Orchestrator/g)).toHaveLength(1);
   });
 
   it("shows a thinking indicator after running assistant text without timeline progress", () => {
@@ -400,7 +435,8 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("我会先追踪本地运行记录。");
     expect(html).toContain("已探索 1 个文件，已运行 1 条命令");
     expect(html).toContain("现在我会把 trace 的消息拼起来。");
-    expect(html).toContain("正在思考");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在思考");
     expect(html).not.toContain("已读取 .ora/runtime.db。");
     expect(html).not.toContain("正在运行 sqlite3 查询。");
     expect(html).not.toContain("运行进度");
@@ -1053,6 +1089,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: true,
+      proposedPlanStatus: "complete",
     };
     const planContent = [
       "## 背景",
@@ -1074,6 +1111,84 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("border-b border-border");
   });
 
+  it("renders timeline content before the PlanCard when a proposed plan is present", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "agent_teams",
+      currentAgentLabel: "Orchestrator",
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "handoff",
+          kind: "agent_message",
+          messageKind: "handoff",
+          fromAgentLabel: "Ora",
+          toAgentLabels: ["Orchestrator"],
+          content: "接下来交给 Orchestrator。",
+          timestamp: "00:00",
+          agentId: "ora",
+          agentLabel: "Ora",
+        },
+        {
+          id: "work",
+          kind: "status_group",
+          summary: "已探索 1 个文件",
+          timestamp: "00:01",
+          status: "complete",
+          agentId: "orchestrator",
+          agentLabel: "Orchestrator",
+          steps: [
+            processStep("grep", "complete", "已搜索 cancelled。", {
+              label: "搜索文件",
+              agentId: "orchestrator",
+            }),
+          ],
+        },
+        {
+          id: "intro",
+          kind: "assistant_text",
+          content: "根据您的需求，我分析了侧边栏状态显示逻辑。",
+          timestamp: "00:02",
+          agentId: "ora",
+          agentLabel: "Ora",
+        },
+      ],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+      proposedPlanStatus: "complete",
+    };
+    const planContent = [
+      "## 背景",
+      "计划模式下的计划输出。",
+      "## 实施步骤",
+      "1. 步骤一",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={planContent} turn={turn} />,
+    );
+
+    expect(html).toContain("Ora");
+    expect(html).toContain("Orchestrator");
+    expect(html).toContain("接下来交给 Orchestrator。");
+    expect(html).toContain("已探索 1 个文件");
+    expect(html).toContain("根据您的需求，我分析了侧边栏状态显示逻辑。");
+    expect(html).toContain("任务计划");
+    expect(html.indexOf("接下来交给 Orchestrator。")).toBeLessThan(html.indexOf("任务计划"));
+    expect(html.indexOf("Orchestrator")).toBeLessThan(html.indexOf("已探索 1 个文件"));
+    expect(html.lastIndexOf("Ora")).toBeLessThan(html.indexOf("根据您的需求，我分析了侧边栏状态显示逻辑。"));
+    expect(html.indexOf("根据您的需求，我分析了侧边栏状态显示逻辑。")).toBeLessThan(html.indexOf("任务计划"));
+    expect(html.match(/计划模式下的计划输出/g)).toHaveLength(1);
+    expect(html.match(/步骤一/g)).toHaveLength(1);
+  });
+
   it("renders a streaming PlanCard for partial proposed plan output", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
@@ -1088,6 +1203,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: true,
+      proposedPlanStatus: "streaming",
     };
 
     const html = renderToStaticMarkup(
@@ -1114,6 +1230,7 @@ describe("assistant turn display helpers", () => {
       approvalCount: 0,
       clarificationCount: 0,
       hasProposedPlan: true,
+      proposedPlanStatus: "streaming",
     };
 
     const html = renderToStaticMarkup(
@@ -1122,6 +1239,156 @@ describe("assistant turn display helpers", () => {
 
     expect(html).toContain("任务计划");
     expect(html).toContain("正在生成计划内容");
+  });
+
+  it("renders placeholder thinking without the old preparing copy", () => {
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" isPlaceholder />,
+    );
+
+    expect(html).toContain("正在思考");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在准备");
+  });
+
+  it("keeps completed proposed plans out of the PlanCard streaming state while the run keeps thinking", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+      proposedPlanStatus: "complete",
+    };
+    const planContent = "## 完整计划\n1. 只在计划卡片显示";
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={planContent} turn={turn} />,
+    );
+
+    expect(html).toContain("任务计划");
+    expect(html).toContain("正在思考");
+    expect(html).not.toContain("正在生成");
+    expect(html.match(/只在计划卡片显示/g)).toHaveLength(1);
+  });
+
+  it("renders thinking under the latest assistant text while running", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [{
+        id: "text-1",
+        kind: "assistant_text",
+        content: "我已经找到相关组件。",
+        timestamp: "00:01",
+      }],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="我已经找到相关组件。" turn={turn} />,
+    );
+
+    expect(html).toContain("我已经找到相关组件。");
+    expect(html).toContain("正在思考");
+    expect(html.indexOf("我已经找到相关组件。")).toBeLessThan(html.indexOf("正在思考"));
+  });
+
+  it("puts the running indicator on the latest progress row instead of adding thinking text", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [{
+        id: "progress-1",
+        kind: "status_group",
+        summary: "已探索 2 个文件",
+        timestamp: "00:01",
+        status: "complete",
+        steps: [
+          processStep("grep", "complete", "已搜索 Sidebar。", { label: "搜索文件" }),
+        ],
+      }],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html).toContain("已探索 2 个文件");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在思考");
+  });
+
+  it("keeps progress loading on the latest status group when assistant text follows it", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "progress-1",
+          kind: "status_group",
+          summary: "已搜索 \"Channel\"（packages/shared/src/runtime.ts）（76 项）。",
+          timestamp: "00:01",
+          status: "complete",
+          steps: [
+            processStep("grep", "complete", "已搜索 Channel。", { label: "搜索文件" }),
+          ],
+          agentLabel: "Orchestrator",
+        },
+        {
+          id: "text-1",
+          kind: "assistant_text",
+          content: "我会继续检查 channels session 的权限逻辑。",
+          timestamp: "00:02",
+          agentLabel: "Orchestrator",
+        },
+      ],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="我会继续检查 channels session 的权限逻辑。" turn={turn} />,
+    );
+
+    expect(html).toContain("已搜索 &quot;Channel&quot;");
+    expect(html).toContain("我会继续检查 channels session 的权限逻辑。");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("正在思考");
   });
 
   it("renders PlanCard for pending plan decisions even when the turn is a placeholder", () => {

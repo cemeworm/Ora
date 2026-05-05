@@ -2159,13 +2159,13 @@ function CompletionPolicyPanel({
               <input
                 type="number"
                 min={1}
-                max={10}
+                max={50}
                 value={draft.completionPolicy.maxRepeatedToolCalls}
                 onChange={(event) => onPatchDraft((current) => ({
                   ...current,
                   completionPolicy: {
                     ...current.completionPolicy,
-                    maxRepeatedToolCalls: Math.max(1, Math.min(10, Number(event.target.value) || 1)),
+                    maxRepeatedToolCalls: Math.max(1, Math.min(50, Number(event.target.value) || 1)),
                   },
                 }))}
                 className="h-9 rounded-md border border-bench-200 bg-white px-2 text-sm outline-none"

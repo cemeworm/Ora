@@ -2,6 +2,37 @@ import { describe, expect, it } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
 
 describe("desktop runtime client agent catalog", () => {
+  it("mirrors automation lifecycle in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const automation = await client.createAutomation({
+      title: "Morning review",
+      prompt: "Summarize overnight changes.",
+      schedule: {
+        kind: "rrule",
+        rrule: "FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0",
+        timezone: "UTC",
+      },
+      status: "active",
+      modeSelection: "manual",
+      taskIntent: "plan",
+      skillIds: [],
+      toolIds: [],
+      runConfig: {},
+    });
+
+    expect((await client.listAutomations()).map((item) => item.id)).toContain(automation.id);
+    expect((await client.previewAutomationSchedule({ schedule: automation.schedule, limit: 2 })).occurrences).toHaveLength(2);
+    expect((await client.pauseAutomation(automation.id)).status).toBe("paused");
+    expect((await client.resumeAutomation(automation.id)).status).toBe("active");
+
+    const run = await client.runAutomationNow(automation.id);
+    expect(run.status).toBe("succeeded");
+    expect(run.sessionId).toBeTruthy();
+
+    const updated = await client.getAutomation(automation.id);
+    expect(updated.state.runHistory[0]?.runId).toBe(run.runId);
+  });
+
   it("lists provider models in browser fallback", async () => {
     const client = createRuntimeClient();
 

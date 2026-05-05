@@ -2,6 +2,13 @@ import type {
   ActionRecord as OraActionRecord,
   AgentCatalogResult as OraAgentCatalogResult,
   AgentProfile as OraAgentProfile,
+  Automation as OraAutomation,
+  AutomationCreateParams as OraAutomationCreateParams,
+  AutomationPreviewScheduleParams as OraAutomationPreviewScheduleParams,
+  AutomationPreviewScheduleResult as OraAutomationPreviewScheduleResult,
+  AutomationRunRecord as OraAutomationRunRecord,
+  AutomationSchedule as OraAutomationSchedule,
+  AutomationUpdateParams as OraAutomationUpdateParams,
   ArtifactRef as OraArtifactRef,
   CheckpointMeta as OraCheckpointMeta,
   ChannelConfig as OraChannelConfig,
@@ -88,6 +95,12 @@ import type {
   RunTrail as OraRunTrail,
   RunTrailMetrics as OraRunTrailMetrics,
   SessionCreateParams as OraSessionCreateParams,
+  SessionBranchGroup as OraSessionBranchGroup,
+  SessionBranchGroupCreateParams as OraSessionBranchGroupCreateParams,
+  SessionBranchGroupAdoptParams as OraSessionBranchGroupAdoptParams,
+  SessionBranchGroupDismissParams as OraSessionBranchGroupDismissParams,
+  SessionBranchGroupGetParams as OraSessionBranchGroupGetParams,
+  SessionBranchGroupListParams as OraSessionBranchGroupListParams,
   SessionDetail as OraSessionDetail,
   SessionPlanDecisionResolveParams as OraSessionPlanDecisionResolveParams,
   SessionSummary as OraSessionSummary,
@@ -111,7 +124,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, legacySystemAgentIdsFor, modeSpecToPatternDefinition, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
+import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, legacySystemAgentIdsFor, modeSpecToPatternDefinition, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -122,6 +135,13 @@ export type {
   OraActionRecord,
   OraAgentCatalogResult,
   OraAgentProfile,
+  OraAutomation,
+  OraAutomationCreateParams,
+  OraAutomationPreviewScheduleParams,
+  OraAutomationPreviewScheduleResult,
+  OraAutomationRunRecord,
+  OraAutomationSchedule,
+  OraAutomationUpdateParams,
   OraArtifactRef,
   OraCheckpointMeta,
   OraChannelConfig,
@@ -201,6 +221,12 @@ export type {
   OraSelfIterationCandidate,
   OraSelfIterationPolicy,
   OraSelfIterationScanResult,
+  OraSessionBranchGroup,
+  OraSessionBranchGroupCreateParams,
+  OraSessionBranchGroupAdoptParams,
+  OraSessionBranchGroupDismissParams,
+  OraSessionBranchGroupGetParams,
+  OraSessionBranchGroupListParams,
   OraSessionCreateParams,
   OraSessionPlanDecisionResolveParams,
   OraSessionDetail,
@@ -405,6 +431,33 @@ export function createRuntimeClient() {
     async channelStatus(): Promise<OraChannelStatusResult> {
       return call<OraChannelStatusResult>("channels.status");
     },
+    async listAutomations(params: { includePaused?: boolean } = {}): Promise<OraAutomation[]> {
+      return call<OraAutomation[]>("automations.list", params);
+    },
+    async getAutomation(id: string): Promise<OraAutomation> {
+      return call<OraAutomation>("automations.get", { id });
+    },
+    async createAutomation(params: OraAutomationCreateParams): Promise<OraAutomation> {
+      return call<OraAutomation>("automations.create", params);
+    },
+    async updateAutomation(params: OraAutomationUpdateParams): Promise<OraAutomation> {
+      return call<OraAutomation>("automations.update", params);
+    },
+    async deleteAutomation(id: string): Promise<{ deleted: true; id: string }> {
+      return call<{ deleted: true; id: string }>("automations.delete", { id });
+    },
+    async pauseAutomation(id: string): Promise<OraAutomation> {
+      return call<OraAutomation>("automations.pause", { id });
+    },
+    async resumeAutomation(id: string): Promise<OraAutomation> {
+      return call<OraAutomation>("automations.resume", { id });
+    },
+    async runAutomationNow(id: string): Promise<OraAutomationRunRecord> {
+      return call<OraAutomationRunRecord>("automations.runNow", { id });
+    },
+    async previewAutomationSchedule(params: OraAutomationPreviewScheduleParams): Promise<OraAutomationPreviewScheduleResult> {
+      return call<OraAutomationPreviewScheduleResult>("automations.previewSchedule", params);
+    },
     async wechatRequestQrCode(channelId: string): Promise<{ base64: string; qrcode: string; mimeType?: string; imageSrc?: string; pageSrc?: string }> {
       return call<{ base64: string; qrcode: string; mimeType?: string; imageSrc?: string; pageSrc?: string }>("channels.wechat.requestQrCode", { channelId });
     },
@@ -463,6 +516,21 @@ export function createRuntimeClient() {
     },
     async archiveSession(sessionId: string): Promise<OraSessionSummary> {
       return call<OraSessionSummary>("sessions.archive", { sessionId });
+    },
+    async listSessionBranchGroups(params: OraSessionBranchGroupListParams): Promise<OraSessionBranchGroup[]> {
+      return call<OraSessionBranchGroup[]>("sessions.branchGroups.list", params);
+    },
+    async getSessionBranchGroup(params: OraSessionBranchGroupGetParams): Promise<OraSessionBranchGroup> {
+      return call<OraSessionBranchGroup>("sessions.branchGroups.get", params);
+    },
+    async createAndRunSessionBranchGroup(params: OraSessionBranchGroupCreateParams): Promise<OraSessionBranchGroup> {
+      return call<OraSessionBranchGroup>("sessions.branchGroups.createAndRun", params);
+    },
+    async adoptSessionBranchGroup(params: OraSessionBranchGroupAdoptParams): Promise<OraSessionDetail> {
+      return call<OraSessionDetail>("sessions.branchGroups.adopt", params);
+    },
+    async dismissSessionBranchGroup(params: OraSessionBranchGroupDismissParams): Promise<OraSessionBranchGroup> {
+      return call<OraSessionBranchGroup>("sessions.branchGroups.dismiss", params);
     },
     async resolvePlanDecision(params: OraSessionPlanDecisionResolveParams): Promise<OraSessionDetail> {
       return call<OraSessionDetail>("sessions.resolvePlanDecision", params);
@@ -1106,6 +1174,7 @@ class LocalJsonRpcRuntime {
   private projects = new Map<string, OraProjectSummary>();
   private sessions = new Map<string, OraSessionSummary>();
   private channels = new Map<string, OraChannelConfig>();
+  private automations = new Map<string, OraAutomation>();
   private runs = new Map<string, OraStateSnapshot>();
   private modeStudioBuilderResults = new Map<string, OraModeStudioBuilderResult>();
   private customAgents = new Map<string, OraCustomAgentDetail>();
@@ -1136,6 +1205,7 @@ class LocalJsonRpcRuntime {
   private selfIterationPolicies = new Map<string, OraSelfIterationPolicy>();
   private nextProjectNumber = 1;
   private nextSessionNumber = 1;
+  private nextAutomationNumber = 1;
   private nextRunNumber = 1;
   private nextEvaluationDatasetNumber = 1;
   private nextEvaluationRunNumber = 1;
@@ -1396,6 +1466,16 @@ class LocalJsonRpcRuntime {
           .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
       case "sessions.get":
         return this.getSessionDetail(params);
+      case "sessions.branchGroups.list":
+        return this.listSessionBranchGroups(params);
+      case "sessions.branchGroups.get":
+        return this.getSessionBranchGroup(params);
+      case "sessions.branchGroups.createAndRun":
+        return this.createAndRunSessionBranchGroup(params);
+      case "sessions.branchGroups.adopt":
+        return this.adoptSessionBranchGroup(params);
+      case "sessions.branchGroups.dismiss":
+        return this.dismissSessionBranchGroup(params);
       case "sessions.resolvePlanDecision":
         return this.resolvePlanDecision(params);
       case "sessions.archive":
@@ -1433,6 +1513,36 @@ class LocalJsonRpcRuntime {
       }
       case "channels.wechat.pollQrCodeStatus":
         return { status: "waiting" };
+      case "automations.list":
+        return [...this.automations.values()]
+          .filter((automation) => {
+            const includePaused = !isRecord(params) || params.includePaused !== false;
+            return includePaused || automation.status !== "paused";
+          })
+          .sort((a, b) => (a.state.nextRunAt ?? Number.MAX_SAFE_INTEGER) - (b.state.nextRunAt ?? Number.MAX_SAFE_INTEGER) || b.updatedAt - a.updatedAt);
+      case "automations.get": {
+        const id = isRecord(params) ? String(params.id ?? "") : "";
+        const automation = this.automations.get(id);
+        if (!automation) throw new Error(`Automation not found: ${id}`);
+        return automation;
+      }
+      case "automations.create":
+        return this.createAutomation(params);
+      case "automations.update":
+        return this.updateAutomation(params);
+      case "automations.delete": {
+        const id = isRecord(params) ? String(params.id ?? "") : "";
+        if (!this.automations.delete(id)) throw new Error(`Automation not found: ${id}`);
+        return { deleted: true, id };
+      }
+      case "automations.pause":
+        return this.setAutomationStatus(params, "paused");
+      case "automations.resume":
+        return this.setAutomationStatus(params, "active");
+      case "automations.runNow":
+        return this.runAutomationNow(params);
+      case "automations.previewSchedule":
+        return this.previewAutomationSchedule(params);
       case "evaluation.datasets.import":
         return this.importEvaluationDataset(params);
       case "evaluation.datasets.list":
@@ -2271,6 +2381,131 @@ class LocalJsonRpcRuntime {
       this.syncProjectSummary(session.projectId);
     }
     return session;
+  }
+
+  private createAutomation(params: unknown): OraAutomation {
+    const parsed = AutomationCreateParamsSchema.parse(params);
+    const now = Date.now();
+    const automation = AutomationSchema.parse({
+      ...parsed,
+      id: `automation-${String(this.nextAutomationNumber++).padStart(4, "0")}`,
+      createdAt: now,
+      updatedAt: now,
+      state: {
+        nextRunAt: parsed.status === "active" ? mockAutomationOccurrences(parsed.schedule, now, 1)[0] : undefined,
+      },
+    });
+    this.automations.set(automation.id, automation);
+    return automation;
+  }
+
+  private updateAutomation(params: unknown): OraAutomation {
+    const parsed = AutomationUpdateParamsSchema.parse(params);
+    const existing = this.automations.get(parsed.id);
+    if (!existing) throw new Error(`Automation not found: ${parsed.id}`);
+    const now = Date.now();
+    const schedule = parsed.schedule ?? existing.schedule;
+    const status = parsed.status ?? existing.status;
+    const automation = AutomationSchema.parse({
+      ...existing,
+      ...parsed,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: now,
+      state: {
+        ...existing.state,
+        nextRunAt: status === "active" ? mockAutomationOccurrences(schedule, now, 1)[0] : undefined,
+      },
+    });
+    this.automations.set(automation.id, automation);
+    return automation;
+  }
+
+  private setAutomationStatus(params: unknown, status: "active" | "paused"): OraAutomation {
+    const id = isRecord(params) ? String(params.id ?? "") : "";
+    const existing = this.automations.get(id);
+    if (!existing) throw new Error(`Automation not found: ${id}`);
+    const now = Date.now();
+    const automation = AutomationSchema.parse({
+      ...existing,
+      status,
+      updatedAt: now,
+      state: {
+        ...existing.state,
+        nextRunAt: status === "active" ? mockAutomationOccurrences(existing.schedule, now, 1)[0] : undefined,
+      },
+    });
+    this.automations.set(automation.id, automation);
+    return automation;
+  }
+
+  private runAutomationNow(params: unknown): OraAutomationRunRecord {
+    const id = isRecord(params) ? String(params.id ?? "") : "";
+    const existing = this.automations.get(id);
+    if (!existing) throw new Error(`Automation not found: ${id}`);
+    const startedAt = Date.now();
+    const sessionId = existing.state.dedicatedSessionId
+      ?? this.createSession({ label: `Automation: ${existing.title}`, projectId: existing.projectId }).sessionId;
+    const handle = this.startRun({
+      input: {
+        prompt: existing.prompt,
+        projectId: existing.projectId,
+        context: { automationId: existing.id, automationTitle: existing.title },
+        createdAt: startedAt,
+      },
+      config: {
+        ...existing.runConfig,
+        modeId: existing.modeId,
+        modeSelection: existing.modeSelection,
+        providerId: existing.providerId,
+        customAgentId: existing.customAgentId,
+        modelRef: existing.modelRef,
+        skillIds: existing.skillIds,
+        toolIds: existing.toolIds,
+        metadata: {
+          ...(existing.runConfig.metadata ?? {}),
+          automationId: existing.id,
+          automationTitle: existing.title,
+          taskIntent: existing.taskIntent,
+        },
+      },
+      sessionId,
+    });
+    const completedAt = Date.now();
+    const record: OraAutomationRunRecord = {
+      id: `automation-run-${Date.now()}`,
+      automationId: existing.id,
+      runId: handle.runId,
+      sessionId,
+      status: "succeeded",
+      startedAt,
+      completedAt,
+      durationMs: completedAt - startedAt,
+    };
+    const automation = AutomationSchema.parse({
+      ...existing,
+      updatedAt: completedAt,
+      state: {
+        ...existing.state,
+        dedicatedSessionId: sessionId,
+        lastRunId: handle.runId,
+        lastRunAt: startedAt,
+        lastRunStatus: "succeeded",
+        lastDurationMs: record.durationMs,
+        consecutiveFailures: 0,
+        nextRunAt: existing.status === "active" ? mockAutomationOccurrences(existing.schedule, completedAt, 1)[0] : undefined,
+        runHistory: [record, ...existing.state.runHistory].slice(0, 20),
+      },
+    });
+    this.automations.set(automation.id, automation);
+    return record;
+  }
+
+  private previewAutomationSchedule(params: unknown): OraAutomationPreviewScheduleResult {
+    const parsed = AutomationPreviewScheduleParamsSchema.parse(params);
+    return {
+      occurrences: mockAutomationOccurrences(parsed.schedule, parsed.from ?? Date.now(), parsed.limit),
+    };
   }
 
   private createChannel(params: unknown): OraChannelConfig {
@@ -3491,6 +3726,7 @@ class LocalJsonRpcRuntime {
     }
     const turns = [...this.runs.values()]
       .filter((snapshot) => snapshot.sessionId === params.sessionId)
+      .filter(isVisibleMockMainlineRun)
       .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1))
       .map((snapshot) => ({
         runId: snapshot.runId,
@@ -3543,8 +3779,163 @@ class LocalJsonRpcRuntime {
       session: this.sessionWithLatestAttention(session),
       turns,
       transcript,
+      branchGroups: buildMockBranchGroups(params.sessionId, [...this.runs.values()]),
       latestSnapshot: latestRunId ? this.runs.get(latestRunId) : undefined,
     };
+  }
+
+  private listSessionBranchGroups(params: unknown): OraSessionBranchGroup[] {
+    if (!isRecord(params) || typeof params.sessionId !== "string") {
+      throw new Error("Missing sessionId");
+    }
+    return buildMockBranchGroups(params.sessionId, [...this.runs.values()]);
+  }
+
+  private getSessionBranchGroup(params: unknown): OraSessionBranchGroup {
+    if (!isRecord(params) || typeof params.sessionId !== "string" || typeof params.branchGroupId !== "string") {
+      throw new Error("Invalid branch group params");
+    }
+    const group = this.listSessionBranchGroups({ sessionId: params.sessionId })
+      .find((candidate) => candidate.branchGroupId === params.branchGroupId);
+    if (!group) throw new Error(`Branch group not found: ${params.branchGroupId}`);
+    return group;
+  }
+
+  private createAndRunSessionBranchGroup(params: unknown): OraSessionBranchGroup {
+    if (!isRecord(params) || typeof params.sessionId !== "string" || typeof params.target !== "string" || !Array.isArray(params.candidates)) {
+      throw new Error("Invalid branch group create params");
+    }
+    const sessionId = params.sessionId;
+    const branchTarget = branchTargetValue(params.target);
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    const latest = session.latestRunId ? this.runs.get(session.latestRunId) : undefined;
+    const replaceRunId = branchTarget === "replace_latest"
+      ? typeof params.replaceRunId === "string" ? params.replaceRunId : latest?.runId
+      : undefined;
+    const replaceRun = replaceRunId ? this.runs.get(replaceRunId) : undefined;
+    const prompt = typeof params.prompt === "string" && params.prompt.trim()
+      ? params.prompt.trim()
+      : replaceRun?.input.prompt;
+    if (!prompt) throw new Error("Branch group prompt is required.");
+    if (branchTarget === "empty_start" && session.turnCount !== 0) {
+      throw new Error("empty_start branch groups require an empty session.");
+    }
+    if (branchTarget === "replace_latest" && replaceRunId !== latest?.runId) {
+      throw new Error("replace_latest can only replace the current latest run.");
+    }
+    const branchGroupId = `${sessionId}:branch-${Date.now()}-${this.nextRunNumber}`;
+    const baseRunId = branchTarget === "append_after_latest"
+      ? latest?.runId
+      : branchTarget === "replace_latest"
+        ? previousVisibleMockRunBefore(sessionId, replaceRunId!, [...this.runs.values()])?.runId
+        : undefined;
+    const baseTurnIndex = branchTarget === "replace_latest"
+      ? Math.max(0, (replaceRun?.turnIndex ?? 1) - 1)
+      : latest?.turnIndex ?? 0;
+    params.candidates.forEach((rawCandidate, index) => {
+      const candidate = isRecord(rawCandidate) ? rawCandidate : {};
+      const config = isRecord(candidate.config) ? candidate.config : {};
+      const modeId = typeof config.modeId === "string" ? config.modeId : SINGLE_AGENT_MODE_ID;
+      const mode = this.resolveMode(modeId, typeof config.pattern === "string" ? config.pattern as CoordinationPattern : "orchestrator_subagent");
+      const runId = `run-${String(this.nextRunNumber++).padStart(4, "0")}`;
+      const providerId = typeof config.providerId === "string" ? config.providerId : "local-smoke";
+      const modelRef = typeof config.modelRef === "string" ? config.modelRef : "local/smoke-model";
+      const snapshot = this.createSnapshot(
+        runId,
+        mode,
+        prompt,
+        Date.now() + index,
+        "succeeded",
+        undefined,
+        {
+          providerId,
+          modelRef,
+          projectId: session.projectId,
+          modeSelection: config.modeSelection === "auto" ? "auto" : "manual",
+        },
+        sessionId,
+        branchTarget === "replace_latest" ? (replaceRun?.turnIndex ?? 1) + 1 : this.nextVisibleTurnIndex(sessionId),
+      );
+      const metadata = isRecord(config.metadata) ? config.metadata : {};
+      this.runs.set(runId, {
+        ...snapshot,
+        config: {
+          ...snapshot.config,
+          ...config,
+          metadata: {
+            ...snapshot.config.metadata,
+            ...metadata,
+            branchGroupId,
+            branchRole: "candidate",
+            branchTarget,
+            branchPrompt: prompt,
+            branchBaseTurnIndex: baseTurnIndex,
+            branchGroupCreatedAt: Date.now(),
+            branchCandidateLabel: typeof candidate.label === "string" ? candidate.label : `Candidate ${index + 1}`,
+            ...(baseRunId ? { branchBaseRunId: baseRunId } : {}),
+            ...(replaceRunId ? { branchReplaceRunId: replaceRunId } : {}),
+          },
+        },
+      });
+    });
+    return this.getSessionBranchGroup({ sessionId, branchGroupId });
+  }
+
+  private adoptSessionBranchGroup(params: unknown): OraSessionDetail {
+    if (!isRecord(params) || typeof params.sessionId !== "string" || typeof params.branchGroupId !== "string" || typeof params.runId !== "string") {
+      throw new Error("Invalid branch group adoption params");
+    }
+    const group = this.getSessionBranchGroup(params);
+    const candidate = this.runs.get(params.runId);
+    if (!candidate || candidate.config.metadata.branchGroupId !== params.branchGroupId) {
+      throw new Error("Run does not belong to the selected branch group.");
+    }
+    const now = Date.now();
+    if (group.target === "replace_latest" && group.replaceRunId) {
+      const replaced = this.runs.get(group.replaceRunId);
+      if (replaced) {
+        this.runs.set(replaced.runId, {
+          ...replaced,
+          config: {
+            ...replaced.config,
+            metadata: { ...replaced.config.metadata, supersededByRunId: candidate.runId, supersededAt: now },
+          },
+          updatedAt: Math.max(replaced.updatedAt, now),
+        });
+      }
+    }
+    const adopted = {
+      ...candidate,
+      turnIndex: group.target === "replace_latest" && group.replaceRunId
+        ? this.runs.get(group.replaceRunId)?.turnIndex ?? candidate.turnIndex
+        : candidate.turnIndex,
+      config: {
+        ...candidate.config,
+        metadata: { ...candidate.config.metadata, branchRole: "adopted", branchAdoptedAt: now },
+      },
+      updatedAt: Math.max(candidate.updatedAt, now),
+    };
+    this.runs.set(adopted.runId, adopted);
+    this.updateSessionFromSnapshot(adopted);
+    return this.getSessionDetail({ sessionId: params.sessionId });
+  }
+
+  private dismissSessionBranchGroup(params: unknown): OraSessionBranchGroup {
+    const group = this.getSessionBranchGroup(params);
+    const now = Date.now();
+    group.candidateRunIds.forEach((runId) => {
+      const run = this.runs.get(runId);
+      if (!run || run.config.metadata.branchRole === "adopted") return;
+      this.runs.set(runId, {
+        ...run,
+        config: {
+          ...run.config,
+          metadata: { ...run.config.metadata, branchDismissed: true, branchDismissedAt: now },
+        },
+      });
+    });
+    return this.getSessionBranchGroup(params);
   }
 
   private resolvePlanDecision(params: unknown): OraSessionDetail {
@@ -4572,6 +4963,7 @@ class LocalJsonRpcRuntime {
     this.runs.set(snapshot.runId, snapshot);
     const sessionId = snapshot.sessionId;
     if (!sessionId) return;
+    if (isUnadoptedMockBranchCandidate(snapshot)) return;
     const existing = this.sessions.get(sessionId);
     if (!existing) return;
     const updatedSession = {
@@ -4585,7 +4977,7 @@ class LocalJsonRpcRuntime {
       latestProviderId: snapshot.config.providerId,
       latestModelRef: snapshot.config.modelRef,
       projectId: snapshot.input.projectId ?? existing.projectId,
-      turnCount: [...this.runs.values()].filter((run) => run.sessionId === sessionId).length,
+      turnCount: [...this.runs.values()].filter((run) => run.sessionId === sessionId && isVisibleMockMainlineRun(run)).length,
       updatedAt: snapshot.updatedAt,
       archivedAt: existing.archivedAt,
     };
@@ -4593,6 +4985,14 @@ class LocalJsonRpcRuntime {
     if (updatedSession.projectId) {
       this.syncProjectSummary(updatedSession.projectId);
     }
+  }
+
+  private nextVisibleTurnIndex(sessionId: string): number {
+    const last = [...this.runs.values()]
+      .filter((run) => run.sessionId === sessionId && isVisibleMockMainlineRun(run))
+      .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt)
+      .at(-1);
+    return (last?.turnIndex ?? 0) + 1;
   }
 
   private normalizeMockSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
@@ -4936,6 +5336,86 @@ function asReplayRunParams(params: unknown): { runId: string; checkpointId?: str
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isUnadoptedMockBranchCandidate(run: OraStateSnapshot): boolean {
+  return run.config.metadata.branchRole === "candidate";
+}
+
+function isVisibleMockMainlineRun(run: OraStateSnapshot): boolean {
+  return !isUnadoptedMockBranchCandidate(run) && typeof run.config.metadata.supersededByRunId !== "string";
+}
+
+function previousVisibleMockRunBefore(sessionId: string, runId: string, runs: OraStateSnapshot[]): OraStateSnapshot | undefined {
+  const visibleRuns = runs
+    .filter((run) => run.sessionId === sessionId && isVisibleMockMainlineRun(run))
+    .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt);
+  const index = visibleRuns.findIndex((run) => run.runId === runId);
+  return index > 0 ? visibleRuns[index - 1] : undefined;
+}
+
+function buildMockBranchGroups(sessionId: string, runs: OraStateSnapshot[]): OraSessionBranchGroup[] {
+  const grouped = new Map<string, OraStateSnapshot[]>();
+  runs
+    .filter((run) => run.sessionId === sessionId && typeof run.config.metadata.branchGroupId === "string")
+    .forEach((run) => {
+      const branchGroupId = String(run.config.metadata.branchGroupId);
+      grouped.set(branchGroupId, [...(grouped.get(branchGroupId) ?? []), run]);
+    });
+  return [...grouped.entries()].map(([branchGroupId, groupRuns]) => {
+    const sortedRuns = groupRuns.sort((a, b) => a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
+    const first = sortedRuns[0]!;
+    const adopted = sortedRuns.find((run) => run.config.metadata.branchRole === "adopted");
+    const dismissed = sortedRuns.every((run) => run.config.metadata.branchDismissed === true);
+    const allSettled = sortedRuns.every((run) => run.status !== "queued" && run.status !== "running");
+    const status: OraSessionBranchGroup["status"] = adopted ? "adopted" : dismissed ? "dismissed" : allSettled ? "ready" : "running";
+    return {
+      branchGroupId,
+      sessionId,
+      target: branchTargetValue(first.config.metadata.branchTarget),
+      baseRunId: stringRecordValue(first.config.metadata.branchBaseRunId),
+      replaceRunId: stringRecordValue(first.config.metadata.branchReplaceRunId),
+      baseTurnIndex: numberRecordValue(first.config.metadata.branchBaseTurnIndex) ?? 0,
+      prompt: stringRecordValue(first.config.metadata.branchPrompt) ?? first.input.prompt,
+      status,
+      candidateRunIds: sortedRuns.map((run) => run.runId),
+      candidates: sortedRuns.map((run) => ({
+        runId: run.runId,
+        status: run.status,
+        label: stringRecordValue(run.config.metadata.branchCandidateLabel),
+        modeId: run.modeId,
+        providerId: run.config.providerId,
+        modelRef: run.config.modelRef,
+        adopted: run.config.metadata.branchRole === "adopted",
+        prompt: run.input.prompt,
+        outputPreview: mockOutputPreview(run),
+        updatedAt: run.updatedAt,
+      })),
+      adoptedRunId: adopted?.runId,
+      createdAt: numberRecordValue(first.config.metadata.branchGroupCreatedAt) ?? first.input.createdAt ?? first.updatedAt,
+      updatedAt: sortedRuns.reduce((max, run) => Math.max(max, run.updatedAt), first.updatedAt),
+    };
+  }).sort((a, b) => b.updatedAt - a.updatedAt || a.branchGroupId.localeCompare(b.branchGroupId));
+}
+
+function branchTargetValue(value: unknown): OraSessionBranchGroup["target"] {
+  return value === "empty_start" || value === "append_after_latest" || value === "replace_latest"
+    ? value
+    : "append_after_latest";
+}
+
+function stringRecordValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function numberRecordValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function mockOutputPreview(run: OraStateSnapshot): string | undefined {
+  if (isRecord(run.output) && typeof run.output.text === "string") return run.output.text.slice(0, 500);
+  if (typeof run.output === "string") return run.output.slice(0, 500);
+  return undefined;
 }
 
 function createMockPackageStore(): OraPackageStoreSnapshot {
@@ -6054,6 +6534,46 @@ function buildMockEvaluationEvents(run: OraEvaluationRun, attempts: OraEvaluatio
 
 function explicitSystemAgentModelRef(modelRef: string | undefined): string | undefined {
   return modelRef === "local/smoke-model" ? undefined : modelRef;
+}
+
+function mockAutomationOccurrences(schedule: OraAutomationSchedule, from: number, limit: number): number[] {
+  if (schedule.kind === "once") {
+    return schedule.at > from ? [schedule.at] : [];
+  }
+  const parts = Object.fromEntries(
+    schedule.rrule.split(";").map((segment) => {
+      const [key, value] = segment.split("=");
+      return [key?.toUpperCase(), value];
+    }),
+  );
+  const interval = Math.max(1, Number(parts.INTERVAL ?? 1));
+  const minute = Number(parts.BYMINUTE ?? new Date(from).getMinutes());
+  const hour = Number(parts.BYHOUR ?? new Date(from).getHours());
+  const occurrences: number[] = [];
+  const cursor = new Date(from);
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+
+  for (let i = 0; i < 366 * 24 * 60 && occurrences.length < limit; i += 1) {
+    if (mockAutomationOccurrenceMatches(cursor, String(parts.FREQ ?? "DAILY"), interval, hour, minute, String(parts.BYDAY ?? ""), String(parts.BYMONTHDAY ?? ""))) {
+      occurrences.push(cursor.getTime());
+    }
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+  return occurrences;
+}
+
+function mockAutomationOccurrenceMatches(date: Date, freq: string, interval: number, hour: number, minute: number, byDay: string, byMonthDay: string): boolean {
+  if (date.getMinutes() !== minute) return false;
+  if (freq !== "HOURLY" && date.getHours() !== hour) return false;
+  if (byMonthDay && !byMonthDay.split(",").includes(String(date.getDate()))) return false;
+  if (byDay) {
+    const dayCode = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][date.getDay()];
+    if (!byDay.split(",").includes(dayCode)) return false;
+  }
+  if (freq === "HOURLY") return date.getHours() % interval === 0;
+  if (freq === "MONTHLY") return date.getMonth() % interval === 0;
+  return true;
 }
 
 function mockRuleAllows(rule: OraFeedbackLoopCalibrationRule, source: OraProjectSignal["source"], severity: OraProjectSignal["severity"]): boolean {

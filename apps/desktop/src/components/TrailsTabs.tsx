@@ -73,7 +73,6 @@ interface TrailsTabsProps {
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
   selectedSession: SessionRun;
-  onExportReport: () => void;
   onForkRun: () => void;
   onResumeRun: () => void;
   onCancelRun: () => void;
@@ -93,7 +92,6 @@ export function TrailsTabs({
   selectedCheckpoint,
   selectedNode,
   selectedSession,
-  onExportReport,
   onForkRun,
   onResumeRun,
   onCancelRun,
@@ -224,7 +222,6 @@ export function TrailsTabs({
             commandFeedback={commandFeedback}
             findings={visibleFindings}
             onCancelRun={onCancelRun}
-            onExportReport={onExportReport}
             onFindingClick={jumpToFinding}
             onForkRun={onForkRun}
             onResumeRun={onResumeRun}
@@ -327,7 +324,6 @@ function TrailOverview({
   summary,
   timelineItems,
   onCancelRun,
-  onExportReport,
   onFindingClick,
   onForkRun,
   onResumeRun,
@@ -348,7 +344,6 @@ function TrailOverview({
   summary: ReturnType<typeof buildTrailDebugSummary>;
   timelineItems: SemanticTimelineItem[];
   onCancelRun: () => void;
-  onExportReport: () => void;
   onFindingClick: (finding: TrailFinding) => void;
   onForkRun: () => void;
   onResumeRun: () => void;
@@ -468,9 +463,6 @@ function TrailOverview({
       <DockCard title="操作" icon={<Activity size={16} />}>
         <p className="mb-3 text-xs leading-5 text-bench-700">{commandFeedback}</p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={onExportReport} disabled={busyCommand !== undefined}>
-            导出
-          </Button>
           <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
             分叉
           </Button>

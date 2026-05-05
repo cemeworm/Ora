@@ -240,7 +240,7 @@ describe("trail debugger view model", () => {
           thinking: "deep",
           reasoningEffort: "high",
           budgetProfile: "deep",
-          budget: { maxTokens: 24000, maxToolCalls: 64, maxRuntimeMs: 600000, maxCostUsd: 5 },
+          budget: { maxTokens: 24000, maxToolCalls: 256, maxRuntimeMs: 600000, maxCostUsd: 5 },
           planning: "explicit",
           planningEnabled: true,
           delegation: "preferred",

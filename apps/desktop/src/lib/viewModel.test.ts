@@ -1,10 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
-import { adaptChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
+import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop session view model", () => {
+  it("uses an empty assistant placeholder for newly pending runs", () => {
+    const messages = adaptPendingRunMessages({
+      sessionId: "session-pending",
+      prompt: "开始一个新任务",
+      createdAt: 1_714_000_000_000,
+    });
+
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      content: "",
+      isPlaceholder: true,
+    });
+    expect(messages[1]?.content).not.toContain("正在准备");
+  });
+
   it("does not treat a newly-created empty session preview as running", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {
@@ -33,6 +48,88 @@ describe("desktop session view model", () => {
 
     expect(selectedSession?.status).toBe("done");
     expect(isSessionProcessing(selectedSession, undefined)).toBe(false);
+  });
+
+  it("shows approval required for a running snapshot with a pending approval action", () => {
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      sessionId: "session-approval-running",
+      title: "Needs approval",
+      status: "running",
+      latestRunId: "run-approval-running",
+      latestPattern: "orchestrator_subagent",
+      latestModeId: SINGLE_AGENT_MODE_ID,
+      turnCount: 1,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const snapshot = {
+      runId: "run-approval-running",
+      sessionId: "session-approval-running",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Apply a patch.", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-running-approval-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [{
+        id: "run-approval-running:action:tool-1",
+        runId: "run-approval-running",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+    const detail: OraSessionDetail = {
+      session,
+      turns: [],
+      transcript: [],
+      latestSnapshot: snapshot,
+    };
+
+    const viewModel = buildWorkbenchViewModel(
+      MVP_PATTERNS,
+      MVP_MODES,
+      [session],
+      detail,
+      snapshot,
+      "orchestrator_subagent",
+      SINGLE_AGENT_MODE_ID,
+    );
+
+    expect(viewModel.sessions[0]?.status).toBe("approval_required");
   });
 
   it("renders cancelled assistant turns with user-facing copy", () => {
@@ -98,6 +195,155 @@ describe("desktop session view model", () => {
 
     expect(assistant?.content).toBe("Stopped processing as instructed.");
     expect(assistant?.content).not.toContain("Cancelled by caller.");
+  });
+
+  it("nests resolved clarification exchanges inside the interrupted assistant turn without changing top-level timeline order", () => {
+    const createdAt = 1_714_000_000_000;
+    const firstSnapshot = {
+      runId: "run-history",
+      sessionId: "session-clarification-order",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Earlier request", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-clarification-order-history",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Earlier answer" },
+      updatedAt: createdAt + 10,
+    } as unknown as OraStateSnapshot;
+    const clarificationSnapshot = {
+      ...firstSnapshot,
+      runId: "run-clarification",
+      turnIndex: 2,
+      input: { prompt: "Needs a decision", createdAt: createdAt + 20, context: {} },
+      output: { text: "Continued after clarification" },
+      events: [{
+        id: "run-clarification:evt-0",
+        runId: "run-clarification",
+        seq: 0,
+        type: "clarification.required",
+        createdAt: createdAt + 30,
+        pattern: "orchestrator_subagent",
+        payload: {
+          clarification: {
+            id: "clarification:scope",
+            nodeId: "solo_agent",
+            key: "scope",
+            question: "Which scope should I use?",
+            requestedAt: createdAt + 30,
+          },
+          pending: 1,
+        },
+      }, {
+        id: "run-clarification:evt-1",
+        runId: "run-clarification",
+        seq: 1,
+        type: "clarification.resolved",
+        createdAt: createdAt + 40,
+        pattern: "orchestrator_subagent",
+        payload: {
+          clarificationId: "clarification:scope",
+          nodeId: "solo_agent",
+          answer: "Use the current session only.",
+          mode: "resume",
+        },
+      }],
+      pendingClarifications: [],
+      updatedAt: createdAt + 50,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-history:user",
+        sessionId: "session-clarification-order",
+        runId: "run-history",
+        turnIndex: 1,
+        role: "user",
+        content: "Earlier request",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }, {
+        id: "run-history:assistant",
+        sessionId: "session-clarification-order",
+        runId: "run-history",
+        turnIndex: 1,
+        role: "assistant",
+        content: "Earlier answer",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 10,
+      }, {
+        id: "run-clarification:user",
+        sessionId: "session-clarification-order",
+        runId: "run-clarification",
+        turnIndex: 2,
+        role: "user",
+        content: "Needs a decision",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 20,
+      }, {
+        id: "run-clarification:assistant",
+        sessionId: "session-clarification-order",
+        runId: "run-clarification",
+        turnIndex: 2,
+        role: "assistant",
+        content: "Continued after clarification",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt: createdAt + 50,
+      }],
+      {
+        "run-history": firstSnapshot,
+        "run-clarification": clarificationSnapshot,
+      },
+    );
+
+    expect(messages.map((message) => `${message.role}:${message.content}`)).toEqual([
+      "user:Earlier request",
+      "assistant:Earlier answer",
+      "user:Needs a decision",
+      "assistant:Continued after clarification",
+    ]);
+    const clarificationAssistant = messages.find((message) => message.metadata?.runId === "run-clarification" && message.role === "assistant");
+    expect(clarificationAssistant?.turn?.clarificationExchanges).toEqual([expect.objectContaining({
+      id: "clarification:scope",
+      question: "Which scope should I use?",
+      answer: "Use the current session only.",
+      status: "resolved",
+    })]);
   });
 
   it("uses proposed plan content instead of the preamble for decision plan cards", () => {
@@ -188,12 +434,25 @@ describe("desktop session view model", () => {
       { "run-plan": snapshot },
     );
     const assistant = messages.find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : [])
+      .join("\n") ?? "";
 
     expect(assistant?.turn?.hasProposedPlan).toBe(true);
     expect(assistant?.content).toContain("## PlanDecisionPanel 决策状态 UI 调整");
     expect(assistant?.content).toContain("## 实施步骤");
     expect(assistant?.content).not.toContain("现在我已经充分了解了代码结构");
     expect(assistant?.content).not.toContain("<proposed_plan>");
+    expect(timelineText).not.toContain("## PlanDecisionPanel 决策状态 UI 调整");
+    expect(timelineText).not.toContain("## 实施步骤");
+    expect(timelineText).not.toContain("提示文字左对齐");
+    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "assistant_text",
+      content: expect.stringContaining("现在我已经充分了解了代码结构"),
+    }));
+    expect(assistant?.turn?.timelineItems?.some((item) =>
+      item.kind === "final_text" && "content" in item && item.content.includes("## PlanDecisionPanel 决策状态 UI 调整")
+    )).toBe(false);
   });
 
   it("uses partial proposed plan content while plan mode output is still streaming", () => {
@@ -275,12 +534,133 @@ describe("desktop session view model", () => {
       { "run-streaming-plan": snapshot },
     );
     const assistant = messages.find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : [])
+      .join("\n") ?? "";
 
     expect(assistant?.turn?.hasProposedPlan).toBe(true);
     expect(assistant?.content).toContain("## 流式计划卡片");
     expect(assistant?.content).toContain("opening tag 出现后立即渲染卡片");
     expect(assistant?.content).not.toContain("我先整理成可执行计划");
     expect(assistant?.content).not.toContain("<proposed_plan>");
+    expect(timelineText).toContain("我先整理成可执行计划");
+    expect(timelineText).not.toContain("## 流式计划卡片");
+    expect(timelineText).not.toContain("opening tag 出现后立即渲染卡片");
+    expect(assistant?.turn?.proposedPlanStatus).toBe("streaming");
+  });
+
+  it("uses tagged delta proposed plans instead of untagged final plan summaries", () => {
+    const createdAt = 1_714_000_000_000;
+    const untaggedOutput = [
+      "Below is the proposed change to remove the status badge for cancelled sessions in the sidebar.",
+      "",
+      "### Plan summary",
+      "- File: apps/desktop/src/components/Sidebar.tsx",
+      "- Change: return null for cancelled sessions.",
+      "",
+      "Shall I go ahead and implement this change now?",
+    ].join("\n");
+    const taggedPlanOutput = [
+      "Now I have full context. The change is isolated and low-risk — here's the plan.",
+      "",
+      "<proposed_plan>",
+      "## Hide status badge for cancelled sessions in Sidebar",
+      "",
+      "## 背景",
+      "Ora 的侧边栏中，SessionStatusBadge 会为非 done 状态渲染标签，cancelled 不应显示状态徽章。",
+      "",
+      "## 实施步骤",
+      "1. 修改 SessionStatusBadge，让 cancelled 状态返回 null。",
+      "2. 保持 running、failed、paused 等其他状态的现有徽章行为。",
+      "",
+      "## 验证方式",
+      "1. 确认 cancelled session 不显示 Cancelled 标签。",
+      "2. 确认其他状态仍正常显示。",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-0031-like",
+      sessionId: "session-0031-like",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      input: { prompt: "hide cancelled status", createdAt, context: {} },
+      config: {
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-run-0031-proposed-plan-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "Orchestrator" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-0031-like:evt-0",
+        runId: "run-0031-like",
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        agentId: "orchestrator",
+        pattern: "agent_teams",
+        payload: { role: "assistant", content: taggedPlanOutput, streaming: true },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: untaggedOutput },
+      updatedAt: createdAt + 1_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-0031-like:user",
+        sessionId: "session-0031-like",
+        runId: "run-0031-like",
+        turnIndex: 1,
+        role: "user",
+        content: "hide cancelled status",
+        pattern: "agent_teams",
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-0031-like": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => "content" in item ? [item.content] : [])
+      .join("\n") ?? "";
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.turn?.proposedPlanStatus).toBe("complete");
+    expect(assistant?.content).toContain("## Hide status badge for cancelled sessions in Sidebar");
+    expect(assistant?.content).toContain("## 实施步骤");
+    expect(assistant?.content).not.toContain("Below is the proposed change");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+    expect(timelineText).toContain("Now I have full context");
+    expect(timelineText).not.toContain("Below is the proposed change");
+    expect(timelineText).not.toContain("### Plan summary");
+    expect(timelineText).not.toContain("## Hide status badge");
+    expect(timelineText).not.toContain("## 实施步骤");
   });
 
   it("does not promote a completed but invalid short proposed plan into a plan card", () => {
@@ -1161,7 +1541,7 @@ describe("desktop session view model", () => {
     expect(secondStatus?.summary).not.toContain("已探索");
   });
 
-  it("keeps the root handoff target as turn agent while subagents stream body text", () => {
+  it("uses the latest public mode agent as turn owner even when old root handoff content exists", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-subagent-owner",
@@ -1293,15 +1673,16 @@ describe("desktop session view model", () => {
     );
     const assistant = messages.find((message) => message.role === "assistant");
     const timelineText = assistant?.turn?.timelineItems
-      ?.flatMap((item) => "content" in item && item.kind === "assistant_text" ? [item.content] : [])
+      ?.flatMap((item) => "content" in item ? [item.content] : [])
       .join("\n");
 
-    expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(assistant?.turn?.currentAgentLabel).toBe("Reviewer");
     expect(timelineText).toContain("Researcher is checking the relevant files.");
     expect(timelineText).toContain("Reviewer is validating the findings.");
+    expect(timelineText).toContain("接下来交给 Orchestrator。");
   });
 
-  it("uses the primary profile as turn agent when subagents stream without a root handoff", () => {
+  it("uses the public assistant delta agent as the turn owner without a root handoff", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-primary-owner",
@@ -1390,11 +1771,196 @@ describe("desktop session view model", () => {
       { "run-primary-owner": snapshot },
     ).find((message) => message.role === "assistant");
 
-    expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(assistant?.turn?.currentAgentLabel).toBe("Researcher");
     expect(assistant?.turn?.timelineItems?.[0]).toMatchObject({
       kind: "assistant_text",
       content: "Researcher is reading delegated files.",
     });
+  });
+
+  it("keeps root handoff, final intro, and the plan card separate for completed handoff plan output", () => {
+    const createdAt = 1_714_000_000_000;
+    const planOutput = [
+      "根据您的需求，我分析了侧边栏对 `cancelled` 会话的状态显示逻辑，并制定了修改方案。",
+      "",
+      "<proposed_plan>",
+      "## 背景",
+      "当前 Ora 侧边栏中，cancelled 会显示状态徽章。",
+      "",
+      "## 实施步骤",
+      "1. 修改 Sidebar.tsx 中 SessionStatusBadge 的 cancelled 分支。",
+      "2. 验证 cancelled 和 done 一样不显示状态。",
+      "</proposed_plan>",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-code-handoff-output",
+      sessionId: "session-code-handoff-output",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "agent_teams",
+      modeId: CODE_DEVELOPMENT_MODE_ID,
+      input: { prompt: "fix the sidebar status", createdAt, context: {} },
+      config: {
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-handoff-output-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL },
+        { id: "orchestrator", label: "Orchestrator" },
+      ],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-code-handoff-output:evt-0",
+          runId: "run-code-handoff-output",
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          payload: {
+            toolId: "file.grep",
+            status: "succeeded",
+            input: { pattern: "cancelled", include: "**/*.ts" },
+            output: { matches: new Array(3).fill({}) },
+          },
+        },
+        {
+          id: "run-code-handoff-output:evt-1",
+          runId: "run-code-handoff-output",
+          seq: 1,
+          type: "completion.updated",
+          createdAt: createdAt + 2,
+          payload: {
+            state: "force_final",
+            reason: "tool_budget_exhausted",
+          },
+        },
+        {
+          id: "run-code-handoff-output:evt-2",
+          runId: "run-code-handoff-output",
+          seq: 2,
+          type: "message.delta",
+          createdAt: createdAt + 3,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          payload: { role: "assistant", content: planOutput },
+        },
+      ],
+      agentMessages: [
+        {
+          id: "run-code-handoff-output:agent-message:0",
+          runId: "run-code-handoff-output",
+          createdAt,
+          fromAgentId: ORA_ROOT_AGENT_ID,
+          toAgentIds: ["orchestrator"],
+          threadId: "run-code-handoff-output:ora-handoff",
+          nodeId: ORA_ROOT_AGENT_ID,
+          kind: "handoff",
+          status: "done",
+          content: "接下来交给 Orchestrator。",
+          artifactIds: [],
+        },
+        {
+          id: "run-code-handoff-output:agent-message:1",
+          runId: "run-code-handoff-output",
+          createdAt: createdAt + 4,
+          fromAgentId: "orchestrator",
+          toAgentIds: [ORA_ROOT_AGENT_ID],
+          replyToId: "run-code-handoff-output:agent-message:0",
+          threadId: "run-code-handoff-output:ora-handoff",
+          nodeId: "orchestrator",
+          kind: "reply",
+          status: "done",
+          content: "Orchestrator 已将处理结果交回 Ora。",
+          artifactIds: [],
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: planOutput, ora: { agentId: ORA_ROOT_AGENT_ID } },
+      updatedAt: createdAt + 5,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-code-handoff-output:user",
+        sessionId: "session-code-handoff-output",
+        runId: "run-code-handoff-output",
+        turnIndex: 1,
+        role: "user",
+        content: "fix the sidebar status",
+        pattern: "agent_teams",
+        modeId: CODE_DEVELOPMENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-code-handoff-output": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+    const timelineText = timeline
+      .flatMap((item) => "content" in item ? [item.content] : [])
+      .join("\n");
+
+    expect(assistant?.turn?.currentAgentLabel).toBe("Orchestrator");
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.content).toContain("## 背景");
+    expect(assistant?.content).toContain("## 实施步骤");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+    expect(timelineText).toContain("接下来交给 Orchestrator。");
+    expect(timelineText).toContain("Orchestrator 已将处理结果交回 Ora。");
+    expect(timelineText).toContain("根据您的需求，我分析了侧边栏");
+    expect(timelineText).not.toContain("## 背景");
+    expect(timelineText).not.toContain("## 实施步骤");
+    expect(timelineText).not.toContain("修改内容");
+    expect(timeline).toContainEqual(expect.objectContaining({
+      kind: "status_group",
+      agentLabel: "Orchestrator",
+      summary: expect.stringContaining("已探索 1 个文件"),
+    }));
+    const completionGroup = timeline.find((item) =>
+      item.kind === "status_group" &&
+      item.agentLabel === "Orchestrator" &&
+      item.steps.some((step) => step.eventType === "completion.updated")
+    );
+    expect(completionGroup).toMatchObject({
+      kind: "status_group",
+      summary: expect.stringContaining("工具预算已用完，正在整理最终回答。"),
+    });
+    expect(completionGroup && "steps" in completionGroup
+      ? completionGroup.steps[0]?.label
+      : undefined).toBe("进入最终回答");
+    expect(completionGroup && "steps" in completionGroup
+      ? completionGroup.steps[0]?.detail
+      : undefined).not.toContain("已停止工具调用");
+    expect(timeline).toContainEqual(expect.objectContaining({
+      kind: "assistant_text",
+      agentLabel: ORA_ROOT_AGENT_LABEL,
+      content: expect.stringContaining("根据您的需求，我分析了侧边栏"),
+    }));
+    expect(timeline.some((item) => item.kind === "final_text")).toBe(false);
   });
 
   it("preserves stage transcript metadata on assistant turns", () => {
@@ -1548,7 +2114,7 @@ describe("desktop session view model", () => {
     expect(new Set(assistant?.turn?.agentMessages.map((message) => message.fromAgentId))).toEqual(new Set(["debate_agent"]));
   });
 
-  it("keeps orchestrator subagent handoff messages in assistant turns", () => {
+  it("keeps root orchestrator handoff content in public timeline items", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-orchestrator-subagent",
@@ -2134,6 +2700,228 @@ describe("desktop session view model", () => {
     expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
   });
 
+  it("segments live assistant deltas by agent and ignores final cumulative content events", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-channel-live-deltas",
+      sessionId: "session-channel-live-deltas",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "你能联网搜索吗？", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-v4-pro",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-channel-live-deltas-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-channel-live-deltas:evt-1",
+          runId: "run-channel-live-deltas",
+          seq: 1,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "草稿", delta: "草稿", streaming: true },
+        },
+        {
+          id: "run-channel-live-deltas:evt-2",
+          runId: "run-channel-live-deltas",
+          seq: 2,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "。", delta: "。", streaming: true },
+        },
+        {
+          id: "run-channel-live-deltas:evt-3",
+          runId: "run-channel-live-deltas",
+          seq: 3,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 3_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "草稿。", streaming: false },
+        },
+        {
+          id: "run-channel-live-deltas:evt-4",
+          runId: "run-channel-live-deltas",
+          seq: 4,
+          type: "message.delta",
+          agentId: "researcher",
+          createdAt: createdAt + 4_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "研究结论。", streaming: false },
+        },
+        {
+          id: "run-channel-live-deltas:evt-5",
+          runId: "run-channel-live-deltas",
+          seq: 5,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 5_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "最终", delta: "最终", streaming: true },
+        },
+        {
+          id: "run-channel-live-deltas:evt-6",
+          runId: "run-channel-live-deltas",
+          seq: 6,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 6_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "回答。", delta: "回答。", streaming: true },
+        },
+        {
+          id: "run-channel-live-deltas:evt-7",
+          runId: "run-channel-live-deltas",
+          seq: 7,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 7_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "最终回答。", streaming: false },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 7_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-channel-live-deltas:user",
+        sessionId: "session-channel-live-deltas",
+        runId: "run-channel-live-deltas",
+        turnIndex: 1,
+        role: "user",
+        content: "你能联网搜索吗？",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-channel-live-deltas": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(assistant?.content).toBe("最终回答。");
+    expect(timelineText).toEqual(["草稿。", "研究结论。", "最终回答。"]);
+  });
+
+  it("shows only the final output text for completed model delta timelines", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-channel-final-deltas",
+      sessionId: "session-channel-final-deltas",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "你能联网搜索吗？", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-v4-pro",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-channel-final-deltas-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-channel-final-deltas:evt-1",
+          runId: "run-channel-final-deltas",
+          seq: 1,
+          type: "message.delta",
+          agentId: "researcher",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "研究结论。", streaming: false },
+        },
+        {
+          id: "run-channel-final-deltas:evt-2",
+          runId: "run-channel-final-deltas",
+          seq: 2,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "最终回答。", streaming: false },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "最终回答。" },
+      updatedAt: createdAt + 3_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-channel-final-deltas:user",
+        sessionId: "session-channel-final-deltas",
+        runId: "run-channel-final-deltas",
+        turnIndex: 1,
+        role: "user",
+        content: "你能联网搜索吗？",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-channel-final-deltas": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("最终回答。");
+    expect(assistant?.turn?.timelineItems?.map((item) => item.kind)).toEqual(["final_text"]);
+    expect(assistant?.turn?.timelineItems?.[0]).toMatchObject({ content: "最终回答。" });
+  });
+
   it("keeps internal agent tool-policy output out of the assistant body", () => {
     const createdAt = 1_714_000_000_000;
     const leakedToolIntent = "{\"tool\":\"file.grep\",\"args\":{\"pattern\":\"按该计划实施|需要决策\",\"include\":\"**/*.tsx,**/*.ts\"}}\n\n<file_grep_policy> 1. Always run a quick second grep.\n</file_grep_policy>";
@@ -2432,6 +3220,273 @@ describe("desktop session view model", () => {
     expect(timeline[3]).toMatchObject({ summary: "已更新任务计划：1/2 完成，正在 汇总结论" });
     expect(timeline[4]).toMatchObject({ content: "最终结论：run 没有停在计划阶段。" });
     expect(assistant?.content).toBe("最终结论：run 没有停在计划阶段。");
+  });
+
+  it("does not duplicate proposed plan intro text that was already shown in the timeline", () => {
+    const createdAt = 1_714_000_000_000;
+    const introOne = "好的，这是一项重要的功能增强。让我先深入理解现有代码结构。";
+    const introTwo = "现在我已经对整个代码库有了充分的了解。让我来产出最终的设计方案。";
+    const planContent = [
+      "# Channel 项目关联与自然语言切换设计方案",
+      "## 背景",
+      "当前 channels 创建的 session 没有绑定 projectId。",
+      "## 实施步骤",
+      "1. 更新 channel 创建参数以携带 projectId。",
+      "## 验证方式",
+      "- 运行 channel session 相关测试。",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-proposed-plan-intro",
+      sessionId: "session-proposed-plan-intro",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "修复 channels session 项目上下文", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-proposed-plan-intro-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "Orchestrator" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-proposed-plan-intro:evt-0",
+          runId: "run-proposed-plan-intro",
+          seq: 0,
+          type: "task.progress",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "tool.succeeded",
+            summary: introOne,
+          },
+        },
+        {
+          id: "run-proposed-plan-intro:evt-1",
+          runId: "run-proposed-plan-intro",
+          seq: 1,
+          type: "task.progress",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            trigger: "tool.succeeded",
+            summary: introTwo,
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: {
+        text: [
+          introOne,
+          "",
+          introTwo,
+          "",
+          "<proposed_plan>",
+          planContent,
+          "</proposed_plan>",
+        ].join("\n"),
+      },
+      updatedAt: createdAt + 2_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-proposed-plan-intro:user",
+        sessionId: "session-proposed-plan-intro",
+        runId: "run-proposed-plan-intro",
+        turnIndex: 1,
+        role: "user",
+        content: "修复 channels session 项目上下文",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-proposed-plan-intro": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+
+    expect(timeline.map((item) => item.kind)).toEqual(["assistant_text", "assistant_text"]);
+    expect(timeline.filter((item) => "content" in item && item.content === introOne)).toHaveLength(1);
+    expect(timeline.filter((item) => "content" in item && item.content === introTwo)).toHaveLength(1);
+    expect(assistant?.content).toBe(planContent);
+    expect(assistant?.content).toContain("Channel 项目关联与自然语言切换设计方案");
+    expect(assistant?.content).not.toContain(introOne);
+    expect(assistant?.content).not.toContain(introTwo);
+  });
+
+  it("keeps streamed text separators when final output exists without duplicating the final text", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalText = "最终结论：已经完成。";
+    const snapshot = {
+      runId: "run-final-text-stream-separators",
+      sessionId: "session-final-text-stream-separators",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "追踪 run-0035", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-final-text-stream-separators-test",
+        skillIds: [],
+        toolIds: ["file.read", "file.grep"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "Orchestrator" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-final-text-stream-separators:evt-0",
+          runId: "run-final-text-stream-separators",
+          seq: 0,
+          type: "message.delta",
+          createdAt,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "我先确认运行事件。" },
+        },
+        {
+          id: "run-final-text-stream-separators:evt-1",
+          runId: "run-final-text-stream-separators",
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 1_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: { path: ".ora/runtime.db" },
+            output: { path: ".ora/runtime.db", sizeBytes: 128 },
+          },
+        },
+        {
+          id: "run-final-text-stream-separators:evt-2",
+          runId: "run-final-text-stream-separators",
+          seq: 2,
+          type: "message.delta",
+          createdAt: createdAt + 2_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "接着对照前端 timeline 逻辑。" },
+        },
+        {
+          id: "run-final-text-stream-separators:evt-3",
+          runId: "run-final-text-stream-separators",
+          seq: 3,
+          type: "tool.called",
+          createdAt: createdAt + 3_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.grep",
+            status: "succeeded",
+            input: { pattern: "message.delta", include: "apps/desktop/src/lib/viewModel.ts" },
+            output: { pattern: "message.delta", matches: [{ path: "apps/desktop/src/lib/viewModel.ts" }] },
+          },
+        },
+        {
+          id: "run-final-text-stream-separators:evt-4",
+          runId: "run-final-text-stream-separators",
+          seq: 4,
+          type: "message.delta",
+          createdAt: createdAt + 4_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: finalText },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalText },
+      updatedAt: createdAt + 5_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-final-text-stream-separators:user",
+        sessionId: "session-final-text-stream-separators",
+        runId: "run-final-text-stream-separators",
+        turnIndex: 1,
+        role: "user",
+        content: "追踪 run-0035",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-final-text-stream-separators": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+
+    expect(timeline.map((item) => item.kind)).toEqual([
+      "assistant_text",
+      "status_group",
+      "assistant_text",
+      "status_group",
+      "final_text",
+    ]);
+    expect(timeline[0]).toMatchObject({ content: "我先确认运行事件。" });
+    expect(timeline[1]).toMatchObject({ summary: "已探索 1 个文件" });
+    expect(timeline[2]).toMatchObject({ content: "接着对照前端 timeline 逻辑。" });
+    expect(timeline[3]).toMatchObject({ summary: "已探索 1 个文件" });
+    expect(timeline[4]).toMatchObject({ content: finalText });
+    expect(timeline.filter((item) => "content" in item && item.content === finalText)).toHaveLength(1);
+    expect(assistant?.content).toBe(finalText);
   });
 
   it("keeps historical progress narration out of process steps after the run finishes", () => {

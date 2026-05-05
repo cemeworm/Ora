@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { initialWorkbenchState, type WorkbenchState } from "./state";
-import { buildClarificationSubmissionPrompt, buildDesktopRunContext, isDisposableEmptySession, lightweightRunBudgetForTask, shouldEnableProgressNarration } from "./useRunActions";
+import {
+  acceptedPlanImplementationSubmission,
+  buildClarificationSubmissionPrompt,
+  buildDesktopRunContext,
+  isDisposableEmptySession,
+  shouldEnableProgressNarration,
+} from "./useRunActions";
 import type { OraSessionSummary } from "./runtimeClient";
 
 describe("desktop run actions", () => {
@@ -10,17 +16,11 @@ describe("desktop run actions", () => {
     expect(shouldEnableProgressNarration("plan")).toBe(false);
   });
 
-  it("caps lightweight chat and plan tool budgets without changing implement runs", () => {
-    const budget = {
-      maxTokens: 18_000,
-      maxToolCalls: 64,
-      maxRuntimeMs: 300_000,
-      maxCostUsd: 3,
-    };
-
-    expect(lightweightRunBudgetForTask("chat", budget)?.maxToolCalls).toBe(8);
-    expect(lightweightRunBudgetForTask("plan", { ...budget, maxToolCalls: 4 })?.maxToolCalls).toBe(4);
-    expect(lightweightRunBudgetForTask("implement", budget)).toBeUndefined();
+  it("submits accepted plan decisions as implementation runs", () => {
+    expect(acceptedPlanImplementationSubmission()).toEqual({
+      prompt: "请按照上述计划开始执行",
+      taskIntent: "implement",
+    });
   });
 
   it("includes attached project files in run context", () => {

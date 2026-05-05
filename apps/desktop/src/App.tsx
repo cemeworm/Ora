@@ -54,6 +54,11 @@ const AgentsView = lazy(() =>
     default: module.AgentsView,
   })),
 );
+const AutomationsView = lazy(() =>
+  import("./components/AutomationsView").then((module) => ({
+    default: module.AutomationsView,
+  })),
+);
 const EvaluationView = lazy(() =>
   import("./components/EvaluationView").then((module) => ({
     default: module.EvaluationView,
@@ -106,6 +111,8 @@ function windowTitleForView(
   switch (activeView) {
     case "agents":
       return `${base} · ${translateCopy(language, "Agents")}`;
+    case "automations":
+      return `${base} · ${translateCopy(language, "定时任务")}`;
     case "skills":
       return `${base} · ${translateCopy(language, "Skills")}`;
     case "modes":
@@ -794,6 +801,19 @@ function WorkbenchInner() {
     );
   }
 
+  if (state.activeView === "automations") {
+    return (
+      <AppShell>
+        {settingsDialog}
+        <WorkspacePane className="w-full">
+          <Suspense fallback={<LoadingPane />}>
+            <AutomationsView runtimeClient={runtimeClient} />
+          </Suspense>
+        </WorkspacePane>
+      </AppShell>
+    );
+  }
+
   if (state.activeView === "skills") {
     return (
       <AppShell>
@@ -872,11 +892,14 @@ function WorkbenchInner() {
               dispatch({ type: "SET_PROMPT", text })
             }
             onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
-            onExportReport={actions.exportReport}
             onForkRun={actions.forkRun}
+            onCreateAndRunBranchGroup={(params) => void actions.createAndRunBranchGroup(params)}
+            onAdoptBranchGroup={(branchGroupId, runId) => void actions.adoptBranchGroup(branchGroupId, runId)}
+            onDismissBranchGroup={(branchGroupId) => void actions.dismissBranchGroup(branchGroupId)}
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
+            onAcceptPlanDecisionAndStartImplementation={() => void actions.acceptPlanDecisionAndStartImplementation()}
             onResolvePlanDecision={(status) => void actions.resolvePlanDecision(status)}
             onCancelRun={actions.cancelRun}
             onOpenArtifact={(artifactId) =>
@@ -946,7 +969,6 @@ function WorkbenchInner() {
                   selectedCheckpoint={selectedCheckpoint}
                   selectedNode={selectedNode}
                   selectedSession={selectedSession}
-                  onExportReport={actions.exportReport}
                   onForkRun={actions.forkRun}
                   onResumeRun={actions.resumeRun}
                   onCancelRun={actions.cancelRun}

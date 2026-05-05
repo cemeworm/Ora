@@ -1,7 +1,7 @@
 import { useMemo, useRef } from "react";
 import { flushSync } from "react-dom";
 import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
-import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
+import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
 import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
@@ -28,22 +28,19 @@ const FILE_MODIFICATION_TOOL_IDS = [
 ];
 
 type DesktopLatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
-type RunBudget = NonNullable<OraStateSnapshot["config"]["budget"]>;
+export const ACCEPTED_PLAN_IMPLEMENT_PROMPT = "请按照上述计划开始执行";
 
 export function shouldEnableProgressNarration(taskIntent: WorkbenchState["taskIntent"]): boolean {
   return taskIntent === "implement";
 }
 
-export function lightweightRunBudgetForTask(
-  taskIntent: WorkbenchState["taskIntent"],
-  defaultBudget: RunBudget | undefined,
-): RunBudget | undefined {
-  if (!defaultBudget || taskIntent === "implement") {
-    return undefined;
-  }
+export function acceptedPlanImplementationSubmission(): {
+  prompt: string;
+  taskIntent: WorkbenchState["taskIntent"];
+} {
   return {
-    ...defaultBudget,
-    maxToolCalls: Math.min(defaultBudget.maxToolCalls, 8),
+    prompt: ACCEPTED_PLAN_IMPLEMENT_PROMPT,
+    taskIntent: "implement",
   };
 }
 
@@ -545,11 +542,17 @@ export function useRunActions() {
     }
   }
 
-  async function startRun() {
-    if (!state.selectedSessionId || !state.promptText.trim()) return;
+  async function startRunWithOptions(options: {
+    prompt?: string;
+    taskIntent?: WorkbenchState["taskIntent"];
+    clearPromptIfMatched?: boolean;
+  } = {}) {
+    const prompt = options.prompt ?? state.promptText;
+    const taskIntent = options.taskIntent ?? state.taskIntent;
+    if (!state.selectedSessionId || !prompt.trim()) return;
     const desktopLatencyMarks: DesktopLatencyMark[] = [desktopLatencyMark("submitAt")];
     const sessionId = state.selectedSessionId;
-    const submittedPrompt = state.promptText;
+    const submittedPrompt = prompt;
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
     const clarificationPatch = state.activeSnapshot?.runId === state.selectedTurnRunId
@@ -562,7 +565,9 @@ export function useRunActions() {
         prompt: submittedPrompt,
         createdAt: Date.now(),
       });
-      dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
+      if (options.clearPromptIfMatched ?? true) {
+        dispatch({ type: "CLEAR_PROMPT_IF_MATCH", text: submittedPrompt });
+      }
       if (!clarificationPatch && submittedProjectFileAttachments.length > 0) {
         dispatch({ type: "CLEAR_PROJECT_FILE_ATTACHMENTS", sessionId });
       }
@@ -607,10 +612,9 @@ export function useRunActions() {
     ])];
     try {
       const resolvedToolIds = toolIdsForRun(selectedMode?.capabilityFlags.toolIds, projectId);
-      const filteredToolIds = (state.taskIntent === "chat" || state.taskIntent === "plan")
+      const filteredToolIds = (taskIntent === "chat" || taskIntent === "plan")
         ? resolvedToolIds.filter((id) => !(FILE_MODIFICATION_TOOL_IDS as readonly string[]).includes(id))
         : resolvedToolIds;
-      const lightweightBudget = lightweightRunBudgetForTask(state.taskIntent, selectedMode?.defaultBudget);
       desktopLatencyMarks.push(desktopLatencyMark("startStreamingRunCalledAt"));
       const handle = await runtimeClient.startStreamingRun(
         {
@@ -628,15 +632,14 @@ export function useRunActions() {
           modelRef: provider?.modelId ?? "local/smoke-model",
           ...(selectedRunSkillIds.length > 0 ? { skillIds: selectedRunSkillIds } : {}),
           toolIds: filteredToolIds,
-          ...(lightweightBudget ? { budget: lightweightBudget } : {}),
           permissionMode: state.permissionMode,
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
             clarificationPreflight: true,
-            progressNarration: shouldEnableProgressNarration(state.taskIntent),
+            progressNarration: shouldEnableProgressNarration(taskIntent),
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
-            taskIntent: state.taskIntent,
+            taskIntent,
             toolModelProviderId: toolModelSettings.providerId,
             ...searchConfig.metadata,
             ...(state.selectedSkillIds.length > 0 ? { selectedSkillIds: state.selectedSkillIds } : {}),
@@ -663,6 +666,10 @@ export function useRunActions() {
       });
       dispatch({ type: "SET_LOADING", loading: false });
     }
+  }
+
+  async function startRun() {
+    await startRunWithOptions();
   }
 
   async function interruptRun() {
@@ -711,12 +718,12 @@ export function useRunActions() {
     }
   }
 
-  async function resolvePlanDecision(status: "accepted" | "declined") {
+  async function resolvePlanDecision(status: "accepted" | "declined"): Promise<boolean> {
     const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
     const decisionId = state.activeSessionDetail?.session.attention?.planDecisionId ?? state.activeSnapshot?.attention?.planDecisionId;
     if (!sessionId || !decisionId) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
-      return;
+      return false;
     }
     dispatch({ type: "SET_BUSY_COMMAND", command: status === "accepted" ? "Accept plan" : "Decline plan" });
     try {
@@ -733,10 +740,24 @@ export function useRunActions() {
         feedback: status === "accepted" ? "Plan accepted." : "Plan decision dismissed.",
       });
       dispatch({ type: "SET_PLAN_DECISION_PENDING", sessionId, pending: false });
+      return true;
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Plan decision update failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+      return false;
     }
+  }
+
+  async function acceptPlanDecisionAndStartImplementation() {
+    const accepted = await resolvePlanDecision("accepted");
+    if (!accepted) return;
+    const submission = acceptedPlanImplementationSubmission();
+    dispatch({ type: "SET_TASK_INTENT", taskIntent: submission.taskIntent });
+    await startRunWithOptions({
+      prompt: submission.prompt,
+      taskIntent: submission.taskIntent,
+      clearPromptIfMatched: false,
+    });
   }
 
   async function forkRun() {
@@ -760,6 +781,55 @@ export function useRunActions() {
       await refreshCurrentSession(snapshot, `Fork completed against ${snapshot.runId}.`);
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Fork failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function createAndRunBranchGroup(params: OraSessionBranchGroupCreateParams) {
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Branch" });
+    try {
+      const group = await runtimeClient.createAndRunSessionBranchGroup(params);
+      await hydrateSession(params.sessionId, undefined, `Started ${group.candidateRunIds.length} branch candidate${group.candidateRunIds.length === 1 ? "" : "s"}.`);
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Branch run failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function adoptBranchGroup(branchGroupId: string, runId: string) {
+    const sessionId = state.selectedSessionId;
+    if (!sessionId) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Adopt branch" });
+    try {
+      const detail = await runtimeClient.adoptSessionBranchGroup({ sessionId, branchGroupId, runId });
+      const [projects, sessions] = await Promise.all([
+        runtimeClient.listProjects(),
+        runtimeClient.listSessions(),
+      ]);
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects,
+        sessions,
+        detail,
+        feedback: "Branch adopted.",
+      });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Branch adoption failed." });
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    }
+  }
+
+  async function dismissBranchGroup(branchGroupId: string) {
+    const sessionId = state.selectedSessionId;
+    if (!sessionId) return;
+    dispatch({ type: "SET_BUSY_COMMAND", command: "Dismiss branch" });
+    try {
+      await runtimeClient.dismissSessionBranchGroup({ sessionId, branchGroupId });
+      await hydrateSession(sessionId, undefined, "Branch group dismissed.");
+      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+    } catch (error) {
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Branch dismissal failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
   }
@@ -942,7 +1012,11 @@ export function useRunActions() {
       resumeRun,
       cancelRun,
       resolvePlanDecision,
+      acceptPlanDecisionAndStartImplementation,
       forkRun,
+      createAndRunBranchGroup,
+      adoptBranchGroup,
+      dismissBranchGroup,
       replaySelection,
       exportReport,
       storeProviderSecret,

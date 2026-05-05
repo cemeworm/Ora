@@ -30,7 +30,6 @@ interface TrailsDrawerProps {
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
   selectedSession: SessionRun;
-  onExportReport: () => void;
   onForkRun: () => void;
   onResumeRun: () => void;
   onCancelRun: () => void;
@@ -52,7 +51,6 @@ export function TrailsDrawer({
   selectedCheckpoint,
   selectedNode,
   selectedSession,
-  onExportReport,
   onForkRun,
   onResumeRun,
   onCancelRun,
@@ -91,7 +89,6 @@ export function TrailsDrawer({
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
             selectedSession={selectedSession}
-            onExportReport={onExportReport}
             onForkRun={onForkRun}
             onResumeRun={onResumeRun}
             onCancelRun={onCancelRun}

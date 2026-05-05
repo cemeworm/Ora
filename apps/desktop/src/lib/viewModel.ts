@@ -17,6 +17,7 @@ import type {
   RunStatus,
   SessionRun,
   SessionTurnItem,
+  TurnClarificationExchange,
   StreamLine,
   TurnArtifactAttachment,
   TurnFileChangeAttachment,
@@ -393,11 +394,24 @@ function adaptAttentionStatus(attention: OraRunAttention | undefined): RunStatus
 }
 
 function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
+  const attentionStatus = adaptAttentionStatus(snapshot.attention);
+  if (attentionStatus && attentionStatus !== "running") {
+    return attentionStatus;
+  }
+  if (snapshotPendingClarifications(snapshot).length > 0) {
+    return "clarification_required";
+  }
+  if (
+    snapshotPendingApprovals(snapshot).length > 0 ||
+    snapshot.actions.some((action) => action.status === "approval_required")
+  ) {
+    return "approval_required";
+  }
   if (snapshot.status === "queued" || snapshot.status === "running") {
     return "running";
   }
-  return adaptAttentionStatus(snapshot.attention) ??
-    adaptRunStatus(snapshot.status, { hasPendingClarifications: snapshot.pendingClarifications.length > 0 });
+  return attentionStatus ??
+    adaptRunStatus(snapshot.status, { hasPendingClarifications: snapshotPendingClarifications(snapshot).length > 0 });
 }
 
 function adaptRunStatus(status: OraStateSnapshot["status"], opts?: { hasPendingClarifications?: boolean }): RunStatus {
@@ -1217,25 +1231,18 @@ export function adaptChatMessages(
 
       if (turn.snapshot) {
         const questions = extractClarificationQuestions(turn.snapshot);
+        const answeredIds = new Set(
+          extractClarificationAnswers(turn.snapshot).map((answer) => answer.id),
+        );
         for (const question of questions) {
+          if (answeredIds.has(question.id)) {
+            continue;
+          }
           messages.push({
             id: `clarification-question:${turn.runId}:${question.id}`,
             role: "assistant",
             content: question.question,
             timestamp: formatClock(question.requestedAt),
-            metadata: {
-              runId: turn.runId,
-              turnIndex: turn.turnIndex,
-            },
-          });
-        }
-        const answers = extractClarificationAnswers(turn.snapshot);
-        for (const answer of answers) {
-          messages.push({
-            id: `clarification-answer:${turn.runId}:${answer.id}`,
-            role: "user",
-            content: answer.answer,
-            timestamp: formatClock(answer.answeredAt),
             metadata: {
               runId: turn.runId,
               turnIndex: turn.turnIndex,
@@ -1250,15 +1257,20 @@ export function adaptChatMessages(
       const rawAssistantText = turn.snapshot
         ? assistantTextFromSnapshot(turn.snapshot)
         : undefined;
-      const parsedAssistantPlan = rawAssistantText
+      const snapshotProposedPlan = turn.snapshot
+        ? proposedPlanFromSnapshot(turn.snapshot)
+        : undefined;
+      const parsedAssistantPlan = !snapshotProposedPlan && rawAssistantText
         ? parseProposedPlan(rawAssistantText)
         : undefined;
       const canDisplayPlanBody = parsedAssistantPlan
         ? parsedAssistantPlan.status === "streaming" || parsedAssistantPlan.hasCompletePlan
         : false;
-      const snapshotAssistant = parsedAssistantPlan && canDisplayPlanBody
-        ? parsedAssistantPlan.planContent
-        : parsedAssistantPlan?.displayText;
+      const snapshotAssistant = snapshotProposedPlan
+        ? snapshotProposedPlan.planContent
+        : parsedAssistantPlan && canDisplayPlanBody
+          ? parsedAssistantPlan.planContent
+          : parsedAssistantPlan?.displayText;
       const suppressStoredAssistant = turn.snapshot
         ? shouldSuppressStoredAssistantFallback(turn.snapshot)
         : false;
@@ -1309,7 +1321,7 @@ export function adaptPendingRunMessages(
     {
       id: `${pendingRun.sessionId}:pending:assistant`,
       role: "assistant",
-      content: pendingRun.progressText?.trim() || "正在准备",
+      content: pendingRun.progressText?.trim() || "",
       timestamp: formatClock(pendingRun.createdAt),
       isPlaceholder: true,
     },
@@ -1395,18 +1407,39 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
       parts.length = 0;
     }
     activeAgentId = agentId;
-    const delta = typeof event.payload.delta === "string" ? event.payload.delta : undefined;
-    const content = typeof event.payload.content === "string" ? event.payload.content : undefined;
-    const text = delta ?? content;
-    if (text) {
-      parts.push(text);
-    }
+    mergeAssistantTextParts(parts, event);
   }
   const text = parts.join("");
   if (text.trim() && !isInternalAssistantText(text)) {
     return text;
   }
   return undefined;
+}
+
+function mergeAssistantTextParts(parts: string[], event: OraEventEnvelope & { payload: Record<string, unknown> }): void {
+  const delta = typeof event.payload.delta === "string" ? event.payload.delta : undefined;
+  if (delta) {
+    parts.push(delta);
+    return;
+  }
+  const content = typeof event.payload.content === "string" ? event.payload.content : undefined;
+  if (!content) {
+    return;
+  }
+  const current = parts.join("");
+  if (!current) {
+    parts.push(content);
+    return;
+  }
+  if (content === current || current.endsWith(content)) {
+    return;
+  }
+  if (content.startsWith(current)) {
+    parts.length = 0;
+    parts.push(content);
+    return;
+  }
+  parts.push(content);
 }
 
 function extractClarificationQuestions(
@@ -1694,6 +1727,7 @@ function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
 ): AssistantTurnAttachment {
   const processSteps = deriveProcessSteps(snapshot);
+  const proposedPlan = proposedPlanFromSnapshot(snapshot);
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
@@ -1703,6 +1737,7 @@ function buildAssistantTurnAttachment(
     liveProgressText: progressTextFromSnapshot(snapshot),
     processSteps,
     timelineItems: deriveTimelineItems(snapshot, processSteps),
+    clarificationExchanges: deriveClarificationExchanges(snapshot),
     planList: (snapshot.planList ?? []).map((item) => ({
       step: item.step,
       status: item.status,
@@ -1713,18 +1748,56 @@ function buildAssistantTurnAttachment(
     todos: deriveTurnTodos(snapshot),
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
-    hasProposedPlan: hasProposedPlanInSnapshot(snapshot),
+    hasProposedPlan: Boolean(proposedPlan),
+    proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
   };
+}
+
+function deriveClarificationExchanges(snapshot: OraStateSnapshot): TurnClarificationExchange[] | undefined {
+  const questions = extractClarificationQuestions(snapshot);
+  if (questions.length === 0) {
+    return undefined;
+  }
+
+  const answers = new Map(extractClarificationAnswers(snapshot).map((answer) => [answer.id, answer]));
+  return questions.map((question) => {
+    const answer = answers.get(question.id);
+    return {
+      id: question.id,
+      question: question.question,
+      answer: answer?.answer,
+      requestedAt: formatClock(question.requestedAt),
+      answeredAt: answer ? formatClock(answer.answeredAt) : undefined,
+      status: answer ? "resolved" : "pending",
+    };
+  });
 }
 
 function currentAgentLabelFromSnapshot(snapshot: OraStateSnapshot): string {
   const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
-  const handoffTargetId = rootHandoffTargetId(snapshot);
-  if (handoffTargetId) {
-    return profiles.get(handoffTargetId) ?? handoffTargetId;
+  const latestAgentMessage = [...(snapshot.agentMessages ?? [])].reverse().find((message) =>
+    message.fromAgentId !== ORA_ROOT_AGENT_ID &&
+    !isRootHandoffScaffoldingMessage(snapshot, message) &&
+    !message.transcript &&
+    message.kind !== "status" &&
+    message.content.trim() &&
+    !isInternalAssistantText(message.content)
+  );
+  if (latestAgentMessage) {
+    return profiles.get(latestAgentMessage.fromAgentId) ?? latestAgentMessage.fromAgentId;
   }
 
-  const primaryAgentId = primaryTurnAgentId(snapshot);
+  const latestAssistantDeltaAgentId = latestPublicAssistantDeltaAgentId(snapshot);
+  if (latestAssistantDeltaAgentId && latestAssistantDeltaAgentId !== ORA_ROOT_AGENT_ID) {
+    return profiles.get(latestAssistantDeltaAgentId) ?? latestAssistantDeltaAgentId;
+  }
+
+  const handoffTargetAgentId = rootHandoffTargetAgentId(snapshot);
+  if (handoffTargetAgentId && hasPublicAssistantDeltaFromAgent(snapshot, handoffTargetAgentId)) {
+    return profiles.get(handoffTargetAgentId) ?? handoffTargetAgentId;
+  }
+
+  const primaryAgentId = snapshot.profiles.find((profile) => profile.id !== ORA_ROOT_AGENT_ID)?.id;
   if (primaryAgentId) {
     return profiles.get(primaryAgentId) ?? primaryAgentId;
   }
@@ -1732,33 +1805,74 @@ function currentAgentLabelFromSnapshot(snapshot: OraStateSnapshot): string {
   return profiles.get(ORA_ROOT_AGENT_ID) ?? ORA_ROOT_AGENT_LABEL;
 }
 
-function rootHandoffTargetId(snapshot: OraStateSnapshot): string | undefined {
-  for (let index = (snapshot.agentMessages ?? []).length - 1; index >= 0; index -= 1) {
-    const message = snapshot.agentMessages[index];
+function isRootHandoffScaffoldingMessage(
+  snapshot: OraStateSnapshot,
+  message: OraStateSnapshot["agentMessages"][number],
+): boolean {
+  return message.threadId === `${snapshot.runId}:ora-handoff`;
+}
+
+function rootHandoffTargetAgentId(snapshot: OraStateSnapshot): string | undefined {
+  const handoffMessage = (snapshot.agentMessages ?? []).find((message) =>
+    message.fromAgentId === ORA_ROOT_AGENT_ID &&
+    message.threadId === `${snapshot.runId}:ora-handoff` &&
+    message.kind === "handoff"
+  );
+  return handoffMessage?.toAgentIds.find((agentId) => agentId !== ORA_ROOT_AGENT_ID);
+}
+
+function hasPublicAssistantDeltaFromAgent(snapshot: OraStateSnapshot, agentId: string): boolean {
+  return snapshot.events.some((event) =>
+    event.agentId === agentId &&
+    isPublicAssistantDelta(snapshot, event) &&
+    assistantDeltaText(event).trim().length > 0
+  );
+}
+
+function latestPublicAssistantDeltaAgentId(snapshot: OraStateSnapshot): string | undefined {
+  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+    const event = snapshot.events[index];
     if (
-      message?.kind === "handoff" &&
-      message.fromAgentId === ORA_ROOT_AGENT_ID &&
-      message.toAgentIds.length > 0
+      event?.agentId &&
+      isPublicAssistantDelta(snapshot, event) &&
+      assistantDeltaText(event).trim().length > 0
     ) {
-      return message.toAgentIds[0];
+      return event.agentId;
     }
   }
   return undefined;
 }
 
-function primaryTurnAgentId(snapshot: OraStateSnapshot): string | undefined {
-  return snapshot.profiles.find((profile) => profile.id !== ORA_ROOT_AGENT_ID)?.id;
+function proposedPlanFromSnapshot(snapshot: OraStateSnapshot): ReturnType<typeof parseProposedPlan> | undefined {
+  const outputText = outputTextFromSnapshot(snapshot);
+  const outputPlan = outputText ? parseProposedPlan(outputText) : undefined;
+  if (outputPlan && (outputPlan.status === "streaming" || outputPlan.hasCompletePlan)) {
+    return outputPlan;
+  }
+  return proposedPlanFromAssistantDeltas(snapshot);
 }
 
-function hasProposedPlanInSnapshot(snapshot: OraStateSnapshot): boolean {
-  const parts: string[] = [];
+function proposedPlanFromAssistantDeltas(snapshot: OraStateSnapshot): ReturnType<typeof parseProposedPlan> | undefined {
+  const partsByAgent = new Map<string, string[]>();
+  let latestStartedPlan: ReturnType<typeof parseProposedPlan> | undefined;
   for (const event of snapshot.events) {
-    if (isPublicAssistantDelta(snapshot, event) && typeof event.payload.content === "string") {
-      parts.push(event.payload.content);
+    if (!isPublicAssistantDelta(snapshot, event)) {
+      continue;
+    }
+    const agentId = event.agentId ?? "__default__";
+    const parts = partsByAgent.get(agentId) ?? [];
+    mergeAssistantTextParts(parts, event);
+    partsByAgent.set(agentId, parts);
+    const parsed = parseProposedPlan(parts.join(""));
+    if (parsed.hasCompletePlan) {
+      latestStartedPlan = parsed;
+    } else if (!latestStartedPlan && parsed.status === "streaming") {
+      latestStartedPlan = parsed;
+    } else if (latestStartedPlan?.status === "streaming" && parsed.status === "streaming") {
+      latestStartedPlan = parsed;
     }
   }
-  const parsed = parseProposedPlan(parts.join(""));
-  return parsed.status === "streaming" || parsed.hasCompletePlan;
+  return latestStartedPlan;
 }
 
 function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationMessage[] {
@@ -1929,6 +2043,15 @@ function deriveTimelineItems(
 ): TurnTimelineItem[] {
   const { events, visibleEvents } = visibleProcessEvents(snapshot);
   const baseTime = events[0]?.createdAt ?? snapshot.events[0]?.createdAt ?? snapshot.updatedAt;
+  const finalText = outputTextFromSnapshot(snapshot);
+  const hasVisibleProcessSeparators = visibleEvents.some((event) => isWorkProcessEvent(event));
+  const proposedPlan = proposedPlanFromSnapshot(snapshot);
+  const hasStartedProposedPlan = Boolean(proposedPlan);
+  const hasCompleteFinalProposedPlan = proposedPlan?.hasCompletePlan === true;
+  const agentLabels = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
+  if (!agentLabels.has(ORA_ROOT_AGENT_ID)) {
+    agentLabels.set(ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL);
+  }
   const processStepByEventId = new Map(processSteps.map((step) => [step.id, step]));
   const items: Array<{ rawTime: number; eventSeq: number; item: TurnTimelineItem }> = [];
   let pendingSteps: TurnProcessStep[] = [];
@@ -1937,11 +2060,16 @@ function deriveTimelineItems(
   let pendingTextParts: string[] = [];
   let pendingTextStartedAt = baseTime;
   let pendingTextSeq = 0;
+  let pendingTextAgentId: string | undefined;
 
   function flushPendingText() {
-    const content = pendingTextParts.join("").trim();
+    const content = timelineTextExcludingProposedPlan(pendingTextParts.join(""));
+    const agentId = pendingTextAgentId && pendingTextAgentId !== "__default__"
+      ? pendingTextAgentId
+      : undefined;
     if (!content || isInternalAssistantText(content)) {
       pendingTextParts = [];
+      pendingTextAgentId = undefined;
       return;
     }
     items.push({
@@ -1952,10 +2080,13 @@ function deriveTimelineItems(
         kind: "assistant_text",
         content,
         timestamp: formatElapsed(baseTime, pendingTextStartedAt),
+        agentId,
+        agentLabel: agentLabelForTimeline(agentLabels, agentId),
         eventSeq: pendingTextSeq,
       },
     });
     pendingTextParts = [];
+    pendingTextAgentId = undefined;
   }
 
   function flushPendingSteps() {
@@ -1963,6 +2094,7 @@ function deriveTimelineItems(
       return;
     }
     const steps = pendingSteps;
+    const agentId = dominantStepAgentId(steps);
     const itemStatus = aggregateStepStatus(steps);
     items.push({
       rawTime: pendingStartedAt,
@@ -1974,6 +2106,8 @@ function deriveTimelineItems(
         steps,
         timestamp: formatElapsed(baseTime, pendingStartedAt),
         status: itemStatus,
+        agentId,
+        agentLabel: agentLabelForTimeline(agentLabels, agentId),
         eventSeq: pendingSeq,
       },
     });
@@ -1983,18 +2117,29 @@ function deriveTimelineItems(
   for (const event of snapshot.events.filter((event) => event.runId === snapshot.runId)) {
     if (isPublicAssistantDelta(snapshot, event)) {
       const text = assistantDeltaText(event);
-      if (text) {
-        flushPendingSteps();
-        if (pendingTextParts.length === 0) {
-          pendingTextStartedAt = event.createdAt;
-          pendingTextSeq = event.seq;
+      const shouldCollectText = shouldCollectAssistantDeltaForTimeline(event, finalText, hasVisibleProcessSeparators);
+      if (shouldCollectText) {
+        const agentId = event.agentId ?? "__default__";
+        if (text && pendingTextParts.length > 0 && pendingTextAgentId !== undefined && agentId !== pendingTextAgentId) {
+          flushPendingText();
         }
-        pendingTextParts.push(text);
+        if (text) {
+          pendingTextAgentId = agentId;
+          if (pendingTextParts.length === 0) {
+            pendingTextStartedAt = event.createdAt;
+            pendingTextSeq = event.seq;
+          }
+          mergeAssistantTextParts(pendingTextParts, event);
+        }
+      }
+      if (shouldCollectText) {
+        flushPendingSteps();
       }
       continue;
     }
 
     if (isChatProgressEvent(event) && isRecord(event.payload)) {
+      const eventAgentId = inferTimelineEventAgentId(snapshot, event);
       const summary = typeof event.payload.summary === "string" ? event.payload.summary.trim() : "";
       if (summary && !isPlaceholderProgressText(summary)) {
         flushPendingText();
@@ -2007,6 +2152,8 @@ function deriveTimelineItems(
             kind: "assistant_text",
             content: summary,
             timestamp: formatElapsed(baseTime, event.createdAt),
+            agentId: eventAgentId,
+            agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
             eventSeq: event.seq,
           },
         });
@@ -2015,6 +2162,7 @@ function deriveTimelineItems(
     }
 
     if (event.type === "plan_list.updated") {
+      const eventAgentId = inferTimelineEventAgentId(snapshot, event);
       flushPendingText();
       flushPendingSteps();
       items.push({
@@ -2025,6 +2173,8 @@ function deriveTimelineItems(
           kind: "plan_update",
           summary: planUpdateSummary(event.payload),
           timestamp: formatElapsed(baseTime, event.createdAt),
+          agentId: eventAgentId,
+          agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
           eventSeq: event.seq,
         },
       });
@@ -2032,6 +2182,7 @@ function deriveTimelineItems(
     }
 
     if (event.type === "artifact.exported" || event.type === "artifact.degraded") {
+      const eventAgentId = inferTimelineEventAgentId(snapshot, event);
       flushPendingText();
       flushPendingSteps();
       items.push({
@@ -2043,6 +2194,8 @@ function deriveTimelineItems(
           summary: processStepDetail(event) || processStepLabel(event),
           artifactId: artifactIdFromEvent(event),
           timestamp: formatElapsed(baseTime, event.createdAt),
+          agentId: eventAgentId,
+          agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
           eventSeq: event.seq,
         },
       });
@@ -2056,18 +2209,33 @@ function deriveTimelineItems(
     if (!step) {
       continue;
     }
+    const eventAgentId = inferTimelineEventAgentId(snapshot, event);
+    const effectiveStep = eventAgentId && !step.agentId
+      ? { ...step, agentId: eventAgentId }
+      : step;
     flushPendingText();
+    if (event.type === "completion.updated") {
+      flushPendingSteps();
+    }
+    const stepAgentId = effectiveStep.agentId ?? eventAgentId;
+    if (
+      pendingSteps.length > 0 &&
+      stepAgentId &&
+      dominantStepAgentId(pendingSteps) &&
+      stepAgentId !== dominantStepAgentId(pendingSteps)
+    ) {
+      flushPendingSteps();
+    }
     if (pendingSteps.length === 0) {
       pendingStartedAt = event.createdAt;
       pendingSeq = event.seq;
     }
-    pendingSteps.push(step);
+    pendingSteps.push(effectiveStep);
   }
 
   flushPendingText();
   flushPendingSteps();
 
-  const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
   for (const [index, message] of (snapshot.agentMessages ?? []).entries()) {
     if (
       message.transcript ||
@@ -2085,24 +2253,54 @@ function deriveTimelineItems(
         id: `${message.id}:timeline`,
         kind: "agent_message",
         messageKind: message.kind,
-        fromAgentLabel: profiles.get(message.fromAgentId) ?? message.fromAgentId,
-        toAgentLabels: message.toAgentIds.map((agentId) => profiles.get(agentId) ?? agentId),
+        fromAgentLabel: agentLabels.get(message.fromAgentId) ?? message.fromAgentId,
+        toAgentLabels: message.toAgentIds.map((agentId) => agentLabels.get(agentId) ?? agentId),
         content: message.content.trim(),
         timestamp: formatElapsed(baseTime, message.createdAt),
+        agentId: message.fromAgentId,
+        agentLabel: agentLabels.get(message.fromAgentId) ?? message.fromAgentId,
       },
     });
   }
 
-  const finalText = outputTextFromSnapshot(snapshot);
-  if (finalText && !items.some(({ item }) => "content" in item && item.content.trim() === finalText.trim())) {
+  const finalIntroText = proposedPlan
+    ? timelineTextExcludingProposedPlan(proposedPlan.displayText)
+    : undefined;
+  if (
+    finalIntroText &&
+    !isTimelineTextAlreadyRepresented(finalIntroText, items.map(({ item }) => item))
+  ) {
+    items.push({
+      rawTime: snapshot.updatedAt,
+      eventSeq: Number.MAX_SAFE_INTEGER - 1,
+      item: {
+        id: `${snapshot.runId}:timeline:final-intro`,
+        kind: "assistant_text",
+        content: finalIntroText,
+        timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+        agentId: finalOutputAgentId(snapshot),
+        agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
+      },
+    });
+  }
+
+  const finalTimelineText = !hasStartedProposedPlan
+    ? timelineTextExcludingProposedPlan(finalText ?? "")
+    : "";
+  if (
+    finalTimelineText &&
+    !isTimelineTextAlreadyRepresented(finalTimelineText, items.map(({ item }) => item))
+  ) {
     items.push({
       rawTime: snapshot.updatedAt,
       eventSeq: Number.MAX_SAFE_INTEGER,
       item: {
         id: `${snapshot.runId}:timeline:final`,
         kind: "final_text",
-        content: finalText,
+        content: finalTimelineText,
         timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+        agentId: finalOutputAgentId(snapshot),
+        agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
       },
     });
   }
@@ -2110,6 +2308,128 @@ function deriveTimelineItems(
   return items
     .sort((left, right) => left.rawTime - right.rawTime || left.eventSeq - right.eventSeq)
     .map(({ item }) => item);
+}
+
+function shouldCollectAssistantDeltaForTimeline(
+  event: OraEventEnvelope & { payload: Record<string, unknown> },
+  finalText: string | undefined,
+  hasVisibleProcessSeparators: boolean,
+): boolean {
+  const text = assistantDeltaText(event);
+  if (!text.trim()) {
+    return false;
+  }
+  if (!finalText) {
+    return true;
+  }
+  if (!hasVisibleProcessSeparators) {
+    return false;
+  }
+  const hasDelta = typeof event.payload.delta === "string" && event.payload.delta.length > 0;
+  if (hasDelta) {
+    return true;
+  }
+  return !isTimelineTextDuplicate(text, finalText);
+}
+
+function timelineTextExcludingProposedPlan(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const parsed = parseProposedPlan(trimmed);
+  const displayText = parsed.hasStartedPlan ? parsed.displayText : trimmed;
+  return displayText.trim();
+}
+
+function isTimelineTextDuplicate(text: string, candidate: string): boolean {
+  const normalizedText = normalizeTimelineText(timelineTextExcludingProposedPlan(text));
+  const normalizedCandidate = normalizeTimelineText(timelineTextExcludingProposedPlan(candidate));
+  if (!normalizedText || !normalizedCandidate) {
+    return false;
+  }
+  if (normalizedText === normalizedCandidate) {
+    return true;
+  }
+  if (normalizedText.includes(normalizedCandidate) && normalizedCandidate.length >= 40) {
+    return true;
+  }
+  return normalizedCandidate.includes(normalizedText) && normalizedText.length >= normalizedCandidate.length * 0.8;
+}
+
+function isTimelineTextAlreadyRepresented(text: string, items: TurnTimelineItem[]): boolean {
+  const normalizedText = normalizeTimelineText(text);
+  if (!normalizedText) {
+    return true;
+  }
+  const contentItems = items
+    .flatMap((item) => "content" in item ? [item.content] : [])
+    .map(normalizeTimelineText)
+    .filter(Boolean);
+  if (contentItems.some((content) => content === normalizedText)) {
+    return true;
+  }
+  const joinedContent = contentItems.join("");
+  if (!joinedContent) {
+    return false;
+  }
+  if (joinedContent.includes(normalizedText)) {
+    return true;
+  }
+  return normalizedText.includes(joinedContent) && joinedContent.length >= normalizedText.length * 0.8;
+}
+
+function normalizeTimelineText(text: string): string {
+  return text.replace(/\s+/g, "");
+}
+
+function agentLabelForTimeline(
+  labels: Map<string, string>,
+  agentId: string | undefined,
+): string | undefined {
+  if (!agentId) {
+    return undefined;
+  }
+  return labels.get(agentId) ?? agentId;
+}
+
+function dominantStepAgentId(steps: TurnProcessStep[]): string | undefined {
+  const counts = new Map<string, number>();
+  for (const step of steps) {
+    if (!step.agentId) {
+      continue;
+    }
+    counts.set(step.agentId, (counts.get(step.agentId) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+}
+
+function inferTimelineEventAgentId(
+  snapshot: OraStateSnapshot,
+  event: OraEventEnvelope,
+): string | undefined {
+  if (event.agentId) {
+    return event.agentId;
+  }
+  if (event.type !== "completion.updated") {
+    return undefined;
+  }
+  for (let index = snapshot.events.findIndex((candidate) => candidate.id === event.id) - 1; index >= 0; index -= 1) {
+    const previous = snapshot.events[index];
+    if (previous?.runId === snapshot.runId && previous.agentId && previous.agentId !== ORA_ROOT_AGENT_ID) {
+      return previous.agentId;
+    }
+  }
+  return undefined;
+}
+
+function finalOutputAgentId(snapshot: OraStateSnapshot): string | undefined {
+  if (isRecord(snapshot.output) && isRecord(snapshot.output.ora)) {
+    return typeof snapshot.output.ora.agentId === "string"
+      ? snapshot.output.ora.agentId
+      : undefined;
+  }
+  return undefined;
 }
 
 function aggregateStepStatus(steps: TurnProcessStep[]): TurnProcessStep["status"] {
@@ -2317,6 +2637,9 @@ function processStepLabel(event: OraEventEnvelope): string {
     return toolCallLabel(event.payload);
   }
   if (event.type === "completion.updated") {
+    if (isRecord(event.payload) && event.payload.state === "force_final") {
+      return "进入最终回答";
+    }
     return "已停止工具调用";
   }
   if (event.type === "approval.required") {
@@ -2345,6 +2668,11 @@ function processStepDetail(event: OraEventEnvelope): string {
     return isRecord(event.payload) ? readablePayloadText(event.payload) ?? "" : "";
   }
   if (event.type === "completion.updated") {
+    if (isRecord(event.payload) && event.payload.state === "force_final") {
+      return event.payload.reason === "tool_budget_exhausted"
+        ? "工具预算已用完，正在整理最终回答。"
+        : "正在整理最终回答。";
+    }
     return "";
   }
   const detail = eventText(event);

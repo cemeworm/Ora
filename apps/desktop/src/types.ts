@@ -198,6 +198,8 @@ export type TurnTimelineItem =
       kind: "assistant_text" | "final_text";
       content: string;
       timestamp: string;
+      agentId?: string;
+      agentLabel?: string;
       eventSeq?: number;
     }
   | {
@@ -208,6 +210,8 @@ export type TurnTimelineItem =
       toAgentLabels: string[];
       content: string;
       timestamp: string;
+      agentId?: string;
+      agentLabel?: string;
       eventSeq?: number;
     }
   | {
@@ -217,6 +221,8 @@ export type TurnTimelineItem =
       steps: TurnProcessStep[];
       timestamp: string;
       status: "complete" | "active" | "blocked";
+      agentId?: string;
+      agentLabel?: string;
       eventSeq?: number;
     }
   | {
@@ -224,6 +230,8 @@ export type TurnTimelineItem =
       kind: "plan_update";
       summary: string;
       timestamp: string;
+      agentId?: string;
+      agentLabel?: string;
       eventSeq?: number;
     }
   | {
@@ -232,12 +240,23 @@ export type TurnTimelineItem =
       summary: string;
       artifactId?: string;
       timestamp: string;
+      agentId?: string;
+      agentLabel?: string;
       eventSeq?: number;
     };
 
 export interface TurnPlanListStep {
   step: string;
   status: "pending" | "in_progress" | "completed";
+}
+
+export interface TurnClarificationExchange {
+  id: string;
+  question: string;
+  answer?: string;
+  requestedAt: string;
+  answeredAt?: string;
+  status: "pending" | "resolved";
 }
 
 export interface TurnTodoItem {
@@ -330,6 +349,7 @@ export interface AssistantTurnAttachment {
   liveProgressText?: string;
   processSteps: TurnProcessStep[];
   timelineItems?: TurnTimelineItem[];
+  clarificationExchanges?: TurnClarificationExchange[];
   planList: TurnPlanListStep[];
   agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];
@@ -338,6 +358,7 @@ export interface AssistantTurnAttachment {
   approvalCount: number;
   clarificationCount: number;
   hasProposedPlan: boolean;
+  proposedPlanStatus?: "streaming" | "complete";
 }
 
 export type RuntimeBridgeMode = "initializing" | "tauri" | "browser_mock" | "unavailable" | "error";
@@ -349,7 +370,7 @@ export interface RuntimeBridgeStatus {
   detail: string;
 }
 
-export type AppView = "chat" | "agents" | "skills" | "modes" | "evaluation";
+export type AppView = "chat" | "agents" | "skills" | "modes" | "evaluation" | "automations";
 
 export interface ClarificationOption {
   id: string;

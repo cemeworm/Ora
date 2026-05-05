@@ -5,6 +5,7 @@ import {
   ChartNoAxesColumn,
   CheckCircle2,
   ChevronDown,
+  Clock,
   Folder,
   FolderOpen,
   GitBranchPlus,
@@ -279,14 +280,6 @@ function SessionStatusBadge({ status }: { status: RunStatus }) {
     );
   }
 
-  if (status === "cancelled") {
-    return (
-      <span className="inline-flex items-center rounded-full bg-bench-100 px-2 py-0.5 text-[10px] font-medium text-bench-700">
-        Cancelled
-      </span>
-    );
-  }
-
   if (status === "paused") {
     return (
       <span className="inline-flex items-center rounded-full bg-bench-100 px-2 py-0.5 text-[10px] font-medium text-bench-700">
@@ -300,7 +293,7 @@ function SessionStatusBadge({ status }: { status: RunStatus }) {
 
 function SessionLeadingIndicator({ status }: { status: RunStatus }) {
   if (status === "running") {
-    return <span className="h-3 w-3 shrink-0 rounded-full border border-muted-foreground/15 border-t-muted-foreground/55 animate-spin" />;
+    return <span className="h-3 w-3 shrink-0 rounded-full border border-bench-200 border-t-bench-700 animate-spin" />;
   }
 
   if (status === "approval_required") {
@@ -672,6 +665,18 @@ export function Sidebar() {
           >
             <ChartNoAxesColumn size={16} />
             {open && <span>Evaluation</span>}
+          </button>
+          <button
+            onClick={() => dispatch({ type: "SET_VIEW", view: "automations" })}
+            className={cn(
+              "mt-1 flex h-9 w-full appearance-none items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-muted-foreground shadow-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              state.activeView === "automations" && "bg-sidebar-accent text-sidebar-accent-foreground",
+              !open && "justify-center px-0",
+            )}
+            title="定时任务"
+          >
+            <Clock size={16} />
+            {open && <span>定时任务</span>}
           </button>
         </div>
 

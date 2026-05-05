@@ -1,4 +1,4 @@
-import type { ChannelKind, ProviderCapability } from "@cemeworm/shared";
+import type { ChannelKind, ModeSelection, PermissionMode, ProviderCapability, TaskIntent } from "@cemeworm/shared";
 import {
   Activity,
   Bot,
@@ -45,7 +45,7 @@ import {
   type DesktopToolModelSettings,
 } from "../lib/toolModelSettings";
 import { useRunActions } from "../lib/useRunActions";
-import type { OraChannelConfig, OraLongTermMemoryProfile, OraProviderModelsResult } from "../lib/runtimeClient";
+import type { OraChannelConfig, OraLongTermMemoryProfile, OraProviderConfig, OraProviderModelsResult } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { LANGUAGE_OPTIONS } from "../lib/i18n";
 import { ProjectSignalsView } from "./ProjectSignalsView";
@@ -99,6 +99,26 @@ type ChannelConfigField = {
   span?: "full";
   secret?: boolean;
 };
+
+const channelModeSelectionOptions: Array<{ value: ModeSelection; label: string }> = [
+  { value: "auto", label: "自动" },
+  { value: "manual", label: "手动" },
+];
+
+type ChannelTaskIntentSetting = "auto" | TaskIntent;
+
+const channelTaskIntentOptions: Array<{ value: ChannelTaskIntentSetting; label: string }> = [
+  { value: "auto", label: "自动判断" },
+  { value: "chat", label: "对话" },
+  { value: "plan", label: "计划" },
+  { value: "implement", label: "实施" },
+];
+
+const channelPermissionModeOptions: Array<{ value: PermissionMode; label: string }> = [
+  { value: "default", label: "默认" },
+  { value: "auto_review", label: "自动审查" },
+  { value: "full_access", label: "完全访问" },
+];
 
 const channelProviderTabs: Array<{
   id: ChannelProviderKind;
@@ -325,6 +345,68 @@ function buildChannelConfig(fields: ChannelConfigField[], draft: Record<string, 
   );
 }
 
+function buildChannelRunConfig(
+  provider: OraProviderConfig | undefined,
+  defaults: {
+    modeSelection: ModeSelection;
+    modeId?: string;
+    permissionMode: PermissionMode;
+    taskIntent: ChannelTaskIntentSetting;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  const metadata = { ...(defaults.metadata ?? {}) };
+  delete metadata.taskIntent;
+  delete metadata.taskIntentMode;
+  const taskIntentMetadata = defaults.taskIntent === "auto"
+    ? { taskIntentMode: "auto" }
+    : { taskIntentMode: "fixed", taskIntent: defaults.taskIntent };
+  return {
+    modeSelection: defaults.modeSelection,
+    ...(defaults.modeSelection === "manual" && defaults.modeId ? { modeId: defaults.modeId } : {}),
+    permissionMode: defaults.permissionMode,
+    metadata: { ...metadata, ...taskIntentMetadata },
+    ...(provider ? {
+      providerId: provider.id,
+      modelRef: provider.modelId,
+      providerConfig: provider,
+    } : {}),
+  };
+}
+
+function channelRunConfig(channel: OraChannelConfig | undefined): Record<string, unknown> {
+  const candidate = channel?.config.runConfig;
+  return candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate as Record<string, unknown>
+    : {};
+}
+
+function channelRunConfigMetadata(channel: OraChannelConfig | undefined): Record<string, unknown> {
+  const metadata = channelRunConfig(channel).metadata;
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+}
+
+function channelDraftValue(draft: Record<string, string>, key: string, fallback: unknown, defaultValue: string) {
+  if (draft[key] !== undefined) {
+    return draft[key];
+  }
+  return typeof fallback === "string" && fallback ? fallback : defaultValue;
+}
+
+function channelModeSelectionValue(value: string): ModeSelection {
+  return value === "manual" ? "manual" : "auto";
+}
+
+function channelTaskIntentValue(value: string): ChannelTaskIntentSetting {
+  return value === "chat" || value === "plan" || value === "implement" ? value : "auto";
+}
+
+function channelPermissionModeValue(value: string): PermissionMode {
+  return value === "auto_review" || value === "full_access" ? value : "default";
+}
+
 function channelFieldPlaceholder(channel: OraChannelConfig | undefined, field: ChannelConfigField) {
   const value = channel?.config[field.key];
   if (value === "[redacted]") {
@@ -447,6 +529,40 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
   const selectedChannel = useMemo(
     () => channels.find((channel) => channel.kind === selectedChannelTab.channelKind),
     [channels, selectedChannelTab.channelKind],
+  );
+  const selectedChannelRunConfig = channelRunConfig(selectedChannel);
+  const selectedChannelRunMetadata = channelRunConfigMetadata(selectedChannel);
+  const channelModelProviders = useMemo(
+    () => (state.providerRegistry?.providers ?? []).filter((provider) => provider.enabled !== false),
+    [state.providerRegistry?.providers],
+  );
+  const channelProviderId = channelDraftValue(
+    channelDraft,
+    "runProviderId",
+    selectedChannelRunConfig.providerId,
+    selectedProvider?.id ?? channelModelProviders[0]?.id ?? "",
+  );
+  const selectedChannelRunProvider =
+    channelModelProviders.find((provider) => provider.id === channelProviderId) ??
+    (selectedProvider?.id === channelProviderId ? selectedProvider : undefined);
+  const channelModeSelection = channelModeSelectionValue(
+    channelDraftValue(channelDraft, "runModeSelection", selectedChannelRunConfig.modeSelection, "auto"),
+  );
+  const channelModeId = channelDraftValue(
+    channelDraft,
+    "runModeId",
+    selectedChannelRunConfig.modeId,
+    state.selectedModeId || state.modes[0]?.id || "",
+  );
+  const channelPermissionMode = channelPermissionModeValue(
+    channelDraftValue(channelDraft, "runPermissionMode", selectedChannelRunConfig.permissionMode, "default"),
+  );
+  const selectedChannelTaskIntent =
+    selectedChannelRunMetadata.taskIntentMode === "auto"
+      ? "auto"
+      : selectedChannelRunMetadata.taskIntent;
+  const channelTaskIntent = channelTaskIntentValue(
+    channelDraftValue(channelDraft, "runTaskIntent", selectedChannelTaskIntent, "auto"),
   );
   const selectedChannelStartedAt = selectedChannel
     ? new Date(selectedChannel.createdAt).toLocaleString()
@@ -751,7 +867,17 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
 
   async function saveSelectedChannel(nextEnabled = true) {
     const label = channelDraft.label?.trim() || selectedChannel?.label || selectedChannelTab.title;
-    const config = buildChannelConfig(selectedChannelTab.fields, channelDraft);
+    const runConfig = buildChannelRunConfig(selectedChannelRunProvider, {
+      modeSelection: channelModeSelection,
+      modeId: channelModeId,
+      permissionMode: channelPermissionMode,
+      taskIntent: channelTaskIntent,
+      metadata: selectedChannelRunMetadata,
+    });
+    const config = {
+      ...buildChannelConfig(selectedChannelTab.fields, channelDraft),
+      runConfig,
+    };
     const enabled = selectedChannelTab.runtimeImplemented ? nextEnabled : false;
     try {
       if (selectedChannel) {
@@ -2285,12 +2411,20 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                               isBound={Boolean(selectedChannel.config?.bound)}
                               runtimeClient={runtimeClient}
                               onBind={async (id, credentials) => {
+                                const runConfig = buildChannelRunConfig(selectedChannelRunProvider, {
+                                  modeSelection: channelModeSelection,
+                                  modeId: channelModeId,
+                                  permissionMode: channelPermissionMode,
+                                  taskIntent: channelTaskIntent,
+                                  metadata: selectedChannelRunMetadata,
+                                });
                                 await runtimeClient.updateChannel({
                                   channelId: id,
                                   config: {
                                     botToken: credentials.botToken,
                                     baseUrl: credentials.baseUrl,
                                     bound: true,
+                                    runConfig,
                                   },
                                 });
                                 await loadChannels();
@@ -2312,23 +2446,83 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                       )}
                     </div>
 
-                    <div className="mt-5 space-y-2">
+                    <div className="mt-5 space-y-4 rounded-2xl bg-white px-5 py-4 shadow-xs ring-1 ring-inset ring-bench-200">
                       <div className="flex items-center gap-2 text-sm font-semibold text-bench-900">
                         <Settings size={15} className="text-bench-400" />
-                        Default Model
+                        Channel defaults
                       </div>
                       <p className="text-xs text-bench-500">
-                        AI model for {selectedChannelTab.title} conversations. Falls back to global default if not set.
+                        Defaults applied to new {selectedChannelTab.title} conversations.
                       </p>
-                      <button
-                        type="button"
-                        className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-sm text-bench-500 transition hover:bg-bench-50 active:scale-[0.98]"
-                        disabled
-                      >
-                        <Circle size={13} />
-                        {selectedProvider?.modelId ?? selectedProvider?.id ?? "global default"}
-                        <ChevronDown size={13} />
-                      </button>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="space-y-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-500">默认模型</span>
+                          <Select
+                            value={channelProviderId}
+                            onChange={(event) => setChannelDraft((draft) => ({ ...draft, runProviderId: event.target.value }))}
+                            className="h-10 rounded-xl bg-bench-50"
+                          >
+                            {channelModelProviders.length > 0 ? (
+                              channelModelProviders.map((provider) => (
+                                <option key={provider.id} value={provider.id}>
+                                  {provider.label} · {provider.modelId}
+                                </option>
+                              ))
+                            ) : (
+                              <option value="">global default</option>
+                            )}
+                          </Select>
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-500">默认工作模式</span>
+                          <Select
+                            value={channelModeSelection}
+                            onChange={(event) => setChannelDraft((draft) => ({ ...draft, runModeSelection: event.target.value }))}
+                            className="h-10 rounded-xl bg-bench-50"
+                          >
+                            {channelModeSelectionOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </Select>
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-500">手动模式</span>
+                          <Select
+                            value={channelModeId}
+                            onChange={(event) => setChannelDraft((draft) => ({ ...draft, runModeId: event.target.value }))}
+                            disabled={channelModeSelection === "auto"}
+                            className="h-10 rounded-xl bg-bench-50 disabled:opacity-60"
+                          >
+                            {state.modes.map((mode) => (
+                              <option key={mode.id} value={mode.id}>{mode.label}</option>
+                            ))}
+                          </Select>
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-500">默认权限</span>
+                          <Select
+                            value={channelPermissionMode}
+                            onChange={(event) => setChannelDraft((draft) => ({ ...draft, runPermissionMode: event.target.value }))}
+                            className="h-10 rounded-xl bg-bench-50"
+                          >
+                            {channelPermissionModeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </Select>
+                        </label>
+                        <label className="space-y-2 md:col-span-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-bench-500">默认目标</span>
+                          <Select
+                            value={channelTaskIntent}
+                            onChange={(event) => setChannelDraft((draft) => ({ ...draft, runTaskIntent: event.target.value }))}
+                            className="h-10 rounded-xl bg-bench-50"
+                          >
+                            {channelTaskIntentOptions.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </Select>
+                        </label>
+                      </div>
                     </div>
                   </section>
 
