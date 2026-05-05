@@ -1,29 +1,67 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { OraEventEnvelopeSchema, StateSnapshotSchema, type OraEventEnvelope, type StateSnapshot } from "@cemeworm/shared";
+import { describe, expect, it, vi } from "vitest";
+import {
+  getModePreset,
+  modeSpecToPatternDefinition,
+  OraEventEnvelopeSchema,
+  SINGLE_AGENT_MODE_ID,
+  StateSnapshotSchema,
+  type OraEventEnvelope,
+  type StateSnapshot,
+} from "@cemeworm/shared";
+
+vi.mock("../src/providers/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/providers/index.js")>(
+    "../src/providers/index.js",
+  );
+
+  return {
+    ...actual,
+    invokeRunProvider: vi.fn(async (config, request) => {
+      const messages = (request.messages ?? []).map((message) => ({
+        role: message.role,
+        content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+      }));
+      return {
+        providerId: config.providerId ?? "mock-provider",
+        providerType: "local_smoke",
+        modelId: config.modelRef ?? "mock-model",
+        text: responseForRequest(messages),
+        raw: { request },
+      };
+    }),
+  };
+});
+
 import { RuntimeSkillRegistry } from "../src/harness/capability-registries.js";
 import { completeApprovedToolContinuation } from "../src/approved-file-write-resume.js";
+import { executeRuntimeKernel } from "../src/index.js";
+import { runtimeConversationToModelMessages } from "../src/runtime-conversation.js";
 
 describe("approved tool resume completion", () => {
-  it("fails instead of emitting run.done when explicit plan-list state remains incomplete", async () => {
+  it("returns a continuation snapshot when explicit plan-list state remains incomplete", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-plan-list-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
       planList: [{ step: "Verify the approved change", status: "pending" }],
     });
 
-    const resumed = await completeApprovedToolContinuation(
+    const result = await completeApprovedToolContinuation(
       snapshot,
       ["run-approved:action-write"],
       {},
       deps(),
     );
 
-    expect(resumed?.status).toBe("failed");
-    expect(resumed?.error).toBe("Plan list still has unfinished steps; continuing the run.");
-    expect(resumed?.events.map((event) => event.type)).toContain("run.failed");
+    expect(result?.kind).toBe("continue");
+    const resumed = result?.kind === "continue" ? result.snapshot : undefined;
+    expect(resumed?.status).toBe("running");
+    expect(resumed?.error).toBeUndefined();
+    expect(resumed?.events.map((event) => event.type)).toContain("task.progress");
+    expect(resumed?.events.map((event) => event.type)).not.toContain("run.failed");
     expect(resumed?.events.map((event) => event.type)).not.toContain("run.done");
+    expect(resumed?.conversation.at(-1)?.content).toContain("The current plan list is not complete yet");
     expect(resumed?.toolCalls.find((call) => call.actionId === "run-approved:action-write")).toMatchObject({
       status: "succeeded",
     });
@@ -36,13 +74,15 @@ describe("approved tool resume completion", () => {
       todoStatus: "blocked",
     });
 
-    const resumed = await completeApprovedToolContinuation(
+    const result = await completeApprovedToolContinuation(
       snapshot,
       ["run-approved:action-write"],
       {},
       deps(),
     );
 
+    expect(result?.kind).toBe("completed");
+    const resumed = result?.kind === "completed" ? result.snapshot : undefined;
     expect(resumed?.status).toBe("succeeded");
     expect(resumed?.events.map((event) => event.type)).toContain("plan.updated");
     expect(resumed?.events.map((event) => event.type)).toContain("todo.updated");
@@ -50,7 +90,67 @@ describe("approved tool resume completion", () => {
     expect(resumed?.todos.every((item) => item.status === "done")).toBe(true);
     expect(resumed?.events.map((event) => event.type)).toContain("run.done");
   });
+
+  it("continues through the kernel after approved tool execution when plan-list work remains", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-kernel-continue-"));
+    const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
+      planList: [{ step: "Verify the approved change", status: "pending" }],
+      toolIds: ["file.write", "plan.update"],
+    });
+
+    const result = await completeApprovedToolContinuation(
+      snapshot,
+      ["run-approved:action-write"],
+      {},
+      deps(),
+    );
+
+    expect(result?.kind).toBe("continue");
+    if (result?.kind !== "continue") {
+      throw new Error("Expected approved tool continuation to require kernel continuation.");
+    }
+
+    const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const { snapshot: resumed } = await executeRuntimeKernel(
+      snapshot.runId,
+      result.snapshot.input,
+      result.snapshot.config,
+      {
+        modeSpec,
+        definition,
+        skillRegistry: new RuntimeSkillRegistry(),
+        conversationMessages: runtimeConversationToModelMessages(result.snapshot.conversation),
+        resumeState: result.snapshot,
+      },
+    );
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.planList).toEqual([
+      { step: "Verify the approved change", status: "completed" },
+    ]);
+    expect(resumed.events.map((event) => event.type)).toContain("plan_list.updated");
+    expect(resumed.events.map((event) => event.type)).toContain("run.done");
+    expect(resumed.events.map((event) => event.type)).not.toContain("run.failed");
+  });
 });
+
+function responseForRequest(messages: Array<{ role: string; content: string }>): string {
+  if (messages.some((message) => message.content.includes("Workspace tool result for plan.update"))) {
+    return "All approved work is complete.";
+  }
+  if (messages.some((message) => message.content.includes("The current plan list is not complete yet"))) {
+    return JSON.stringify({
+      tool: "plan.update",
+      args: {
+        plan: [
+          { step: "Verify the approved change", status: "completed" },
+        ],
+      },
+    });
+  }
+  return "已完成批准的操作。";
+}
 
 function deps() {
   return {
@@ -83,6 +183,7 @@ function approvedFileWriteSnapshot(
     planList?: StateSnapshot["planList"];
     planStatus?: StateSnapshot["plan"][number]["status"];
     todoStatus?: StateSnapshot["todos"][number]["status"];
+    toolIds?: string[];
   } = {},
 ): StateSnapshot {
   const runId = "run-approved";
@@ -104,7 +205,7 @@ function approvedFileWriteSnapshot(
       modeSelection: "manual",
       profileIds: ["solo_agent"],
       skillIds: [],
-      toolIds: ["file.write"],
+      toolIds: options.toolIds ?? ["file.write"],
       providerId: "local-smoke",
       modelRef: "local/smoke-model",
       providerConfig: {

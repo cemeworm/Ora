@@ -146,7 +146,7 @@ export interface RuntimeKernelOptions {
     approvedActionIds?: string[];
     approvedActions?: ApprovedResumeAction[];
   };
-  resumeState?: Pick<StateSnapshot, "plan" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation">;
+  resumeState?: Pick<StateSnapshot, "plan" | "planList" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation">;
   streamProvider?: boolean;
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
@@ -344,7 +344,7 @@ export async function executeRuntimeKernel(
   }
   const agentLabel = (agentId: string): string => profilesById.get(agentId)?.label ?? agentId;
 
-  let planList: PlanListStep[] = [];
+  let planList: PlanListStep[] = options.resumeState?.planList ?? [];
 
   const cloneEventPayload = <T,>(value: T): T => {
     if (value === undefined || value === null) {

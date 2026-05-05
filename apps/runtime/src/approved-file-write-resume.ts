@@ -5,7 +5,10 @@ import { fileChangeArtifact } from "./harness/file-change-artifact.js";
 import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolId } from "./harness/runtime-tool-executor.js";
 import { PackageManager } from "./package-manager.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
-import { evaluateRuntimeCompletionGuards } from "./harness/runtime-completion-guards.js";
+import {
+  evaluateRuntimeCompletionGuards,
+  type RuntimeCompletionGuardResult,
+} from "./harness/runtime-completion-guards.js";
 import {
   currentPendingApprovalActions,
   currentPendingApprovalToolActionIds,
@@ -26,6 +29,12 @@ export interface ApprovedFileWriteResumeDeps {
   attachTraceMetadata: (snapshot: StateSnapshot) => StateSnapshot;
   buildConversationMessages: (sessionId: string, currentPrompt: string, excludeRunId?: string) => ModelMessage[];
 }
+
+type ContinueGuardResult = Extract<RuntimeCompletionGuardResult, { allowComplete: false }>;
+
+export type ApprovedToolContinuationResult =
+  | { kind: "completed"; snapshot: StateSnapshot }
+  | { kind: "continue"; snapshot: StateSnapshot; guardResult: ContinueGuardResult };
 
 const DETERMINISTIC_APPROVED_TOOL_IDS = new Set<string>([
   "file.write",
@@ -74,7 +83,7 @@ export async function completeApprovedToolContinuation(
   params: { reason?: string; patch?: unknown } = {},
   deps: ApprovedFileWriteResumeDeps,
   onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
-): Promise<StateSnapshot | undefined> {
+): Promise<ApprovedToolContinuationResult | undefined> {
   const approvedTools = approvedToolContinuationActions(snapshot, approvedActionIds);
   if (approvedTools.length === 0) {
     return undefined;
@@ -359,13 +368,16 @@ export async function completeApprovedToolContinuation(
       append("action.updated", { actionId: action.id, status: "failed", record: failed });
       append("run.failed", { status: "failed", error: detail });
       updateContinuationStatus("failed");
-      return deps.attachTraceMetadata(StateSnapshotSchema.parse({
-        ...working,
-        status: "failed",
-        error: detail,
-        activeAgents: [],
-        updatedAt: deps.now(),
-      }));
+      return {
+        kind: "completed",
+        snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
+          ...working,
+          status: "failed",
+          error: detail,
+          activeAgents: [],
+          updatedAt: deps.now(),
+        })),
+      };
     }
   }
 
@@ -416,21 +428,31 @@ export async function completeApprovedToolContinuation(
     toolCalls: working.toolCalls,
   });
   if (!guardResult.allowComplete) {
-    const output = { text: guardResult.followUpContent };
-    append("run.failed", {
-      status: "failed",
-      error: guardResult.progressSummary,
-      output,
+    append("task.progress", {
+      kind: "chat_progress",
+      source: "runtime_status",
+      trigger: guardResult.progressTrigger,
+      title: "Runtime",
+      summary: guardResult.progressSummary,
+      basedOnSeq: Math.max(0, working.events.length - 1),
     });
-    updateContinuationStatus("failed");
-    return deps.attachTraceMetadata(StateSnapshotSchema.parse({
+    working = StateSnapshotSchema.parse({
       ...working,
-      status: "failed",
-      error: guardResult.progressSummary,
-      activeAgents: [],
-      output,
+      conversation: [
+        ...working.conversation,
+        {
+          role: "user",
+          content: guardResult.followUpContent,
+          createdAt: deps.now(),
+        },
+      ],
       updatedAt: deps.now(),
-    }));
+    });
+    return {
+      kind: "continue",
+      snapshot: deps.attachTraceMetadata(working),
+      guardResult,
+    };
   }
 
   completeInterruptedModeProgress();
@@ -443,14 +465,17 @@ export async function completeApprovedToolContinuation(
       output,
     });
     updateContinuationStatus("failed");
-    return deps.attachTraceMetadata(StateSnapshotSchema.parse({
-      ...working,
-      status: "failed",
-      error: modeProgressError,
-      activeAgents: [],
-      output,
-      updatedAt: deps.now(),
-    }));
+    return {
+      kind: "completed",
+      snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
+        ...working,
+        status: "failed",
+        error: modeProgressError,
+        activeAgents: [],
+        output,
+        updatedAt: deps.now(),
+      })),
+    };
   }
 
   const finalText = await finalTextForApprovedToolContinuation(snapshot, toolResults, deps);
@@ -458,14 +483,17 @@ export async function completeApprovedToolContinuation(
   const output = { text: finalText };
   append("run.done", { status: "succeeded", output });
   updateContinuationStatus("completed");
-  return deps.attachTraceMetadata(StateSnapshotSchema.parse({
-    ...working,
-    status: "succeeded",
-    pendingApprovals: [],
-    activeAgents: [],
-    output,
-    updatedAt: deps.now(),
-  }));
+  return {
+    kind: "completed",
+    snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
+      ...working,
+      status: "succeeded",
+      pendingApprovals: [],
+      activeAgents: [],
+      output,
+      updatedAt: deps.now(),
+    })),
+  };
 }
 
 export async function completeApprovedFileWriteResume(
@@ -474,7 +502,7 @@ export async function completeApprovedFileWriteResume(
   params: { reason?: string; patch?: unknown } = {},
   deps: ApprovedFileWriteResumeDeps,
   onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void,
-): Promise<StateSnapshot | undefined> {
+): Promise<ApprovedToolContinuationResult | undefined> {
   return completeApprovedToolContinuation(snapshot, approvedActionIds, params, deps, onEvent);
 }
 

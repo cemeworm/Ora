@@ -1,4 +1,4 @@
-import { modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } from "@cemeworm/shared";
+import { getModePreset, modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } from "@cemeworm/shared";
 import type {
   ActionRecord,
   AgentProfile,
@@ -3374,11 +3374,16 @@ function todosMirrorPlan(snapshot: OraStateSnapshot): boolean {
 }
 
 function planLooksLikeTemplate(snapshot: OraStateSnapshot): boolean {
-  if (!snapshot.modeSpec || snapshot.plan.length === 0) {
+  if (snapshot.plan.length === 0) {
     return false;
   }
 
-  const template = modeSpecToPatternDefinition(snapshot.modeSpec).planTemplate;
+  const mode = snapshot.modeSpec ?? (snapshot.modeId ? getModePreset(snapshot.modeId) : undefined);
+  if (!mode) {
+    return false;
+  }
+
+  const template = modeSpecToPatternDefinition(mode).planTemplate;
   if (template.length !== snapshot.plan.length) {
     return false;
   }
@@ -3387,7 +3392,8 @@ function planLooksLikeTemplate(snapshot: OraStateSnapshot): boolean {
     const templateItem = template[index];
     return (
       templateItem &&
-      item.id === `${snapshot.runId}:${templateItem.id}` &&
+      (item.id === `${snapshot.runId}:${templateItem.id}` ||
+        item.id === templateItem.id) &&
       item.title === templateItem.title &&
       item.ownerAgentId === templateItem.ownerAgentId
     );

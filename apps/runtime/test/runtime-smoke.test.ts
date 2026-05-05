@@ -229,6 +229,8 @@ describe("Ora runtime smoke path", () => {
       expect(state.planDecisions[0]).toMatchObject({
         status: "pending",
         sessionId: state.sessionId,
+        planContent: expect.stringContaining("# PlanDecisionPanel 决策状态 UI 调整"),
+        planSourceRunId: run.runId,
       });
       expect(state.plan.filter((item) => item.status === "done").map((item) => item.id)).toEqual([`${run.runId}:triage`]);
       expect(state.plan.filter((item) => item.status === "skipped").map((item) => item.id)).toEqual([
@@ -246,6 +248,135 @@ describe("Ora runtime smoke path", () => {
         delete process.env.PLAN_MODE_PROVIDER_KEY;
       } else {
         process.env.PLAN_MODE_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
+  it("injects an accepted proposed plan into the next implementation run after compaction", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.ACCEPTED_PLAN_PROVIDER_KEY;
+    process.env.ACCEPTED_PLAN_PROVIDER_KEY = "test";
+    const providerBodies: string[] = [];
+    const acceptedPlanTitle = "# Runtime Accepted Plan Handoff";
+    const proposedPlan = [
+      "<proposed_plan>",
+      acceptedPlanTitle,
+      "## Summary",
+      "Persist the accepted plan as a runtime handoff contract.",
+      "## Key Changes",
+      "- Save the plan content on the plan decision gate.",
+      "- Inject the accepted plan into the implementation run after compaction.",
+      "## Test Plan",
+      "- Assert the implementation provider request contains the accepted plan.",
+      "</proposed_plan>",
+    ].join("\n");
+    const providerConfig = {
+      id: "accepted-plan-provider",
+      label: "Accepted Plan Provider",
+      type: "openai_compatible" as const,
+      modelId: "accepted-plan-model",
+      baseUrl: "https://accepted-plan-provider.test/v1",
+      apiKeyEnv: "ACCEPTED_PLAN_PROVIDER_KEY",
+      capabilities: ["chat", "tool_use"],
+      headers: {},
+      contextWindow: 64,
+      autoCompactTokenLimit: 1,
+    };
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = String(init?.body ?? "");
+      providerBodies.push(body);
+      const content = body.includes("compressing an Ora session history")
+        ? "Compacted history intentionally omits the plan body."
+        : body.includes("请先输出任务计划")
+          ? proposedPlan
+          : "Implementation received the accepted plan.";
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const planRun = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请先输出任务计划，不要实施。" },
+          config: {
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: providerConfig.id,
+            modelRef: providerConfig.modelId,
+            providerConfig,
+            metadata: { taskIntent: "plan" },
+          },
+        },
+      }) as { runId: string; sessionId: string };
+      const planState = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: planRun.runId },
+      }));
+      const decision = planState.planDecisions[0];
+      expect(decision).toMatchObject({
+        status: "pending",
+        planContent: expect.stringContaining(acceptedPlanTitle),
+      });
+
+      await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "sessions.resolvePlanDecision",
+        params: {
+          sessionId: planRun.sessionId,
+          decisionId: decision!.id,
+          status: "accepted",
+        },
+      });
+
+      const implementationRun = await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.start",
+        params: {
+          sessionId: planRun.sessionId,
+          input: { prompt: "请按照上述计划开始执行" },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: providerConfig.id,
+            modelRef: providerConfig.modelId,
+            providerConfig,
+            metadata: { taskIntent: "implement" },
+          },
+        },
+      }) as { runId: string };
+      const implementationState = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "runs.state",
+        params: { runId: implementationRun.runId },
+      }));
+
+      const implementationBody = providerBodies.at(-1) ?? "";
+      expect(providerBodies.some((body) => body.includes("Compacted prior session context"))).toBe(true);
+      expect(implementationBody).toContain("<accepted_plan>");
+      expect(implementationBody).toContain(acceptedPlanTitle);
+      expect(implementationBody).toContain("Inject the accepted plan into the implementation run after compaction.");
+      expect(implementationState.config.metadata).toMatchObject({
+        acceptedPlanDecisionId: decision!.id,
+        acceptedPlanRunId: planRun.runId,
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.ACCEPTED_PLAN_PROVIDER_KEY;
+      } else {
+        process.env.ACCEPTED_PLAN_PROVIDER_KEY = previousKey;
       }
     }
   });

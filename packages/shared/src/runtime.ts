@@ -680,6 +680,8 @@ export const PlanDecisionGateSchema = z.object({
   runId: z.string().min(1),
   sessionId: z.string().min(1),
   status: PlanDecisionStatusSchema.default("pending"),
+  planContent: z.string().min(1).optional(),
+  planSourceRunId: z.string().min(1).optional(),
   createdAt: z.number().int().nonnegative(),
   resolvedAt: z.number().int().nonnegative().optional(),
 });
@@ -1397,16 +1399,48 @@ function branchOutputPreviewForRun(run: StateSnapshot): string | undefined {
 }
 
 export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapshot, "events">): boolean {
-  const content = snapshot.events
+  return extractCompleteProposedPlanContent(snapshot) !== undefined;
+}
+
+export function extractCompleteProposedPlanContent(snapshot: Pick<StateSnapshot, "events"> & { output?: unknown }): string | undefined {
+  const candidates: string[] = [];
+  if (typeof snapshot.output === "string") {
+    candidates.push(snapshot.output);
+  } else if (
+    snapshot.output &&
+    typeof snapshot.output === "object" &&
+    typeof (snapshot.output as { text?: unknown }).text === "string"
+  ) {
+    candidates.push((snapshot.output as { text: string }).text);
+  }
+  candidates.push(snapshot.events
     .filter((event) =>
       event.type === "message.delta" &&
       Boolean(event.payload) &&
       typeof event.payload === "object" &&
-      typeof (event.payload as { content?: unknown }).content === "string"
+      (
+        typeof (event.payload as { content?: unknown }).content === "string" ||
+        typeof (event.payload as { delta?: unknown }).delta === "string"
+      )
     )
-    .map((event) => (event.payload as { content: string }).content)
-    .join("");
-  return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(content);
+    .map((event) => {
+      const payload = event.payload as { content?: unknown; delta?: unknown };
+      return typeof payload.content === "string"
+        ? payload.content
+        : typeof payload.delta === "string"
+          ? payload.delta
+          : "";
+    })
+    .join(""));
+
+  for (const candidate of candidates) {
+    const match = candidate.match(/<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>/);
+    const content = match?.[1]?.trim();
+    if (content) {
+      return content;
+    }
+  }
+  return undefined;
 }
 
 export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {

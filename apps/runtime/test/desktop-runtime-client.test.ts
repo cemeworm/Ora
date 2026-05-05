@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CODE_DEVELOPMENT_MODE_ID } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, createRuntimeClient } from "../../desktop/src/lib/runtimeClient";
 import { adaptChatMessages } from "../../desktop/src/lib/viewModel";
 
@@ -36,6 +37,39 @@ describe("desktop browser-mock runtime lifecycle", () => {
     const assistant = messages.find((message) => message.role === "assistant");
     expect(assistant?.turn?.todos).toEqual([]);
     expect(assistant?.turn?.processSteps).toEqual([]);
+  });
+
+  it("does not render built-in mode template todos when modeSpec is absent", async () => {
+    const client = createRuntimeClient();
+    const session = await client.createSession();
+    const snapshot = await client.startRun(
+      { prompt: "Inspect code without a custom task list." },
+      { modeId: CODE_DEVELOPMENT_MODE_ID },
+      session.sessionId,
+    );
+    const snapshotWithoutModeSpec = { ...snapshot };
+    delete (snapshotWithoutModeSpec as { modeSpec?: unknown }).modeSpec;
+
+    const messages = adaptChatMessages(
+      [
+        {
+          id: `${snapshot.runId}:user`,
+          sessionId: session.sessionId,
+          runId: snapshot.runId,
+          turnIndex: snapshot.turnIndex ?? 1,
+          role: "user",
+          content: snapshot.input.prompt,
+          pattern: snapshot.pattern,
+          modeId: snapshot.modeId,
+          createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+        },
+      ],
+      { [snapshot.runId]: snapshotWithoutModeSpec },
+    );
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(snapshot.todos).toHaveLength(5);
+    expect(assistant?.turn?.todos).toEqual([]);
   });
 
   it("renders real runtime tool calls with their target objects", async () => {

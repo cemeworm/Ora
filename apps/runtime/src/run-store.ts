@@ -87,6 +87,7 @@ import {
   SkillSetEnabledParams,
   SkillUpdateParams,
   SelfIterationEnvironmentObserverPolicy,
+  extractCompleteProposedPlanContent,
   snapshotContainsCompleteProposedPlan,
   StateSnapshot,
   StateSnapshotSchema,
@@ -279,6 +280,12 @@ const StartRunParamsSchema = z.object({
   config: RunConfigSchema.partial().optional(),
   sessionId: z.string().min(1).optional(),
 });
+
+type AcceptedPlanHandoff = {
+  decisionId: string;
+  sourceRunId: string;
+  planContent: string;
+};
 
 const RunIdParamsSchema = z.object({
   runId: z.string().min(1)
@@ -1315,6 +1322,70 @@ export class LocalRunStore {
     };
   }
 
+  private async continueKernelAfterApprovedTool(
+    snapshot: StateSnapshot,
+    continuationSnapshot: StateSnapshot,
+    clarificationPatch: Record<string, unknown>,
+    approvedActionIds: string[],
+    signal?: AbortSignal,
+    onEvent?: (event: OraEventEnvelope, baseSeq: number) => void,
+  ): Promise<StateSnapshot> {
+    const modeSpec = continuationSnapshot.modeSpec;
+    if (!modeSpec) {
+      throw new OraRuntimeError("Cannot continue an approved-tool resume without modeSpec.", -32004, {
+        runId: continuationSnapshot.runId,
+      });
+    }
+    const sessionId = continuationSnapshot.sessionId;
+    if (!sessionId) {
+      throw new OraRuntimeError("Cannot continue an approved-tool resume without sessionId.", -32004, {
+        runId: continuationSnapshot.runId,
+      });
+    }
+    const resumedInput = resumedInputWithClarifications(continuationSnapshot.input, clarificationPatch);
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const baseSeq = continuationSnapshot.events.length;
+    const resumedSnapshot = await executeTracedKernelResume({
+      runId: continuationSnapshot.runId,
+      input: resumedInput,
+      config: continuationSnapshot.config,
+      modeSpec,
+      definition,
+      sessionId,
+      turnIndex: continuationSnapshot.turnIndex,
+      clock: this.clock,
+      skillRegistry: this.skillRegistry,
+      modeRegistry: this,
+      selfIterationRegistry: this,
+      automationRegistry: this,
+      customAgentOverlay: this.customAgentStore.personaOverlay(continuationSnapshot.config.customAgentId),
+      customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+      systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
+      customAgentContexts: this.customAgentContextsForMode(modeSpec),
+      conversationMessages: [
+        ...this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+        ...runtimeConversationToModelMessages(continuationSnapshot.conversation),
+      ],
+      clarificationPatch,
+      approvedActionIds,
+      approvedActions: [],
+      resumeSnapshot: continuationSnapshot,
+      signal,
+      onEvent: onEvent ? (event) => onEvent(event, baseSeq) : undefined,
+    });
+    return this.mergeResumeSnapshotEvents(continuationSnapshot, resumedSnapshot);
+  }
+
+  private mergeResumeSnapshotEvents(baseSnapshot: StateSnapshot, resumedSnapshot: StateSnapshot): StateSnapshot {
+    const rebasedEvents = resumedSnapshot.events.map((event) =>
+      rebaseRunEvent(event, baseSnapshot.runId, baseSnapshot.events.length)
+    );
+    return StateSnapshotSchema.parse({
+      ...resumedSnapshot,
+      events: [...baseSnapshot.events, ...rebasedEvents],
+    });
+  }
+
   async resumeStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
     const parsed = RunResumeParamsSchema.parse(params);
     const snapshot = this.getRunOrThrow(parsed.runId);
@@ -1378,18 +1449,51 @@ export class LocalRunStore {
           });
           publishStream([event], liveSnapshot);
         },
-      ).then(async (completed) => {
-        this.activeStreamingAbortControllers.delete(snapshot.runId);
-        if (!completed) {
+      ).then(async (result) => {
+        if (!result) {
+          this.activeStreamingAbortControllers.delete(snapshot.runId);
           return;
         }
         const cancelled = this.cancelledSnapshot(snapshot.runId);
         if (cancelled) {
+          this.activeStreamingAbortControllers.delete(snapshot.runId);
           liveSnapshot = cancelled;
           publishStream([], cancelled);
           return;
         }
-        liveSnapshot = this.normalizeSnapshotForPersistence(completed);
+        let completedSnapshot: StateSnapshot;
+        if (result.kind === "continue") {
+          const continuationSnapshot = result.snapshot;
+          liveSnapshot = continuationSnapshot;
+          completedSnapshot = await this.continueKernelAfterApprovedTool(
+            snapshot,
+            continuationSnapshot,
+            clarificationPatch,
+            approvedActionIds,
+            abortController.signal,
+            (event, baseSeq) => {
+              if (abortController.signal.aborted || this.isRunCancelled(snapshot.runId)) {
+                return;
+              }
+              const rebasedEvent = rebaseRunEvent(event, snapshot.runId, baseSeq);
+              liveSnapshot = applyStreamingRunEvent(liveSnapshot, rebasedEvent);
+              this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(rebasedEvent), {
+                deferInitialTitle: true,
+              });
+              publishStream([rebasedEvent]);
+            },
+          );
+        } else {
+          completedSnapshot = result.snapshot;
+        }
+        this.activeStreamingAbortControllers.delete(snapshot.runId);
+        const cancelledAfterContinuation = this.cancelledSnapshot(snapshot.runId);
+        if (cancelledAfterContinuation) {
+          liveSnapshot = cancelledAfterContinuation;
+          publishStream([], cancelledAfterContinuation);
+          return;
+        }
+        liveSnapshot = this.normalizeSnapshotForPersistence(completedSnapshot);
         await this.persistRunWithGeneratedTitle(liveSnapshot);
         publishStream([], liveSnapshot);
       }).catch(async (error) => {
@@ -1622,13 +1726,21 @@ export class LocalRunStore {
     const snapshot = this.getRunOrThrow(parsed.runId);
     const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
     const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
-    const completedApprovedTool = await completeApprovedToolContinuation(
+    const approvedToolContinuation = await completeApprovedToolContinuation(
       snapshot,
       approvedActionIds,
       { reason: parsed.reason, patch: parsed.patch },
       this.approvedFileWriteResumeDeps(),
     );
-    if (completedApprovedTool) {
+    if (approvedToolContinuation) {
+      const completedApprovedTool = approvedToolContinuation.kind === "continue"
+        ? await this.continueKernelAfterApprovedTool(
+          snapshot,
+          approvedToolContinuation.snapshot,
+          clarificationPatch,
+          approvedActionIds,
+        )
+        : approvedToolContinuation.snapshot;
       await this.persistRunWithGeneratedTitle(completedApprovedTool);
       return completedApprovedTool;
     }
@@ -2427,6 +2539,7 @@ export class LocalRunStore {
       snapshotContainsCompleteProposedPlan(normalized) &&
       normalized.planDecisions.length === 0
     ) {
+      const planContent = extractCompleteProposedPlanContent(normalized);
       normalized = StateSnapshotSchema.parse({
         ...normalized,
         planDecisions: [{
@@ -2434,6 +2547,7 @@ export class LocalRunStore {
           runId: normalized.runId,
           sessionId: normalized.sessionId,
           status: "pending",
+          ...(planContent ? { planContent, planSourceRunId: normalized.runId } : {}),
           createdAt: normalized.updatedAt,
         }],
       });
@@ -2473,8 +2587,26 @@ export class LocalRunStore {
     const excludeRunId = config.metadata.branchTarget === "replace_latest" && typeof config.metadata.branchReplaceRunId === "string"
       ? config.metadata.branchReplaceRunId
       : undefined;
+    const acceptedPlanHandoff = this.acceptedPlanHandoffForNextImplementationRun(sessionId, config, excludeRunId);
+    if (acceptedPlanHandoff) {
+      config.metadata = {
+        ...config.metadata,
+        acceptedPlanDecisionId: acceptedPlanHandoff.decisionId,
+        acceptedPlanRunId: acceptedPlanHandoff.sourceRunId,
+      };
+    }
     const priorMessages = this.buildConversationMessages(sessionId, "", excludeRunId);
-    let messages = this.buildConversationMessages(sessionId, currentPrompt, excludeRunId);
+    const currentPromptMessage = currentPrompt.trim()
+      ? [{ role: "user" as const, content: currentPrompt.trim() }]
+      : [];
+    const handoffMessages = acceptedPlanHandoff
+      ? [acceptedPlanHandoffMessage(acceptedPlanHandoff)]
+      : [];
+    let messages = [
+      ...priorMessages,
+      ...handoffMessages,
+      ...currentPromptMessage,
+    ];
     const check = shouldCompactContext({
       contextState: session.contextState,
       provider,
@@ -2511,9 +2643,41 @@ export class LocalRunStore {
     this.persistSessionContextState(sessionId, compacted.contextState);
     messages = [
       ...compacted.messages,
-      ...(currentPrompt.trim() ? [{ role: "user" as const, content: currentPrompt.trim() }] : []),
+      ...handoffMessages,
+      ...currentPromptMessage,
     ];
     return messages;
+  }
+
+  private acceptedPlanHandoffForNextImplementationRun(
+    sessionId: string,
+    config: RunConfig,
+    excludeRunId?: string,
+  ): AcceptedPlanHandoff | undefined {
+    if (config.metadata.taskIntent !== "implement") {
+      return undefined;
+    }
+    const priorTurns = this.runsForSession(sessionId)
+      .filter((turn) => turn.runId !== excludeRunId);
+    const latestPriorTurn = priorTurns.at(-1);
+    if (!latestPriorTurn) {
+      return undefined;
+    }
+    const decision = latestPriorTurn.planDecisions.find(
+      (candidate) =>
+        candidate.status === "accepted" &&
+        candidate.runId === latestPriorTurn.runId &&
+        typeof candidate.planContent === "string" &&
+        candidate.planContent.trim().length > 0,
+    );
+    if (!decision?.planContent) {
+      return undefined;
+    }
+    return {
+      decisionId: decision.id,
+      sourceRunId: latestPriorTurn.runId,
+      planContent: decision.planContent.trim(),
+    };
   }
 
   private persistSessionContextState(sessionId: string, contextState: SessionSummary["contextState"]): void {
@@ -3193,6 +3357,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isTerminalRunStatus(status: StateSnapshot["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function acceptedPlanHandoffMessage(handoff: AcceptedPlanHandoff): ModelMessage {
+  return {
+    role: "system",
+    content: [
+      "The user accepted the following implementation plan in the immediately preceding plan-mode turn.",
+      "Treat this accepted plan as a runtime handoff contract for the current implementation run.",
+      "Execute it unless direct repository evidence requires a small adjustment; if you adjust it, explain why in the final response.",
+      "",
+      `Accepted plan decision: ${handoff.decisionId}`,
+      `Accepted plan source run: ${handoff.sourceRunId}`,
+      "",
+      "<accepted_plan>",
+      handoff.planContent,
+      "</accepted_plan>",
+    ].join("\n"),
+  };
 }
 
 function previousMainlineRunBefore(
