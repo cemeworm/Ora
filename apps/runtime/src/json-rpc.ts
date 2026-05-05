@@ -164,6 +164,16 @@ export function createRuntimeMethodHandler(
         return store.listSessions(request.params);
       case "sessions.get":
         return store.getSession(request.params);
+      case "sessions.branchGroups.list":
+        return store.listSessionBranchGroups(request.params);
+      case "sessions.branchGroups.get":
+        return store.getSessionBranchGroup(request.params);
+      case "sessions.branchGroups.createAndRun":
+        return store.createAndRunSessionBranchGroup(request.params);
+      case "sessions.branchGroups.adopt":
+        return store.adoptSessionBranchGroup(request.params);
+      case "sessions.branchGroups.dismiss":
+        return store.dismissSessionBranchGroup(request.params);
       case "sessions.resolvePlanDecision":
         return store.resolvePlanDecision(request.params);
       case "sessions.archive":
@@ -198,6 +208,24 @@ export function createRuntimeMethodHandler(
         return store.wechatRequestQrCode(request.params);
       case "channels.wechat.pollQrCodeStatus":
         return store.wechatPollQrCodeStatus(request.params);
+      case "automations.list":
+        return store.listAutomations(request.params);
+      case "automations.get":
+        return store.getAutomation(request.params);
+      case "automations.create":
+        return store.createAutomation(request.params);
+      case "automations.update":
+        return store.updateAutomation(request.params);
+      case "automations.delete":
+        return store.deleteAutomation(request.params);
+      case "automations.pause":
+        return store.pauseAutomation(request.params);
+      case "automations.resume":
+        return store.resumeAutomation(request.params);
+      case "automations.runNow":
+        return store.runAutomationNow(request.params);
+      case "automations.previewSchedule":
+        return store.previewAutomationSchedule(request.params);
       case "runs.start":
         return store.startRun(request.params);
       case "runs.startStreaming":

@@ -24,6 +24,12 @@ export function defaultSelfIterationStoreDir(runtimeDataDir: string): string {
     : path.join(runtimeDataDir, "self-iteration-store");
 }
 
+export function defaultAutomationsDir(runtimeDataDir: string): string {
+  return runtimeDataDir.endsWith(".db")
+    ? path.join(path.dirname(runtimeDataDir), "automations")
+    : path.join(runtimeDataDir, "automations");
+}
+
 export function defaultCustomAgentsDir(runtimeDataDir: string): string {
   return runtimeDataDir.endsWith(".db")
     ? path.join(path.dirname(runtimeDataDir), "agents")

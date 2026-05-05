@@ -9,7 +9,7 @@ import type {
 } from "@cemeworm/shared";
 import { StateSnapshotSchema } from "@cemeworm/shared";
 import type { RuntimeSkillRegistry } from "./harness/capability-registries.js";
-import { type ModeRegistryTools, type SelfIterationRegistryTools } from "./harness/runtime-tool-executor.js";
+import { type AutomationRegistryTools, type ModeRegistryTools, type SelfIterationRegistryTools } from "./harness/runtime-tool-executor.js";
 import { executeRuntimeKernel, type RuntimeKernelOptions } from "./harness/runtime-kernel.js";
 import type { ModelMessage } from "./providers/index.js";
 import { withLangfuseRunTrace } from "./telemetry/langfuse.js";
@@ -27,6 +27,7 @@ interface KernelLifecycleBaseParams {
   skillRegistry?: RuntimeSkillRegistry;
   modeRegistry?: ModeRegistryTools;
   selfIterationRegistry?: SelfIterationRegistryTools;
+  automationRegistry?: AutomationRegistryTools;
   customAgentOverlay?: string;
   customAgentOverlays?: Record<string, string>;
   systemAgentOverlays?: Record<string, string>;
@@ -84,6 +85,7 @@ function kernelOptions(params: KernelLifecycleBaseParams & CancellableKernelLife
     skillRegistry: params.skillRegistry,
     modeRegistry: params.modeRegistry,
     selfIterationRegistry: params.selfIterationRegistry,
+    automationRegistry: params.automationRegistry,
     customAgentOverlay: params.customAgentOverlay,
     customAgentOverlays: params.customAgentOverlays,
     systemAgentOverlays: params.systemAgentOverlays,

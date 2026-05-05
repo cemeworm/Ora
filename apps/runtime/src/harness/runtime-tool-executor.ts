@@ -49,6 +49,15 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "selfIteration.scan",
   "selfIteration.evaluate",
   "selfIteration.apply",
+  "automations.list",
+  "automations.get",
+  "automations.previewSchedule",
+  "automations.create",
+  "automations.update",
+  "automations.pause",
+  "automations.resume",
+  "automations.delete",
+  "automations.runNow",
   "plan.update",
 ] as const;
 
@@ -85,6 +94,7 @@ export interface RuntimeToolExecutorOptions {
   skillRegistry?: SkillRegistryTools;
   modeRegistry?: ModeRegistryTools;
   selfIterationRegistry?: SelfIterationRegistryTools;
+  automationRegistry?: AutomationRegistryTools;
   fetchImpl?: typeof fetch;
   mcpConfigPaths?: string[];
   searchProvider?: SearchProvider;
@@ -121,6 +131,18 @@ export interface SelfIterationRegistryTools {
   applySelfIterationCandidate(params: unknown): unknown;
 }
 
+export interface AutomationRegistryTools {
+  listAutomations(params?: unknown): unknown;
+  getAutomation(params: unknown): unknown;
+  previewAutomationSchedule(params: unknown): unknown;
+  createAutomation(params: unknown): unknown;
+  updateAutomation(params: unknown): unknown;
+  pauseAutomation(params: unknown): unknown;
+  resumeAutomation(params: unknown): unknown;
+  deleteAutomation(params: unknown): unknown;
+  runAutomationNow(params: unknown): unknown;
+}
+
 interface McpServerConfig {
   type?: "stdio" | "http";
   command?: string;
@@ -141,17 +163,17 @@ export function registerImplementedToolId(toolId: string): void {
 export function unregisterImplementedToolId(toolId: string): void {
   IMPLEMENTED_TOOL_SET.delete(toolId);
 }
-const FILE_READ_MAX_BYTES = 1_000_000;
+const FILE_READ_MAX_BYTES = 10_000_000;
 const FILE_LIST_MAX_ENTRIES = 500;
-const FILE_SEARCH_MAX_FILES = 2_000;
-const FILE_SEARCH_MAX_MATCHES = 200;
-const FILE_SEARCH_MAX_BYTES = 1_000_000;
-const FILE_WRITE_MAX_BYTES = 1_000_000;
-const WEB_MAX_BYTES = 1_000_000;
-const DOCUMENT_EXTRACT_MAX_BYTES = 128_000;
+const FILE_SEARCH_MAX_FILES = 10_000;
+const FILE_SEARCH_MAX_MATCHES = 1_000;
+const FILE_SEARCH_MAX_BYTES = 10_000_000;
+const FILE_WRITE_MAX_BYTES = 10_000_000;
+const WEB_MAX_BYTES = 10_000_000;
+const DOCUMENT_EXTRACT_MAX_BYTES = 1_000_000;
 const DOCUMENT_SOURCE_MAX_BYTES = 25_000_000;
-const SHELL_MAX_OUTPUT_BYTES = 1_000_000;
-const SHELL_TIMEOUT_MS = 60_000;
+const SHELL_MAX_OUTPUT_BYTES = 10_000_000;
+const SHELL_TIMEOUT_MS = 300_000;
 const SHELL_READ_ONLY_COMMANDS = new Set(["cat", "find", "ls", "pwd", "rg", "wc"]);
 const SHELL_APPROVED_COMMANDS = new Set([
   ...SHELL_READ_ONLY_COMMANDS,
@@ -286,6 +308,7 @@ export class RuntimeToolExecutor {
   private readonly skillRegistry?: SkillRegistryTools;
   private readonly modeRegistry?: ModeRegistryTools;
   private readonly selfIterationRegistry?: SelfIterationRegistryTools;
+  private readonly automationRegistry?: AutomationRegistryTools;
   private readonly mcpConfigPaths?: string[];
   private readonly searchProvider: SearchProvider;
   private readonly packageManager?: PackageManager;
@@ -299,6 +322,7 @@ export class RuntimeToolExecutor {
     this.skillRegistry = options.skillRegistry;
     this.modeRegistry = options.modeRegistry;
     this.selfIterationRegistry = options.selfIterationRegistry;
+    this.automationRegistry = options.automationRegistry;
     this.mcpConfigPaths = options.mcpConfigPaths;
     this.packageManager = options.packageManager;
     this.workspace = options.workspace;
@@ -404,6 +428,12 @@ export class RuntimeToolExecutor {
       || call.tool === "skills.setEnabled"
       || call.tool === "modes.applyDraft"
       || call.tool === "selfIteration.apply"
+      || call.tool === "automations.create"
+      || call.tool === "automations.update"
+      || call.tool === "automations.pause"
+      || call.tool === "automations.resume"
+      || call.tool === "automations.delete"
+      || call.tool === "automations.runNow"
       || call.tool.startsWith("package.")
     ) {
       return "high";
@@ -507,6 +537,24 @@ export class RuntimeToolExecutor {
         return { output: await evaluateRuntimeSelfIterationCandidate(this.selfIterationRegistry, call.args) };
       case "selfIteration.apply":
         return { output: applyRuntimeSelfIterationCandidate(this.selfIterationRegistry, call.args, options.allowRisky === true) };
+      case "automations.list":
+        return { output: listRuntimeAutomations(this.automationRegistry, call.args) };
+      case "automations.get":
+        return { output: getRuntimeAutomation(this.automationRegistry, call.args) };
+      case "automations.previewSchedule":
+        return { output: previewRuntimeAutomationSchedule(this.automationRegistry, call.args) };
+      case "automations.create":
+        return { output: createRuntimeAutomation(this.automationRegistry, call.args) };
+      case "automations.update":
+        return { output: updateRuntimeAutomation(this.automationRegistry, call.args) };
+      case "automations.pause":
+        return { output: pauseRuntimeAutomation(this.automationRegistry, call.args) };
+      case "automations.resume":
+        return { output: resumeRuntimeAutomation(this.automationRegistry, call.args) };
+      case "automations.delete":
+        return { output: deleteRuntimeAutomation(this.automationRegistry, call.args) };
+      case "automations.runNow":
+        return { output: runRuntimeAutomationNow(this.automationRegistry, call.args) };
       case "plan.update": {
         if (this.taskIntent === "plan") {
           throw new Error("plan.update is not available in plan mode. Plan mode is for producing a proposed plan, not for managing a task checklist.");
@@ -581,6 +629,12 @@ function toolNeedsUserApprovalCopy(toolId: RuntimeToolId): boolean {
     || toolId === "mcp.call"
     || toolId === "modes.applyDraft"
     || toolId === "selfIteration.apply"
+    || toolId === "automations.create"
+    || toolId === "automations.update"
+    || toolId === "automations.pause"
+    || toolId === "automations.resume"
+    || toolId === "automations.delete"
+    || toolId === "automations.runNow"
     || toolId.startsWith("package.");
 }
 
@@ -668,6 +722,36 @@ function fallbackApprovalRequestForToolCall(call: RuntimeToolCall, userPrompt?: 
             whatWillChange: "Whether agents can use this skill in later conversations will change.",
             whyNeeded: "This is required to apply the skill setting you requested.",
             riskNote: "Skill availability affects what agents can do later.",
+            confirmLabel: "Approve and continue",
+          };
+    }
+    case "automations.create":
+    case "automations.update":
+    case "automations.pause":
+    case "automations.resume":
+    case "automations.delete":
+    case "automations.runNow": {
+      const action = automationActionLabel(call.tool, zh);
+      const title = stringArg(call.args, "title", zh ? "这个定时任务" : "this scheduled task");
+      return zh
+        ? {
+            title: `需要你确认${action}`,
+            summary: `我准备${action}“${title}”。`,
+            whatWillChange: call.tool === "automations.runNow"
+              ? "会立即启动一次定时任务运行，并写入运行历史。"
+              : "会改变 Ora 本地定时任务配置或状态。",
+            whyNeeded: "这是完成你刚才要求管理定时任务的必要步骤。",
+            riskNote: "定时任务会在未来自动触发 agent，请确认调度、目标和影响范围正确。",
+            confirmLabel: "批准并继续",
+          }
+        : {
+            title: `Confirm ${action}`,
+            summary: `I am ready to ${action} "${title}".`,
+            whatWillChange: call.tool === "automations.runNow"
+              ? "This will start one scheduled task run now and write run history."
+              : "This will change local Ora scheduled task configuration or state.",
+            whyNeeded: "This is required to manage the scheduled task you requested.",
+            riskNote: "Scheduled tasks can trigger agents later, so confirm the schedule, goal, and impact first.",
             confirmLabel: "Approve and continue",
           };
     }
@@ -819,6 +903,25 @@ function stringArg(args: Record<string, unknown>, key: string, fallback: string)
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function automationActionLabel(toolId: RuntimeToolId, zh: boolean): string {
+  switch (toolId) {
+    case "automations.create":
+      return zh ? "创建定时任务" : "create the scheduled task";
+    case "automations.update":
+      return zh ? "更新定时任务" : "update the scheduled task";
+    case "automations.pause":
+      return zh ? "暂停定时任务" : "pause the scheduled task";
+    case "automations.resume":
+      return zh ? "恢复定时任务" : "resume the scheduled task";
+    case "automations.delete":
+      return zh ? "删除定时任务" : "delete the scheduled task";
+    case "automations.runNow":
+      return zh ? "立即运行定时任务" : "run the scheduled task now";
+    default:
+      return zh ? "管理定时任务" : "manage the scheduled task";
+  }
+}
+
 function exampleForTool(toolId: RuntimeToolId): string {
   switch (toolId) {
     case "file.read":
@@ -855,6 +958,24 @@ function exampleForTool(toolId: RuntimeToolId): string {
       return "{\"tool\":\"skills.update\",\"args\":{\"name\":\"waza-think\",\"content\":\"---\\nname: waza-think\\ndescription: Think workflow\\n---\\n...\"}}";
     case "skills.setEnabled":
       return "{\"tool\":\"skills.setEnabled\",\"args\":{\"name\":\"waza-think\",\"enabled\":true}}";
+    case "automations.list":
+      return "{\"tool\":\"automations.list\",\"args\":{\"includePaused\":true}}";
+    case "automations.get":
+      return "{\"tool\":\"automations.get\",\"args\":{\"id\":\"automation-123\"}}";
+    case "automations.previewSchedule":
+      return "{\"tool\":\"automations.previewSchedule\",\"args\":{\"schedule\":{\"kind\":\"rrule\",\"rrule\":\"FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0\",\"timezone\":\"Asia/Shanghai\"},\"limit\":3}}";
+    case "automations.create":
+      return "{\"tool\":\"automations.create\",\"args\":{\"title\":\"Daily status review\",\"prompt\":\"Summarize project status.\",\"schedule\":{\"kind\":\"rrule\",\"rrule\":\"FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0\",\"timezone\":\"Asia/Shanghai\"},\"status\":\"active\",\"modeSelection\":\"manual\",\"taskIntent\":\"plan\",\"skillIds\":[],\"toolIds\":[],\"runConfig\":{}}}";
+    case "automations.update":
+      return "{\"tool\":\"automations.update\",\"args\":{\"id\":\"automation-123\",\"title\":\"Updated daily review\"}}";
+    case "automations.pause":
+      return "{\"tool\":\"automations.pause\",\"args\":{\"id\":\"automation-123\"}}";
+    case "automations.resume":
+      return "{\"tool\":\"automations.resume\",\"args\":{\"id\":\"automation-123\"}}";
+    case "automations.delete":
+      return "{\"tool\":\"automations.delete\",\"args\":{\"id\":\"automation-123\"}}";
+    case "automations.runNow":
+      return "{\"tool\":\"automations.runNow\",\"args\":{\"id\":\"automation-123\"}}";
     case "mcp.listTools":
       return "{\"tool\":\"mcp.listTools\",\"args\":{\"server\":\"local-docs\"}}";
     case "mcp.readResource":
@@ -1525,6 +1646,69 @@ function setRuntimeSkillEnabled(skillRegistry: SkillRegistryTools | undefined, a
     throw new Error("A skill registry is required for skills.setEnabled.");
   }
   return skillRegistry.setEnabled(args);
+}
+
+function listRuntimeAutomations(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.list.");
+  }
+  return automationRegistry.listAutomations(args);
+}
+
+function getRuntimeAutomation(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.get.");
+  }
+  return automationRegistry.getAutomation(args);
+}
+
+function previewRuntimeAutomationSchedule(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.previewSchedule.");
+  }
+  return automationRegistry.previewAutomationSchedule(args);
+}
+
+function createRuntimeAutomation(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.create.");
+  }
+  return automationRegistry.createAutomation(args);
+}
+
+function updateRuntimeAutomation(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.update.");
+  }
+  return automationRegistry.updateAutomation(args);
+}
+
+function pauseRuntimeAutomation(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.pause.");
+  }
+  return automationRegistry.pauseAutomation(args);
+}
+
+function resumeRuntimeAutomation(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.resume.");
+  }
+  return automationRegistry.resumeAutomation(args);
+}
+
+function deleteRuntimeAutomation(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.delete.");
+  }
+  return automationRegistry.deleteAutomation(args);
+}
+
+function runRuntimeAutomationNow(automationRegistry: AutomationRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!automationRegistry) {
+    throw new Error("An automation registry is required for automations.runNow.");
+  }
+  return automationRegistry.runAutomationNow(args);
 }
 
 function parseHttpUrl(value: unknown, toolName: string): string {

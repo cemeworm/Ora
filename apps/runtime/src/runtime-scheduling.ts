@@ -1,4 +1,4 @@
-import type { ModeSpec, ResourceBudget, RunConfig, TaskIntent } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, type ModeSpec, type ResourceBudget, type RunConfig, type TaskIntent } from "@cemeworm/shared";
 
 const LIGHTWEIGHT_CAPS: Record<Extract<TaskIntent, "chat" | "plan">, {
   maxTokens: number;
@@ -7,14 +7,20 @@ const LIGHTWEIGHT_CAPS: Record<Extract<TaskIntent, "chat" | "plan">, {
 }> = {
   chat: {
     maxTokens: 12_000,
-    maxToolCalls: 4,
+    maxToolCalls: 8,
     maxCostUsd: 0.1,
   },
   plan: {
-    maxTokens: 16_000,
-    maxToolCalls: 8,
-    maxCostUsd: 0.25,
+    maxTokens: 18_000,
+    maxToolCalls: 16,
+    maxCostUsd: 0.5,
   },
+};
+
+const CODE_DEVELOPMENT_PLAN_CAP = {
+  maxTokens: 24_000,
+  maxToolCalls: 32,
+  maxCostUsd: 1,
 };
 
 export interface AgenticRuntimeSchedulingResult {
@@ -33,6 +39,7 @@ export function resolveAgenticRuntimeScheduling(params: {
   budget: ResourceBudget;
   explicitBudget: boolean;
   metadata: RunConfig["metadata"];
+  modeSpec?: Pick<ModeSpec, "id" | "family" | "label">;
 }): AgenticRuntimeSchedulingResult {
   if (params.metadata.agenticScheduling === false || params.metadata.agenticScheduling === "disabled") {
     return {
@@ -65,7 +72,9 @@ export function resolveAgenticRuntimeScheduling(params: {
     };
   }
 
-  const caps = LIGHTWEIGHT_CAPS[taskIntent];
+  const caps = taskIntent === "plan" && isDevelopmentPlanMode(params.modeSpec)
+    ? CODE_DEVELOPMENT_PLAN_CAP
+    : LIGHTWEIGHT_CAPS[taskIntent];
   const budget = {
     ...params.budget,
     maxTokens: Math.min(params.budget.maxTokens, caps.maxTokens),
@@ -86,6 +95,17 @@ export function resolveAgenticRuntimeScheduling(params: {
       budget,
     },
   };
+}
+
+function isDevelopmentPlanMode(modeSpec: Pick<ModeSpec, "id" | "family" | "label"> | undefined): boolean {
+  if (!modeSpec) {
+    return false;
+  }
+  if (modeSpec.id === CODE_DEVELOPMENT_MODE_ID) {
+    return true;
+  }
+  const haystack = [modeSpec.id, modeSpec.label].filter(Boolean).join(" ");
+  return modeSpec.family === "agent_teams" && /(^|[_\s-])(code|development)($|[_\s-])/i.test(haystack);
 }
 
 export function routerCostHintForMode(mode: ModeSpec): RouterCostHint {

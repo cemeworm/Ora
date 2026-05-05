@@ -13,6 +13,8 @@ import {
   ProjectSummarySchema,
   RunsListParamsSchema,
   RunSummary,
+  SessionBranchGroup,
+  SessionBranchGroupSchema,
   SessionArchiveParamsSchema,
   SessionCreateParamsSchema,
   SessionDetail,
@@ -152,6 +154,7 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
     session,
     turns,
     transcript: deps.sessionTranscript(parsed.sessionId),
+    branchGroups: branchGroupsForSession(parsed.sessionId, [...deps.runs.values()]),
     latestSnapshot,
   });
 }
@@ -175,4 +178,92 @@ export function listRuns(params: unknown, deps: ProjectSessionOperationDeps): Ru
     .sort((a, b) => b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId))
     .slice(0, parsed.limit)
     .map((run) => toRunSummary(run));
+}
+
+export function branchGroupsForSession(sessionId: string, runs: StateSnapshot[]): SessionBranchGroup[] {
+  const candidates = runs
+    .filter((run) => run.sessionId === sessionId)
+    .filter((run) => typeof run.config.metadata.branchGroupId === "string");
+  const groups = new Map<string, StateSnapshot[]>();
+  for (const run of candidates) {
+    const branchGroupId = String(run.config.metadata.branchGroupId);
+    groups.set(branchGroupId, [...(groups.get(branchGroupId) ?? []), run]);
+  }
+
+  return [...groups.entries()]
+    .map(([branchGroupId, groupRuns]) => {
+      const sortedRuns = groupRuns.sort((a, b) => a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
+      const first = sortedRuns[0]!;
+      const metadata = first.config.metadata;
+      const adopted = sortedRuns.find((run) => run.config.metadata.branchRole === "adopted");
+      const dismissed = sortedRuns.every((run) => run.config.metadata.branchDismissed === true);
+      const allSettled = sortedRuns.every((run) => run.status !== "queued" && run.status !== "running");
+      const createdAt = numberMetadata(metadata.branchGroupCreatedAt) ?? first.input.createdAt ?? first.updatedAt;
+      const updatedAt = sortedRuns.reduce((max, run) => Math.max(max, run.updatedAt), createdAt);
+      return SessionBranchGroupSchema.parse({
+        branchGroupId,
+        sessionId,
+        target: stringMetadata(metadata.branchTarget) ?? "append_after_latest",
+        baseRunId: stringMetadata(metadata.branchBaseRunId),
+        replaceRunId: stringMetadata(metadata.branchReplaceRunId),
+        baseTurnIndex: numberMetadata(metadata.branchBaseTurnIndex) ?? 0,
+        prompt: stringMetadata(metadata.branchPrompt) ?? first.input.prompt,
+        status: adopted ? "adopted" : dismissed ? "dismissed" : allSettled ? "ready" : "running",
+        candidateRunIds: sortedRuns.map((run) => run.runId),
+        candidates: sortedRuns.map((run) => ({
+          runId: run.runId,
+          status: run.status,
+          label: stringMetadata(run.config.metadata.branchCandidateLabel),
+          modeId: run.modeId,
+          providerId: typeof run.config.providerId === "string" ? run.config.providerId : undefined,
+          modelRef: run.config.modelRef,
+          adopted: run.config.metadata.branchRole === "adopted",
+          prompt: run.input.prompt,
+          outputPreview: outputPreviewForRun(run),
+          updatedAt: run.updatedAt,
+        })),
+        adoptedRunId: adopted?.runId,
+        createdAt,
+        updatedAt,
+      });
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.branchGroupId.localeCompare(b.branchGroupId));
+}
+
+export function isUnadoptedBranchCandidate(run: StateSnapshot): boolean {
+  return run.config.metadata.branchRole === "candidate";
+}
+
+export function isSupersededRun(run: StateSnapshot): boolean {
+  return typeof run.config.metadata.supersededByRunId === "string";
+}
+
+export function isVisibleMainlineRun(run: StateSnapshot): boolean {
+  return !isUnadoptedBranchCandidate(run) && !isSupersededRun(run);
+}
+
+function stringMetadata(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function numberMetadata(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function outputPreviewForRun(run: StateSnapshot): string | undefined {
+  if (typeof run.output === "object" && run.output !== null && typeof (run.output as { text?: unknown }).text === "string") {
+    return (run.output as { text: string }).text.slice(0, 500);
+  }
+  if (typeof run.output === "string") {
+    return run.output.slice(0, 500);
+  }
+  const content = run.events
+    .filter((event) => event.type === "message.delta")
+    .map((event) => event.payload)
+    .filter((payload): payload is { content: string } =>
+      typeof payload === "object" && payload !== null && typeof (payload as { content?: unknown }).content === "string"
+    )
+    .map((payload) => payload.content)
+    .join("");
+  return content ? content.slice(0, 500) : undefined;
 }

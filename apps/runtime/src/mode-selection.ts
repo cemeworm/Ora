@@ -13,6 +13,8 @@ import {
   RunConfigSchema,
   SessionSummary,
   SINGLE_AGENT_MODE_ID,
+  TaskIntentSchema,
+  type TaskIntent,
   UserTaskInput,
   modeSpecToPatternDefinition,
   withDefaultWebToolIds
@@ -33,6 +35,7 @@ const AUTO_MODE_ROUTER_MAX_TOKENS = 800;
 const AUTO_MODE_ROUTER_RECENT_MESSAGE_LIMIT = 6;
 const AutoModeRouterResponseSchema = z.object({
   modeId: z.string().min(1),
+  taskIntent: TaskIntentSchema.optional(),
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1),
 });
@@ -63,6 +66,7 @@ export async function resolveModeSelection(
   const autoRoute = parsed.modeSelection === "auto" && input
     ? await routeAutoMode(parsed, input, session, deps)
     : undefined;
+  const effectiveMetadata = resolveAutoTaskIntentMetadata(parsed.metadata, autoRoute);
   const requestedModeId = autoRoute?.modeId
     ?? (typeof config?.modeId === "string" ? config.modeId : parsed.modeId ?? parsed.pattern);
   const modeSpec = deps.applySystemAgentOverridesToMode(deps.modeStore.resolve(requestedModeId, parsed.pattern));
@@ -96,7 +100,8 @@ export async function resolveModeSelection(
   const scheduling = resolveAgenticRuntimeScheduling({
     budget: baseBudget,
     explicitBudget: config?.budget !== undefined,
-    metadata: parsed.metadata,
+    metadata: effectiveMetadata,
+    modeSpec,
   });
   const budget = scheduling.budget;
   const effectiveStrategy = resolveEffectiveRunStrategy(modeSpec, {
@@ -116,20 +121,20 @@ export async function resolveModeSelection(
     approvalMode: resolvedApprovalMode,
     skillIds,
     toolIds,
-      metadata: {
-        ...parsed.metadata,
-        modeId: modeSpec.id,
-        oraEntry: {
-          agentId: ORA_ROOT_AGENT_ID,
-          decision: parsed.modeSelection === "auto" ? "route" : "proceed",
-          status: autoRoute?.metadata.status ?? "proceed",
-          selectedModeId: modeSpec.id,
-          reason: autoRoute?.metadata.reason ?? "Manual mode selection proceeds with the requested mode.",
-          ...(autoRoute?.metadata.handoffSummary ? { handoffSummary: autoRoute.metadata.handoffSummary } : {}),
-        },
-        effectiveStrategy,
-        ...(scheduling.metadata ? { agenticScheduling: scheduling.metadata } : {}),
-        ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
+    metadata: {
+      ...effectiveMetadata,
+      modeId: modeSpec.id,
+      oraEntry: {
+        agentId: ORA_ROOT_AGENT_ID,
+        decision: parsed.modeSelection === "auto" ? "route" : "proceed",
+        status: autoRoute?.metadata.status ?? "proceed",
+        selectedModeId: modeSpec.id,
+        reason: autoRoute?.metadata.reason ?? "Manual mode selection proceeds with the requested mode.",
+        ...(autoRoute?.metadata.handoffSummary ? { handoffSummary: autoRoute.metadata.handoffSummary } : {}),
+      },
+      effectiveStrategy,
+      ...(scheduling.metadata ? { agenticScheduling: scheduling.metadata } : {}),
+      ...(autoRoute ? { autoModeRouter: autoRoute.metadata } : {}),
       ...(skillPromptOverlay ? { skillPromptOverlay } : {}),
       ...(skillWarnings.length > 0 ? { skillWarnings } : {}),
     },
@@ -260,7 +265,7 @@ async function routeAutoMode(
   input: UserTaskInput,
   session: SessionSummary | undefined,
   deps: ModeSelectionDeps,
-): Promise<{ modeId: string; metadata: Record<string, unknown> }> {
+): Promise<{ modeId: string; taskIntent?: TaskIntent; metadata: Record<string, unknown> }> {
   const candidates = deps.modeStore.list()
     .filter((mode) => mode.visibility !== "internal")
     .map((mode) => ({
@@ -277,12 +282,16 @@ async function routeAutoMode(
   const fallbackModeId = candidateIds.has(SINGLE_AGENT_MODE_ID)
     ? SINGLE_AGENT_MODE_ID
     : candidates[0]?.id ?? config.pattern;
+  const autoTaskIntent = isAutoTaskIntentMode(config.metadata);
   const fallback = (reason: string, detail?: unknown) => ({
     modeId: fallbackModeId,
-      metadata: {
+    ...(autoTaskIntent ? { taskIntent: "plan" as const } : {}),
+    metadata: {
       entryAgentId: ORA_ROOT_AGENT_ID,
       selectedModeId: fallbackModeId,
+      ...(autoTaskIntent ? { selectedTaskIntent: "plan" } : {}),
       confidence: 0,
+      ...(autoTaskIntent ? { taskIntentConfidence: 0 } : {}),
       reason,
       status: "fallback",
       handoffSummary: reason,
@@ -303,7 +312,9 @@ async function routeAutoMode(
       system: [
         "You are Ora, Ora's root conversation agent and agent mode router.",
         "Choose exactly one modeId from the provided candidates for the next run.",
-        "Return only compact JSON with keys modeId, confidence, and reason.",
+        "Return only compact JSON with keys modeId, taskIntent, confidence, and reason.",
+        "taskIntent must be one of chat, plan, implement.",
+        "Classify taskIntent with plan priority: chat for Q&A, search, summarization, or no local state change; plan for solution design, troubleshooting plans, ambiguous large tasks, or deciding what to do; implement only for explicit requests to modify/create files, fix bugs, run commands, deploy, commit, or perform concrete changes.",
         "confidence must be a number from 0 to 1.",
         "reason must be a short plain string under 120 characters.",
         "When multiple modes fit equally well, prefer lower agenticCostHint costTier and coordinationTier.",
@@ -315,6 +326,7 @@ async function routeAutoMode(
         task: input.prompt,
         projectId: input.projectId,
         context: input.context ?? {},
+        taskIntentMode: config.metadata.taskIntentMode,
         taskIntent: taskIntentFromMetadata(config.metadata),
         recentMessages: resolveAutoRouterRecentMessages(input, session, deps),
         candidates,
@@ -337,9 +349,12 @@ async function routeAutoMode(
     }
     return {
       modeId: parsed.modeId,
+      ...(autoTaskIntent ? { taskIntent: parsed.taskIntent ?? "plan" } : {}),
       metadata: {
         selectedModeId: parsed.modeId,
+        ...(autoTaskIntent ? { selectedTaskIntent: parsed.taskIntent ?? "plan" } : {}),
         confidence: parsed.confidence,
+        ...(autoTaskIntent ? { taskIntentConfidence: parsed.taskIntent ? parsed.confidence : 0 } : {}),
         reason: parsed.reason,
         status: "selected",
         entryAgentId: ORA_ROOT_AGENT_ID,
@@ -349,6 +364,23 @@ async function routeAutoMode(
   } catch (error) {
     return fallback("Router failed before producing a valid mode.", error instanceof Error ? error.message : String(error));
   }
+}
+
+function isAutoTaskIntentMode(metadata: Record<string, unknown>): boolean {
+  return metadata.taskIntentMode === "auto";
+}
+
+function resolveAutoTaskIntentMetadata(
+  metadata: Record<string, unknown>,
+  autoRoute: { taskIntent?: TaskIntent } | undefined,
+): Record<string, unknown> {
+  if (!isAutoTaskIntentMode(metadata)) {
+    return metadata;
+  }
+  return {
+    ...metadata,
+    taskIntent: autoRoute?.taskIntent ?? "plan",
+  };
 }
 
 function resolveAutoRouterRecentMessages(

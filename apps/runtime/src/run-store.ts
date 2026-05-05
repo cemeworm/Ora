@@ -63,6 +63,12 @@ import {
   RunTrailParamsSchema,
   RunTrailSchema,
   RunSummary,
+  SessionBranchGroup,
+  SessionBranchGroupAdoptParamsSchema,
+  SessionBranchGroupCreateParamsSchema,
+  SessionBranchGroupDismissParamsSchema,
+  SessionBranchGroupGetParamsSchema,
+  SessionBranchGroupListParamsSchema,
   SessionPlanDecisionResolveParamsSchema,
   SessionDetail,
   SessionSummary,
@@ -91,6 +97,7 @@ import {
   UserTaskInput,
   UserTaskInputSchema
 } from "@cemeworm/shared";
+import { AutomationService } from "./automation-service.js";
 import { TodoService } from "./capabilities.js";
 import type { ChannelSessionUpdateEvent } from "./channels/manager.js";
 import { ChannelService } from "./channels/service.js";
@@ -195,6 +202,7 @@ import {
   defaultCustomAgentsDir,
   defaultEvaluationStoreDir,
   defaultFeedbackLoopStoreDir,
+  defaultAutomationsDir,
   defaultSelfIterationStoreDir,
   defaultMemoryDir,
   defaultModesDir,
@@ -238,10 +246,13 @@ import {
 } from "./run-state-operations.js";
 import {
   archiveSession as archiveSessionOperation,
+  branchGroupsForSession,
   createProject as createProjectOperation,
   createSession as createSessionOperation,
   getProject as getProjectOperation,
   getSession as getSessionOperation,
+  isUnadoptedBranchCandidate,
+  isVisibleMainlineRun,
   listProjectFiles as listProjectFilesOperation,
   listProjects as listProjectsOperation,
   listRuns as listRunsOperation,
@@ -281,6 +292,8 @@ export interface LocalRunStoreOptions {
   clock?: () => number;
   fetchImpl?: typeof fetch;
   onChannelSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
+  autoStartChannels?: boolean;
+  autoStartAutomations?: boolean;
 }
 
 interface StreamingRunOptions {
@@ -301,6 +314,7 @@ export class LocalRunStore {
   private readonly longTermMemory: LongTermMemoryManager;
   private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
   private readonly channelService: ChannelService;
+  private readonly automationService: AutomationService;
   private readonly selfIterationCuratorTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, StoredSession>();
@@ -345,6 +359,15 @@ export class LocalRunStore {
       clock: this.clock,
       fetchImpl: options.fetchImpl,
       onSessionUpdate: options.onChannelSessionUpdate,
+      autoStartAdapters: options.autoStartChannels ?? false,
+    });
+    this.automationService = new AutomationService({
+      rootDir: defaultAutomationsDir(dataDir),
+      clock: this.clock,
+      createSession: (params) => this.createSession(params),
+      startStreamingRun: (params, options) => this.startStreamingRun(params, options),
+      listProjects: () => this.listProjects(),
+      agentExists: (agentId) => this.agentExists(agentId),
     });
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
@@ -357,9 +380,16 @@ export class LocalRunStore {
       this.syncProjectSummary(projectId);
     }
     this.backend.saveManifest(this.manifest);
-    this.channelService.startAll().catch((err) => {
-      console.error("[LocalRunStore] channel 自动启动失败:", err instanceof Error ? err.message : err);
-    });
+    if (options.autoStartChannels) {
+      this.channelService.startAll().catch((err) => {
+        console.error("[LocalRunStore] channel 自动启动失败:", err instanceof Error ? err.message : err);
+      });
+    } else {
+      this.channelService.prepareAll();
+    }
+    if (options.autoStartAutomations) {
+      this.automationService.start();
+    }
   }
 
   health() {
@@ -647,6 +677,210 @@ export class LocalRunStore {
     return getSessionOperation(params, this.projectSessionOperationDeps());
   }
 
+  listSessionBranchGroups(params: unknown): SessionBranchGroup[] {
+    const parsed = SessionBranchGroupListParamsSchema.parse(params);
+    this.getSessionOrThrow(parsed.sessionId);
+    return branchGroupsForSession(parsed.sessionId, [...this.runs.values()]).slice(0, parsed.limit);
+  }
+
+  getSessionBranchGroup(params: unknown): SessionBranchGroup {
+    const parsed = SessionBranchGroupGetParamsSchema.parse(params);
+    const group = this.listSessionBranchGroups({ sessionId: parsed.sessionId })
+      .find((candidate) => candidate.branchGroupId === parsed.branchGroupId);
+    if (!group) {
+      throw new OraRuntimeError(`Branch group not found: ${parsed.branchGroupId}`, -32004, parsed);
+    }
+    return group;
+  }
+
+  async createAndRunSessionBranchGroup(params: unknown): Promise<SessionBranchGroup> {
+    const parsed = SessionBranchGroupCreateParamsSchema.parse(params);
+    const session = this.getSessionOrThrow(parsed.sessionId);
+    const latestRun = session.latestRunId ? this.getRunOrThrow(session.latestRunId) : undefined;
+    const replaceRunId = parsed.target === "replace_latest"
+      ? parsed.replaceRunId ?? latestRun?.runId
+      : undefined;
+    const replaceRun = replaceRunId ? this.getRunOrThrow(replaceRunId) : undefined;
+    if (parsed.target === "empty_start" && session.turnCount !== 0) {
+      throw new OraRuntimeError("empty_start branch groups require an empty session.", -32004, { sessionId: session.sessionId });
+    }
+    if ((parsed.target === "append_after_latest" || parsed.target === "replace_latest") && !latestRun) {
+      throw new OraRuntimeError(`${parsed.target} requires an existing latest run.`, -32004, { sessionId: session.sessionId });
+    }
+    const baseRunId = parsed.target === "append_after_latest"
+      ? parsed.baseRunId ?? latestRun?.runId
+      : parsed.target === "replace_latest"
+        ? previousMainlineRunBefore(session.sessionId, replaceRunId!, this.runsForSession(session.sessionId))?.runId
+        : undefined;
+    if (parsed.target === "append_after_latest" && baseRunId !== latestRun?.runId) {
+      throw new OraRuntimeError("append_after_latest can only branch from the current latest run.", -32004, { sessionId: session.sessionId, baseRunId });
+    }
+    if (parsed.target === "replace_latest" && replaceRun?.runId !== latestRun?.runId) {
+      throw new OraRuntimeError("replace_latest can only replace the current latest run.", -32004, { sessionId: session.sessionId, replaceRunId });
+    }
+    if (latestRun && (latestRun.status === "queued" || latestRun.status === "running")) {
+      throw new OraRuntimeError("Wait for the latest run to finish before creating branch candidates.", -32004, {
+        sessionId: session.sessionId,
+        runId: latestRun.runId,
+      });
+    }
+
+    const prompt = parsed.prompt ?? replaceRun?.input.prompt;
+    if (!prompt?.trim()) {
+      throw new OraRuntimeError("Branch group prompt is required.", -32004, { sessionId: session.sessionId });
+    }
+    const now = this.now();
+    const branchGroupId = `${session.sessionId}:branch-${now}-${String(this.manifest.nextRunNumber).padStart(4, "0")}`;
+    const baseTurnIndex = parsed.target === "replace_latest"
+      ? Math.max(0, (replaceRun?.turnIndex ?? 1) - 1)
+      : latestRun?.turnIndex ?? 0;
+
+    for (const [index, candidate] of parsed.candidates.entries()) {
+      await this.startStreamingRun({
+        sessionId: session.sessionId,
+        input: {
+          ...candidate.input,
+          prompt: candidate.input?.prompt ?? prompt,
+          projectId: candidate.input?.projectId ?? session.projectId,
+          context: {
+            ...(candidate.input?.context ?? {}),
+            branchGroupId,
+            branchTarget: parsed.target,
+            ...(baseRunId ? { branchBaseRunId: baseRunId } : {}),
+            ...(replaceRunId ? { branchReplaceRunId: replaceRunId } : {}),
+          },
+        },
+        config: {
+          ...candidate.config,
+          metadata: {
+            ...(candidate.config.metadata ?? {}),
+            branchGroupId,
+            branchRole: "candidate",
+            branchTarget: parsed.target,
+            branchPrompt: prompt,
+            branchBaseTurnIndex: baseTurnIndex,
+            branchGroupCreatedAt: now,
+            branchCandidateLabel: candidate.label ?? `Candidate ${index + 1}`,
+            ...(baseRunId ? { branchBaseRunId: baseRunId } : {}),
+            ...(replaceRunId ? { branchReplaceRunId: replaceRunId } : {}),
+          },
+        },
+      });
+    }
+
+    return this.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId });
+  }
+
+  adoptSessionBranchGroup(params: unknown): SessionDetail {
+    const parsed = SessionBranchGroupAdoptParamsSchema.parse(params);
+    const session = this.getSessionOrThrow(parsed.sessionId);
+    const group = this.getSessionBranchGroup(parsed);
+    const candidate = this.getRunOrThrow(parsed.runId);
+    if (candidate.sessionId !== session.sessionId || candidate.config.metadata.branchGroupId !== parsed.branchGroupId) {
+      throw new OraRuntimeError("Run does not belong to the selected branch group.", -32004, parsed);
+    }
+    if (candidate.status === "queued" || candidate.status === "running" || candidate.status === "failed" || candidate.status === "cancelled") {
+      throw new OraRuntimeError("Only completed branch candidates can be adopted.", -32004, { runId: candidate.runId, status: candidate.status });
+    }
+    if (group.target === "append_after_latest" && session.latestRunId !== group.baseRunId) {
+      throw new OraRuntimeError("Cannot adopt append branch because the session latest run has changed.", -32004, {
+        sessionId: session.sessionId,
+        latestRunId: session.latestRunId,
+        baseRunId: group.baseRunId,
+      });
+    }
+    if (group.target === "replace_latest" && session.latestRunId !== group.replaceRunId) {
+      throw new OraRuntimeError("Cannot adopt replacement branch because the session latest run has changed.", -32004, {
+        sessionId: session.sessionId,
+        latestRunId: session.latestRunId,
+        replaceRunId: group.replaceRunId,
+      });
+    }
+    if (group.target === "empty_start" && session.turnCount !== 0) {
+      throw new OraRuntimeError("Cannot adopt empty_start branch after the session has advanced.", -32004, {
+        sessionId: session.sessionId,
+        turnCount: session.turnCount,
+      });
+    }
+
+    const now = this.now();
+    if (group.target === "replace_latest" && group.replaceRunId) {
+      const replaced = this.getRunOrThrow(group.replaceRunId);
+      const superseded = StateSnapshotSchema.parse({
+        ...replaced,
+        config: {
+          ...replaced.config,
+          metadata: {
+            ...replaced.config.metadata,
+            supersededByRunId: candidate.runId,
+            supersededAt: now,
+          },
+        },
+        updatedAt: Math.max(replaced.updatedAt, now),
+      });
+      this.cacheRun(superseded, true);
+    }
+
+    const turnIndex = group.target === "replace_latest" && group.replaceRunId
+      ? this.getRunOrThrow(group.replaceRunId).turnIndex
+      : candidate.turnIndex;
+    const adopted = StateSnapshotSchema.parse({
+      ...candidate,
+      turnIndex,
+      config: {
+        ...candidate.config,
+        metadata: {
+          ...candidate.config.metadata,
+          branchRole: "adopted",
+          branchAdoptedAt: now,
+        },
+      },
+      updatedAt: Math.max(candidate.updatedAt, now),
+    });
+    this.cacheRun(adopted, true);
+
+    for (const runId of group.candidateRunIds) {
+      if (runId === candidate.runId) continue;
+      const other = this.getRunOrThrow(runId);
+      this.cacheRun(StateSnapshotSchema.parse({
+        ...other,
+        config: {
+          ...other.config,
+          metadata: {
+            ...other.config.metadata,
+            branchGroupAdoptedRunId: candidate.runId,
+          },
+        },
+        updatedAt: Math.max(other.updatedAt, now),
+      }), true);
+    }
+
+    return this.getSession({ sessionId: session.sessionId });
+  }
+
+  dismissSessionBranchGroup(params: unknown): SessionBranchGroup {
+    const parsed = SessionBranchGroupDismissParamsSchema.parse(params);
+    const group = this.getSessionBranchGroup(parsed);
+    const now = this.now();
+    for (const runId of group.candidateRunIds) {
+      const run = this.getRunOrThrow(runId);
+      if (run.config.metadata.branchRole === "adopted") continue;
+      this.cacheRun(StateSnapshotSchema.parse({
+        ...run,
+        config: {
+          ...run.config,
+          metadata: {
+            ...run.config.metadata,
+            branchDismissed: true,
+            branchDismissedAt: now,
+          },
+        },
+        updatedAt: Math.max(run.updatedAt, now),
+      }), true);
+    }
+    return this.getSessionBranchGroup(parsed);
+  }
+
   resolvePlanDecision(params: unknown): SessionDetail {
     const parsed = SessionPlanDecisionResolveParamsSchema.parse(params);
     const session = this.getSessionOrThrow(parsed.sessionId);
@@ -696,6 +930,48 @@ export class LocalRunStore {
       systemAgentOverrideStore: this.systemAgentOverrideStore,
       agents: this.listAgents(),
     });
+  }
+
+  private agentExists(agentId: string): boolean {
+    const catalog = this.agentCatalog();
+    return catalog.customAgents.some((agent) => agent.name === agentId)
+      || catalog.systemAgents.some((agent) => agent.id === agentId);
+  }
+
+  listAutomations(params: unknown = {}) {
+    return this.automationService.list(params);
+  }
+
+  getAutomation(params: unknown) {
+    return this.automationService.get(params);
+  }
+
+  createAutomation(params: unknown) {
+    return this.automationService.create(params);
+  }
+
+  updateAutomation(params: unknown) {
+    return this.automationService.update(params);
+  }
+
+  deleteAutomation(params: unknown) {
+    return this.automationService.delete(params);
+  }
+
+  pauseAutomation(params: unknown) {
+    return this.automationService.pause(params);
+  }
+
+  resumeAutomation(params: unknown) {
+    return this.automationService.resume(params);
+  }
+
+  runAutomationNow(params: unknown) {
+    return this.automationService.runNow(params);
+  }
+
+  previewAutomationSchedule(params: unknown) {
+    return this.automationService.previewSchedule(params);
   }
 
   updateSystemAgentOverride(params: SystemAgentOverrideUpdateParams | unknown): SystemAgentOverride {
@@ -876,6 +1152,7 @@ export class LocalRunStore {
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
       selfIterationRegistry: this,
+      automationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -912,7 +1189,7 @@ export class LocalRunStore {
     });
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
-    if (turnIndex === 1) {
+    if (turnIndex === 1 && fullConfig.metadata.branchRole !== "candidate") {
       generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title).then((earlyTitle) => {
         if (earlyTitle) this.updateSessionTitle(session.sessionId, earlyTitle);
       });
@@ -977,6 +1254,7 @@ export class LocalRunStore {
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
       selfIterationRegistry: this,
+      automationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1157,6 +1435,7 @@ export class LocalRunStore {
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
       selfIterationRegistry: this,
+      automationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1224,7 +1503,7 @@ export class LocalRunStore {
     const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
-    if (turnIndex === 1) {
+    if (turnIndex === 1 && fullConfig.metadata.branchRole !== "candidate") {
       const earlyTitle = await generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title);
       if (earlyTitle) {
         this.updateSessionTitle(session.sessionId, earlyTitle);
@@ -1248,6 +1527,7 @@ export class LocalRunStore {
       skillRegistry: this.skillRegistry,
       modeRegistry: this,
       selfIterationRegistry: this,
+      automationRegistry: this,
       customAgentOverlay: this.customAgentStore.personaOverlay(fullConfig.customAgentId),
       customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
       systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1375,6 +1655,7 @@ export class LocalRunStore {
         skillRegistry: this.skillRegistry,
         modeRegistry: this,
         selfIterationRegistry: this,
+        automationRegistry: this,
         customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
         customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
         systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
@@ -1870,6 +2151,9 @@ export class LocalRunStore {
   private persistRun(snapshot: StateSnapshot): void {
     const normalized = this.normalizeSnapshotForPersistence(snapshot);
     this.cacheRun(normalized, true);
+    if (isUnadoptedBranchCandidate(normalized)) {
+      return;
+    }
     scheduleLongTermMemoryUpdate(normalized, this.memoryUpdateDeps());
     this.queueSelfIterationAfterTerminalRun(normalized);
   }
@@ -1881,6 +2165,9 @@ export class LocalRunStore {
       normalized.sessionId ? this.sessions.get(normalized.sessionId)?.title : undefined,
     );
     this.cacheRun(normalized, true, { titleOverride });
+    if (isUnadoptedBranchCandidate(normalized)) {
+      return;
+    }
     scheduleLongTermMemoryUpdate(normalized, this.memoryUpdateDeps());
     this.queueSelfIterationAfterTerminalRun(normalized);
   }
@@ -1930,7 +2217,7 @@ export class LocalRunStore {
   ): void {
     snapshot = this.normalizeSnapshotForPersistence(snapshot);
     this.runs.set(snapshot.runId, snapshot);
-    if (snapshot.sessionId) {
+    if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
       const session = this.upsertSessionFromRun(snapshot, options);
       this.sessions.set(session.sessionId, session);
       if (flush) {
@@ -2038,10 +2325,14 @@ export class LocalRunStore {
     this.backend.saveManifest(this.manifest);
   }
 
-  private runsForSession(sessionId: string): StateSnapshot[] {
+  private allRunsForSession(sessionId: string): StateSnapshot[] {
     return [...this.runs.values()]
       .filter((run) => run.sessionId === sessionId)
       .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));
+  }
+
+  private runsForSession(sessionId: string): StateSnapshot[] {
+    return this.allRunsForSession(sessionId).filter(isVisibleMainlineRun);
   }
 
   private nextTurnIndex(sessionId: string): number {
@@ -2172,20 +2463,29 @@ export class LocalRunStore {
   ): Promise<ModelMessage[]> {
     const session = this.getSessionOrThrow(sessionId);
     const provider = resolveRunProviderConfig(config);
-    const priorMessages = this.buildConversationMessages(sessionId, "");
-    let messages = this.buildConversationMessages(sessionId, currentPrompt);
+    const excludeRunId = config.metadata.branchTarget === "replace_latest" && typeof config.metadata.branchReplaceRunId === "string"
+      ? config.metadata.branchReplaceRunId
+      : undefined;
+    const priorMessages = this.buildConversationMessages(sessionId, "", excludeRunId);
+    let messages = this.buildConversationMessages(sessionId, currentPrompt, excludeRunId);
     const check = shouldCompactContext({
       contextState: session.contextState,
       provider,
       messages,
     });
-    this.persistSessionContextState(sessionId, {
-      ...normalizeContextState(session.contextState),
-      activeTokenUsage: check.usage,
-      contextWindow: check.contextWindow,
-      autoCompactTokenLimit: check.limit,
-    });
+    const branchCandidate = config.metadata.branchRole === "candidate";
+    if (!branchCandidate) {
+      this.persistSessionContextState(sessionId, {
+        ...normalizeContextState(session.contextState),
+        activeTokenUsage: check.usage,
+        contextWindow: check.contextWindow,
+        autoCompactTokenLimit: check.limit,
+      });
+    }
     if (!check.shouldCompact || !check.limit || priorMessages.length === 0) {
+      return messages;
+    }
+    if (branchCandidate) {
       return messages;
     }
 
@@ -2886,6 +3186,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isTerminalRunStatus(status: StateSnapshot["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function previousMainlineRunBefore(
+  sessionId: string,
+  runId: string,
+  runs: StateSnapshot[],
+): StateSnapshot | undefined {
+  const index = runs.findIndex((run) => run.sessionId === sessionId && run.runId === runId);
+  return index > 0 ? runs[index - 1] : undefined;
 }
 
 export class InMemoryRunStore extends LocalRunStore {}

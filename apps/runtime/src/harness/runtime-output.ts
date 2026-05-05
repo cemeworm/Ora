@@ -55,7 +55,6 @@ export function coerceNoToolResponse(
     ? FORCED_FINAL_FALLBACK_TEXT
     : response.text.trim() || FORCED_FINAL_FALLBACK_TEXT;
   if ((response.toolCalls?.length ?? 0) > 0) {
-    deps.setCompletionStopReason("forced_final_answer");
     deps.emit("completion.updated", {
       state: "tool_calls_ignored",
       reason,

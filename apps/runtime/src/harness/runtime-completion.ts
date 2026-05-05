@@ -2,9 +2,9 @@ import type { CompletionStopReason, ModeSpec, RunConfig } from "@cemeworm/shared
 import type { RuntimeToolCall } from "./runtime-tool-executor.js";
 import { stableKeyForRuntimeTool, type RuntimeToolAttemptDecision } from "./runtime-tool-loop.js";
 
-export const RUNTIME_TOOL_LOOP_SAFETY_LIMIT = 64;
-export const DEFAULT_MAX_TOOL_CALLS = 64;
-export const TOOL_TYPE_HARD_LIMIT = 64;
+export const RUNTIME_TOOL_LOOP_SAFETY_LIMIT = 256;
+export const DEFAULT_MAX_TOOL_CALLS = 256;
+export const TOOL_TYPE_HARD_LIMIT = 256;
 export const FORCED_FINAL_FALLBACK_TEXT = "I need to stop using tools here. Based on the available context, I cannot complete more tool-backed work in this run.";
 
 type RuntimeCompletionEmit = (

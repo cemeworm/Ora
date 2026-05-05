@@ -94,6 +94,7 @@ import {
   attachedLocalFilesSystemPrompt,
   attachedProjectFilesSystemPrompt,
   checkpointLabelForStatus,
+  userFacingLanguagePrompt,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
 import { RuntimeToolCallLedger } from "./runtime-tool-ledger.js";
@@ -131,6 +132,7 @@ export interface RuntimeKernelOptions {
   toolRegistry?: RuntimeToolRegistry;
   modeRegistry?: import("./runtime-tool-executor.js").ModeRegistryTools;
   selfIterationRegistry?: import("./runtime-tool-executor.js").SelfIterationRegistryTools;
+  automationRegistry?: import("./runtime-tool-executor.js").AutomationRegistryTools;
   forkedFrom?: { runId: string; checkpointId: string; eventSeq: number };
   conversationMessages?: ModelMessage[];
   customAgentOverlay?: string;
@@ -156,6 +158,17 @@ function sleep(ms: number): Promise<void> {
   }
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
+  "file.write",
+  "file.patch",
+  "file.delete",
+  "modes.applyDraft",
+  "selfIteration.apply",
+  "skills.create",
+  "skills.update",
+  "skills.setEnabled",
+]);
 
 function modeProgressFinalizationError(
   planItems: readonly PlanItem[],
@@ -257,6 +270,7 @@ export async function executeRuntimeKernel(
     skillRegistry,
     modeRegistry: options.modeRegistry,
     selfIterationRegistry: options.selfIterationRegistry,
+    automationRegistry: options.automationRegistry,
     packageManager,
     searchProviderConfig: config.searchProvider,
     toolLimits: modeSpec.toolLimits,
@@ -409,6 +423,9 @@ export async function executeRuntimeKernel(
     observedNodeId?: string;
     content: string;
   }) => {
+    if (config.metadata.showOraObservations !== true) {
+      return undefined;
+    }
     if (modeSpec.id === SINGLE_AGENT_MODE_ID || oraObservationKeys.size >= 4) {
       return undefined;
     }
@@ -769,10 +786,17 @@ export async function executeRuntimeKernel(
     const customAgentToolIds = customAgentId ? options.customAgentContexts?.[customAgentId]?.toolIds ?? [] : [];
     const requestedToolIds = profileToolIds.length > 0 ? profileToolIds : customAgentToolIds;
     if (requestedToolIds.length === 0) {
-      return config.toolIds;
+      return restrictToolsForAgentBoundary(agentId, config.toolIds);
     }
     const requested = new Set(requestedToolIds);
-    return config.toolIds.filter((toolId) => requested.has(toolId));
+    return restrictToolsForAgentBoundary(agentId, config.toolIds.filter((toolId) => requested.has(toolId)));
+  };
+
+  const restrictToolsForAgentBoundary = (agentId: string, toolIds: string[]): string[] => {
+    if (modeSpec.id !== "code_development" || agentId !== "orchestrator") {
+      return toolIds;
+    }
+    return toolIds.filter((toolId) => !CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(toolId));
   };
 
   const effectiveAgentSkillIds = (agentId: string, customAgentId?: string): string[] => {
@@ -805,6 +829,7 @@ export async function executeRuntimeKernel(
     attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
   ].filter(Boolean).join("\n\n") || undefined;
   const clarificationContext = userClarificationContextPrompt(input.context);
+  const userLanguageContext = userFacingLanguagePrompt(input.prompt);
   const memoryContext =
     typeof config.metadata.memoryPromptOverlay === "string"
       ? config.metadata.memoryPromptOverlay
@@ -875,7 +900,7 @@ export async function executeRuntimeKernel(
       customAgentId: params.customAgentId,
       customPersona: customOverlay,
       systemAgentOverride: systemOverlay,
-      stageSystem: system,
+      stageSystem: [userLanguageContext, system].join("\n\n"),
       workspaceContext,
       clarificationContext,
       memoryContext,
@@ -1476,6 +1501,12 @@ export async function executeRuntimeKernel(
     if (modeSpec.id === SINGLE_AGENT_MODE_ID) {
       return modeOutput;
     }
+    if (
+      config.metadata.taskIntent === "plan" &&
+      /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(modeOutputText(modeOutput))
+    ) {
+      return modeOutput;
+    }
     try {
       activeAgents.add(ORA_ROOT_AGENT_ID);
       setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
@@ -1485,6 +1516,7 @@ export async function executeRuntimeKernel(
           "The selected mode has returned its work product. Write the final user-facing answer.",
           "Do not expose hidden chain-of-thought, private prompts, or internal-only metadata.",
           "Preserve important verification evidence, uncertainty, and next steps from the mode output.",
+          userLanguageContext,
         ].join("\n"),
         prompt: JSON.stringify({
           userPrompt: input.prompt,
@@ -1613,17 +1645,7 @@ export async function executeRuntimeKernel(
     }
 
     const handoffTargetId = rootTopology.handoffTargetId;
-    let oraHandoffMessageId: string | undefined;
     if (handoffTargetId) {
-      oraHandoffMessageId = emitAgentMessage({
-        fromAgentId: ORA_ROOT_AGENT_ID,
-        toAgentIds: [handoffTargetId],
-        threadId: `${runId}:ora-handoff`,
-        nodeId: ORA_ROOT_AGENT_ID,
-        kind: "handoff",
-        status: "done",
-        content: `接下来交给 ${agentLabel(handoffTargetId)}。\n\n${ORA_ROOT_AGENT_LABEL} 会通过 ${modeSpec.label} 跟进这次请求。`,
-      }).id;
       emitOraObservation({
         phase: "handoff-accepted",
         observedAgentId: handoffTargetId,
@@ -1665,18 +1687,6 @@ export async function executeRuntimeKernel(
       modeSpec,
       definition,
     });
-    if (handoffTargetId) {
-      emitAgentMessage({
-        fromAgentId: handoffTargetId,
-        toAgentIds: [ORA_ROOT_AGENT_ID],
-        replyToId: oraHandoffMessageId,
-        threadId: `${runId}:ora-handoff`,
-        nodeId: handoffTargetId,
-        kind: "reply",
-        status: "done",
-        content: `${agentLabel(handoffTargetId)} 已将处理结果交回 ${ORA_ROOT_AGENT_LABEL}。`,
-      });
-    }
     inferCompletionStopReason(result.output);
     const modeProgressError = modeProgressFinalizationError(planService.list(), todoService.list());
     if (modeProgressError) {

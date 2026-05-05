@@ -18,6 +18,7 @@ export { ChannelService } from "./channels/service.js";
 export { ChannelStore } from "./channels/store.js";
 export { ChannelManager } from "./channels/manager.js";
 export { ChannelMessageBus } from "./channels/message-bus.js";
+export { AutomationService } from "./automation-service.js";
 export { createRuntimeHttpServer, listenRuntimeHttpServer } from "./http-server.js";
 export { InMemoryRunStore, LocalRunStore } from "./run-store.js";
 export { OraRuntimeError } from "./runtime-errors.js";

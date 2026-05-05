@@ -140,6 +140,17 @@ function endsWithSentenceFinalPunctuation(text: string): boolean {
   return index >= 0 && SENTENCE_FINAL_PUNCTUATION.has(text[index]);
 }
 
+export function userFacingLanguagePrompt(userPrompt: string): string {
+  const excerpt = userPrompt.trim().replace(/\s+/g, " ").slice(0, 400);
+  return [
+    "User-facing output language:",
+    "- User-facing output follows current user message language.",
+    "- If the current user message explicitly asks for a response language, obey that explicit request.",
+    "- Keep code, commands, paths, logs, identifiers, quoted text, and proper nouns in their original language unless the user asks to translate them.",
+    excerpt ? `- Current user message excerpt: ${JSON.stringify(excerpt)}` : undefined,
+  ].filter(Boolean).join("\n");
+}
+
 export function workspaceSystemPrompt(workspace: unknown): string | undefined {
   if (!workspace || typeof workspace !== "object" || workspace === null) {
     return undefined;

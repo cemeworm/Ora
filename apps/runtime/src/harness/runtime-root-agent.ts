@@ -114,7 +114,7 @@ function hasProfile(modeSpec: ModeSpec, agentId: string): boolean {
 function modeDefaultBudget(): AgentProfile["budget"] {
   return {
     maxTokens: 18000,
-    maxToolCalls: 64,
+    maxToolCalls: 256,
     maxRuntimeMs: 300000,
     maxCostUsd: 3,
   };

@@ -8,6 +8,7 @@ import type {
   PendingClarificationOption,
   RunConfig,
 } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID } from "@cemeworm/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import {
@@ -165,6 +166,36 @@ export interface RunNodeRuntimeLoopDeps {
   ) => ArtifactRef;
   sleep: (ms: number) => Promise<void>;
   actionDeps: () => RuntimeActionDeps;
+}
+
+const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
+  "file.write",
+  "file.patch",
+  "file.delete",
+  "modes.applyDraft",
+  "selfIteration.apply",
+  "skills.create",
+  "skills.update",
+  "skills.setEnabled",
+]);
+
+function codeDevelopmentToolBoundaryError(params: {
+  modeSpec: ModeSpec;
+  agentId: string;
+  toolCall: RuntimeToolCall;
+  runtimeToolExecutor: RuntimeToolExecutor;
+}): string | undefined {
+  if (params.modeSpec.id !== CODE_DEVELOPMENT_MODE_ID || params.agentId !== "orchestrator") {
+    return undefined;
+  }
+  const isBlockedStaticTool = CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(params.toolCall.tool);
+  const isHighRiskShell =
+    params.toolCall.tool === "shell.execute" &&
+    params.runtimeToolExecutor.riskLevel(params.toolCall) === "high";
+  if (!isBlockedStaticTool && !isHighRiskShell) {
+    return undefined;
+  }
+  return "Code Development boundary violation: Orchestrator may plan and finalize, but code mutations must run in the Builder stage.";
 }
 
 export function isInternalProviderAssistantText(text: string): boolean {
@@ -912,6 +943,16 @@ export async function runNodeRuntimeLoop(
         nodeId: params.nodeId,
         title: params.title,
       });
+    }
+
+    const boundaryError = codeDevelopmentToolBoundaryError({
+      modeSpec,
+      agentId: params.agentId,
+      toolCall,
+      runtimeToolExecutor,
+    });
+    if (boundaryError) {
+      throw new Error(boundaryError);
     }
 
     const riskLevel = runtimeToolExecutor.riskLevel(toolCall);
