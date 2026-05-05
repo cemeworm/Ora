@@ -129,6 +129,51 @@ describe("session thread runtime behavior", () => {
     expect(reloaded.getSession({ sessionId: created.sessionId }).session.turnCount).toBe(0);
   });
 
+  it("persists run lifecycle through the session ledger and reloads from projection", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    const run = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Ledger cutover smoke", createdAt: FIXED_TIME },
+      config: { modeId: "single_agent", providerId: "ledger-cutover-provider", modelRef: "mock-model" },
+    });
+
+    const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
+    const entries = fs.readFileSync(ledgerPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; runId?: string });
+
+    expect(entries.map((entry) => entry.type)).toEqual([
+      "session.created",
+      "compaction.summary",
+      "user.message",
+      "run.started",
+      "runtime.event_batch",
+      "assistant.message",
+      "session.info",
+    ]);
+    expect(entries.filter((entry) => entry.runId === run.runId).map((entry) => entry.type)).toEqual([
+      "user.message",
+      "run.started",
+      "runtime.event_batch",
+      "assistant.message",
+    ]);
+    expect(fs.existsSync(path.join(dir, "runs", `${run.runId}.json`))).toBe(false);
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    const detail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: session.sessionId }));
+    expect(detail.latestSnapshot).toMatchObject({
+      runId: run.runId,
+      sessionId: session.sessionId,
+      status: "succeeded",
+    });
+    expect((detail.latestSnapshot?.output as { text?: string }).text).toContain("Ledger cutover smoke");
+    expect(detail.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
   it("archives sessions and hides them from session lists", () => {
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
@@ -425,6 +470,7 @@ describe("session thread runtime behavior", () => {
       (event.payload as { toolId?: string }).toolId === "shell.execute"
     )).toBe(true);
     expect(capturedRequests.some((request) =>
+      request.prompt.includes("Workspace tool result for shell.execute") ||
       request.messages.some((message) => message.content.includes("Workspace tool result for shell.execute"))
     )).toBe(true);
   });
@@ -595,7 +641,7 @@ describe("session thread runtime behavior", () => {
     expect(sessionDetail.session.turnCount).toBe(2);
   });
 
-  it("migrates legacy runs into single-turn legacy sessions", async () => {
+  it("does not persist clean-cutover runs into legacy run files", async () => {
     const dir = freshStoreDir();
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dir, clock }));
 
@@ -610,30 +656,25 @@ describe("session thread runtime behavior", () => {
     }) as { runId: string };
 
     const runPath = path.join(dir, "runs", `${run.runId}.json`);
-    const persistedRun = JSON.parse(fs.readFileSync(runPath, "utf8")) as Record<string, unknown>;
-    delete persistedRun.sessionId;
-    delete persistedRun.turnIndex;
-    fs.writeFileSync(runPath, JSON.stringify(persistedRun, null, 2));
-    fs.rmSync(path.join(dir, "sessions"), { recursive: true, force: true });
+    expect(fs.existsSync(runPath)).toBe(false);
 
     const reloaded = new LocalRunStore({ dataDir: dir, clock });
     const sessions = reloaded.listSessions();
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.sessionId).toBe(`session-legacy-${run.runId}`);
+    expect(sessions[0]?.latestRunId).toBe(run.runId);
     expect(sessions[0]?.turnCount).toBe(1);
 
     const detail = SessionDetailSchema.parse(reloaded.getSession({
-      sessionId: `session-legacy-${run.runId}`,
+      sessionId: sessions[0]!.sessionId,
     }));
     expect(detail.session.latestRunId).toBe(run.runId);
-    expect(detail.latestSnapshot?.sessionId).toBe(`session-legacy-${run.runId}`);
     expect(detail.latestSnapshot?.turnIndex).toBe(1);
     expect(detail.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(detail.transcript[0]?.content).toBe("Legacy migration prompt");
     expect(detail.transcript[1]?.content).toContain("Legacy migration prompt");
   });
 
-  it("migrates legacy ora-mvp placeholder project ids into unscoped recent chats", async () => {
+  it("keeps ledger-backed state authoritative over legacy placeholder files", async () => {
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
     const project = store.createProject({ rootPath: dir });
@@ -667,8 +708,8 @@ describe("session thread runtime behavior", () => {
     );
 
     const reloaded = new LocalRunStore({ dataDir: dir, clock });
-    expect(reloaded.getSession({ sessionId: session.sessionId }).session.projectId).toBeUndefined();
-    expect(reloaded.getRunState({ runId: run.runId }).input.projectId).toBeUndefined();
+    expect(reloaded.getSession({ sessionId: session.sessionId }).session.projectId).toBe(project.projectId);
+    expect(reloaded.getRunState({ runId: run.runId }).input.projectId).toBe(project.projectId);
   });
 
   it("uses the runtime kernel even when legacy graph metadata is present", async () => {

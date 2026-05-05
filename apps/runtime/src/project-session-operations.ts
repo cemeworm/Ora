@@ -45,6 +45,7 @@ export interface ProjectSessionOperationDeps {
   nextSessionId: () => string;
   persistProject: (project: ProjectSummary) => void;
   persistSession: (session: SessionSummary) => void;
+  persistSessionCreated?: (session: SessionSummary) => SessionSummary;
   getProjectOrThrow: (projectId: string) => ProjectSummary;
   getSessionOrThrow: (sessionId: string) => SessionSummary;
   getRunOrThrow: (runId: string) => StateSnapshot;
@@ -116,8 +117,7 @@ export function createSession(params: unknown, deps: ProjectSessionOperationDeps
     createdAt: now,
     updatedAt: now,
   });
-  deps.persistSession(session);
-  return session;
+  return deps.persistSessionCreated?.(session) ?? (deps.persistSession(session), session);
 }
 
 export function listSessions(params: unknown, deps: ProjectSessionOperationDeps): SessionSummary[] {
@@ -160,6 +160,9 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
 }
 
 function sessionWithLatestAttention(session: SessionSummary, deps: ProjectSessionOperationDeps): SessionSummary {
+  if (session.attention) {
+    return SessionSummarySchema.parse(session);
+  }
   const latestRun = session.latestRunId ? deps.runs.get(session.latestRunId) : deps.runsForSession(session.sessionId).at(-1);
   if (!latestRun) {
     return SessionSummarySchema.parse(session);

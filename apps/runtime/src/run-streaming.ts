@@ -25,7 +25,11 @@ export function publishRunStream(params: {
     ? normalizeSnapshotAttention(params.snapshot)
     : undefined;
   const liveSnapshot = normalizeSnapshotAttention(params.liveSnapshot);
-  const streamSnapshot = snapshot ?? (shouldAttachLiveSnapshot(params.events) ? liveSnapshot : undefined);
+  const streamSnapshot = snapshot ?? (
+    liveSnapshot.status === "queued" || liveSnapshot.status === "running"
+      ? shouldAttachRunningLiveSnapshot(params.events, liveSnapshot) ? liveSnapshot : undefined
+      : shouldAttachLiveSnapshot(params.events) ? liveSnapshot : undefined
+  );
   params.onStream?.(RunEventStreamSchema.parse({
     runId: params.runId,
     fromSeq: params.events[0]?.seq ?? liveSnapshot.events.length,
@@ -225,7 +229,7 @@ function shouldAttachLiveSnapshot(events: readonly OraEventEnvelope[]): boolean 
     if (event.type === "message.delta" || event.type === "token.delta") {
       return false;
     }
-    return event.type.startsWith("run.") ||
+    return (event.type.startsWith("run.") && event.type !== "run.started") ||
       event.type === "action.updated" ||
       event.type === "approval.required" ||
       event.type === "approval.resolved" ||
@@ -241,6 +245,22 @@ function shouldAttachLiveSnapshot(events: readonly OraEventEnvelope[]): boolean 
       event.type === "artifact.degraded" ||
       event.type === "agent.message";
   });
+}
+
+function shouldAttachRunningLiveSnapshot(events: readonly OraEventEnvelope[], liveSnapshot: StateSnapshot): boolean {
+  if (events.some((event) =>
+    event.type === "approval.required" ||
+    event.type === "clarification.required"
+  )) {
+    return true;
+  }
+  if (!events.some((event) => event.type === "message.delta" || event.type === "token.delta")) {
+    return false;
+  }
+  return liveSnapshot.events.filter((event) =>
+    event.type === "message.delta" &&
+    (!event.payload || typeof event.payload !== "object" || (event.payload as Record<string, unknown>).visibility !== "internal")
+  ).length > 1;
 }
 
 export function createStreamingFailure(params: {

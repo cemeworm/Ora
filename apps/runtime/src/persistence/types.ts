@@ -6,6 +6,8 @@ import type {
   ChannelDelivery,
   ChannelMessageRecord,
   ProjectSummary,
+  RuntimeSessionEntry,
+  RuntimeSessionLedger,
   RuntimeStorageOptimizationResult,
   SessionSummary,
   StateSnapshot
@@ -35,6 +37,9 @@ export interface PersistedArtifact {
 export interface RuntimePersistenceBackend {
   load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] };
   optimizeStorage(): RuntimeStorageOptimizationResult;
+  appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;
+  getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined;
+  listSessionLedgers(): RuntimeSessionLedger[];
   saveManifest(manifest: StoreManifest): void;
   saveRun(run: StoredRun): void;
   saveSession(session: StoredSession): void;

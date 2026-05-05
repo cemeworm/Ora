@@ -8,11 +8,13 @@ import {
   ChannelDeliverySchema,
   ChannelMessageRecordSchema,
   ProjectSummarySchema,
+  RuntimeSessionEntrySchema,
+  RuntimeSessionLedgerSchema,
   SessionSummarySchema,
   RuntimeStorageOptimizationResultSchema,
   StateSnapshotSchema
 } from "@cemeworm/shared";
-import type { ArtifactRef } from "@cemeworm/shared";
+import type { ArtifactRef, RuntimeSessionEntry, RuntimeSessionLedger } from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
 import type {
   PersistedArtifact,
@@ -26,6 +28,11 @@ import type {
   StoredRun,
   StoredSession
 } from "./types.js";
+import {
+  deriveStoredRuntimeStateFromLedgers,
+  mergeStoredRuns,
+  mergeStoredSessions,
+} from "./session-ledger-projections.js";
 
 const MANIFEST_SCHEMA_VERSION = 3;
 
@@ -54,6 +61,31 @@ CREATE TABLE IF NOT EXISTS sessions (
   sessionId TEXT PRIMARY KEY,
   updatedAt INTEGER NOT NULL,
   data TEXT NOT NULL
+);
+`;
+
+const CREATE_SESSION_ENTRIES_TABLE = `
+CREATE TABLE IF NOT EXISTS session_entries (
+  sessionId TEXT NOT NULL,
+  entryId TEXT NOT NULL,
+  parentId TEXT,
+  runId TEXT,
+  turnIndex INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  createdAt INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (sessionId, entryId)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_entries_session_seq
+  ON session_entries(sessionId, seq, createdAt, entryId);
+`;
+
+const CREATE_SESSION_LEDGER_META_TABLE = `
+CREATE TABLE IF NOT EXISTS session_ledger_meta (
+  sessionId TEXT PRIMARY KEY,
+  leafEntryId TEXT
 );
 `;
 
@@ -157,6 +189,11 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtLoadAllSessions: Database.Statement;
   private readonly stmtLoadAllProjects: Database.Statement;
   private readonly stmtLoadAllRuns: Database.Statement;
+  private readonly stmtInsertSessionEntry: Database.Statement;
+  private readonly stmtLoadSessionEntries: Database.Statement;
+  private readonly stmtListSessionEntryIds: Database.Statement;
+  private readonly stmtSaveSessionLedgerMeta: Database.Statement;
+  private readonly stmtGetSessionLedgerMeta: Database.Statement;
   private readonly stmtSaveSession: Database.Statement;
   private readonly stmtSaveProject: Database.Statement;
   private readonly stmtSaveRun: Database.Statement;
@@ -188,6 +225,8 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.db.exec(CREATE_MANIFEST_TABLE);
     this.db.exec(CREATE_RUNS_TABLE);
     this.db.exec(CREATE_SESSIONS_TABLE);
+    this.db.exec(CREATE_SESSION_ENTRIES_TABLE);
+    this.db.exec(CREATE_SESSION_LEDGER_META_TABLE);
     this.db.exec(CREATE_PROJECTS_TABLE);
     this.db.exec(CREATE_ARTIFACTS_TABLE);
     this.db.exec(CREATE_CHANNEL_CONFIGS_TABLE);
@@ -209,6 +248,15 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.stmtLoadAllSessions = this.db.prepare("SELECT data FROM sessions ORDER BY updatedAt DESC, sessionId ASC");
     this.stmtLoadAllProjects = this.db.prepare("SELECT data FROM projects ORDER BY updatedAt DESC, projectId ASC");
     this.stmtLoadAllRuns = this.db.prepare("SELECT data FROM runs ORDER BY runId ASC");
+    this.stmtInsertSessionEntry = this.db.prepare(
+      "INSERT OR IGNORE INTO session_entries (sessionId, entryId, parentId, runId, turnIndex, seq, createdAt, type, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    this.stmtLoadSessionEntries = this.db.prepare("SELECT data FROM session_entries WHERE sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
+    this.stmtListSessionEntryIds = this.db.prepare("SELECT DISTINCT sessionId FROM session_entries ORDER BY sessionId ASC");
+    this.stmtSaveSessionLedgerMeta = this.db.prepare(
+      "INSERT INTO session_ledger_meta (sessionId, leafEntryId) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET leafEntryId = excluded.leafEntryId"
+    );
+    this.stmtGetSessionLedgerMeta = this.db.prepare("SELECT leafEntryId FROM session_ledger_meta WHERE sessionId = ? LIMIT 1");
     this.stmtSaveSession = this.db.prepare(
       "INSERT INTO sessions (sessionId, updatedAt, data) VALUES (?, ?, ?) ON CONFLICT(sessionId) DO UPDATE SET updatedAt = excluded.updatedAt, data = excluded.data"
     );
@@ -280,13 +328,17 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       runs.push(StateSnapshotSchema.parse(JSON.parse(row.data)));
     }
 
+    const ledgerState = deriveStoredRuntimeStateFromLedgers(this.listSessionLedgers());
+    const mergedRuns = mergeStoredRuns(runs, ledgerState.runs);
+    const mergedSessions = mergeStoredSessions(sessions, ledgerState.sessions);
+
     // Ensure nextRunNumber is at least greater than any existing run number
-    const maxRunNumber = runs.reduce((max, run) => {
+    const maxRunNumber = mergedRuns.reduce((max, run) => {
       const match = /^run-(\d+)$/.exec(run.runId);
       return match ? Math.max(max, Number(match[1])) : max;
     }, 0);
 
-    const maxSessionNumber = sessions.reduce((max, session) => {
+    const maxSessionNumber = mergedSessions.reduce((max, session) => {
       const match = /^session-(\d+)$/.exec(session.sessionId);
       return match ? Math.max(max, Number(match[1])) : max;
     }, 0);
@@ -303,8 +355,8 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
         nextSessionNumber: Math.max(manifest.nextSessionNumber, maxSessionNumber + 1),
         nextProjectNumber: Math.max(manifest.nextProjectNumber, maxProjectNumber + 1),
       },
-      runs,
-      sessions,
+      runs: mergedRuns,
+      sessions: mergedSessions,
       projects,
     };
   }
@@ -329,6 +381,59 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       manifest.nextSessionNumber,
       manifest.nextProjectNumber,
     );
+  }
+
+  appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger {
+    const parsedEntries = entries.map((entry) => RuntimeSessionEntrySchema.parse({
+      ...entry,
+      sessionId,
+    }));
+    const appendTransaction = this.db.transaction(() => {
+      for (const entry of parsedEntries) {
+        this.stmtInsertSessionEntry.run(
+          entry.sessionId,
+          entry.id,
+          entry.parentId ?? null,
+          entry.runId ?? null,
+          entry.turnIndex,
+          entry.seq,
+          entry.createdAt,
+          entry.type,
+          JSON.stringify(entry),
+        );
+      }
+      const nextLeafEntryId = leafEntryId ?? parsedEntries.at(-1)?.id;
+      if (nextLeafEntryId) {
+        this.stmtSaveSessionLedgerMeta.run(sessionId, nextLeafEntryId);
+      }
+    });
+    appendTransaction();
+    return this.getSessionLedger(sessionId) ?? RuntimeSessionLedgerSchema.parse({ sessionId, entries: [] });
+  }
+
+  getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined {
+    const rows = this.stmtLoadSessionEntries.all(sessionId) as { data: string }[];
+    if (rows.length === 0) {
+      return undefined;
+    }
+    const entries = rows.map((row) => RuntimeSessionEntrySchema.parse(JSON.parse(row.data)));
+    const meta = this.stmtGetSessionLedgerMeta.get(sessionId) as { leafEntryId: string | null } | undefined;
+    const entryIds = new Set(entries.map((entry) => entry.id));
+    const leafEntryId = meta?.leafEntryId && entryIds.has(meta.leafEntryId)
+      ? meta.leafEntryId
+      : entries.at(-1)?.id;
+    return RuntimeSessionLedgerSchema.parse({
+      sessionId,
+      leafEntryId,
+      entries,
+    });
+  }
+
+  listSessionLedgers(): RuntimeSessionLedger[] {
+    const rows = this.stmtListSessionEntryIds.all() as { sessionId: string }[];
+    return rows
+      .map((row) => this.getSessionLedger(row.sessionId))
+      .filter((ledger): ledger is RuntimeSessionLedger => ledger !== undefined);
   }
 
   private databaseFileBytes(): number {

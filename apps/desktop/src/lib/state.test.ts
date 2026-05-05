@@ -23,6 +23,8 @@ function testSnapshot(params: {
   latency?: OraStateSnapshot["latency"];
   attention?: OraStateSnapshot["attention"];
   planDecisions?: OraStateSnapshot["planDecisions"];
+  pendingApprovals?: OraStateSnapshot["pendingApprovals"];
+  pendingClarifications?: OraStateSnapshot["pendingClarifications"];
 } = {}): OraStateSnapshot {
   const runId = params.runId ?? "run-debate";
   const sessionId = params.sessionId ?? "session-debate";
@@ -69,8 +71,8 @@ function testSnapshot(params: {
     queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 0, topics: [] },
     sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
     busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
-    pendingClarifications: [],
-    pendingApprovals: [],
+    pendingClarifications: params.pendingClarifications ?? [],
+    pendingApprovals: params.pendingApprovals ?? [],
     attention: params.attention,
     latency: params.latency,
     updatedAt,
@@ -1067,6 +1069,27 @@ describe("desktop workbench state", () => {
       });
 
       expect(next.activeSessionDetail?.session.attention?.kind).toBe("needs_plan_decision");
+    });
+
+    it("does not synthesize clickable gate attention from raw pending fields", () => {
+      const sessionId = "session-raw-pending";
+      const snapshot = testSnapshot({
+        runId: "run-raw-pending",
+        sessionId,
+        pendingApprovals: ["run-raw-pending:action-1"],
+      });
+
+      const next = mergeRunStreamSnapshot(undefined, {
+        runId: snapshot.runId,
+        fromSeq: 0,
+        nextSeq: 0,
+        status: "interrupted",
+        events: [],
+        snapshot,
+      } as unknown as OraRunEventStream);
+
+      expect(next?.pendingApprovals).toEqual(["run-raw-pending:action-1"]);
+      expect(next?.attention?.kind).not.toBe("needs_approval");
     });
 
     it("does not create durable plan decision attention when taskIntent is implement", () => {

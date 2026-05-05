@@ -10,6 +10,8 @@ import {
   ChannelDeliverySchema,
   ChannelMessageRecordSchema,
   ProjectSummarySchema,
+  RuntimeSessionEntrySchema,
+  RuntimeSessionLedgerSchema,
   SessionSummarySchema,
   RuntimeStorageOptimizationResultSchema,
   StateSnapshotSchema
@@ -28,10 +30,17 @@ import {
   type StoredRun,
   type StoredSession
 } from "./types.js";
+import type { RuntimeSessionEntry, RuntimeSessionLedger } from "@cemeworm/shared";
+import {
+  deriveStoredRuntimeStateFromLedgers,
+  mergeStoredRuns,
+  mergeStoredSessions,
+} from "./session-ledger-projections.js";
 
 export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
   private readonly manifestPath: string;
   private readonly sessionsDir: string;
+  private readonly sessionLedgerDir: string;
   private readonly projectsDir: string;
   private readonly runsDir: string;
   private readonly artifactsDir: string;
@@ -43,6 +52,7 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   constructor(private readonly dataDir: string) {
     this.manifestPath = path.join(dataDir, "manifest.json");
     this.sessionsDir = path.join(dataDir, "sessions");
+    this.sessionLedgerDir = path.join(dataDir, "sessions-ledger");
     this.projectsDir = path.join(dataDir, "projects");
     this.runsDir = path.join(dataDir, "runs");
     this.artifactsDir = path.join(dataDir, "artifacts");
@@ -77,15 +87,19 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
       .map((name) => this.readJsonFile(path.join(this.runsDir, name), StateSnapshotSchema))
       .sort((a, b) => a.runId.localeCompare(b.runId));
 
+    const ledgerState = deriveStoredRuntimeStateFromLedgers(this.listSessionLedgers());
+    const mergedRuns = mergeStoredRuns(runs, ledgerState.runs);
+    const mergedSessions = mergeStoredSessions(sessions, ledgerState.sessions);
+
     return {
       manifest: {
         ...manifest,
-        nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(runs)),
-        nextSessionNumber: Math.max(manifest.nextSessionNumber, this.nextSessionNumberAfter(sessions)),
+        nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(mergedRuns)),
+        nextSessionNumber: Math.max(manifest.nextSessionNumber, this.nextSessionNumberAfter(mergedSessions)),
         nextProjectNumber: Math.max(manifest.nextProjectNumber, this.nextProjectNumberAfter(projects)),
       },
-      runs,
-      sessions,
+      runs: mergedRuns,
+      sessions: mergedSessions,
       projects,
     };
   }
@@ -103,6 +117,64 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   saveManifest(manifest: StoreManifest): void {
     this.ensureDirs();
     this.writeJsonFile(this.manifestPath, StoreManifestSchema.parse(manifest));
+  }
+
+  appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger {
+    this.ensureDirs();
+    const parsedEntries = entries.map((entry) => RuntimeSessionEntrySchema.parse({
+      ...entry,
+      sessionId,
+    }));
+    const existing = this.getSessionLedger(sessionId) ?? RuntimeSessionLedgerSchema.parse({
+      sessionId,
+      entries: [],
+    });
+    const existingIds = new Set(existing.entries.map((entry) => entry.id));
+    const appendEntries = parsedEntries.filter((entry) => !existingIds.has(entry.id));
+    const ledgerPath = this.sessionLedgerPath(sessionId);
+    if (appendEntries.length > 0) {
+      fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+      fs.appendFileSync(
+        ledgerPath,
+        appendEntries.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+        "utf8",
+      );
+    }
+    const nextLeafEntryId = leafEntryId ?? appendEntries.at(-1)?.id ?? existing.leafEntryId;
+    if (nextLeafEntryId) {
+      this.writeJsonFile(this.sessionLedgerMetaPath(sessionId), { sessionId, leafEntryId: nextLeafEntryId });
+    }
+    return this.getSessionLedger(sessionId)!;
+  }
+
+  getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined {
+    this.ensureDirs();
+    const ledgerPath = this.sessionLedgerPath(sessionId);
+    if (!fs.existsSync(ledgerPath)) {
+      return undefined;
+    }
+    const entries = parseLedgerJsonl(fs.readFileSync(ledgerPath, "utf8"))
+      .filter((entry) => entry.sessionId === sessionId);
+    const meta = this.readSessionLedgerMeta(sessionId);
+    const entryIds = new Set(entries.map((entry) => entry.id));
+    const leafEntryId = meta?.leafEntryId && entryIds.has(meta.leafEntryId)
+      ? meta.leafEntryId
+      : entries.sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt || a.id.localeCompare(b.id)).at(-1)?.id;
+    return RuntimeSessionLedgerSchema.parse({
+      sessionId,
+      leafEntryId,
+      entries,
+    });
+  }
+
+  listSessionLedgers(): RuntimeSessionLedger[] {
+    this.ensureDirs();
+    return fs.readdirSync(this.sessionLedgerDir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .map((name) => decodeURIComponent(name.slice(0, -".jsonl".length)))
+      .map((sessionId) => this.getSessionLedger(sessionId))
+      .filter((ledger): ledger is RuntimeSessionLedger => ledger !== undefined)
+      .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
   }
 
   private directoryBytes(dir: string): number {
@@ -243,6 +315,7 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
 
   private ensureDirs(): void {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
+    fs.mkdirSync(this.sessionLedgerDir, { recursive: true });
     fs.mkdirSync(this.projectsDir, { recursive: true });
     fs.mkdirSync(this.runsDir, { recursive: true });
     fs.mkdirSync(this.artifactsDir, { recursive: true });
@@ -329,4 +402,46 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   private fileSafeId(id: string): string {
     return encodeURIComponent(id);
   }
+
+  private sessionLedgerPath(sessionId: string): string {
+    return path.join(this.sessionLedgerDir, `${this.fileSafeId(sessionId)}.jsonl`);
+  }
+
+  private sessionLedgerMetaPath(sessionId: string): string {
+    return path.join(this.sessionLedgerDir, `${this.fileSafeId(sessionId)}.meta.json`);
+  }
+
+  private readSessionLedgerMeta(sessionId: string): { sessionId: string; leafEntryId?: string } | undefined {
+    const metaPath = this.sessionLedgerMetaPath(sessionId);
+    if (!fs.existsSync(metaPath)) {
+      return undefined;
+    }
+    return this.readJsonFile(
+      metaPath,
+      z.object({
+        sessionId: z.string().min(1),
+        leafEntryId: z.string().min(1).optional(),
+      }),
+    );
+  }
+}
+
+function parseLedgerJsonl(contents: string): RuntimeSessionEntry[] {
+  const lines = contents
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const entries: RuntimeSessionEntry[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    try {
+      entries.push(RuntimeSessionEntrySchema.parse(JSON.parse(line)));
+    } catch (error) {
+      if (index === lines.length - 1) {
+        break;
+      }
+      throw error;
+    }
+  }
+  return entries;
 }

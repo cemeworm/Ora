@@ -111,7 +111,6 @@ export function runRuntimeMaintenance(
       estimatedSnapshotBytesBefore += compacted.bytesBefore;
       estimatedSnapshotBytesAfter += compacted.bytesAfter;
       deps.runs.set(runId, compacted.snapshot);
-      deps.backend.saveRun(compacted.snapshot);
     }
   }
 

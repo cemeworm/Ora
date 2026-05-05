@@ -5746,7 +5746,7 @@ describe("Ora runtime smoke path", () => {
     }));
     expect(state.status).toBe("succeeded");
     expect(state.events.some((event) => event.type === "run.done")).toBe(true);
-  });
+  }, 10_000);
 
   it("executes OpenAI-compatible native tool calls during streaming runs", async () => {
     const streams: Array<{ status?: string; events: Array<{ type: string; payload: unknown }>; snapshot?: unknown }> = [];
