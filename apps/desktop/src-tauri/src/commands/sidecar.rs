@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -229,7 +231,13 @@ impl RuntimeSidecarManager {
             app,
             self.active_streaming_children.clone(),
         ) {
-            Ok(response) => Some(response),
+            Ok(response) => {
+                if should_restart_channel_daemon_after_response(request, &response) {
+                    self.stop_channel_daemon();
+                    self.ensure_channel_daemon(app);
+                }
+                Some(response)
+            }
             Err(_) => {
                 self.disable_process_bridge();
                 None
@@ -302,12 +310,10 @@ impl RuntimeSidecarManager {
             match child.try_wait() {
                 Ok(Some(_status)) => {}
                 Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_child_process_group(&mut child);
                 }
                 Err(_error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_child_process_group(&mut child);
                 }
             }
         }
@@ -916,6 +922,11 @@ impl RuntimeFacade {
             "sessions.list" => self.sessions_list(params.as_ref()),
             "sessions.get" => self.sessions_get(params.as_ref()),
             "sessions.archive" => self.sessions_archive(params.as_ref()),
+            "sessions.branchGroups.list" => self.sessions_branch_groups_list(params.as_ref()),
+            "sessions.branchGroups.get" => self.sessions_branch_groups_get(params.as_ref()),
+            "sessions.branchGroups.createAndRun" => self.sessions_branch_groups_create_and_run(params.as_ref()),
+            "sessions.branchGroups.adopt" => self.sessions_branch_groups_adopt(params.as_ref()),
+            "sessions.branchGroups.dismiss" => self.sessions_branch_groups_dismiss(params.as_ref()),
             "runs.start" => self.runs_start(params.as_ref()),
             "runs.startStreaming" => self.runs_start(params.as_ref()),
             "runs.list" => self.runs_list(params.as_ref()),
@@ -1483,22 +1494,258 @@ impl RuntimeFacade {
         let session_id = require_session_id(params)?;
         let state = self.lock_state()?;
         let session = get_session(&state, &session_id)?.clone();
-        let turns = runs_for_session(&state, &session_id)
+        let turns = visible_runs_for_session(&state, &session_id)
             .into_iter()
             .map(session_turn)
             .collect::<Vec<Value>>();
         let transcript = session_transcript(&state, &session_id);
-        let latest_snapshot = runs_for_session(&state, &session_id)
+        let latest_snapshot = visible_runs_for_session(&state, &session_id)
             .last()
             .cloned()
             .cloned();
+        let branch_groups = branch_groups_for_session(&state, &session_id);
 
         Ok(json!({
             "session": session,
             "turns": turns,
             "transcript": transcript,
-            "latestSnapshot": latest_snapshot
+            "latestSnapshot": latest_snapshot,
+            "branchGroups": branch_groups
         }))
+    }
+
+    fn sessions_branch_groups_list(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let state = self.lock_state()?;
+        get_session(&state, &session_id)?;
+        Ok(Value::Array(branch_groups_for_session(&state, &session_id)))
+    }
+
+    fn sessions_branch_groups_get(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let branch_group_id = require_branch_group_id(params)?;
+        let state = self.lock_state()?;
+        get_session(&state, &session_id)?;
+        branch_groups_for_session(&state, &session_id)
+            .into_iter()
+            .find(|group| group["branchGroupId"].as_str() == Some(branch_group_id.as_str()))
+            .ok_or_else(|| runtime_error(-32004, "Branch group not found", Some(json!({ "branchGroupId": branch_group_id }))))
+    }
+
+    fn sessions_branch_groups_create_and_run(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let target = params
+            .and_then(|value| value.get("target"))
+            .and_then(Value::as_str)
+            .unwrap_or("append_after_latest");
+        if !matches!(target, "empty_start" | "append_after_latest" | "replace_latest") {
+            return Err(runtime_error(-32602, "Unsupported branch group target", Some(json!({ "target": target }))));
+        }
+        let candidates = params
+            .and_then(|value| value.get("candidates"))
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+            .ok_or_else(|| runtime_error(-32602, "Branch group candidates are required", None))?;
+        let mut state = self.lock_state()?;
+        let session = get_session(&state, &session_id)?.clone();
+        let latest = visible_runs_for_session(&state, &session_id).last().cloned().cloned();
+        let replace_run_id = if target == "replace_latest" {
+            params
+                .and_then(|value| value.get("replaceRunId"))
+                .and_then(Value::as_str)
+                .or_else(|| latest.as_ref().and_then(|run| run["runId"].as_str()))
+                .map(str::to_string)
+        } else {
+            None
+        };
+        let replace_run = replace_run_id
+            .as_deref()
+            .and_then(|run_id| state.runs.get(run_id))
+            .cloned();
+        if target == "empty_start" && session["turnCount"].as_u64().unwrap_or(0) != 0 {
+            return Err(runtime_error(-32602, "empty_start branch groups require an empty session", None));
+        }
+        if target == "replace_latest"
+            && replace_run_id.as_deref() != latest.as_ref().and_then(|run| run["runId"].as_str())
+        {
+            return Err(runtime_error(-32602, "replace_latest can only replace the current latest run", None));
+        }
+        let prompt = params
+            .and_then(|value| value.get("prompt"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| replace_run.as_ref().and_then(|run| run["input"]["prompt"].as_str()))
+            .ok_or_else(|| runtime_error(-32602, "Branch group prompt is required", None))?
+            .to_string();
+        let now = now_ms();
+        let branch_group_id = format!("{}:branch-{}-{}", session_id, now, state.next_run_number + 1);
+        let base_run_id = match target {
+            "append_after_latest" => latest.as_ref().and_then(|run| run["runId"].as_str()).map(str::to_string),
+            "replace_latest" => replace_run_id
+                .as_deref()
+                .and_then(|run_id| previous_visible_run_before(&state, &session_id, run_id))
+                .and_then(|run| run["runId"].as_str())
+                .map(str::to_string),
+            _ => None,
+        };
+        let base_turn_index = if target == "replace_latest" {
+            replace_run
+                .as_ref()
+                .and_then(|run| run["turnIndex"].as_u64())
+                .unwrap_or(1)
+                .saturating_sub(1)
+        } else {
+            latest
+                .as_ref()
+                .and_then(|run| run["turnIndex"].as_u64())
+                .unwrap_or(0)
+        };
+        let project_id = session["projectId"].as_str().map(str::to_string);
+        let candidate_turn_index = if target == "replace_latest" {
+            replace_run
+                .as_ref()
+                .and_then(|run| run["turnIndex"].as_u64())
+                .unwrap_or(1)
+        } else {
+            next_visible_turn_index(&state, &session_id)
+        };
+
+        for (index, candidate) in candidates.iter().enumerate() {
+            let config = candidate.get("config").unwrap_or(&Value::Null);
+            let pattern = config
+                .get("pattern")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_PATTERN);
+            ensure_pattern(pattern)?;
+            let provider_id = config.get("providerId").and_then(Value::as_str);
+            let provider_config = config.get("providerConfig");
+            let model_ref = config.get("modelRef").and_then(Value::as_str);
+            let custom_agent_id = config
+                .get("customAgentId")
+                .and_then(Value::as_str)
+                .map(normalize_custom_agent_name)
+                .transpose()?;
+            state.next_run_number += 1;
+            let run_id = format!("run-{:04}", state.next_run_number);
+            let mut snapshot = create_snapshot(
+                &run_id,
+                &session_id,
+                candidate_turn_index,
+                project_id.as_deref(),
+                pattern,
+                &prompt,
+                now + index as u64,
+                None,
+                provider_id,
+                provider_config,
+                model_ref,
+                custom_agent_id.as_deref(),
+            );
+            let label = candidate
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Candidate {}", index + 1));
+            if let Some(metadata) = snapshot.get_mut("config").and_then(|config| config.get_mut("metadata")) {
+                set_object_value(metadata, "branchGroupId", json!(branch_group_id));
+                set_object_value(metadata, "branchRole", json!("candidate"));
+                set_object_value(metadata, "branchTarget", json!(target));
+                set_object_value(metadata, "branchPrompt", json!(prompt));
+                set_object_value(metadata, "branchBaseTurnIndex", json!(base_turn_index));
+                set_object_value(metadata, "branchGroupCreatedAt", json!(now));
+                set_object_value(metadata, "branchCandidateLabel", json!(label));
+                if let Some(base_run_id) = base_run_id.as_deref() {
+                    set_object_value(metadata, "branchBaseRunId", json!(base_run_id));
+                }
+                if let Some(replace_run_id) = replace_run_id.as_deref() {
+                    set_object_value(metadata, "branchReplaceRunId", json!(replace_run_id));
+                }
+            }
+            state.runs.insert(run_id.clone(), snapshot);
+            state.run_order.push(run_id);
+        }
+        branch_groups_for_session(&state, &session_id)
+            .into_iter()
+            .find(|group| group["branchGroupId"].as_str() == Some(branch_group_id.as_str()))
+            .ok_or_else(|| runtime_error(-32004, "Branch group not found", Some(json!({ "branchGroupId": branch_group_id }))))
+    }
+
+    fn sessions_branch_groups_adopt(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let branch_group_id = require_branch_group_id(params)?;
+        let run_id = require_run_id(params)?;
+        let mut state = self.lock_state()?;
+        let group = branch_groups_for_session(&state, &session_id)
+            .into_iter()
+            .find(|group| group["branchGroupId"].as_str() == Some(branch_group_id.as_str()))
+            .ok_or_else(|| runtime_error(-32004, "Branch group not found", Some(json!({ "branchGroupId": branch_group_id }))))?;
+        let replace_run_id = group.get("replaceRunId").and_then(Value::as_str).map(str::to_string);
+        let replace_turn_index = replace_run_id
+            .as_deref()
+            .and_then(|id| state.runs.get(id))
+            .and_then(|run| run["turnIndex"].as_u64());
+        let now = now_ms();
+        if let Some(replace_run_id) = replace_run_id.as_deref() {
+            if let Some(replaced) = state.runs.get_mut(replace_run_id) {
+                if let Some(metadata) = replaced.get_mut("config").and_then(|config| config.get_mut("metadata")) {
+                    set_object_value(metadata, "supersededByRunId", json!(run_id));
+                    set_object_value(metadata, "supersededAt", json!(now));
+                }
+                set_object_value(replaced, "updatedAt", json!(replaced["updatedAt"].as_u64().unwrap_or(0).max(now)));
+            }
+        }
+        let adopted = {
+            let candidate = get_run_mut(&mut state, &run_id)?;
+            if candidate["sessionId"].as_str() != Some(session_id.as_str())
+                || candidate["config"]["metadata"]["branchGroupId"].as_str() != Some(branch_group_id.as_str())
+            {
+                return Err(runtime_error(-32602, "Run does not belong to the selected branch group", Some(json!({ "runId": run_id }))));
+            }
+            if let Some(turn_index) = replace_turn_index {
+                set_object_value(candidate, "turnIndex", json!(turn_index));
+            }
+            if let Some(metadata) = candidate.get_mut("config").and_then(|config| config.get_mut("metadata")) {
+                set_object_value(metadata, "branchRole", json!("adopted"));
+                set_object_value(metadata, "branchAdoptedAt", json!(now));
+            }
+            set_object_value(candidate, "updatedAt", json!(candidate["updatedAt"].as_u64().unwrap_or(0).max(now)));
+            candidate.clone()
+        };
+        upsert_session_from_snapshot(&mut state, &adopted);
+        drop(state);
+        self.sessions_get(params)
+    }
+
+    fn sessions_branch_groups_dismiss(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
+        let session_id = require_session_id(params)?;
+        let branch_group_id = require_branch_group_id(params)?;
+        let now = now_ms();
+        let mut state = self.lock_state()?;
+        let candidate_ids = branch_groups_for_session(&state, &session_id)
+            .into_iter()
+            .find(|group| group["branchGroupId"].as_str() == Some(branch_group_id.as_str()))
+            .and_then(|group| group["candidateRunIds"].as_array().cloned())
+            .ok_or_else(|| runtime_error(-32004, "Branch group not found", Some(json!({ "branchGroupId": branch_group_id }))))?;
+        for value in candidate_ids {
+            let Some(run_id) = value.as_str() else {
+                continue;
+            };
+            let Some(run) = state.runs.get_mut(run_id) else {
+                continue;
+            };
+            if run["config"]["metadata"]["branchRole"].as_str() == Some("adopted") {
+                continue;
+            }
+            if let Some(metadata) = run.get_mut("config").and_then(|config| config.get_mut("metadata")) {
+                set_object_value(metadata, "branchDismissed", json!(true));
+                set_object_value(metadata, "branchDismissedAt", json!(now));
+            }
+        }
+        branch_groups_for_session(&state, &session_id)
+            .into_iter()
+            .find(|group| group["branchGroupId"].as_str() == Some(branch_group_id.as_str()))
+            .ok_or_else(|| runtime_error(-32004, "Branch group not found", Some(json!({ "branchGroupId": branch_group_id }))))
     }
 
     fn runs_start(&self, params: Option<&Value>) -> Result<Value, RuntimeJsonRpcError> {
@@ -2784,6 +3031,8 @@ fn spawn_channel_daemon_child(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    #[cfg(unix)]
+    process.process_group(0);
     if let Some(working_directory) = command.working_directory.as_ref() {
         process.current_dir(working_directory);
     }
@@ -2820,6 +3069,49 @@ fn parse_channel_session_update_notification(line: &str) -> Option<Value> {
         return value.get("params").cloned();
     }
     None
+}
+
+fn should_restart_channel_daemon_after_response(
+    request: &RuntimeJsonRpcRequest,
+    response: &RuntimeJsonRpcResponse,
+) -> bool {
+    if response.error.is_some() {
+        return false;
+    }
+    match request.method.as_str() {
+        "channels.create"
+        | "channels.update"
+        | "channels.delete"
+        | "channels.start"
+        | "channels.stop"
+        | "channels.restart" => true,
+        "channels.wechat.pollQrCodeStatus" => response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("status"))
+            .and_then(Value::as_str)
+            == Some("confirmed"),
+        _ => false,
+    }
+}
+
+fn terminate_child_process_group(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        for _ in 0..10 {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(50)),
+                Err(_) => break,
+            }
+        }
+        let _ = Command::new("kill").args(["-KILL", &group]).status();
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn channel_daemon_command(command: &RuntimeCommandSpec) -> RuntimeCommandSpec {
@@ -2878,6 +3170,8 @@ fn run_process_json_rpc_internal(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    #[cfg(unix)]
+    process.process_group(0);
     if let Some(working_directory) = command.working_directory.as_ref() {
         process.current_dir(working_directory);
     }
@@ -3016,12 +3310,10 @@ fn run_process_json_rpc_internal(
         match child.try_wait() {
             Ok(Some(_status)) => {}
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_child_process_group(&mut child);
             }
             Err(_error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_child_process_group(&mut child);
             }
         }
     }
@@ -4100,11 +4392,150 @@ fn runs_for_session<'a>(state: &'a FacadeState, session_id: &str) -> Vec<&'a Val
 }
 
 fn next_turn_index(state: &FacadeState, session_id: &str) -> u64 {
-    runs_for_session(state, session_id)
+    visible_runs_for_session(state, session_id)
         .last()
         .and_then(|snapshot| snapshot["turnIndex"].as_u64())
         .unwrap_or(0)
         + 1
+}
+
+fn visible_runs_for_session<'a>(state: &'a FacadeState, session_id: &str) -> Vec<&'a Value> {
+    runs_for_session(state, session_id)
+        .into_iter()
+        .filter(|run| is_visible_mainline_run(run))
+        .collect()
+}
+
+fn next_visible_turn_index(state: &FacadeState, session_id: &str) -> u64 {
+    visible_runs_for_session(state, session_id)
+        .last()
+        .and_then(|snapshot| snapshot["turnIndex"].as_u64())
+        .unwrap_or(0)
+        + 1
+}
+
+fn previous_visible_run_before<'a>(
+    state: &'a FacadeState,
+    session_id: &str,
+    run_id: &str,
+) -> Option<&'a Value> {
+    let runs = visible_runs_for_session(state, session_id);
+    let index = runs
+        .iter()
+        .position(|run| run["runId"].as_str() == Some(run_id))?;
+    if index == 0 {
+        None
+    } else {
+        runs.get(index - 1).copied()
+    }
+}
+
+fn is_unadopted_branch_candidate(run: &Value) -> bool {
+    run["config"]["metadata"]["branchRole"].as_str() == Some("candidate")
+}
+
+fn is_visible_mainline_run(run: &Value) -> bool {
+    !is_unadopted_branch_candidate(run)
+        && run["config"]["metadata"]["supersededByRunId"].as_str().is_none()
+}
+
+fn branch_groups_for_session(state: &FacadeState, session_id: &str) -> Vec<Value> {
+    let mut grouped: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for run in runs_for_session(state, session_id) {
+        let Some(branch_group_id) = run["config"]["metadata"]["branchGroupId"].as_str() else {
+            continue;
+        };
+        grouped
+            .entry(branch_group_id.to_string())
+            .or_default()
+            .push(run.clone());
+    }
+    let mut groups = grouped
+        .into_iter()
+        .map(|(branch_group_id, mut runs)| {
+            runs.sort_by(|left, right| {
+                left["updatedAt"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .cmp(&right["updatedAt"].as_u64().unwrap_or(0))
+                    .then_with(|| {
+                        left["runId"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .cmp(right["runId"].as_str().unwrap_or_default())
+                    })
+            });
+            let first = runs.first().cloned().unwrap_or_else(|| json!({}));
+            let adopted_run_id = runs
+                .iter()
+                .find(|run| run["config"]["metadata"]["branchRole"].as_str() == Some("adopted"))
+                .and_then(|run| run["runId"].as_str())
+                .map(str::to_string);
+            let dismissed = runs.iter().all(|run| run["config"]["metadata"]["branchDismissed"].as_bool() == Some(true));
+            let all_settled = runs.iter().all(|run| {
+                !matches!(run["status"].as_str(), Some("queued") | Some("running"))
+            });
+            let status = if adopted_run_id.is_some() {
+                "adopted"
+            } else if dismissed {
+                "dismissed"
+            } else if all_settled {
+                "ready"
+            } else {
+                "running"
+            };
+            let candidates = runs
+                .iter()
+                .map(|run| {
+                    json!({
+                        "runId": run["runId"],
+                        "status": run["status"],
+                        "label": run["config"]["metadata"]["branchCandidateLabel"],
+                        "modeId": run["modeId"],
+                        "providerId": run["config"]["providerId"],
+                        "modelRef": run["config"]["modelRef"],
+                        "adopted": run["config"]["metadata"]["branchRole"].as_str() == Some("adopted"),
+                        "prompt": run["input"]["prompt"],
+                        "outputPreview": assistant_text_for_run(run),
+                        "updatedAt": run["updatedAt"]
+                    })
+                })
+                .collect::<Vec<Value>>();
+            let updated_at = runs
+                .iter()
+                .filter_map(|run| run["updatedAt"].as_u64())
+                .max()
+                .unwrap_or_else(now_ms);
+            json!({
+                "branchGroupId": branch_group_id,
+                "sessionId": session_id,
+                "target": first["config"]["metadata"]["branchTarget"].as_str().unwrap_or("append_after_latest"),
+                "baseRunId": first["config"]["metadata"]["branchBaseRunId"].clone(),
+                "replaceRunId": first["config"]["metadata"]["branchReplaceRunId"].clone(),
+                "baseTurnIndex": first["config"]["metadata"]["branchBaseTurnIndex"].as_u64().unwrap_or(0),
+                "prompt": first["config"]["metadata"]["branchPrompt"].as_str().unwrap_or_else(|| first["input"]["prompt"].as_str().unwrap_or("")),
+                "status": status,
+                "candidateRunIds": runs.iter().map(|run| run["runId"].clone()).collect::<Vec<Value>>(),
+                "candidates": candidates,
+                "adoptedRunId": adopted_run_id,
+                "createdAt": first["config"]["metadata"]["branchGroupCreatedAt"].as_u64().unwrap_or_else(now_ms),
+                "updatedAt": updated_at
+            })
+        })
+        .collect::<Vec<Value>>();
+    groups.sort_by(|left, right| {
+        right["updatedAt"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&left["updatedAt"].as_u64().unwrap_or(0))
+            .then_with(|| {
+                left["branchGroupId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["branchGroupId"].as_str().unwrap_or_default())
+            })
+    });
+    groups
 }
 
 fn default_session_title(prompt: &str) -> String {
@@ -4144,7 +4575,7 @@ fn assistant_text_for_run(snapshot: &Value) -> String {
 
 fn session_transcript(state: &FacadeState, session_id: &str) -> Vec<Value> {
     let mut transcript = Vec::new();
-    for run in runs_for_session(state, session_id) {
+    for run in visible_runs_for_session(state, session_id) {
         if let Some(prompt) = run["input"]["prompt"].as_str() {
             if !prompt.trim().is_empty() {
                 transcript.push(json!({
@@ -4221,6 +4652,9 @@ fn upsert_session_from_snapshot(state: &mut FacadeState, snapshot: &Value) {
     let Some(session_id) = snapshot["sessionId"].as_str() else {
         return;
     };
+    if is_unadopted_branch_candidate(snapshot) {
+        return;
+    }
     let existing = state.sessions.get(session_id).cloned();
     let project_id = if !snapshot["input"]["projectId"].is_null() {
         snapshot["input"]["projectId"].clone()
@@ -4230,7 +4664,7 @@ fn upsert_session_from_snapshot(state: &mut FacadeState, snapshot: &Value) {
             .map(|session| session["projectId"].clone())
             .unwrap_or(Value::Null)
     };
-    let turn_count = runs_for_session(state, session_id)
+    let turn_count = visible_runs_for_session(state, session_id)
         .into_iter()
         .filter(|run| run["runId"] != snapshot["runId"])
         .count() as u64
@@ -4286,6 +4720,15 @@ fn require_session_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcEr
         .filter(|session_id| !session_id.is_empty())
         .map(str::to_string)
         .ok_or_else(|| runtime_error(-32602, "Missing sessionId", None))
+}
+
+fn require_branch_group_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
+    params
+        .and_then(|value| value.get("branchGroupId"))
+        .and_then(Value::as_str)
+        .filter(|branch_group_id| !branch_group_id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| runtime_error(-32602, "Missing branchGroupId", None))
 }
 
 fn require_project_id(params: Option<&Value>) -> Result<String, RuntimeJsonRpcError> {
@@ -4728,11 +5171,11 @@ fn profile(id: &str, label: &str, role: &str, pattern: &str, namespaces: Vec<&st
 
 fn pattern_budget(pattern: &str) -> Value {
     match pattern {
-        "generator_verifier" => budget(12000, 8, 180000, 2),
-        "agent_teams" => budget(24000, 24, 600000, 5),
-        "message_bus" => budget(18000, 18, 300000, 3),
-        "shared_state" => budget(20000, 20, 360000, 4),
-        _ => budget(18000, 16, 300000, 3),
+        "generator_verifier" => budget(12000, 256, 180000, 2),
+        "agent_teams" => budget(24000, 256, 600000, 5),
+        "message_bus" => budget(18000, 256, 300000, 3),
+        "shared_state" => budget(20000, 256, 360000, 4),
+        _ => budget(18000, 256, 300000, 3),
     }
 }
 
@@ -5580,6 +6023,68 @@ mod tests {
         assert_eq!(detail["turns"].as_array().unwrap().len(), 2);
         assert_eq!(detail["transcript"].as_array().unwrap().len(), 4);
         assert_eq!(detail["latestSnapshot"]["runId"], second["runId"]);
+    }
+
+    #[test]
+    fn session_branch_groups_support_replace_latest_adoption_in_facade() {
+        let facade = RuntimeFacade::default();
+        let created = facade
+            .handle_method("sessions.create", Some(json!({ "label": "branches" })))
+            .unwrap();
+        let session_id = created["sessionId"].as_str().unwrap().to_string();
+        let first = facade
+            .handle_method(
+                "runs.start",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "input": { "prompt": "Original" },
+                    "config": { "pattern": "generator_verifier" }
+                })),
+            )
+            .unwrap();
+        let group = facade
+            .handle_method(
+                "sessions.branchGroups.createAndRun",
+                Some(json!({
+                    "sessionId": session_id.clone(),
+                    "target": "replace_latest",
+                    "candidates": [
+                        {
+                            "label": "Verifier",
+                            "config": {
+                                "pattern": "shared_state",
+                                "providerId": "local-smoke",
+                                "modelRef": "local/smoke-model"
+                            }
+                        }
+                    ]
+                })),
+            )
+            .unwrap();
+        let branch_group_id = group["branchGroupId"].as_str().unwrap().to_string();
+        let candidate_run_id = group["candidateRunIds"][0].as_str().unwrap().to_string();
+
+        let detail_before_adoption = facade
+            .handle_method("sessions.get", Some(json!({ "sessionId": session_id.clone() })))
+            .unwrap();
+        assert_eq!(detail_before_adoption["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(detail_before_adoption["latestSnapshot"]["runId"], first["runId"]);
+        assert_eq!(detail_before_adoption["branchGroups"].as_array().unwrap().len(), 1);
+
+        let detail_after_adoption = facade
+            .handle_method(
+                "sessions.branchGroups.adopt",
+                Some(json!({
+                    "sessionId": session_id,
+                    "branchGroupId": branch_group_id,
+                    "runId": candidate_run_id
+                })),
+            )
+            .unwrap();
+        assert_eq!(detail_after_adoption["session"]["turnCount"], json!(1));
+        assert_eq!(detail_after_adoption["latestSnapshot"]["pattern"], json!("shared_state"));
+        assert_eq!(detail_after_adoption["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(detail_after_adoption["branchGroups"][0]["status"], json!("adopted"));
     }
 
     #[test]
