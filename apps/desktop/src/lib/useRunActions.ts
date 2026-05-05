@@ -735,6 +735,7 @@ export function useRunActions() {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
       return false;
     }
+    const currentTaskIntent = state.taskIntent;
     dispatch({ type: "SET_BUSY_COMMAND", command: status === "accepted" ? "Accept plan" : "Decline plan" });
     try {
       const detail = await runtimeClient.resolvePlanDecision({ sessionId, decisionId, status });
@@ -749,6 +750,9 @@ export function useRunActions() {
         detail,
         feedback: status === "accepted" ? "Plan accepted." : "Plan decision dismissed.",
       });
+      if (status === "declined") {
+        dispatch({ type: "SET_TASK_INTENT", taskIntent: currentTaskIntent });
+      }
       return true;
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Plan decision update failed." });

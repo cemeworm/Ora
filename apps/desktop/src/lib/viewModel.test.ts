@@ -50,7 +50,7 @@ describe("desktop session view model", () => {
     expect(isSessionProcessing(selectedSession, undefined)).toBe(false);
   });
 
-  it("shows approval required for a running snapshot with a pending approval action", () => {
+  it("shows approval required for a running snapshot with projection-backed approval attention", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {
       sessionId: "session-approval-running",
@@ -109,7 +109,15 @@ describe("desktop session view model", () => {
       sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
       busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
       pendingClarifications: [],
-      pendingApprovals: [],
+      pendingApprovals: ["run-approval-running:action:tool-1"],
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: "run-approval-running",
+        reason: "approval_required",
+        pendingActionIds: ["run-approval-running:action:tool-1"],
+        pendingToolCallIds: [],
+      },
       updatedAt: createdAt,
     } as unknown as OraStateSnapshot;
     const detail: OraSessionDetail = {
@@ -130,6 +138,88 @@ describe("desktop session view model", () => {
     );
 
     expect(viewModel.sessions[0]?.status).toBe("approval_required");
+  });
+
+  it("does not show approval required from raw action state without projection attention", () => {
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      sessionId: "session-raw-approval-running",
+      title: "Raw approval",
+      status: "running",
+      latestRunId: "run-raw-approval-running",
+      latestPattern: "orchestrator_subagent",
+      latestModeId: SINGLE_AGENT_MODE_ID,
+      turnCount: 1,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const snapshot = {
+      runId: "run-raw-approval-running",
+      sessionId: "session-raw-approval-running",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Apply a patch.", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-raw-approval-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [{
+        id: "run-raw-approval-running:action:tool-1",
+        runId: "run-raw-approval-running",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: ["run-raw-approval-running:action:tool-1"],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+    const detail: OraSessionDetail = {
+      session,
+      turns: [],
+      transcript: [],
+      latestSnapshot: snapshot,
+    };
+
+    const viewModel = buildWorkbenchViewModel(
+      MVP_PATTERNS,
+      MVP_MODES,
+      [session],
+      detail,
+      snapshot,
+      "orchestrator_subagent",
+      SINGLE_AGENT_MODE_ID,
+    );
+
+    expect(viewModel.sessions[0]?.status).toBe("running");
   });
 
   it("renders cancelled assistant turns with user-facing copy", () => {
@@ -783,6 +873,110 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("does not let raw approval actions suppress running turn content without projection attention", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-raw-approval-running-content",
+      sessionId: "session-raw-approval-running-content",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Keep rendering progress.", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-raw-approval-running-content-test",
+        skillIds: [],
+        toolIds: ["file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [{
+        id: "run-raw-approval-running-content:action:tool-1",
+        runId: "run-raw-approval-running-content",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-raw-approval-running-content:evt-0",
+        runId: "run-raw-approval-running-content",
+        seq: 0,
+        type: "tool.called",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          toolId: "file.read",
+          status: "succeeded",
+          input: { path: "README.md" },
+          output: { path: "README.md", sizeBytes: 128 },
+        },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: ["run-raw-approval-running-content:action:tool-1"],
+      output: undefined,
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [
+        {
+          id: "run-raw-approval-running-content:user",
+          sessionId: "session-raw-approval-running-content",
+          runId: "run-raw-approval-running-content",
+          turnIndex: 1,
+          role: "user",
+          content: "Keep rendering progress.",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt,
+        },
+        {
+          id: "run-raw-approval-running-content:assistant",
+          sessionId: "session-raw-approval-running-content",
+          runId: "run-raw-approval-running-content",
+          turnIndex: 1,
+          role: "assistant",
+          content: "Stored assistant text stays visible.",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: createdAt + 1_000,
+        },
+      ],
+      { "run-raw-approval-running-content": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("Stored assistant text stays visible.");
+    expect(assistant?.turn?.approvalCount).toBe(0);
+    expect(assistant?.turn?.activeLoadingTarget).toEqual({
+      kind: "timeline",
+      itemId: "run-raw-approval-running-content:timeline:status:0",
+    });
+  });
+
   it("uses tagged delta proposed plans instead of untagged final plan summaries", () => {
     const createdAt = 1_714_000_000_000;
     const untaggedOutput = [
@@ -1261,25 +1455,67 @@ describe("desktop session view model", () => {
       toolCalls: [],
       policyDecisions: [],
       checkpoints: [],
-      events: [],
-      artifacts: [{
-        id: "run-file-change:file-change:0",
+      events: [{
+        id: "run-file-change:event:artifact-degraded",
         runId: "run-file-change",
-        kind: "file",
-        label: "notes/project.md",
-        mimeType: "text/markdown",
+        seq: 1,
+        type: "artifact.degraded",
         createdAt,
         payload: {
-          kind: "file_change",
-          path: "notes/project.md",
-          operation: "patch",
-          beforeContent: "alpha\nold\nomega\n",
-          afterContent: "alpha\nnew\nomega\n",
-          additions: 1,
-          deletions: 1,
-          metadata: { sizeBytes: 16, replacements: 1, created: false },
+          artifact: {
+            id: "run-file-change:recovery:1",
+            runId: "run-file-change",
+            kind: "log",
+            label: "Recovery artifact",
+            mimeType: "application/json",
+            createdAt,
+            payload: {
+              id: "run-file-change:recovery:1",
+              runId: "run-file-change",
+              errorType: "tool_error",
+              decision: "fallback_artifact",
+              summary: "tool_error recovered with a degraded artifact.",
+              createdAt,
+            },
+          },
         },
       }],
+      artifacts: [
+        {
+          id: "run-file-change:file-change:0",
+          runId: "run-file-change",
+          kind: "file",
+          label: "notes/project.md",
+          mimeType: "text/markdown",
+          createdAt,
+          payload: {
+            kind: "file_change",
+            path: "notes/project.md",
+            operation: "patch",
+            beforeContent: "alpha\nold\nomega\n",
+            afterContent: "alpha\nnew\nomega\n",
+            additions: 1,
+            deletions: 1,
+            metadata: { sizeBytes: 16, replacements: 1, created: false },
+          },
+        },
+        {
+          id: "run-file-change:recovery:1",
+          runId: "run-file-change",
+          kind: "log",
+          label: "Recovery artifact",
+          mimeType: "application/json",
+          createdAt,
+          payload: {
+            id: "run-file-change:recovery:1",
+            runId: "run-file-change",
+            errorType: "tool_error",
+            decision: "fallback_artifact",
+            summary: "tool_error recovered with a degraded artifact.",
+            createdAt,
+          },
+        },
+      ],
       activeAgents: [],
       queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
       sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
@@ -1311,6 +1547,15 @@ describe("desktop session view model", () => {
       label: "notes/project.md",
       kind: "file",
     });
+    expect(assistant?.turn?.artifacts).toHaveLength(1);
+    expect(assistant?.turn?.timelineItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "artifact",
+          artifactId: "run-file-change:recovery:1",
+        }),
+      ]),
+    );
     expect(assistant?.turn?.fileChanges).toEqual([
       expect.objectContaining({
         artifactId: "run-file-change:file-change:0",
@@ -1485,6 +1730,14 @@ describe("desktop session view model", () => {
       busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
       pendingClarifications: [],
       pendingApprovals: ["run-approval-transcript:action:solo_agent-tool-1"],
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: "run-approval-transcript",
+        reason: "approval_required",
+        pendingActionIds: ["run-approval-transcript:action:solo_agent-tool-1"],
+        pendingToolCallIds: [],
+      },
       updatedAt: createdAt,
     } as unknown as OraStateSnapshot;
 
@@ -1520,6 +1773,99 @@ describe("desktop session view model", () => {
     expect(assistant?.content).toBe("我已经准备好把调研结果写入项目文档，批准后会继续执行本地写入。");
     expect(assistant?.content).not.toContain("正在读取力拓");
     expect(assistant?.content).not.toContain("文档已成功更新");
+  });
+
+  it("does not show approval copy from raw action state without projection attention", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-raw-approval-copy",
+      sessionId: "session-raw-approval-copy",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "更新项目文档", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-raw-approval-copy-test",
+        skillIds: [],
+        toolIds: ["file.write"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [{
+        id: "run-raw-approval-copy:action:tool-1",
+        runId: "run-raw-approval-copy",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: { path: "README.md" },
+        approvalRequest: {
+          title: "需要你确认写入文件",
+          summary: "Raw approval summary should not become chat copy.",
+          whatWillChange: "README.md",
+          whyNeeded: "Test",
+          riskNote: "Write",
+          confirmLabel: "批准并继续",
+        },
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: ["run-raw-approval-copy:action:tool-1"],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [
+        {
+          id: "run-raw-approval-copy:user",
+          sessionId: "session-raw-approval-copy",
+          runId: "run-raw-approval-copy",
+          turnIndex: 1,
+          role: "user",
+          content: "更新项目文档",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt,
+        },
+        {
+          id: "run-raw-approval-copy:assistant",
+          sessionId: "session-raw-approval-copy",
+          runId: "run-raw-approval-copy",
+          turnIndex: 1,
+          role: "assistant",
+          content: "正在等待后台状态同步。",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt: createdAt + 1_000,
+        },
+      ],
+      { "run-raw-approval-copy": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("");
+    expect(assistant?.content).not.toContain("Raw approval summary");
   });
 
   it("adapts structured agent messages into assistant turn attachments", () => {

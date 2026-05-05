@@ -152,7 +152,7 @@ export function buildWorkbenchViewModel(
       adaptActionRecord(action, selectedPatternSnapshot.input.prompt),
     ),
     checkpoints: detailSnapshot.checkpoints.map(adaptCheckpoint),
-    artifacts: detailSnapshot.artifacts.map(adaptArtifact),
+    artifacts: userVisibleArtifacts(detailSnapshot.artifacts).map(adaptArtifact),
     beats: adaptFilmstripBeats(detailSnapshot),
     activePattern,
     activeMode,
@@ -402,10 +402,7 @@ function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
   if (snapshotPendingClarifications(snapshot).length > 0) {
     return "clarification_required";
   }
-  if (
-    snapshotPendingApprovals(snapshot).length > 0 ||
-    snapshot.actions.some((action) => action.status === "approval_required")
-  ) {
+  if (snapshotPendingApprovals(snapshot).length > 0) {
     return "approval_required";
   }
   if (snapshot.status === "queued" || snapshot.status === "running") {
@@ -1097,16 +1094,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
+  if (snapshot.attention?.kind !== "needs_approval") {
+    return [];
+  }
+  const durableIds = new Set(snapshot.attention.pendingActionIds);
   return Array.isArray(snapshot.pendingApprovals)
-    ? snapshot.pendingApprovals
-    : [];
+    ? snapshot.pendingApprovals.filter((actionId) => durableIds.has(actionId))
+    : [...durableIds];
 }
 
 function snapshotPendingClarifications(
   snapshot: OraStateSnapshot,
 ): OraStateSnapshot["pendingClarifications"] {
+  if (snapshot.attention?.kind !== "needs_clarification") {
+    return [];
+  }
+  const durableIds = new Set(snapshot.attention.pendingClarificationIds);
   return Array.isArray(snapshot.pendingClarifications)
-    ? snapshot.pendingClarifications
+    ? snapshot.pendingClarifications.filter((clarification) => durableIds.has(clarification.id))
     : [];
 }
 
@@ -1366,8 +1371,7 @@ function assistantTextFromSnapshot(
   ) {
     if (
       snapshotPendingClarifications(snapshot).length > 0 ||
-      snapshotPendingApprovals(snapshot).length > 0 ||
-      snapshot.actions.some((action) => action.status === "approval_required")
+      snapshotPendingApprovals(snapshot).length > 0
     ) {
       return undefined;
     }
@@ -1587,11 +1591,7 @@ function progressTextFromSnapshot(
 }
 
 function approvalPendingTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
-  if (
-    snapshot.status !== "interrupted" &&
-    snapshotPendingApprovals(snapshot).length === 0 &&
-    !snapshot.actions.some((action) => action.status === "approval_required")
-  ) {
+  if (snapshotPendingApprovals(snapshot).length === 0) {
     return undefined;
   }
 
@@ -1600,9 +1600,7 @@ function approvalPendingTextFromSnapshot(snapshot: OraStateSnapshot): string | u
 
 function approvalRequestTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
   const pendingIds = new Set(snapshotPendingApprovals(snapshot));
-  const pendingAction =
-    snapshot.actions.find((action) => pendingIds.has(action.id)) ??
-    snapshot.actions.find((action) => action.status === "approval_required");
+  const pendingAction = snapshot.actions.find((action) => pendingIds.has(action.id));
   const summary = pendingAction?.approvalRequest?.summary;
   return typeof summary === "string" && summary.trim()
     ? summary.trim()
@@ -1739,8 +1737,7 @@ function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): bool
   return (
     hasRejectedFinalToolCall(snapshot) ||
     snapshot.status === "interrupted" ||
-    snapshotPendingApprovals(snapshot).length > 0 ||
-    snapshot.actions.some((action) => action.status === "approval_required")
+    snapshotPendingApprovals(snapshot).length > 0
   );
 }
 
@@ -1766,8 +1763,8 @@ function buildAssistantTurnAttachment(
       status: item.status,
     })),
     agentMessages: deriveAgentMessages(snapshot),
-    artifacts: snapshot.artifacts.map(adaptTurnArtifact),
-    fileChanges: snapshot.artifacts.flatMap(adaptTurnFileChange),
+    artifacts: userVisibleArtifacts(snapshot.artifacts).map(adaptTurnArtifact),
+    fileChanges: userVisibleArtifacts(snapshot.artifacts).flatMap(adaptTurnFileChange),
     todos: deriveTurnTodos(snapshot),
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
@@ -1791,8 +1788,7 @@ function activeLoadingTargetFromSnapshot(
   }
   if (
     snapshotPendingClarifications(snapshot).length > 0 ||
-    snapshotPendingApprovals(snapshot).length > 0 ||
-    snapshot.actions.some((action) => action.status === "approval_required")
+    snapshotPendingApprovals(snapshot).length > 0
   ) {
     return undefined;
   }
@@ -2241,7 +2237,7 @@ function deriveTimelineItems(
       continue;
     }
 
-    if (event.type === "artifact.exported" || event.type === "artifact.degraded") {
+    if (event.type === "artifact.exported") {
       const eventAgentId = inferTimelineEventAgentId(snapshot, event);
       flushPendingText();
       flushPendingSteps();
@@ -2613,7 +2609,6 @@ function shouldShowProcessEvent(event: OraEventEnvelope): boolean {
     case "tool.repaired":
       return hasToolId(event);
     case "artifact.exported":
-    case "artifact.degraded":
     case "recovery.detected":
     case "recovery.retry_scheduled":
     case "recovery.applied":
@@ -3277,6 +3272,20 @@ function adaptTurnArtifact(artifact: OraArtifactRef): TurnArtifactAttachment {
   };
 }
 
+function userVisibleArtifacts(artifacts: OraArtifactRef[]): OraArtifactRef[] {
+  return artifacts.filter((artifact) => !isRecoveryArtifact(artifact));
+}
+
+function isRecoveryArtifact(artifact: OraArtifactRef): boolean {
+  return (
+    artifact.kind === "log" &&
+    artifact.label === "Recovery artifact" &&
+    isRecord(artifact.payload) &&
+    typeof artifact.payload.errorType === "string" &&
+    typeof artifact.payload.decision === "string"
+  );
+}
+
 function isPreviewableTurnArtifact(artifact: OraArtifactRef): boolean {
   const label = artifact.label.toLowerCase();
   return artifact.mimeType.startsWith("image/") || artifact.mimeType.includes("html") || label.endsWith(".html") || label.endsWith(".htm");
@@ -3439,10 +3448,7 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
     return clarificationTextFromSnapshot(snapshot) ?? "";
   }
 
-  if (
-    snapshotPendingApprovals(snapshot).length > 0 ||
-    snapshot.actions.some((action) => action.status === "approval_required")
-  ) {
+  if (snapshotPendingApprovals(snapshot).length > 0) {
     return approvalPendingTextFromSnapshot(snapshot) ?? "";
   }
 

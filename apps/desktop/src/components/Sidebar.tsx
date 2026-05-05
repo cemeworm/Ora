@@ -33,6 +33,11 @@ const MAX_VISIBLE_PROJECT_SESSIONS = 4;
 const MAX_VISIBLE_PREFETCH_SESSIONS = 12;
 const MAX_SESSION_SEARCH_RESULTS = 9;
 const SESSION_COLUMN_INDENT = "pl-[1.375rem]";
+const SIDEBAR_ACTION_SLOT_CLASS = "flex h-7 w-7 shrink-0 items-center justify-center";
+const SIDEBAR_ACTION_BUTTON_CLASS = cn(
+  SIDEBAR_ACTION_SLOT_CLASS,
+  "rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground active:scale-95",
+);
 
 export function statusFromSession(
   status: string | undefined,
@@ -73,9 +78,9 @@ function SidebarSectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between px-2 pb-2 pt-1">
+    <div className="flex items-center justify-between pb-2 pl-2 pt-1">
       <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">{title}</span>
-      {action}
+      <div className={SIDEBAR_ACTION_SLOT_CLASS}>{action}</div>
     </div>
   );
 }
@@ -244,7 +249,8 @@ function SessionRow({
           onArchiveRequest();
         }}
         className={cn(
-          "mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-background/85 hover:text-foreground focus-visible:opacity-100 active:scale-95 group-hover/session:opacity-100",
+          SIDEBAR_ACTION_BUTTON_CLASS,
+          "opacity-0 hover:bg-background/85 hover:text-foreground focus-visible:opacity-100 group-hover/session:opacity-100",
           confirmOpen && "opacity-100",
         )}
         title="Archive chat"
@@ -512,12 +518,14 @@ export function Sidebar() {
     >
       <div className="flex h-12 shrink-0 flex-col justify-center px-2">
         {open ? (
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 pr-1">
             <div className="ml-1 flex min-w-0 items-center gap-2">
               <div className="cursor-default font-serif text-[15px] text-primary">Ora</div>
               <ReleaseUpdatePill />
             </div>
-            <SidebarTrigger />
+            <div className={SIDEBAR_ACTION_SLOT_CLASS}>
+              <SidebarTrigger />
+            </div>
           </div>
         ) : (
           <div className="group/workspace-header flex w-full items-center justify-center">
@@ -605,7 +613,7 @@ export function Sidebar() {
                     <button
                       type="button"
                       onClick={() => void actions.addProjectFromDialog()}
-                      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
                       title="Select folder"
                     >
                       <Plus size={14} />
@@ -618,8 +626,8 @@ export function Sidebar() {
                     const visibleSessions = showAllSessions ? project.sessions : project.sessions.slice(0, MAX_VISIBLE_PROJECT_SESSIONS);
                     const hiddenSessionCount = Math.max(0, project.sessions.length - visibleSessions.length);
                     return (
-                      <div key={project.projectId} className="group/project rounded-lg px-2">
-                        <div className="flex items-center gap-1.5">
+                      <div key={project.projectId} className="group/project rounded-lg">
+                        <div className="flex items-center">
                           <button
                             type="button"
                             onClick={() => {
@@ -637,7 +645,10 @@ export function Sidebar() {
                           <button
                             type="button"
                             onClick={() => void actions.createProjectSession(project.projectId)}
-                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground group-hover/project:opacity-100 focus-visible:opacity-100"
+                            className={cn(
+                              SIDEBAR_ACTION_BUTTON_CLASS,
+                              "opacity-0 group-hover/project:opacity-100 focus-visible:opacity-100",
+                            )}
                             title="New project session"
                           >
                             <Plus size={14} />
@@ -717,40 +728,38 @@ export function Sidebar() {
                         dispatch({ type: "SET_VIEW", view: "chat" });
                         void actions.createSession();
                       }}
-                      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
                       title="New chat"
                     >
                       <Plus size={14} />
                     </button>
                   )}
                 />
-                <div className="px-2">
-                  <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
-                    {recentChats.length === 0 ? (
-                      <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
-                    ) : (
-                      recentChats.map((session) => {
-                        const selected = chatSessionSelected && session.id === state.selectedSessionId;
-                        return (
-                          <SessionRow
-                            key={session.id}
-                            title={session.title}
-                            status={session.status}
-                            selected={selected}
-                            confirmOpen={confirmArchiveSessionId === session.id}
-                            onClick={() => void actions.selectSession(session.id)}
-                            onPrefetch={() => void actions.prefetchSession(session.id)}
-                            onArchiveRequest={() => setConfirmArchiveSessionId(session.id)}
-                            onArchiveCancel={() => setConfirmArchiveSessionId(undefined)}
-                            onArchiveConfirm={() => {
-                              setConfirmArchiveSessionId(undefined);
-                              void actions.archiveSession(session.id);
-                            }}
-                          />
-                        );
-                      })
-                    )}
-                  </div>
+                <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
+                  {recentChats.length === 0 ? (
+                    <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                  ) : (
+                    recentChats.map((session) => {
+                      const selected = chatSessionSelected && session.id === state.selectedSessionId;
+                      return (
+                        <SessionRow
+                          key={session.id}
+                          title={session.title}
+                          status={session.status}
+                          selected={selected}
+                          confirmOpen={confirmArchiveSessionId === session.id}
+                          onClick={() => void actions.selectSession(session.id)}
+                          onPrefetch={() => void actions.prefetchSession(session.id)}
+                          onArchiveRequest={() => setConfirmArchiveSessionId(session.id)}
+                          onArchiveCancel={() => setConfirmArchiveSessionId(undefined)}
+                          onArchiveConfirm={() => {
+                            setConfirmArchiveSessionId(undefined);
+                            void actions.archiveSession(session.id);
+                          }}
+                        />
+                      );
+                    })
+                  )}
                 </div>
               </section>
             </div>

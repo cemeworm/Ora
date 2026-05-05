@@ -119,6 +119,41 @@ describe("trail debugger view model", () => {
     expect(findings.some((finding) => finding.id.startsWith("clarification.pending"))).toBe(false);
   });
 
+  it("does not synthesize trail gates from raw pending fields without projection attention", () => {
+    const snapshot = baseSnapshot({
+      status: "interrupted",
+      pendingClarifications: [{
+        id: "clarification-raw",
+        key: "scope",
+        nodeId: "team_lead",
+        nodeLabel: "Team Lead",
+        question: "Raw question?",
+        options: [],
+        requestedAt: 2,
+      }],
+      pendingApprovals: ["action-raw"],
+      actions: [{
+        id: "action-raw",
+        runId: "run-test",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+    });
+
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
+    const findings = collectTrailFindings(snapshot, undefined, undefined, []);
+
+    expect(summary.currentStage).toBe("运行时已初始化");
+    expect(summary.blockingGate).toBe("无");
+    expect(buildPendingApprovalItems(snapshot)).toEqual([]);
+    expect(snapshotPendingClarifications(snapshot)).toEqual([]);
+    expect(findings.some((finding) => finding.id === "approval.pending")).toBe(false);
+    expect(findings.some((finding) => finding.id.startsWith("clarification.pending"))).toBe(false);
+  });
+
   it("keeps current attention-backed gates visible in trail lists and findings", () => {
     const snapshot = baseSnapshot({
       status: "interrupted",

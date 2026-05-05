@@ -2113,7 +2113,6 @@ export function workbenchReducer(
           sessionId: action.sessionId,
           prompt: action.prompt,
           createdAt: action.createdAt,
-          progressText: "正在准备",
         },
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),

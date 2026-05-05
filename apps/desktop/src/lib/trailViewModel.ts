@@ -634,33 +634,27 @@ export function buildActiveMemorySummary(snapshot: OraStateSnapshot): ActiveMemo
 }
 
 export function snapshotPendingClarifications(snapshot: OraStateSnapshot): OraStateSnapshot["pendingClarifications"] {
-  if (snapshot.attention) {
-    if (snapshot.attention.kind !== "needs_clarification") {
-      return [];
-    }
-    const pendingIds = new Set(snapshot.attention.pendingClarificationIds);
-    return snapshot.pendingClarifications.filter((clarification) => pendingIds.has(clarification.id));
+  if (snapshot.attention?.kind !== "needs_clarification") {
+    return [];
   }
-  return Array.isArray(snapshot.pendingClarifications) ? snapshot.pendingClarifications : [];
+  const pendingIds = new Set(snapshot.attention.pendingClarificationIds);
+  return snapshot.pendingClarifications.filter((clarification) => pendingIds.has(clarification.id));
 }
 
 export function snapshotPendingApprovals(snapshot: OraStateSnapshot): string[] {
-  if (snapshot.attention) {
-    if (snapshot.attention.kind !== "needs_approval") {
-      return [];
-    }
-    const pendingIds = new Set(snapshot.attention.pendingActionIds);
-    for (const toolCallId of snapshot.attention.pendingToolCallIds) {
-      const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
-      if (toolCall?.actionId) {
-        pendingIds.add(toolCall.actionId);
-      }
-    }
-    return snapshot.actions
-      .filter((action) => action.status === "approval_required" && pendingIds.has(action.id))
-      .map((action) => action.id);
+  if (snapshot.attention?.kind !== "needs_approval") {
+    return [];
   }
-  return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals : [];
+  const pendingIds = new Set(snapshot.attention.pendingActionIds);
+  for (const toolCallId of snapshot.attention.pendingToolCallIds) {
+    const toolCall = snapshot.toolCalls.find((call) => call.id === toolCallId);
+    if (toolCall?.actionId) {
+      pendingIds.add(toolCall.actionId);
+    }
+  }
+  return snapshot.actions
+    .filter((action) => action.status === "approval_required" && pendingIds.has(action.id))
+    .map((action) => action.id);
 }
 
 export function canOpenLangfuseTrace(
@@ -985,9 +979,7 @@ function currentBlockingGate(snapshot: OraStateSnapshot) {
   const approvalItems = buildPendingApprovalItems(snapshot);
   const approval = attention?.kind === "needs_approval"
     ? approvalItems.find((item) => attention.pendingActionIds.includes(item.actionId))
-    : !attention
-      ? approvalItems[0]
-      : undefined;
+    : undefined;
   if (approval) {
     return `确认 · ${approval.nodeLabel}`;
   }
@@ -1003,8 +995,7 @@ function inferCurrentStage(snapshot: OraStateSnapshot, lastImportantEvent?: Sema
   }
   if (
     snapshot.attention?.kind === "needs_approval" ||
-    snapshot.attention?.kind === "needs_clarification" ||
-    (!snapshot.attention && (snapshot.status === "interrupted" || snapshot.pendingApprovals.length > 0 || snapshot.pendingClarifications.length > 0))
+    snapshot.attention?.kind === "needs_clarification"
   ) {
     return "等待用户输入";
   }
