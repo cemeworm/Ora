@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   AgentProfileSchema,
   AgentConversationMessageSchema,
+  AutomationCreateParamsSchema,
+  AutomationPreviewScheduleParamsSchema,
+  AutomationSchema,
+  AutomationUpdateParamsSchema,
   ChannelBindingSchema,
   ChannelConfigSchema,
   ChannelDeliveryRetryParamsSchema,
@@ -323,6 +327,42 @@ describe("Ora shared contracts", () => {
     const builderMode = MVP_MODES.find((mode) => mode.id === MODE_STUDIO_BUILDER_MODE_ID)!;
     expect(builderMode.visibility).toBe("internal");
     expect(builderMode.family).toBe("agent_teams");
+  });
+
+  it("validates automation contracts and RPC method names", () => {
+    const schedule = {
+      kind: "rrule" as const,
+      rrule: "FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0",
+      timezone: "Asia/Shanghai",
+    };
+    const createParams = AutomationCreateParamsSchema.parse({
+      title: "Daily review",
+      prompt: "Summarize project status.",
+      schedule,
+      taskIntent: "plan",
+    });
+    expect(createParams.modeSelection).toBe("manual");
+    expect(createParams.taskIntent).toBe("plan");
+
+    expect(AutomationUpdateParamsSchema.parse({
+      id: "automation-1",
+      status: "paused",
+    }).status).toBe("paused");
+
+    expect(AutomationSchema.parse({
+      id: "automation-1",
+      title: "Daily review",
+      prompt: "Summarize project status.",
+      schedule,
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+      state: {},
+    }).state.runHistory).toEqual([]);
+
+    expect(AutomationPreviewScheduleParamsSchema.parse({ schedule }).limit).toBe(5);
+    expect(RuntimeJsonRpcMethodSchema.parse("automations.create")).toBe("automations.create");
+    expect(RuntimeJsonRpcMethodSchema.parse("automations.runNow")).toBe("automations.runNow");
   });
 
   it("accepts agentic efficiency evaluation metric ids", () => {
@@ -2894,6 +2934,36 @@ describe("MVP_TOOLS", () => {
       "shared_state.write",
       "export.report",
     ]));
+  });
+
+  it("exposes scheduled task tools with approval on mutations", () => {
+    const toolsById = new Map(MVP_TOOLS.map((tool) => [tool.id, tool]));
+    const safeTools = ["automations.list", "automations.get", "automations.previewSchedule"];
+    const writeTools = [
+      "automations.create",
+      "automations.update",
+      "automations.pause",
+      "automations.resume",
+      "automations.delete",
+      "automations.runNow",
+    ];
+
+    for (const id of safeTools) {
+      expect(toolsById.get(id)).toMatchObject({
+        category: "internal",
+        riskLevel: "safe",
+        requiresApproval: false,
+        implemented: true,
+      });
+    }
+    for (const id of writeTools) {
+      expect(toolsById.get(id)).toMatchObject({
+        category: "internal",
+        riskLevel: "requires_approval",
+        requiresApproval: true,
+        implemented: true,
+      });
+    }
   });
 });
 

@@ -327,6 +327,125 @@ export const RunConfigSchema = z.object({
 });
 export type RunConfig = z.infer<typeof RunConfigSchema>;
 
+export const AutomationScheduleSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("once"),
+    at: z.number().int().nonnegative(),
+    timezone: z.string().min(1).default("UTC"),
+  }),
+  z.object({
+    kind: z.literal("rrule"),
+    rrule: z.string().min(1),
+    startAt: z.number().int().nonnegative().optional(),
+    timezone: z.string().min(1).default("UTC"),
+  }),
+]);
+export type AutomationSchedule = z.infer<typeof AutomationScheduleSchema>;
+
+export const AutomationStatusSchema = z.enum(["active", "paused"]);
+export type AutomationStatus = z.infer<typeof AutomationStatusSchema>;
+
+export const AutomationRunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "skipped"]);
+export type AutomationRunStatus = z.infer<typeof AutomationRunStatusSchema>;
+
+export const AutomationRunRecordSchema = z.object({
+  id: z.string().min(1),
+  automationId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  sessionId: z.string().min(1).optional(),
+  status: AutomationRunStatusSchema,
+  startedAt: z.number().int().nonnegative(),
+  completedAt: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  error: z.string().optional(),
+});
+export type AutomationRunRecord = z.infer<typeof AutomationRunRecordSchema>;
+
+export const AutomationStateSchema = z.object({
+  nextRunAt: z.number().int().nonnegative().optional(),
+  runningRunId: z.string().min(1).optional(),
+  dedicatedSessionId: z.string().min(1).optional(),
+  lastRunId: z.string().min(1).optional(),
+  lastRunAt: z.number().int().nonnegative().optional(),
+  lastRunStatus: AutomationRunStatusSchema.optional(),
+  lastError: z.string().optional(),
+  lastDurationMs: z.number().int().nonnegative().optional(),
+  consecutiveFailures: z.number().int().nonnegative().default(0),
+  runHistory: z.array(AutomationRunRecordSchema).default([]),
+});
+export type AutomationState = z.infer<typeof AutomationStateSchema>;
+
+export const AutomationConfigSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  prompt: z.string().min(1),
+  schedule: AutomationScheduleSchema,
+  status: AutomationStatusSchema.default("active"),
+  projectId: z.string().min(1).optional(),
+  customAgentId: z.string().min(1).optional(),
+  modeId: ModeIdSchema.optional(),
+  modeSelection: ModeSelectionSchema.default("manual"),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  taskIntent: TaskIntentSchema.default("implement"),
+  skillIds: z.array(z.string().min(1)).default([]),
+  toolIds: z.array(z.string().min(1)).default([]),
+  runConfig: RunConfigSchema.partial().default({}),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type AutomationConfig = z.infer<typeof AutomationConfigSchema>;
+
+export const AutomationSchema = AutomationConfigSchema.extend({
+  state: AutomationStateSchema.default({}),
+});
+export type Automation = z.infer<typeof AutomationSchema>;
+
+export const AutomationCreateParamsSchema = z.object({
+  title: z.string().min(1),
+  prompt: z.string().min(1),
+  schedule: AutomationScheduleSchema,
+  status: AutomationStatusSchema.default("active"),
+  projectId: z.string().min(1).optional(),
+  customAgentId: z.string().min(1).optional(),
+  modeId: ModeIdSchema.optional(),
+  modeSelection: ModeSelectionSchema.default("manual"),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  taskIntent: TaskIntentSchema.default("implement"),
+  skillIds: z.array(z.string().min(1)).default([]),
+  toolIds: z.array(z.string().min(1)).default([]),
+  runConfig: RunConfigSchema.partial().default({}),
+});
+export type AutomationCreateParams = z.infer<typeof AutomationCreateParamsSchema>;
+
+export const AutomationUpdateParamsSchema = AutomationCreateParamsSchema.partial().extend({
+  id: z.string().min(1),
+});
+export type AutomationUpdateParams = z.infer<typeof AutomationUpdateParamsSchema>;
+
+export const AutomationIdParamsSchema = z.object({
+  id: z.string().min(1),
+});
+export type AutomationIdParams = z.infer<typeof AutomationIdParamsSchema>;
+
+export const AutomationListParamsSchema = z.object({
+  includePaused: z.boolean().default(true),
+});
+export type AutomationListParams = z.infer<typeof AutomationListParamsSchema>;
+
+export const AutomationPreviewScheduleParamsSchema = z.object({
+  schedule: AutomationScheduleSchema,
+  from: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().max(20).default(5),
+});
+export type AutomationPreviewScheduleParams = z.infer<typeof AutomationPreviewScheduleParamsSchema>;
+
+export const AutomationPreviewScheduleResultSchema = z.object({
+  occurrences: z.array(z.number().int().nonnegative()),
+});
+export type AutomationPreviewScheduleResult = z.infer<typeof AutomationPreviewScheduleResultSchema>;
+
 export const RunHandleSchema = z.object({
   runId: z.string().min(1),
   sessionId: z.string().min(1).optional(),
@@ -902,6 +1021,51 @@ export const RunForkParamsSchema = z.object({
 });
 export type RunForkParams = z.infer<typeof RunForkParamsSchema>;
 
+export const SessionBranchTargetSchema = z.enum(["empty_start", "append_after_latest", "replace_latest"]);
+export type SessionBranchTarget = z.infer<typeof SessionBranchTargetSchema>;
+
+export const SessionBranchCandidateConfigSchema = z.object({
+  label: z.string().min(1).optional(),
+  input: UserTaskInputSchema.partial().optional(),
+  config: RunConfigSchema.partial().default({}),
+});
+export type SessionBranchCandidateConfig = z.infer<typeof SessionBranchCandidateConfigSchema>;
+
+export const SessionBranchGroupCreateParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  target: SessionBranchTargetSchema,
+  prompt: z.string().min(1).optional(),
+  baseRunId: z.string().min(1).optional(),
+  replaceRunId: z.string().min(1).optional(),
+  candidates: z.array(SessionBranchCandidateConfigSchema).min(1).max(6),
+});
+export type SessionBranchGroupCreateParams = z.infer<typeof SessionBranchGroupCreateParamsSchema>;
+
+export const SessionBranchGroupGetParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  branchGroupId: z.string().min(1),
+});
+export type SessionBranchGroupGetParams = z.infer<typeof SessionBranchGroupGetParamsSchema>;
+
+export const SessionBranchGroupListParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  limit: z.number().int().positive().max(100).optional(),
+});
+export type SessionBranchGroupListParams = z.infer<typeof SessionBranchGroupListParamsSchema>;
+
+export const SessionBranchGroupAdoptParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  branchGroupId: z.string().min(1),
+  runId: z.string().min(1),
+});
+export type SessionBranchGroupAdoptParams = z.infer<typeof SessionBranchGroupAdoptParamsSchema>;
+
+export const SessionBranchGroupDismissParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  branchGroupId: z.string().min(1),
+});
+export type SessionBranchGroupDismissParams = z.infer<typeof SessionBranchGroupDismissParamsSchema>;
+
 export const RunReplayParamsSchema = z.object({
   runId: z.string().min(1),
   checkpointId: z.string().min(1).optional()
@@ -1093,6 +1257,40 @@ export const StateSnapshotSchema = z.object({
 });
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 
+export const SessionBranchCandidateSchema = z.object({
+  runId: z.string().min(1),
+  status: RunStatusSchema,
+  label: z.string().min(1).optional(),
+  modeId: ModeIdSchema.optional(),
+  providerId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  adopted: z.boolean().default(false),
+  prompt: z.string().min(1),
+  outputPreview: z.string().optional(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type SessionBranchCandidate = z.infer<typeof SessionBranchCandidateSchema>;
+
+export const SessionBranchGroupStatusSchema = z.enum(["running", "ready", "adopted", "dismissed"]);
+export type SessionBranchGroupStatus = z.infer<typeof SessionBranchGroupStatusSchema>;
+
+export const SessionBranchGroupSchema = z.object({
+  branchGroupId: z.string().min(1),
+  sessionId: z.string().min(1),
+  target: SessionBranchTargetSchema,
+  baseRunId: z.string().min(1).optional(),
+  replaceRunId: z.string().min(1).optional(),
+  baseTurnIndex: z.number().int().nonnegative(),
+  prompt: z.string().min(1),
+  status: SessionBranchGroupStatusSchema,
+  candidateRunIds: z.array(z.string().min(1)).default([]),
+  candidates: z.array(SessionBranchCandidateSchema).default([]),
+  adoptedRunId: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type SessionBranchGroup = z.infer<typeof SessionBranchGroupSchema>;
+
 export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapshot, "events">): boolean {
   const content = snapshot.events
     .filter((event) =>
@@ -1205,6 +1403,7 @@ export const SessionDetailSchema = z.object({
   session: SessionSummarySchema,
   turns: z.array(SessionTurnSchema),
   transcript: z.array(SessionTranscriptMessageSchema).default([]),
+  branchGroups: z.array(SessionBranchGroupSchema).default([]).optional(),
   latestSnapshot: StateSnapshotSchema.optional(),
 });
 export type SessionDetail = z.infer<typeof SessionDetailSchema>;

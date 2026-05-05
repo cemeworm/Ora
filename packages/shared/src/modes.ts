@@ -335,31 +335,31 @@ export type ModeValidateParams = z.infer<typeof ModeValidateParamsSchema>;
 export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudget> = {
   generator_verifier: {
     maxTokens: 12000,
-    maxToolCalls: 64,
+    maxToolCalls: 256,
     maxRuntimeMs: 180000,
     maxCostUsd: 2
   },
   orchestrator_subagent: {
     maxTokens: 18000,
-    maxToolCalls: 64,
+    maxToolCalls: 256,
     maxRuntimeMs: 300000,
     maxCostUsd: 3
   },
   agent_teams: {
     maxTokens: 24000,
-    maxToolCalls: 64,
+    maxToolCalls: 256,
     maxRuntimeMs: 600000,
     maxCostUsd: 5
   },
   message_bus: {
     maxTokens: 20000,
-    maxToolCalls: 64,
+    maxToolCalls: 256,
     maxRuntimeMs: 360000,
     maxCostUsd: 4
   },
   shared_state: {
     maxTokens: 22000,
-    maxToolCalls: 64,
+    maxToolCalls: 256,
     maxRuntimeMs: 420000,
     maxCostUsd: 4
   }
@@ -367,7 +367,7 @@ export const DEFAULT_RESOURCE_BUDGETS: Record<CoordinationPattern, ResourceBudge
 
 const SINGLE_AGENT_RESOURCE_BUDGET: ResourceBudget = {
   ...DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
-  maxToolCalls: 64
+  maxToolCalls: 256
 };
 
 export const MODE_RUNTIME_POLICY_PRESETS = {
@@ -2538,7 +2538,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
     },
     defaultBudget: {
       ...DEFAULT_RESOURCE_BUDGETS.agent_teams,
-      maxToolCalls: 64,
+      maxToolCalls: 256,
       maxRuntimeMs: 900000,
     },
     completionPolicy: completionPolicyForPreset("persistent"),
