@@ -21,8 +21,11 @@ export const StoreManifestSchema = z.object({
 });
 
 export type StoreManifest = z.infer<typeof StoreManifestSchema>;
-export type StoredRun = StateSnapshot;
-export type StoredSession = SessionSummary;
+// RPC-compatible read models derived from the session ledger. These shapes are
+// intentionally legacy-compatible, but they are projections, not persistence
+// authority.
+export type RuntimeRunReadModel = StateSnapshot;
+export type RuntimeSessionReadModel = SessionSummary;
 export type StoredProject = ProjectSummary;
 export type StoredChannelConfig = ChannelConfig;
 export type StoredChannelBinding = ChannelBinding;
@@ -35,14 +38,12 @@ export interface PersistedArtifact {
 }
 
 export interface RuntimePersistenceBackend {
-  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] };
+  load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] };
   optimizeStorage(): RuntimeStorageOptimizationResult;
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined;
   listSessionLedgers(): RuntimeSessionLedger[];
   saveManifest(manifest: StoreManifest): void;
-  saveRun(run: StoredRun): void;
-  saveSession(session: StoredSession): void;
   saveProject(project: StoredProject): void;
   saveArtifact(artifact: PersistedArtifact): ArtifactRef;
   saveChannelConfig(config: StoredChannelConfig): void;

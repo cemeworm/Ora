@@ -10,9 +10,7 @@ import {
   ProjectSummarySchema,
   RuntimeSessionEntrySchema,
   RuntimeSessionLedgerSchema,
-  SessionSummarySchema,
   RuntimeStorageOptimizationResultSchema,
-  StateSnapshotSchema
 } from "@cemeworm/shared";
 import type { ArtifactRef, RuntimeSessionEntry, RuntimeSessionLedger } from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
@@ -25,14 +23,10 @@ import type {
   StoredChannelDelivery,
   StoredChannelMessage,
   StoredProject,
-  StoredRun,
-  StoredSession
+  RuntimeRunReadModel,
+  RuntimeSessionReadModel,
 } from "./types.js";
-import {
-  deriveStoredRuntimeStateFromLedgers,
-  mergeStoredRuns,
-  mergeStoredSessions,
-} from "./session-ledger-projections.js";
+import { deriveRuntimeReadModelsFromLedgers } from "./session-ledger-projections.js";
 
 const MANIFEST_SCHEMA_VERSION = 3;
 
@@ -42,25 +36,6 @@ CREATE TABLE IF NOT EXISTS manifest (
   nextRunNumber INTEGER NOT NULL,
   nextSessionNumber INTEGER NOT NULL DEFAULT 1,
   nextProjectNumber INTEGER NOT NULL DEFAULT 1
-);
-`;
-
-const CREATE_RUNS_TABLE = `
-CREATE TABLE IF NOT EXISTS runs (
-  runId TEXT PRIMARY KEY,
-  sessionId TEXT,
-  turnIndex INTEGER,
-  status TEXT NOT NULL,
-  pattern TEXT NOT NULL,
-  data TEXT NOT NULL
-);
-`;
-
-const CREATE_SESSIONS_TABLE = `
-CREATE TABLE IF NOT EXISTS sessions (
-  sessionId TEXT PRIMARY KEY,
-  updatedAt INTEGER NOT NULL,
-  data TEXT NOT NULL
 );
 `;
 
@@ -186,17 +161,13 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   // Prepared statements
   private readonly stmtLoadManifest: Database.Statement;
   private readonly stmtSaveManifest: Database.Statement;
-  private readonly stmtLoadAllSessions: Database.Statement;
   private readonly stmtLoadAllProjects: Database.Statement;
-  private readonly stmtLoadAllRuns: Database.Statement;
   private readonly stmtInsertSessionEntry: Database.Statement;
   private readonly stmtLoadSessionEntries: Database.Statement;
   private readonly stmtListSessionEntryIds: Database.Statement;
   private readonly stmtSaveSessionLedgerMeta: Database.Statement;
   private readonly stmtGetSessionLedgerMeta: Database.Statement;
-  private readonly stmtSaveSession: Database.Statement;
   private readonly stmtSaveProject: Database.Statement;
-  private readonly stmtSaveRun: Database.Statement;
   private readonly stmtSaveArtifact: Database.Statement;
   private readonly stmtLoadArtifact: Database.Statement;
   private readonly stmtSaveChannelConfig: Database.Statement;
@@ -223,8 +194,6 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
 
     // Create tables
     this.db.exec(CREATE_MANIFEST_TABLE);
-    this.db.exec(CREATE_RUNS_TABLE);
-    this.db.exec(CREATE_SESSIONS_TABLE);
     this.db.exec(CREATE_SESSION_ENTRIES_TABLE);
     this.db.exec(CREATE_SESSION_LEDGER_META_TABLE);
     this.db.exec(CREATE_PROJECTS_TABLE);
@@ -235,8 +204,6 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.db.exec(CREATE_CHANNEL_DELIVERIES_TABLE);
     this.ensureColumn("manifest", "nextSessionNumber", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("manifest", "nextProjectNumber", "INTEGER NOT NULL DEFAULT 1");
-    this.ensureColumn("runs", "sessionId", "TEXT");
-    this.ensureColumn("runs", "turnIndex", "INTEGER");
 
     // Seed manifest if empty
     this.db.prepare(SEED_MANIFEST).run(MANIFEST_SCHEMA_VERSION, 1, 1, 1);
@@ -245,9 +212,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     // Prepare statements
     this.stmtLoadManifest = this.db.prepare("SELECT schemaVersion, nextRunNumber, nextSessionNumber, nextProjectNumber FROM manifest LIMIT 1");
     this.stmtSaveManifest = this.db.prepare("UPDATE manifest SET schemaVersion = ?, nextRunNumber = ?, nextSessionNumber = ?, nextProjectNumber = ?");
-    this.stmtLoadAllSessions = this.db.prepare("SELECT data FROM sessions ORDER BY updatedAt DESC, sessionId ASC");
     this.stmtLoadAllProjects = this.db.prepare("SELECT data FROM projects ORDER BY updatedAt DESC, projectId ASC");
-    this.stmtLoadAllRuns = this.db.prepare("SELECT data FROM runs ORDER BY runId ASC");
     this.stmtInsertSessionEntry = this.db.prepare(
       "INSERT OR IGNORE INTO session_entries (sessionId, entryId, parentId, runId, turnIndex, seq, createdAt, type, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
@@ -257,14 +222,8 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       "INSERT INTO session_ledger_meta (sessionId, leafEntryId) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET leafEntryId = excluded.leafEntryId"
     );
     this.stmtGetSessionLedgerMeta = this.db.prepare("SELECT leafEntryId FROM session_ledger_meta WHERE sessionId = ? LIMIT 1");
-    this.stmtSaveSession = this.db.prepare(
-      "INSERT INTO sessions (sessionId, updatedAt, data) VALUES (?, ?, ?) ON CONFLICT(sessionId) DO UPDATE SET updatedAt = excluded.updatedAt, data = excluded.data"
-    );
     this.stmtSaveProject = this.db.prepare(
       "INSERT INTO projects (projectId, updatedAt, data) VALUES (?, ?, ?) ON CONFLICT(projectId) DO UPDATE SET updatedAt = excluded.updatedAt, data = excluded.data"
-    );
-    this.stmtSaveRun = this.db.prepare(
-      "INSERT INTO runs (runId, sessionId, turnIndex, status, pattern, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(runId) DO UPDATE SET sessionId = excluded.sessionId, turnIndex = excluded.turnIndex, status = excluded.status, pattern = excluded.pattern, data = excluded.data"
     );
     this.stmtSaveArtifact = this.db.prepare(
       "INSERT INTO artifacts (id, runId, kind, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET runId = excluded.runId, kind = excluded.kind, data = excluded.data"
@@ -294,7 +253,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.stmtGetChannelDelivery = this.db.prepare("SELECT data FROM channel_deliveries WHERE deliveryId = ?");
   }
 
-  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] } {
+  load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] } {
     const manifestRow = this.stmtLoadManifest.get() as
       | { schemaVersion: number; nextRunNumber: number; nextSessionNumber?: number; nextProjectNumber?: number }
       | undefined;
@@ -310,35 +269,21 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       nextProjectNumber: manifestRow.nextProjectNumber ?? 1,
     };
 
-    const sessionRows = this.stmtLoadAllSessions.all() as { data: string }[];
-    const sessions: StoredSession[] = [];
-    for (const row of sessionRows) {
-      sessions.push(SessionSummarySchema.parse(JSON.parse(row.data)));
-    }
-
     const projectRows = this.stmtLoadAllProjects.all() as { data: string }[];
     const projects: StoredProject[] = [];
     for (const row of projectRows) {
       projects.push(ProjectSummarySchema.parse(JSON.parse(row.data)));
     }
 
-    const runRows = this.stmtLoadAllRuns.all() as { data: string }[];
-    const runs: StoredRun[] = [];
-    for (const row of runRows) {
-      runs.push(StateSnapshotSchema.parse(JSON.parse(row.data)));
-    }
-
-    const ledgerState = deriveStoredRuntimeStateFromLedgers(this.listSessionLedgers());
-    const mergedRuns = mergeStoredRuns(runs, ledgerState.runs);
-    const mergedSessions = mergeStoredSessions(sessions, ledgerState.sessions);
+    const ledgerState = deriveRuntimeReadModelsFromLedgers(this.listSessionLedgers());
 
     // Ensure nextRunNumber is at least greater than any existing run number
-    const maxRunNumber = mergedRuns.reduce((max, run) => {
+    const maxRunNumber = ledgerState.runs.reduce((max, run) => {
       const match = /^run-(\d+)$/.exec(run.runId);
       return match ? Math.max(max, Number(match[1])) : max;
     }, 0);
 
-    const maxSessionNumber = mergedSessions.reduce((max, session) => {
+    const maxSessionNumber = ledgerState.sessions.reduce((max, session) => {
       const match = /^session-(\d+)$/.exec(session.sessionId);
       return match ? Math.max(max, Number(match[1])) : max;
     }, 0);
@@ -355,8 +300,8 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
         nextSessionNumber: Math.max(manifest.nextSessionNumber, maxSessionNumber + 1),
         nextProjectNumber: Math.max(manifest.nextProjectNumber, maxProjectNumber + 1),
       },
-      runs: mergedRuns,
-      sessions: mergedSessions,
+      runs: ledgerState.runs,
+      sessions: ledgerState.sessions,
       projects,
     };
   }
@@ -439,16 +384,6 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private databaseFileBytes(): number {
     return [this.dbPath, `${this.dbPath}-wal`, `${this.dbPath}-shm`]
       .reduce((total, filePath) => total + fileSize(filePath), 0);
-  }
-
-  saveRun(run: StoredRun): void {
-    const data = JSON.stringify(run);
-    this.stmtSaveRun.run(run.runId, run.sessionId ?? null, run.turnIndex ?? 1, run.status, run.pattern, data);
-  }
-
-  saveSession(session: StoredSession): void {
-    const data = JSON.stringify(session);
-    this.stmtSaveSession.run(session.sessionId, session.updatedAt, data);
   }
 
   saveProject(project: StoredProject): void {

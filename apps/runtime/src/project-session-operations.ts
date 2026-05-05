@@ -51,6 +51,7 @@ export interface ProjectSessionOperationDeps {
   getRunOrThrow: (runId: string) => StateSnapshot;
   runsForSession: (sessionId: string) => StateSnapshot[];
   sessionTranscript: (sessionId: string) => SessionTranscriptMessage[];
+  branchGroupsForSession?: (sessionId: string) => SessionBranchGroup[];
 }
 
 export function createProject(params: unknown, deps: ProjectSessionOperationDeps): ProjectSummary {
@@ -154,7 +155,7 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
     session,
     turns,
     transcript: deps.sessionTranscript(parsed.sessionId),
-    branchGroups: branchGroupsForSession(parsed.sessionId, [...deps.runs.values()]),
+    branchGroups: deps.branchGroupsForSession?.(parsed.sessionId) ?? branchGroupsForSession(parsed.sessionId, [...deps.runs.values()]),
     latestSnapshot,
   });
 }

@@ -307,6 +307,51 @@ describe("runtime session ledger projection", () => {
     expect(projection.contextState?.compactedHistory[0]?.content).toBe("Summary");
   });
 
+  it("folds accepted plan handoff consumption facts by decision and source run", () => {
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: "session-ledger",
+      leafEntryId: "e-handoff-consumed",
+      entries: [
+        entry({ id: "e-session", seq: 0, type: "session.created", payload: {} }),
+        entry({
+          id: "e-handoff-open",
+          parentId: "e-session",
+          seq: 1,
+          type: "handoff.accepted_plan",
+          payload: {
+            decisionId: "decision-1",
+            sourceRunId: "run-plan",
+            planContent: "Ship the ledger.",
+            acceptedAt: BASE_TIME + 1,
+          },
+        }),
+        entry({
+          id: "e-handoff-consumed",
+          parentId: "e-handoff-open",
+          seq: 2,
+          type: "handoff.accepted_plan",
+          payload: {
+            decisionId: "decision-1",
+            sourceRunId: "run-plan",
+            planContent: "Ship the ledger.",
+            acceptedAt: BASE_TIME + 1,
+            consumedByRunId: "run-implement",
+          },
+        }),
+      ],
+    });
+
+    const projection = deriveSessionProjection(ledger);
+
+    expect(projection.acceptedPlanHandoffs).toEqual([{
+      decisionId: "decision-1",
+      sourceRunId: "run-plan",
+      planContent: "Ship the ledger.",
+      acceptedAt: BASE_TIME + 1,
+      consumedByRunId: "run-implement",
+    }]);
+  });
+
   it("walks the selected branch leaf path without rewriting sibling entries", () => {
     const ledger = RuntimeSessionLedgerSchema.parse({
       sessionId: "session-ledger",

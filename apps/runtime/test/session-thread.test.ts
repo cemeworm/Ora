@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
+import { deriveSessionProjection, RuntimeSessionLedgerSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
 
 const capturedRequests: Array<{
   prompt: string;
@@ -273,6 +273,83 @@ describe("session thread runtime behavior", () => {
 
     expect(resolved.session.attention?.kind).toBe("idle");
     expect(resolved.latestSnapshot?.planDecisions[0]?.status).toBe("accepted");
+  });
+
+  it("consumes accepted plan handoff from the ledger for only the next implementation run", async () => {
+    titleResponses.push("Plan Handoff Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Return a proposed plan for the ledger handoff." },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        modelRef: "gpt-plan-test",
+        metadata: { taskIntent: "plan" },
+      },
+    });
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    expect(decision?.status).toBe("pending");
+
+    store.resolvePlanDecision({
+      sessionId: session.sessionId,
+      decisionId: decision?.id,
+      status: "accepted",
+    });
+
+    const firstImplementation = await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Implement the accepted plan." },
+      config: {
+        pattern: "generator_verifier",
+        providerId: "openai-gpt",
+        modelRef: "gpt-implementation-test",
+        metadata: { taskIntent: "implement" },
+      },
+    });
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Do a separate follow-up." },
+      config: {
+        pattern: "generator_verifier",
+        providerId: "openai-gpt",
+        modelRef: "gpt-follow-up-test",
+        metadata: { taskIntent: "implement" },
+      },
+    });
+
+    const firstImplementationRequest = capturedRequests.find((request) =>
+      request.modelRef === "gpt-implementation-test" &&
+      request.messages.some((message) => message.content.includes("Implement the accepted plan."))
+    );
+    const followUpRequest = capturedRequests.find((request) =>
+      request.modelRef === "gpt-follow-up-test" &&
+      request.messages.some((message) => message.content.includes("Do a separate follow-up."))
+    );
+    expect(firstImplementationRequest?.messages.some((message) => message.content.includes("<accepted_plan>"))).toBe(true);
+    expect(followUpRequest?.messages.some((message) => message.content.includes("<accepted_plan>"))).toBe(false);
+
+    const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      entries: fs.readFileSync(ledgerPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    });
+    const projection = deriveSessionProjection(ledger);
+    expect(projection.acceptedPlanHandoffs).toEqual([
+      expect.objectContaining({
+        decisionId: decision?.id,
+        sourceRunId: planned.latestSnapshot?.runId,
+        consumedByRunId: firstImplementation.runId,
+      }),
+    ]);
   });
 
   it("keeps the generated title stable across later turns", async () => {
@@ -596,6 +673,71 @@ describe("session thread runtime behavior", () => {
     ))).toBe(true);
   });
 
+  it("builds later model context from the ledger instead of in-memory run snapshots", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const handle = createRuntimeMethodHandler(store);
+
+    const first = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "Ledger-owned prompt" },
+        config: { pattern: "generator_verifier" },
+      },
+    }) as { runId: string; sessionId: string };
+
+    const mutableStore = store as unknown as { runs: Map<string, unknown> };
+    const original = StateSnapshotSchema.parse(mutableStore.runs.get(first.runId));
+    mutableStore.runs.set(first.runId, StateSnapshotSchema.parse({
+      ...original,
+      input: {
+        ...original.input,
+        prompt: "SHADOW SNAPSHOT PROMPT",
+      },
+      output: {
+        text: "SHADOW SNAPSHOT ANSWER",
+      },
+    }));
+
+    const detailAfterShadowWrite = SessionDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sessions.get",
+      params: { sessionId: first.sessionId },
+    }));
+    expect(detailAfterShadowWrite.latestSnapshot?.input.prompt).toBe("Ledger-owned prompt");
+    expect(detailAfterShadowWrite.latestSnapshot?.output).not.toMatchObject({ text: "SHADOW SNAPSHOT ANSWER" });
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        sessionId: first.sessionId,
+        input: { prompt: "Second ledger context prompt" },
+        config: { pattern: "shared_state" },
+      },
+    });
+
+    const secondRuntimeRequest = capturedRequests.find((request) =>
+      !request.system.includes("Ora's conversation title generator") &&
+      request.messages.some((message) => message.content === "Second ledger context prompt")
+    );
+
+    expect(secondRuntimeRequest?.messages).toEqual([
+      { role: "user", content: "Ledger-owned prompt" },
+      expect.objectContaining({
+        role: "assistant",
+        content: expect.stringContaining("Ledger-owned prompt"),
+      }),
+      { role: "user", content: "Second ledger context prompt" },
+    ]);
+    expect(secondRuntimeRequest?.messages.some((message) =>
+      message.content.includes("SHADOW SNAPSHOT")
+    )).toBe(false);
+  });
+
   it("keeps forks attached to the originating session", async () => {
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir(), clock }));
 
@@ -639,6 +781,126 @@ describe("session thread runtime behavior", () => {
     expect(fork.turnIndex).toBe(2);
     expect(sessionDetail.turns.map((turn) => turn.runId)).toEqual([source.runId, fork.runId]);
     expect(sessionDetail.session.turnCount).toBe(2);
+  });
+
+  it("persists branch created, candidate started, and dismissed facts in the session ledger", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    const group = await store.createAndRunSessionBranchGroup({
+      sessionId: session.sessionId,
+      target: "empty_start",
+      prompt: "Try branch lifecycle.",
+      candidates: [
+        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+      ],
+    });
+
+    await waitFor(
+      () => store.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId: group.branchGroupId }),
+      (current) => current.status === "ready",
+    );
+    store.dismissSessionBranchGroup({ sessionId: session.sessionId, branchGroupId: group.branchGroupId });
+
+    const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
+    const entries = fs.readFileSync(ledgerPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const branchEntries = entries.filter((entry) => String(entry.type).startsWith("branch."));
+    const projection = deriveSessionProjection(RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      entries,
+    }));
+
+    expect(branchEntries.map((entry) => entry.type)).toEqual([
+      "branch.created",
+      "branch.candidate_started",
+      "branch.dismissed",
+    ]);
+    expect(branchEntries[1]?.runId).toBe(group.candidateRunIds[0]);
+    expect(projection.branchGroups).toEqual([
+      expect.objectContaining({
+        branchGroupId: group.branchGroupId,
+        status: "dismissed",
+        candidateRunIds: group.candidateRunIds,
+      }),
+    ]);
+  });
+
+  it("persists branch candidate run facts without exposing them on the mainline before adoption", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    const group = await store.createAndRunSessionBranchGroup({
+      sessionId: session.sessionId,
+      target: "empty_start",
+      prompt: "Try durable branch candidate.",
+      candidates: [
+        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+      ],
+    });
+    await waitFor(
+      () => store.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId: group.branchGroupId }),
+      (current) => current.status === "ready",
+    );
+
+    const candidateRunId = group.candidateRunIds[0]!;
+    const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
+    const entries = fs.readFileSync(ledgerPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      entries,
+      leafEntryId: entries.at(-1)?.id,
+    });
+    const candidateAssistant = entries.find((entry) => entry.id === `${candidateRunId}:assistant`);
+    expect(entries.filter((entry) => entry.runId === candidateRunId).map((entry) => entry.type)).toEqual(
+      expect.arrayContaining(["user.message", "run.started", "runtime.event_batch", "assistant.message"]),
+    );
+    expect(deriveSessionProjection(ledger).runs.map((run) => run.runId)).toEqual([]);
+    expect(candidateAssistant).toBeTruthy();
+    expect(deriveSessionProjection(ledger, candidateAssistant.id).runs.map((run) => run.runId)).toEqual([candidateRunId]);
+  });
+
+  it("adopts a durable branch candidate after reloading the runtime store", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    const group = await store.createAndRunSessionBranchGroup({
+      sessionId: session.sessionId,
+      target: "empty_start",
+      prompt: "Try reloadable branch adoption.",
+      candidates: [
+        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+      ],
+    });
+    await waitFor(
+      () => store.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId: group.branchGroupId }),
+      (current) => current.status === "ready",
+    );
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    const adopted = SessionDetailSchema.parse(reloaded.adoptSessionBranchGroup({
+      sessionId: session.sessionId,
+      branchGroupId: group.branchGroupId,
+      runId: group.candidateRunIds[0],
+    }));
+
+    expect(adopted.session.latestRunId).toBe(group.candidateRunIds[0]);
+    expect(adopted.turns.map((turn) => turn.runId)).toEqual([group.candidateRunIds[0]]);
+    expect(adopted.branchGroups[0]).toEqual(expect.objectContaining({
+      branchGroupId: group.branchGroupId,
+      status: "adopted",
+      adoptedRunId: group.candidateRunIds[0],
+    }));
   });
 
   it("does not persist clean-cutover runs into legacy run files", async () => {

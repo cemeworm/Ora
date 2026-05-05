@@ -165,7 +165,6 @@ describe("desktop composer pending-run behavior", () => {
       sessionId: "session-1",
       prompt: "hello",
       createdAt: 10,
-      progressText: "正在准备",
     });
   });
 
@@ -516,6 +515,13 @@ describe("desktop composer pending-run behavior", () => {
         requestedAt: 11,
       }],
       pendingApprovals: [],
+      attention: {
+        kind: "needs_clarification",
+        blocking: true,
+        sourceRunId: "run-clarify",
+        reason: "clarification_required",
+        pendingClarificationIds: ["clarification:intent_guard"],
+      },
       updatedAt: 12,
     } as unknown as OraStateSnapshot;
 

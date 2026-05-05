@@ -52,14 +52,18 @@ import {
   ProjectSummary,
   ProjectSummarySchema,
   RuntimeSessionEntrySchema,
+  type RuntimeAcceptedPlanHandoff,
   RunConfig,
   RunConfigSchema,
   RunEventStream,
+  RunEventStreamSchema,
+  RunReplayParamsSchema,
   SINGLE_AGENT_MODE_ID,
   RunForkParamsSchema,
   RunHandle,
   type RunLatencyMark,
   RunResumeParamsSchema,
+  RunStreamParamsSchema,
   RunTrail,
   RunTrailParamsSchema,
   RunTrailSchema,
@@ -70,6 +74,7 @@ import {
   SessionBranchGroupDismissParamsSchema,
   SessionBranchGroupGetParamsSchema,
   SessionBranchGroupListParamsSchema,
+  SessionBranchGroupSchema,
   SessionPlanDecisionResolveParamsSchema,
   SessionDetail,
   SessionSummary,
@@ -143,8 +148,8 @@ import type {
   RuntimePersistenceBackend,
   StoreManifest,
   StoredProject,
-  StoredRun,
-  StoredSession
+  RuntimeRunReadModel,
+  RuntimeSessionReadModel
 } from "./persistence/types.js";
 import type { ModelMessage } from "./providers/index.js";
 import { invokeRunProvider } from "./providers/index.js";
@@ -330,8 +335,9 @@ export class LocalRunStore {
   private readonly automationService: AutomationService;
   private readonly selfIterationCuratorTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private projects = new Map<string, StoredProject>();
-  private sessions = new Map<string, StoredSession>();
-  private runs = new Map<string, StoredRun>();
+  private sessions = new Map<string, RuntimeSessionReadModel>();
+  private runs = new Map<string, RuntimeRunReadModel>();
+  private branchCandidateLeafByRun = new Map<string, string>();
   private activeStreamingAbortControllers = new Map<string, AbortController>();
   private manifest: StoreManifest;
 
@@ -693,7 +699,17 @@ export class LocalRunStore {
   listSessionBranchGroups(params: unknown): SessionBranchGroup[] {
     const parsed = SessionBranchGroupListParamsSchema.parse(params);
     this.getSessionOrThrow(parsed.sessionId);
-    return branchGroupsForSession(parsed.sessionId, [...this.runs.values()]).slice(0, parsed.limit);
+    return this.mergedSessionBranchGroups(parsed.sessionId).slice(0, parsed.limit);
+  }
+
+  private mergedSessionBranchGroups(sessionId: string): SessionBranchGroup[] {
+    const runtimeGroups = branchGroupsForSession(sessionId, [...this.runs.values()]);
+    const runtimeGroupIds = new Set(runtimeGroups.map((group) => group.branchGroupId));
+    const ledger = this.backend.getSessionLedger(sessionId);
+    const ledgerGroups = ledger
+      ? deriveSessionProjection(ledger).branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
+      : [];
+    return [...runtimeGroups, ...ledgerGroups];
   }
 
   getSessionBranchGroup(params: unknown): SessionBranchGroup {
@@ -747,9 +763,25 @@ export class LocalRunStore {
     const baseTurnIndex = parsed.target === "replace_latest"
       ? Math.max(0, (replaceRun?.turnIndex ?? 1) - 1)
       : latestRun?.turnIndex ?? 0;
+    const initialBranchGroup = SessionBranchGroupSchema.parse({
+      branchGroupId,
+      sessionId: session.sessionId,
+      target: parsed.target,
+      baseRunId,
+      replaceRunId,
+      baseTurnIndex,
+      prompt,
+      status: "running",
+      candidateRunIds: [],
+      candidates: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.appendBranchLifecycleEntry(session.sessionId, "branch.created", initialBranchGroup, now);
+    let projectedBranchGroup = initialBranchGroup;
 
     for (const [index, candidate] of parsed.candidates.entries()) {
-      await this.startStreamingRun({
+      const handle = await this.startStreamingRun({
         sessionId: session.sessionId,
         input: {
           ...candidate.input,
@@ -779,6 +811,24 @@ export class LocalRunStore {
           },
         },
       });
+      projectedBranchGroup = SessionBranchGroupSchema.parse({
+        ...projectedBranchGroup,
+        candidateRunIds: [...projectedBranchGroup.candidateRunIds, handle.runId],
+        candidates: [
+          ...projectedBranchGroup.candidates,
+          {
+            runId: handle.runId,
+            status: handle.status,
+            label: candidate.label ?? `Candidate ${index + 1}`,
+            modeId: handle.modeId,
+            modelRef: candidate.config.modelRef,
+            prompt: candidate.input?.prompt ?? prompt,
+            updatedAt: handle.startedAt,
+          },
+        ],
+        updatedAt: Math.max(projectedBranchGroup.updatedAt, handle.startedAt),
+      });
+      this.appendBranchLifecycleEntry(session.sessionId, "branch.candidate_started", projectedBranchGroup, this.now(), handle.runId);
     }
 
     return this.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId });
@@ -850,6 +900,7 @@ export class LocalRunStore {
       },
       updatedAt: Math.max(candidate.updatedAt, now),
     });
+    let adoptedSnapshot = adopted;
     if (this.isLedgerBackedSession(session.sessionId)) {
       this.appendRunStartedToLedger({
         sessionId: session.sessionId,
@@ -860,8 +911,21 @@ export class LocalRunStore {
         modeId: adopted.modeId,
         createdAt: adopted.input.createdAt,
       });
-      this.appendRuntimeEventBatchToLedger(adopted, adopted.events, adopted.status);
-      this.appendAssistantMessageToLedger(adopted);
+      adoptedSnapshot = this.appendRunSnapshotUpdateToLedger(adopted);
+      this.appendSessionLedgerEntry(session.sessionId, {
+        id: `${adopted.runId}:assistant:adopted-${now}`,
+        type: "assistant.message",
+        runId: adopted.runId,
+        turnIndex: adopted.turnIndex ?? turnIndex ?? 1,
+        createdAt: now,
+        payload: {
+          content: assistantTextForRun(adoptedSnapshot),
+          status: adoptedSnapshot.status,
+          output: adoptedSnapshot.output,
+          error: adoptedSnapshot.error,
+          snapshot: adoptedSnapshot,
+        },
+      });
       this.appendSessionLedgerEntry(session.sessionId, {
         id: `${group.branchGroupId}:adopted:${adopted.runId}`,
         type: "branch.adopted",
@@ -877,7 +941,7 @@ export class LocalRunStore {
       this.refreshSessionFromLedger(session.sessionId);
       this.backend.saveManifest(this.manifest);
     }
-    this.cacheRun(adopted, true);
+    this.cacheRun(adoptedSnapshot, true);
 
     for (const runId of group.candidateRunIds) {
       if (runId === candidate.runId) continue;
@@ -919,7 +983,9 @@ export class LocalRunStore {
         updatedAt: Math.max(run.updatedAt, now),
       }), true);
     }
-    return this.getSessionBranchGroup(parsed);
+    const dismissed = this.getSessionBranchGroup(parsed);
+    this.appendBranchLifecycleEntry(parsed.sessionId, "branch.dismissed", dismissed, now);
+    return dismissed;
   }
 
   resolvePlanDecision(params: unknown): SessionDetail {
@@ -1177,6 +1243,7 @@ export class LocalRunStore {
       input.prompt,
       fullConfig,
       turnIndex,
+      runId,
     );
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
@@ -1187,6 +1254,7 @@ export class LocalRunStore {
       modeId: modeSpec.id,
       createdAt: input.createdAt,
     });
+    this.consumeAcceptedPlanHandoffForStartedRun(session.sessionId, fullConfig, runId);
     if (fullConfig.metadata.evaluationRouterOnly === true) {
       const baseSnapshot = createRunningRunSnapshot({
         runId,
@@ -1285,6 +1353,7 @@ export class LocalRunStore {
       input.prompt,
       fullConfig,
       turnIndex,
+      runId,
     );
     markRuntimeLatency("conversationMessages.done", { messageCount: conversationMessages.length });
     let liveSnapshot = createRunningRunSnapshot({
@@ -1306,6 +1375,7 @@ export class LocalRunStore {
       modeId: modeSpec.id,
       createdAt: input.createdAt,
     });
+    this.consumeAcceptedPlanHandoffForStartedRun(session.sessionId, fullConfig, runId);
     markRuntimeLatency("snapshot.created");
     liveSnapshot = withRunLatencyMarks(liveSnapshot, latencyMarks);
     const sessionCtx = this.sessions.get(session.sessionId)?.contextState;
@@ -1324,7 +1394,7 @@ export class LocalRunStore {
       if (nextEvents.length === 0) {
         return;
       }
-      this.appendRuntimeEventBatchToLedger(liveSnapshot, nextEvents, status);
+      liveSnapshot = this.appendRuntimeEventBatchToLedger(liveSnapshot, nextEvents, status);
       ledgeredEventCount = liveSnapshot.events.length;
     };
 
@@ -1529,6 +1599,15 @@ export class LocalRunStore {
     this.persistRun(liveSnapshot);
     const abortController = new AbortController();
     this.activeStreamingAbortControllers.set(snapshot.runId, abortController);
+    let ledgeredEventCount = snapshot.events.length;
+    const flushLedgerEvents = (status = liveSnapshot.status) => {
+      const nextEvents = liveSnapshot.events.slice(ledgeredEventCount);
+      if (nextEvents.length === 0) {
+        return;
+      }
+      liveSnapshot = this.appendRuntimeEventBatchToLedger(liveSnapshot, nextEvents, status);
+      ledgeredEventCount = liveSnapshot.events.length;
+    };
 
     const publishStream = (events: OraEventEnvelope[], streamSnapshot?: StateSnapshot) => {
       publishRunStream({
@@ -1555,6 +1634,9 @@ export class LocalRunStore {
           this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
             deferInitialTitle: true,
           });
+          if (shouldFlushStreamingEvent(event) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
+            flushLedgerEvents();
+          }
           publishStream([event], liveSnapshot);
         },
       ).then(async (result) => {
@@ -1588,6 +1670,9 @@ export class LocalRunStore {
               this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(rebasedEvent), {
                 deferInitialTitle: true,
               });
+              if (shouldFlushStreamingEvent(rebasedEvent) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
+                flushLedgerEvents();
+              }
               publishStream([rebasedEvent]);
             },
           );
@@ -1621,7 +1706,9 @@ export class LocalRunStore {
           error,
           failedAt: this.now(),
         });
-        liveSnapshot = attachTraceMetadata(failure.snapshot);
+        liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+          attachTraceMetadata(failure.snapshot),
+        ));
         await this.persistRunWithGeneratedTitle(liveSnapshot);
         publishStream([failure.event], liveSnapshot);
       });
@@ -1641,6 +1728,9 @@ export class LocalRunStore {
       this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(rebasedEvent), {
         deferInitialTitle: true,
       });
+      if (shouldFlushStreamingEvent(rebasedEvent) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
+        flushLedgerEvents();
+      }
       publishStream([rebasedEvent]);
     };
 
@@ -1687,6 +1777,7 @@ export class LocalRunStore {
       liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
         this.withResumeResolutionEvents(finalSnapshot, snapshot, clarificationPatch, approvedActionIds),
       ));
+      ledgeredEventCount = liveSnapshot.events.length;
       await this.persistRunWithGeneratedTitle(liveSnapshot);
       publishStream([], liveSnapshot);
     }).catch(async (error) => {
@@ -1704,7 +1795,9 @@ export class LocalRunStore {
         error,
         failedAt: this.now(),
       });
-      liveSnapshot = attachTraceMetadata(failure.snapshot);
+      liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+        attachTraceMetadata(failure.snapshot),
+      ));
       await this.persistRunWithGeneratedTitle(liveSnapshot);
       publishStream([failure.event], liveSnapshot);
     });
@@ -1738,6 +1831,7 @@ export class LocalRunStore {
       input.prompt,
       fullConfig,
       turnIndex,
+      runId,
     );
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
@@ -1748,6 +1842,7 @@ export class LocalRunStore {
       modeId: modeSpec.id,
       createdAt: input.createdAt,
     });
+    this.consumeAcceptedPlanHandoffForStartedRun(session.sessionId, fullConfig, runId);
     const sessionBoundSnapshot = await executeTracedKernelRun({
       runId,
       input,
@@ -1807,6 +1902,7 @@ export class LocalRunStore {
       input.prompt,
       fullConfig,
       turnIndex,
+      runId,
     );
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
@@ -1817,6 +1913,7 @@ export class LocalRunStore {
       modeId: modeSpec.id,
       createdAt: input.createdAt,
     });
+    this.consumeAcceptedPlanHandoffForStartedRun(session.sessionId, fullConfig, runId);
     const snapshot = await createSnapshot({
       runId,
       input,
@@ -1849,6 +1946,21 @@ export class LocalRunStore {
   }
 
   streamRun(params: unknown): RunEventStream {
+    const parsed = RunStreamParamsSchema.parse(params);
+    const projected = this.ledgerRebasedRunSnapshot(parsed.runId);
+    if (projected) {
+      const fromSeq = parsed.afterSeq === undefined ? 0 : parsed.afterSeq + 1;
+      const normalized = attachTraceMetadata(projected);
+      const settled = normalized.status !== "queued" && normalized.status !== "running";
+      return RunEventStreamSchema.parse({
+        runId: normalized.runId,
+        fromSeq,
+        events: normalized.events.filter((event) => event.seq >= fromSeq).sort((a, b) => a.seq - b.seq),
+        nextSeq: normalized.events.length,
+        status: normalized.status,
+        snapshot: settled ? normalized : undefined,
+      });
+    }
     return streamRun(params, this.runStateOperationDeps());
   }
 
@@ -1989,6 +2101,12 @@ export class LocalRunStore {
   }
 
   getRunState(params: unknown): StateSnapshot {
+    const runId = this.requireRunId(params);
+    const projected = this.ledgerRebasedRunSnapshot(runId);
+    if (projected) {
+      this.runs.set(runId, projected);
+      return attachTraceMetadata(projected);
+    }
     return getRunState(params, this.runStateOperationDeps());
   }
 
@@ -2040,6 +2158,11 @@ export class LocalRunStore {
   }
 
   replayRun(params: unknown): RunEventStream {
+    const parsed = RunReplayParamsSchema.parse(params);
+    const projected = this.ledgerProjectedRunSnapshot(parsed.runId);
+    if (projected) {
+      return this.replayRunFromSnapshot(projected, parsed.checkpointId);
+    }
     return replayRun(params, this.runStateOperationDeps());
   }
 
@@ -2346,6 +2469,7 @@ export class LocalRunStore {
       getRunOrThrow: (runId) => this.getRunOrThrow(runId),
       runsForSession: (sessionId) => this.runsForSession(sessionId),
       sessionTranscript: (sessionId) => this.sessionTranscript(sessionId),
+      branchGroupsForSession: (sessionId) => this.mergedSessionBranchGroups(sessionId),
     };
   }
 
@@ -2377,11 +2501,9 @@ export class LocalRunStore {
     modeId?: string;
     createdAt?: number;
   }): void {
-    if (args.config.metadata.branchRole === "candidate") {
-      return;
-    }
     const createdAt = args.createdAt ?? args.input.createdAt ?? this.now();
-    this.appendSessionLedgerEntries(args.sessionId, [
+    const candidate = args.config.metadata.branchRole === "candidate";
+    const entries = this.appendSessionLedgerEntries(args.sessionId, [
       {
         id: `${args.runId}:user`,
         type: "user.message",
@@ -2403,15 +2525,46 @@ export class LocalRunStore {
           status: "running",
         },
       },
-    ]);
+    ], { updateLeaf: !candidate, parentId: candidate ? this.backend.getSessionLedger(args.sessionId)?.leafEntryId : undefined });
+    if (candidate) {
+      const leaf = entries.at(-1)?.id;
+      if (leaf) {
+        this.branchCandidateLeafByRun.set(args.runId, leaf);
+      }
+      return;
+    }
     this.refreshSessionFromLedger(args.sessionId);
   }
 
-  private appendRuntimeEventBatchToLedger(snapshot: StateSnapshot, events: OraEventEnvelope[], status = snapshot.status): void {
-    if (!snapshot.sessionId || events.length === 0 || snapshot.config.metadata.branchRole === "candidate") {
+  private appendBranchLifecycleEntry(
+    sessionId: string,
+    type: Extract<RuntimeSessionEntryType, "branch.created" | "branch.candidate_started" | "branch.dismissed">,
+    group: SessionBranchGroup,
+    createdAt: number,
+    runId?: string,
+  ): void {
+    if (!this.isLedgerBackedSession(sessionId)) {
       return;
     }
-    this.appendSessionLedgerEntry(snapshot.sessionId, {
+    const suffix = runId ? `${type}:${runId}` : type;
+    this.appendSessionLedgerEntry(sessionId, {
+      id: `${group.branchGroupId}:${suffix}`,
+      type,
+      runId,
+      turnIndex: group.baseTurnIndex,
+      createdAt,
+      payload: group,
+    });
+    this.refreshSessionFromLedger(sessionId);
+    this.backend.saveManifest(this.manifest);
+  }
+
+  private appendRuntimeEventBatchToLedger(snapshot: StateSnapshot, events: OraEventEnvelope[], status = snapshot.status): StateSnapshot {
+    if (!snapshot.sessionId || events.length === 0) {
+      return snapshot;
+    }
+    const candidate = snapshot.config.metadata.branchRole === "candidate";
+    const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
       id: `${snapshot.runId}:events-${events[0]?.seq ?? snapshot.events.length}-${events.at(-1)?.seq ?? snapshot.events.length}`,
       type: "runtime.event_batch",
       runId: snapshot.runId,
@@ -2424,19 +2577,30 @@ export class LocalRunStore {
         error: snapshot.error,
         snapshot,
       },
-    });
+    }, candidate ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
+    if (candidate) {
+      this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+      const projected = this.ledgerSnapshotOrFallback(snapshot, entry.id);
+      this.runs.set(projected.runId, projected);
+      return projected;
+    }
     this.refreshSessionFromLedger(snapshot.sessionId);
+    const projected = this.ledgerSnapshotOrFallback(snapshot);
+    this.runs.set(projected.runId, projected);
+    return projected;
   }
 
   private appendRunSnapshotUpdateToLedger(snapshot: StateSnapshot): StateSnapshot {
-    if (!snapshot.sessionId || snapshot.config.metadata.branchRole === "candidate") {
+    if (!snapshot.sessionId) {
       return snapshot;
     }
+    const candidate = snapshot.config.metadata.branchRole === "candidate";
     const ledger = this.backend.getSessionLedger(snapshot.sessionId);
-    const existing = ledger ? deriveRunSnapshot(ledger, snapshot.runId) : undefined;
+    const candidateLeaf = candidate ? this.branchCandidateLeafByRun.get(snapshot.runId) : undefined;
+    const existing = ledger ? deriveRunSnapshot(ledger, snapshot.runId, candidateLeaf ?? ledger.leafEntryId) : undefined;
     const existingEventCount = existing?.events.length ?? 0;
     const events = snapshot.events.slice(existingEventCount);
-    this.appendSessionLedgerEntry(snapshot.sessionId, {
+    const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
       id: `${snapshot.runId}:update-${snapshot.updatedAt}-${ledger?.entries.length ?? 0}`,
       type: "runtime.event_batch",
       runId: snapshot.runId,
@@ -2449,7 +2613,11 @@ export class LocalRunStore {
         error: snapshot.error,
         snapshot,
       },
-    });
+    }, candidate ? { updateLeaf: false, parentId: candidateLeaf } : undefined);
+    if (candidate) {
+      this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+      return this.ledgerSnapshotOrFallback(snapshot, entry.id);
+    }
     return this.ledgerSnapshotOrFallback(snapshot);
   }
 
@@ -2549,12 +2717,13 @@ export class LocalRunStore {
   }
 
   private appendAssistantMessageToLedger(snapshot: StateSnapshot): StateSnapshot {
-    if (!snapshot.sessionId || snapshot.config.metadata.branchRole === "candidate") {
+    if (!snapshot.sessionId) {
       return snapshot;
     }
     this.appendSnapshotBusinessFactsToLedger(snapshot);
     const content = assistantTextForRun(snapshot);
-    this.appendSessionLedgerEntry(snapshot.sessionId, {
+    const candidate = snapshot.config.metadata.branchRole === "candidate";
+    const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
       id: `${snapshot.runId}:assistant`,
       type: "assistant.message",
       runId: snapshot.runId,
@@ -2567,7 +2736,11 @@ export class LocalRunStore {
         error: snapshot.error,
         snapshot,
       },
-    });
+    }, candidate ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
+    if (candidate) {
+      this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+      return this.ledgerSnapshotOrFallback(snapshot, entry.id);
+    }
     return this.ledgerSnapshotOrFallback(snapshot);
   }
 
@@ -2576,7 +2749,7 @@ export class LocalRunStore {
       return;
     }
     for (const clarification of snapshot.pendingClarifications) {
-      this.appendSessionLedgerEntry(snapshot.sessionId, {
+      const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
         id: `${snapshot.runId}:gate:${clarification.id}`,
         type: "gate.opened",
         runId: snapshot.runId,
@@ -2588,13 +2761,16 @@ export class LocalRunStore {
           pendingClarificationIds: [clarification.id],
           clarification,
         },
-      });
+      }, snapshot.config.metadata.branchRole === "candidate" ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
+      if (snapshot.config.metadata.branchRole === "candidate") {
+        this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+      }
     }
     if (snapshot.pendingApprovals.length > 0) {
       const pendingToolCallIds = snapshot.toolCalls
         .filter((call) => call.actionId && snapshot.pendingApprovals.includes(call.actionId))
         .map((call) => call.id);
-      this.appendSessionLedgerEntry(snapshot.sessionId, {
+      const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
         id: `${snapshot.runId}:gate:approval`,
         type: "gate.opened",
         runId: snapshot.runId,
@@ -2606,13 +2782,16 @@ export class LocalRunStore {
           pendingActionIds: snapshot.pendingApprovals,
           pendingToolCallIds,
         },
-      });
+      }, snapshot.config.metadata.branchRole === "candidate" ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
+      if (snapshot.config.metadata.branchRole === "candidate") {
+        this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+      }
     }
     for (const decision of snapshot.planDecisions) {
       if (decision.status !== "pending") {
         continue;
       }
-      this.appendSessionLedgerEntry(snapshot.sessionId, {
+      const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
         id: `${snapshot.runId}:gate:${decision.id}`,
         type: "gate.opened",
         runId: snapshot.runId,
@@ -2623,24 +2802,29 @@ export class LocalRunStore {
           kind: "plan_decision",
           planDecision: decision,
         },
-      });
+      }, snapshot.config.metadata.branchRole === "candidate" ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
+      if (snapshot.config.metadata.branchRole === "candidate") {
+        this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+      }
     }
   }
 
   private appendSessionLedgerEntry(
     sessionId: string,
     entry: Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType },
+    options: { updateLeaf?: boolean; parentId?: string } = {},
   ): RuntimeSessionEntry {
-    return this.appendSessionLedgerEntries(sessionId, [entry]).at(-1)!;
+    return this.appendSessionLedgerEntries(sessionId, [entry], options).at(-1)!;
   }
 
   private appendSessionLedgerEntries(
     sessionId: string,
     entries: Array<Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType }>,
+    options: { updateLeaf?: boolean; parentId?: string } = {},
   ): RuntimeSessionEntry[] {
     const ledger = this.backend.getSessionLedger(sessionId);
     const maxSeq = ledger?.entries.reduce((max, entry) => Math.max(max, entry.seq), -1) ?? -1;
-    let parentId = ledger?.leafEntryId;
+    let parentId = options.parentId ?? ledger?.leafEntryId;
     const parsed = entries.map((entry, index) => {
       const next = RuntimeSessionEntrySchema.parse({
         ...entry,
@@ -2651,7 +2835,8 @@ export class LocalRunStore {
       parentId = next.id;
       return next;
     });
-    this.backend.appendSessionEntries(sessionId, parsed, parsed.at(-1)?.id);
+    const nextLeafEntryId = options.updateLeaf === false ? ledger?.leafEntryId : parsed.at(-1)?.id;
+    this.backend.appendSessionEntries(sessionId, parsed, nextLeafEntryId);
     return parsed;
   }
 
@@ -2677,18 +2862,121 @@ export class LocalRunStore {
     return projection.session;
   }
 
-  private ledgerSnapshotOrFallback(snapshot: StateSnapshot): StateSnapshot {
+  private ledgerSnapshotOrFallback(snapshot: StateSnapshot, leafEntryId?: string): StateSnapshot {
     if (!snapshot.sessionId) {
       return snapshot;
     }
     const ledger = this.backend.getSessionLedger(snapshot.sessionId);
-    const projected = ledger ? deriveRunSnapshot(ledger, snapshot.runId) : undefined;
+    const projected = ledger ? deriveRunSnapshot(ledger, snapshot.runId, leafEntryId ?? ledger.leafEntryId) : undefined;
     if (!projected) {
       return snapshot;
     }
     this.runs.set(projected.runId, projected);
     this.refreshSessionFromLedger(snapshot.sessionId);
     return projected;
+  }
+
+  private ledgerRebasedRunSnapshot(runId: string): StateSnapshot | undefined {
+    const cached = this.runs.get(runId);
+    const projected = cached
+      ? this.ledgerProjectedRunSnapshotForCachedRun(cached)
+      : this.ledgerProjectedRunSnapshot(runId);
+    if (!projected) {
+      return undefined;
+    }
+    return this.rebaseActiveRunSnapshot(projected, cached);
+  }
+
+  private rebaseActiveRunSnapshot(projected: StateSnapshot, cached?: StateSnapshot): StateSnapshot {
+    if (projected.status !== "queued" && projected.status !== "running") {
+      return projected;
+    }
+    if (!cached) {
+      return projected;
+    }
+    const lastLedgerSeq = projected.events.reduce((max, event) => Math.max(max, event.seq), -1);
+    const unledgeredEvents = cached.events
+      .filter((event) => event.seq > lastLedgerSeq)
+      .sort((left, right) => left.seq - right.seq);
+    if (unledgeredEvents.length === 0) {
+      return projected;
+    }
+    return unledgeredEvents.reduce(
+      (snapshot, event) => applyStreamingRunEvent(snapshot, event),
+      projected,
+    );
+  }
+
+  private ledgerProjectedRunSnapshotForCachedRun(cached: StateSnapshot): StateSnapshot | undefined {
+    if (!cached.sessionId) {
+      return undefined;
+    }
+    const ledger = this.backend.getSessionLedger(cached.sessionId);
+    if (!ledger) {
+      return undefined;
+    }
+    const leafEntryId = cached.config.metadata.branchRole === "candidate"
+      ? this.branchCandidateLeafByRun.get(cached.runId)
+      : ledger.leafEntryId;
+    return deriveRunSnapshot(ledger, cached.runId, leafEntryId);
+  }
+
+  private ledgerProjectedRunSnapshot(runId: string): StateSnapshot | undefined {
+    const cached = this.runs.get(runId);
+    if (cached?.sessionId) {
+      return this.ledgerProjectedRunSnapshotForCachedRun(cached);
+    }
+    for (const ledger of this.backend.listSessionLedgers()) {
+      const projected = deriveRunSnapshot(ledger, runId);
+      if (projected) {
+        return projected;
+      }
+    }
+    return undefined;
+  }
+
+  private ledgerProjectedRunSnapshotFromAnyLeaf(runId: string): StateSnapshot | undefined {
+    for (const ledger of this.backend.listSessionLedgers()) {
+      const runEntries = ledger.entries
+        .filter((entry) => entry.runId === runId)
+        .sort((a, b) => b.seq - a.seq || b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+      for (const entry of runEntries) {
+        const projected = deriveRunSnapshot(ledger, runId, entry.id);
+        if (projected) {
+          return projected;
+        }
+      }
+    }
+    return undefined;
+  }
+
+
+  private replayRunFromSnapshot(snapshot: StateSnapshot, checkpointId?: string): RunEventStream {
+    const checkpoint = checkpointId
+      ? snapshot.checkpoints.find((candidate) => candidate.id === checkpointId)
+      : snapshot.checkpoints.at(-1);
+    if (!checkpoint) {
+      throw new OraRuntimeError("Checkpoint not found for replay.", -32004, {
+        runId: snapshot.runId,
+        checkpointId,
+      });
+    }
+    const replayableEvents = snapshot.events
+      .filter((event) => event.seq <= checkpoint.eventSeq)
+      .sort((a, b) => a.seq - b.seq);
+    const replayed = this.appendRunSnapshotUpdateToLedger(this.appendEvent(snapshot, "run.replayed", {
+      checkpointId: checkpoint.id,
+      replayedEventCount: replayableEvents.length,
+      events: replayableEvents,
+      continuation: continuationSummary(snapshot),
+    }));
+    this.persistRun(replayed);
+    return RunEventStreamSchema.parse({
+      runId: snapshot.runId,
+      fromSeq: 0,
+      events: replayableEvents,
+      nextSeq: replayed.events.length,
+    });
   }
 
   private isLedgerBackedSession(sessionId: string | undefined): boolean {
@@ -2920,7 +3208,7 @@ export class LocalRunStore {
   }
 
   private cancelledSnapshot(runId: string): StateSnapshot | undefined {
-    const snapshot = this.runs.get(runId);
+    const snapshot = this.ledgerRebasedRunSnapshot(runId) ?? this.runs.get(runId);
     if (snapshot?.status === "cancelled") {
       return snapshot;
     }
@@ -2933,10 +3221,31 @@ export class LocalRunStore {
 
   private getRunOrThrow(runId: string): StateSnapshot {
     const snapshot = this.runs.get(runId);
-    if (!snapshot) {
-      throw new OraRuntimeError(`Run not found: ${runId}`, -32004, { runId });
+    if (snapshot) {
+      const projected = this.ledgerProjectedRunSnapshotForCachedRun(snapshot);
+      if (projected) {
+        const rebased = this.rebaseActiveRunSnapshot(projected, snapshot);
+        this.runs.set(runId, rebased);
+        return rebased;
+      }
+      return snapshot;
     }
-    return snapshot;
+    const projected = this.ledgerProjectedRunSnapshotFromAnyLeaf(runId);
+    if (projected) {
+      this.runs.set(runId, projected);
+      if (projected.config.metadata.branchRole === "candidate" && projected.sessionId) {
+        const ledger = this.backend.getSessionLedger(projected.sessionId);
+        const leaf = ledger?.entries
+          .filter((entry) => entry.runId === runId)
+          .sort((a, b) => b.seq - a.seq || b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+          .at(0)?.id;
+        if (leaf) {
+          this.branchCandidateLeafByRun.set(runId, leaf);
+        }
+      }
+      return projected;
+    }
+    throw new OraRuntimeError(`Run not found: ${runId}`, -32004, { runId });
   }
 
   private getSessionOrThrow(sessionId: string): SessionSummary {
@@ -3126,13 +3435,14 @@ export class LocalRunStore {
     currentPrompt: string,
     config: RunConfig,
     turnIndex: number,
+    runId: string,
   ): Promise<ModelMessage[]> {
     const session = this.getSessionOrThrow(sessionId);
     const provider = resolveRunProviderConfig(config);
     const excludeRunId = config.metadata.branchTarget === "replace_latest" && typeof config.metadata.branchReplaceRunId === "string"
       ? config.metadata.branchReplaceRunId
       : undefined;
-    const acceptedPlanHandoff = this.acceptedPlanHandoffForNextImplementationRun(sessionId, config, excludeRunId);
+    const acceptedPlanHandoff = this.acceptedPlanHandoffForNextImplementationRun(sessionId, config, runId, excludeRunId);
     if (acceptedPlanHandoff) {
       config.metadata = {
         ...config.metadata,
@@ -3141,6 +3451,7 @@ export class LocalRunStore {
       };
     }
     const priorMessages = this.buildConversationMessages(sessionId, "", excludeRunId);
+    const contextState = this.contextStateForModelContext(sessionId);
     const currentPromptMessage = currentPrompt.trim()
       ? [{ role: "user" as const, content: currentPrompt.trim() }]
       : [];
@@ -3153,14 +3464,14 @@ export class LocalRunStore {
       ...currentPromptMessage,
     ];
     const check = shouldCompactContext({
-      contextState: session.contextState,
+      contextState,
       provider,
       messages,
     });
     const branchCandidate = config.metadata.branchRole === "candidate";
     if (!branchCandidate) {
       this.persistSessionContextState(sessionId, {
-        ...normalizeContextState(session.contextState),
+        ...normalizeContextState(contextState),
         activeTokenUsage: check.usage,
         contextWindow: check.contextWindow,
         autoCompactTokenLimit: check.limit,
@@ -3181,7 +3492,7 @@ export class LocalRunStore {
       beforeTokens: check.usage.totalTokens,
       limit: check.limit,
       contextWindow: check.contextWindow,
-      previousState: session.contextState,
+      previousState: contextState,
       compactedThroughTurnIndex: Math.max(0, turnIndex - 1),
       now: this.now(),
     });
@@ -3197,10 +3508,30 @@ export class LocalRunStore {
   private acceptedPlanHandoffForNextImplementationRun(
     sessionId: string,
     config: RunConfig,
+    runId: string,
     excludeRunId?: string,
   ): AcceptedPlanHandoff | undefined {
-    if (config.metadata.taskIntent !== "implement") {
+    if (config.metadata.taskIntent !== "implement" || config.metadata.branchRole === "candidate") {
       return undefined;
+    }
+    const ledger = this.backend.getSessionLedger(sessionId);
+    if (ledger) {
+      const projection = deriveSessionProjection(ledger);
+      const handoff = [...projection.acceptedPlanHandoffs]
+        .reverse()
+        .find((candidate) =>
+          !candidate.consumedByRunId &&
+          candidate.sourceRunId !== excludeRunId &&
+          candidate.planContent.trim().length > 0
+        );
+      if (!handoff) {
+        return undefined;
+      }
+      return {
+        decisionId: handoff.decisionId,
+        sourceRunId: handoff.sourceRunId,
+        planContent: handoff.planContent.trim(),
+      };
     }
     const priorTurns = this.runsForSession(sessionId)
       .filter((turn) => turn.runId !== excludeRunId);
@@ -3223,6 +3554,40 @@ export class LocalRunStore {
       sourceRunId: latestPriorTurn.runId,
       planContent: decision.planContent.trim(),
     };
+  }
+
+  private consumeAcceptedPlanHandoffForStartedRun(sessionId: string, config: RunConfig, runId: string): void {
+    const decisionId = config.metadata.acceptedPlanDecisionId;
+    const sourceRunId = config.metadata.acceptedPlanRunId;
+    if (typeof decisionId !== "string" || typeof sourceRunId !== "string") {
+      return;
+    }
+    const ledger = this.backend.getSessionLedger(sessionId);
+    if (!ledger) {
+      return;
+    }
+    const projection = deriveSessionProjection(ledger);
+    const handoff = projection.acceptedPlanHandoffs.find((candidate) =>
+      candidate.decisionId === decisionId &&
+      candidate.sourceRunId === sourceRunId &&
+      !candidate.consumedByRunId
+    );
+    if (!handoff) {
+      return;
+    }
+    const consumed = {
+      ...handoff,
+      consumedByRunId: runId,
+    } satisfies RuntimeAcceptedPlanHandoff;
+    this.appendSessionLedgerEntry(sessionId, {
+      id: `${runId}:handoff-consumed:${handoff.decisionId}`,
+      type: "handoff.accepted_plan",
+      runId,
+      turnIndex: 0,
+      createdAt: this.now(),
+      payload: consumed,
+    });
+    this.refreshSessionFromLedger(sessionId);
   }
 
   private persistSessionContextState(sessionId: string, contextState: SessionSummary["contextState"]): void {
@@ -3283,6 +3648,10 @@ export class LocalRunStore {
   }
 
   private buildConversationMessages(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] {
+    const ledgerMessages = this.buildModelContextFromLedger(sessionId, currentPrompt, excludeRunId);
+    if (ledgerMessages) {
+      return ledgerMessages;
+    }
     const session = this.sessions.get(sessionId);
     const contextState = normalizeContextState(session?.contextState);
     const priorTurns = this.runsForSession(sessionId);
@@ -3299,7 +3668,7 @@ export class LocalRunStore {
         messages.push({ role: "user", content: prompt });
       }
       if (turn.conversation.length > 0) {
-        messages.push(...runtimeConversationToModelMessages(turn.conversation));
+        messages.push(...priorTurnConversationMessages(turn.conversation));
       }
       const assistant = assistantTextForRun(turn);
       if (assistant) {
@@ -3310,6 +3679,51 @@ export class LocalRunStore {
       messages.push({ role: "user", content: currentPrompt.trim() });
     }
     return messages;
+  }
+
+  private buildModelContextFromLedger(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] | undefined {
+    const ledger = this.backend.getSessionLedger(sessionId);
+    if (!ledger) {
+      return undefined;
+    }
+    const projection = deriveSessionProjection(ledger);
+    const contextState = normalizeContextState(projection.contextState);
+    const messages: ModelMessage[] = contextMessages(contextState);
+    for (const run of projection.runs) {
+      if (run.runId === excludeRunId) {
+        continue;
+      }
+      if (run.turnIndex <= contextState.compactedThroughTurnIndex) {
+        continue;
+      }
+      const snapshot = deriveRunSnapshot(ledger, run.runId, projection.leafEntryId);
+      if (!snapshot) {
+        continue;
+      }
+      const prompt = snapshot.input.prompt.trim();
+      if (prompt) {
+        messages.push({ role: "user", content: prompt });
+      }
+      if (snapshot.conversation.length > 0) {
+        messages.push(...priorTurnConversationMessages(snapshot.conversation));
+      }
+      const assistant = assistantTextForRun(snapshot);
+      if (assistant) {
+        messages.push({ role: "assistant", content: assistant });
+      }
+    }
+    if (currentPrompt.trim()) {
+      messages.push({ role: "user", content: currentPrompt.trim() });
+    }
+    return messages;
+  }
+
+  private contextStateForModelContext(sessionId: string): SessionSummary["contextState"] {
+    const ledger = this.backend.getSessionLedger(sessionId);
+    if (ledger) {
+      return deriveSessionProjection(ledger).contextState;
+    }
+    return this.sessions.get(sessionId)?.contextState;
   }
 
   private feedbackSourceContextDeps(): FeedbackSourceContextDeps {
@@ -3932,6 +4346,41 @@ function acceptedPlanHandoffMessage(handoff: AcceptedPlanHandoff): ModelMessage 
       handoff.planContent,
       "</accepted_plan>",
     ].join("\n"),
+  };
+}
+
+function priorTurnConversationMessages(entries: StateSnapshot["conversation"]): ModelMessage[] {
+  return runtimeConversationToModelMessages(entries).filter((message) =>
+    message.role !== "system" || !isAcceptedPlanHandoffMessage(message.content)
+  );
+}
+
+function isAcceptedPlanHandoffMessage(content: string): boolean {
+  return content.includes("<accepted_plan>") && content.includes("Accepted plan decision:");
+}
+
+function continuationSummary(snapshot: StateSnapshot) {
+  return {
+    activeFrameId: snapshot.continuation.activeFrameId,
+    frameCount: snapshot.continuation.frames.length,
+    frames: snapshot.continuation.frames.map((frame) => ({
+      id: frame.id,
+      status: frame.status,
+      reason: frame.reason,
+      agentId: frame.agentId,
+      nodeId: frame.nodeId,
+      planItemId: frame.planItemId,
+      pendingActionIds: frame.pendingActionIds,
+      pendingToolCallIds: frame.pendingToolCallIds,
+      pendingClarificationIds: frame.pendingClarificationIds,
+      approvedActionIds: frame.approvedActionIds,
+      resolvedClarificationIds: frame.resolvedClarificationIds,
+      resumedFromFrameId: frame.resumedFromFrameId,
+      createdAt: frame.createdAt,
+      updatedAt: frame.updatedAt,
+    })),
+    conversationEntryCount: snapshot.conversation.length,
+    toolResultCount: snapshot.toolResults.length,
   };
 }
 

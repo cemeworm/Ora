@@ -3529,18 +3529,47 @@ describe("Ora runtime smoke path", () => {
         },
       }) as { runId: string; status: string };
 
-      const cancelled = StateSnapshotSchema.parse(await handle({
+      const mutableStore = store as unknown as { runs: Map<string, unknown> };
+      const runningCache = mutableStore.runs.get(run.runId);
+      expect(runningCache).toBeTruthy();
+      mutableStore.runs.set(run.runId, StateSnapshotSchema.parse({
+        ...StateSnapshotSchema.parse(runningCache),
+        status: "failed",
+        error: "SHADOW ACTIVE OVERWRITE",
+      }));
+      const activeState = StateSnapshotSchema.parse(await handle({
         jsonrpc: "2.0",
         id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      expect(activeState.status).toBe("running");
+      expect(activeState.error).not.toBe("SHADOW ACTIVE OVERWRITE");
+      mutableStore.runs.set(run.runId, runningCache);
+
+      const cancelled = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 3,
         method: "runs.cancel",
         params: { runId: run.runId, reason: "Stopped processing as instructed." },
       }));
 
       await waitFor(() => abortObserved);
       await new Promise((resolve) => setTimeout(resolve, 20));
+      const cancelledProjection = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      mutableStore.runs.set(run.runId, StateSnapshotSchema.parse({
+        ...cancelledProjection,
+        status: "failed",
+        error: "SHADOW CANCEL OVERWRITE",
+      }));
       const latest = StateSnapshotSchema.parse(await handle({
         jsonrpc: "2.0",
-        id: 3,
+        id: 5,
         method: "runs.state",
         params: { runId: run.runId },
       }));
@@ -3549,6 +3578,7 @@ describe("Ora runtime smoke path", () => {
       expect(cancelled.status).toBe("cancelled");
       expect(latest.status).toBe("cancelled");
       expect(latest.error).toBe("Stopped processing as instructed.");
+      expect(latest.error).not.toBe("SHADOW CANCEL OVERWRITE");
       expect(streams.some((stream) => JSON.stringify(stream).includes("\"status\":\"failed\""))).toBe(false);
     } finally {
       globalThis.fetch = previousFetch;
@@ -5746,6 +5776,79 @@ describe("Ora runtime smoke path", () => {
     }));
     expect(state.status).toBe("succeeded");
     expect(state.events.some((event) => event.type === "run.done")).toBe(true);
+  }, 10_000);
+
+  it("reads completed streaming state and replay streams from the ledger projection", async () => {
+    const store = createTempStore();
+    const handle = createRuntimeMethodHandler(store);
+    const run = (await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.startStreaming",
+      params: {
+        input: { prompt: "Stream ledger projection." },
+        config: { pattern: "orchestrator_subagent" },
+      },
+    })) as { runId: string; status: string };
+
+    expect(run.status).toBe("running");
+    await waitFor(async () => {
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      return state.status === "succeeded";
+    }, 10_000);
+
+    const cleanState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.state",
+      params: { runId: run.runId },
+    }));
+    const mutableStore = store as unknown as { runs: Map<string, unknown> };
+    mutableStore.runs.set(run.runId, StateSnapshotSchema.parse({
+      ...cleanState,
+      events: [],
+      output: { text: "SHADOW STREAM OUTPUT" },
+    }));
+
+    const projectedState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "runs.state",
+      params: { runId: run.runId },
+    }));
+    const stream = await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "runs.stream",
+      params: { runId: run.runId, afterSeq: 0 },
+    }) as { events: Array<{ seq: number; type: string }>; snapshot?: unknown; nextSeq: number };
+    const replay = await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "runs.replay",
+      params: { runId: run.runId },
+    }) as { events: Array<{ seq: number; type: string }>; nextSeq: number };
+    const replayedState = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "runs.state",
+      params: { runId: run.runId },
+    }));
+
+    expect(projectedState.output).not.toMatchObject({ text: "SHADOW STREAM OUTPUT" });
+    expect(projectedState.events.length).toBeGreaterThan(0);
+    expect(stream.nextSeq).toBe(projectedState.events.length);
+    expect(stream.events).toEqual(projectedState.events.filter((event) => event.seq >= 1));
+    expect(StateSnapshotSchema.parse(stream.snapshot).output).toEqual(projectedState.output);
+    expect(replay.events.length).toBeGreaterThan(0);
+    expect(replay.events.at(-1)?.type).toBe("checkpoint.created");
+    expect(replay.nextSeq).toBe(replayedState.events.length);
+    expect(replayedState.events.at(-1)?.type).toBe("run.replayed");
   }, 10_000);
 
   it("executes OpenAI-compatible native tool calls during streaming runs", async () => {

@@ -12,9 +12,7 @@ import {
   ProjectSummarySchema,
   RuntimeSessionEntrySchema,
   RuntimeSessionLedgerSchema,
-  SessionSummarySchema,
   RuntimeStorageOptimizationResultSchema,
-  StateSnapshotSchema
 } from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
 import {
@@ -27,14 +25,12 @@ import {
   type StoredChannelDelivery,
   type StoredChannelMessage,
   type StoredProject,
-  type StoredRun,
-  type StoredSession
+  type RuntimeRunReadModel,
+  type RuntimeSessionReadModel
 } from "./types.js";
 import type { RuntimeSessionEntry, RuntimeSessionLedger } from "@cemeworm/shared";
 import {
-  deriveStoredRuntimeStateFromLedgers,
-  mergeStoredRuns,
-  mergeStoredSessions,
+  deriveRuntimeReadModelsFromLedgers,
 } from "./session-ledger-projections.js";
 
 export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBackend {
@@ -62,7 +58,7 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     this.channelDeliveriesDir = path.join(dataDir, "channels", "deliveries");
   }
 
-  load(): { manifest: StoreManifest; runs: StoredRun[]; sessions: StoredSession[]; projects: StoredProject[] } {
+  load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] } {
     this.ensureDirs();
 
     const manifest = this.readJsonFile(this.manifestPath, StoreManifestSchema, StoreManifestSchema.parse({
@@ -71,35 +67,23 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
       nextSessionNumber: 1,
       nextProjectNumber: 1,
     }));
-    const sessions: StoredSession[] = fs
-      .readdirSync(this.sessionsDir)
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => this.readJsonFile(path.join(this.sessionsDir, name), SessionSummarySchema))
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
     const projects: StoredProject[] = fs
       .readdirSync(this.projectsDir)
       .filter((name) => name.endsWith(".json"))
       .map((name) => this.readJsonFile(path.join(this.projectsDir, name), ProjectSummarySchema))
       .sort((a, b) => b.updatedAt - a.updatedAt || a.projectId.localeCompare(b.projectId));
-    const runs: StoredRun[] = fs
-      .readdirSync(this.runsDir)
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => this.readJsonFile(path.join(this.runsDir, name), StateSnapshotSchema))
-      .sort((a, b) => a.runId.localeCompare(b.runId));
 
-    const ledgerState = deriveStoredRuntimeStateFromLedgers(this.listSessionLedgers());
-    const mergedRuns = mergeStoredRuns(runs, ledgerState.runs);
-    const mergedSessions = mergeStoredSessions(sessions, ledgerState.sessions);
+    const ledgerState = deriveRuntimeReadModelsFromLedgers(this.listSessionLedgers());
 
     return {
       manifest: {
         ...manifest,
-        nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(mergedRuns)),
-        nextSessionNumber: Math.max(manifest.nextSessionNumber, this.nextSessionNumberAfter(mergedSessions)),
+        nextRunNumber: Math.max(manifest.nextRunNumber, this.nextRunNumberAfter(ledgerState.runs)),
+        nextSessionNumber: Math.max(manifest.nextSessionNumber, this.nextSessionNumberAfter(ledgerState.sessions)),
         nextProjectNumber: Math.max(manifest.nextProjectNumber, this.nextProjectNumberAfter(projects)),
       },
-      runs: mergedRuns,
-      sessions: mergedSessions,
+      runs: ledgerState.runs,
+      sessions: ledgerState.sessions,
       projects,
     };
   }
@@ -191,16 +175,6 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
       }
       return total + fs.statSync(entryPath).size;
     }, 0);
-  }
-
-  saveRun(run: StoredRun): void {
-    this.ensureDirs();
-    this.writeJsonFile(path.join(this.runsDir, `${this.fileSafeId(run.runId)}.json`), run);
-  }
-
-  saveSession(session: StoredSession): void {
-    this.ensureDirs();
-    this.writeJsonFile(path.join(this.sessionsDir, `${this.fileSafeId(session.sessionId)}.json`), session);
   }
 
   saveProject(project: StoredProject): void {
@@ -372,7 +346,7 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     fs.renameSync(tmpPath, filePath);
   }
 
-  private nextRunNumberAfter(runs: StoredRun[]): number {
+  private nextRunNumberAfter(runs: RuntimeRunReadModel[]): number {
     return (
       runs.reduce((max, run) => {
         const match = /^run-(\d+)$/.exec(run.runId);
@@ -381,7 +355,7 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     );
   }
 
-  private nextSessionNumberAfter(sessions: StoredSession[]): number {
+  private nextSessionNumberAfter(sessions: RuntimeSessionReadModel[]): number {
     return (
       sessions.reduce((max, session) => {
         const match = /^session-(\d+)$/.exec(session.sessionId);

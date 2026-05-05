@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
   RuntimeSessionLedgerSchema,
@@ -159,5 +160,56 @@ describe("runtime session ledger persistence", () => {
 
     expect(ledger?.entries.map((candidate) => candidate.id)).toEqual(entries.map((candidate) => candidate.id));
     expect(ledger?.leafEntryId).toBe("e-assistant");
+  });
+
+  it("ignores legacy JSON run/session files during clean ledger cutover load", () => {
+    const dir = freshDir("ora-json-ledger-clean-cutover-");
+    const backend = new JsonFileRuntimePersistenceBackend(dir);
+    backend.appendSessionEntries("session-ledger", ledgerEntries(), "e-assistant");
+    fs.mkdirSync(path.join(dir, "runs"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "runs", "run-legacy.json"), "{ invalid run json", "utf8");
+    fs.writeFileSync(path.join(dir, "sessions", "session-legacy.json"), "{ invalid session json", "utf8");
+
+    const loaded = new JsonFileRuntimePersistenceBackend(dir).load();
+
+    expect(loaded.runs.map((run) => run.runId)).toEqual(["run-1"]);
+    expect(loaded.sessions.map((session) => session.sessionId)).toEqual(["session-ledger"]);
+  });
+
+  it("ignores legacy SQLite run/session tables during clean ledger cutover load", () => {
+    const dir = freshDir("ora-sqlite-ledger-clean-cutover-");
+    const dbPath = path.join(dir, "runtime.db");
+    const backend = new SqliteRuntimePersistence(dbPath);
+    backend.appendSessionEntries("session-ledger", ledgerEntries(), "e-assistant");
+    const db = new Database(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS runs (
+          runId TEXT PRIMARY KEY,
+          sessionId TEXT,
+          turnIndex INTEGER,
+          status TEXT NOT NULL,
+          pattern TEXT NOT NULL,
+          data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          sessionId TEXT PRIMARY KEY,
+          updatedAt INTEGER NOT NULL,
+          data TEXT NOT NULL
+        );
+        INSERT OR REPLACE INTO runs (runId, sessionId, turnIndex, status, pattern, data)
+          VALUES ('run-legacy', 'session-legacy', 1, 'succeeded', 'orchestrator_subagent', '{ invalid run json');
+        INSERT OR REPLACE INTO sessions (sessionId, updatedAt, data)
+          VALUES ('session-legacy', 1714000000000, '{ invalid session json');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const loaded = new SqliteRuntimePersistence(dbPath).load();
+
+    expect(loaded.runs.map((run) => run.runId)).toEqual(["run-1"]);
+    expect(loaded.sessions.map((session) => session.sessionId)).toEqual(["session-ledger"]);
   });
 });

@@ -573,7 +573,10 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
       break;
     }
     case "handoff.accepted_plan": {
-      state.acceptedPlanHandoffs.push(AcceptedPlanHandoffPayloadSchema.parse(entry.payload));
+      state.acceptedPlanHandoffs = upsertAcceptedPlanHandoff(
+        state.acceptedPlanHandoffs,
+        AcceptedPlanHandoffPayloadSchema.parse(entry.payload),
+      );
       break;
     }
     case "compaction.summary": {
@@ -627,6 +630,16 @@ function updateRun(
 function upsertPlanDecision(decisions: readonly PlanDecisionGate[], decision: PlanDecisionGate): PlanDecisionGate[] {
   const without = decisions.filter((candidate) => candidate.id !== decision.id);
   return [...without, decision].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+}
+
+function upsertAcceptedPlanHandoff(
+  handoffs: readonly RuntimeAcceptedPlanHandoff[],
+  handoff: RuntimeAcceptedPlanHandoff,
+): RuntimeAcceptedPlanHandoff[] {
+  const without = handoffs.filter((candidate) =>
+    candidate.decisionId !== handoff.decisionId || candidate.sourceRunId !== handoff.sourceRunId
+  );
+  return [...without, handoff].sort((a, b) => a.acceptedAt - b.acceptedAt || a.decisionId.localeCompare(b.decisionId));
 }
 
 function toLedgerSessionTurn(run: RuntimeRunProjection): SessionTurn {
