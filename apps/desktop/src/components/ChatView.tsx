@@ -98,6 +98,31 @@ export function getChatInputContextState({
   );
 }
 
+export function deriveProjectedGateTrays({
+  attention,
+  actionRecords,
+  pendingClarifications,
+}: {
+  attention?: OraStateSnapshot["attention"];
+  actionRecords: ActionRecord[];
+  pendingClarifications: OraStateSnapshot["pendingClarifications"];
+}) {
+  const pendingApprovalIds = new Set(attention?.kind === "needs_approval" ? attention.pendingActionIds : []);
+  const approvalActions = actionRecords.filter((action) =>
+    action.state === "approval_required" && pendingApprovalIds.has(action.id)
+  );
+  const pendingClarificationIds = new Set(attention?.kind === "needs_clarification" ? attention.pendingClarificationIds : []);
+  const clarificationQuestions = pendingClarifications.filter((clarification) =>
+    pendingClarificationIds.has(clarification.id)
+  );
+  return {
+    approvalActions,
+    clarificationQuestions,
+    hasApprovalTray: attention?.kind === "needs_approval" && approvalActions.length > 0,
+    hasClarificationTray: attention?.kind === "needs_clarification" && clarificationQuestions.length > 0,
+  };
+}
+
 export function ChatView({
   activeMode,
   activeSnapshot,
@@ -146,14 +171,16 @@ export function ChatView({
   const projectFileAttachments = state.sessionProjectFileAttachments[selectedSession.id] ?? [];
   const localFileAttachments = state.sessionLocalFileAttachments[selectedSession.id] ?? [];
   const attention = activeSnapshot?.attention ?? state.activeSessionDetail?.session.attention;
-  const pendingApprovalIds = new Set(attention?.kind === "needs_approval" ? attention.pendingActionIds : []);
-  const pendingApprovalActions = actionRecords.filter((action) =>
-    action.state === "approval_required" && pendingApprovalIds.has(action.id)
-  );
-  const pendingClarificationIds = new Set(attention?.kind === "needs_clarification" ? attention.pendingClarificationIds : []);
-  const pendingClarifications = (activeSnapshot?.pendingClarifications ?? []).filter((clarification) =>
-    pendingClarificationIds.has(clarification.id)
-  );
+  const {
+    approvalActions: pendingApprovalActions,
+    clarificationQuestions: pendingClarifications,
+    hasApprovalTray,
+    hasClarificationTray,
+  } = deriveProjectedGateTrays({
+    attention,
+    actionRecords,
+    pendingClarifications: activeSnapshot?.pendingClarifications ?? [],
+  });
   const pendingPlanDecisionId =
     attention?.kind === "needs_plan_decision"
       ? attention.planDecisionId
@@ -277,8 +304,8 @@ export function ChatView({
           <ChatMessages
             chatMessages={chatMessages}
             actionRecords={actionRecords}
-            hasApprovalTray={attention?.kind === "needs_approval" && pendingApprovalActions.length > 0}
-            hasClarificationTray={attention?.kind === "needs_clarification" && pendingClarifications.length > 0}
+            hasApprovalTray={hasApprovalTray}
+            hasClarificationTray={hasClarificationTray}
             hasPlanDecisionTray={planDecisionPending}
             hasPlanStepsTray={currentPlanSteps.length > 0}
             bottomInsetPx={composerOverlayHeight}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getActiveChatProvider, getChatInputContextState } from "./ChatView";
+import { deriveProjectedGateTrays, getActiveChatProvider, getChatInputContextState } from "./ChatView";
 
 describe("chat view provider selection", () => {
   it("uses the selected provider when it is available", () => {
@@ -68,6 +68,69 @@ describe("chat view context state selection", () => {
         },
       },
     })).toBe(sessionContextState);
+  });
+});
+
+describe("chat view projected gate trays", () => {
+  const actionRecords = [
+    { id: "action-1", state: "approval_required" },
+    { id: "action-2", state: "approval_required" },
+  ] as any[];
+  const pendingClarifications = [
+    { id: "clarification-1", key: "scope", question: "What scope?", requestedAt: 1 },
+    { id: "clarification-2", key: "budget", question: "What budget?", requestedAt: 1 },
+  ] as any[];
+
+  it("does not show approval or clarification trays from raw state without projection attention", () => {
+    expect(deriveProjectedGateTrays({
+      attention: { kind: "running", blocking: false, sourceRunId: "run-1" } as any,
+      actionRecords,
+      pendingClarifications,
+    })).toEqual({
+      approvalActions: [],
+      clarificationQuestions: [],
+      hasApprovalTray: false,
+      hasClarificationTray: false,
+    });
+  });
+
+  it("shows only approval actions named by projection attention", () => {
+    expect(deriveProjectedGateTrays({
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: "run-1",
+        reason: "approval_required",
+        pendingActionIds: ["action-2"],
+        pendingToolCallIds: [],
+      } as any,
+      actionRecords,
+      pendingClarifications,
+    })).toMatchObject({
+      approvalActions: [{ id: "action-2", state: "approval_required" }],
+      clarificationQuestions: [],
+      hasApprovalTray: true,
+      hasClarificationTray: false,
+    });
+  });
+
+  it("shows only clarification questions named by projection attention", () => {
+    expect(deriveProjectedGateTrays({
+      attention: {
+        kind: "needs_clarification",
+        blocking: true,
+        sourceRunId: "run-1",
+        reason: "clarification_required",
+        pendingClarificationIds: ["clarification-1"],
+      } as any,
+      actionRecords,
+      pendingClarifications,
+    })).toMatchObject({
+      approvalActions: [],
+      clarificationQuestions: [{ id: "clarification-1" }],
+      hasApprovalTray: false,
+      hasClarificationTray: true,
+    });
   });
 });
 
