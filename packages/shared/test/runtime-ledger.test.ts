@@ -211,6 +211,74 @@ describe("runtime session ledger projection", () => {
     expect(projection.gates.find((gate) => gate.gateId === "gate-clarification")?.status).toBe("resolved");
   });
 
+  it("does not project a resolved human gate with no completion snapshot as an ordinary pause", () => {
+    const ledger = baseLedger([
+      entry({
+        id: "e-run",
+        parentId: "e-session",
+        seq: 1,
+        type: "run.started",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          input: { prompt: "Need clarification.", createdAt: BASE_TIME, context: {} },
+          config: runConfig(),
+        },
+      }),
+      entry({
+        id: "e-interrupted",
+        parentId: "e-run",
+        seq: 2,
+        type: "runtime.event_batch",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          status: "interrupted",
+          events: [{
+            id: "evt-clarification",
+            runId: "run-1",
+            seq: 0,
+            type: "clarification.required",
+            createdAt: BASE_TIME + 2,
+            pattern: "orchestrator_subagent",
+            payload: { clarificationId: "clarification-1" },
+          }],
+        },
+      }),
+      entry({
+        id: "e-clarification-open",
+        parentId: "e-interrupted",
+        seq: 3,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "clarification-1",
+          kind: "clarification",
+          pendingClarificationIds: ["clarification-1"],
+        },
+      }),
+      entry({
+        id: "e-clarification-resolved",
+        parentId: "e-clarification-open",
+        seq: 4,
+        type: "gate.resolved",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: { gateId: "clarification-1", status: "resolved", resolvedAt: BASE_TIME + 4 },
+      }),
+    ]);
+
+    const projection = deriveSessionProjection(ledger);
+
+    expect(projection.session.status).toBe("interrupted");
+    expect(projection.session.attention).toMatchObject({
+      kind: "failed",
+      reason: "resume_incomplete_after_gate_resolution",
+    });
+    expect(projection.latestSnapshot?.pendingClarifications).toEqual([]);
+  });
+
   it("projects plan acceptance handoff and compaction context as ledger facts", () => {
     const ledger = baseLedger([
       entry({

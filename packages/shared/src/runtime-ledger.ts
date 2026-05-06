@@ -365,7 +365,7 @@ export function deriveRunSnapshot(
   return run ? runtimeRunProjectionToSnapshot(run, projection.contextState) : undefined;
 }
 
-export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId" | "status" | "gates" | "error">): RunAttention {
+export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId" | "status" | "gates" | "error" | "events">): RunAttention {
   const openGates = run.gates.filter((gate) => gate.status === "open");
   const clarification = openGates.find((gate) => gate.kind === "clarification");
   if (clarification) {
@@ -402,6 +402,14 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
     return RunAttentionSchema.parse({ kind: "running", blocking: false, sourceRunId: run.runId });
   }
   if (run.status === "interrupted") {
+    if (hasIncompleteResolvedHumanGateResume(run)) {
+      return RunAttentionSchema.parse({
+        kind: "failed",
+        blocking: false,
+        sourceRunId: run.runId,
+        reason: run.error ?? "resume_incomplete_after_gate_resolution",
+      });
+    }
     return RunAttentionSchema.parse({ kind: "paused", blocking: false, sourceRunId: run.runId, reason: "manual_interrupt" });
   }
   if (run.status === "failed") {
@@ -411,6 +419,25 @@ export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId"
     return RunAttentionSchema.parse({ kind: "cancelled", blocking: false, sourceRunId: run.runId, reason: run.error });
   }
   return RunAttentionSchema.parse({ kind: "idle", blocking: false, sourceRunId: run.runId });
+}
+
+function hasIncompleteResolvedHumanGateResume(
+  run: Pick<RuntimeRunProjection, "gates" | "events">,
+): boolean {
+  const latestResolvedGateAt = run.gates.reduce((latest, gate) =>
+    gate.status === "resolved" ? Math.max(latest, gate.resolvedAt ?? gate.openedAt) : latest,
+  0);
+  if (latestResolvedGateAt === 0) {
+    return false;
+  }
+  const manualInterruptAfterResume = run.events.some((event) =>
+    event.type === "run.interrupted" &&
+    event.createdAt >= latestResolvedGateAt &&
+    event.payload &&
+    typeof event.payload === "object" &&
+    typeof (event.payload as Record<string, unknown>).reason === "string"
+  );
+  return !manualInterruptAfterResume;
 }
 
 function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEntry): void {
