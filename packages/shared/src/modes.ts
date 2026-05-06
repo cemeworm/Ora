@@ -233,8 +233,6 @@ export const ModeToolLimitsSchema = z.object({
   documentSourceMaxBytes: z.number().int().positive().optional(),
   shellMaxOutputBytes: z.number().int().positive().optional(),
   shellTimeoutMs: z.number().int().positive().optional(),
-  shellExtraReadOnlyCommands: z.array(z.string().min(1)).default([]),
-  shellExtraApprovedCommands: z.array(z.string().min(1)).default([]),
 });
 export type ModeToolLimits = z.infer<typeof ModeToolLimitsSchema>;
 
