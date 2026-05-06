@@ -340,9 +340,15 @@ describe("desktop session view model", () => {
 
     const messages = adaptChatMessages([], { [snapshot.runId]: snapshot });
 
-    expect(messages.map((message) => `${message.role}:${message.content}`)).toContain(
-      "assistant:Which scope should I use?",
-    );
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(messages.some((message) => message.id.startsWith("clarification-question:"))).toBe(false);
+    expect(messages[1]?.turn?.clarificationExchanges).toEqual([
+      expect.objectContaining({
+        id: "clarification:scope",
+        question: "Which scope should I use?",
+        status: "pending",
+      }),
+    ]);
   });
 
   it("nests resolved clarification exchanges inside the interrupted assistant turn without changing top-level timeline order", () => {
@@ -3922,6 +3928,89 @@ describe("desktop session view model", () => {
     expect(assistant?.content).toContain("Channel 项目关联与自然语言切换设计方案");
     expect(assistant?.content).not.toContain(introOne);
     expect(assistant?.content).not.toContain(introTwo);
+  });
+
+  it("keeps inline proposed plan intro text out of the plan card content", () => {
+    const createdAt = 1_714_000_000_000;
+    const intro = "Phase1-3分析完成，决策完备";
+    const planContent = [
+      "计划标题：ChatInput textarea 添加滚动支持",
+      "## 背景",
+      "Ora 内容区的输入框在多行内容过多时会挤压下方操作区。",
+      "## 实施步骤",
+      "1. 修改 textarea overflow 属性，只让输入框内部滚动。",
+      "2. 补充覆盖长文本输入的组件测试。",
+      "## 验证方式",
+      "- 运行 ChatInput 和 AssistantTurnCard 相关测试。",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-inline-proposed-plan-intro",
+      sessionId: "session-inline-proposed-plan-intro",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "修复输入框滚动", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-inline-proposed-plan-intro-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "Orchestrator" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: {
+        text: `${intro}<proposed_plan>\n${planContent}\n</proposed_plan>`,
+      },
+      updatedAt: createdAt + 1_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-inline-proposed-plan-intro:user",
+        sessionId: "session-inline-proposed-plan-intro",
+        runId: "run-inline-proposed-plan-intro",
+        turnIndex: 1,
+        role: "user",
+        content: "修复输入框滚动",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-inline-proposed-plan-intro": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.content).toBe(planContent);
+    expect(assistant?.content).not.toContain(intro);
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+    expect(timeline.filter((item) => "content" in item && item.content === intro)).toHaveLength(1);
   });
 
   it("keeps streamed text separators when final output exists without duplicating the final text", () => {

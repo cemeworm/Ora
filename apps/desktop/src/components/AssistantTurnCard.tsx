@@ -20,7 +20,6 @@ import type {
   TurnFileChangeAttachment,
   TurnProcessStep,
   TurnTimelineItem,
-  TurnTodoItem,
 } from "../types";
 import { cn } from "../lib/utils";
 import { Message, MessageContent } from "./ai-elements/message";
@@ -75,7 +74,6 @@ export function AssistantTurnCard({
   const stageTranscriptMessages = agentMessages.filter(
     (message) => message.transcript,
   );
-  const [todosOpen, setTodosOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | undefined>(
@@ -85,17 +83,20 @@ export function AssistantTurnCard({
   const [copied, setCopied] = useState(false);
   const hasTimeline = timelineItems.length > 0;
   const hasStageTranscript = stageTranscriptMessages.length > 0;
+  const bodyContent = shouldSuppressClarificationBody(content, clarificationExchanges)
+    ? ""
+    : content;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
   const canCopyContent = Boolean(
-    !isPlaceholder && turn?.status !== "running" && content.trim(),
+    !isPlaceholder && turn?.status !== "running" && bodyContent.trim(),
   );
   const canSubmitFeedback = Boolean(
     turn &&
     onSubmitFeedback &&
     !isPlaceholder &&
     turn.status !== "running" &&
-    content.trim(),
+    bodyContent.trim(),
   );
   const canShowActions = canCopyContent || canSubmitFeedback;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
@@ -125,16 +126,16 @@ export function AssistantTurnCard({
   }
 
   async function handleCopyContent() {
-    if (!content.trim()) {
+    if (!bodyContent.trim()) {
       return;
     }
 
     try {
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content);
+        await navigator.clipboard.writeText(bodyContent);
       } else {
         const textarea = document.createElement("textarea");
-        textarea.value = content;
+        textarea.value = bodyContent;
         textarea.setAttribute("readonly", "");
         textarea.style.position = "fixed";
         textarea.style.left = "-9999px";
@@ -193,10 +194,10 @@ export function AssistantTurnCard({
             />
           ) : null}
 
-          {turn?.hasProposedPlan || hasTimeline ? null : (
+          {turn?.hasProposedPlan || hasTimeline || !bodyContent.trim() ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
-                content={content}
+                content={bodyContent}
                 className={cn(isPlaceholder && "text-muted-foreground")}
               />
             </MessageContent>
@@ -218,20 +219,6 @@ export function AssistantTurnCard({
 
           {fileChanges.length > 0 ? (
             <FileChangeDiffPanel fileChanges={fileChanges} />
-          ) : null}
-
-          {turn && turn.todos.length > 0 ? (
-            <CollapsibleCard
-              open={todosOpen}
-              onToggle={() => setTodosOpen((current) => !current)}
-              title={`To-dos ${turn.todos.length}`}
-              icon={<ListTodo size={14} />}
-              summary={todoSummary(turn.todos)}
-            >
-              {turn.todos.map((todo) => (
-                <TodoItemRow key={todo.id} todo={todo} />
-              ))}
-            </CollapsibleCard>
           ) : null}
 
           {canShowActions ? (
@@ -303,6 +290,26 @@ export function AssistantTurnCard({
       </Dialog>
     </Message>
   );
+}
+
+function shouldSuppressClarificationBody(
+  content: string,
+  exchanges: TurnClarificationExchange[],
+): boolean {
+  const pendingQuestions = exchanges
+    .filter((exchange) => exchange.status === "pending" && !exchange.answer)
+    .map((exchange) => exchange.question.trim())
+    .filter(Boolean);
+
+  if (pendingQuestions.length === 0) {
+    return false;
+  }
+
+  return normalizeComparableText(content) === normalizeComparableText(pendingQuestions.join("\n"));
+}
+
+function normalizeComparableText(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
 }
 
 function ClarificationExchangeList({
@@ -956,53 +963,6 @@ function isContentArtifact(artifact: TurnArtifactAttachment): boolean {
   return artifact.label !== "Recovery artifact";
 }
 
-function TodoItemRow({ todo }: { todo: TurnTodoItem }) {
-  return (
-    <TaskItem className="flex items-start gap-3">
-      <TodoStatusIcon status={todo.status} />
-      <div className="min-w-0 flex-1">
-        <p
-          className={cn(
-            "font-medium",
-            todo.status === "done" && "text-muted-foreground line-through",
-          )}
-        >
-          {todo.label}
-        </p>
-        <TaskItemMeta>
-          <span>{todo.status}</span>
-          {todo.owner ? <span>{todo.owner}</span> : null}
-          {todo.detail ? <span>{todo.detail}</span> : null}
-        </TaskItemMeta>
-      </div>
-    </TaskItem>
-  );
-}
-
-function TodoStatusIcon({ status }: { status: TurnTodoItem["status"] }) {
-  switch (status) {
-    case "done":
-      return (
-        <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" />
-      );
-    case "running":
-      return (
-        <LoaderCircle
-          size={16}
-          className="mt-0.5 shrink-0 animate-spin text-muted-foreground"
-        />
-      );
-    case "blocked":
-      return (
-        <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-600" />
-      );
-    default:
-      return (
-        <Circle size={16} className="mt-0.5 shrink-0 text-muted-foreground" />
-      );
-  }
-}
-
 export function processSummary(
   steps: TurnProcessStep[],
   status?: AssistantTurnAttachment["status"],
@@ -1021,9 +981,4 @@ export function processSummary(
     return `${blocked} 个需处理`;
   }
   return `${steps.length} 条记录`;
-}
-
-function todoSummary(todos: TurnTodoItem[]) {
-  const done = todos.filter((todo) => todo.status === "done").length;
-  return `${done}/${todos.length} done`;
 }

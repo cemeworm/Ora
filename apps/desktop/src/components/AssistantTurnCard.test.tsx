@@ -96,6 +96,34 @@ describe("assistant turn display helpers", () => {
     expect(html.indexOf("Team Lead")).toBeLessThan(html.indexOf("正文内容"));
   });
 
+  it("does not render the legacy runtime todos panel", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-todos",
+      turnIndex: 1,
+      status: "running",
+      pattern: "agent_teams",
+      processSteps: [],
+      agentMessages: [],
+      artifacts: [],
+      todos: [{
+        id: "run-todos:triage:todo",
+        label: "Plan development task",
+        status: "queued",
+      }],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="Working" turn={turn} />,
+    );
+
+    expect(html).not.toContain("To-dos");
+    expect(html).not.toContain("Plan development task");
+  });
+
   it("renders clarification exchanges inside the assistant turn", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-clarification",
@@ -128,6 +156,37 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("Which scope should I use?");
     expect(html).toContain("Use the current session only.");
     expect(html.indexOf("Which scope should I use?")).toBeLessThan(html.indexOf("Continued after clarification"));
+  });
+
+  it("does not duplicate a pending clarification question as assistant body text", () => {
+    const question = "Which scope should I use?";
+    const turn: AssistantTurnAttachment = {
+      runId: "run-pending-clarification",
+      turnIndex: 1,
+      status: "clarification_required",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      clarificationExchanges: [{
+        id: "clarification:scope",
+        question,
+        requestedAt: "13:40",
+        status: "pending",
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 1,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={question} turn={turn} />,
+    );
+
+    expect(html.split(question).length - 1).toBe(1);
+    expect(html).toContain("等待补充信息");
   });
 
   it("keeps the turn label on the primary agent while subagent content renders in the timeline", () => {

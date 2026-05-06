@@ -29,6 +29,26 @@ describe("sidebar session status", () => {
     expect(statusFromSession("running")).toBe("running");
     expect(statusFromSession("succeeded")).toBe("done");
   });
+
+  it("does not show paused when refreshed attention closes a stale interrupted resume", () => {
+    expect(statusFromSession("interrupted", {
+      kind: "idle",
+      blocking: false,
+      sourceRunId: "run-resumed",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    })).toBe("done");
+    expect(statusFromSession("interrupted", {
+      kind: "failed",
+      blocking: false,
+      sourceRunId: "run-resume-failed",
+      reason: "resume_incomplete_after_gate_resolution",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    })).toBe("failed");
+  });
 });
 
 describe("sidebar release update check", () => {

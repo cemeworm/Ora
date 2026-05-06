@@ -1,4 +1,4 @@
-import { getModePreset, modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } from "@cemeworm/shared";
+import { modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } from "@cemeworm/shared";
 import type {
   ActionRecord,
   AgentProfile,
@@ -25,7 +25,6 @@ import type {
   TurnAgentConversationMessage,
   TurnProcessStep,
   TurnTimelineItem,
-  TurnTodoItem,
   TopologyEdge,
   TopologyNode,
 } from "../types";
@@ -1235,28 +1234,6 @@ export function adaptChatMessages(
         });
       }
 
-      if (turn.snapshot) {
-        const questions = extractClarificationQuestions(turn.snapshot);
-        const answeredIds = new Set(
-          extractClarificationAnswers(turn.snapshot).map((answer) => answer.id),
-        );
-        for (const question of questions) {
-          if (answeredIds.has(question.id)) {
-            continue;
-          }
-          messages.push({
-            id: `clarification-question:${turn.runId}:${question.id}`,
-            role: "assistant",
-            content: question.question,
-            timestamp: formatClock(question.requestedAt),
-            metadata: {
-              runId: turn.runId,
-              turnIndex: turn.turnIndex,
-            },
-          });
-        }
-      }
-
       const assistantTurn = turn.snapshot
         ? buildAssistantTurnAttachment(turn.snapshot)
         : undefined;
@@ -1765,7 +1742,7 @@ function buildAssistantTurnAttachment(
     agentMessages: deriveAgentMessages(snapshot),
     artifacts: userVisibleArtifacts(snapshot.artifacts).map(adaptTurnArtifact),
     fileChanges: userVisibleArtifacts(snapshot.artifacts).flatMap(adaptTurnFileChange),
-    todos: deriveTurnTodos(snapshot),
+    todos: [],
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
     hasProposedPlan: Boolean(proposedPlan),
@@ -3335,108 +3312,6 @@ function isFileChangePayload(value: unknown): value is {
     isRecord(value.metadata) &&
     typeof value.metadata.created === "boolean"
   );
-}
-
-function deriveTurnTodos(snapshot: OraStateSnapshot): TurnTodoItem[] {
-  const runtimeTodos = readRuntimeTodos(snapshot.todos);
-  if (runtimeTodos.length > 0 && !todosMirrorPlan(snapshot)) {
-    return runtimeTodos;
-  }
-
-  if (planLooksLikeTemplate(snapshot)) {
-    return [];
-  }
-
-  return snapshot.plan.map((item) => ({
-    id: item.id,
-    label: item.title,
-    status: todoStatusFromPlan(item.status),
-    owner: item.ownerAgentId ?? "runtime",
-    detail:
-      item.linkedActionIds.length > 0
-        ? `${item.linkedActionIds.length} linked action${item.linkedActionIds.length === 1 ? "" : "s"}`
-        : undefined,
-  }));
-}
-
-function todosMirrorPlan(snapshot: OraStateSnapshot): boolean {
-  if (
-    !snapshot.todos ||
-    snapshot.todos.length === 0 ||
-    snapshot.todos.length !== snapshot.plan.length
-  ) {
-    return false;
-  }
-
-  const planById = new Map(snapshot.plan.map((item) => [item.id, item]));
-  return snapshot.todos.every((todo) => {
-    const planItem = todo.sourcePlanItemId
-      ? planById.get(todo.sourcePlanItemId)
-      : undefined;
-    return (
-      planItem &&
-      todo.label === planItem.title &&
-      todo.status === planItem.status &&
-      !todo.detail
-    );
-  });
-}
-
-function planLooksLikeTemplate(snapshot: OraStateSnapshot): boolean {
-  if (snapshot.plan.length === 0) {
-    return false;
-  }
-
-  const mode = snapshot.modeSpec ?? (snapshot.modeId ? getModePreset(snapshot.modeId) : undefined);
-  if (!mode) {
-    return false;
-  }
-
-  const template = modeSpecToPatternDefinition(mode).planTemplate;
-  if (template.length !== snapshot.plan.length) {
-    return false;
-  }
-
-  return snapshot.plan.every((item, index) => {
-    const templateItem = template[index];
-    return (
-      templateItem &&
-      (item.id === `${snapshot.runId}:${templateItem.id}` ||
-        item.id === templateItem.id) &&
-      item.title === templateItem.title &&
-      item.ownerAgentId === templateItem.ownerAgentId
-    );
-  });
-}
-
-function readRuntimeTodos(
-  todos: OraStateSnapshot["todos"] | undefined,
-): TurnTodoItem[] {
-  return (todos ?? []).map((item, index) => ({
-    id: item.id || `todo-${index}`,
-    label: item.label,
-    status: todoStatusFromPlan(item.status),
-    detail: item.detail,
-  }));
-}
-
-function todoStatusFromPlan(
-  status: OraPlanItem["status"],
-): TurnTodoItem["status"] {
-  switch (status) {
-    case "running":
-      return "running";
-    case "blocked":
-    case "failed":
-      return "blocked";
-    case "done":
-    case "skipped":
-      return "done";
-    case "planned":
-    case "ready":
-    default:
-      return "queued";
-  }
 }
 
 function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {

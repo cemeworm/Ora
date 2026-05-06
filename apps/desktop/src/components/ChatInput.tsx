@@ -612,7 +612,7 @@ export function ChatInput({
                   "max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
                   hasTopChips ? "min-h-[148px] pt-20" : "min-h-[96px] pt-4",
                 )}
-                style={{ height: "auto", overflow: "hidden" }}
+                style={{ height: "auto", overflowY: "auto" }}
                 onInput={(e) => {
                   resizeComposerTextarea(e.target as HTMLTextAreaElement);
                 }}

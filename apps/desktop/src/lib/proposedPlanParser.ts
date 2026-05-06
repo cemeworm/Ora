@@ -14,32 +14,42 @@ interface ProposedPlanParseResult {
 }
 
 export function parseProposedPlan(text: string): ProposedPlanParseResult {
-  const lines = text.split("\n");
   let state: ParseState = "normal";
-  const planLines: string[] = [];
-  const displayLines: string[] = [];
+  const planParts: string[] = [];
+  const displayParts: string[] = [];
+  let cursor = 0;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    if (trimmed === OPEN_TAG && state === "normal") {
+  while (cursor < text.length) {
+    if (state === "normal") {
+      const openIndex = text.indexOf(OPEN_TAG, cursor);
+      if (openIndex === -1) {
+        displayParts.push(text.slice(cursor));
+        break;
+      }
+      displayParts.push(text.slice(cursor, openIndex));
+      cursor = openIndex + OPEN_TAG.length;
       state = "inside";
       continue;
     }
 
-    if (trimmed === CLOSE_TAG && state === "inside") {
+    if (state === "inside") {
+      const closeIndex = text.indexOf(CLOSE_TAG, cursor);
+      if (closeIndex === -1) {
+        planParts.push(text.slice(cursor));
+        cursor = text.length;
+        break;
+      }
+      planParts.push(text.slice(cursor, closeIndex));
+      cursor = closeIndex + CLOSE_TAG.length;
       state = "completed";
       continue;
     }
 
-    if (state === "normal") {
-      displayLines.push(line);
-    } else if (state === "inside") {
-      planLines.push(line);
-    }
+    displayParts.push(text.slice(cursor));
+    break;
   }
 
-  const planContent = planLines.join("\n");
+  const planContent = trimBoundaryWhitespace(planParts.join(""));
   const contentLength = planContent.replace(/\s/g, "").length;
   const status: ProposedPlanStatus =
     state === "inside" ? "streaming" : state === "completed" ? "complete" : "none";
@@ -56,6 +66,10 @@ export function parseProposedPlan(text: string): ProposedPlanParseResult {
     hasStartedPlan,
     hasCompletePlan,
     planContent,
-    displayText: displayLines.join("\n"),
+    displayText: trimBoundaryWhitespace(displayParts.join("")),
   };
+}
+
+function trimBoundaryWhitespace(value: string): string {
+  return value.replace(/^\s+|\s+$/g, "");
 }

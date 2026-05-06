@@ -46,6 +46,15 @@ describe("parseProposedPlan", () => {
     expect(result.displayText).toContain("前置分析完成");
   });
 
+  it("splits inline text before the proposed plan opening tag into display text", () => {
+    const result = parseProposedPlan(`Phase1-3分析完成，决策完备${PLAN}`);
+    expect(result.hasCompletePlan).toBe(true);
+    expect(result.displayText).toBe("Phase1-3分析完成，决策完备");
+    expect(result.planContent).toContain("计划标题");
+    expect(result.planContent).not.toContain("Phase1-3分析完成");
+    expect(result.planContent).not.toContain("<proposed_plan>");
+  });
+
   it("returns false for text without proposed_plan tags", () => {
     const result = parseProposedPlan("只是一段普通文本，没有计划标签。");
     expect(result.status).toBe("none");
@@ -65,5 +74,22 @@ describe("parseProposedPlan", () => {
     expect(result.hasCompletePlan).toBe(false);
     expect(result.planContent).toBe("## 未完成的计划\n内容...");
     expect(result.displayText).not.toContain("<proposed_plan>");
+  });
+
+  it("keeps inline trailing text out of the proposed plan content", () => {
+    const result = parseProposedPlan(`${PLAN}验证完成，方案可行。`);
+    expect(result.hasCompletePlan).toBe(true);
+    expect(result.planContent).toContain("计划标题");
+    expect(result.planContent).not.toContain("验证完成");
+    expect(result.displayText).toBe("验证完成，方案可行。");
+  });
+
+  it("streams inline proposed plan content when the closing tag has not arrived", () => {
+    const result = parseProposedPlan("前置说明<proposed_plan>## 未完成的计划\n内容...");
+    expect(result.status).toBe("streaming");
+    expect(result.hasStartedPlan).toBe(true);
+    expect(result.hasCompletePlan).toBe(false);
+    expect(result.displayText).toBe("前置说明");
+    expect(result.planContent).toBe("## 未完成的计划\n内容...");
   });
 });

@@ -191,8 +191,15 @@ export function ChatView({
         decision.id === pendingPlanDecisionId && decision.status === "pending"
       )
   );
+  const resolvingPlanDecision = Boolean(
+    pendingPlanDecisionId &&
+      state.pendingPlanDecisionResolution?.sessionId === selectedSession.id &&
+      state.pendingPlanDecisionResolution.decisionId === pendingPlanDecisionId
+  );
   const planDecisionPending =
-    attention?.kind === "needs_plan_decision" && hasPendingPlanDecisionEntity;
+    attention?.kind === "needs_plan_decision" &&
+    hasPendingPlanDecisionEntity &&
+    !resolvingPlanDecision;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
