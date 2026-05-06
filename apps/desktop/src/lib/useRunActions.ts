@@ -726,6 +726,9 @@ export function useRunActions() {
   }
 
   async function resolvePlanDecision(status: "accepted" | "declined"): Promise<boolean> {
+    if (state.pendingPlanDecisionResolution) {
+      return false;
+    }
     const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
     const decisionId =
       state.activeSessionDetail?.session.attention?.planDecisionId ??
@@ -736,17 +739,27 @@ export function useRunActions() {
       return false;
     }
     const currentTaskIntent = state.taskIntent;
-    dispatch({ type: "SET_BUSY_COMMAND", command: status === "accepted" ? "Accept plan" : "Decline plan" });
+    const implementationPrompt = status === "accepted"
+      ? acceptedPlanImplementationSubmission().prompt
+      : undefined;
+    const startedAt = Date.now();
+    flushSync(() => {
+      dispatch({
+        type: "BEGIN_PLAN_DECISION_RESOLUTION",
+        sessionId,
+        decisionId,
+        status,
+        createdAt: startedAt,
+        implementationPrompt,
+      });
+    });
+    await waitForPendingRunPaint();
     try {
       const detail = await runtimeClient.resolvePlanDecision({ sessionId, decisionId, status });
-      const [projects, sessions] = await Promise.all([
-        runtimeClient.listProjects(),
-        runtimeClient.listSessions(),
-      ]);
       dispatch({
         type: "HYDRATE_SESSION",
-        projects,
-        sessions,
+        projects: state.projects,
+        sessions: state.sessions,
         detail,
         feedback: status === "accepted" ? "Plan accepted." : "Plan decision dismissed.",
       });
@@ -755,8 +768,12 @@ export function useRunActions() {
       }
       return true;
     } catch (error) {
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Plan decision update failed." });
-      dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
+      dispatch({
+        type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
+        sessionId,
+        decisionId,
+        feedback: error instanceof Error ? error.message : "Plan decision update failed.",
+      });
       return false;
     }
   }

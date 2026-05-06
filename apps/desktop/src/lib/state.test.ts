@@ -17,6 +17,7 @@ function sessionSummary(sessionId: string): OraSessionSummary {
 function testSnapshot(params: {
   runId?: string;
   sessionId?: string;
+  status?: OraStateSnapshot["status"];
   updatedAt?: number;
   agentMessages?: OraStateSnapshot["agentMessages"];
   events?: OraStateSnapshot["events"];
@@ -33,7 +34,7 @@ function testSnapshot(params: {
     runId,
     sessionId,
     turnIndex: 1,
-    status: "running",
+    status: params.status ?? "running",
     pattern: "orchestrator_subagent",
     modeId: "debate",
     input: { prompt: "Debate this.", createdAt: updatedAt, context: {} },
@@ -667,6 +668,64 @@ describe("desktop workbench state", () => {
     expect(state.activeSnapshot?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
   });
 
+  it("hydrates resume results over stale interrupted session summaries", () => {
+    const sessionId = "session-resume-closure";
+    const snapshot = testSnapshot({
+      runId: "run-resume-closure",
+      sessionId,
+      status: "succeeded",
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-resume-closure",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const staleSession: OraSessionSummary = {
+      ...sessionSummary(sessionId),
+      status: "interrupted",
+      latestRunId: snapshot.runId,
+      attention: {
+        kind: "paused",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: "manual_interrupt",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      turnCount: 1,
+    };
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: snapshot.runId,
+      sessions: [staleSession],
+      pendingRun: { sessionId, prompt: "staging", createdAt: 1_714_000_000_001 },
+    }, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [staleSession],
+      detail: {
+        session: staleSession,
+        turns: [{ runId: snapshot.runId } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+      snapshot,
+    });
+
+    expect(next.pendingRun).toBeUndefined();
+    expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+    expect(next.sessions[0]?.status).toBe("succeeded");
+    expect(next.activeSessionDetail?.session.attention).toEqual(snapshot.attention);
+    expect(next.sessions[0]?.attention).toEqual(snapshot.attention);
+    expect(next.activeSnapshot?.pendingClarifications).toEqual([]);
+  });
+
   it("does not merge same-run snapshots from different sessions", () => {
     const existing = testSnapshot({
       runId: "run-shared-id",
@@ -1069,6 +1128,114 @@ describe("desktop workbench state", () => {
       });
 
       expect(next.activeSessionDetail?.session.attention?.kind).toBe("needs_plan_decision");
+    });
+
+    it("optimistically shows accepted plan decisions as pending implementation runs", () => {
+      const next = workbenchReducer(initialWorkbenchState, {
+        type: "BEGIN_PLAN_DECISION_RESOLUTION",
+        sessionId: "session-plan",
+        decisionId: "run-plan:plan-decision",
+        status: "accepted",
+        createdAt: 1_714_000_000_100,
+        implementationPrompt: "请按照上述计划开始执行",
+      });
+
+      expect(next.pendingRun).toMatchObject({
+        sessionId: "session-plan",
+        prompt: "请按照上述计划开始执行",
+      });
+      expect(next.pendingPlanDecisionResolution).toMatchObject({
+        decisionId: "run-plan:plan-decision",
+        status: "accepted",
+      });
+      expect(next.isLoading).toBe(true);
+      expect(next.busyCommand).toBe("Accept plan");
+    });
+
+    it("optimistically dismisses declined plan decisions without blocking composer input", () => {
+      const next = workbenchReducer(initialWorkbenchState, {
+        type: "BEGIN_PLAN_DECISION_RESOLUTION",
+        sessionId: "session-plan",
+        decisionId: "run-plan:plan-decision",
+        status: "declined",
+        createdAt: 1_714_000_000_100,
+      });
+
+      expect(next.pendingRun).toBeUndefined();
+      expect(next.pendingPlanDecisionResolution).toMatchObject({
+        decisionId: "run-plan:plan-decision",
+        status: "declined",
+      });
+      expect(next.isLoading).toBe(false);
+      expect(next.busyCommand).toBe("Decline plan");
+    });
+
+    it("preserves accepted plan pending run while hydrating the resolved decision", () => {
+      const sessionId = "session-plan";
+      const snapshot = testSnapshot({
+        runId: "run-plan",
+        sessionId,
+        planDecisions: [{
+          id: "run-plan:plan-decision",
+          runId: "run-plan",
+          sessionId,
+          status: "accepted",
+          createdAt: 1_714_000_000_000,
+          resolvedAt: 1_714_000_000_100,
+        }],
+      });
+      const state = workbenchReducer(initialWorkbenchState, {
+        type: "BEGIN_PLAN_DECISION_RESOLUTION",
+        sessionId,
+        decisionId: "run-plan:plan-decision",
+        status: "accepted",
+        createdAt: 1_714_000_000_100,
+        implementationPrompt: "请按照上述计划开始执行",
+      });
+      const session = { ...sessionSummary(sessionId), latestRunId: snapshot.runId };
+
+      const next = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [session],
+        detail: {
+          session,
+          turns: [],
+          transcript: [],
+          latestSnapshot: snapshot,
+        },
+        feedback: "Plan accepted.",
+      });
+
+      expect(next.pendingRun).toMatchObject({
+        sessionId,
+        prompt: "请按照上述计划开始执行",
+      });
+      expect(next.pendingPlanDecisionResolution).toBeUndefined();
+      expect(next.isLoading).toBe(true);
+    });
+
+    it("rolls back failed accepted plan decisions", () => {
+      const state = workbenchReducer(initialWorkbenchState, {
+        type: "BEGIN_PLAN_DECISION_RESOLUTION",
+        sessionId: "session-plan",
+        decisionId: "run-plan:plan-decision",
+        status: "accepted",
+        createdAt: 1_714_000_000_100,
+        implementationPrompt: "请按照上述计划开始执行",
+      });
+
+      const next = workbenchReducer(state, {
+        type: "ROLLBACK_PLAN_DECISION_RESOLUTION",
+        sessionId: "session-plan",
+        decisionId: "run-plan:plan-decision",
+        feedback: "Plan decision update failed.",
+      });
+
+      expect(next.pendingRun).toBeUndefined();
+      expect(next.pendingPlanDecisionResolution).toBeUndefined();
+      expect(next.isLoading).toBe(false);
+      expect(next.commandFeedback).toBe("Plan decision update failed.");
     });
 
     it("does not synthesize clickable gate attention from raw pending fields", () => {

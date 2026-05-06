@@ -14,6 +14,16 @@ export function nextPlanDecisionOption(
   return current === "confirm" ? "decline" : "confirm";
 }
 
+export function planDecisionOptionLabel(
+  option: PlanDecisionOption,
+  submittingOption?: PlanDecisionOption,
+): string {
+  if (submittingOption === option) {
+    return option === "confirm" ? "正在开始实施..." : "正在提交调整...";
+  }
+  return option === "confirm" ? "是，按该计划实施" : "否，需要调整计划";
+}
+
 interface PlanDecisionPanelProps {
   onConfirm: () => void;
   onDecline: () => void;
@@ -27,9 +37,12 @@ export function PlanDecisionPanel({
 }: PlanDecisionPanelProps) {
   const [activeOption, setActiveOption] =
     useState<PlanDecisionOption>("confirm");
+  const [submittingOption, setSubmittingOption] =
+    useState<PlanDecisionOption | undefined>();
 
   function submitOption(option: PlanDecisionOption) {
-    if (disabled) return;
+    if (disabled || submittingOption) return;
+    setSubmittingOption(option);
     if (option === "confirm") {
       onConfirm();
       return;
@@ -57,6 +70,7 @@ export function PlanDecisionPanel({
       activeOption === option &&
         "border-bench-300 bg-accent text-accent-foreground ring-1 ring-inset ring-bench-300",
     );
+  const controlsDisabled = disabled || submittingOption !== undefined;
 
   return (
     <div
@@ -72,22 +86,22 @@ export function PlanDecisionPanel({
           onClick={() => submitOption("confirm")}
           onFocus={() => setActiveOption("confirm")}
           onMouseEnter={() => setActiveOption("confirm")}
-          disabled={disabled}
+          disabled={controlsDisabled}
           className={buttonClassName("confirm")}
         >
           <Check size={16} />
-          <span>是，按该计划实施</span>
+          <span>{planDecisionOptionLabel("confirm", submittingOption)}</span>
         </button>
         <button
           type="button"
           onClick={() => submitOption("decline")}
           onFocus={() => setActiveOption("decline")}
           onMouseEnter={() => setActiveOption("decline")}
-          disabled={disabled}
+          disabled={controlsDisabled}
           className={buttonClassName("decline")}
         >
           <Pencil size={16} />
-          <span>否，需要调整计划</span>
+          <span>{planDecisionOptionLabel("decline", submittingOption)}</span>
         </button>
       </div>
     </div>

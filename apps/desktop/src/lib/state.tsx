@@ -72,6 +72,14 @@ export interface PendingRunState {
   progressText?: string;
 }
 
+export interface PendingPlanDecisionResolution {
+  sessionId: string;
+  decisionId: string;
+  status: "accepted" | "declined";
+  createdAt: number;
+  implementationPrompt?: string;
+}
+
 export interface WorkbenchState {
   selectedPattern: CoordinationPattern;
   selectedModeId: string;
@@ -114,6 +122,7 @@ export interface WorkbenchState {
   >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   pendingRun: PendingRunState | undefined;
+  pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   isLoading: boolean;
   busyCommand: string | undefined;
   commandFeedback: string;
@@ -221,6 +230,20 @@ export type WorkbenchAction =
       sessionId: string;
       progressText: string;
     }
+  | {
+      type: "BEGIN_PLAN_DECISION_RESOLUTION";
+      sessionId: string;
+      decisionId: string;
+      status: "accepted" | "declined";
+      createdAt: number;
+      implementationPrompt?: string;
+    }
+  | {
+      type: "ROLLBACK_PLAN_DECISION_RESOLUTION";
+      sessionId: string;
+      decisionId: string;
+      feedback: string;
+    }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_BUSY_COMMAND"; command: string | undefined }
   | { type: "SET_COMMAND_FEEDBACK"; feedback: string }
@@ -282,6 +305,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
   pendingRun: undefined,
+  pendingPlanDecisionResolution: undefined,
   isLoading: false,
   busyCommand: undefined,
   commandFeedback:
@@ -1398,6 +1422,20 @@ function markSnapshotResuming(
   });
 }
 
+function shouldPreserveAcceptedPlanPendingRun(
+  pendingResolution: WorkbenchState["pendingPlanDecisionResolution"],
+  pendingRun: WorkbenchState["pendingRun"],
+  sessionId: string,
+): boolean {
+  return Boolean(
+    pendingResolution?.status === "accepted" &&
+      pendingResolution.sessionId === sessionId &&
+      pendingResolution.implementationPrompt &&
+      pendingRun?.sessionId === sessionId &&
+      pendingRun.prompt === pendingResolution.implementationPrompt,
+  );
+}
+
 export function workbenchReducer(
   state: WorkbenchState,
   action: WorkbenchAction,
@@ -1428,6 +1466,7 @@ export function workbenchReducer(
         sessionProjectFileAttachments: {},
         sessionLocalFileAttachments: {},
         pendingRun: undefined,
+        pendingPlanDecisionResolution: undefined,
         isLoading: true,
         busyCommand: undefined,
         commandFeedback: "Reconnecting to the Ora runtime bridge.",
@@ -1472,14 +1511,21 @@ export function workbenchReducer(
       const normalizedSnapshot = snapshot ? normalizeDesktopSnapshot(snapshot) : undefined;
       const latestTurn = action.detail.turns.at(-1);
       const attention = normalizedSnapshot?.attention ?? action.detail.session.attention;
+      const status = normalizedSnapshot?.status ?? action.detail.session.status;
       const normalizedDetail = {
         ...action.detail,
         session: {
           ...action.detail.session,
+          status,
           attention,
         },
         latestSnapshot: normalizedSnapshot ?? action.detail.latestSnapshot,
       };
+      const preservePendingRun = shouldPreserveAcceptedPlanPendingRun(
+        state.pendingPlanDecisionResolution,
+        state.pendingRun,
+        action.detail.session.sessionId,
+      );
       return {
         ...state,
         projects: action.projects,
@@ -1526,8 +1572,9 @@ export function workbenchReducer(
         ),
         taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
-        pendingRun: undefined,
-        isLoading: false,
+        pendingRun: preservePendingRun ? state.pendingRun : undefined,
+        pendingPlanDecisionResolution: undefined,
+        isLoading: preservePendingRun ? true : false,
         busyCommand: undefined,
       };
     }
@@ -1862,6 +1909,7 @@ export function workbenchReducer(
         detailDrawer: undefined,
         artifactPanelOpen: false,
         pendingRun: undefined,
+        pendingPlanDecisionResolution: undefined,
       };
     }
 
@@ -1881,6 +1929,9 @@ export function workbenchReducer(
           state.selectedNodeId,
         selectedBeatId: snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
         pendingRun: snapshot ? undefined : state.pendingRun,
+        pendingPlanDecisionResolution: snapshot
+          ? undefined
+          : state.pendingPlanDecisionResolution,
       };
     }
 
@@ -1929,6 +1980,11 @@ export function workbenchReducer(
       const isSettled =
         action.stream.status === "succeeded" ||
         action.stream.status === "failed";
+      const matchesPendingRun = streamMatchesPendingRun(
+        state.pendingRun,
+        action.stream,
+        streamSnapshot,
+      );
       return {
         ...state,
         sessions,
@@ -1963,24 +2019,17 @@ export function workbenchReducer(
         selectedBeatId: streamBelongsToActiveTurn
           ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)
           : state.selectedBeatId,
-        pendingRun: streamMatchesPendingRun(
-          state.pendingRun,
-          action.stream,
-          streamSnapshot,
-        )
+        pendingRun: matchesPendingRun ? undefined : state.pendingRun,
+        pendingPlanDecisionResolution: matchesPendingRun
           ? undefined
-          : state.pendingRun,
+          : state.pendingPlanDecisionResolution,
         selectedModeSelection: streamBelongsToActiveTurn
           ? (activeSnapshot?.config.modeSelection ??
             state.selectedModeSelection)
           : state.selectedModeSelection,
         lastRunTaskIntent:
           isSettled &&
-          streamMatchesPendingRun(
-            state.pendingRun,
-            action.stream,
-            streamSnapshot,
-          )
+          matchesPendingRun
             ? state.taskIntent
             : state.lastRunTaskIntent,
         isLoading: streamBelongsToActiveTurn
@@ -2114,10 +2163,59 @@ export function workbenchReducer(
           prompt: action.prompt,
           createdAt: action.createdAt,
         },
+        pendingPlanDecisionResolution: undefined,
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         lastRunTaskIntent: undefined,
         isLoading: true,
+      };
+    }
+
+    case "BEGIN_PLAN_DECISION_RESOLUTION": {
+      const pendingRun = action.status === "accepted" && action.implementationPrompt
+        ? {
+            sessionId: action.sessionId,
+            prompt: action.implementationPrompt,
+            createdAt: action.createdAt,
+          }
+        : state.pendingRun;
+      return {
+        ...state,
+        pendingRun,
+        pendingPlanDecisionResolution: {
+          sessionId: action.sessionId,
+          decisionId: action.decisionId,
+          status: action.status,
+          createdAt: action.createdAt,
+          implementationPrompt: action.implementationPrompt,
+        },
+        isLoading: action.status === "accepted" ? true : state.isLoading,
+        busyCommand: action.status === "accepted" ? "Accept plan" : "Decline plan",
+        commandFeedback: action.status === "accepted"
+          ? "Plan accepted. Starting implementation."
+          : "Plan decision submitted. Adjust the plan.",
+      };
+    }
+
+    case "ROLLBACK_PLAN_DECISION_RESOLUTION": {
+      const pendingResolution = state.pendingPlanDecisionResolution;
+      const matches = pendingResolution?.sessionId === action.sessionId &&
+        pendingResolution.decisionId === action.decisionId;
+      if (!pendingResolution || !matches) {
+        return {
+          ...state,
+          commandFeedback: action.feedback,
+          busyCommand: undefined,
+        };
+      }
+      const wasAccepted = pendingResolution.status === "accepted";
+      return {
+        ...state,
+        pendingRun: wasAccepted ? undefined : state.pendingRun,
+        pendingPlanDecisionResolution: undefined,
+        isLoading: wasAccepted ? false : state.isLoading,
+        busyCommand: undefined,
+        commandFeedback: action.feedback,
       };
     }
 
@@ -2141,6 +2239,9 @@ export function workbenchReducer(
         ...state,
         isLoading: action.loading,
         pendingRun: action.loading ? state.pendingRun : undefined,
+        pendingPlanDecisionResolution: action.loading
+          ? state.pendingPlanDecisionResolution
+          : undefined,
       };
 
     case "SET_BUSY_COMMAND":
