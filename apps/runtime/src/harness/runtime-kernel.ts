@@ -276,6 +276,7 @@ export async function executeRuntimeKernel(
     toolLimits: modeSpec.toolLimits,
     taskIntent,
     permissionProfile,
+    toolDefinitions: toolRegistry.listDefinitions(),
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);

@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   MVP_SKILLS,
+  MVP_TOOLS,
   SkillRegistrySchema,
-  ToolRegistryBuilder,
+  ToolRegistrySchema,
   type CoordinationPattern,
   type SkillDescriptor,
   type SkillDetail,
@@ -19,10 +20,28 @@ import {
   type SkillListParams,
   type SkillSetEnabledParams,
   type SkillUpdateParams,
+  type ActionApprovalRequestCopy,
+  type ActionRiskLevel,
   type ToolDescriptor,
   type ToolRegistry,
 } from "@cemeworm/shared";
 import { SkillFileStore, type SkillFileStoreOptions } from "../skills.js";
+
+export interface RuntimeToolDefinition<
+  TContext = unknown,
+  TArgs extends Record<string, unknown> = Record<string, unknown>,
+  TResult = unknown,
+> {
+  descriptor: ToolDescriptor;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
+  promptExample?: string;
+  requiresApprovalCopy?: boolean;
+  actionRiskLevel?: (args: TArgs, context: TContext) => ActionRiskLevel;
+  approvalRequest?: (args: TArgs, context: { toolId: string; userPrompt?: string }) => ActionApprovalRequestCopy;
+  riskLevel?: (args: TArgs, context: TContext) => ToolDescriptor["riskLevel"];
+  execute?: (args: TArgs, context: TContext) => TResult | Promise<TResult>;
+}
 
 function repoRoot(): string {
   let current = path.resolve(process.cwd());
@@ -51,30 +70,68 @@ function defaultPublicSkillsRoot(): string {
 }
 
 export class RuntimeToolRegistry {
-  private readonly builder: ToolRegistryBuilder;
+  private readonly definitions = new Map<string, RuntimeToolDefinition>();
+  private activeToolIds: string[] | undefined;
 
-  constructor(builder?: ToolRegistryBuilder) {
-    this.builder = builder ?? ToolRegistryBuilder.fromDefaults();
+  constructor(definitions: Iterable<ToolDescriptor | RuntimeToolDefinition> = MVP_TOOLS) {
+    for (const definition of definitions) {
+      this.register(definition);
+    }
   }
 
-  register(descriptor: ToolDescriptor): void {
-    this.builder.register(descriptor);
+  register(definition: ToolDescriptor | RuntimeToolDefinition): void {
+    const runtimeDefinition = "descriptor" in definition
+      ? definition
+      : { descriptor: definition };
+    this.definitions.set(runtimeDefinition.descriptor.id, runtimeDefinition);
   }
 
   unregister(toolId: string): boolean {
-    return this.builder.unregister(toolId);
+    this.activeToolIds = this.activeToolIds?.filter((id) => id !== toolId);
+    return this.definitions.delete(toolId);
   }
 
   get(toolId: string): ToolDescriptor | undefined {
-    return this.builder.get(toolId);
+    return this.getDefinition(toolId)?.descriptor;
+  }
+
+  getDefinition(toolId: string): RuntimeToolDefinition | undefined {
+    return this.definitions.get(toolId);
   }
 
   list(): ToolDescriptor[] {
-    return this.builder.list();
+    return this.listDefinitions().map((definition) => definition.descriptor);
+  }
+
+  listDefinitions(): RuntimeToolDefinition[] {
+    return Array.from(this.definitions.values());
+  }
+
+  setActiveTools(toolIds: readonly string[]): void {
+    this.activeToolIds = [...new Set(toolIds)].filter((toolId) => this.definitions.has(toolId));
+  }
+
+  getActiveToolIds(): string[] {
+    return this.activeToolIds ?? this.list().map((tool) => tool.id);
+  }
+
+  listActiveDefinitions(): RuntimeToolDefinition[] {
+    const activeIds = new Set(this.getActiveToolIds());
+    return this.listDefinitions().filter((definition) => activeIds.has(definition.descriptor.id));
+  }
+
+  activeSnapshot(): ToolRegistry {
+    return ToolRegistrySchema.parse({
+      tools: this.listActiveDefinitions().map((definition) => definition.descriptor),
+      defaultPolicyId: "runtime.default_policy",
+    });
   }
 
   snapshot(): ToolRegistry {
-    return this.builder.snapshot();
+    return ToolRegistrySchema.parse({
+      tools: this.list(),
+      defaultPolicyId: "runtime.default_policy",
+    });
   }
 }
 
