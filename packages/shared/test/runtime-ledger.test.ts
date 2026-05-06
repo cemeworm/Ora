@@ -406,6 +406,56 @@ describe("runtime session ledger projection", () => {
     expect(deriveSessionProjection(ledger, "e-candidate-assistant").session.latestRunId).toBe("run-candidate");
   });
 
+  it("applies selected leaf paths in parent-chain order when repaired seq values are stale", () => {
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: "session-ledger",
+      leafEntryId: "e-assistant",
+      entries: [
+        entry({ id: "e-session", seq: 0, type: "session.created", payload: { title: "Repaired" } }),
+        entry({
+          id: "e-run",
+          parentId: "e-session",
+          seq: 5,
+          type: "run.started",
+          runId: "run-1",
+          turnIndex: 1,
+          payload: { input: { prompt: "Recover ordering.", createdAt: BASE_TIME, context: {} }, config: runConfig() },
+        }),
+        entry({
+          id: "e-assistant",
+          parentId: "e-run",
+          seq: 4,
+          type: "assistant.message",
+          runId: "run-1",
+          turnIndex: 1,
+          payload: { content: "Recovered.", status: "succeeded" },
+        }),
+        entry({
+          id: "e-sibling",
+          parentId: "e-session",
+          seq: 1,
+          type: "assistant.message",
+          runId: "run-sibling",
+          turnIndex: 1,
+          payload: { content: "Wrong path.", status: "succeeded" },
+        }),
+      ],
+    });
+
+    expect(runtimeSessionEntryPath(ledger).map((candidate) => candidate.id)).toEqual([
+      "e-session",
+      "e-run",
+      "e-assistant",
+    ]);
+
+    const projection = deriveSessionProjection(ledger);
+
+    expect(projection.session.latestRunId).toBe("run-1");
+    expect(projection.session.status).toBe("succeeded");
+    expect(projection.transcript.map((message) => message.content)).toEqual(["Recovered."]);
+    expect(projection.latestSnapshot?.output).toEqual({ text: "Recovered." });
+  });
+
   it("hides replaced run transcript entries from the adopted mainline projection", () => {
     const ledger = baseLedger([
       entry({

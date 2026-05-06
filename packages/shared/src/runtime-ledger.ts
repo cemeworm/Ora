@@ -258,7 +258,7 @@ export function runtimeSessionEntryPath(
     path.push(entry);
     cursor = entry.parentId;
   }
-  return orderedRuntimeSessionEntries(path);
+  return path.reverse().map((entry) => RuntimeSessionEntrySchema.parse(entry));
 }
 
 export function deriveSessionProjection(
