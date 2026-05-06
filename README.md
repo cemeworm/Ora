@@ -33,11 +33,128 @@ Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型
 ├── packages
 │   └── shared           # 跨端共享的类型、schema、模式、能力和 RPC 定义
 ├── scripts              # 本地开发、构建和版本同步脚本
-├── skills               # Ora 技能目录
-└── tasks                # 项目任务记录
+└── skills               # Ora 技能目录
 ```
 
 桌面端通过 Tauri 启动 runtime sidecar。前端和 sidecar 之间使用 shared 包里的 JSON-RPC 合约通信，运行时负责模型调用、工具执行、channel 事件、存储、评测和 trace。
+
+## Runtime loop 结构
+
+Ora 的 runtime loop 不是单一循环，而是三层嵌套：外层 run 生命周期负责 mode selection、context/memory 注入、kernel 执行、interrupt/resume 和 plan decision；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清、恢复和 finalization。更完整的说明见 [Ora runtime loop 结构图](docs/ora-runtime-loop.md)。
+
+### 外层 run lifecycle
+
+```mermaid
+flowchart TD
+  A["User / Channel input"] --> B["RunStore: create or resume run"]
+  B --> C["resolveModeSelection"]
+  C --> C1{"modeSelection = auto?"}
+  C1 -->|yes| C2["Auto mode router selects modeId + taskIntent"]
+  C1 -->|no| C3["Use requested/manual mode"]
+  C2 --> D["Resolve ModeSpec + PatternDefinition"]
+  C3 --> D
+  D --> E["withMemoryPrompt + conversation context"]
+  E --> F["executeTracedKernelRun / executeTracedKernelResume"]
+  F --> G["executeRuntimeKernel"]
+
+  G --> H{"clarification preflight?"}
+  H -->|needs clarification| I["clarification.required"]
+  I --> J["run.interrupted + continuation frame"]
+  J --> K["User answers clarification / approves action"]
+  K --> L["runs.resume with patch"]
+  L --> F
+
+  H -->|no / already answered| M["executeModeSpec"]
+  M --> N{"mode output"}
+  N -->|success| O["Ora root finalizer if needed"]
+  O --> P["run.done"]
+  N -->|provider/tool failure unrecovered| Q["run.failed"]
+  N -->|approval required| R["approval_required"]
+  R --> J
+
+  P --> S{"taskIntent = plan and output has proposed_plan?"}
+  S -->|yes| T["PlanDecisionGate pending"]
+  T --> U["User accepts / declines"]
+  U -->|accepted| V["accepted plan handoff"]
+  V --> W["Next implement run consumes accepted plan"]
+  U -->|declined| X["Decision resolved, no handoff"]
+  S -->|no| Y["Session idle"]
+```
+
+### Mode 编排层
+
+```mermaid
+flowchart TD
+  A["executeModeSpec"] --> B["orderedEnabledModeNodes(modeSpec)"]
+  B --> C["initializeQueueSummary"]
+  C --> D["For each mode node / stage"]
+
+  D --> E{"node has clarificationQuestion + clarification_interrupt atom?"}
+  E -->|yes, unanswered| F["ensureClarification"]
+  F --> G["node blocked + run interrupted"]
+  E -->|no / answered| H["setPlanStatus: running"]
+
+  H --> I{"node atom: subagent_delegate?"}
+  I -->|yes| J["runDelegatedTask"]
+  I -->|no| K["direct node execution"]
+  J --> L["callAgent"]
+  K --> L
+
+  L --> M["runNodeRuntimeLoop"]
+  M --> N{"node result"}
+  N -->|completed| O["memory_capture / artifact_publish if enabled"]
+  O --> P["setPlanStatus: done"]
+  P --> Q["queue.updated + topology.updated"]
+  Q --> D
+
+  N -->|skipped via recovery| R["setPlanStatus: skipped"]
+  R --> Q
+  N -->|interrupt| G
+  N -->|failed| S["recovery policy or run.failed"]
+
+  D --> T["mode output"]
+  T --> U{"plan mode and contains proposed_plan?"}
+  U -->|yes| V["skip remaining nodes, finish plan mode"]
+  U -->|no| W["kernel finalization"]
+```
+
+### 单个 node 的 model-tool loop
+
+```mermaid
+stateDiagram-v2
+  [*] --> pending
+  pending --> running_model: tools allowed
+  pending --> finalizing: tool budget exhausted
+
+  running_model --> tool_requested: native/fallback tool call detected
+  running_model --> completed: no tool + completion guards pass
+  running_model --> running_model: completion guard asks follow-up
+
+  tool_requested --> finalizing: attempt denied by completion policy
+  tool_requested --> failed: code-development boundary violation
+  tool_requested --> approval_required: risky/manual action needs approval
+  approval_required --> interrupted: ApprovalInterruptError
+  interrupted --> running_model: resume approved action
+
+  tool_requested --> tool_running: approval not required / resumed approval
+  tool_running --> clarification_required: tool/middleware asks clarification
+  clarification_required --> interrupted: ClarificationInterruptError
+  interrupted --> tool_running: resume with clarification answer
+
+  tool_running --> tool_result_observed: tool succeeded
+  tool_result_observed --> running_model: append tool result as context
+
+  tool_running --> degraded: tool/provider failure
+  degraded --> tool_running: recovery retry / alternate tool
+  degraded --> repairing: fallback artifact
+  repairing --> running_model: follow-up with degraded result
+  degraded --> failed: recovery exhausted
+
+  running_model --> finalizing: max tool calls / repeat / loop limit
+  finalizing --> completed: forced final provider call
+  completed --> [*]
+  failed --> [*]
+```
 
 ## 快速开始
 
