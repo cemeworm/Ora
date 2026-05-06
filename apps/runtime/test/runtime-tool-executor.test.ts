@@ -9,7 +9,7 @@ import {
   RuntimeToolExecutor,
   extractRuntimeToolCallFromText,
 } from "../src/harness/runtime-tool-executor.js";
-import { RuntimeSkillRegistry } from "../src/harness/capability-registries.js";
+import { RuntimeSkillRegistry, RuntimeToolRegistry } from "../src/harness/capability-registries.js";
 import { PackageManager } from "../src/package-manager.js";
 
 const cleanupPaths: string[] = [];
@@ -75,6 +75,138 @@ describe("RuntimeToolExecutor", () => {
     const implementedDescriptors = MVP_TOOLS.filter((tool) => tool.implemented !== false);
 
     expect(implementedDescriptors.map((tool) => tool.id).sort()).toEqual([...implementedIds].sort());
+  });
+
+  it("keeps runtime tool definitions in an O(1) registry snapshot", () => {
+    const registry = new RuntimeToolRegistry();
+    registry.register({
+      descriptor: {
+        id: "test.echo",
+        label: "Echo",
+        description: "Echo test arguments.",
+        category: "internal",
+        riskLevel: "safe",
+        parameters: {},
+        requiresApproval: false,
+        implemented: true,
+        allowedForProfiles: [],
+      },
+      execute: (args) => ({ output: args }),
+    });
+
+    expect(registry.getDefinition("test.echo")?.descriptor.label).toBe("Echo");
+    expect(registry.snapshot().tools.some((tool) => tool.id === "test.echo")).toBe(true);
+    registry.setActiveTools(["test.echo", "missing.tool"]);
+    expect(registry.getActiveToolIds()).toEqual(["test.echo"]);
+    expect(registry.activeSnapshot().tools.map((tool) => tool.id)).toEqual(["test.echo"]);
+    expect(registry.unregister("test.echo")).toBe(true);
+    expect(registry.getDefinition("test.echo")).toBeUndefined();
+    expect(registry.getActiveToolIds()).toEqual([]);
+  });
+
+  it("executes dynamically registered runtime tool definitions", async () => {
+    const descriptor = {
+      id: "test.echo",
+      label: "Echo",
+      description: "Echo test arguments.",
+      category: "internal" as const,
+      riskLevel: "safe" as const,
+      parameters: {},
+      requiresApproval: false,
+      implemented: true,
+      allowedForProfiles: [],
+    };
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: [descriptor],
+      toolDefinitions: [{
+        descriptor,
+        execute: (args) => ({ output: { echoed: args.value } }),
+      }],
+    });
+
+    expect(executor.enabledToolIds(["test.echo"])).toEqual(["test.echo"]);
+    await expect(executor.execute({
+      tool: "test.echo" as never,
+      args: { value: "hello" },
+    })).resolves.toEqual({ echoed: "hello" });
+  });
+
+  it("drives tool metadata from runtime definitions", () => {
+    const descriptor = {
+      id: "test.echo",
+      label: "Echo",
+      description: "Echo test arguments.",
+      category: "internal" as const,
+      riskLevel: "safe" as const,
+      parameters: {},
+      requiresApproval: false,
+      implemented: true,
+      allowedForProfiles: [],
+    };
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: [descriptor],
+      toolDefinitions: [{
+        descriptor,
+        promptExample: "{\"tool\":\"test.echo\",\"args\":{\"value\":\"hello\"}}",
+        promptGuidelines: ["Echo values only when explicitly requested."],
+        requiresApprovalCopy: true,
+        actionRiskLevel: () => "high",
+        approvalRequest: (args) => ({
+          title: "Confirm echo",
+          summary: `Echo ${String(args.value)}`,
+          confirmLabel: "Approve",
+        }),
+        execute: (args) => ({ output: { echoed: args.value } }),
+      }],
+    });
+
+    const prompt = executor.systemPrompt(["test.echo"]) ?? "";
+    expect(prompt).toContain("{\"tool\":\"test.echo\",\"args\":{\"value\":\"hello\"}}");
+    expect(prompt).toContain("Echo values only when explicitly requested.");
+    expect(executor.riskLevel({ tool: "test.echo" as never, args: { value: "hello" } })).toBe("high");
+    expect(executor.approvalRequest({ tool: "test.echo" as never, args: { value: "hello" } }).summary).toBe("Echo hello");
+    expect(executor.toolDefinitions(["test.echo"])[0]?.parameters?.properties).toMatchObject({
+      approvalRequest: expect.objectContaining({
+        required: ["title", "summary"],
+      }),
+    });
+  });
+
+  it("runs pre and post policy hooks around runtime tool definitions", async () => {
+    const descriptor = {
+      id: "test.echo",
+      label: "Echo",
+      description: "Echo test arguments.",
+      category: "internal" as const,
+      riskLevel: "safe" as const,
+      parameters: {},
+      requiresApproval: false,
+      implemented: true,
+      allowedForProfiles: [],
+    };
+    const executor = new RuntimeToolExecutor({
+      toolDescriptors: [descriptor],
+      toolDefinitions: [{
+        descriptor,
+        execute: (args) => ({ output: { echoed: args.value } }),
+      }],
+      preToolPolicyHooks: [
+        (request) => ({
+          permission: "allow",
+          args: { ...request.args, value: "mutated" },
+        }),
+      ],
+      postToolPolicyHooks: [
+        (request) => ({
+          result: { output: { wrapped: request.result?.output } },
+        }),
+      ],
+    });
+
+    await expect(executor.execute({
+      tool: "test.echo" as never,
+      args: { value: "original" },
+    })).resolves.toEqual({ wrapped: { echoed: "mutated" } });
   });
 
   it("tells agents to answer tool-capability questions from Ora runtime tools", () => {
@@ -374,23 +506,78 @@ describe("RuntimeToolExecutor", () => {
     expect(skillRequest.summary).toBe("我准备安装 Waza 的 think 技能。");
   });
 
-  it("keeps read-only shell commands low risk and gates broader commands", async () => {
+  it("runs natural shell commands and gates shell through permission profiles", async () => {
     const { workspace } = createWorkspace();
-    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
-    const readOnly = { tool: "shell.execute" as const, args: { command: "pwd" } };
-    const broader = { tool: "shell.execute" as const, args: { command: "node --version" } };
+    const defaultExecutor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.default_policy"),
+    });
+    const fullTrustExecutor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.full_trust"),
+    });
+    const readonlyExecutor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.readonly"),
+    });
+    const sedCall = { tool: "shell.execute" as const, args: { command: "sed -n '1,1p' README.md" } };
+    const pipelineCall = { tool: "shell.execute" as const, args: { command: "printf 'alpha\\nbeta\\n' | sed -n '2p'" } };
 
-    expect(executor.riskLevel(readOnly)).toBe("low");
-    expect(executor.riskLevel(broader)).toBe("high");
+    expect(defaultExecutor.riskLevel(sedCall)).toBe("high");
+    await expect(defaultExecutor.execute(sedCall)).rejects.toThrow("Waiting for your approval");
+    await expect(readonlyExecutor.execute(sedCall, { allowRisky: true })).rejects.toThrow("denied by the active permission profile");
 
-    const readOnlyResult = await executor.execute(readOnly) as { exitCode: number; stdout: string };
-    expect(readOnlyResult.exitCode).toBe(0);
-    expect(readOnlyResult.stdout).toContain((workspace as { rootPath: string }).rootPath);
+    const sedResult = await fullTrustExecutor.execute(sedCall) as { exitCode: number; stdout: string };
+    const pipelineResult = await fullTrustExecutor.execute(pipelineCall) as { exitCode: number; stdout: string };
 
-    await expect(executor.execute(broader)).rejects.toThrow("shell.execute command must be one of");
-    const approvedResult = await executor.execute(broader, { allowRisky: true }) as { exitCode: number; stdout: string };
-    expect(approvedResult.exitCode).toBe(0);
-    expect(approvedResult.stdout.trim()).toMatch(/^v\d+/);
+    expect(sedResult.exitCode).toBe(0);
+    expect(sedResult.stdout).toContain("Ora local agent tools");
+    expect(pipelineResult.exitCode).toBe(0);
+    expect(pipelineResult.stdout.trim()).toBe("beta");
+  });
+
+  it("routes destructive shell patterns through policy before execution", async () => {
+    const { workspace } = createWorkspace();
+    const defaultExecutor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.default_policy"),
+    });
+    const readonlyExecutor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.readonly"),
+    });
+    const destructiveCall = { tool: "shell.execute" as const, args: { command: "rm -rf build" } };
+
+    await expect(defaultExecutor.execute(destructiveCall)).rejects.toThrow("Waiting for your approval");
+    await expect(readonlyExecutor.execute(destructiveCall, { allowRisky: true })).rejects.toThrow("destructive-command safety pattern");
+  });
+
+  it("returns structured shell results for non-zero exit and timeout", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.full_trust"),
+    });
+
+    const failed = await executor.execute({
+      tool: "shell.execute",
+      args: { command: "ls definitely-missing-file" },
+    }) as { exitCode: number; stderr: string };
+    const timedOut = await executor.execute({
+      tool: "shell.execute",
+      args: { command: "node -e \"setTimeout(() => {}, 1000)\"", timeoutMs: 50 },
+    }) as { exitCode: number; stderr: string };
+
+    expect(failed.exitCode).not.toBe(0);
+    expect(failed.stderr).toContain("definitely-missing-file");
+    expect(timedOut.exitCode).toBe(124);
+    expect(timedOut.stderr).toContain("timed out");
   });
 
   it("fetches HTTP content for web.fetch", async () => {
@@ -719,37 +906,18 @@ rl.on("line", (line) => {
     expect(shellResult.stdout).toHaveLength(1_500_000);
   });
 
-  it("applies toolLimits.shellExtraApprovedCommands from mode config", async () => {
+  it("falls back to hardcoded shell defaults when toolLimits is omitted", async () => {
     const { workspace } = createWorkspace();
-    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS, toolLimits: { shellExtraApprovedCommands: ["echo"] } });
-    const call = { tool: "shell.execute" as const, args: { command: "echo hello" } };
-
-    expect(executor.riskLevel(call)).toBe("high");
-    const result = await executor.execute(call, { allowRisky: true }) as { exitCode: number; stdout: string };
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("hello");
-  });
-
-  it("falls back to hardcoded defaults when toolLimits is omitted", async () => {
-    const { workspace } = createWorkspace();
-    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
-    const readOnly = { tool: "shell.execute" as const, args: { command: "pwd" } };
+    const executor = new RuntimeToolExecutor({
+      workspace,
+      toolDescriptors: MVP_TOOLS,
+      permissionProfile: getPermissionProfile("runtime.full_trust"),
+    });
     const broader = { tool: "shell.execute" as const, args: { command: "node --version" } };
 
-    expect(executor.riskLevel(readOnly)).toBe("low");
     expect(executor.riskLevel(broader)).toBe("high");
-    const readResult = await executor.execute(readOnly) as { exitCode: number };
+    const readResult = await executor.execute(broader) as { exitCode: number; stdout: string };
     expect(readResult.exitCode).toBe(0);
-  });
-
-  it("applies toolLimits.shellExtraReadOnlyCommands to low-risk set", async () => {
-    const { workspace } = createWorkspace();
-    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS, toolLimits: { shellExtraReadOnlyCommands: ["echo"] } });
-    const call = { tool: "shell.execute" as const, args: { command: "echo test" } };
-
-    expect(executor.riskLevel(call)).toBe("low");
-    const result = await executor.execute(call) as { exitCode: number; stdout: string };
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("test");
+    expect(readResult.stdout.trim()).toMatch(/^v\d+/);
   });
 });

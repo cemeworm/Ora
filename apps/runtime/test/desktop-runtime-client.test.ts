@@ -39,7 +39,7 @@ describe("desktop browser-mock runtime lifecycle", () => {
     expect(assistant?.turn?.processSteps).toEqual([]);
   });
 
-  it("does not render built-in mode template todos when modeSpec is absent", async () => {
+  it("does not expose runtime todos through chat turn attachments", async () => {
     const client = createRuntimeClient();
     const session = await client.createSession();
     const snapshot = await client.startRun(

@@ -527,12 +527,9 @@ describe("desktop composer pending-run behavior", () => {
 
     const messages = adaptChatMessages([], { "run-clarify": snapshot });
 
+    expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", content: snapshot.input.prompt });
     expect(messages[1]).toMatchObject({
-      role: "assistant",
-      content: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
-    });
-    expect(messages[2]).toMatchObject({
       role: "assistant",
       content: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
       clarificationOptions: [
@@ -541,7 +538,14 @@ describe("desktop composer pending-run behavior", () => {
       ],
       isPlaceholder: false,
     });
-    expect(clarificationOptionAnswer(messages[2]!.clarificationOptions![0]!)).toBe("我们是收单机构。");
+    expect(messages[1]?.turn?.clarificationExchanges).toEqual([
+      expect.objectContaining({
+        id: "clarification:intent_guard",
+        question: expect.stringContaining("角色是清算通道方、收单机构还是跨境商户"),
+        status: "pending",
+      }),
+    ]);
+    expect(clarificationOptionAnswer(messages[1]!.clarificationOptions![0]!)).toBe("我们是收单机构。");
     expect(buildPendingClarificationResumePatch(snapshot, "我们是收单机构，月交易额约 3000 万。")).toEqual({
       clarifications: {
         intent_guard: "我们是收单机构，月交易额约 3000 万。",

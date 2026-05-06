@@ -22,7 +22,7 @@ describe("agentic runtime scheduling", () => {
     });
     expect(chat.budget).toMatchObject({
       maxTokens: 12_000,
-      maxToolCalls: 8,
+      maxToolCalls: 256,
       maxCostUsd: 0.1,
     });
     expect(chat.metadata).toMatchObject({
@@ -48,7 +48,7 @@ describe("agentic runtime scheduling", () => {
     });
     expect(plan.budget).toMatchObject({
       maxTokens: 18_000,
-      maxToolCalls: 16,
+      maxToolCalls: 256,
       maxCostUsd: 0.5,
     });
   });
@@ -65,7 +65,7 @@ describe("agentic runtime scheduling", () => {
 
     expect(plan.budget).toMatchObject({
       maxTokens: 24_000,
-      maxToolCalls: 32,
+      maxToolCalls: 256,
       maxCostUsd: 1,
     });
     expect(plan.metadata).toMatchObject({

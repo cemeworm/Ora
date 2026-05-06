@@ -51,7 +51,7 @@ vi.mock("../src/providers/index.js", async () => {
         : shouldEscapeShell
         ? JSON.stringify({ tool: "shell.execute", args: { command: "cat /etc/passwd" } })
         : shouldCallShell
-        ? JSON.stringify({ tool: "shell.execute", args: { command: "rg --files -g *.md" } })
+        ? JSON.stringify({ tool: "shell.execute", args: { command: "rg --files -g '*.md'" } })
         : hasToolResult
           ? "There are 2 Markdown files."
           : `reply:${request.prompt}`;
@@ -82,6 +82,7 @@ vi.mock("../src/providers/index.js", async () => {
 });
 
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
+import { createRunningRunSnapshot } from "../src/run-snapshots.js";
 
 const FIXED_TIME = 1_700_000_000_000;
 const clock = () => FIXED_TIME;
@@ -273,6 +274,236 @@ describe("session thread runtime behavior", () => {
 
     expect(resolved.session.attention?.kind).toBe("idle");
     expect(resolved.latestSnapshot?.planDecisions[0]?.status).toBe("accepted");
+  });
+
+  it("closes clarification resume projections across state, session detail, list, and cold reload", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Need clarification before continuing.", createdAt: FIXED_TIME },
+      config: {
+        modeId: "single_agent",
+        providerId: "clarification-closure-provider",
+        modelRef: "clarification-closure-model",
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock });
+      return StateSnapshotSchema.parse({
+        ...base,
+        status: "interrupted",
+        pendingClarifications: [{
+          id: "clarification:ora:target",
+          key: "target",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          question: "Which target?",
+          options: [],
+          requestedAt: clock(),
+        }],
+        events: [{
+          id: `${base.runId}:evt-0`,
+          runId: base.runId,
+          seq: 0,
+          type: "clarification.required",
+          createdAt: clock(),
+          pattern: base.pattern,
+          nodeId: "ora",
+          agentId: "ora",
+          payload: { clarificationId: "clarification:ora:target" },
+        }],
+      });
+    });
+
+    const blocked = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    expect(blocked.session.attention?.kind).toBe("needs_clarification");
+
+    const resumed = StateSnapshotSchema.parse(await store.resumeRun({
+      runId: handle.runId,
+      patch: { clarifications: { target: "staging" } },
+    }));
+    const resumedState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const summary = store.listSessions().find((item) => item.sessionId === session.sessionId);
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    const coldDetail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: session.sessionId }));
+    const coldSummary = reloaded.listSessions().find((item) => item.sessionId === session.sessionId);
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.pendingClarifications).toEqual([]);
+    expect(resumed.attention?.kind).toBe("idle");
+    expect(resumedState.attention).toEqual(resumed.attention);
+    expect(detail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(detail.session.attention).toEqual(resumed.attention);
+    expect(summary?.attention).toEqual(resumed.attention);
+    expect(coldDetail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(coldDetail.session.attention).toEqual(resumed.attention);
+    expect(coldSummary?.attention).toEqual(resumed.attention);
+    expect(coldDetail.latestSnapshot?.pendingClarifications).toEqual([]);
+
+    const mutableStore = store as unknown as {
+      runs: Map<string, unknown>;
+      sessions: Map<string, unknown>;
+    };
+    mutableStore.runs.set(handle.runId, StateSnapshotSchema.parse({
+      ...resumed,
+      status: "interrupted",
+      pendingClarifications: [{
+        id: "clarification:stale",
+        key: "target",
+        nodeId: "ora",
+        nodeLabel: "Ora",
+        question: "Stale?",
+        options: [],
+        requestedAt: FIXED_TIME,
+      }],
+    }));
+    mutableStore.sessions.set(session.sessionId, {
+      ...detail.session,
+      status: "interrupted",
+      attention: {
+        kind: "paused",
+        blocking: false,
+        sourceRunId: handle.runId,
+        reason: "manual_interrupt",
+      },
+    });
+
+    const repairedDetail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const repairedSummary = store.listSessions().find((item) => item.sessionId === session.sessionId);
+    expect(repairedDetail.session.attention).toEqual(resumed.attention);
+    expect(repairedDetail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(repairedDetail.latestSnapshot?.pendingClarifications).toEqual([]);
+    expect(repairedSummary?.attention).toEqual(resumed.attention);
+  });
+
+  it("closes approval resume projections across state, session detail, list, and cold reload", async () => {
+    const dir = freshStoreDir();
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-approval-closure-"));
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: {
+        prompt: "Write the approved note.",
+        createdAt: FIXED_TIME,
+        context: { projectWorkspace: { label: "Approval Closure", rootPath: workspaceDir } },
+      },
+      config: {
+        modeId: "single_agent",
+        providerId: "approval-closure-provider",
+        modelRef: "approval-closure-model",
+        toolIds: ["file.write"],
+        approvalMode: "high_risk_only",
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock });
+      const actionId = `${base.runId}:action-write`;
+      const toolCallId = `${base.runId}:tool-call-write`;
+      return StateSnapshotSchema.parse({
+        ...base,
+        status: "interrupted",
+        plan: base.plan.map((item) => ({ ...item, status: "done" })),
+        todos: base.todos.map((item) => ({ ...item, status: "done", updatedAt: clock() })),
+        actions: [{
+          id: actionId,
+          runId: base.runId,
+          type: "file.write",
+          riskLevel: "high",
+          status: "approval_required",
+          input: { path: "notes/approved.md", content: "approved\n" },
+          artifactIds: [],
+          agentId: "solo_agent",
+          planItemId: base.plan[0]?.id,
+        }],
+        toolCalls: [{
+          id: toolCallId,
+          runId: base.runId,
+          toolId: "file.write",
+          args: { path: "notes/approved.md", content: "approved\n" },
+          source: "provider_native",
+          status: "approval_required",
+          actionId,
+          agentId: "solo_agent",
+          nodeId: "solo_agent",
+          requestedAt: clock(),
+          updatedAt: clock(),
+        }],
+        continuation: {
+          activeFrameId: `${base.runId}:continuation:0`,
+          frames: [{
+            id: `${base.runId}:continuation:0`,
+            runId: base.runId,
+            status: "paused",
+            reason: "approval_required",
+            conversationCursor: 0,
+            pendingActionIds: [actionId],
+            pendingToolCallIds: [toolCallId],
+            pendingClarificationIds: [],
+            approvedActionIds: [],
+            resolvedClarificationIds: [],
+            createdAt: clock(),
+            updatedAt: clock(),
+          }],
+        },
+        pendingApprovals: [actionId],
+        attention: {
+          kind: "needs_approval",
+          blocking: true,
+          sourceRunId: base.runId,
+          reason: "approval_required",
+          pendingActionIds: [actionId],
+          pendingToolCallIds: [toolCallId],
+          pendingClarificationIds: [],
+        },
+        events: [{
+          id: `${base.runId}:evt-0`,
+          runId: base.runId,
+          seq: 0,
+          type: "approval.required",
+          createdAt: clock(),
+          pattern: base.pattern,
+          nodeId: "solo_agent",
+          agentId: "solo_agent",
+          payload: { actionId, toolCallId },
+        }],
+      });
+    });
+
+    if (!handle) {
+      throw new Error("Expected approval-gated run to start.");
+    }
+    const blocked = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    expect(blocked.attention?.kind).toBe("needs_approval");
+
+    const approvedActionId = blocked.pendingApprovals[0];
+    const resumed = StateSnapshotSchema.parse(await store.resumeRun({
+      runId: handle.runId,
+      patch: { approvedActionIds: [approvedActionId] },
+    }));
+    const resumedState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const summary = store.listSessions().find((item) => item.sessionId === session.sessionId);
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    const coldDetail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: session.sessionId }));
+    const coldSummary = reloaded.listSessions().find((item) => item.sessionId === session.sessionId);
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.pendingApprovals).toEqual([]);
+    expect(resumed.actions.some((action) => action.status === "approval_required")).toBe(false);
+    expect(resumed.toolCalls.some((call) => call.status === "approval_required")).toBe(false);
+    expect(resumed.attention?.kind).toBe("idle");
+    expect(resumed.events.map((event) => event.type)).toContain("approval.resolved");
+    expect(fs.readFileSync(path.join(workspaceDir, "notes/approved.md"), "utf8")).toBe("approved\n");
+    expect(resumedState.attention).toEqual(resumed.attention);
+    expect(detail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(detail.session.attention).toEqual(resumed.attention);
+    expect(summary?.attention).toEqual(resumed.attention);
+    expect(coldDetail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(coldDetail.session.attention).toEqual(resumed.attention);
+    expect(coldSummary?.attention).toEqual(resumed.attention);
+    expect(coldDetail.latestSnapshot?.pendingApprovals).toEqual([]);
   });
 
   it("consumes accepted plan handoff from the ledger for only the next implementation run", async () => {
