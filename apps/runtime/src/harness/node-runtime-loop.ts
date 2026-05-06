@@ -49,6 +49,9 @@ import {
   type RuntimeToolFailureContext,
   type RuntimeToolFailureRequest,
 } from "./runtime-middleware.js";
+import {
+  NodeLoopController,
+} from "./node-loop-transitions.js";
 
 export type NodeRuntimeLoopState =
   | "pending"
@@ -155,6 +158,7 @@ export interface RunNodeRuntimeLoopDeps {
     agentId?: string;
     nodeId?: string;
     title?: string;
+    emitNodeRuntimeState?: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"];
   }) => Promise<ModelResponse>;
   publishRecoveryArtifact: (
     incident: RecoveryIncident,
@@ -247,7 +251,7 @@ export async function runNodeRuntimeLoop(
     appendToolCall,
     now,
     emit,
-    emitNodeRuntimeState,
+    emitNodeRuntimeState: emitNodeRuntimeStateEvent,
     emitProgressNarration,
     emitRecoveryDecision,
     emitRejectedFinalToolIntent,
@@ -272,6 +276,28 @@ export async function runNodeRuntimeLoop(
     },
   };
   const { actionLedger } = actionDeps();
+  const nodeLoopController = new NodeLoopController({
+    emit: emitNodeRuntimeStateEvent,
+    onInvalidTransition: "throw",
+    onInvalidTransitionRecorded: (transition, transitionParams) => {
+      emit(
+        "task.progress",
+        {
+          kind: "runtime_diagnostic",
+          source: "node_loop_transition",
+          severity: "warning",
+          from: transition.from,
+          to: transition.to,
+          title: transitionParams.title ?? params.title,
+          actionId: transitionParams.actionId,
+          toolId: transitionParams.toolId,
+          iteration: transitionParams.iteration,
+        },
+        { agentId: params.agentId, nodeId: params.nodeId },
+      );
+    },
+  });
+  const emitNodeRuntimeState = nodeLoopController.emit;
 
   const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
   const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
@@ -503,6 +529,7 @@ export async function runNodeRuntimeLoop(
             agentId: params.agentId,
             nodeId: params.nodeId,
             title: params.title,
+            emitNodeRuntimeState,
           }),
         };
       }
@@ -618,6 +645,7 @@ export async function runNodeRuntimeLoop(
             agentId: params.agentId,
             nodeId: params.nodeId,
             title: params.title,
+            emitNodeRuntimeState,
           }),
         };
       }
@@ -746,6 +774,7 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
         title: params.title,
+        emitNodeRuntimeState,
       }),
     invokeFollowUpModel,
   };
@@ -766,7 +795,7 @@ export async function runNodeRuntimeLoop(
       toolCalls: deps.toolCalls(),
     });
     if (guardResult.allowComplete) {
-      emitNodeRuntimeState("completed", {
+      nodeLoopController.emitTransitionResult("complete", "completed", {
         agentId: params.agentId,
         title: params.title,
         iteration,
@@ -781,7 +810,7 @@ export async function runNodeRuntimeLoop(
       guardResult.progressSummary,
       Math.max(0, events.length - 1),
     );
-    emitNodeRuntimeState("running_model", {
+    nodeLoopController.emitTransitionResult("model_request", "running_model", {
       agentId: params.agentId,
       title: params.title,
       reason: guardResult.reason,
@@ -813,10 +842,17 @@ export async function runNodeRuntimeLoop(
   if (!initialToolsAllowed && completion.toolAttempts >= completion.maxToolCalls) {
     completion.forceFinalAnswer("tool_budget_exhausted");
   }
-  emitNodeRuntimeState(initialToolsAllowed ? "running_model" : "finalizing", {
-    agentId: params.agentId,
-    title: params.title,
-  });
+  if (initialToolsAllowed) {
+    nodeLoopController.emitTransitionResult("model_request", "running_model", {
+      agentId: params.agentId,
+      title: params.title,
+    });
+  } else {
+    nodeLoopController.emitTransitionResult("forced_final", "finalizing", {
+      agentId: params.agentId,
+      title: params.title,
+    });
+  }
   const initialRequest: ModelRequest = {
     prompt: params.prompt,
     messages,
@@ -835,13 +871,26 @@ export async function runNodeRuntimeLoop(
           : "none"
         : undefined,
   };
-  let response = await invokeModel(initialRequest);
+  let response: ModelResponse;
+  try {
+    response = await invokeModel(initialRequest);
+  } catch (error) {
+    if (!initialToolsAllowed) {
+      nodeLoopController.emitTransitionResult("fail", "failed", {
+        agentId: params.agentId,
+        title: params.title,
+        reason: completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
   if (!initialToolsAllowed) {
     const finalResponse = coerceNoToolResponse(
       response,
       completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
     );
-    emitNodeRuntimeState("completed", {
+    nodeLoopController.emitTransitionResult("complete", "completed", {
       agentId: params.agentId,
       title: params.title,
     });
@@ -876,6 +925,7 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
         title: params.title,
+        emitNodeRuntimeState,
       });
     }
 
@@ -919,12 +969,17 @@ export async function runNodeRuntimeLoop(
       continue;
     }
 
-    emitNodeRuntimeState("tool_requested", {
+    const toolRequestedParams = {
       agentId: params.agentId,
       title: params.title,
       toolId: toolCall.tool,
       iteration,
-    });
+    };
+    if (nodeLoopController.state === "running_model") {
+      nodeLoopController.emitTransitionResult("model_response", "tool_requested", toolRequestedParams);
+    } else {
+      emitNodeRuntimeState("tool_requested", toolRequestedParams);
+    }
 
     const attemptDecision = completion.registerToolAttempt(toolCall, completionScope);
     if (!attemptDecision.allowed) {
@@ -946,6 +1001,7 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
         title: params.title,
+        emitNodeRuntimeState,
       });
     }
 
@@ -956,6 +1012,13 @@ export async function runNodeRuntimeLoop(
       runtimeToolExecutor,
     });
     if (boundaryError) {
+      emitNodeRuntimeState("failed", {
+        agentId: params.agentId,
+        title: params.title,
+        toolId: toolCall.tool,
+        detail: boundaryError,
+        iteration,
+      });
       throw new Error(boundaryError);
     }
 
@@ -1005,7 +1068,7 @@ export async function runNodeRuntimeLoop(
       deps: actionDeps(),
       toolCallRecord,
     });
-    emitNodeRuntimeState("tool_running", {
+    nodeLoopController.emitTransitionResult("tool_request", "tool_running", {
       agentId: params.agentId,
       title: params.title,
       actionId: action.id,
@@ -1035,7 +1098,7 @@ export async function runNodeRuntimeLoop(
         toolCallRecord,
         now,
       });
-      emitNodeRuntimeState("tool_result_observed", {
+      nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed", {
         agentId: params.agentId,
         title: params.title,
         actionId: action.id,
@@ -1083,7 +1146,7 @@ export async function runNodeRuntimeLoop(
             ];
       if (completion.forcedFinalIsActive(completionScope)) {
         const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
-        emitNodeRuntimeState("finalizing", {
+        nodeLoopController.emitTransitionResult("forced_final", "finalizing", {
           agentId: params.agentId,
           title: params.title,
           toolId: toolCall.tool,
@@ -1101,10 +1164,11 @@ export async function runNodeRuntimeLoop(
           agentId: params.agentId,
           nodeId: params.nodeId,
           title: params.title,
+          emitNodeRuntimeState,
         });
         return response;
       }
-      emitNodeRuntimeState("running_model", {
+      nodeLoopController.emitTransitionResult("model_request", "running_model", {
         agentId: params.agentId,
         title: params.title,
         iteration: iteration + 1,
@@ -1159,5 +1223,6 @@ export async function runNodeRuntimeLoop(
     reason: "runtime_tool_loop_limit",
     agentId: params.agentId,
     title: params.title,
+    emitNodeRuntimeState,
   });
 }

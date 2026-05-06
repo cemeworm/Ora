@@ -696,6 +696,13 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
           { actionId: batchAction.id, status: "proposed", record: batchAction },
           { agentId: context.agentId, nodeId: context.nodeId },
         );
+        context.emitNodeRuntimeState("tool_requested", {
+          agentId: context.agentId,
+          title: context.title,
+          actionId: batchAction.id,
+          toolId: "user.clarify",
+          iteration: request.iteration,
+        });
         context.emitNodeRuntimeState("tool_running", {
           agentId: context.agentId,
           title: context.title,
