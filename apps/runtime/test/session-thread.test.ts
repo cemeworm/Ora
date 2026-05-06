@@ -903,6 +903,41 @@ describe("session thread runtime behavior", () => {
     }));
   });
 
+  it("adopts a durable branch candidate after reloading SQLite runtime storage", async () => {
+    const dir = freshStoreDir();
+    const dbPath = path.join(dir, "runtime.db");
+    const store = new LocalRunStore({ dataDir: dbPath, clock });
+    const session = store.createSession();
+
+    const group = await store.createAndRunSessionBranchGroup({
+      sessionId: session.sessionId,
+      target: "empty_start",
+      prompt: "Try SQLite reloadable branch adoption.",
+      candidates: [
+        { label: "Candidate A", config: { pattern: "generator_verifier" } },
+      ],
+    });
+    await waitFor(
+      () => store.getSessionBranchGroup({ sessionId: session.sessionId, branchGroupId: group.branchGroupId }),
+      (current) => current.status === "ready",
+    );
+
+    const reloaded = new LocalRunStore({ dataDir: dbPath, clock });
+    const adopted = SessionDetailSchema.parse(reloaded.adoptSessionBranchGroup({
+      sessionId: session.sessionId,
+      branchGroupId: group.branchGroupId,
+      runId: group.candidateRunIds[0],
+    }));
+
+    expect(adopted.session.latestRunId).toBe(group.candidateRunIds[0]);
+    expect(adopted.turns.map((turn) => turn.runId)).toEqual([group.candidateRunIds[0]]);
+    expect(adopted.branchGroups[0]).toEqual(expect.objectContaining({
+      branchGroupId: group.branchGroupId,
+      status: "adopted",
+      adoptedRunId: group.candidateRunIds[0],
+    }));
+  });
+
   it("does not persist clean-cutover runs into legacy run files", async () => {
     const dir = freshStoreDir();
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dir, clock }));
