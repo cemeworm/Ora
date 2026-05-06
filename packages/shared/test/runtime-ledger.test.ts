@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   RuntimeSessionLedgerSchema,
+  StateSnapshotSchema,
   deriveRunSnapshot,
   deriveSessionProjection,
+  orderedRuntimeSessionEntries,
   runtimeSessionEntryPath,
   runtimeSessionProjectionToDetail,
   type RuntimeSessionEntry,
   type RuntimeSessionLedger,
+  type StateSnapshot,
 } from "../src/index.js";
 
 const BASE_TIME = 1_714_000_000_000;
@@ -36,6 +39,44 @@ function runConfig(metadata: Record<string, unknown> = {}) {
     skillIds: [],
     toolIds: [],
   };
+}
+
+function snapshot(patch: Partial<StateSnapshot> & Pick<StateSnapshot, "runId" | "sessionId">): StateSnapshot {
+  return StateSnapshotSchema.parse({
+    runId: patch.runId,
+    sessionId: patch.sessionId,
+    turnIndex: 1,
+    status: "running",
+    pattern: "orchestrator_subagent",
+    coordinationKind: "orchestrator_subagent",
+    modeId: "single_agent",
+    input: { prompt: "Project from ledger facts.", createdAt: BASE_TIME, context: {} },
+    config: runConfig(),
+    topology: { nodes: [], edges: [] },
+    profiles: [],
+    memory: [],
+    plan: [],
+    planList: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    conversation: [],
+    toolResults: [],
+    policyDecisions: [],
+    checkpoints: [],
+    events: [],
+    agentMessages: [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    pendingClarifications: [],
+    pendingApprovals: [],
+    updatedAt: BASE_TIME,
+    ...patch,
+  });
 }
 
 function baseLedger(extraEntries: RuntimeSessionEntry[] = []): RuntimeSessionLedger {
@@ -209,6 +250,417 @@ describe("runtime session ledger projection", () => {
     });
     expect(projection.latestSnapshot?.pendingClarifications).toEqual([]);
     expect(projection.gates.find((gate) => gate.gateId === "gate-clarification")?.status).toBe("resolved");
+  });
+
+  it("projects gate.opened facts into run snapshot pending fields without raw gate events", () => {
+    const clarification = {
+      id: "clarification-1",
+      key: "scope",
+      nodeId: "ora",
+      nodeLabel: "Ora",
+      question: "Which scope?",
+      options: [],
+      requestedAt: BASE_TIME + 2,
+    };
+    const planDecision = {
+      id: "decision-1",
+      runId: "run-1",
+      sessionId: "session-ledger",
+      status: "pending" as const,
+      planContent: "Ship the gate projection.",
+      createdAt: BASE_TIME + 4,
+    };
+    const ledger = baseLedger([
+      entry({
+        id: "e-run",
+        parentId: "e-session",
+        seq: 1,
+        type: "run.started",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          input: { prompt: "Open gates.", createdAt: BASE_TIME, context: {} },
+          config: runConfig(),
+        },
+      }),
+      entry({
+        id: "e-clarification-open",
+        parentId: "e-run",
+        seq: 2,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "clarification-1",
+          kind: "clarification",
+          pendingClarificationIds: ["clarification-1"],
+          clarification,
+        },
+      }),
+      entry({
+        id: "e-approval-open",
+        parentId: "e-clarification-open",
+        seq: 3,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "run-1:approval",
+          kind: "approval",
+          pendingActionIds: ["action-1"],
+          pendingToolCallIds: ["tool-call-1"],
+        },
+      }),
+      entry({
+        id: "e-plan-open",
+        parentId: "e-approval-open",
+        seq: 4,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "decision-1",
+          kind: "plan_decision",
+          planDecision,
+        },
+      }),
+    ]);
+
+    const projection = deriveSessionProjection(ledger);
+    const snapshot = deriveRunSnapshot(ledger, "run-1");
+
+    expect(snapshot?.pendingClarifications).toEqual([clarification]);
+    expect(snapshot?.pendingApprovals).toEqual(["action-1"]);
+    expect(snapshot?.planDecisions).toEqual([planDecision]);
+    expect(projection.gates.map((gate) => [gate.gateId, gate.kind])).toEqual([
+      ["clarification-1", "clarification"],
+      ["run-1:approval", "approval"],
+      ["decision-1", "plan_decision"],
+    ]);
+  });
+
+  it("projects gate.resolved facts into resume parity events without raw resolution events", () => {
+    const interruptedSnapshot = StateSnapshotSchema.parse({
+      runId: "run-1",
+      sessionId: "session-ledger",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Resolve gates.", createdAt: BASE_TIME, context: {} },
+      config: runConfig(),
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [{
+        id: "action-1",
+        runId: "run-1",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: { path: "notes.md" },
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      continuation: { frames: [] },
+      conversation: [],
+      toolResults: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "evt-0",
+        runId: "run-1",
+        seq: 0,
+        type: "approval.required",
+        createdAt: BASE_TIME + 2,
+        pattern: "orchestrator_subagent",
+        payload: { actionId: "action-1" },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [{
+        id: "clarification-1",
+        key: "scope",
+        nodeId: "ora",
+        nodeLabel: "Ora",
+        question: "Which scope?",
+        options: [],
+        requestedAt: BASE_TIME + 3,
+      }],
+      pendingApprovals: ["action-1"],
+      updatedAt: BASE_TIME + 3,
+    });
+    const ledger = baseLedger([
+      entry({
+        id: "e-run",
+        parentId: "e-session",
+        seq: 1,
+        type: "run.started",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          input: { prompt: "Resolve gates.", createdAt: BASE_TIME, context: {} },
+          config: runConfig(),
+        },
+      }),
+      entry({
+        id: "e-interrupted",
+        parentId: "e-run",
+        seq: 2,
+        type: "runtime.event_batch",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          status: "interrupted",
+          snapshot: interruptedSnapshot,
+          events: [{
+            id: "evt-0",
+            runId: "run-1",
+            seq: 0,
+            type: "approval.required",
+            createdAt: BASE_TIME + 2,
+            pattern: "orchestrator_subagent",
+            payload: { actionId: "action-1" },
+          }],
+        },
+      }),
+      entry({
+        id: "e-clarification-open",
+        parentId: "e-interrupted",
+        seq: 3,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "clarification-1",
+          kind: "clarification",
+          pendingClarificationIds: ["clarification-1"],
+        },
+      }),
+      entry({
+        id: "e-approval-open",
+        parentId: "e-clarification-open",
+        seq: 4,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "run-1:approval",
+          kind: "approval",
+          pendingActionIds: ["action-1"],
+        },
+      }),
+      entry({
+        id: "e-clarification-resolved",
+        parentId: "e-approval-open",
+        seq: 5,
+        type: "gate.resolved",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: { gateId: "clarification-1", status: "resolved", resolvedAt: BASE_TIME + 5 },
+      }),
+      entry({
+        id: "e-approval-resolved",
+        parentId: "e-clarification-resolved",
+        seq: 6,
+        type: "gate.resolved",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: { gateId: "run-1:approval", status: "accepted", resolvedAt: BASE_TIME + 6 },
+      }),
+    ]);
+
+    const snapshot = deriveRunSnapshot(ledger, "run-1");
+    const projectedResolutions = snapshot?.events.filter((event) =>
+      event.type === "clarification.resolved" || event.type === "approval.resolved"
+    );
+
+    expect(snapshot?.pendingClarifications).toEqual([]);
+    expect(snapshot?.pendingApprovals).toEqual([]);
+    expect(projectedResolutions).toEqual([
+      expect.objectContaining({
+        type: "clarification.resolved",
+        payload: { clarificationId: "clarification-1", mode: "ledger_projection" },
+      }),
+      expect.objectContaining({
+        type: "approval.resolved",
+        payload: { actionId: "action-1", decision: "approved", mode: "ledger_projection" },
+      }),
+    ]);
+  });
+
+  it("applies canonical same-seq replay order before projecting gate facts into snapshots", () => {
+    const approvalRequired = {
+      id: "evt-approval-required",
+      runId: "run-1",
+      seq: 0,
+      type: "approval.required" as const,
+      createdAt: BASE_TIME + 10,
+      pattern: "orchestrator_subagent" as const,
+      payload: { actionId: "action-1" },
+    };
+    const interruptedSnapshot = snapshot({
+      runId: "run-1",
+      sessionId: "session-ledger",
+      status: "interrupted",
+      input: { prompt: "Resolve from ledger facts.", createdAt: BASE_TIME, context: {} },
+      actions: [{
+        id: "action-1",
+        runId: "run-1",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: { path: "notes.md" },
+        artifactIds: [],
+      }],
+      events: [approvalRequired],
+      pendingApprovals: ["action-1"],
+      updatedAt: BASE_TIME + 20,
+    });
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: "session-ledger",
+      entries: [
+        entry({
+          id: "a-gate-resolved",
+          seq: 2,
+          type: "gate.resolved",
+          runId: "run-1",
+          turnIndex: 1,
+          createdAt: BASE_TIME + 1,
+          payload: { gateId: "gate-approval", status: "accepted", resolvedAt: BASE_TIME + 1 },
+        }),
+        entry({
+          id: "z-gate-opened",
+          seq: 2,
+          type: "gate.opened",
+          runId: "run-1",
+          turnIndex: 1,
+          createdAt: BASE_TIME + 30,
+          payload: {
+            gateId: "gate-approval",
+            kind: "approval",
+            pendingActionIds: ["action-1"],
+          },
+        }),
+        entry({
+          id: "m-event-batch",
+          seq: 2,
+          type: "runtime.event_batch",
+          runId: "run-1",
+          turnIndex: 1,
+          createdAt: BASE_TIME + 20,
+          payload: {
+            status: "interrupted",
+            snapshot: interruptedSnapshot,
+            events: [approvalRequired],
+          },
+        }),
+        entry({
+          id: "e-run",
+          seq: 1,
+          type: "run.started",
+          runId: "run-1",
+          turnIndex: 1,
+          payload: {
+            input: { prompt: "Resolve from ledger facts.", createdAt: BASE_TIME, context: {} },
+            config: runConfig(),
+          },
+        }),
+        entry({
+          id: "e-session",
+          seq: 0,
+          type: "session.created",
+          payload: { title: "Canonical replay order" },
+        }),
+      ],
+    });
+
+    expect(orderedRuntimeSessionEntries(ledger.entries).map((candidate) => candidate.id)).toEqual([
+      "e-session",
+      "e-run",
+      "m-event-batch",
+      "z-gate-opened",
+      "a-gate-resolved",
+    ]);
+
+    const projectedSnapshot = deriveRunSnapshot(ledger, "run-1");
+
+    expect(projectedSnapshot?.pendingApprovals).toEqual([]);
+    expect(projectedSnapshot?.events.map((event) => event.type)).toEqual([
+      "approval.required",
+      "approval.resolved",
+    ]);
+    expect(projectedSnapshot?.events.at(-1)).toEqual(expect.objectContaining({
+      type: "approval.resolved",
+      payload: { actionId: "action-1", decision: "approved", mode: "ledger_projection" },
+    }));
+  });
+
+  it("does not let duplicate opened gate facts resurrect a resolved gate", () => {
+    const ledger = baseLedger([
+      entry({
+        id: "e-run",
+        parentId: "e-session",
+        seq: 1,
+        type: "run.started",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          input: { prompt: "Need approval.", createdAt: BASE_TIME, context: {} },
+          config: runConfig(),
+        },
+      }),
+      entry({
+        id: "e-approval-open",
+        parentId: "e-run",
+        seq: 2,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "gate-approval",
+          kind: "approval",
+          pendingActionIds: ["action-1"],
+        },
+      }),
+      entry({
+        id: "e-approval-resolved",
+        parentId: "e-approval-open",
+        seq: 3,
+        type: "gate.resolved",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: { gateId: "gate-approval", status: "accepted", resolvedAt: BASE_TIME + 3 },
+      }),
+      entry({
+        id: "e-approval-open-duplicate",
+        parentId: "e-approval-resolved",
+        seq: 4,
+        type: "gate.opened",
+        runId: "run-1",
+        turnIndex: 1,
+        payload: {
+          gateId: "gate-approval",
+          kind: "approval",
+          pendingActionIds: ["action-1"],
+        },
+      }),
+    ]);
+
+    const projection = deriveSessionProjection(ledger);
+
+    expect(projection.gates.find((gate) => gate.gateId === "gate-approval")).toMatchObject({
+      status: "resolved",
+      resolvedAt: BASE_TIME + 3,
+    });
+    expect(projection.latestSnapshot?.pendingApprovals).toEqual([]);
   });
 
   it("does not project a resolved human gate with no completion snapshot as an ordinary pause", () => {
@@ -472,6 +924,181 @@ describe("runtime session ledger projection", () => {
     ]);
     expect(deriveSessionProjection(ledger).session.latestRunId).toBe("run-main");
     expect(deriveSessionProjection(ledger, "e-candidate-assistant").session.latestRunId).toBe("run-candidate");
+  });
+
+  it("keeps candidate gate facts isolated to the candidate leaf path", () => {
+    const candidateSnapshot = StateSnapshotSchema.parse({
+      runId: "run-candidate",
+      sessionId: "session-ledger",
+      turnIndex: 1,
+      status: "interrupted",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Candidate prompt.", createdAt: BASE_TIME, context: {} },
+      config: runConfig({ branchRole: "candidate", branchGroupId: "branch-1" }),
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [{
+        id: "action-candidate",
+        runId: "run-candidate",
+        type: "file.write",
+        riskLevel: "high",
+        status: "approval_required",
+        input: { path: "candidate.md" },
+        artifactIds: [],
+      }],
+      toolCalls: [],
+      continuation: { frames: [] },
+      conversation: [],
+      toolResults: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: ["action-candidate"],
+      updatedAt: BASE_TIME + 5,
+    });
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: "session-ledger",
+      leafEntryId: "e-branch-candidate-started",
+      entries: [
+        entry({ id: "e-session", seq: 0, type: "session.created", payload: { title: "Branching" } }),
+        entry({
+          id: "e-branch-created",
+          parentId: "e-session",
+          seq: 1,
+          type: "branch.created",
+          payload: {
+            branchGroupId: "branch-1",
+            sessionId: "session-ledger",
+            target: "empty_start",
+            baseTurnIndex: 0,
+            prompt: "Try candidate.",
+            status: "running",
+            candidateRunIds: [],
+            candidates: [],
+            createdAt: BASE_TIME + 1,
+            updatedAt: BASE_TIME + 1,
+          },
+        }),
+        entry({
+          id: "e-branch-candidate-started",
+          parentId: "e-branch-created",
+          seq: 2,
+          type: "branch.candidate_started",
+          runId: "run-candidate",
+          payload: {
+            branchGroupId: "branch-1",
+            sessionId: "session-ledger",
+            target: "empty_start",
+            baseTurnIndex: 0,
+            prompt: "Try candidate.",
+            status: "running",
+            candidateRunIds: ["run-candidate"],
+            candidates: [],
+            createdAt: BASE_TIME + 1,
+            updatedAt: BASE_TIME + 2,
+          },
+        }),
+        entry({
+          id: "e-candidate-user",
+          parentId: "e-branch-created",
+          seq: 3,
+          type: "user.message",
+          runId: "run-candidate",
+          turnIndex: 1,
+          payload: { content: "Candidate prompt." },
+        }),
+        entry({
+          id: "e-candidate-run",
+          parentId: "e-candidate-user",
+          seq: 4,
+          type: "run.started",
+          runId: "run-candidate",
+          turnIndex: 1,
+          payload: {
+            input: { prompt: "Candidate prompt.", createdAt: BASE_TIME, context: {} },
+            config: runConfig({ branchRole: "candidate", branchGroupId: "branch-1" }),
+          },
+        }),
+        entry({
+          id: "e-candidate-update",
+          parentId: "e-candidate-run",
+          seq: 5,
+          type: "runtime.event_batch",
+          runId: "run-candidate",
+          turnIndex: 1,
+          payload: {
+            status: "interrupted",
+            snapshot: candidateSnapshot,
+            events: [],
+          },
+        }),
+        entry({
+          id: "e-candidate-gate",
+          parentId: "e-candidate-update",
+          seq: 6,
+          type: "gate.opened",
+          runId: "run-candidate",
+          turnIndex: 1,
+          payload: {
+            gateId: "run-candidate:approval",
+            kind: "approval",
+            pendingActionIds: ["action-candidate"],
+          },
+        }),
+        entry({
+          id: "e-candidate-gate-resolved",
+          parentId: "e-candidate-gate",
+          seq: 7,
+          type: "gate.resolved",
+          runId: "run-candidate",
+          turnIndex: 1,
+          payload: {
+            gateId: "run-candidate:approval",
+            status: "accepted",
+            resolvedAt: BASE_TIME + 6,
+          },
+        }),
+      ],
+    });
+
+    const mainlineProjection = deriveSessionProjection(ledger);
+    const openedProjection = deriveSessionProjection(ledger, "e-candidate-gate");
+    const resolvedSnapshot = deriveRunSnapshot(ledger, "run-candidate", "e-candidate-gate-resolved");
+
+    expect(mainlineProjection.runs.map((run) => run.runId)).toEqual([]);
+    expect(mainlineProjection.gates.map((gate) => gate.gateId)).toEqual([]);
+    expect(openedProjection.runs.map((run) => run.runId)).toEqual(["run-candidate"]);
+    expect(openedProjection.gates).toEqual([
+      expect.objectContaining({
+        gateId: "run-candidate:approval",
+        status: "open",
+        pendingActionIds: ["action-candidate"],
+      }),
+    ]);
+    expect(openedProjection.session.attention).toMatchObject({
+      kind: "needs_approval",
+      sourceRunId: "run-candidate",
+      pendingActionIds: ["action-candidate"],
+    });
+    expect(resolvedSnapshot?.pendingApprovals).toEqual([]);
+    expect(resolvedSnapshot?.events).toEqual([
+      expect.objectContaining({
+        type: "approval.resolved",
+        payload: { actionId: "action-candidate", decision: "approved", mode: "ledger_projection" },
+      }),
+    ]);
   });
 
   it("applies selected leaf paths in parent-chain order when repaired seq values are stale", () => {

@@ -231,7 +231,49 @@ interface ProjectionState {
 export function orderedRuntimeSessionEntries(entries: readonly RuntimeSessionEntry[]): RuntimeSessionEntry[] {
   return entries
     .map((entry) => RuntimeSessionEntrySchema.parse(entry))
-    .sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    .sort((a, b) =>
+      a.seq - b.seq ||
+      runtimeSessionEntryReplayOrder(a) - runtimeSessionEntryReplayOrder(b) ||
+      a.createdAt - b.createdAt ||
+      a.id.localeCompare(b.id)
+    );
+}
+
+function runtimeSessionEntryReplayOrder(entry: RuntimeSessionEntry): number {
+  switch (entry.type) {
+    case "session.created":
+      return 0;
+    case "session.info":
+      return 10;
+    case "branch.created":
+      return 20;
+    case "branch.candidate_started":
+      return 30;
+    case "user.message":
+      return 40;
+    case "run.started":
+      return 50;
+    case "runtime.event_batch":
+      return 60;
+    case "assistant.checkpoint":
+      return 70;
+    case "tool.result":
+      return 80;
+    case "gate.opened":
+      return 90;
+    case "gate.resolved":
+      return 100;
+    case "handoff.accepted_plan":
+      return 110;
+    case "compaction.summary":
+      return 120;
+    case "assistant.message":
+      return 130;
+    case "branch.adopted":
+      return 140;
+    case "branch.dismissed":
+      return 150;
+  }
 }
 
 export function runtimeSessionEntryPath(
@@ -554,6 +596,10 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
     case "gate.opened": {
       const payload = GateOpenedPayloadSchema.parse(entry.payload);
       if (!entry.runId) break;
+      const existing = state.gates.get(payload.gateId);
+      if (existing?.status === "resolved") {
+        break;
+      }
       const gate = RuntimeGateProjectionSchema.parse({
         gateId: payload.gateId,
         kind: payload.kind,
