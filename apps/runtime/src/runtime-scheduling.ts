@@ -7,19 +7,19 @@ const LIGHTWEIGHT_CAPS: Record<Extract<TaskIntent, "chat" | "plan">, {
 }> = {
   chat: {
     maxTokens: 12_000,
-    maxToolCalls: 8,
+    maxToolCalls: 256,
     maxCostUsd: 0.1,
   },
   plan: {
     maxTokens: 18_000,
-    maxToolCalls: 16,
+    maxToolCalls: 256,
     maxCostUsd: 0.5,
   },
 };
 
 const CODE_DEVELOPMENT_PLAN_CAP = {
   maxTokens: 24_000,
-  maxToolCalls: 32,
+  maxToolCalls: 256,
   maxCostUsd: 1,
 };
 

@@ -669,6 +669,7 @@ export class LocalRunStore {
   }
 
   getProject(params: unknown): ProjectDetail {
+    this.refreshAllSessionLedgerProjections();
     return getProjectOperation(params, this.projectSessionOperationDeps());
   }
 
@@ -685,6 +686,7 @@ export class LocalRunStore {
   }
 
   listSessions(params: unknown = {}): SessionSummary[] {
+    this.refreshAllSessionLedgerProjections();
     return listSessionsOperation(params, this.projectSessionOperationDeps());
   }
 
@@ -693,6 +695,7 @@ export class LocalRunStore {
   }
 
   getSession(params: unknown): SessionDetail {
+    this.refreshAllSessionLedgerProjections();
     return getSessionOperation(params, this.projectSessionOperationDeps());
   }
 
@@ -1974,123 +1977,140 @@ export class LocalRunStore {
     const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
     const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
     this.appendGateResolutionsForResume(snapshot, clarificationPatch, approvedActionIds);
-    const approvedToolContinuation = await completeApprovedToolContinuation(
-      snapshot,
-      approvedActionIds,
-      { reason: parsed.reason, patch: parsed.patch },
-      this.approvedFileWriteResumeDeps(),
-    );
-    if (approvedToolContinuation) {
-      const completedApprovedTool = approvedToolContinuation.kind === "continue"
-        ? await this.continueKernelAfterApprovedTool(
-          snapshot,
-          approvedToolContinuation.snapshot,
+    let liveSnapshot = this.markResumeRunning(snapshot, approvedActionIds);
+
+    try {
+      const approvedToolContinuation = await completeApprovedToolContinuation(
+        snapshot,
+        approvedActionIds,
+        { reason: parsed.reason, patch: parsed.patch },
+        this.approvedFileWriteResumeDeps(),
+      );
+      if (approvedToolContinuation) {
+        const completedApprovedTool = approvedToolContinuation.kind === "continue"
+          ? await this.continueKernelAfterApprovedTool(
+            snapshot,
+            approvedToolContinuation.snapshot,
+            clarificationPatch,
+            approvedActionIds,
+          )
+          : approvedToolContinuation.snapshot;
+        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+          this.withResumeResolutionEvents(completedApprovedTool, snapshot, clarificationPatch, approvedActionIds),
+        ));
+        await this.persistRunWithGeneratedTitle(projected);
+        return projected;
+      }
+      const hasKernelWork = hasKernelResumeWork(snapshot);
+
+      if (hasKernelWork) {
+        const modeSpec = snapshot.modeSpec;
+        if (!modeSpec) {
+          throw new OraRuntimeError("Cannot resume a kernel-backed run without modeSpec.", -32004, {
+            runId: snapshot.runId,
+          });
+        }
+        const resumedInput = resumedInputWithClarifications(snapshot.input, clarificationPatch);
+        const definition = modeSpecToPatternDefinition(modeSpec);
+        const sessionId = snapshot.sessionId;
+        if (!sessionId) {
+          throw new OraRuntimeError("Cannot resume a kernel-backed run without sessionId.", -32004, {
+            runId: snapshot.runId,
+          });
+        }
+
+        const resumedSnapshot = await executeTracedKernelResume({
+          runId: snapshot.runId,
+          input: resumedInput,
+          config: snapshot.config,
+          modeSpec,
+          definition,
+          sessionId,
+          turnIndex: snapshot.turnIndex,
+          clock: this.clock,
+          skillRegistry: this.skillRegistry,
+          modeRegistry: this,
+          selfIterationRegistry: this,
+          automationRegistry: this,
+          customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
+          customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
+          systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
+          customAgentContexts: this.customAgentContextsForMode(modeSpec),
+          conversationMessages: [
+            ...this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
+            ...runtimeConversationToModelMessages(snapshot.conversation),
+          ],
           clarificationPatch,
           approvedActionIds,
-        )
-        : approvedToolContinuation.snapshot;
-      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        this.withResumeResolutionEvents(completedApprovedTool, snapshot, clarificationPatch, approvedActionIds),
-      ));
-      await this.persistRunWithGeneratedTitle(projected);
-      return projected;
-    }
-    const hasKernelWork = hasKernelResumeWork(snapshot);
-
-    if (hasKernelWork) {
-      const modeSpec = snapshot.modeSpec;
-      if (!modeSpec) {
-        throw new OraRuntimeError("Cannot resume a kernel-backed run without modeSpec.", -32004, {
-          runId: snapshot.runId,
+          approvedActions,
+          resumeSnapshot: snapshot,
         });
-      }
-      const resumedInput = resumedInputWithClarifications(snapshot.input, clarificationPatch);
-      const definition = modeSpecToPatternDefinition(modeSpec);
-      const sessionId = snapshot.sessionId;
-      if (!sessionId) {
-        throw new OraRuntimeError("Cannot resume a kernel-backed run without sessionId.", -32004, {
-          runId: snapshot.runId,
-        });
+        const tracedSnapshot = this.appendResolvedClarificationEvents(
+          attachTraceMetadata(resumedSnapshot),
+          currentPendingClarifications(snapshot),
+          clarificationPatch,
+        );
+        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+          this.withResumeResolutionEvents(tracedSnapshot, snapshot, clarificationPatch, approvedActionIds),
+        ));
+        await this.persistRunWithGeneratedTitle(projected);
+        return projected;
       }
 
-      const resumedSnapshot = await executeTracedKernelResume({
-        runId: snapshot.runId,
-        input: resumedInput,
-        config: snapshot.config,
-        modeSpec,
-        definition,
-        sessionId,
-        turnIndex: snapshot.turnIndex,
-        clock: this.clock,
-        skillRegistry: this.skillRegistry,
-        modeRegistry: this,
-        selfIterationRegistry: this,
-        automationRegistry: this,
-        customAgentOverlay: this.customAgentStore.personaOverlay(snapshot.config.customAgentId),
-        customAgentOverlays: this.customAgentOverlaysForMode(modeSpec),
-        systemAgentOverlays: this.systemAgentOverlaysForMode(modeSpec),
-        customAgentContexts: this.customAgentContextsForMode(modeSpec),
-        conversationMessages: [
-          ...this.buildConversationMessages(sessionId, resumedInput.prompt, snapshot.runId),
-          ...runtimeConversationToModelMessages(snapshot.conversation),
-        ],
-        clarificationPatch,
-        approvedActionIds,
-        approvedActions,
-        resumeSnapshot: snapshot,
+      const resumeMutationDeps = {
+        appendEvent: (
+          target: StateSnapshot,
+          type: OraEventEnvelope["type"],
+          payload: unknown,
+          extra?: Partial<OraEventEnvelope>,
+        ) => this.appendEvent(target, type, payload, extra),
+        now: () => this.now(),
+        syncTodos: (target: StateSnapshot, reason: string) => this.syncSnapshotTodos(target, reason),
+      };
+
+      let working = beginNonKernelResume({
+        snapshot,
+        reason: parsed.reason ?? USER_RESUMED_MESSAGE,
+        patch: parsed.patch,
+        deps: resumeMutationDeps,
       });
-      const tracedSnapshot = this.appendResolvedClarificationEvents(
-        attachTraceMetadata(resumedSnapshot),
-        currentPendingClarifications(snapshot),
+      working = resolveNonKernelResumeClarifications({
+        snapshot: working,
         clarificationPatch,
-      );
+        appendEvent: resumeMutationDeps.appendEvent,
+      });
+      working = applyNonKernelResumeApprovals(working, resumeMutationDeps);
+
+      if (nonKernelResumeNeedsInput(working)) {
+        const updated = interruptedNonKernelResumeSnapshot(working, this.now());
+        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+          this.withResumeResolutionEvents(updated, snapshot, clarificationPatch, approvedActionIds),
+        ));
+        this.persistRun(projected);
+        return projected;
+      }
+
+      const updated = completeNonKernelResumeMutation(working, resumeMutationDeps);
+      const syncedTodos = this.syncSnapshotTodos(updated, "resume.completed");
       const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        this.withResumeResolutionEvents(tracedSnapshot, snapshot, clarificationPatch, approvedActionIds),
+        this.withResumeResolutionEvents(syncedTodos, snapshot, clarificationPatch, approvedActionIds),
       ));
       await this.persistRunWithGeneratedTitle(projected);
       return projected;
-    }
-
-    const resumeMutationDeps = {
-      appendEvent: (
-        target: StateSnapshot,
-        type: OraEventEnvelope["type"],
-        payload: unknown,
-        extra?: Partial<OraEventEnvelope>,
-      ) => this.appendEvent(target, type, payload, extra),
-      now: () => this.now(),
-      syncTodos: (target: StateSnapshot, reason: string) => this.syncSnapshotTodos(target, reason),
-    };
-
-    let working = beginNonKernelResume({
-      snapshot,
-      reason: parsed.reason ?? USER_RESUMED_MESSAGE,
-      patch: parsed.patch,
-      deps: resumeMutationDeps,
-    });
-    working = resolveNonKernelResumeClarifications({
-      snapshot: working,
-      clarificationPatch,
-      appendEvent: resumeMutationDeps.appendEvent,
-    });
-    working = applyNonKernelResumeApprovals(working, resumeMutationDeps);
-
-    if (nonKernelResumeNeedsInput(working)) {
-      const updated = interruptedNonKernelResumeSnapshot(working, this.now());
-      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        this.withResumeResolutionEvents(updated, snapshot, clarificationPatch, approvedActionIds),
+    } catch (error) {
+      const failure = createStreamingFailure({
+        liveSnapshot,
+        runId: snapshot.runId,
+        pattern: snapshot.config.pattern,
+        error,
+        failedAt: this.now(),
+      });
+      liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+        this.withResumeResolutionEvents(attachTraceMetadata(failure.snapshot), snapshot, clarificationPatch, approvedActionIds),
       ));
-      this.persistRun(projected);
-      return projected;
+      await this.persistRunWithGeneratedTitle(liveSnapshot);
+      return liveSnapshot;
     }
-
-    const updated = completeNonKernelResumeMutation(working, resumeMutationDeps);
-    const syncedTodos = this.syncSnapshotTodos(updated, "resume.completed");
-    const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-      this.withResumeResolutionEvents(syncedTodos, snapshot, clarificationPatch, approvedActionIds),
-    ));
-    await this.persistRunWithGeneratedTitle(projected);
-    return projected;
   }
 
   cancelRun(params: unknown): StateSnapshot {
@@ -2621,6 +2641,15 @@ export class LocalRunStore {
     return this.ledgerSnapshotOrFallback(snapshot);
   }
 
+  private markResumeRunning(snapshot: StateSnapshot, approvedActionIds: string[]): StateSnapshot {
+    if (!snapshot.sessionId || !this.isLedgerBackedSession(snapshot.sessionId)) {
+      return snapshot;
+    }
+    return this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
+      runningSnapshotForApprovedActions(snapshot, approvedActionIds, this.now()),
+    ));
+  }
+
   private appendGateResolutionsForResume(
     snapshot: StateSnapshot,
     clarificationPatch: Record<string, unknown>,
@@ -2860,6 +2889,12 @@ export class LocalRunStore {
       }
     }
     return projection.session;
+  }
+
+  private refreshAllSessionLedgerProjections(): void {
+    for (const ledger of this.backend.listSessionLedgers()) {
+      this.refreshSessionFromLedger(ledger.sessionId, ledger.leafEntryId);
+    }
   }
 
   private ledgerSnapshotOrFallback(snapshot: StateSnapshot, leafEntryId?: string): StateSnapshot {
