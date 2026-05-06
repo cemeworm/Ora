@@ -1,5 +1,6 @@
 import {
   type ActionRiskLevel,
+  type ActionRecord,
   type AgentConversationMessage,
   AgentConversationMessageSchema,
   type ArtifactRef,
@@ -97,7 +98,10 @@ import {
   userFacingLanguagePrompt,
   workspaceSystemPrompt,
 } from "./runtime-prompts.js";
-import { RuntimeToolCallLedger } from "./runtime-tool-ledger.js";
+import {
+  RuntimeToolCallLedger,
+  type AppendRuntimeToolCallParams,
+} from "./runtime-tool-ledger.js";
 import { fileChangeArtifact } from "./file-change-artifact.js";
 import { emitRuntimeProgressNarration } from "./runtime-progress.js";
 import {
@@ -113,6 +117,7 @@ import {
   isInternalProviderAssistantText,
   type NodeRuntimeLoopState,
   runNodeRuntimeLoop,
+  type RunNodeRuntimeLoopDeps,
   type RunNodeRuntimeLoopParams,
 } from "./node-runtime-loop.js";
 import { createRuntimePatternExecutionContext } from "./runtime-pattern-context.js";
@@ -150,6 +155,353 @@ export interface RuntimeKernelOptions {
   streamProvider?: boolean;
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
+}
+
+class KernelRuntimeContext {
+  private readonly eventsValue: OraEventEnvelope[] = [];
+  private readonly artifactsValue: ArtifactRef[] = [];
+  private readonly agentMessagesValue: AgentConversationMessage[] = [];
+  private readonly activeAgentsValue = new Set<string>();
+  private readonly pendingClarificationsValue: PendingClarification[] = [];
+  private readonly busTopicCountsValue: Record<string, number> = {};
+  private readonly sharedEntriesValue: SharedStateSummary["entries"] = [];
+  private readonly toolCallLedger: RuntimeToolCallLedger;
+  private readonly topologyValue: StateSnapshot["topology"];
+  private planListValue: PlanListStep[];
+  private queueSummaryValue: QueueSummary;
+  private busStatsValue: BusStats;
+  private sharedStateSummaryValue: SharedStateSummary;
+  private nodeLoopDepsFactory?: () => RunNodeRuntimeLoopDeps;
+
+  constructor(private readonly params: {
+    runId: string;
+    config: RunConfig;
+    now: () => number;
+    initialPlanList: PlanListStep[];
+    initialToolCalls: OraToolCallEnvelope[];
+    initialTopology: StateSnapshot["topology"];
+    initialQueueSummary: QueueSummary;
+    initialBusStats: BusStats;
+    initialSharedStateSummary: SharedStateSummary;
+    onEvent?: (event: OraEventEnvelope) => void;
+  }) {
+    this.planListValue = params.initialPlanList;
+    this.toolCallLedger = new RuntimeToolCallLedger(params.runId, params.now, params.initialToolCalls);
+    this.topologyValue = params.initialTopology;
+    this.queueSummaryValue = params.initialQueueSummary;
+    this.busStatsValue = params.initialBusStats;
+    this.sharedStateSummaryValue = params.initialSharedStateSummary;
+  }
+
+  get events(): OraEventEnvelope[] {
+    return this.eventsValue;
+  }
+
+  get planList(): PlanListStep[] {
+    return this.planListValue;
+  }
+
+  get artifacts(): ArtifactRef[] {
+    return this.artifactsValue;
+  }
+
+  get agentMessages(): AgentConversationMessage[] {
+    return this.agentMessagesValue;
+  }
+
+  get toolCalls(): OraToolCallEnvelope[] {
+    return this.toolCallLedger.list();
+  }
+
+  get topology(): StateSnapshot["topology"] {
+    return this.topologyValue;
+  }
+
+  get activeAgents(): string[] {
+    return [...this.activeAgentsValue];
+  }
+
+  get pendingClarifications(): PendingClarification[] {
+    return this.pendingClarificationsValue;
+  }
+
+  get queueSummary(): QueueSummary {
+    return this.queueSummaryValue;
+  }
+
+  get busStats(): BusStats {
+    return this.busStatsValue;
+  }
+
+  get sharedStateSummary(): SharedStateSummary {
+    return this.sharedStateSummaryValue;
+  }
+
+  eventCount(): number {
+    return this.eventsValue.length;
+  }
+
+  agentMessageCount(): number {
+    return this.agentMessagesValue.length;
+  }
+
+  artifactCount(): number {
+    return this.artifactsValue.length;
+  }
+
+  activeAgentCount(): number {
+    return this.activeAgentsValue.size;
+  }
+
+  pendingClarificationCount(): number {
+    return this.pendingClarificationsValue.length;
+  }
+
+  activateAgent(agentId: string): void {
+    this.activeAgentsValue.add(agentId);
+  }
+
+  deactivateAgent(agentId: string): void {
+    this.activeAgentsValue.delete(agentId);
+  }
+
+  setTopologyStatus(
+    agentId: string,
+    status: "idle" | "running" | "done" | "blocked" | "failed",
+  ): void {
+    for (const node of this.topologyValue.nodes) {
+      if (node.agentId === agentId || node.id === agentId) {
+        node.status = status;
+      }
+    }
+    this.emit("topology.updated", this.topologyValue, { agentId, nodeId: agentId });
+  }
+
+  appendAgentMessage(message: AgentConversationMessage): AgentConversationMessage {
+    this.agentMessagesValue.push(message);
+    return message;
+  }
+
+  appendArtifact(artifact: ArtifactRef): ArtifactRef {
+    this.artifactsValue.push(artifact);
+    return artifact;
+  }
+
+  appendToolCall = (params: AppendRuntimeToolCallParams): OraToolCallEnvelope => {
+    return this.toolCallLedger.append(params);
+  };
+
+  updateQueueSummary(patch: Partial<QueueSummary>): QueueSummary {
+    this.queueSummaryValue = { ...this.queueSummaryValue, ...patch };
+    return this.queueSummaryValue;
+  }
+
+  recordBusPublished(topic: string): { queueSummary: QueueSummary; busStats: BusStats } {
+    this.busTopicCountsValue[topic] = (this.busTopicCountsValue[topic] ?? 0) + 1;
+    this.busStatsValue = {
+      enabled: true,
+      publishedCount: this.busStatsValue.publishedCount + 1,
+      routedCount: this.busStatsValue.routedCount,
+      topicCounts: { ...this.busTopicCountsValue },
+    };
+    this.addQueueTopic(topic);
+    return { queueSummary: this.queueSummaryValue, busStats: this.busStatsValue };
+  }
+
+  recordBusRouted(topic: string): { queueSummary: QueueSummary; busStats: BusStats } {
+    this.busTopicCountsValue[topic] = (this.busTopicCountsValue[topic] ?? 0) + 1;
+    this.busStatsValue = {
+      enabled: true,
+      publishedCount: this.busStatsValue.publishedCount,
+      routedCount: this.busStatsValue.routedCount + 1,
+      topicCounts: { ...this.busTopicCountsValue },
+    };
+    this.addQueueTopic(topic);
+    return { queueSummary: this.queueSummaryValue, busStats: this.busStatsValue };
+  }
+
+  writeSharedStateEntry(params: {
+    key: string;
+    summary: string;
+    agentId: string;
+  }): { entry: SharedStateSummary["entries"][number]; sharedStateSummary: SharedStateSummary } {
+    const version = this.sharedStateSummaryValue.version + 1;
+    const entry = {
+      key: params.key,
+      version,
+      summary: params.summary,
+      updatedBy: params.agentId,
+    };
+    this.sharedEntriesValue.push(entry);
+    this.sharedStateSummaryValue = {
+      enabled: true,
+      storeKind: "blackboard",
+      version,
+      entries: [...this.sharedEntriesValue],
+      stopReason: params.key === "convergence" ? "converged" : undefined,
+    };
+    return { entry, sharedStateSummary: this.sharedStateSummaryValue };
+  }
+
+  latestEventSeq(): number {
+    return this.eventsValue.at(-1)?.seq ?? -1;
+  }
+
+  emit = (
+    type: OraEventEnvelope["type"],
+    payload: unknown,
+    extra: Partial<OraEventEnvelope> = {},
+  ) => {
+    const payloadSnapshot = this.cloneEventPayload(payload);
+    const envelope = OraEventEnvelopeSchema.parse({
+      id: `${this.params.runId}:evt-${this.eventsValue.length}`,
+      runId: this.params.runId,
+      seq: this.eventsValue.length,
+      type,
+      createdAt: this.params.now(),
+      pattern: this.params.config.pattern,
+      payload: payloadSnapshot,
+      ...extra,
+    });
+    this.eventsValue.push(envelope);
+    if (type === "plan_list.updated") {
+      const planData = payloadSnapshot as { plan?: PlanListStep[] };
+      if (planData.plan) {
+        this.planListValue = planData.plan;
+      }
+    }
+    this.params.onEvent?.(envelope);
+    return envelope;
+  };
+
+  setNodeLoopDepsFactory(factory: () => RunNodeRuntimeLoopDeps): void {
+    this.nodeLoopDepsFactory = factory;
+  }
+
+  get nodeLoopDeps(): RunNodeRuntimeLoopDeps {
+    if (!this.nodeLoopDepsFactory) {
+      throw new Error("KernelRuntimeContext node loop dependencies are not initialized.");
+    }
+    return this.nodeLoopDepsFactory();
+  }
+
+  assembleContinuation(params: {
+    previous?: StateSnapshot["continuation"];
+    status: StateSnapshot["status"];
+    actions: ActionRecord[];
+    conversationCursor: number;
+    now: number;
+  }): {
+    continuation: StateSnapshot["continuation"];
+    pendingApprovals: string[];
+  } {
+    const pendingApprovalActions = params.actions.filter((action) => action.status === "approval_required");
+    const pendingApprovals = pendingApprovalActions.map((action) => action.id);
+    const pendingApprovalToolCalls = this.toolCalls.filter((call) =>
+      call.actionId && pendingApprovals.includes(call.actionId)
+    );
+    const pendingApprovalToolCallIds = pendingApprovalToolCalls.map((call) => call.id);
+    const continuation = continuationForKernelSnapshot({
+      previous: params.previous,
+      runId: this.params.runId,
+      status: params.status,
+      reason: pendingApprovals.length > 0
+        ? "approval_required"
+        : this.pendingClarificationCount() > 0
+          ? "clarification_required"
+          : undefined,
+      pendingApprovals,
+      pendingApprovalToolCallIds,
+      pendingClarificationIds: this.pendingClarifications.map((clarification) => clarification.id),
+      agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
+      nodeId: pendingApprovalToolCalls[0]?.nodeId,
+      planItemId: pendingApprovalActions[0]?.planItemId,
+      conversationCursor: params.conversationCursor,
+      now: params.now,
+    });
+
+    return { continuation, pendingApprovals };
+  }
+
+  assembleFinalSnapshot(params: {
+    status: StateSnapshot["status"];
+    input: UserTaskInput;
+    config: RunConfig;
+    modeSpec: ModeSpec;
+    profiles: StateSnapshot["profiles"];
+    memory: StateSnapshot["memory"];
+    plan: StateSnapshot["plan"];
+    todos: StateSnapshot["todos"];
+    actions: ActionRecord[];
+    conversation: StateSnapshot["conversation"];
+    toolResults: StateSnapshot["toolResults"];
+    checkpoint: CheckpointMeta;
+    previousContinuation?: StateSnapshot["continuation"];
+    conversationCursor: number;
+    output: unknown;
+    error?: string;
+    updatedAt: number;
+  }): StateSnapshot {
+    const { continuation, pendingApprovals } = this.assembleContinuation({
+      previous: params.previousContinuation,
+      status: params.status,
+      actions: params.actions,
+      conversationCursor: params.conversationCursor,
+      now: params.updatedAt,
+    });
+
+    return StateSnapshotSchema.parse({
+      runId: this.params.runId,
+      status: params.status,
+      pattern: params.config.pattern,
+      coordinationKind: params.config.pattern,
+      modeId: params.modeSpec.id,
+      input: params.input,
+      config: params.config,
+      topology: this.topology,
+      profiles: params.profiles,
+      memory: params.memory,
+      plan: params.plan,
+      planList: this.planList,
+      todos: params.todos,
+      actions: params.actions,
+      toolCalls: this.toolCalls,
+      continuation,
+      conversation: params.conversation,
+      toolResults: params.toolResults,
+      policyDecisions: [],
+      checkpoints: [params.checkpoint],
+      events: this.events,
+      agentMessages: this.agentMessages,
+      artifacts: this.artifacts,
+      activeAgents: this.activeAgents,
+      queueSummary: this.queueSummary,
+      sharedStateSummary: this.sharedStateSummary,
+      busStats: this.busStats,
+      pendingClarifications: this.pendingClarifications,
+      pendingApprovals,
+      modeSpec: params.modeSpec,
+      output: params.output,
+      error: params.error,
+      updatedAt: params.updatedAt,
+    });
+  }
+
+  private cloneEventPayload<T>(value: T): T {
+    if (value === undefined || value === null) {
+      return value;
+    }
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+
+  private addQueueTopic(topic: string): void {
+    if (!this.queueSummaryValue.topics.includes(topic)) {
+      this.queueSummaryValue = {
+        ...this.queueSummaryValue,
+        topics: [...this.queueSummaryValue.topics, topic],
+      };
+    }
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -255,6 +607,8 @@ export async function executeRuntimeKernel(
   if (!modeSpec) {
     throw new Error("Runtime kernel requires a resolved mode spec.");
   }
+  const resolvedDefinition: PatternDefinition = definition;
+  const resolvedModeSpec: ModeSpec = modeSpec;
   const startedAt = now();
   const projectId = input.projectId ?? "local-project";
   const skillRegistry = options.skillRegistry ?? new RuntimeSkillRegistry();
@@ -291,20 +645,11 @@ export async function executeRuntimeKernel(
   const actionLedger = new ActionLedger(runId, options.resumeState?.actions);
   const policyService = new PolicyService(runId, now);
   const resumeApprovals = createResumeApprovalMatcher(options.resumeContext);
-  const events: OraEventEnvelope[] = [];
-  const artifacts: ArtifactRef[] = [];
-  const agentMessages: AgentConversationMessage[] = [];
-  const toolCallLedger = new RuntimeToolCallLedger(runId, now, options.resumeState?.toolCalls);
-  const runtimeToolResultCache = new Map<string, unknown>(
-    (options.resumeState?.toolResults ?? [])
-      .filter((entry) => entry.status === "succeeded")
-      .map((entry) => [entry.key, entry.output] as const),
-  );
-  const pendingClarifications: PendingClarification[] = [];
-  const activeAgents = new Set<string>();
-  const busTopicCounts: Record<string, number> = {};
-  const sharedEntries: SharedStateSummary["entries"] = [];
-  let queueSummary: QueueSummary = {
+  const rootTopology = injectRootAgentTopology({
+    nodes: definition.topology.nodes.map((node) => ({ ...node })),
+    edges: definition.topology.edges,
+  }, modeSpec);
+  const initialQueueSummary: QueueSummary = {
     mode:
       definition.coordinationKind === "bus"
         ? "event_bus"
@@ -318,68 +663,45 @@ export async function executeRuntimeKernel(
     completed: 0,
     topics: [],
   };
-  let busStats: BusStats = {
+  const initialBusStats: BusStats = {
     enabled: definition.supportsEventRouting,
     publishedCount: 0,
     routedCount: 0,
     topicCounts: {},
   };
-  let sharedStateSummary: SharedStateSummary = {
+  const initialSharedStateSummary: SharedStateSummary = {
     enabled: definition.supportsSharedState,
     storeKind: definition.supportsSharedState ? "blackboard" : "none",
     version: 0,
     entries: [],
   };
+  const kernelRuntimeContext = new KernelRuntimeContext({
+    runId,
+    config,
+    now,
+    initialPlanList: options.resumeState?.planList ?? [],
+    initialToolCalls: options.resumeState?.toolCalls ?? [],
+    initialTopology: {
+      nodes: rootTopology.nodes,
+      edges: rootTopology.edges,
+    },
+    initialQueueSummary,
+    initialBusStats,
+    initialSharedStateSummary,
+    onEvent: options.onEvent,
+  });
+  const emit = kernelRuntimeContext.emit;
+  const runtimeToolResultCache = new Map<string, unknown>(
+    (options.resumeState?.toolResults ?? [])
+      .filter((entry) => entry.status === "succeeded")
+      .map((entry) => [entry.key, entry.output] as const),
+  );
 
-  const rootTopology = injectRootAgentTopology({
-    nodes: definition.topology.nodes.map((node) => ({ ...node })),
-    edges: definition.topology.edges,
-  }, modeSpec);
-  const topology = {
-    nodes: rootTopology.nodes,
-    edges: rootTopology.edges,
-  };
   const profilesById = new Map(modeSpec.profiles.map((profile) => [profile.id, profile]));
   if (!profilesById.has(ORA_ROOT_AGENT_ID)) {
     profilesById.set(ORA_ROOT_AGENT_ID, rootProfile);
   }
   const agentLabel = (agentId: string): string => profilesById.get(agentId)?.label ?? agentId;
-
-  let planList: PlanListStep[] = options.resumeState?.planList ?? [];
-
-  const cloneEventPayload = <T,>(value: T): T => {
-    if (value === undefined || value === null) {
-      return value;
-    }
-    return JSON.parse(JSON.stringify(value)) as T;
-  };
-
-  const emit = (
-    type: OraEventEnvelope["type"],
-    payload: unknown,
-    extra: Partial<OraEventEnvelope> = {},
-  ) => {
-    const payloadSnapshot = cloneEventPayload(payload);
-    const envelope = OraEventEnvelopeSchema.parse({
-      id: `${runId}:evt-${events.length}`,
-      runId,
-      seq: events.length,
-      type,
-      createdAt: now(),
-      pattern: config.pattern,
-      payload: payloadSnapshot,
-      ...extra,
-    });
-    events.push(envelope);
-    if (type === "plan_list.updated") {
-      const planData = payloadSnapshot as { plan?: PlanListStep[] };
-      if (planData.plan) {
-        planList = planData.plan;
-      }
-    }
-    options.onEvent?.(envelope);
-    return envelope;
-  };
 
   const emitAgentMessage = (params: {
     fromAgentId: string;
@@ -397,7 +719,7 @@ export async function executeRuntimeKernel(
     transcript?: AgentConversationMessage["transcript"];
   }) => {
     const message = AgentConversationMessageSchema.parse({
-      id: `${runId}:agent-message:${agentMessages.length}`,
+      id: `${runId}:agent-message:${kernelRuntimeContext.agentMessageCount()}`,
       runId,
       createdAt: now(),
       toAgentIds: [],
@@ -405,7 +727,7 @@ export async function executeRuntimeKernel(
       artifactIds: [],
       ...params,
     });
-    agentMessages.push(message);
+    kernelRuntimeContext.appendAgentMessage(message);
     emit(
       "agent.message",
       { message },
@@ -457,7 +779,7 @@ export async function executeRuntimeKernel(
     decision: RecoveryDecision,
   ) => {
     const recoveryArtifact = RecoveryArtifactSchema.parse({
-      id: `${runId}:recovery:${artifacts.length}`,
+      id: `${runId}:recovery:${kernelRuntimeContext.artifactCount()}`,
       runId,
       nodeId: incident.nodeId,
       toolId: incident.toolId,
@@ -477,7 +799,7 @@ export async function executeRuntimeKernel(
       createdAt: recoveryArtifact.createdAt,
       payload: recoveryArtifact,
     });
-    artifacts.push(artifact);
+    kernelRuntimeContext.appendArtifact(artifact);
     emit(
       "artifact.degraded",
       { artifact, recovery: recoveryArtifact },
@@ -537,15 +859,15 @@ export async function executeRuntimeKernel(
     await emitRuntimeProgressNarration(params, {
       config,
       userPrompt: input.prompt,
-      events,
-      activeAgentCount: () => activeAgents.size,
+      events: kernelRuntimeContext.events,
+      activeAgentCount: () => kernelRuntimeContext.activeAgentCount(),
       planStatuses: () => planService.list().map((item) => item.status),
       todoStatuses: () => todoService.list().map((item) => item.status),
       emit,
     });
   };
 
-  const appendToolCall = toolCallLedger.append.bind(toolCallLedger);
+  const appendToolCall = kernelRuntimeContext.appendToolCall;
   const actionDeps = () => ({
     actionLedger,
     policyService,
@@ -623,51 +945,57 @@ export async function executeRuntimeKernel(
     agentId?: string;
     nodeId?: string;
     title?: string;
+    emitNodeRuntimeState?: typeof emitNodeRuntimeState;
   }): Promise<ModelResponse> => {
     completion.markForcedFinalConsumed({ agentId: params.agentId, nodeId: params.nodeId });
-    const response = await params.invokeProvider(
-      params.config,
-      {
-        messages: params.messages,
-        system: forcedFinalSystemPrompt(params.system, params.reason),
-        maxTokens: params.config.budget?.maxTokens,
-        tools: params.nativeTools,
-        toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
-        signal: options.signal,
-      },
-      params.streamCallbacks,
-    );
+    const forcedFinalStateEmitter = params.emitNodeRuntimeState ?? emitNodeRuntimeState;
+    const invokeForcedFinalProvider = async (messages: ModelMessage[]): Promise<ModelResponse> => {
+      try {
+        return await params.invokeProvider(
+          params.config,
+          {
+            messages,
+            system: forcedFinalSystemPrompt(params.system, params.reason),
+            maxTokens: params.config.budget?.maxTokens,
+            tools: params.nativeTools,
+            toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
+            signal: options.signal,
+          },
+          params.streamCallbacks,
+        );
+      } catch (caught) {
+        if (params.agentId) {
+          forcedFinalStateEmitter("failed", {
+            agentId: params.agentId,
+            title: params.title,
+            reason: params.reason,
+            detail: caught instanceof Error ? caught.message : String(caught),
+          });
+        }
+        throw caught;
+      }
+    };
+    const response = await invokeForcedFinalProvider(params.messages);
     const fallbackToolIntent = extractRuntimeToolCallFromText(
       response.text,
       config.toolIds,
     );
     if (fallbackToolIntent) {
       emitRejectedFinalToolIntent(fallbackToolIntent, params.reason);
-      const retryResponse = await params.invokeProvider(
-        params.config,
+      const retryResponse = await invokeForcedFinalProvider([
+        ...params.messages,
         {
-          messages: [
-            ...params.messages,
-            {
-              role: "user",
-              content: [
-                `Completion control rejected a ${fallbackToolIntent.tool} tool call because tools are disabled for this final answer.`,
-                "Do not call tools or emit tool JSON.",
-                "Use the available conversation and prior tool results to answer the user's original request now.",
-              ].join("\n"),
-            },
-          ],
-          system: forcedFinalSystemPrompt(params.system, params.reason),
-          maxTokens: params.config.budget?.maxTokens,
-          tools: params.nativeTools,
-          toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
-          signal: options.signal,
+          role: "user",
+          content: [
+            `Completion control rejected a ${fallbackToolIntent.tool} tool call because tools are disabled for this final answer.`,
+            "Do not call tools or emit tool JSON.",
+            "Use the available conversation and prior tool results to answer the user's original request now.",
+          ].join("\n"),
         },
-        params.streamCallbacks,
-      );
+      ]);
       const finalResponse = coerceNoToolResponse(retryResponse, params.reason);
       if (params.agentId) {
-        emitNodeRuntimeState("completed", {
+        forcedFinalStateEmitter("completed", {
           agentId: params.agentId,
           title: params.title,
         });
@@ -676,7 +1004,7 @@ export async function executeRuntimeKernel(
     }
     const finalResponse = coerceNoToolResponse(response, params.reason);
     if (params.agentId) {
-      emitNodeRuntimeState("completed", {
+      forcedFinalStateEmitter("completed", {
         agentId: params.agentId,
         title: params.title,
       });
@@ -725,12 +1053,7 @@ export async function executeRuntimeKernel(
     agentId: string,
     status: "idle" | "running" | "done" | "blocked" | "failed",
   ) => {
-    for (const node of topology.nodes) {
-      if (node.agentId === agentId || node.id === agentId) {
-        node.status = status;
-      }
-    }
-    emit("topology.updated", topology, { agentId, nodeId: agentId });
+    kernelRuntimeContext.setTopologyStatus(agentId, status);
   };
 
   const setPlanStatus = (
@@ -750,8 +1073,7 @@ export async function executeRuntimeKernel(
     }
     planService.setStatus(item.id, status);
     todoService.setStatus(item.id, status);
-    queueSummary = {
-      ...queueSummary,
+    const queueSummary = kernelRuntimeContext.updateQueueSummary({
       pending: planService
         .list()
         .filter((plan) => plan.status === "planned" || plan.status === "ready")
@@ -762,7 +1084,7 @@ export async function executeRuntimeKernel(
         .list()
         .filter((plan) => plan.status === "done" || plan.status === "skipped")
         .length,
-    };
+    });
     emitPlanUpdated();
     emit("queue.updated", { summary: queueSummary });
     if (status === "done" || status === "skipped" || status === "blocked" || status === "failed") {
@@ -913,38 +1235,40 @@ export async function executeRuntimeKernel(
     }).system;
   };
 
+  kernelRuntimeContext.setNodeLoopDepsFactory(() => ({
+    config,
+    modeSpec,
+    conversationMessages: options.conversationMessages,
+    streamProvider: options.streamProvider,
+    signal: options.signal,
+    inputPrompt: input.prompt,
+    now,
+    eventsLength: () => kernelRuntimeContext.eventCount(),
+    planList: () => kernelRuntimeContext.planList,
+    toolCalls: () => kernelRuntimeContext.toolCalls,
+    runtimeToolExecutor,
+    completion,
+    runtimeToolResultCache,
+    recoveryCoordinator,
+    appendToolCall,
+    emit,
+    emitNodeRuntimeState,
+    emitProgressNarration,
+    emitRecoveryDecision,
+    emitRejectedFinalToolIntent,
+    clarificationAnswer,
+    ensureClarification,
+    ensureClarifications,
+    coerceNoToolResponse,
+    runForcedFinalProviderCall,
+    publishRecoveryArtifact,
+    publishFileChangeArtifact,
+    sleep,
+    actionDeps,
+  }));
+
   const runNodeRuntimeLoopForAgent = async (params: RunNodeRuntimeLoopParams): Promise<ModelResponse> =>
-    runNodeRuntimeLoop(params, {
-      config,
-      modeSpec,
-      conversationMessages: options.conversationMessages,
-      streamProvider: options.streamProvider,
-      signal: options.signal,
-      inputPrompt: input.prompt,
-      now,
-      eventsLength: () => events.length,
-      planList: () => planList,
-      toolCalls: () => toolCallLedger.list(),
-      runtimeToolExecutor,
-      completion,
-      runtimeToolResultCache,
-      recoveryCoordinator,
-      appendToolCall,
-      emit,
-      emitNodeRuntimeState,
-      emitProgressNarration,
-      emitRecoveryDecision,
-      emitRejectedFinalToolIntent,
-      clarificationAnswer,
-      ensureClarification,
-      ensureClarifications,
-      coerceNoToolResponse,
-      runForcedFinalProviderCall,
-      publishRecoveryArtifact,
-      publishFileChangeArtifact,
-      sleep,
-      actionDeps,
-    });
+    runNodeRuntimeLoop(params, kernelRuntimeContext.nodeLoopDeps);
 
   const callAgent = async (params: {
     agentId: string;
@@ -955,7 +1279,7 @@ export async function executeRuntimeKernel(
     customAgentId?: string;
     riskLevel?: ActionRiskLevel;
   }) => {
-    activeAgents.add(params.agentId);
+    kernelRuntimeContext.activateAgent(params.agentId);
     setTopologyStatus(params.agentId, "running");
     emit(
       "agent.started",
@@ -980,7 +1304,7 @@ export async function executeRuntimeKernel(
       (expectedPlanItemId === undefined || record.planItemId === expectedPlanItemId)
     );
     const action = resumeAction ?? actionLedger.propose({
-      id: `${params.agentId}-${events.length}`,
+      id: `${params.agentId}-${kernelRuntimeContext.eventCount()}`,
       type: actionType,
       riskLevel: params.riskLevel ?? "low",
       input: { prompt: params.prompt, title: params.title },
@@ -1108,7 +1432,7 @@ export async function executeRuntimeKernel(
           nodeId: params.agentId,
           title: params.title,
         });
-        activeAgents.delete(params.agentId);
+        kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
         return response.text;
       } catch (error) {
@@ -1121,7 +1445,7 @@ export async function executeRuntimeKernel(
             title: params.title,
             detail: error instanceof Error ? error.message : String(error),
           });
-          activeAgents.delete(params.agentId);
+          kernelRuntimeContext.deactivateAgent(params.agentId);
           setTopologyStatus(params.agentId, "blocked");
           throw error;
         }
@@ -1187,7 +1511,7 @@ export async function executeRuntimeKernel(
         }
 
         if (recoveryDecision.action !== "fallback_artifact") {
-          activeAgents.delete(params.agentId);
+          kernelRuntimeContext.deactivateAgent(params.agentId);
           setTopologyStatus(params.agentId, "failed");
           throw error;
         }
@@ -1241,7 +1565,7 @@ export async function executeRuntimeKernel(
           title: params.title,
           detail,
         });
-        activeAgents.delete(params.agentId);
+        kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
         return visibleFallback;
       }
@@ -1293,7 +1617,7 @@ export async function executeRuntimeKernel(
       createdAt: now(),
       payload: params.payload,
     });
-    artifacts.push(artifact);
+    kernelRuntimeContext.appendArtifact(artifact);
     emit("artifact.exported", { artifact });
   };
 
@@ -1303,11 +1627,11 @@ export async function executeRuntimeKernel(
   ) => {
     const artifact = fileChangeArtifact({
       runId,
-      artifactIndex: artifacts.length,
+      artifactIndex: kernelRuntimeContext.artifactCount(),
       fileChange,
       createdAt: now(),
     });
-    artifacts.push(artifact);
+    kernelRuntimeContext.appendArtifact(artifact);
     emit(
       "artifact.exported",
       { artifact, actionId: context.actionId },
@@ -1327,7 +1651,7 @@ export async function executeRuntimeKernel(
   }) => {
     return ensureRuntimeClarification(params, {
       answer: clarificationAnswer,
-      pendingClarifications,
+      pendingClarifications: kernelRuntimeContext.pendingClarifications,
       now,
       emit,
       emitProgressNarration,
@@ -1348,7 +1672,7 @@ export async function executeRuntimeKernel(
   ) => {
     return ensureRuntimeClarifications(requests, {
       answer: clarificationAnswer,
-      pendingClarifications,
+      pendingClarifications: kernelRuntimeContext.pendingClarifications,
       now,
       emit,
       emitProgressNarration,
@@ -1399,19 +1723,7 @@ export async function executeRuntimeKernel(
     summary: string;
     payload: unknown;
   }) => {
-    busTopicCounts[params.topic] = (busTopicCounts[params.topic] ?? 0) + 1;
-    busStats = {
-      enabled: true,
-      publishedCount: busStats.publishedCount + 1,
-      routedCount: busStats.routedCount,
-      topicCounts: { ...busTopicCounts },
-    };
-    if (!queueSummary.topics.includes(params.topic)) {
-      queueSummary = {
-        ...queueSummary,
-        topics: [...queueSummary.topics, params.topic],
-      };
-    }
+    const { queueSummary, busStats } = kernelRuntimeContext.recordBusPublished(params.topic);
     emit("message.published", params, {
       agentId: params.agentId,
       nodeId: params.agentId,
@@ -1426,19 +1738,7 @@ export async function executeRuntimeKernel(
     correlationId: string;
     summary: string;
   }) => {
-    busTopicCounts[params.toTopic] = (busTopicCounts[params.toTopic] ?? 0) + 1;
-    busStats = {
-      enabled: true,
-      publishedCount: busStats.publishedCount,
-      routedCount: busStats.routedCount + 1,
-      topicCounts: { ...busTopicCounts },
-    };
-    if (!queueSummary.topics.includes(params.toTopic)) {
-      queueSummary = {
-        ...queueSummary,
-        topics: [...queueSummary.topics, params.toTopic],
-      };
-    }
+    const { queueSummary, busStats } = kernelRuntimeContext.recordBusRouted(params.toTopic);
     emit("message.routed", params, {
       agentId: params.agentId,
       nodeId: params.agentId,
@@ -1452,21 +1752,11 @@ export async function executeRuntimeKernel(
     summary: string;
     value: unknown;
   }) => {
-    const version = sharedStateSummary.version + 1;
-    const entry = {
+    const { entry } = kernelRuntimeContext.writeSharedStateEntry({
       key: params.key,
-      version,
       summary: params.summary,
-      updatedBy: params.agentId,
-    };
-    sharedEntries.push(entry);
-    sharedStateSummary = {
-      enabled: true,
-      storeKind: "blackboard",
-      version,
-      entries: [...sharedEntries],
-      stopReason: params.key === "convergence" ? "converged" : undefined,
-    };
+      agentId: params.agentId,
+    });
     emit(
       "shared_state.updated",
       { entry, value: params.value },
@@ -1511,7 +1801,7 @@ export async function executeRuntimeKernel(
       return modeOutput;
     }
     try {
-      activeAgents.add(ORA_ROOT_AGENT_ID);
+      kernelRuntimeContext.activateAgent(ORA_ROOT_AGENT_ID);
       setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
       const response = await invokeRunProvider(config, {
         system: [
@@ -1537,7 +1827,7 @@ export async function executeRuntimeKernel(
       });
       const text = response.text.trim() || modeOutputText(modeOutput);
       setTopologyStatus(ORA_ROOT_AGENT_ID, "done");
-      activeAgents.delete(ORA_ROOT_AGENT_ID);
+      kernelRuntimeContext.deactivateAgent(ORA_ROOT_AGENT_ID);
       return {
         ...modeOutputRecord(modeOutput),
         text,
@@ -1554,7 +1844,7 @@ export async function executeRuntimeKernel(
       };
     } catch (finalizerError) {
       setTopologyStatus(ORA_ROOT_AGENT_ID, "done");
-      activeAgents.delete(ORA_ROOT_AGENT_ID);
+      kernelRuntimeContext.deactivateAgent(ORA_ROOT_AGENT_ID);
       return {
         ...modeOutputRecord(modeOutput),
         text: modeOutputText(modeOutput),
@@ -1570,105 +1860,155 @@ export async function executeRuntimeKernel(
     }
   };
 
-  emit("run.started", {
-    input,
-    config,
-    effectiveStrategy: config.effectiveStrategy,
-    skills: skills.skills,
-    tools: tools.tools,
-  });
-  if (options.forkedFrom) {
-    emit("run.forked", {
-      sourceRunId: options.forkedFrom.runId,
-      checkpointId: options.forkedFrom.checkpointId,
-      eventSeq: options.forkedFrom.eventSeq,
-    });
-  }
-  emit("topology.updated", topology);
-  emit("profile.updated", { profiles });
-  emitPlanUpdated();
-  emitTodoUpdated();
+  const kernelRunnerDeps = {
+    lifecycle: {
+      input,
+      config,
+      skills,
+      tools,
+      options,
+      kernelRuntimeContext,
+      profiles,
+      emit,
+      emitPlanUpdated,
+      emitTodoUpdated,
+      setTopologyStatus,
+      planService,
+      todoService,
+    },
+    execution: {
+      executeModeSpec,
+      createRuntimePatternExecutionContext,
+      projectId,
+      kernelRuntimeContext,
+      systemPrompt,
+      setPlanStatus,
+      runRecoverableNode,
+      runDelegatedTask,
+      ensureClarification,
+      claimWorker,
+      releaseWorker,
+      agentLabel,
+      callAgent,
+      remember,
+      captureMemory,
+      publishArtifact,
+      publishMessage,
+      routeMessage,
+      emitAgentMessage,
+      writeSharedState,
+      input,
+      config,
+      resolvedModeSpec,
+      resolvedDefinition,
+      emit,
+    },
+    preflight: {
+      setTopologyStatus,
+      clarificationAnswer,
+      resolvedModeSpec,
+      config,
+      options,
+      emit,
+      kernelRuntimeContext,
+      requestIntentClarificationQuestion,
+      input,
+      ensureClarification,
+      rootTopology,
+      emitOraObservation,
+      agentLabel,
+    },
+    finalization: {
+      inferCompletionStopReason,
+      modeProgressFinalizationError,
+      planService,
+      todoService,
+      outputWithCompletionMetadata,
+      completionMetadata,
+      emit,
+      finalizeAsOra,
+      incompleteForcedFinalError,
+    },
+    memory: {
+      memoryCaptureQueue,
+      memoryService,
+      emit,
+    },
+    checkpoint: {
+      runId,
+      checkpointLabelForStatus,
+      now,
+      kernelRuntimeContext,
+      emit,
+      planService,
+      input,
+      config,
+      resolvedModeSpec,
+      profiles,
+      memoryService,
+      todoService,
+      actionLedger,
+      options,
+    },
+  };
+  type KernelRunnerDeps = Readonly<typeof kernelRunnerDeps>;
 
-  let status: StateSnapshot["status"] = "succeeded";
-  let output: unknown;
-  let error: string | undefined;
+  class KernelRunner {
+    private status: StateSnapshot["status"] = "succeeded";
+    private output: unknown;
+    private error: string | undefined;
 
-  try {
-    setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
-    const intentClarificationAnswer = clarificationAnswer(INTENT_CLARIFICATION_KEY, INTENT_CLARIFICATION_ID);
-    const shouldRunClarificationPreflight =
-      modeSpec.runtimeAtoms.includes("clarification_interrupt") &&
-      config.metadata.clarificationPreflight === true &&
-      intentClarificationAnswer === undefined;
-    if (config.modeSelection === "auto" || config.metadata.autoModeRouter) {
-      emit(
-        "task.progress",
-        {
-          kind: "chat_progress",
-          source: "runtime_status",
-          trigger: "mode.selection",
-          title: "Prepare run",
-          summary: selectedModeProgressText(modeSpec, shouldRunClarificationPreflight),
-          basedOnSeq: events.at(-1)?.seq ?? -1,
-        },
-        { nodeId: "run" },
-      );
+    constructor(private readonly deps: KernelRunnerDeps) {}
+
+    async run(): Promise<StateSnapshot> {
+      this.emitStartEvents();
+      await this.executeMode();
+      this.flushMemory();
+      return this.checkpoint();
     }
-    if (
-      modeSpec.runtimeAtoms.includes("clarification_interrupt") &&
-      config.metadata.clarificationPreflight === true &&
-      intentClarificationAnswer !== undefined &&
-      options.resumeContext?.clarifications &&
-      (INTENT_CLARIFICATION_KEY in options.resumeContext.clarifications ||
-        INTENT_CLARIFICATION_ID in options.resumeContext.clarifications)
-    ) {
-      emit(
-        "clarification.resolved",
-        {
-          clarificationId: INTENT_CLARIFICATION_ID,
-          nodeId: INTENT_CLARIFICATION_NODE_ID,
-          answer: intentClarificationAnswer,
-          mode: "resume",
-        },
-        { nodeId: INTENT_CLARIFICATION_NODE_ID },
-      );
-    }
-    const intentClarificationQuestion = shouldRunClarificationPreflight
-      ? await requestIntentClarificationQuestion(input.prompt, config)
-      : undefined;
-    if (intentClarificationQuestion) {
-      await ensureClarification({
-        id: INTENT_CLARIFICATION_ID,
-        key: INTENT_CLARIFICATION_KEY,
-        nodeId: INTENT_CLARIFICATION_NODE_ID,
-        nodeLabel: INTENT_CLARIFICATION_NODE_LABEL,
-        question: intentClarificationQuestion,
-        narrate: false,
+
+    private emitStartEvents(): void {
+      const {
+        input,
+        config,
+        skills,
+        tools,
+        options,
+        kernelRuntimeContext,
+        profiles,
+        emit,
+        emitPlanUpdated,
+        emitTodoUpdated,
+      } = this.deps.lifecycle;
+
+      emit("run.started", {
+        input,
+        config,
+        effectiveStrategy: config.effectiveStrategy,
+        skills: skills.skills,
+        tools: tools.tools,
       });
+      if (options.forkedFrom) {
+        emit("run.forked", {
+          sourceRunId: options.forkedFrom.runId,
+          checkpointId: options.forkedFrom.checkpointId,
+          eventSeq: options.forkedFrom.eventSeq,
+        });
+      }
+      emit("topology.updated", kernelRuntimeContext.topology);
+      emit("profile.updated", { profiles });
+      emitPlanUpdated();
+      emitTodoUpdated();
     }
 
-    const handoffTargetId = rootTopology.handoffTargetId;
-    if (handoffTargetId) {
-      emitOraObservation({
-        phase: "handoff-accepted",
-        observedAgentId: handoffTargetId,
-        observedNodeId: handoffTargetId,
-        content: `${ORA_ROOT_AGENT_LABEL} 已交给 ${agentLabel(handoffTargetId)}，并会继续观察阶段进展。`,
-      });
-    }
-
-    const result = await executeModeSpec({
-      context: createRuntimePatternExecutionContext({
+    private async executeMode(): Promise<void> {
+      const {
+        executeModeSpec,
+        createRuntimePatternExecutionContext,
         projectId,
-        queueSummary,
-        sharedStateSummary,
-        busStats,
+        kernelRuntimeContext,
         systemPrompt,
         setPlanStatus,
-        setQueueSummary: (patch) => {
-          queueSummary = { ...queueSummary, ...patch };
-          emit("queue.updated", { summary: queueSummary, busStats });
-        },
         runRecoverableNode,
         runDelegatedTask,
         ensureClarification,
@@ -1683,200 +2023,325 @@ export async function executeRuntimeKernel(
         routeMessage,
         emitAgentMessage,
         writeSharedState,
-        currentSharedState: () => sharedStateSummary,
-      }),
-      prompt: input.prompt,
-      config,
-      modeSpec,
-      definition,
-    });
-    inferCompletionStopReason(result.output);
-    const modeProgressError = modeProgressFinalizationError(planService.list(), todoService.list());
-    if (modeProgressError) {
-      status = "failed";
-      error = modeProgressError;
-      output = outputWithCompletionMetadata({
-        text: modeProgressError,
-        modeOutput: result.output,
-      }, completionMetadata());
-      emit("run.failed", {
-        status,
-        error,
-        output,
+        input,
+        config,
+        resolvedModeSpec,
+        resolvedDefinition,
+      } = this.deps.execution;
+
+      try {
+        await this.preflight();
+        const result = await executeModeSpec({
+          context: createRuntimePatternExecutionContext({
+            projectId,
+            queueSummary: () => kernelRuntimeContext.queueSummary,
+            sharedStateSummary: () => kernelRuntimeContext.sharedStateSummary,
+            busStats: () => kernelRuntimeContext.busStats,
+            systemPrompt,
+            setPlanStatus,
+            setQueueSummary: (patch) => {
+              const queueSummary = kernelRuntimeContext.updateQueueSummary(patch);
+              emit("queue.updated", { summary: queueSummary, busStats: kernelRuntimeContext.busStats });
+            },
+            runRecoverableNode,
+            runDelegatedTask,
+            ensureClarification,
+            claimWorker,
+            releaseWorker,
+            agentLabel,
+            callAgent,
+            remember,
+            captureMemory,
+            publishArtifact,
+            publishMessage,
+            routeMessage,
+            emitAgentMessage,
+            writeSharedState,
+            currentSharedState: () => kernelRuntimeContext.sharedStateSummary,
+          }),
+          prompt: input.prompt,
+          config,
+          modeSpec: resolvedModeSpec,
+          definition: resolvedDefinition,
+        });
+        await this.finalizeModeResult(result.output);
+      } catch (caught) {
+        this.handleModeError(caught);
+      }
+    }
+
+    private async preflight(): Promise<void> {
+      const {
+        setTopologyStatus,
+        clarificationAnswer,
+        resolvedModeSpec,
+        config,
+        options,
+        emit,
+        kernelRuntimeContext,
+        requestIntentClarificationQuestion,
+        input,
+        ensureClarification,
+        rootTopology,
+        emitOraObservation,
+        agentLabel,
+      } = this.deps.preflight;
+
+      setTopologyStatus(ORA_ROOT_AGENT_ID, "running");
+      const intentClarificationAnswer = clarificationAnswer(INTENT_CLARIFICATION_KEY, INTENT_CLARIFICATION_ID);
+      const shouldRunClarificationPreflight =
+        resolvedModeSpec.runtimeAtoms.includes("clarification_interrupt") &&
+        config.metadata.clarificationPreflight === true &&
+        intentClarificationAnswer === undefined;
+      if (config.modeSelection === "auto" || config.metadata.autoModeRouter) {
+        emit(
+          "task.progress",
+          {
+            kind: "chat_progress",
+            source: "runtime_status",
+            trigger: "mode.selection",
+            title: "Prepare run",
+            summary: selectedModeProgressText(resolvedModeSpec, shouldRunClarificationPreflight),
+            basedOnSeq: kernelRuntimeContext.latestEventSeq(),
+          },
+          { nodeId: "run" },
+        );
+      }
+      if (
+        resolvedModeSpec.runtimeAtoms.includes("clarification_interrupt") &&
+        config.metadata.clarificationPreflight === true &&
+        intentClarificationAnswer !== undefined &&
+        options.resumeContext?.clarifications &&
+        (INTENT_CLARIFICATION_KEY in options.resumeContext.clarifications ||
+          INTENT_CLARIFICATION_ID in options.resumeContext.clarifications)
+      ) {
+        emit(
+          "clarification.resolved",
+          {
+            clarificationId: INTENT_CLARIFICATION_ID,
+            nodeId: INTENT_CLARIFICATION_NODE_ID,
+            answer: intentClarificationAnswer,
+            mode: "resume",
+          },
+          { nodeId: INTENT_CLARIFICATION_NODE_ID },
+        );
+      }
+      const intentClarificationQuestion = shouldRunClarificationPreflight
+        ? await requestIntentClarificationQuestion(input.prompt, config)
+        : undefined;
+      if (intentClarificationQuestion) {
+        await ensureClarification({
+          id: INTENT_CLARIFICATION_ID,
+          key: INTENT_CLARIFICATION_KEY,
+          nodeId: INTENT_CLARIFICATION_NODE_ID,
+          nodeLabel: INTENT_CLARIFICATION_NODE_LABEL,
+          question: intentClarificationQuestion,
+          narrate: false,
+        });
+      }
+
+      const handoffTargetId = rootTopology.handoffTargetId;
+      if (handoffTargetId) {
+        emitOraObservation({
+          phase: "handoff-accepted",
+          observedAgentId: handoffTargetId,
+          observedNodeId: handoffTargetId,
+          content: `${ORA_ROOT_AGENT_LABEL} 已交给 ${agentLabel(handoffTargetId)}，并会继续观察阶段进展。`,
+        });
+      }
+    }
+
+    private async finalizeModeResult(modeOutput: unknown): Promise<void> {
+      const {
+        inferCompletionStopReason,
+        modeProgressFinalizationError,
+        planService,
+        todoService,
+        outputWithCompletionMetadata,
+        completionMetadata,
+        emit,
+        finalizeAsOra,
+        incompleteForcedFinalError,
+      } = this.deps.finalization;
+
+      inferCompletionStopReason(modeOutput);
+      const modeProgressError = modeProgressFinalizationError(planService.list(), todoService.list());
+      if (modeProgressError) {
+        this.status = "failed";
+        this.error = modeProgressError;
+        this.output = outputWithCompletionMetadata({
+          text: modeProgressError,
+          modeOutput,
+        }, completionMetadata());
+        emit("run.failed", {
+          status: this.status,
+          error: this.error,
+          output: this.output,
+          stopReason: completionMetadata().stopReason,
+          completion: completionMetadata(),
+        });
+        return;
+      }
+
+      this.output = outputWithCompletionMetadata(await finalizeAsOra(modeOutput), completionMetadata());
+      const incompleteError = incompleteForcedFinalError(this.output, completionMetadata());
+      if (incompleteError) {
+        this.status = "failed";
+        this.error = incompleteError;
+        emit("run.failed", {
+          status: this.status,
+          error: this.error,
+          output: this.output,
+          stopReason: completionMetadata().stopReason,
+          completion: completionMetadata(),
+        });
+        return;
+      }
+
+      emit("run.done", {
+        status: "succeeded",
+        output: this.output,
         stopReason: completionMetadata().stopReason,
         completion: completionMetadata(),
       });
-    } else {
-      output = outputWithCompletionMetadata(await finalizeAsOra(result.output), completionMetadata());
-      const incompleteError = incompleteForcedFinalError(output, completionMetadata());
-      if (incompleteError) {
-        status = "failed";
-        error = incompleteError;
-        emit("run.failed", {
-          status,
-          error,
-          output,
-          stopReason: completionMetadata().stopReason,
-          completion: completionMetadata(),
-        });
-      } else {
-        emit("run.done", {
-          status: "succeeded",
-          output,
-          stopReason: completionMetadata().stopReason,
-          completion: completionMetadata(),
-        });
-      }
     }
-  } catch (caught) {
-    error = caught instanceof Error ? caught.message : String(caught);
-    status =
-      caught instanceof ClarificationInterruptError ||
-      caught instanceof ApprovalInterruptError
-        ? "interrupted"
-        : "failed";
-    setTopologyStatus(ORA_ROOT_AGENT_ID, status === "interrupted" ? "blocked" : "failed");
-    if (status === "interrupted") {
-      for (const item of planService.list()) {
-        if (item.status === "done" || item.status === "skipped") {
-          continue;
+
+    private handleModeError(caught: unknown): void {
+      const {
+        setTopologyStatus,
+        planService,
+        todoService,
+        kernelRuntimeContext,
+        emitPlanUpdated,
+        emitTodoUpdated,
+        emit,
+      } = this.deps.lifecycle;
+
+      this.error = caught instanceof Error ? caught.message : String(caught);
+      this.status =
+        caught instanceof ClarificationInterruptError ||
+        caught instanceof ApprovalInterruptError
+          ? "interrupted"
+          : "failed";
+      setTopologyStatus(ORA_ROOT_AGENT_ID, this.status === "interrupted" ? "blocked" : "failed");
+      if (this.status === "interrupted") {
+        for (const item of planService.list()) {
+          if (item.status === "done" || item.status === "skipped") {
+            continue;
+          }
+          planService.setStatus(item.id, "blocked");
+          todoService.setStatus(item.id, "blocked");
         }
-        planService.setStatus(item.id, "blocked");
-        todoService.setStatus(item.id, "blocked");
+        const queueSummary = kernelRuntimeContext.updateQueueSummary({
+          pending: 0,
+          inProgress: 0,
+          completed: planService
+            .list()
+            .filter((item) => item.status === "done" || item.status === "skipped")
+            .length,
+        });
+        emitPlanUpdated();
+        emitTodoUpdated();
+        emit("queue.updated", { summary: queueSummary, busStats: kernelRuntimeContext.busStats });
       }
-      queueSummary = {
-        ...queueSummary,
-        pending: 0,
-        inProgress: 0,
-        completed: planService
-          .list()
-          .filter((item) => item.status === "done" || item.status === "skipped")
-          .length,
-      };
-      emitPlanUpdated();
-      emitTodoUpdated();
-      emit("queue.updated", { summary: queueSummary, busStats });
-    }
-    emit(status === "interrupted" ? "run.interrupted" : "run.failed", {
-      error,
-      status,
-      reason:
-        caught instanceof ClarificationInterruptError
-          ? "clarification_required"
-          : caught instanceof ApprovalInterruptError
-            ? "approval_required"
+      emit(this.status === "interrupted" ? "run.interrupted" : "run.failed", {
+        error: this.error,
+        status: this.status,
+        reason:
+          caught instanceof ClarificationInterruptError
+            ? "clarification_required"
+            : caught instanceof ApprovalInterruptError
+              ? "approval_required"
+              : undefined,
+        clarificationId:
+          caught instanceof ClarificationInterruptError && caught.clarifications.length === 1
+            ? caught.clarification.id
             : undefined,
-      clarificationId:
-        caught instanceof ClarificationInterruptError && caught.clarifications.length === 1
-          ? caught.clarification.id
-          : undefined,
-      clarificationIds:
-        caught instanceof ClarificationInterruptError
-          ? caught.clarifications.map((c) => c.id)
-          : undefined,
-      actionId:
-        caught instanceof ApprovalInterruptError ? caught.actionId : undefined,
-    });
-  }
-
-  if (memoryCaptureQueue.size() > 0) {
-    const flushed = memoryCaptureQueue.flush(memoryService);
-    for (const record of flushed) {
-      emit("memory.updated", { record });
+        clarificationIds:
+          caught instanceof ClarificationInterruptError
+            ? caught.clarifications.map((c) => c.id)
+            : undefined,
+        actionId:
+          caught instanceof ApprovalInterruptError ? caught.actionId : undefined,
+      });
     }
-    emit("memory.flushed", {
-      count: flushed.length,
-      recordIds: flushed.map((record) => record.id),
-    });
+
+    private flushMemory(): void {
+      const { memoryCaptureQueue, memoryService, emit } = this.deps.memory;
+
+      if (memoryCaptureQueue.size() === 0) {
+        return;
+      }
+      const flushed = memoryCaptureQueue.flush(memoryService);
+      for (const record of flushed) {
+        emit("memory.updated", { record });
+      }
+      emit("memory.flushed", {
+        count: flushed.length,
+        recordIds: flushed.map((record) => record.id),
+      });
+    }
+
+    private checkpoint(): StateSnapshot {
+      const {
+        runId,
+        checkpointLabelForStatus,
+        now,
+        kernelRuntimeContext,
+        emit,
+        planService,
+        input,
+        config,
+        resolvedModeSpec,
+        profiles,
+        memoryService,
+        todoService,
+        actionLedger,
+        options,
+      } = this.deps.checkpoint;
+
+      const checkpoint: CheckpointMeta = {
+        id: `${runId}:checkpoint-0`,
+        runId,
+        label: checkpointLabelForStatus(this.status),
+        createdAt: now(),
+        // Match the historic Ora replay contract: the checkpoint references the
+        // `checkpoint.created` event itself, not the event immediately before it.
+        eventSeq: kernelRuntimeContext.eventCount(),
+        stateHash: JSON.stringify(this.output ?? { error: this.error, status: this.status }),
+      };
+      emit(
+        "checkpoint.created",
+        {
+          checkpoint,
+          summary: "Runtime checkpoint captured from the unified Ora kernel.",
+        },
+        { checkpointId: checkpoint.id },
+      );
+      planService.attachCheckpoint(checkpoint.id);
+      return kernelRuntimeContext.assembleFinalSnapshot({
+        status: this.status,
+        input,
+        config,
+        modeSpec: resolvedModeSpec,
+        profiles,
+        memory: memoryService.list(),
+        plan: planService.list(),
+        todos: todoService.list(),
+        actions: actionLedger.list(),
+        conversation: options.resumeState?.conversation ?? [],
+        toolResults: options.resumeState?.toolResults ?? [],
+        checkpoint,
+        previousContinuation: options.resumeState?.continuation,
+        conversationCursor: options.resumeState?.conversation.length ?? 0,
+        output: this.output,
+        error: this.error,
+        updatedAt: now(),
+      });
+    }
   }
 
-  const checkpoint: CheckpointMeta = {
-    id: `${runId}:checkpoint-0`,
-    runId,
-    label: checkpointLabelForStatus(status),
-    createdAt: now(),
-    // Match the historic Ora replay contract: the checkpoint references the
-    // `checkpoint.created` event itself, not the event immediately before it.
-    eventSeq: events.length,
-    stateHash: JSON.stringify(output ?? { error, status }),
-  };
-  emit(
-    "checkpoint.created",
-    {
-      checkpoint,
-      summary: "Runtime checkpoint captured from the unified Ora kernel.",
-    },
-    { checkpointId: checkpoint.id },
-  );
-  planService.attachCheckpoint(checkpoint.id);
-  const pendingApprovals = actionLedger
-    .list()
-    .filter((action) => action.status === "approval_required")
-    .map((action) => action.id);
-  const pendingApprovalActions = actionLedger
-    .list()
-    .filter((action) => action.status === "approval_required");
-  const pendingApprovalToolCallIds = toolCallLedger
-    .list()
-    .filter((call) => call.actionId && pendingApprovals.includes(call.actionId))
-    .map((call) => call.id);
-  const pendingApprovalToolCalls = toolCallLedger
-    .list()
-    .filter((call) => call.actionId && pendingApprovals.includes(call.actionId));
-  const continuation = continuationForKernelSnapshot({
-    previous: options.resumeState?.continuation,
-    runId,
-    status,
-    reason: pendingApprovals.length > 0
-      ? "approval_required"
-      : pendingClarifications.length > 0
-        ? "clarification_required"
-        : undefined,
-    pendingApprovals,
-    pendingApprovalToolCallIds,
-    pendingClarificationIds: pendingClarifications.map((clarification) => clarification.id),
-    agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
-    nodeId: pendingApprovalToolCalls[0]?.nodeId,
-    planItemId: pendingApprovalActions[0]?.planItemId,
-    conversationCursor: options.resumeState?.conversation.length ?? 0,
-    now: now(),
-  });
-
-  const snapshot = StateSnapshotSchema.parse({
-    runId,
-    status,
-    pattern: config.pattern,
-    coordinationKind: config.pattern,
-    modeId: modeSpec.id,
-    input,
-    config,
-    topology,
-    profiles,
-    memory: memoryService.list(),
-    plan: planService.list(),
-    planList,
-    todos: todoService.list(),
-    actions: actionLedger.list(),
-    toolCalls: toolCallLedger.list(),
-    continuation,
-    conversation: options.resumeState?.conversation ?? [],
-    toolResults: options.resumeState?.toolResults ?? [],
-    policyDecisions: [],
-    checkpoints: [checkpoint],
-    events,
-    agentMessages,
-    artifacts,
-    activeAgents: [...activeAgents],
-    queueSummary,
-    sharedStateSummary,
-    busStats,
-    pendingClarifications,
-    pendingApprovals,
-    modeSpec,
-    output,
-    error,
-    updatedAt: now(),
-  });
+  const snapshot = await new KernelRunner(kernelRunnerDeps).run();
 
   return {
     snapshot,

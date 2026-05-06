@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveSessionProjection, RuntimeSessionLedgerSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
+import type { RuntimeGateResolution } from "../src/runtime-gate-service.js";
 
 const capturedRequests: Array<{
   prompt: string;
@@ -91,6 +92,18 @@ function freshStoreDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-session-test-"));
 }
 
+function readSessionLedger(dir: string, sessionId: string) {
+  const ledgerPath = path.join(dir, "sessions-ledger", `${sessionId}.jsonl`);
+  return RuntimeSessionLedgerSchema.parse({
+    sessionId,
+    entries: fs.readFileSync(ledgerPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+  });
+}
+
 async function waitFor<T>(read: () => T, predicate: (value: T) => boolean): Promise<T> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const value = read();
@@ -173,6 +186,194 @@ describe("session thread runtime behavior", () => {
     });
     expect((detail.latestSnapshot?.output as { text?: string }).text).toContain("Ledger cutover smoke");
     expect(detail.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("persists opened gate ledger entries in legacy order and shape", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Open all gate types.", createdAt: FIXED_TIME },
+      config: {
+        modeId: "single_agent",
+        providerId: "gate-ledger-provider",
+        modelRef: "gate-ledger-model",
+        toolIds: ["file.write"],
+        approvalMode: "high_risk_only",
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock });
+      const actionId = `${base.runId}:action-write`;
+      const toolCallId = `${base.runId}:tool-call-write`;
+      return StateSnapshotSchema.parse({
+        ...base,
+        status: "interrupted",
+        pendingClarifications: [{
+          id: "clarification:gate:scope",
+          key: "scope",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          question: "Which scope?",
+          options: [],
+          requestedAt: FIXED_TIME + 10,
+        }],
+        pendingApprovals: [actionId],
+        actions: [{
+          id: actionId,
+          runId: base.runId,
+          type: "file.write",
+          riskLevel: "high",
+          status: "approval_required",
+          input: { path: "notes/gate.md", content: "gate\n" },
+          artifactIds: [],
+        }],
+        toolCalls: [{
+          id: toolCallId,
+          runId: base.runId,
+          toolId: "file.write",
+          args: { path: "notes/gate.md", content: "gate\n" },
+          source: "json_fallback",
+          status: "approval_required",
+          actionId,
+          requestedAt: FIXED_TIME + 20,
+          updatedAt: FIXED_TIME + 20,
+        }],
+        planDecisions: [{
+          id: "decision-gate",
+          runId: base.runId,
+          sessionId: session.sessionId,
+          status: "pending",
+          planContent: "Plan the gated work.",
+          createdAt: FIXED_TIME + 30,
+        }],
+      });
+    });
+
+    if (!handle) {
+      throw new Error("Expected gated run to start.");
+    }
+    const ledger = readSessionLedger(dir, session.sessionId);
+    const gateEntries = ledger.entries.filter((entry) => entry.type === "gate.opened");
+
+    expect(gateEntries.map((entry) => entry.id)).toEqual([
+      `${handle.runId}:gate:clarification:gate:scope`,
+      `${handle.runId}:gate:approval`,
+      `${handle.runId}:gate:decision-gate`,
+    ]);
+    expect(gateEntries.map((entry) => entry.payload)).toEqual([
+      expect.objectContaining({
+        gateId: "clarification:gate:scope",
+        kind: "clarification",
+        pendingClarificationIds: ["clarification:gate:scope"],
+      }),
+      {
+        gateId: `${handle.runId}:approval`,
+        kind: "approval",
+        pendingActionIds: [`${handle.runId}:action-write`],
+        pendingToolCallIds: [`${handle.runId}:tool-call-write`],
+      },
+      expect.objectContaining({
+        gateId: "decision-gate",
+        kind: "plan_decision",
+        planDecision: expect.objectContaining({
+          id: "decision-gate",
+          status: "pending",
+          planContent: "Plan the gated work.",
+        }),
+      }),
+    ]);
+    expect(gateEntries.map((entry) => entry.createdAt)).toEqual([
+      FIXED_TIME + 10,
+      FIXED_TIME,
+      FIXED_TIME + 30,
+    ]);
+  });
+
+  it("does not append already-ledgered opened gate ids when business facts are flushed again", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Open all gate types twice.", createdAt: FIXED_TIME },
+      config: {
+        modeId: "single_agent",
+        providerId: "gate-ledger-idempotence-provider",
+        modelRef: "gate-ledger-idempotence-model",
+        toolIds: ["file.write"],
+        approvalMode: "high_risk_only",
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock });
+      const actionId = `${base.runId}:action-write`;
+      const toolCallId = `${base.runId}:tool-call-write`;
+      return StateSnapshotSchema.parse({
+        ...base,
+        status: "interrupted",
+        pendingClarifications: [{
+          id: "clarification:gate:scope",
+          key: "scope",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          question: "Which scope?",
+          options: [],
+          requestedAt: FIXED_TIME + 10,
+        }],
+        pendingApprovals: [actionId],
+        actions: [{
+          id: actionId,
+          runId: base.runId,
+          type: "file.write",
+          riskLevel: "high",
+          status: "approval_required",
+          input: { path: "notes/gate.md", content: "gate\n" },
+          artifactIds: [],
+        }],
+        toolCalls: [{
+          id: toolCallId,
+          runId: base.runId,
+          toolId: "file.write",
+          args: { path: "notes/gate.md", content: "gate\n" },
+          source: "json_fallback",
+          status: "approval_required",
+          actionId,
+          requestedAt: FIXED_TIME + 20,
+          updatedAt: FIXED_TIME + 20,
+        }],
+        planDecisions: [{
+          id: "decision-gate",
+          runId: base.runId,
+          sessionId: session.sessionId,
+          status: "pending",
+          planContent: "Plan the gated work.",
+          createdAt: FIXED_TIME + 30,
+        }],
+      });
+    });
+
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    (store as unknown as {
+      appendSnapshotBusinessFactsToLedger(snapshot: unknown): void;
+    }).appendSnapshotBusinessFactsToLedger(snapshot);
+
+    const gateEntries = readSessionLedger(dir, session.sessionId).entries.filter((entry) =>
+      entry.type === "gate.opened"
+    );
+    expect(gateEntries.map((entry) => entry.id)).toEqual([
+      `${handle.runId}:gate:clarification:gate:scope`,
+      `${handle.runId}:gate:approval`,
+      `${handle.runId}:gate:decision-gate`,
+    ]);
+    expect(gateEntries.map((entry) =>
+      entry.payload && typeof entry.payload === "object"
+        ? (entry.payload as Record<string, unknown>).gateId
+        : undefined
+    )).toEqual([
+      "clarification:gate:scope",
+      `${handle.runId}:approval`,
+      "decision-gate",
+    ]);
   });
 
   it("archives sessions and hides them from session lists", () => {
@@ -276,6 +477,75 @@ describe("session thread runtime behavior", () => {
     expect(resolved.latestSnapshot?.planDecisions[0]?.status).toBe("accepted");
   });
 
+  it("declines plan-decision gates without creating accepted-plan handoffs after cold reload", async () => {
+    titleResponses.push("Declined Plan Session");
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+
+    await store.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Return a proposed plan that will be declined." },
+      config: {
+        pattern: "orchestrator_subagent",
+        providerId: "openai-gpt",
+        modelRef: "gpt-plan-test",
+        metadata: {
+          taskIntent: "plan",
+        },
+      },
+    });
+
+    const planned = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const decision = planned.latestSnapshot?.planDecisions[0];
+    expect(decision?.status).toBe("pending");
+
+    const resolved = SessionDetailSchema.parse(store.resolvePlanDecision({
+      sessionId: session.sessionId,
+      decisionId: decision?.id,
+      status: "declined",
+    }));
+
+    expect(resolved.session.attention?.kind).toBe("idle");
+    expect(resolved.latestSnapshot?.planDecisions[0]?.status).toBe("declined");
+
+    const reloaded = new LocalRunStore({ dataDir: dir, clock });
+    const coldDetail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: session.sessionId }));
+    const coldSummary = reloaded.listSessions().find((item) => item.sessionId === session.sessionId);
+    expect(coldDetail.session.attention?.kind).toBe("idle");
+    expect(coldDetail.latestSnapshot?.planDecisions[0]?.status).toBe("declined");
+    expect(coldSummary?.attention?.kind).toBe("idle");
+
+    await reloaded.startRun({
+      sessionId: session.sessionId,
+      input: { prompt: "Implement without the declined plan." },
+      config: {
+        pattern: "generator_verifier",
+        providerId: "openai-gpt",
+        modelRef: "gpt-declined-implementation-test",
+        metadata: { taskIntent: "implement" },
+      },
+    });
+
+    const implementationRequest = capturedRequests.find((request) =>
+      request.modelRef === "gpt-declined-implementation-test" &&
+      request.messages.some((message) => message.content.includes("Implement without the declined plan."))
+    );
+    expect(implementationRequest?.messages.some((message) => message.content.includes("<accepted_plan>"))).toBe(false);
+
+    const ledgerPath = path.join(dir, "sessions-ledger", `${session.sessionId}.jsonl`);
+    const ledger = RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      entries: fs.readFileSync(ledgerPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    });
+    const projection = deriveSessionProjection(ledger);
+    expect(projection.acceptedPlanHandoffs).toEqual([]);
+  });
+
   it("closes clarification resume projections across state, session detail, list, and cold reload", async () => {
     const dir = freshStoreDir();
     const store = new LocalRunStore({ dataDir: dir, clock });
@@ -330,6 +600,7 @@ describe("session thread runtime behavior", () => {
     const coldDetail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: session.sessionId }));
     const coldSummary = reloaded.listSessions().find((item) => item.sessionId === session.sessionId);
 
+    expect(resumed.error).toBeUndefined();
     expect(resumed.status).toBe("succeeded");
     expect(resumed.pendingClarifications).toEqual([]);
     expect(resumed.attention?.kind).toBe("idle");
@@ -341,6 +612,19 @@ describe("session thread runtime behavior", () => {
     expect(coldDetail.session.attention).toEqual(resumed.attention);
     expect(coldSummary?.attention).toEqual(resumed.attention);
     expect(coldDetail.latestSnapshot?.pendingClarifications).toEqual([]);
+    expect(readSessionLedger(dir, session.sessionId).entries.filter((entry) =>
+      entry.type === "gate.resolved" &&
+      entry.runId === handle.runId
+    )).toEqual([
+      expect.objectContaining({
+        id: `${handle.runId}:gate:clarification:ora:target:resolved-${FIXED_TIME}`,
+        payload: {
+          gateId: "clarification:ora:target",
+          status: "resolved",
+          resolvedAt: FIXED_TIME,
+        },
+      }),
+    ]);
 
     const mutableStore = store as unknown as {
       runs: Map<string, unknown>;
@@ -376,6 +660,143 @@ describe("session thread runtime behavior", () => {
     expect(repairedDetail.latestSnapshot?.attention).toEqual(resumed.attention);
     expect(repairedDetail.latestSnapshot?.pendingClarifications).toEqual([]);
     expect(repairedSummary?.attention).toEqual(resumed.attention);
+  });
+
+  it("does not duplicate gate resolutions when streaming resume delegates to non-kernel resume", async () => {
+    const dir = freshStoreDir();
+    let now = FIXED_TIME;
+    const advancingClock = () => {
+      now += 1;
+      return now;
+    };
+    const store = new LocalRunStore({ dataDir: dir, clock: advancingClock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Clarify non-kernel streaming resume.", createdAt: FIXED_TIME },
+      config: {
+        modeId: "single_agent",
+        providerId: "streaming-non-kernel-clarification-provider",
+        modelRef: "streaming-non-kernel-clarification-model",
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock: advancingClock });
+      return StateSnapshotSchema.parse({
+        ...base,
+        modeSpec: undefined,
+        status: "interrupted",
+        pendingClarifications: [{
+          id: "clarification:ora:stream-target",
+          key: "streamTarget",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          question: "Which streaming target?",
+          options: [],
+          requestedAt: advancingClock(),
+        }],
+        events: [{
+          id: `${base.runId}:evt-0`,
+          runId: base.runId,
+          seq: 0,
+          type: "clarification.required",
+          createdAt: advancingClock(),
+          pattern: base.pattern,
+          nodeId: "ora",
+          agentId: "ora",
+          payload: { clarificationId: "clarification:ora:stream-target" },
+        }],
+      });
+    });
+
+    const resumed = await store.resumeStreamingRun({
+      runId: handle.runId,
+      patch: { clarifications: { streamTarget: "staging" } },
+    });
+    const resolvedEntries = readSessionLedger(dir, session.sessionId).entries.filter((entry) =>
+      entry.type === "gate.resolved" &&
+      entry.runId === handle.runId &&
+      entry.payload &&
+      typeof entry.payload === "object" &&
+      (entry.payload as Record<string, unknown>).gateId === "clarification:ora:stream-target"
+    );
+
+    expect(["running", "succeeded"]).toContain(resumed.status);
+    expect(resolvedEntries).toHaveLength(1);
+    expect(resolvedEntries[0]).toMatchObject({
+      payload: {
+        gateId: "clarification:ora:stream-target",
+        status: "resolved",
+      },
+    });
+  });
+
+  it("closes clarification resume projections across SQLite state, session detail, list, and cold reload", async () => {
+    const dir = freshStoreDir();
+    const dbPath = path.join(dir, "runtime.db");
+    const store = new LocalRunStore({ dataDir: dbPath, clock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Need SQLite clarification before continuing.", createdAt: FIXED_TIME },
+      config: {
+        modeId: "single_agent",
+        providerId: "sqlite-clarification-closure-provider",
+        modelRef: "sqlite-clarification-closure-model",
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock });
+      return StateSnapshotSchema.parse({
+        ...base,
+        status: "interrupted",
+        pendingClarifications: [{
+          id: "clarification:sqlite:target",
+          key: "target",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          question: "Which SQLite target?",
+          options: [],
+          requestedAt: clock(),
+        }],
+        events: [{
+          id: `${base.runId}:evt-0`,
+          runId: base.runId,
+          seq: 0,
+          type: "clarification.required",
+          createdAt: clock(),
+          pattern: base.pattern,
+          nodeId: "ora",
+          agentId: "ora",
+          payload: { clarificationId: "clarification:sqlite:target" },
+        }],
+      });
+    });
+
+    const blocked = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    expect(blocked.session.attention?.kind).toBe("needs_clarification");
+
+    const resumed = StateSnapshotSchema.parse(await store.resumeRun({
+      runId: handle.runId,
+      patch: { clarifications: { target: "sqlite-staging" } },
+    }));
+    const resumedState = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: session.sessionId }));
+    const summary = store.listSessions().find((item) => item.sessionId === session.sessionId);
+    const reloaded = new LocalRunStore({ dataDir: dbPath, clock });
+    const coldDetail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: session.sessionId }));
+    const coldSummary = reloaded.listSessions().find((item) => item.sessionId === session.sessionId);
+
+    expect(resumed.error).toBeUndefined();
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.pendingClarifications).toEqual([]);
+    expect(resumed.attention?.kind).toBe("idle");
+    expect(resumedState.attention).toEqual(resumed.attention);
+    expect(detail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(detail.session.attention).toEqual(resumed.attention);
+    expect(summary?.attention).toEqual(resumed.attention);
+    expect(coldDetail.latestSnapshot?.attention).toEqual(resumed.attention);
+    expect(coldDetail.session.attention).toEqual(resumed.attention);
+    expect(coldSummary?.attention).toEqual(resumed.attention);
+    expect(coldDetail.latestSnapshot?.pendingClarifications).toEqual([]);
   });
 
   it("closes approval resume projections across state, session detail, list, and cold reload", async () => {
@@ -504,6 +925,19 @@ describe("session thread runtime behavior", () => {
     expect(coldDetail.session.attention).toEqual(resumed.attention);
     expect(coldSummary?.attention).toEqual(resumed.attention);
     expect(coldDetail.latestSnapshot?.pendingApprovals).toEqual([]);
+    expect(readSessionLedger(dir, session.sessionId).entries.filter((entry) =>
+      entry.type === "gate.resolved" &&
+      entry.runId === handle.runId
+    )).toEqual([
+      expect.objectContaining({
+        id: `${handle.runId}:gate:approval:resolved-${FIXED_TIME}`,
+        payload: {
+          gateId: `${handle.runId}:approval`,
+          status: "accepted",
+          resolvedAt: FIXED_TIME,
+        },
+      }),
+    ]);
   });
 
   it("consumes accepted plan handoff from the ledger for only the next implementation run", async () => {
@@ -574,6 +1008,19 @@ describe("session thread runtime behavior", () => {
         .map((line) => JSON.parse(line)),
     });
     const projection = deriveSessionProjection(ledger);
+    expect(ledger.entries.filter((entry) =>
+      entry.type === "gate.resolved" &&
+      entry.runId === planned.latestSnapshot?.runId
+    )).toEqual([
+      expect.objectContaining({
+        id: `${planned.latestSnapshot?.runId}:gate:${decision?.id}:resolved`,
+        payload: {
+          gateId: decision?.id,
+          status: "accepted",
+          resolvedAt: FIXED_TIME,
+        },
+      }),
+    ]);
     expect(projection.acceptedPlanHandoffs).toEqual([
       expect.objectContaining({
         decisionId: decision?.id,
@@ -1098,6 +1545,251 @@ describe("session thread runtime behavior", () => {
     expect(deriveSessionProjection(ledger).runs.map((run) => run.runId)).toEqual([]);
     expect(candidateAssistant).toBeTruthy();
     expect(deriveSessionProjection(ledger, candidateAssistant.id).runs.map((run) => run.runId)).toEqual([candidateRunId]);
+  });
+
+  it("keeps candidate gate resolution facts on the candidate leaf path", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const session = store.createSession();
+    const handle = await store.startRunWithSnapshot({
+      sessionId: session.sessionId,
+      input: { prompt: "Candidate needs a scoped answer.", createdAt: FIXED_TIME },
+      config: {
+        modeId: "single_agent",
+        providerId: "candidate-gate-resolution-provider",
+        modelRef: "candidate-gate-resolution-model",
+        metadata: { branchRole: "candidate", branchGroupId: "branch-candidate-gate-resolution" },
+      },
+    }, async (args) => {
+      const base = createRunningRunSnapshot({ ...args, clock });
+      return StateSnapshotSchema.parse({
+        ...base,
+        status: "interrupted",
+        output: { text: "Candidate is waiting for scope." },
+        pendingClarifications: [{
+          id: "clarification:candidate:scope",
+          key: "scope",
+          nodeId: "ora",
+          nodeLabel: "Ora",
+          question: "Which candidate scope?",
+          options: [],
+          requestedAt: FIXED_TIME + 10,
+        }],
+        events: [{
+          id: `${base.runId}:evt-0`,
+          runId: base.runId,
+          seq: 0,
+          type: "clarification.required",
+          createdAt: FIXED_TIME + 10,
+          pattern: base.pattern,
+          nodeId: "ora",
+          agentId: "ora",
+          payload: { clarificationId: "clarification:candidate:scope" },
+        }],
+      });
+    });
+
+    const metaPath = path.join(dir, "sessions-ledger", `${session.sessionId}.meta.json`);
+    const mainlineLeafBefore = JSON.parse(fs.readFileSync(metaPath, "utf8")).leafEntryId;
+    const candidateSnapshot = StateSnapshotSchema.parse(store.getRunState({ runId: handle!.runId }));
+    const candidateLedgerBefore = readSessionLedger(dir, session.sessionId);
+    const candidateAssistant = candidateLedgerBefore.entries.find((entry) => entry.id === `${handle!.runId}:assistant`);
+    expect(candidateAssistant).toBeTruthy();
+
+    (store as unknown as {
+      branchCandidateLeafByRun: Map<string, string>;
+      appendGateResolutionsForResume(
+        snapshot: unknown,
+        gateResolutions: RuntimeGateResolution[],
+      ): void;
+    }).branchCandidateLeafByRun.delete(handle!.runId);
+    (store as unknown as {
+      appendGateResolutionsForResume(
+        snapshot: unknown,
+        gateResolutions: RuntimeGateResolution[],
+      ): void;
+    }).appendGateResolutionsForResume(candidateSnapshot, [{
+      kind: "clarification",
+      gateId: "clarification:candidate:scope",
+      value: "pilot",
+    }]);
+
+    const mainlineLeafAfter = JSON.parse(fs.readFileSync(metaPath, "utf8")).leafEntryId;
+    const ledger = readSessionLedger(dir, session.sessionId);
+    const resolvedEntry = ledger.entries.find((entry) =>
+      entry.type === "gate.resolved" &&
+      entry.runId === handle!.runId &&
+      entry.payload &&
+      typeof entry.payload === "object" &&
+      (entry.payload as Record<string, unknown>).gateId === "clarification:candidate:scope"
+    );
+
+    expect(mainlineLeafAfter).toBe(mainlineLeafBefore);
+    expect(resolvedEntry).toMatchObject({
+      parentId: candidateAssistant?.id,
+      payload: {
+        gateId: "clarification:candidate:scope",
+        status: "resolved",
+        resolvedAt: FIXED_TIME,
+      },
+    });
+    expect(deriveSessionProjection(RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      leafEntryId: mainlineLeafAfter,
+      entries: ledger.entries,
+    })).runs.map((run) => run.runId)).toEqual([]);
+    expect(deriveSessionProjection(RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      leafEntryId: resolvedEntry?.id,
+      entries: ledger.entries,
+    })).latestSnapshot?.pendingClarifications).toEqual([]);
+  });
+
+  it("keeps public API branch candidate resume facts off the mainline ledger leaf", async () => {
+    const dir = freshStoreDir();
+    const store = new LocalRunStore({ dataDir: dir, clock });
+    const handle = createRuntimeMethodHandler(store);
+    const session = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sessions.create",
+      params: {},
+    }) as { sessionId: string };
+    const cloned = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "modes.cloneFromPreset",
+      params: {
+        sourceModeId: "orchestrator_subagent",
+        modeId: "orchestrator-candidate-clarification",
+        label: "Orchestrator Candidate Clarification",
+      },
+    }) as any;
+
+    await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "modes.update",
+      params: {
+        modeId: cloned.id,
+        spec: {
+          ...cloned,
+          summary: "Custom orchestrator mode with a branch candidate clarification gate.",
+          nodes: cloned.nodes.map((node: { id: string; config?: Record<string, unknown> }) =>
+            node.id === "research"
+              ? {
+                  ...node,
+                  config: {
+                    ...node.config,
+                    clarificationQuestion: "What scope should research use?",
+                  },
+                }
+              : node
+          ),
+        },
+      },
+    });
+
+    const group = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "sessions.branchGroups.createAndRun",
+      params: {
+        sessionId: session.sessionId,
+        target: "empty_start",
+        prompt: "Run candidate clarification.",
+        candidates: [{
+          label: "Candidate A",
+          config: { modeId: cloned.id },
+        }],
+      },
+    }) as { branchGroupId: string; candidateRunIds: string[] };
+
+    const candidateRunId = group.candidateRunIds[0]!;
+    const blocked = await waitFor(
+      () => StateSnapshotSchema.parse(handle({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "runs.state",
+        params: { runId: candidateRunId },
+      })),
+      (current) => current.status === "interrupted",
+    );
+    expect(blocked.config.metadata.branchRole).toBe("candidate");
+    expect(blocked.pendingClarifications).toEqual([
+      expect.objectContaining({
+        id: "clarification:research",
+        key: "research",
+        question: "What scope should research use?",
+      }),
+    ]);
+
+    const metaPath = path.join(dir, "sessions-ledger", `${session.sessionId}.meta.json`);
+    const mainlineLeafBefore = JSON.parse(fs.readFileSync(metaPath, "utf8")).leafEntryId;
+    const resumed = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "runs.resume",
+      params: {
+        runId: candidateRunId,
+        patch: { clarifications: { research: "pilot" } },
+      },
+    }));
+    const mainlineLeafAfter = JSON.parse(fs.readFileSync(metaPath, "utf8")).leafEntryId;
+    const ledger = readSessionLedger(dir, session.sessionId);
+    const openedEntry = ledger.entries.find((entry) =>
+      entry.type === "gate.opened" &&
+      entry.runId === candidateRunId &&
+      entry.payload &&
+      typeof entry.payload === "object" &&
+      (entry.payload as Record<string, unknown>).gateId === "clarification:research"
+    );
+    const resolvedEntry = ledger.entries.find((entry) =>
+      entry.type === "gate.resolved" &&
+      entry.runId === candidateRunId &&
+      entry.payload &&
+      typeof entry.payload === "object" &&
+      (entry.payload as Record<string, unknown>).gateId === "clarification:research"
+    );
+    const entriesById = new Map(ledger.entries.map((entry) => [entry.id, entry]));
+    const ancestorIdsFor = (entryId: string | undefined): string[] => {
+      const ancestorIds: string[] = [];
+      let cursor = entryId;
+      while (cursor) {
+        ancestorIds.push(cursor);
+        cursor = entriesById.get(cursor)?.parentId;
+      }
+      return ancestorIds;
+    };
+    const resolvedAncestorIds = ancestorIdsFor(resolvedEntry?.id);
+    const candidateLeafAfterResume = ledger.entries
+      .filter((entry) => entry.runId === candidateRunId && ancestorIdsFor(entry.id).includes(resolvedEntry?.id ?? ""))
+      .at(-1);
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.pendingClarifications).toEqual([]);
+    expect(resumed.events.map((event) => event.type)).toContain("clarification.resolved");
+    expect(mainlineLeafAfter).toBe(mainlineLeafBefore);
+    expect(openedEntry).toBeTruthy();
+    expect(resolvedEntry).toMatchObject({
+      payload: {
+        gateId: "clarification:research",
+        status: "resolved",
+        resolvedAt: FIXED_TIME,
+      },
+    });
+    expect(resolvedEntry?.parentId).not.toBe(mainlineLeafAfter);
+    expect(resolvedAncestorIds).toContain(openedEntry?.id);
+    expect(deriveSessionProjection(RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      leafEntryId: mainlineLeafAfter,
+      entries: ledger.entries,
+    })).runs.map((run) => run.runId)).toEqual([]);
+    expect(deriveSessionProjection(RuntimeSessionLedgerSchema.parse({
+      sessionId: session.sessionId,
+      leafEntryId: candidateLeafAfterResume?.id,
+      entries: ledger.entries,
+    })).latestSnapshot?.pendingClarifications).toEqual([]);
   });
 
   it("adopts a durable branch candidate after reloading the runtime store", async () => {

@@ -129,6 +129,12 @@ describe("approved tool resume completion", () => {
     expect(resumed.planList).toEqual([
       { step: "Verify the approved change", status: "completed" },
     ]);
+    expect(resumed.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
+      status: "succeeded",
+      actionId: "run-approved:action-write",
+      toolId: "file.write",
+    });
+    expect(resumed.toolCalls.filter((call) => call.id === "run-approved:tool-call-write")).toHaveLength(1);
     expect(resumed.events.map((event) => event.type)).toContain("plan_list.updated");
     expect(resumed.events.map((event) => event.type)).toContain("run.done");
     expect(resumed.events.map((event) => event.type)).not.toContain("run.failed");

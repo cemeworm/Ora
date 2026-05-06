@@ -89,6 +89,14 @@ describe("runtime plan list completion guard", () => {
       { step: "Implement guard", status: "completed" },
       { step: "Verify regression", status: "completed" },
     ]);
+    const planListEvents = snapshot.events.filter((event) => event.type === "plan_list.updated");
+    expect(planListEvents.at(-1)?.payload).toMatchObject({ plan: snapshot.planList });
+    expect(snapshot.events.map((event) => event.seq)).toEqual(snapshot.events.map((_, index) => index));
+    const checkpoint = snapshot.checkpoints[0];
+    expect(checkpoint).toBeDefined();
+    const checkpointEvent = snapshot.events.find((event) => event.type === "checkpoint.created");
+    expect(checkpointEvent).toBeDefined();
+    expect(checkpoint?.eventSeq).toBe(checkpointEvent?.seq);
     expect(snapshot.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

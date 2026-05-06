@@ -14,6 +14,10 @@ import { PackageManager } from "../src/package-manager.js";
 
 const cleanupPaths: string[] = [];
 
+function readRuntimeToolExecutorSource(): string {
+  return fs.readFileSync(path.resolve(process.cwd(), "src/harness/runtime-tool-executor.ts"), "utf8");
+}
+
 function createWorkspace() {
   const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ora-tool-test-"));
   cleanupPaths.push(rootPath);
@@ -75,6 +79,28 @@ describe("RuntimeToolExecutor", () => {
     const implementedDescriptors = MVP_TOOLS.filter((tool) => tool.implemented !== false);
 
     expect(implementedDescriptors.map((tool) => tool.id).sort()).toEqual([...implementedIds].sort());
+  });
+
+  it("keeps built-in runtime tool ids backed by executable definitions", () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    const definitions = (executor as unknown as { definitions: Map<string, { execute?: unknown }> }).definitions;
+
+    const missingDefinitions = IMPLEMENTED_RUNTIME_TOOL_IDS.filter((toolId) => !definitions.has(toolId));
+    const missingExecutors = IMPLEMENTED_RUNTIME_TOOL_IDS.filter((toolId) => typeof definitions.get(toolId)?.execute !== "function");
+
+    expect(missingDefinitions).toEqual([]);
+    expect(missingExecutors).toEqual([]);
+    expect(executor.enabledToolIds(IMPLEMENTED_RUNTIME_TOOL_IDS)).toEqual([...IMPLEMENTED_RUNTIME_TOOL_IDS]);
+  });
+
+  it("keeps runtime tool execution on definition dispatch without switch fallbacks", () => {
+    const source = readRuntimeToolExecutorSource();
+    const executeWithMetadata = source.match(/async executeWithMetadata[\s\S]*?\n  private resolveDescriptorRiskLevel/);
+
+    expect(executeWithMetadata?.[0]).toContain("const definition = this.definitions.get(effectiveCall.tool)");
+    expect(executeWithMetadata?.[0]).toContain("await definition.execute(effectiveCall.args, this.executionContext(options))");
+    expect(executeWithMetadata?.[0]).not.toMatch(/\bswitch\s*\(/);
+    expect(executeWithMetadata?.[0]).not.toMatch(/\bcase\s+['\"`][a-zA-Z0-9_.-]+['\"`]\s*:/);
   });
 
   it("keeps runtime tool definitions in an O(1) registry snapshot", () => {

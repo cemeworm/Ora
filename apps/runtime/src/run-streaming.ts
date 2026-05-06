@@ -66,9 +66,13 @@ function projectStreamingEvent(
 
   if (event.type === "action.updated" && isRecord(event.payload.record)) {
     const action = event.payload.record as StateSnapshot["actions"][number];
+    const pendingApprovals = action.status === "approval_required"
+      ? addUnique(snapshot.pendingApprovals, action.id)
+      : snapshot.pendingApprovals.filter((pendingActionId) => pendingActionId !== action.id);
     return {
       ...snapshot,
       actions: upsertById(snapshot.actions, action),
+      pendingApprovals,
     };
   }
 

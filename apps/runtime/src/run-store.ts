@@ -62,7 +62,6 @@ import {
   RunForkParamsSchema,
   RunHandle,
   type RunLatencyMark,
-  RunResumeParamsSchema,
   RunStreamParamsSchema,
   RunTrail,
   RunTrailParamsSchema,
@@ -75,7 +74,6 @@ import {
   SessionBranchGroupGetParamsSchema,
   SessionBranchGroupListParamsSchema,
   SessionBranchGroupSchema,
-  SessionPlanDecisionResolveParamsSchema,
   SessionDetail,
   SessionSummary,
   SessionSummarySchema,
@@ -144,6 +142,14 @@ import { ModeSpecFileStore } from "./modes.js";
 import { JsonFileRuntimePersistenceBackend } from "./persistence/json-file-backend.js";
 import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import { StoreManifestSchema } from "./persistence/types.js";
+import { PlanDecisionService } from "./plan-decision-service.js";
+import { RuntimeGateService } from "./runtime-gate-service.js";
+import type { RuntimeGateResolution } from "./runtime-gate-service.js";
+import {
+  RunResumeService,
+  type RunResumeStrategy,
+} from "./run-resume-service.js";
+import { RunStartService } from "./run-start-service.js";
 import type {
   RuntimePersistenceBackend,
   StoreManifest,
@@ -172,10 +178,7 @@ import {
   type ModeStudioStoreDeps
 } from "./mode-studio-store.js";
 import {
-  approvedActionsForResume,
   currentPendingClarifications,
-  hasKernelResumeWork,
-  parseResumePatch,
   rebaseRunEvent,
   resumedInputWithClarifications,
   runningSnapshotForApprovedActions
@@ -187,9 +190,9 @@ import {
 import {
   applyStreamingRunEvent,
   createStreamingFailure,
-  publishRunStream,
-  shouldFlushStreamingEvent
+  publishRunStream
 } from "./run-streaming.js";
+import { RunStreamingService } from "./run-streaming-service.js";
 import {
   applyNonKernelResumeApprovals,
   beginNonKernelResume,
@@ -333,6 +336,11 @@ export class LocalRunStore {
   private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
   private readonly channelService: ChannelService;
   private readonly automationService: AutomationService;
+  private readonly planDecisionService: PlanDecisionService;
+  private readonly runResumeService: RunResumeService;
+  private readonly runStartService: RunStartService;
+  private readonly runStreamingService: RunStreamingService;
+  private readonly runtimeGateService = new RuntimeGateService();
   private readonly selfIterationCuratorTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, RuntimeSessionReadModel>();
@@ -387,6 +395,34 @@ export class LocalRunStore {
       startStreamingRun: (params, options) => this.startStreamingRun(params, options),
       listProjects: () => this.listProjects(),
       agentExists: (agentId) => this.agentExists(agentId),
+    });
+    this.planDecisionService = new PlanDecisionService({
+      now: () => this.now(),
+      getSessionOrThrow: (sessionId) => this.getSessionOrThrow(sessionId),
+      getRunOrThrow: (runId) => this.getRunOrThrow(runId),
+      normalizeSnapshotForPersistence: (snapshot) => this.normalizeSnapshotForPersistence(snapshot),
+      isLedgerBackedSession: (sessionId) => this.isLedgerBackedSession(sessionId),
+      appendSessionLedgerEntry: (sessionId, entry) => this.appendSessionLedgerEntry(sessionId, entry),
+      refreshSessionFromLedger: (sessionId) => this.refreshSessionFromLedger(sessionId),
+      saveManifest: () => this.backend.saveManifest(this.manifest),
+      cacheRun: (snapshot, syncSession) => this.cacheRun(snapshot, syncSession),
+      getSession: (params) => this.getSession(params),
+    });
+    this.runResumeService = new RunResumeService({
+      getRunOrThrow: (runId) => this.getRunOrThrow(runId),
+    });
+    this.runStartService = new RunStartService({
+      now: () => this.now(),
+      ensureSessionForRun: (sessionId, input) => this.ensureSessionForRun(sessionId, input),
+      enrichInputForSession: (input, session) => this.enrichInputForSession(input, session),
+      modeSelectionDeps: () => this.modeSelectionDeps(),
+      nextRunId: () => this.nextRunId(),
+      nextTurnIndex: (sessionId) => this.nextTurnIndex(sessionId),
+    });
+    this.runStreamingService = new RunStreamingService({
+      cacheRun: (snapshot, flush) => this.cacheRun(snapshot, flush, { deferInitialTitle: true }),
+      appendRuntimeEventBatchToLedger: (snapshot, events, status) =>
+        this.appendRuntimeEventBatchToLedger(snapshot, events, status),
     });
     const loaded = this.backend.load();
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
@@ -992,70 +1028,7 @@ export class LocalRunStore {
   }
 
   resolvePlanDecision(params: unknown): SessionDetail {
-    const parsed = SessionPlanDecisionResolveParamsSchema.parse(params);
-    const session = this.getSessionOrThrow(parsed.sessionId);
-    const latestRunId = session.latestRunId;
-    if (!latestRunId) {
-      throw new OraRuntimeError(`Session '${parsed.sessionId}' has no run to resolve.`, -32004, {
-        sessionId: parsed.sessionId,
-      });
-    }
-    const snapshot = this.getRunOrThrow(latestRunId);
-    const existing = snapshot.planDecisions.find((decision) => decision.id === parsed.decisionId);
-    if (!existing) {
-      throw new OraRuntimeError(`Plan decision '${parsed.decisionId}' does not exist.`, -32004, {
-        sessionId: parsed.sessionId,
-        decisionId: parsed.decisionId,
-      });
-    }
-    const now = this.now();
-    const updatedSnapshot = this.normalizeSnapshotForPersistence(StateSnapshotSchema.parse({
-      ...snapshot,
-      planDecisions: snapshot.planDecisions.map((decision) =>
-        decision.id === parsed.decisionId
-          ? {
-              ...decision,
-              status: parsed.status,
-              resolvedAt: now,
-            }
-          : decision
-      ),
-      updatedAt: Math.max(snapshot.updatedAt, now),
-    }));
-    if (this.isLedgerBackedSession(parsed.sessionId)) {
-      this.appendSessionLedgerEntry(parsed.sessionId, {
-        id: `${latestRunId}:gate:${parsed.decisionId}:resolved`,
-        type: "gate.resolved",
-        runId: latestRunId,
-        turnIndex: snapshot.turnIndex ?? 1,
-        createdAt: now,
-        payload: {
-          gateId: parsed.decisionId,
-          status: parsed.status,
-          resolvedAt: now,
-        },
-      });
-      if (parsed.status === "accepted" && existing.planContent?.trim()) {
-        this.appendSessionLedgerEntry(parsed.sessionId, {
-          id: `${latestRunId}:handoff:${parsed.decisionId}`,
-          type: "handoff.accepted_plan",
-          runId: latestRunId,
-          turnIndex: snapshot.turnIndex ?? 1,
-          createdAt: now,
-          payload: {
-            decisionId: parsed.decisionId,
-            sourceRunId: latestRunId,
-            planContent: existing.planContent.trim(),
-            acceptedAt: now,
-          },
-        });
-      }
-      this.refreshSessionFromLedger(parsed.sessionId);
-      this.backend.saveManifest(this.manifest);
-      return this.getSession({ sessionId: parsed.sessionId });
-    }
-    this.cacheRun(updatedSnapshot, true);
-    return this.getSession({ sessionId: parsed.sessionId });
+    return this.planDecisionService.resolve(params);
   }
 
   listRuns(params: unknown = {}): RunSummary[] {
@@ -1225,16 +1198,19 @@ export class LocalRunStore {
 
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
-    const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const input = this.enrichInputForSession(UserTaskInputSchema.parse({
-      ...parsed.input,
-      createdAt: parsed.input.createdAt ?? this.now()
-    }), session);
-    const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
-    const { modeSpec, definition } = resolved;
-    const runId = this.nextRunId();
-    const turnIndex = this.nextTurnIndex(session.sessionId);
+    const {
+      session,
+      input,
+      fullConfig,
+      modeSpec,
+      definition,
+      runId,
+      turnIndex,
+    } = await this.runStartService.prepare({
+      sessionId: parsed.sessionId,
+      input: parsed.input,
+      config: parsed.config,
+    });
     if (turnIndex === 1) {
       const earlyTitle = await generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title);
       if (earlyTitle) {
@@ -1328,24 +1304,28 @@ export class LocalRunStore {
     };
     markRuntimeLatency("startStreamingRun.enter");
     const parsed = StartRunParamsSchema.parse(params);
-    const session = this.ensureSessionForRun(parsed.sessionId, parsed.input);
-    const input = this.enrichInputForSession(UserTaskInputSchema.parse({
-      ...parsed.input,
-      createdAt: parsed.input.createdAt ?? this.now()
-    }), session);
-    const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
+    const {
+      session,
+      input,
+      resolved,
+      fullConfig,
+      modeSpec,
+      definition,
+      runId,
+      turnIndex,
+    } = await this.runStartService.prepare({
+      sessionId: parsed.sessionId,
+      input: parsed.input,
+      config: parsed.config,
+    });
     markRuntimeLatency("modeSelection.done", {
       modeSelection: resolved.fullConfig.modeSelection,
-      modeId: resolved.modeSpec.id,
+      modeId: modeSpec.id,
     });
-    const { modeSpec, definition } = resolved;
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     markRuntimeLatency("memoryPrompt.done", {
       hasMemoryPromptOverlay: typeof fullConfig.metadata.memoryPromptOverlay === "string",
       activeMemoryDecision: isRecord(fullConfig.metadata.activeMemory) ? fullConfig.metadata.activeMemory.decision : undefined,
     });
-    const runId = this.nextRunId();
-    const turnIndex = this.nextTurnIndex(session.sessionId);
     if (turnIndex === 1 && fullConfig.metadata.branchRole !== "candidate") {
       generateSessionTitleFromPrompt(input.prompt, fullConfig, session.title).then((earlyTitle) => {
         if (earlyTitle) this.updateSessionTitle(session.sessionId, earlyTitle);
@@ -1391,39 +1371,20 @@ export class LocalRunStore {
     this.cacheRun(liveSnapshot, false, { deferInitialTitle: true });
     const abortController = new AbortController();
     this.activeStreamingAbortControllers.set(runId, abortController);
-    let ledgeredEventCount = 0;
-    const flushLedgerEvents = (status = liveSnapshot.status) => {
-      const nextEvents = liveSnapshot.events.slice(ledgeredEventCount);
-      if (nextEvents.length === 0) {
-        return;
-      }
-      liveSnapshot = this.appendRuntimeEventBatchToLedger(liveSnapshot, nextEvents, status);
-      ledgeredEventCount = liveSnapshot.events.length;
-    };
-
-    const publishStream = (events: OraEventEnvelope[], snapshot?: StateSnapshot) => {
-      publishRunStream({
-        onStream: options.onStream,
-        runId,
-        events,
-        liveSnapshot,
-        snapshot,
-      });
-    };
+    const streamingSession = this.runStreamingService.createSession({
+      runId,
+      liveSnapshot,
+      ledgeredEventCount: 0,
+      onStream: options.onStream,
+      shouldIgnoreEvent: () => abortController.signal.aborted || this.isRunCancelled(runId),
+      applyEvent: (snapshot, event) => applyStreamingRunEvent(
+        markLatencyForRunEvent(snapshot, event, this.now()),
+        event,
+      ),
+    });
 
     const applyLiveEvent = (event: OraEventEnvelope) => {
-      if (abortController.signal.aborted || this.isRunCancelled(runId)) {
-        return;
-      }
-      liveSnapshot = markLatencyForRunEvent(liveSnapshot, event, this.now());
-      liveSnapshot = applyStreamingRunEvent(liveSnapshot, event);
-      this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
-        deferInitialTitle: true,
-      });
-      if (shouldFlushStreamingEvent(event) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
-        flushLedgerEvents();
-      }
-      publishStream([event]);
+      liveSnapshot = streamingSession.applyLiveEvent(event) ?? liveSnapshot;
     };
 
     const runKernel = () => executeTracedKernelRun({
@@ -1453,24 +1414,25 @@ export class LocalRunStore {
       this.activeStreamingAbortControllers.delete(runId);
       const cancelled = this.cancelledSnapshot(runId);
       if (cancelled) {
-        liveSnapshot = cancelled;
-        publishStream([], cancelled);
+        liveSnapshot = streamingSession.replaceSnapshot(cancelled);
+        streamingSession.publish([], cancelled);
         return;
       }
       const finalSnapshot = this.normalizeSnapshotForPersistence(
         attachTraceMetadata(this.withSnapshotContextState(withRunLatencyMarks(snapshot, liveSnapshot.latency?.marks ?? []))),
       );
-      liveSnapshot = finalSnapshot;
-      flushLedgerEvents(finalSnapshot.status);
+      liveSnapshot = streamingSession.replaceSnapshot(finalSnapshot);
+      liveSnapshot = streamingSession.flushLedgerEvents(finalSnapshot.status);
       const projectedSnapshot = this.appendAssistantMessageToLedger(finalSnapshot);
       await this.persistRunWithGeneratedTitle(projectedSnapshot);
-      publishStream([], projectedSnapshot);
+      liveSnapshot = streamingSession.replaceSnapshot(projectedSnapshot);
+      streamingSession.publish([], projectedSnapshot);
     }).catch(async (error) => {
       this.activeStreamingAbortControllers.delete(runId);
       const cancelled = this.cancelledSnapshot(runId);
       if (cancelled) {
-        liveSnapshot = cancelled;
-        publishStream([], cancelled);
+        liveSnapshot = streamingSession.replaceSnapshot(cancelled);
+        streamingSession.publish([], cancelled);
         return;
       }
       const failure = createStreamingFailure({
@@ -1480,11 +1442,12 @@ export class LocalRunStore {
         error,
         failedAt: this.now(),
       });
-      liveSnapshot = attachTraceMetadata(failure.snapshot);
-      flushLedgerEvents(liveSnapshot.status);
+      liveSnapshot = streamingSession.replaceSnapshot(attachTraceMetadata(failure.snapshot));
+      liveSnapshot = streamingSession.flushLedgerEvents(liveSnapshot.status);
       const projectedSnapshot = this.appendAssistantMessageToLedger(liveSnapshot);
       await this.persistRunWithGeneratedTitle(projectedSnapshot);
-      publishStream([failure.event], projectedSnapshot);
+      liveSnapshot = streamingSession.replaceSnapshot(projectedSnapshot);
+      streamingSession.publish([failure.event], projectedSnapshot);
       });
     }, 0);
 
@@ -1500,6 +1463,43 @@ export class LocalRunStore {
       buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),
     };
+  }
+
+  private assertResumeStrategyBoundary(params: {
+    snapshot: StateSnapshot;
+    approvedActionIds: string[];
+    hasKernelWork: boolean;
+    strategy: RunResumeStrategy;
+  }): void {
+    const continuationActionIds = approvedToolContinuationActions(
+      params.snapshot,
+      params.approvedActionIds,
+    ).map((action) => action.id);
+    const sameIds = (left: string[], right: string[]) =>
+      left.length === right.length && left.every((value, index) => value === right[index]);
+    if (!sameIds(params.strategy.approvedActionIds, params.approvedActionIds)) {
+      throw new OraRuntimeError("Run resume strategy approved actions diverged from LocalRunStore sources.", -32004, {
+        runId: params.snapshot.runId,
+      });
+    }
+    if (continuationActionIds.length > 0) {
+      if (
+        params.strategy.kind !== "approved_tool_continuation" ||
+        !sameIds(params.strategy.continuationActionIds, continuationActionIds) ||
+        params.strategy.continueKernelAfterTool !== params.hasKernelWork
+      ) {
+        throw new OraRuntimeError("Run resume strategy approved-tool boundary diverged from LocalRunStore sources.", -32004, {
+          runId: params.snapshot.runId,
+        });
+      }
+      return;
+    }
+    const expectedKind = params.hasKernelWork ? "kernel" : "non_kernel";
+    if (params.strategy.kind !== expectedKind) {
+      throw new OraRuntimeError("Run resume strategy kind diverged from LocalRunStore sources.", -32004, {
+        runId: params.snapshot.runId,
+      });
+    }
   }
 
   private async continueKernelAfterApprovedTool(
@@ -1567,11 +1567,17 @@ export class LocalRunStore {
   }
 
   async resumeStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
-    const parsed = RunResumeParamsSchema.parse(params);
-    const snapshot = this.getRunOrThrow(parsed.runId);
-    const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
-    const hasKernelWork = hasKernelResumeWork(snapshot);
-    this.appendGateResolutionsForResume(snapshot, clarificationPatch, approvedActionIds);
+    const {
+      parsed,
+      snapshot,
+      clarificationPatch,
+      approvedActionIds,
+      approvedActions,
+      gateResolutions,
+      hasKernelWork,
+      strategy,
+    } = this.runResumeService.prepare(params);
+    this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, hasKernelWork, strategy });
 
     if (!hasKernelWork) {
       const resumed = await this.resumeRun(params);
@@ -1584,6 +1590,7 @@ export class LocalRunStore {
       });
       return toRunHandle(resumed);
     }
+    this.appendGateResolutionsForResume(snapshot, gateResolutions);
 
     const modeSpec = snapshot.modeSpec;
     if (!modeSpec) {
@@ -1602,26 +1609,14 @@ export class LocalRunStore {
     this.persistRun(liveSnapshot);
     const abortController = new AbortController();
     this.activeStreamingAbortControllers.set(snapshot.runId, abortController);
-    let ledgeredEventCount = snapshot.events.length;
-    const flushLedgerEvents = (status = liveSnapshot.status) => {
-      const nextEvents = liveSnapshot.events.slice(ledgeredEventCount);
-      if (nextEvents.length === 0) {
-        return;
-      }
-      liveSnapshot = this.appendRuntimeEventBatchToLedger(liveSnapshot, nextEvents, status);
-      ledgeredEventCount = liveSnapshot.events.length;
-    };
-
-    const publishStream = (events: OraEventEnvelope[], streamSnapshot?: StateSnapshot) => {
-      publishRunStream({
-        onStream: options.onStream,
-        runId: snapshot.runId,
-        events,
-        liveSnapshot,
-        snapshot: streamSnapshot,
-      });
-    };
-    publishStream([], liveSnapshot);
+    const streamingSession = this.runStreamingService.createSession({
+      runId: snapshot.runId,
+      liveSnapshot,
+      ledgeredEventCount: snapshot.events.length,
+      onStream: options.onStream,
+      shouldIgnoreEvent: () => abortController.signal.aborted || this.isRunCancelled(snapshot.runId),
+    });
+    streamingSession.publish([], liveSnapshot);
 
     if (approvedToolContinuationActions(snapshot, approvedActionIds).length > 0) {
       void completeApprovedToolContinuation(
@@ -1630,17 +1625,7 @@ export class LocalRunStore {
         { reason: parsed.reason, patch: parsed.patch },
         this.approvedFileWriteResumeDeps(),
         (event, nextSnapshot) => {
-          if (abortController.signal.aborted || this.isRunCancelled(snapshot.runId)) {
-            return;
-          }
-          liveSnapshot = nextSnapshot;
-          this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(event), {
-            deferInitialTitle: true,
-          });
-          if (shouldFlushStreamingEvent(event) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
-            flushLedgerEvents();
-          }
-          publishStream([event], liveSnapshot);
+          liveSnapshot = streamingSession.acceptSnapshotForEvent(event, nextSnapshot) ?? liveSnapshot;
         },
       ).then(async (result) => {
         if (!result) {
@@ -1650,14 +1635,14 @@ export class LocalRunStore {
         const cancelled = this.cancelledSnapshot(snapshot.runId);
         if (cancelled) {
           this.activeStreamingAbortControllers.delete(snapshot.runId);
-          liveSnapshot = cancelled;
-          publishStream([], cancelled);
+          liveSnapshot = streamingSession.replaceSnapshot(cancelled);
+          streamingSession.publish([], cancelled);
           return;
         }
         let completedSnapshot: StateSnapshot;
         if (result.kind === "continue") {
           const continuationSnapshot = result.snapshot;
-          liveSnapshot = continuationSnapshot;
+          liveSnapshot = streamingSession.replaceSnapshot(continuationSnapshot);
           completedSnapshot = await this.continueKernelAfterApprovedTool(
             snapshot,
             continuationSnapshot,
@@ -1665,18 +1650,8 @@ export class LocalRunStore {
             approvedActionIds,
             abortController.signal,
             (event, baseSeq) => {
-              if (abortController.signal.aborted || this.isRunCancelled(snapshot.runId)) {
-                return;
-              }
               const rebasedEvent = rebaseRunEvent(event, snapshot.runId, baseSeq);
-              liveSnapshot = applyStreamingRunEvent(liveSnapshot, rebasedEvent);
-              this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(rebasedEvent), {
-                deferInitialTitle: true,
-              });
-              if (shouldFlushStreamingEvent(rebasedEvent) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
-                flushLedgerEvents();
-              }
-              publishStream([rebasedEvent]);
+              liveSnapshot = streamingSession.applyLiveEvent(rebasedEvent) ?? liveSnapshot;
             },
           );
         } else {
@@ -1685,21 +1660,22 @@ export class LocalRunStore {
         this.activeStreamingAbortControllers.delete(snapshot.runId);
         const cancelledAfterContinuation = this.cancelledSnapshot(snapshot.runId);
         if (cancelledAfterContinuation) {
-          liveSnapshot = cancelledAfterContinuation;
-          publishStream([], cancelledAfterContinuation);
+          liveSnapshot = streamingSession.replaceSnapshot(cancelledAfterContinuation);
+          streamingSession.publish([], cancelledAfterContinuation);
           return;
         }
         liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
           this.withResumeResolutionEvents(completedSnapshot, snapshot, clarificationPatch, approvedActionIds),
         ));
         await this.persistRunWithGeneratedTitle(liveSnapshot);
-        publishStream([], liveSnapshot);
+        liveSnapshot = streamingSession.replaceSnapshot(liveSnapshot);
+        streamingSession.publish([], liveSnapshot);
       }).catch(async (error) => {
         this.activeStreamingAbortControllers.delete(snapshot.runId);
         const cancelled = this.cancelledSnapshot(snapshot.runId);
         if (cancelled) {
-          liveSnapshot = cancelled;
-          publishStream([], cancelled);
+          liveSnapshot = streamingSession.replaceSnapshot(cancelled);
+          streamingSession.publish([], cancelled);
           return;
         }
         const failure = createStreamingFailure({
@@ -1713,28 +1689,18 @@ export class LocalRunStore {
           attachTraceMetadata(failure.snapshot),
         ));
         await this.persistRunWithGeneratedTitle(liveSnapshot);
-        publishStream([failure.event], liveSnapshot);
+        liveSnapshot = streamingSession.replaceSnapshot(liveSnapshot);
+        streamingSession.publish([failure.event], liveSnapshot);
       });
       return toRunHandle(liveSnapshot);
     }
 
-    const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
     const resumedInput = resumedInputWithClarifications(snapshot.input, clarificationPatch);
     const definition = modeSpecToPatternDefinition(modeSpec);
     const baseSeq = snapshot.events.length;
     const applyLiveEvent = (event: OraEventEnvelope) => {
-      if (abortController.signal.aborted || this.isRunCancelled(snapshot.runId)) {
-        return;
-      }
       const rebasedEvent = rebaseRunEvent(event, snapshot.runId, baseSeq);
-      liveSnapshot = applyStreamingRunEvent(liveSnapshot, rebasedEvent);
-      this.cacheRun(liveSnapshot, shouldFlushStreamingEvent(rebasedEvent), {
-        deferInitialTitle: true,
-      });
-      if (shouldFlushStreamingEvent(rebasedEvent) || liveSnapshot.events.length - ledgeredEventCount >= 50) {
-        flushLedgerEvents();
-      }
-      publishStream([rebasedEvent]);
+      liveSnapshot = streamingSession.applyLiveEvent(rebasedEvent) ?? liveSnapshot;
     };
 
     void executeTracedKernelResume({
@@ -1768,8 +1734,8 @@ export class LocalRunStore {
       this.activeStreamingAbortControllers.delete(snapshot.runId);
       const cancelled = this.cancelledSnapshot(snapshot.runId);
       if (cancelled) {
-        liveSnapshot = cancelled;
-        publishStream([], cancelled);
+        liveSnapshot = streamingSession.replaceSnapshot(cancelled);
+        streamingSession.publish([], cancelled);
         return;
       }
       const finalSnapshot = this.normalizeSnapshotForPersistence(this.appendResolvedClarificationEvents(
@@ -1780,15 +1746,16 @@ export class LocalRunStore {
       liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
         this.withResumeResolutionEvents(finalSnapshot, snapshot, clarificationPatch, approvedActionIds),
       ));
-      ledgeredEventCount = liveSnapshot.events.length;
+      streamingSession.replaceSnapshot(liveSnapshot);
+      streamingSession.markLedgerSynced();
       await this.persistRunWithGeneratedTitle(liveSnapshot);
-      publishStream([], liveSnapshot);
+      streamingSession.publish([], liveSnapshot);
     }).catch(async (error) => {
       this.activeStreamingAbortControllers.delete(snapshot.runId);
       const cancelled = this.cancelledSnapshot(snapshot.runId);
       if (cancelled) {
-        liveSnapshot = cancelled;
-        publishStream([], cancelled);
+        liveSnapshot = streamingSession.replaceSnapshot(cancelled);
+        streamingSession.publish([], cancelled);
         return;
       }
       const failure = createStreamingFailure({
@@ -1802,7 +1769,8 @@ export class LocalRunStore {
         attachTraceMetadata(failure.snapshot),
       ));
       await this.persistRunWithGeneratedTitle(liveSnapshot);
-      publishStream([failure.event], liveSnapshot);
+      liveSnapshot = streamingSession.replaceSnapshot(liveSnapshot);
+      streamingSession.publish([failure.event], liveSnapshot);
     });
 
     return toRunHandle(liveSnapshot);
@@ -1972,11 +1940,18 @@ export class LocalRunStore {
   }
 
   async resumeRun(params: unknown): Promise<StateSnapshot> {
-    const parsed = RunResumeParamsSchema.parse(params);
-    const snapshot = this.getRunOrThrow(parsed.runId);
-    const { clarificationPatch, approvedActionIds } = parseResumePatch(parsed.patch);
-    const approvedActions = approvedActionsForResume(snapshot, approvedActionIds);
-    this.appendGateResolutionsForResume(snapshot, clarificationPatch, approvedActionIds);
+    const {
+      parsed,
+      snapshot,
+      clarificationPatch,
+      approvedActionIds,
+      approvedActions,
+      gateResolutions,
+      hasKernelWork,
+      strategy,
+    } = this.runResumeService.prepare(params);
+    this.assertResumeStrategyBoundary({ snapshot, approvedActionIds, hasKernelWork, strategy });
+    this.appendGateResolutionsForResume(snapshot, gateResolutions);
     let liveSnapshot = this.markResumeRunning(snapshot, approvedActionIds);
 
     try {
@@ -2001,8 +1976,6 @@ export class LocalRunStore {
         await this.persistRunWithGeneratedTitle(projected);
         return projected;
       }
-      const hasKernelWork = hasKernelResumeWork(snapshot);
-
       if (hasKernelWork) {
         const modeSpec = snapshot.modeSpec;
         if (!modeSpec) {
@@ -2583,8 +2556,7 @@ export class LocalRunStore {
     if (!snapshot.sessionId || events.length === 0) {
       return snapshot;
     }
-    const candidate = snapshot.config.metadata.branchRole === "candidate";
-    const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
+    const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:events-${events[0]?.seq ?? snapshot.events.length}-${events.at(-1)?.seq ?? snapshot.events.length}`,
       type: "runtime.event_batch",
       runId: snapshot.runId,
@@ -2597,9 +2569,8 @@ export class LocalRunStore {
         error: snapshot.error,
         snapshot,
       },
-    }, candidate ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
-    if (candidate) {
-      this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+    });
+    if (snapshot.config.metadata.branchRole === "candidate") {
       const projected = this.ledgerSnapshotOrFallback(snapshot, entry.id);
       this.runs.set(projected.runId, projected);
       return projected;
@@ -2616,11 +2587,11 @@ export class LocalRunStore {
     }
     const candidate = snapshot.config.metadata.branchRole === "candidate";
     const ledger = this.backend.getSessionLedger(snapshot.sessionId);
-    const candidateLeaf = candidate ? this.branchCandidateLeafByRun.get(snapshot.runId) : undefined;
+    const candidateLeaf = candidate ? this.candidateLedgerLeaf(snapshot) : undefined;
     const existing = ledger ? deriveRunSnapshot(ledger, snapshot.runId, candidateLeaf ?? ledger.leafEntryId) : undefined;
     const existingEventCount = existing?.events.length ?? 0;
     const events = snapshot.events.slice(existingEventCount);
-    const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
+    const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:update-${snapshot.updatedAt}-${ledger?.entries.length ?? 0}`,
       type: "runtime.event_batch",
       runId: snapshot.runId,
@@ -2633,11 +2604,12 @@ export class LocalRunStore {
         error: snapshot.error,
         snapshot,
       },
-    }, candidate ? { updateLeaf: false, parentId: candidateLeaf } : undefined);
+    }, { candidateParentId: candidateLeaf });
     if (candidate) {
-      this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
-      return this.ledgerSnapshotOrFallback(snapshot, entry.id);
+      const factLeafEntryId = this.appendSnapshotBusinessFactsToLedger(snapshot);
+      return this.ledgerSnapshotOrFallback(snapshot, factLeafEntryId ?? entry.id);
     }
+    this.appendSnapshotBusinessFactsToLedger(snapshot);
     return this.ledgerSnapshotOrFallback(snapshot);
   }
 
@@ -2652,40 +2624,35 @@ export class LocalRunStore {
 
   private appendGateResolutionsForResume(
     snapshot: StateSnapshot,
-    clarificationPatch: Record<string, unknown>,
-    approvedActionIds: string[],
+    gateResolutions: RuntimeGateResolution[],
   ): void {
     if (!snapshot.sessionId || !this.isLedgerBackedSession(snapshot.sessionId)) {
       return;
     }
-    const now = this.now();
-    const resolvedClarificationIds = new Set(
-      snapshot.pendingClarifications
-        .filter((clarification) =>
-          clarificationPatch[clarification.id] !== undefined || clarificationPatch[clarification.key] !== undefined
-        )
-        .map((clarification) => clarification.id),
-    );
-    for (const clarificationId of resolvedClarificationIds) {
-      this.appendSessionLedgerEntry(snapshot.sessionId, {
-        id: `${snapshot.runId}:gate:${clarificationId}:resolved-${now}`,
-        type: "gate.resolved",
+    const gateLifecycle = this.runtimeGateService.resolveResumeGateLifecycle({
+      snapshot,
+      resolutions: gateResolutions,
+      resolvedAt: this.now(),
+    });
+    if (gateLifecycle.kind !== "resume_resolve") {
+      throw new OraRuntimeError("Cannot append non-resume gate lifecycle facts from resume.", -32004, {
         runId: snapshot.runId,
-        turnIndex: snapshot.turnIndex ?? 1,
-        createdAt: now,
-        payload: { gateId: clarificationId, status: "resolved", resolvedAt: now },
+        kind: gateLifecycle.kind,
       });
     }
-    if (approvedActionIds.length > 0) {
-      this.appendSessionLedgerEntry(snapshot.sessionId, {
-        id: `${snapshot.runId}:gate:approval:resolved-${now}`,
-        type: "gate.resolved",
-        runId: snapshot.runId,
-        turnIndex: snapshot.turnIndex ?? 1,
-        createdAt: now,
-        payload: { gateId: `${snapshot.runId}:approval`, status: "accepted", resolvedAt: now },
-      });
+    for (const entry of gateLifecycle.entries) {
+      this.appendGateResolutionForResume(snapshot, entry);
     }
+  }
+
+  private appendGateResolutionForResume(
+    snapshot: StateSnapshot,
+    entry: Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType },
+  ): void {
+    if (!snapshot.sessionId) {
+      return;
+    }
+    this.appendRunLedgerEntry(snapshot, entry);
   }
 
   private withResumeResolutionEvents(
@@ -2751,8 +2718,7 @@ export class LocalRunStore {
     }
     this.appendSnapshotBusinessFactsToLedger(snapshot);
     const content = assistantTextForRun(snapshot);
-    const candidate = snapshot.config.metadata.branchRole === "candidate";
-    const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
+    const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:assistant`,
       type: "assistant.message",
       runId: snapshot.runId,
@@ -2765,77 +2731,65 @@ export class LocalRunStore {
         error: snapshot.error,
         snapshot,
       },
-    }, candidate ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
-    if (candidate) {
-      this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
+    });
+    if (snapshot.config.metadata.branchRole === "candidate") {
       return this.ledgerSnapshotOrFallback(snapshot, entry.id);
     }
     return this.ledgerSnapshotOrFallback(snapshot);
   }
 
-  private appendSnapshotBusinessFactsToLedger(snapshot: StateSnapshot): void {
+  private appendSnapshotBusinessFactsToLedger(snapshot: StateSnapshot): string | undefined {
+    if (!snapshot.sessionId) {
+      return undefined;
+    }
+    this.appendOpenedGateFactsForSnapshot(snapshot);
+    return snapshot.config.metadata.branchRole === "candidate"
+      ? this.branchCandidateLeafByRun.get(snapshot.runId)
+      : undefined;
+  }
+
+  private appendOpenedGateFactsForSnapshot(snapshot: StateSnapshot): void {
     if (!snapshot.sessionId) {
       return;
     }
-    for (const clarification of snapshot.pendingClarifications) {
-      const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
-        id: `${snapshot.runId}:gate:${clarification.id}`,
-        type: "gate.opened",
+    const ledger = this.backend.getSessionLedger(snapshot.sessionId);
+    const gateLifecycle = this.runtimeGateService.openSnapshotGateLifecycle({
+      snapshot,
+      existingEntryIds: ledger?.entries.map((entry) => entry.id),
+    });
+    if (gateLifecycle.kind !== "snapshot_open") {
+      throw new OraRuntimeError("Cannot append non-snapshot gate lifecycle facts from a snapshot.", -32004, {
         runId: snapshot.runId,
-        turnIndex: snapshot.turnIndex ?? 1,
-        createdAt: clarification.requestedAt,
-        payload: {
-          gateId: clarification.id,
-          kind: "clarification",
-          pendingClarificationIds: [clarification.id],
-          clarification,
-        },
-      }, snapshot.config.metadata.branchRole === "candidate" ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
-      if (snapshot.config.metadata.branchRole === "candidate") {
-        this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
-      }
+        kind: gateLifecycle.kind,
+      });
     }
-    if (snapshot.pendingApprovals.length > 0) {
-      const pendingToolCallIds = snapshot.toolCalls
-        .filter((call) => call.actionId && snapshot.pendingApprovals.includes(call.actionId))
-        .map((call) => call.id);
-      const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
-        id: `${snapshot.runId}:gate:approval`,
-        type: "gate.opened",
+    for (const gateEntry of gateLifecycle.entries) {
+      this.appendRunLedgerEntry(snapshot, gateEntry);
+    }
+  }
+
+  private appendRunLedgerEntry(
+    snapshot: Pick<StateSnapshot, "runId" | "sessionId" | "config">,
+    entry: Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType },
+    options: { candidateParentId?: string } = {},
+  ): RuntimeSessionEntry {
+    if (!snapshot.sessionId) {
+      throw new OraRuntimeError("Cannot append a run ledger entry without a session id.", -32004, {
         runId: snapshot.runId,
-        turnIndex: snapshot.turnIndex ?? 1,
-        createdAt: snapshot.updatedAt,
-        payload: {
-          gateId: `${snapshot.runId}:approval`,
-          kind: "approval",
-          pendingActionIds: snapshot.pendingApprovals,
-          pendingToolCallIds,
-        },
-      }, snapshot.config.metadata.branchRole === "candidate" ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
-      if (snapshot.config.metadata.branchRole === "candidate") {
-        this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
-      }
+      });
     }
-    for (const decision of snapshot.planDecisions) {
-      if (decision.status !== "pending") {
-        continue;
-      }
-      const entry = this.appendSessionLedgerEntry(snapshot.sessionId, {
-        id: `${snapshot.runId}:gate:${decision.id}`,
-        type: "gate.opened",
-        runId: snapshot.runId,
-        turnIndex: snapshot.turnIndex ?? 1,
-        createdAt: decision.createdAt,
-        payload: {
-          gateId: decision.id,
-          kind: "plan_decision",
-          planDecision: decision,
-        },
-      }, snapshot.config.metadata.branchRole === "candidate" ? { updateLeaf: false, parentId: this.branchCandidateLeafByRun.get(snapshot.runId) } : undefined);
-      if (snapshot.config.metadata.branchRole === "candidate") {
-        this.branchCandidateLeafByRun.set(snapshot.runId, entry.id);
-      }
+    const candidate = snapshot.config.metadata.branchRole === "candidate";
+    const appended = this.appendSessionLedgerEntry(
+      snapshot.sessionId,
+      entry,
+      candidate
+        ? { updateLeaf: false, parentId: options.candidateParentId ?? this.candidateLedgerLeaf(snapshot) }
+        : undefined,
+    );
+    if (candidate) {
+      this.branchCandidateLeafByRun.set(snapshot.runId, appended.id);
     }
+    return appended;
   }
 
   private appendSessionLedgerEntry(
@@ -2951,9 +2905,28 @@ export class LocalRunStore {
       return undefined;
     }
     const leafEntryId = cached.config.metadata.branchRole === "candidate"
-      ? this.branchCandidateLeafByRun.get(cached.runId)
+      ? this.candidateLedgerLeaf(cached)
       : ledger.leafEntryId;
     return deriveRunSnapshot(ledger, cached.runId, leafEntryId);
+  }
+
+  private candidateLedgerLeaf(snapshot: Pick<StateSnapshot, "runId" | "sessionId">): string | undefined {
+    const cachedLeaf = this.branchCandidateLeafByRun.get(snapshot.runId);
+    const ledger = snapshot.sessionId ? this.backend.getSessionLedger(snapshot.sessionId) : undefined;
+    if (cachedLeaf && ledger?.entries.find((entry) => entry.id === cachedLeaf)?.type !== "branch.candidate_started") {
+      return cachedLeaf;
+    }
+    if (!snapshot.sessionId) {
+      return undefined;
+    }
+    const leaf = ledger?.entries
+      .filter((entry) => entry.runId === snapshot.runId && entry.type !== "branch.candidate_started")
+      .sort((a, b) => b.seq - a.seq || b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+      .at(0)?.id;
+    if (leaf) {
+      this.branchCandidateLeafByRun.set(snapshot.runId, leaf);
+    }
+    return leaf;
   }
 
   private ledgerProjectedRunSnapshot(runId: string): StateSnapshot | undefined {
@@ -3271,7 +3244,7 @@ export class LocalRunStore {
       if (projected.config.metadata.branchRole === "candidate" && projected.sessionId) {
         const ledger = this.backend.getSessionLedger(projected.sessionId);
         const leaf = ledger?.entries
-          .filter((entry) => entry.runId === runId)
+          .filter((entry) => entry.runId === runId && entry.type !== "branch.candidate_started")
           .sort((a, b) => b.seq - a.seq || b.createdAt - a.createdAt || b.id.localeCompare(a.id))
           .at(0)?.id;
         if (leaf) {

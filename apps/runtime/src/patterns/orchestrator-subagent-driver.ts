@@ -1,0 +1,311 @@
+import { orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
+import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
+import type { ModeExecutionInput } from "./mode-driver-registry.js";
+import { asText, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { runGenericModeNode } from "./generic-node-executor.js";
+import { type ExecutionBag } from "./mode-driver-helpers.js";
+
+function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
+  return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
+}
+
+function stageValues(
+  bag: ExecutionBag,
+  stage: ModeStageSpec,
+  speakerLabel: string,
+  priorTranscript: string,
+): ExecutionBag {
+  return {
+    ...bag,
+    stage,
+    stageId: stage.id,
+    stageLabel: stage.label,
+    stageInstruction: stage.instruction ?? "",
+    speakerId: stage.speakerId ?? "",
+    speakerLabel,
+    stance: stage.stance ?? "neutral",
+    priorTranscript,
+  };
+}
+
+function fallbackStagePrompt(stage: ModeStageSpec): string {
+  return [
+    "Task:\n{{prompt}}",
+    "Stage: {{stageLabel}}",
+    "Speaker: {{speakerLabel}}",
+    "Assigned stance: {{stance}}",
+    "Stage instruction:\n{{stageInstruction}}",
+    "Prior transcript:\n{{priorTranscript}}",
+    "Write only this stage's contribution. Stay faithful to the assigned role and advance the workflow.",
+  ].join("\n\n");
+}
+
+function shouldApplyStanceLock(stage: ModeStageSpec): boolean {
+  return Boolean(stage.stance && stage.stance !== "moderator" && stage.stance !== "neutral");
+}
+
+function stageSpeakerLabel(modeSpec: ModeSpec, node: ModeNodeSpec, stage: ModeStageSpec): string {
+  const profile = stage.speakerId ? modeSpec.profiles.find((candidate) => candidate.id === stage.speakerId) : undefined;
+  return stage.speakerLabel ?? profile?.label ?? node.title ?? node.label;
+}
+
+async function executePlainOrchestratorNode(
+  context: PatternExecutionContext,
+  modeSpec: ModeSpec,
+  node: ModeNodeSpec,
+  bag: ExecutionBag,
+): Promise<unknown> {
+  const agentId = node.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [node]);
+  return context.callAgent({
+    agentId,
+    planItemId: node.id,
+    title: titleForNode(node, node.label),
+    prompt: promptTemplate(
+      node,
+      runtimeFallbackPrompt(modeSpec.family, node.template),
+      bag,
+    ),
+    system: nodeSystemPrompt(context, modeSpec, node, bag),
+    customAgentId: nodeCustomAgentId(node),
+    riskLevel: node.riskLevel,
+  });
+}
+
+async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const stages = modeSpec.stages ?? [];
+  const stagesByNode = new Map<string, ModeStageSpec[]>();
+  for (const stage of stages) {
+    const nodeStages = stagesByNode.get(stage.nodeId) ?? [];
+    nodeStages.push(stage);
+    stagesByNode.set(stage.nodeId, nodeStages);
+  }
+  const layout = modeSpec.transcriptLayout;
+  const groupId = layout?.groupId ?? modeSpec.id;
+  const groupLabel = layout?.groupLabel ?? modeSpec.label;
+  const bag: ExecutionBag = { prompt };
+  const stageOutputs: Array<{ speakerLabel: string; content: string }> = [];
+  let completedNodes = 0;
+  let previousStageMessageId: string | undefined;
+
+  for (const node of nodes) {
+    completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+      const nodeStages = stagesByNode.get(node.id) ?? [];
+      if (nodeStages.length === 0) {
+        const result = await executePlainOrchestratorNode(context, modeSpec, node, bag);
+        bag[node.id] = result;
+        bag[node.template] = result;
+        return result;
+      }
+
+      let lastStageOutput: unknown;
+      for (const stage of nodeStages) {
+        const priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n") || "No prior staged transcript yet.";
+        bag.priorTranscript = priorTranscript;
+        bag.debateTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
+        const agentId = stage.speakerId ?? node.ownerAgentId ?? primaryOwnerAgentId(modeSpec, [node]);
+        const speakerLabel = stageSpeakerLabel(modeSpec, node, stage);
+        const values = stageValues(bag, stage, speakerLabel, priorTranscript);
+        const systemParts = [nodeInstructions(modeSpec, node, values)];
+        if (shouldApplyStanceLock(stage)) {
+          systemParts.push(`STANCE LOCK: You are now ${speakerLabel}. Your mandatory stance is "${stage.stance}". Every claim you make must support the ${stage.stance} position or attack the opposing position. Neutral evaluation, both-sides framing, and undermining your own side are protocol violations.`);
+        }
+        const output = await context.callAgent({
+          agentId,
+          planItemId: node.id,
+          title: node.template === "synthesize" ? titleForNode(node, stage.label) : `${speakerLabel} ${stage.label}`,
+          prompt: interpolate(stage.promptTemplate ?? node.prompt ?? fallbackStagePrompt(stage), values),
+          system: context.systemPrompt(systemParts.join("\n\n")),
+          customAgentId: nodeCustomAgentId(node),
+          riskLevel: node.riskLevel,
+        });
+        const message = context.emitAgentMessage({
+          fromAgentId: agentId,
+          toAgentIds: modeSpec.profiles.map((profile) => profile.id).filter((profileId) => profileId !== agentId),
+          replyToId: previousStageMessageId,
+          threadId: `${groupId}:${context.projectId}`,
+          nodeId: node.id,
+          planItemId: node.id,
+          kind: "reply",
+          status: "done",
+          content: asText(output),
+          transcript: {
+            kind: "stage_transcript",
+            groupId,
+            groupLabel,
+            stageId: stage.id,
+            stageLabel: stage.label,
+            sequence: stageOutputs.length,
+            speakerLabel,
+            speakerId: stage.speakerId,
+            stance: stage.stance ?? "neutral",
+            status: "done",
+            layout,
+          },
+        });
+        previousStageMessageId = message.id;
+        lastStageOutput = output;
+        stageOutputs.push({ speakerLabel, content: asText(output) });
+        bag[stage.id] = output;
+        bag[node.id] = output;
+        bag[node.template] = output;
+        bag.priorTranscript = stageOutputs.map(stageTranscriptLine).join("\n\n");
+        bag.debateTranscript = bag.priorTranscript;
+        if (stage.outputKey) {
+          bag[stage.outputKey] = output;
+        }
+      }
+      return lastStageOutput;
+    });
+  }
+
+  context.remember({
+    id: `mode-${modeSpec.id}-result`,
+    namespace: ["session", context.projectId, modeSpec.id],
+    kind: "session",
+    value: { stages: stageOutputs, output: stageOutputs.at(-1)?.content, completedNodes },
+  });
+
+  const finalOutput = stageOutputs.at(-1)?.content ?? asText(bag.synthesis || bag.handoff || bag.review || bag.research || bag.plan);
+  return {
+    output: {
+      text: finalOutput,
+      pattern: modeSpec.family,
+      modeId: modeSpec.id,
+      stages: stageOutputs,
+    },
+  };
+}
+
+export async function executeOrchestratorSubagent(input: ModeExecutionInput): Promise<PatternExecutionResult> {
+  const { context, prompt, modeSpec } = input;
+  if (modeSpec.stages?.length) {
+    return executeStagedTranscriptMode(input);
+  }
+  const nodes = orderedEnabledModeNodes(modeSpec);
+  const singleOwnerMode = modeUsesSingleOwner(modeSpec, nodes);
+  const primaryAgentId = primaryOwnerAgentId(modeSpec, nodes);
+  const totalActiveNodes = nodes.length;
+  initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
+  const bag: ExecutionBag = { prompt };
+  let completedNodes = 0;
+
+  for (const node of nodes) {
+      completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+        if (node.template === "decompose") {
+          bag.plan = await context.callAgent({
+          agentId: node.ownerAgentId ?? "orchestrator",
+          planItemId: node.id,
+          title: titleForNode(node, "Decompose work"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          customAgentId: nodeCustomAgentId(node),
+          riskLevel: node.riskLevel,
+          });
+          return bag.plan;
+        }
+
+      if (node.template === "research") {
+        bag.research = await context.callAgent({
+          agentId: node.ownerAgentId ?? "researcher",
+          planItemId: node.id,
+          title: titleForNode(node, "Research context"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          customAgentId: nodeCustomAgentId(node),
+          riskLevel: node.riskLevel,
+          });
+          return bag.research;
+        }
+
+      if (node.template === "review") {
+        bag.review = await context.callAgent({
+          agentId: node.ownerAgentId ?? "reviewer",
+          planItemId: node.id,
+          title: titleForNode(node, "Review risks"),
+          prompt: promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          customAgentId: nodeCustomAgentId(node),
+          riskLevel: node.riskLevel,
+          });
+          return bag.review;
+        }
+
+      if (node.template === "synthesize") {
+        const directSoloResponse = singleOwnerMode
+          && bag.plan === undefined
+          && bag.research === undefined
+          && bag.review === undefined;
+        bag.synthesis = await context.callAgent({
+          agentId: node.ownerAgentId ?? "orchestrator",
+          planItemId: node.id,
+          title: titleForNode(node, "Synthesize result"),
+          prompt: promptTemplate(
+            node,
+            directSoloResponse
+              ? "Task: {{prompt}}\nProduce the final answer directly. Do not create a separate planning draft unless the task genuinely requires it."
+              : runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          ),
+          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          customAgentId: nodeCustomAgentId(node),
+          riskLevel: node.riskLevel,
+          });
+          return bag.synthesis;
+        }
+      });
+  }
+
+  context.remember({
+    id: `mode-${modeSpec.id}-result`,
+    namespace: ["session", context.projectId, modeSpec.id],
+    kind: "session",
+    value: { plan: bag.plan, research: bag.research, review: bag.review, synthesis: bag.synthesis },
+  });
+
+  if (singleOwnerMode) {
+    return {
+      output: {
+        text: asText(bag.synthesis || bag.plan),
+        pattern: modeSpec.family,
+        modeId: modeSpec.id,
+        agent: {
+          id: primaryAgentId,
+          plan: bag.plan,
+          response: bag.synthesis,
+        },
+      },
+    };
+  }
+
+  return {
+    output: {
+      text: asText(bag.synthesis || bag.review || bag.research || bag.plan),
+      pattern: modeSpec.family,
+      modeId: modeSpec.id,
+      orchestrator: {
+        decomposition: nodes.map((node) => node.template),
+        plan: bag.plan,
+      },
+      subagents: {
+        researcher: bag.research,
+        reviewer: bag.review,
+      },
+    },
+  };
+}

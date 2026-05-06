@@ -1,7 +1,27 @@
 import type { PatternExecutionContext } from "../patterns/execution-context.js";
 
+type RuntimePatternExecutionContextParams = Omit<
+  PatternExecutionContext,
+  "queueSummary" | "sharedStateSummary" | "busStats"
+> & {
+  queueSummary: () => PatternExecutionContext["queueSummary"];
+  sharedStateSummary: () => PatternExecutionContext["sharedStateSummary"];
+  busStats: () => PatternExecutionContext["busStats"];
+};
+
 export function createRuntimePatternExecutionContext(
-  params: PatternExecutionContext,
+  params: RuntimePatternExecutionContextParams,
 ): PatternExecutionContext {
-  return params;
+  return {
+    ...params,
+    get queueSummary() {
+      return params.queueSummary();
+    },
+    get sharedStateSummary() {
+      return params.sharedStateSummary();
+    },
+    get busStats() {
+      return params.busStats();
+    },
+  };
 }

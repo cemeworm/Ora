@@ -40,6 +40,14 @@ function methodBody(source: string, methodName: string): string {
   throw new Error(`Could not find body for ${methodName}.`);
 }
 
+function sourceSlice(source: string, startPattern: string, endPattern: string): string {
+  const start = source.indexOf(startPattern);
+  expect(start, `${startPattern} should exist`).toBeGreaterThanOrEqual(0);
+  const end = source.indexOf(endPattern, start + startPattern.length);
+  expect(end, `${endPattern} should exist after ${startPattern}`).toBeGreaterThanOrEqual(0);
+  return source.slice(start, end);
+}
+
 describe("runtime ledger authority guards", () => {
   it("does not reintroduce persistent run/session snapshot authority outside persistence adapters", () => {
     const offenders = sourceFiles(sourceRoot)
@@ -90,12 +98,53 @@ describe("runtime ledger authority guards", () => {
 
   it("keeps gate, handoff, compaction, and branch business facts on ledger entry paths", () => {
     const source = readSource("src/run-store.ts");
+    const planDecisionSource = readSource("src/plan-decision-service.ts");
+    const gateServiceSource = readSource("src/runtime-gate-service.ts");
 
-    expect(methodBody(source, "resolvePlanDecision")).toContain('type: "gate.resolved"');
-    expect(methodBody(source, "resolvePlanDecision")).toContain('type: "handoff.accepted_plan"');
+    expect(methodBody(source, "resolvePlanDecision")).toContain("this.planDecisionService.resolve");
+    expect(methodBody(planDecisionSource, "resolve")).toContain("this.gateService.resolvePlanDecisionGate");
+    expect(methodBody(planDecisionSource, "resolve")).not.toContain("this.gateService.resolvedEntry");
+    expect(methodBody(gateServiceSource, "clarificationOpenedEntry")).toContain('type: "gate.opened"');
+    expect(methodBody(gateServiceSource, "approvalOpenedEntry")).toContain('type: "gate.opened"');
+    expect(methodBody(gateServiceSource, "planDecisionOpenedEntry")).toContain('type: "gate.opened"');
+    expect(gateServiceSource).toContain('type: "gate.resolved"');
+    expect(gateServiceSource).toContain("ClarificationGateOpenedParams");
+    expect(gateServiceSource).toContain("ApprovalGateOpenedParams");
+    expect(gateServiceSource).toContain("PlanDecisionGateOpenedParams");
+    expect(gateServiceSource).toContain("RuntimeGateResolvedParams");
+    expect(gateServiceSource).toContain("RuntimeGateResolution");
+    expect(gateServiceSource).toContain("RuntimeGatePlanDecisionResolutionParams");
+    expect(gateServiceSource).toContain("resumeResolutions(params:");
+    expect(gateServiceSource).toContain("openSnapshotGates(params: RuntimeGateSnapshotOpenParams)");
+    expect(gateServiceSource).toContain("resolveResumeGates(params: RuntimeGateResumeResolutionParams)");
+    expect(gateServiceSource).toContain("resolvePlanDecisionGate(params: RuntimeGatePlanDecisionResolutionParams)");
+    expect(methodBody(planDecisionSource, "resolve")).toContain('type: "handoff.accepted_plan"');
     expect(methodBody(source, "persistSessionContextState")).toContain('type: "compaction.summary"');
-    expect(methodBody(source, "appendSnapshotBusinessFactsToLedger")).toContain('type: "gate.opened"');
-    expect(methodBody(source, "appendGateResolutionsForResume")).toContain('type: "gate.resolved"');
+    expect(methodBody(source, "appendSnapshotBusinessFactsToLedger")).toContain("this.appendOpenedGateFactsForSnapshot(snapshot)");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).toContain("this.runtimeGateService.openSnapshotGateLifecycle");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).toContain('gateLifecycle.kind !== "snapshot_open"');
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).toContain("for (const gateEntry of gateLifecycle.entries)");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).toContain("this.appendRunLedgerEntry(snapshot, gateEntry)");
+    expect(methodBody(source, "appendSnapshotBusinessFactsToLedger")).not.toContain("this.runtimeGateService.openedEntries");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).not.toContain("this.runtimeGateService.openSnapshotGates");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).not.toContain("this.runtimeGateService.openedEntries");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).not.toContain("this.runtimeGateService.clarificationOpenedEntry");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).not.toContain("this.runtimeGateService.approvalOpenedEntry");
+    expect(methodBody(source, "appendOpenedGateFactsForSnapshot")).not.toContain("this.runtimeGateService.planDecisionOpenedEntry");
+    expect(methodBody(source, "appendRunSnapshotUpdateToLedger")).toContain("this.appendSnapshotBusinessFactsToLedger(snapshot)");
+    expect(methodBody(source, "appendGateResolutionsForResume")).toContain("this.runtimeGateService.resolveResumeGateLifecycle");
+    expect(methodBody(source, "appendGateResolutionsForResume")).toContain("resolutions: gateResolutions");
+    expect(methodBody(source, "appendGateResolutionsForResume")).toContain('gateLifecycle.kind !== "resume_resolve"');
+    expect(methodBody(source, "appendGateResolutionsForResume")).toContain("for (const entry of gateLifecycle.entries)");
+    expect(methodBody(source, "appendGateResolutionsForResume")).not.toContain("this.runtimeGateService.resolvedEntry");
+    expect(methodBody(source, "appendGateResolutionsForResume")).not.toContain("this.runtimeGateService.resolveResumeGates");
+    expect(methodBody(source, "appendGateResolutionsForResume")).toContain("this.appendGateResolutionForResume");
+    expect(source).toContain('const candidate = snapshot.config.metadata.branchRole === "candidate";');
+    expect(methodBody(source, "appendRuntimeEventBatchToLedger")).toContain("this.appendRunLedgerEntry(snapshot");
+    expect(methodBody(source, "appendRunSnapshotUpdateToLedger")).toContain("candidate ? this.candidateLedgerLeaf(snapshot) : undefined");
+    expect(source).toContain("parentId: options.candidateParentId ?? this.candidateLedgerLeaf(snapshot)");
+    expect(source).toContain("this.branchCandidateLeafByRun.set(snapshot.runId, appended.id)");
+    expect(methodBody(source, "candidateLedgerLeaf")).toContain('entry.type !== "branch.candidate_started"');
     expect(methodBody(source, "createAndRunSessionBranchGroup")).toContain('"branch.created"');
     expect(methodBody(source, "createAndRunSessionBranchGroup")).toContain('"branch.candidate_started"');
     expect(methodBody(source, "adoptSessionBranchGroup")).toContain('type: "branch.adopted"');
@@ -113,11 +162,114 @@ describe("runtime ledger authority guards", () => {
 
   it("consumes accepted-plan handoffs only after the consuming run has started", () => {
     const source = readSource("src/run-store.ts");
+    const startRunSource = sourceSlice(source, "async startRun(params", "async startStreamingRun(params");
+    const startStreamingRunSource = sourceSlice(source, "async startStreamingRun(params", "private approvedFileWriteResumeDeps");
 
+    expect(source).toContain("private readonly runStartService: RunStartService");
+    expect(startRunSource).toContain("this.runStartService.prepare");
+    expect(startStreamingRunSource).toContain("this.runStartService.prepare");
     expect(methodBody(source, "acceptedPlanHandoffForNextImplementationRun")).not.toContain('type: "handoff.accepted_plan"');
     expect(methodBody(source, "consumeAcceptedPlanHandoffForStartedRun")).toContain('type: "handoff.accepted_plan"');
-    expect(methodBody(source, "startRun")).toContain("this.appendRunStartedToLedger");
-    expect(methodBody(source, "startRun")).toContain("this.consumeAcceptedPlanHandoffForStartedRun");
+    expect(startRunSource).toContain("this.appendRunStartedToLedger");
+    expect(startRunSource).toContain("this.consumeAcceptedPlanHandoffForStartedRun");
+  });
+
+  it("keeps resume preparation in RunResumeService while resolution and execution stay in LocalRunStore", () => {
+    const source = readSource("src/run-store.ts");
+    const resumeServiceSource = readSource("src/run-resume-service.ts");
+    const resumeRun = methodBody(source, "resumeRun");
+    const resumeStreamingRun = sourceSlice(source, "async resumeStreamingRun", "async startRunWithKernel");
+
+    expect(source).toContain("private readonly runResumeService: RunResumeService");
+    expect(resumeRun).toContain("this.runResumeService.prepare");
+    expect(resumeStreamingRun).toContain("this.runResumeService.prepare");
+    expect(resumeRun).toContain("this.assertResumeStrategyBoundary");
+    expect(resumeStreamingRun).toContain("this.assertResumeStrategyBoundary");
+    expect(resumeServiceSource).toContain("RunResumeParamsSchema.parse");
+    expect(resumeServiceSource).toContain("this.deps.getRunOrThrow");
+    expect(resumeServiceSource).toContain("parseResumePatch");
+    expect(resumeServiceSource).toContain("this.gateService.resumeResolutions");
+    expect(resumeServiceSource).toContain("approvedActionsForResume");
+    expect(resumeServiceSource).toContain("hasKernelResumeWork");
+    expect(resumeServiceSource).not.toContain("appendGateResolutionsForResume");
+    expect(resumeServiceSource).not.toContain("executeTracedKernelResume");
+    expect(resumeServiceSource).not.toContain("completeApprovedToolContinuation");
+    expect(resumeServiceSource).not.toContain("appendRunSnapshotUpdateToLedger");
+    expect(resumeRun).toContain("this.appendGateResolutionsForResume");
+    expect(resumeRun).toContain("completeApprovedToolContinuation");
+    expect(resumeRun).toContain("executeTracedKernelResume");
+    expect(resumeStreamingRun).toContain("this.appendGateResolutionsForResume");
+    expect(resumeStreamingRun).toContain("completeApprovedToolContinuation");
+    expect(resumeStreamingRun).toContain("executeTracedKernelResume");
+  });
+
+  it("keeps RunResumeStrategy wired as a read-only LocalRunStore boundary guard", () => {
+    const source = readSource("src/run-store.ts");
+    const strategyGuard = sourceSlice(
+      source,
+      "private assertResumeStrategyBoundary",
+      "private async continueKernelAfterApprovedTool",
+    );
+
+    expect(source).toContain("type RunResumeStrategy");
+    expect(strategyGuard).toContain("strategy: RunResumeStrategy");
+    expect(strategyGuard).toContain("approvedToolContinuationActions");
+    expect(strategyGuard).toContain("params.hasKernelWork ? \"kernel\" : \"non_kernel\"");
+    expect(strategyGuard).not.toContain("completeApprovedToolContinuation");
+    expect(strategyGuard).not.toContain("executeTracedKernelResume");
+    expect(strategyGuard).not.toContain("appendGateResolutionsForResume");
+    expect(strategyGuard).not.toContain("appendRunSnapshotUpdateToLedger");
+    expect(strategyGuard).not.toContain("persistRunWithGeneratedTitle");
+  });
+
+  it("keeps narrow lifecycle facades away from run-owned lifecycle side effects", () => {
+    const source = readSource("src/run-store.ts");
+    const lifecycleServicePath = path.join(runtimeRoot, "src/run-lifecycle-service.ts");
+    const lifecycleServiceSource = fs.existsSync(lifecycleServicePath)
+      ? fs.readFileSync(lifecycleServicePath, "utf8")
+      : "";
+    const startRun = sourceSlice(source, "async startRun(params", "async startStreamingRun(params");
+    const startStreamingRun = sourceSlice(source, "async startStreamingRun(params", "private approvedFileWriteResumeDeps");
+    const resumeStreamingRun = sourceSlice(source, "async resumeStreamingRun", "async startRunWithKernel");
+    const resumeRun = methodBody(source, "resumeRun");
+
+    for (const riskyOperation of [
+      "activeStreamingAbortControllers",
+      "AbortController",
+      "executeTracedKernelRun",
+      "executeTracedKernelResume",
+      "completeApprovedToolContinuation",
+      "appendRunSnapshotUpdateToLedger",
+      "appendRuntimeEventBatchToLedger",
+      "appendRunLedgerEntry",
+      "persistRunWithGeneratedTitle",
+    ]) {
+      expect(lifecycleServiceSource).not.toContain(riskyOperation);
+    }
+
+    expect(source).toContain("private activeStreamingAbortControllers = new Map<string, AbortController>");
+    expect(source).toContain("private readonly runStreamingService: RunStreamingService");
+    expect(startRun).toContain("executeTracedKernelRun");
+    expect(startRun).toContain("this.appendRuntimeEventBatchToLedger");
+    expect(startRun).toContain("this.appendAssistantMessageToLedger");
+    expect(startRun).toContain("this.persistRunWithGeneratedTitle");
+    expect(startStreamingRun).toContain("this.activeStreamingAbortControllers.set");
+    expect(startStreamingRun).toContain("this.activeStreamingAbortControllers.delete");
+    expect(startStreamingRun).toContain("executeTracedKernelRun");
+    expect(startStreamingRun).toContain("this.runStreamingService.createSession");
+    expect(startStreamingRun).toContain("this.appendAssistantMessageToLedger");
+    expect(startStreamingRun).toContain("this.persistRunWithGeneratedTitle");
+    expect(resumeStreamingRun).toContain("this.activeStreamingAbortControllers.set");
+    expect(resumeStreamingRun).toContain("this.activeStreamingAbortControllers.delete");
+    expect(resumeStreamingRun).toContain("completeApprovedToolContinuation");
+    expect(resumeStreamingRun).toContain("executeTracedKernelResume");
+    expect(resumeStreamingRun).toContain("this.runStreamingService.createSession");
+    expect(resumeStreamingRun).toContain("this.appendRunSnapshotUpdateToLedger");
+    expect(resumeStreamingRun).toContain("this.persistRunWithGeneratedTitle");
+    expect(resumeRun).toContain("completeApprovedToolContinuation");
+    expect(resumeRun).toContain("executeTracedKernelResume");
+    expect(resumeRun).toContain("this.appendRunSnapshotUpdateToLedger");
+    expect(resumeRun).toContain("this.persistRunWithGeneratedTitle");
   });
 
   it("persists streaming resume failures through ledger snapshot updates", () => {
@@ -142,9 +294,12 @@ describe("runtime ledger authority guards", () => {
       source.indexOf("async startRunWithKernel"),
     );
     const appendRuntimeEventBatchToLedger = methodBody(source, "appendRuntimeEventBatchToLedger");
+    const streamingServiceSource = readSource("src/run-streaming-service.ts");
 
-    expect(startStreamingRun).toContain("liveSnapshot = this.appendRuntimeEventBatchToLedger");
-    expect(resumeStreamingRun).toContain("liveSnapshot = this.appendRuntimeEventBatchToLedger");
+    expect(source).toContain("appendRuntimeEventBatchToLedger: (snapshot, events, status) =>");
+    expect(startStreamingRun).toContain("this.runStreamingService.createSession");
+    expect(resumeStreamingRun).toContain("this.runStreamingService.createSession");
+    expect(streamingServiceSource).toContain("this.deps.appendRuntimeEventBatchToLedger");
     expect(appendRuntimeEventBatchToLedger).toContain("ledgerSnapshotOrFallback");
     expect(appendRuntimeEventBatchToLedger).toContain("this.runs.set(projected.runId, projected)");
   });

@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CODE_DEVELOPMENT_MODE_ID, DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition, type StateSnapshot } from "@cemeworm/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
+import { nodeLoopTransitionDiagnostics } from "../src/harness/node-loop-transitions.js";
 import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
 import { summarizeNarratorProgressPayload } from "../src/harness/runtime-prompts.js";
 
@@ -20,6 +21,22 @@ function expectOrderedEvents(eventTypes: string[], expected: string[]) {
     expect(nextIndex).toBeGreaterThan(lastIndex);
     lastIndex = nextIndex;
   }
+}
+
+function expectEventSeqSemantics(snapshot: StateSnapshot) {
+  expect(snapshot.events.map((event) => event.seq)).toEqual([...Array(snapshot.events.length).keys()]);
+  for (const checkpoint of snapshot.checkpoints) {
+    const checkpointEvent = snapshot.events[checkpoint.eventSeq];
+    expect(checkpointEvent).toMatchObject({
+      seq: checkpoint.eventSeq,
+      type: "checkpoint.created",
+      checkpointId: checkpoint.id,
+    });
+  }
+}
+
+function expectNoNodeLoopTransitionDiagnostics(snapshot: StateSnapshot) {
+  expect(nodeLoopTransitionDiagnostics(snapshot.events)).toEqual([]);
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000) {
@@ -1345,7 +1362,7 @@ describe("Ora runtime smoke path", () => {
       "memory.flushed",
       "checkpoint.created"
     ]);
-    expect(state.events.map((event) => event.seq)).toEqual([...Array(state.events.length).keys()]);
+    expectEventSeqSemantics(state);
     expect(state.checkpoints).toHaveLength(1);
     expect(state.topology.nodes.length).toBeGreaterThan(1);
     expect(state.profiles.map((profile) => profile.id)).toEqual([ORA_ROOT_AGENT_ID, "generator", "verifier"]);
@@ -1365,6 +1382,7 @@ describe("Ora runtime smoke path", () => {
     expect(state.pendingClarifications).toEqual([]);
     expect(state.pendingApprovals).toEqual([]);
     expect(state.activeAgents).toEqual([]);
+    expect(state.topology.nodes.some((node) => node.status === "running")).toBe(false);
     expect(state.events.map((event) => event.type)).toContain("todo.updated");
     expect(state.topology.nodes.some((node) => node.kind === "capability" && node.metadata.atomId === "memory_capture")).toBe(true);
     expect(state.topology.nodes.some((node) => node.kind === "capability" && node.metadata.atomId === "tool_error_boundary")).toBe(true);
@@ -5546,6 +5564,7 @@ describe("Ora runtime smoke path", () => {
       expect(state.pattern).toBe(pattern);
       expect(state.checkpoints).toHaveLength(1);
       expect(state.events.map((event) => event.type)).toContain("checkpoint.created");
+      expectNoNodeLoopTransitionDiagnostics(state);
 
       if (pattern === "agent_teams") {
         expect(state.events.map((event) => event.type)).toContain("worker.claimed");
@@ -5558,12 +5577,32 @@ describe("Ora runtime smoke path", () => {
         expect(state.busStats.publishedCount).toBeGreaterThan(0);
         expect(state.busStats.routedCount).toBeGreaterThan(0);
         expect(state.queueSummary.topics).toContain("task.response");
+        const queueEventsWithBusStats = state.events.filter((event) =>
+          event.type === "queue.updated" &&
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          "busStats" in event.payload
+        );
+        const finalQueueEvent = queueEventsWithBusStats.at(-1);
+        expect(finalQueueEvent?.payload).toMatchObject({
+          summary: {
+            topics: state.queueSummary.topics,
+          },
+          busStats: state.busStats,
+        });
       }
 
       if (pattern === "shared_state") {
         expect(state.sharedStateSummary.enabled).toBe(true);
         expect(state.sharedStateSummary.version).toBeGreaterThan(0);
         expect(state.sharedStateSummary.entries.length).toBeGreaterThan(0);
+        const sharedStateEvents = state.events.filter((event) => event.type === "shared_state.updated");
+        expect(sharedStateEvents.length).toBeGreaterThan(0);
+        expect(sharedStateEvents.at(-1)?.payload).toMatchObject({
+          entry: {
+            version: state.sharedStateSummary.version,
+          },
+        });
       }
     }
   });
@@ -5776,6 +5815,7 @@ describe("Ora runtime smoke path", () => {
     }));
     expect(state.status).toBe("succeeded");
     expect(state.events.some((event) => event.type === "run.done")).toBe(true);
+    expectNoNodeLoopTransitionDiagnostics(state);
   }, 10_000);
 
   it("reads completed streaming state and replay streams from the ledger projection", async () => {
@@ -5849,6 +5889,8 @@ describe("Ora runtime smoke path", () => {
     expect(replay.events.at(-1)?.type).toBe("checkpoint.created");
     expect(replay.nextSeq).toBe(replayedState.events.length);
     expect(replayedState.events.at(-1)?.type).toBe("run.replayed");
+    expectNoNodeLoopTransitionDiagnostics(projectedState);
+    expectNoNodeLoopTransitionDiagnostics(replayedState);
   }, 10_000);
 
   it("executes OpenAI-compatible native tool calls during streaming runs", async () => {
@@ -5947,6 +5989,7 @@ describe("Ora runtime smoke path", () => {
         }),
       ]);
       expect(state.output).toMatchObject({ text: expect.stringContaining("Read README through streaming native tool.") });
+      expectNoNodeLoopTransitionDiagnostics(state);
     } finally {
       globalThis.fetch = previousFetch;
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
@@ -6308,7 +6351,9 @@ describe("Ora runtime smoke path", () => {
     expect(replay.events.at(-1)?.type).toBe("checkpoint.created");
     expect(replay.events.map((event) => event.seq)).toEqual([...Array(replay.events.length).keys()]);
     expect(replay.events.length).toBe(source.checkpoints[0]!.eventSeq + 1);
+    expect(replay.events.at(-1)?.seq).toBe(source.checkpoints[0]!.eventSeq);
     expect(replay.nextSeq).toBe(replayedState.events.length);
+    expectEventSeqSemantics(replayedState);
     expect(replayedState.events.at(-1)?.type).toBe("run.replayed");
     expect(replayedState.events.at(-1)?.payload).toMatchObject({
       continuation: {
