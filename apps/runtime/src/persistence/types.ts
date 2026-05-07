@@ -39,6 +39,7 @@ export interface PersistedArtifact {
 
 export interface RuntimePersistenceBackend {
   load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] };
+  ledgerRevision?(): string;
   optimizeStorage(): RuntimeStorageOptimizationResult;
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined;

@@ -165,6 +165,8 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtInsertSessionEntry: Database.Statement;
   private readonly stmtLoadSessionEntries: Database.Statement;
   private readonly stmtListSessionEntryIds: Database.Statement;
+  private readonly stmtSessionLedgerEntryRevision: Database.Statement;
+  private readonly stmtSessionLedgerMetaRevision: Database.Statement;
   private readonly stmtSaveSessionLedgerMeta: Database.Statement;
   private readonly stmtGetSessionLedgerMeta: Database.Statement;
   private readonly stmtSaveProject: Database.Statement;
@@ -218,6 +220,8 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     );
     this.stmtLoadSessionEntries = this.db.prepare("SELECT data FROM session_entries WHERE sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
     this.stmtListSessionEntryIds = this.db.prepare("SELECT DISTINCT sessionId FROM session_entries ORDER BY sessionId ASC");
+    this.stmtSessionLedgerEntryRevision = this.db.prepare("SELECT COUNT(*) AS count, COALESCE(MAX(rowid), 0) AS maxRowid FROM session_entries");
+    this.stmtSessionLedgerMetaRevision = this.db.prepare("SELECT COALESCE(group_concat(sessionId || ':' || COALESCE(leafEntryId, ''), '|'), '') AS meta FROM (SELECT sessionId, leafEntryId FROM session_ledger_meta ORDER BY sessionId ASC)");
     this.stmtSaveSessionLedgerMeta = this.db.prepare(
       "INSERT INTO session_ledger_meta (sessionId, leafEntryId) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET leafEntryId = excluded.leafEntryId"
     );
@@ -304,6 +308,12 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       sessions: ledgerState.sessions,
       projects,
     };
+  }
+
+  ledgerRevision(): string {
+    const entries = this.stmtSessionLedgerEntryRevision.get() as { count: number; maxRowid: number };
+    const meta = this.stmtSessionLedgerMetaRevision.get() as { meta: string };
+    return `${entries.count}:${entries.maxRowid}:${meta.meta}`;
   }
 
   optimizeStorage() {

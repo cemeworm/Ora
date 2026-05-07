@@ -349,6 +349,7 @@ export class LocalRunStore {
   private sessions = new Map<string, RuntimeSessionReadModel>();
   private runs = new Map<string, RuntimeRunReadModel>();
   private manifest: StoreManifest;
+  private sessionLedgerRevision: string | undefined;
 
   constructor(options: LocalRunStoreOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -470,6 +471,7 @@ export class LocalRunStore {
       this.syncProjectSummary(projectId);
     }
     this.backend.saveManifest(this.manifest);
+    this.sessionLedgerRevision = this.backend.ledgerRevision?.();
     if (options.autoStartChannels) {
       this.channelService.startAll().catch((err) => {
         console.error("[LocalRunStore] channel 自动启动失败:", err instanceof Error ? err.message : err);
@@ -796,16 +798,16 @@ export class LocalRunStore {
     const deps = this.projectSessionOperationDeps();
     const projects = listProjectsOperation({}, deps);
     const sessions = listSessionsOperation({}, deps);
-    const firstSession = this.createSession({});
+    const activeSession = sessions[0] ?? this.createSession({});
     const activeSessionDetail = getSessionOperation(
-      { sessionId: firstSession.sessionId, includeLatestSnapshot: false },
+      { sessionId: activeSession.sessionId, includeLatestSnapshot: false },
       this.projectSessionOperationDeps(),
     );
 
     return RuntimeWorkbenchBootstrapSchema.parse({
       bootstrap,
       projects,
-      sessions: [firstSession, ...sessions],
+      sessions: sessions.length > 0 ? sessions : [activeSession],
       activeSessionDetail,
     });
   }
@@ -2749,9 +2751,14 @@ export class LocalRunStore {
   }
 
   private refreshAllSessionLedgerProjections(): void {
+    const revision = this.backend.ledgerRevision?.();
+    if (revision && revision === this.sessionLedgerRevision) {
+      return;
+    }
     for (const ledger of this.backend.listSessionLedgers()) {
       this.refreshSessionFromLedger(ledger.sessionId, ledger.leafEntryId);
     }
+    this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
   }
 
   private ledgerSnapshotOrFallback(snapshot: StateSnapshot, leafEntryId?: string): StateSnapshot {
