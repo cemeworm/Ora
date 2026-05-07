@@ -118,6 +118,8 @@ import {
 } from "./node-runtime-loop.js";
 import { createKernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
 import { KernelRunner, createKernelRunnerDeps } from "./runtime-kernel-runner.js";
+import { activePlanStepId, advancePlanListFromLifecycle, planListUpdatedPayload } from "./runtime-plan-list-state.js";
+import { classifyContinuationDispatch } from "../run-continuation-dispatcher.js";
 import {
   injectRootAgentTopology,
   rootAgentProfile,
@@ -349,7 +351,10 @@ class KernelRuntimeContext {
     payload: unknown,
     extra: Partial<OraEventEnvelope> = {},
   ) => {
-    const payloadSnapshot = this.cloneEventPayload(payload);
+    const canonicalPayload = type === "plan_list.updated"
+      ? planListUpdatedPayload(payload as Record<string, unknown>)
+      : payload;
+    const payloadSnapshot = this.cloneEventPayload(canonicalPayload);
     const envelope = OraEventEnvelopeSchema.parse({
       id: `${this.params.runId}:evt-${this.eventsValue.length}`,
       runId: this.params.runId,
@@ -413,11 +418,35 @@ class KernelRuntimeContext {
       agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
       nodeId: pendingApprovalToolCalls[0]?.nodeId,
       planItemId: pendingApprovalActions[0]?.planItemId,
+      nodeCheckpoint: this.latestNodeCheckpoint({
+        agentId: pendingApprovalToolCalls[0]?.agentId ?? pendingApprovalActions[0]?.agentId,
+        nodeId: pendingApprovalToolCalls[0]?.nodeId,
+      }),
       conversationCursor: params.conversationCursor,
       now: params.now,
     });
 
     return { continuation, pendingApprovals };
+  }
+
+  latestNodeCheckpoint(params: { agentId?: string; nodeId?: string } = {}): StateSnapshot["continuation"]["frames"][number]["nodeCheckpoint"] | undefined {
+    for (const event of [...this.eventsValue].reverse()) {
+      if (event.type !== "node.updated" || !event.payload || typeof event.payload !== "object") {
+        continue;
+      }
+      const checkpoint = (event.payload as { checkpoint?: StateSnapshot["continuation"]["frames"][number]["nodeCheckpoint"] }).checkpoint;
+      if (!checkpoint) {
+        continue;
+      }
+      if (params.agentId && checkpoint.agentId !== params.agentId) {
+        continue;
+      }
+      if (params.nodeId && checkpoint.nodeId !== params.nodeId) {
+        continue;
+      }
+      return checkpoint;
+    }
+    return undefined;
   }
 
   assembleFinalSnapshot(params: {
@@ -548,6 +577,7 @@ function continuationForKernelSnapshot(params: {
   agentId?: string;
   nodeId?: string;
   planItemId?: string;
+  nodeCheckpoint?: StateSnapshot["continuation"]["frames"][number]["nodeCheckpoint"];
   conversationCursor: number;
   now: number;
 }): StateSnapshot["continuation"] {
@@ -571,6 +601,15 @@ function continuationForKernelSnapshot(params: {
     agentId: params.agentId ?? existing?.agentId,
     nodeId: params.nodeId ?? existing?.nodeId,
     planItemId: params.planItemId ?? existing?.planItemId,
+    nodeCheckpoint: params.nodeCheckpoint ?? existing?.nodeCheckpoint ?? {
+      modeId: undefined,
+      agentId: params.agentId ?? existing?.agentId,
+      nodeId: params.nodeId ?? existing?.nodeId,
+      planItemId: params.planItemId ?? existing?.planItemId,
+      eventSeq: undefined,
+      conversationCursor: params.conversationCursor,
+      bag: {},
+    },
     createdAt: existing?.createdAt ?? params.now,
     updatedAt: params.now,
   };
@@ -1246,6 +1285,19 @@ export async function executeRuntimeKernel(
     now,
     eventsLength: () => kernelRuntimeContext.eventCount(),
     planList: () => kernelRuntimeContext.planList,
+    activePlanStepId: () => activePlanStepId(kernelRuntimeContext.planList),
+    autoAdvancePlanListFromLifecycle: ({ agentId, nodeId, title, evidenceToolCallIds, planStepId }) => {
+      const payload = advancePlanListFromLifecycle({
+        plan: kernelRuntimeContext.planList,
+        planStepId,
+        explanation: `Advanced plan after ${title} completed runtime work (${evidenceToolCallIds.length} tool result${evidenceToolCallIds.length === 1 ? "" : "s"}).`,
+      });
+      if (!payload) {
+        return false;
+      }
+      emit("plan_list.updated", payload, { agentId, nodeId });
+      return true;
+    },
     toolCalls: () => kernelRuntimeContext.toolCalls,
     runtimeToolExecutor,
     completion,
@@ -1573,6 +1625,133 @@ export async function executeRuntimeKernel(
     }
   };
 
+  const continuationWithActiveFrameStatus = (status: "completed" | "failed" | "resuming" | "awaiting_model") => {
+    const continuation = options.resumeState?.continuation;
+    const activeFrameId = continuation?.activeFrameId;
+    if (!continuation || !activeFrameId) {
+      return continuation;
+    }
+    return {
+      activeFrameId,
+      frames: continuation.frames.map((frame) =>
+        frame.id === activeFrameId
+          ? {
+              ...frame,
+              status,
+              pendingActionIds: status === "completed" ? [] : frame.pendingActionIds,
+              pendingToolCallIds: status === "completed" ? [] : frame.pendingToolCallIds,
+              pendingClarificationIds: status === "completed" ? [] : frame.pendingClarificationIds,
+              approvedActionIds: [
+                ...new Set([
+                  ...frame.approvedActionIds,
+                  ...(options.resumeContext?.approvedActionIds ?? []),
+                ]),
+              ],
+              updatedAt: now(),
+            }
+          : frame
+      ),
+    };
+  };
+
+  const resumeSuspendedFrameIfNeeded = async (): Promise<StateSnapshot | undefined> => {
+    const resumeState = options.resumeState;
+    if (!resumeState) {
+      return undefined;
+    }
+    const decision = classifyContinuationDispatch(resumeState);
+    if (decision.kind === "diagnostic_failure") {
+      throw new Error(decision.message);
+    }
+    if (decision.kind !== "resume_suspended_node" || decision.frame.status !== "awaiting_model") {
+      return undefined;
+    }
+
+    const frame = decision.frame;
+    const agentId = decision.agentId;
+    const nodeId = decision.nodeId;
+    const title = `Continue ${agentLabel(agentId)}`;
+    kernelRuntimeContext.activateAgent(agentId);
+    setTopologyStatus(agentId, "running");
+    emit("agent.started", { title, planItemId: frame.planItemId }, { agentId, nodeId });
+    const response = await runNodeRuntimeLoopForAgent({
+      agentId,
+      nodeId,
+      title,
+      prompt: [
+        "Continue the suspended runtime frame.",
+        "Use the conversation follow-up and runtime state to complete only the remaining work.",
+        "If the plan list is incomplete, update it with plan.update before finishing.",
+      ].join("\n"),
+      system: withAgentRuntimeContext(
+        [
+          "You are resuming a paused Ora runtime frame.",
+          "Continue from the provided conversation and tool results.",
+          "Do not restart earlier mode stages or repeat completed work.",
+        ].join("\n"),
+        { agentId },
+      ),
+      toolIds: effectiveAgentToolIds(agentId),
+    });
+
+    emit("message.delta", { role: "assistant", content: response.text }, { agentId, nodeId });
+    emit("agent.completed", { title }, { agentId, nodeId });
+    kernelRuntimeContext.deactivateAgent(agentId);
+    setTopologyStatus(agentId, "done");
+
+    const output = {
+      text: response.text,
+      pattern: resolvedModeSpec.family,
+      modeId: resolvedModeSpec.id,
+      ...(resolvedModeSpec.family === "orchestrator_subagent"
+        ? { orchestrator: { plan: response.text } }
+        : {}),
+    };
+    const memoryRecord = memoryService.remember({
+      id: `${agentId}-continuation-memory`,
+      namespace: ["session", projectId, resolvedModeSpec.family, "continuation", agentId],
+      kind: "session",
+      value: { summary: response.text, resumedFrameId: frame.id },
+    });
+    emit("memory.updated", { record: memoryRecord });
+    emit("run.done", { status: "succeeded", output });
+    const checkpoint: CheckpointMeta = {
+      id: `${runId}:checkpoint-0`,
+      runId,
+      label: checkpointLabelForStatus("succeeded"),
+      createdAt: now(),
+      eventSeq: kernelRuntimeContext.eventCount(),
+      stateHash: JSON.stringify(output),
+    };
+    emit(
+      "checkpoint.created",
+      {
+        checkpoint,
+        summary: "Runtime checkpoint captured from a resumed continuation frame.",
+      },
+      { checkpointId: checkpoint.id },
+    );
+    planService.attachCheckpoint(checkpoint.id);
+    return kernelRuntimeContext.assembleFinalSnapshot({
+      status: "succeeded",
+      input,
+      config,
+      modeSpec: resolvedModeSpec,
+      profiles,
+      memory: memoryService.list(),
+      plan: planService.list().map((item) => ({ ...item, status: "done" as const })),
+      todos: todoService.list().map((item) => ({ ...item, status: "done" as const })),
+      actions: actionLedger.list(),
+      conversation: options.resumeState?.conversation ?? [],
+      toolResults: options.resumeState?.toolResults ?? [],
+      checkpoint,
+      previousContinuation: continuationWithActiveFrameStatus("completed"),
+      conversationCursor: options.resumeState?.conversation.length ?? 0,
+      output,
+      updatedAt: now(),
+    });
+  };
+
   const remember = (params: {
     id: string;
     namespace: string[];
@@ -1715,6 +1894,34 @@ export async function executeRuntimeKernel(
       emit,
       emitProgressNarration,
     });
+  };
+
+  const checkpointNode = (params: {
+    nodeId: string;
+    nodeTemplate: string;
+    nodeLabel: string;
+    agentId?: string;
+    status: "started" | "completed" | "failed" | "skipped";
+    bag: Record<string, unknown>;
+    output?: unknown;
+  }) => {
+    const checkpoint = {
+      modeId: resolvedModeSpec.id,
+      agentId: params.agentId,
+      nodeId: params.nodeId,
+      planItemId: params.nodeId,
+      eventSeq: kernelRuntimeContext.latestEventSeq(),
+      conversationCursor: options.resumeState?.conversation.length ?? 0,
+      bag: params.bag,
+    };
+    emit("node.updated", {
+      nodeId: params.nodeId,
+      nodeTemplate: params.nodeTemplate,
+      nodeLabel: params.nodeLabel,
+      status: params.status,
+      output: params.output,
+      checkpoint,
+    }, { agentId: params.agentId, nodeId: params.nodeId });
   };
 
   const publishMessage = (params: {
@@ -1873,6 +2080,7 @@ export async function executeRuntimeKernel(
         const queueSummary = kernelRuntimeContext.updateQueueSummary(patch);
         emit("queue.updated", { summary: queueSummary, busStats: kernelRuntimeContext.busStats });
       },
+      checkpointNode,
       runRecoverableNode,
       runDelegatedTask,
       ensureClarification,
@@ -1889,6 +2097,11 @@ export async function executeRuntimeKernel(
       writeSharedState,
       currentSharedState: () => kernelRuntimeContext.sharedStateSummary,
     });
+
+  const suspendedSnapshot = await resumeSuspendedFrameIfNeeded();
+  if (suspendedSnapshot) {
+    return { snapshot: suspendedSnapshot, tools };
+  }
 
   const snapshot = await new KernelRunner(createKernelRunnerDeps({
     request: {

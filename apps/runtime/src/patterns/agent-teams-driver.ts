@@ -181,7 +181,7 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         });
         return bag.handoff;
       }
-    });
+    }, bag);
     if (planIntent && node.template === "triage") {
       if (containsCompleteProposedPlan(bag.triage) && !isInternalAgentMessageText(bag.triage)) {
         finishPlanModeAfterProposedPlan(context, nodes, nodeIndex, totalActiveNodes);

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  type ModeId,
   getModePreset,
   modeSpecToPatternDefinition,
   OraEventEnvelopeSchema,
@@ -44,7 +45,7 @@ describe("approved tool resume completion", () => {
   it("returns a continuation snapshot when explicit plan-list state remains incomplete", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-plan-list-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
-      planList: [{ step: "Verify the approved change", status: "pending" }],
+      planList: [{ step: "Verify the approved change", status: "in_progress" }],
     });
 
     const result = await completeApprovedToolContinuation(
@@ -94,7 +95,7 @@ describe("approved tool resume completion", () => {
   it("continues through the kernel after approved tool execution when plan-list work remains", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-kernel-continue-"));
     const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
-      planList: [{ step: "Verify the approved change", status: "pending" }],
+      planList: [{ step: "Verify the approved change", status: "in_progress" }],
       toolIds: ["file.write", "plan.update"],
     });
 
@@ -127,8 +128,15 @@ describe("approved tool resume completion", () => {
 
     expect(resumed.status).toBe("succeeded");
     expect(resumed.planList).toEqual([
-      { step: "Verify the approved change", status: "completed" },
+      {
+        id: "plan-step-1-verify-the-approved-change",
+        step: "Verify the approved change",
+        status: "completed",
+      },
     ]);
+    expect(resumed.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
+      planStepId: "plan-step-1-verify-the-approved-change",
+    });
     expect(resumed.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
       status: "succeeded",
       actionId: "run-approved:action-write",
@@ -138,6 +146,209 @@ describe("approved tool resume completion", () => {
     expect(resumed.events.map((event) => event.type)).toContain("plan_list.updated");
     expect(resumed.events.map((event) => event.type)).toContain("run.done");
     expect(resumed.events.map((event) => event.type)).not.toContain("run.failed");
+  });
+
+  it("continues an agent-team approved tool from the paused frame owner when plan-list work remains", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-approved-team-frame-"));
+    const snapshot = approvedFileWriteSnapshot(workspaceRoot, {
+      modeId: "agent_teams",
+      pattern: "agent_teams",
+      agentId: "builder",
+      nodeId: "builder",
+      planList: [{ step: "Verify the approved change", status: "in_progress" }],
+      toolIds: ["file.write", "plan.update"],
+    });
+
+    const result = await completeApprovedToolContinuation(
+      snapshot,
+      ["run-approved:action-write"],
+      {},
+      deps(),
+    );
+
+    expect(result?.kind).toBe("continue");
+    if (result?.kind !== "continue") {
+      throw new Error("Expected approved tool continuation to require kernel continuation.");
+    }
+
+    const modeSpec = getModePreset("agent_teams")!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const { snapshot: resumed } = await executeRuntimeKernel(
+      snapshot.runId,
+      result.snapshot.input,
+      result.snapshot.config,
+      {
+        modeSpec,
+        definition,
+        skillRegistry: new RuntimeSkillRegistry(),
+        conversationMessages: runtimeConversationToModelMessages(result.snapshot.conversation),
+        resumeState: result.snapshot,
+      },
+    );
+    const agentStartedEvents = resumed.events.filter((event) => event.type === "agent.started");
+    const frame = resumed.continuation.frames.find((item) => item.id === resumed.continuation.activeFrameId);
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.planList).toEqual([
+      {
+        id: "plan-step-1-verify-the-approved-change",
+        step: "Verify the approved change",
+        status: "completed",
+      },
+    ]);
+    expect(resumed.toolCalls.find((call) => call.id === "run-approved:tool-call-write")).toMatchObject({
+      planStepId: "plan-step-1-verify-the-approved-change",
+    });
+    expect(agentStartedEvents).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ title: "Continue Builder" }),
+      }),
+    ]);
+    expect(agentStartedEvents[0]).toMatchObject({ agentId: "builder", nodeId: "builder" });
+    expect(frame).toMatchObject({
+      status: "completed",
+      agentId: "builder",
+      nodeId: "builder",
+      approvedActionIds: ["run-approved:action-write"],
+    });
+    expect(resumed.events.map((event) => event.type)).toContain("plan_list.updated");
+    expect(resumed.events.map((event) => event.type)).toContain("run.done");
+  });
+
+  it("continues a manual interrupted agent frame from the recorded owner", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-manual-team-frame-"));
+    const paused = approvedFileWriteSnapshot(workspaceRoot, {
+      modeId: "agent_teams",
+      pattern: "agent_teams",
+      agentId: "builder",
+      nodeId: "builder",
+      toolIds: ["file.write", "plan.update"],
+    });
+    const snapshot = StateSnapshotSchema.parse({
+      ...paused,
+      status: "interrupted",
+      actions: paused.actions.map((action) => ({
+        ...action,
+        status: "succeeded" as const,
+        output: { interrupted: true },
+      })),
+      pendingApprovals: [],
+      toolCalls: paused.toolCalls.map((call) => ({
+        ...call,
+        status: "interrupted" as const,
+        result: {
+          status: "interrupted" as const,
+          error: "Tool call was interrupted.",
+          content: "Tool call was interrupted.",
+          createdAt: call.updatedAt,
+          updatedAt: call.updatedAt,
+        },
+      })),
+      continuation: {
+        activeFrameId: "run-approved:continuation:0",
+        frames: [{
+          ...paused.continuation.frames[0]!,
+          status: "awaiting_model" as const,
+          reason: "manual_interrupt" as const,
+          agentId: "builder",
+          nodeId: "builder",
+          pendingActionIds: [],
+          pendingToolCallIds: ["run-approved:tool-call-write"],
+          nodeCheckpoint: {
+            modeId: "agent_teams",
+            agentId: "builder",
+            nodeId: "builder",
+            eventSeq: paused.events.at(-1)?.seq,
+            conversationCursor: paused.conversation.length,
+            bag: { interruptedToolCallIds: ["run-approved:tool-call-write"] },
+          },
+        }],
+      },
+      conversation: [{
+        role: "tool" as const,
+        toolCallId: "run-approved:tool-call-write",
+        toolId: "file.write",
+        content: "Tool call was interrupted.",
+        status: "interrupted" as const,
+        createdAt: 1,
+      }],
+    });
+
+    const modeSpec = getModePreset("agent_teams")!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const { snapshot: resumed } = await executeRuntimeKernel(
+      snapshot.runId,
+      snapshot.input,
+      snapshot.config,
+      {
+        modeSpec,
+        definition,
+        skillRegistry: new RuntimeSkillRegistry(),
+        conversationMessages: runtimeConversationToModelMessages(snapshot.conversation),
+        resumeState: snapshot,
+      },
+    );
+    const agentStartedEvents = resumed.events.filter((event) => event.type === "agent.started");
+    const frame = resumed.continuation.frames.find((item) => item.id === resumed.continuation.activeFrameId);
+
+    expect(resumed.status).toBe("succeeded");
+    expect(agentStartedEvents).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ title: "Continue Builder" }),
+      }),
+    ]);
+    expect(agentStartedEvents[0]).toMatchObject({ agentId: "builder", nodeId: "builder" });
+    expect(frame).toMatchObject({
+      status: "completed",
+      reason: "manual_interrupt",
+      agentId: "builder",
+      nodeId: "builder",
+    });
+    expect(frame?.nodeCheckpoint?.bag).toEqual({ interruptedToolCallIds: ["run-approved:tool-call-write"] });
+    expect(resumed.events.map((event) => event.type)).toContain("run.done");
+  });
+
+  it("fails visibly when a resumable continuation frame has no owner metadata", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-missing-owner-frame-"));
+    const snapshot = StateSnapshotSchema.parse({
+      ...approvedFileWriteSnapshot(workspaceRoot, {
+        modeId: "agent_teams",
+        pattern: "agent_teams",
+        toolIds: ["file.write", "plan.update"],
+      }),
+      status: "interrupted",
+      continuation: {
+        activeFrameId: "run-approved:continuation:0",
+        frames: [{
+          id: "run-approved:continuation:0",
+          runId: "run-approved",
+          status: "awaiting_model",
+          reason: "manual_interrupt",
+          conversationCursor: 0,
+          pendingActionIds: [],
+          pendingToolCallIds: ["run-approved:tool-call-write"],
+          pendingClarificationIds: [],
+          approvedActionIds: [],
+          resolvedClarificationIds: [],
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    });
+    const modeSpec = getModePreset("agent_teams")!;
+
+    await expect(executeRuntimeKernel(
+      snapshot.runId,
+      snapshot.input,
+      snapshot.config,
+      {
+        modeSpec,
+        definition: modeSpecToPatternDefinition(modeSpec),
+        skillRegistry: new RuntimeSkillRegistry(),
+        conversationMessages: [],
+        resumeState: snapshot,
+      },
+    )).rejects.toThrow("cannot resume a suspended node without agentId");
   });
 });
 
@@ -186,6 +397,10 @@ function deps() {
 function approvedFileWriteSnapshot(
   workspaceRoot: string,
   options: {
+    modeId?: ModeId;
+    pattern?: StateSnapshot["pattern"];
+    agentId?: string;
+    nodeId?: string;
     planList?: StateSnapshot["planList"];
     planStatus?: StateSnapshot["plan"][number]["status"];
     todoStatus?: StateSnapshot["todos"][number]["status"];
@@ -198,16 +413,16 @@ function approvedFileWriteSnapshot(
     sessionId: "session-approved",
     turnIndex: 1,
     status: "interrupted",
-    pattern: "orchestrator_subagent",
-    modeId: "single_agent",
+    pattern: options.pattern ?? "orchestrator_subagent",
+    modeId: options.modeId ?? "single_agent",
     input: {
       prompt: "Write the approved note.",
       createdAt: 1,
       context: { projectWorkspace: { label: "Approved Resume", rootPath: workspaceRoot } },
     },
     config: {
-      pattern: "orchestrator_subagent",
-      modeId: "single_agent",
+      pattern: options.pattern ?? "orchestrator_subagent",
+      modeId: options.modeId ?? "single_agent",
       modeSelection: "manual",
       profileIds: ["solo_agent"],
       skillIds: [],
@@ -258,7 +473,7 @@ function approvedFileWriteSnapshot(
       status: "approval_required",
       input: { path: "notes/result.md", content: "approved\n" },
       artifactIds: [],
-      agentId: "solo_agent",
+      agentId: options.agentId ?? "solo_agent",
       planItemId: `${runId}:respond`,
     }],
     toolCalls: [{
@@ -269,8 +484,8 @@ function approvedFileWriteSnapshot(
       source: "provider_native",
       status: "approval_required",
       actionId: "run-approved:action-write",
-      agentId: "solo_agent",
-      nodeId: "solo_agent",
+      agentId: options.agentId ?? "solo_agent",
+      nodeId: options.nodeId ?? options.agentId ?? "solo_agent",
       requestedAt: 1,
       updatedAt: 1,
     }],
@@ -287,6 +502,8 @@ function approvedFileWriteSnapshot(
         pendingClarificationIds: [],
         approvedActionIds: [],
         resolvedClarificationIds: [],
+        agentId: options.agentId,
+        nodeId: options.nodeId,
         createdAt: 1,
         updatedAt: 1,
       }],

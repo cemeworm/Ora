@@ -304,6 +304,48 @@ describe("RuntimeToolExecutor", () => {
     ]));
   });
 
+  it("keeps broad file search on visible text files while reporting explicit binary targets", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.mkdirSync(path.join(rootPath, ".ora"), { recursive: true });
+    fs.writeFileSync(path.join(rootPath, ".ora", "runtime.db-wal"), Buffer.from([0, 1, 2, 83, 101, 115, 115, 105, 111, 110]));
+    fs.writeFileSync(path.join(rootPath, "debug.log"), "SessionCreateParams in text log\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const broadGrep = await executor.execute({ tool: "file.grep", args: { pattern: "SessionCreateParams" } }) as {
+      matches: Array<{ path: string }>;
+      skipped: Array<{ path: string; reason: string }>;
+    };
+    const broadGlob = await executor.execute({ tool: "file.glob", args: { pattern: "**/*" } }) as {
+      matches: string[];
+      skipped: Array<{ path: string; reason: string }>;
+    };
+    const explicitGrep = await executor.execute({
+      tool: "file.grep",
+      args: { pattern: "Session", path: ".ora" },
+    }) as {
+      matches: Array<{ path: string }>;
+      skipped: Array<{ path: string; reason: string }>;
+    };
+    const explicitRead = await executor.execute({ tool: "file.read", args: { path: ".ora/runtime.db-wal" } }) as {
+      binary?: boolean;
+      content: string;
+    };
+
+    expect(broadGrep.matches.map((match) => match.path)).toEqual(["debug.log"]);
+    expect(broadGrep.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".ora", reason: "default_excluded" }),
+    ]));
+    expect(broadGlob.matches).not.toContain(".ora/runtime.db-wal");
+    expect(broadGlob.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".ora", reason: "default_excluded" }),
+    ]));
+    expect(explicitGrep.matches).toEqual([]);
+    expect(explicitGrep.skipped).toEqual([
+      expect.objectContaining({ path: ".ora/runtime.db-wal", reason: "binary" }),
+    ]);
+    expect(explicitRead).toMatchObject({ binary: true, content: "" });
+  });
+
   it("writes and patches files through approval-scoped tools", async () => {
     const { rootPath, workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });

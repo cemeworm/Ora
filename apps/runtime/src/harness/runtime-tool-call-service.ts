@@ -24,6 +24,7 @@ import type {
 import {
   proposeRuntimeToolAction,
 } from "./runtime-tool-action-proposal.js";
+import { planListUpdatedPayload } from "./runtime-plan-list-state.js";
 import type {
   RuntimeToolAttempt,
 } from "./runtime-tool-loop.js";
@@ -54,6 +55,7 @@ interface RuntimeToolCallServiceDeps {
   runtimeToolExecutor: RuntimeToolExecutor;
   actionDeps: () => RuntimeActionDeps;
   actionLedger: RuntimeActionDeps["actionLedger"];
+  activePlanStepId: () => string | undefined;
   now: () => number;
   eventsLength: () => number;
   appendToolCall: (params: AppendRuntimeToolCallParams) => OraToolCallEnvelope;
@@ -125,6 +127,7 @@ export class RuntimeToolCallService {
       agentId: this.deps.agentId,
       inputPrompt: this.deps.inputPrompt,
       eventCount: this.deps.eventsLength(),
+      planStepId: this.deps.activePlanStepId(),
       toolCall,
       runtimeToolExecutor: this.deps.runtimeToolExecutor,
       actionLedger: this.deps.actionLedger,
@@ -206,7 +209,7 @@ export class RuntimeToolCallService {
         detail: `${toolCall.tool} returned a result.`,
       });
       if (toolCall.tool === "plan.update") {
-        this.deps.actionDeps().emit("plan_list.updated", toolCall.args);
+        this.deps.actionDeps().emit("plan_list.updated", planListUpdatedPayload(toolCall.args));
       }
 
       this.deps.replaceMessages(

@@ -15,6 +15,15 @@ export interface PatternExecutionContext {
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
   setQueueSummary(patch: Partial<QueueSummary>): void;
+  checkpointNode(params: {
+    nodeId: string;
+    nodeTemplate: string;
+    nodeLabel: string;
+    agentId?: string;
+    status: "started" | "completed" | "failed" | "skipped";
+    bag: Record<string, unknown>;
+    output?: unknown;
+  }): void;
   runRecoverableNode<T>(params: {
     nodeId: string;
     nodeTemplate: string;

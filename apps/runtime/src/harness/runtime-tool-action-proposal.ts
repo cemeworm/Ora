@@ -17,6 +17,7 @@ export function proposeRuntimeToolAction(params: {
   agentId: string;
   inputPrompt: string;
   eventCount: number;
+  planStepId?: string;
   toolCall: RuntimeToolAttempt;
   runtimeToolExecutor: RuntimeToolExecutor;
   actionLedger: Pick<ActionLedger, "propose">;
@@ -36,6 +37,7 @@ export function proposeRuntimeToolAction(params: {
       riskLevel === "high"
         ? params.runtimeToolExecutor.approvalRequest(params.toolCall, params.inputPrompt)
         : undefined,
+    planStepId: params.planStepId,
     agentId: params.agentId,
   });
   const toolCallRecord = params.appendToolCall({
@@ -45,6 +47,7 @@ export function proposeRuntimeToolAction(params: {
     source: params.toolCall.source,
     status: "proposed",
     actionId: action.id,
+    planStepId: params.planStepId,
     agentId: params.agentId,
     nodeId: params.agentId,
   });

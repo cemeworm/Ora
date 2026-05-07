@@ -85,9 +85,9 @@ describe("runtime plan list completion guard", () => {
 
     expect(snapshot.status).toBe("succeeded");
     expect(snapshot.planList).toEqual([
-      { step: "Inspect current behavior", status: "completed" },
-      { step: "Implement guard", status: "completed" },
-      { step: "Verify regression", status: "completed" },
+      { id: "plan-step-1-inspect-current-behavior", step: "Inspect current behavior", status: "completed" },
+      { id: "plan-step-2-implement-guard", step: "Implement guard", status: "completed" },
+      { id: "plan-step-3-verify-regression", step: "Verify regression", status: "completed" },
     ]);
     const planListEvents = snapshot.events.filter((event) => event.type === "plan_list.updated");
     expect(planListEvents.at(-1)?.payload).toMatchObject({ plan: snapshot.planList });

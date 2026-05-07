@@ -69,6 +69,7 @@ interface KernelRuntimeContextForRunner {
   latestEventSeq(): number;
   updateQueueSummary(patch: Partial<StateSnapshot["queueSummary"]>): StateSnapshot["queueSummary"];
   eventCount(): number;
+  latestNodeCheckpoint(params?: { agentId?: string; nodeId?: string }): StateSnapshot["continuation"]["frames"][number]["nodeCheckpoint"] | undefined;
   assembleFinalSnapshot(params: FinalSnapshotParams): StateSnapshot;
 }
 

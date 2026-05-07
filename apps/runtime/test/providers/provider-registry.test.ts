@@ -443,6 +443,43 @@ describe("provider adapters", () => {
     expect(chunks).toEqual(["Hel", "lo"]);
   });
 
+  it("treats SSE [DONE] as terminal even when the connection remains open", async () => {
+    let cancelled = false;
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Done\"}\n\n",
+            "data: [DONE]\n\n",
+          ].join("")));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const provider = createModelProvider(
+      {
+        id: "openai-gpt",
+        type: "openai",
+        label: "GPT",
+        modelId: "gpt-test",
+        headers: {},
+      },
+      { env: { OPENAI_API_KEY: "test-openai-key" }, fetchImpl },
+    );
+
+    const response = await provider.stream?.({ prompt: "Say done." });
+
+    expect(response?.text).toBe("Done");
+    expect(cancelled).toBe(true);
+  });
+
   it("sends an OpenAI-compatible chat completions request", async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe("https://openrouter.ai/api/v1/chat/completions");
@@ -558,6 +595,59 @@ describe("provider adapters", () => {
     ]);
     expect(response.reasoningContent).toBe("I should search before answering.");
     expect(response.finishReason).toBe("tool_calls");
+  });
+
+  it("emits deterministic provider tool schema ordering", async () => {
+    const requestBodies: unknown[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Sorted." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "openrouter",
+        type: "openai_compatible",
+        label: "OpenRouter",
+        modelId: "tool-model",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        headers: {},
+      },
+      { env: { OPENROUTER_API_KEY: "test-openrouter-key" }, fetchImpl },
+    );
+
+    const tools = [
+      {
+        id: "web.search",
+        description: "Search web",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "number" },
+          },
+        },
+      },
+      { id: "file.read", description: "Read file" },
+    ];
+
+    await provider({ prompt: "Use tools.", tools });
+    await provider({ prompt: "Use tools.", tools: [...tools].reverse() });
+
+    const toolNames = requestBodies.map((body) =>
+      (body as { tools: Array<{ function: { name: string; parameters: unknown } }> }).tools
+        .map((tool) => tool.function.name),
+    );
+    expect(toolNames).toEqual([
+      ["file__read", "web__search"],
+      ["file__read", "web__search"],
+    ]);
+    expect(JSON.stringify((requestBodies[0] as { tools: unknown[] }).tools)).toBe(
+      JSON.stringify((requestBodies[1] as { tools: unknown[] }).tools),
+    );
   });
 
   it("applies OpenAI-compatible reasoning effort when requested", async () => {
@@ -786,6 +876,52 @@ describe("provider adapters", () => {
     expect(response.text).toBe("Responses hello.");
   });
 
+  it("uses OpenAI Responses continuation metadata when supplied", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        previous_response_id?: string;
+        input: Array<{ role?: string; type?: string }>;
+      };
+      expect(body.previous_response_id).toBe("resp_previous");
+      expect(body.input).toEqual([
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Only send the delta." }] },
+      ]);
+      return new Response(JSON.stringify({ id: "resp_next", output_text: "Continued." }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "gateway",
+        type: "openai_compatible",
+        label: "Gateway",
+        modelId: "gateway-reasoner",
+        baseUrl: "https://gateway.example.com",
+        apiKeyEnv: "GATEWAY_API_KEY",
+        protocol: "responses",
+        headers: {},
+      },
+      { env: { GATEWAY_API_KEY: "test-gateway-key" }, fetchImpl },
+    );
+
+    const response = await provider({
+      messages: [
+        { role: "user", content: "Earlier prompt." },
+        { role: "assistant", content: "Earlier answer." },
+        { role: "user", content: "Only send the delta." },
+      ],
+      providerCache: {
+        openaiPreviousResponseId: "resp_previous",
+        openaiDeltaMessages: [{ role: "user", content: "Only send the delta." }],
+      },
+    });
+
+    expect(response.text).toBe("Continued.");
+    expect(response.providerResponseId).toBe("resp_next");
+  });
+
   it("maps OpenAI Responses function calls", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
@@ -892,13 +1028,17 @@ describe("provider adapters", () => {
       const body = JSON.parse(String(init?.body)) as {
         model: string;
         max_tokens: number;
-        system?: string;
+        system?: string | Array<{ type: string; text: string; cache_control?: unknown }>;
         messages: Array<{ role: string; content: string }>;
       };
 
       expect(body.model).toBe("claude-test");
       expect(body.max_tokens).toBe(24);
-      expect(body.system).toContain("Be concise.");
+      expect(body.system).toEqual([{
+        type: "text",
+        text: "Be concise.",
+        cache_control: { type: "ephemeral", ttl: "5m" },
+      }]);
       expect(body.messages).toEqual([{ role: "user", content: "What time is it?" }]);
 
       return new Response(
@@ -970,9 +1110,49 @@ describe("provider adapters", () => {
     expect(response.usage).toEqual({
       inputTokens: 35,
       outputTokens: 9,
+      cacheCreationInputTokens: 2,
+      cacheReadInputTokens: 3,
       totalTokens: 44,
       source: "provider",
     });
+  });
+
+  it("keeps Anthropic-compatible prompt caching opt-in", async () => {
+    const requestBodies: unknown[] = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ content: [{ type: "text", text: "OK" }], role: "assistant" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const baseProvider = {
+      id: "claude-gateway",
+      type: "anthropic_compatible" as const,
+      label: "Claude Gateway",
+      modelId: "claude-test",
+      baseUrl: "https://claude-gateway.example.com",
+      apiKeyEnv: "CLAUDE_GATEWAY_API_KEY",
+      headers: {},
+    };
+
+    await createModelProvider(baseProvider, {
+      env: { CLAUDE_GATEWAY_API_KEY: "test-compatible-key" },
+      fetchImpl,
+    })({ prompt: "Hello.", system: "Cache maybe." });
+
+    await createModelProvider({
+      ...baseProvider,
+      id: "claude-gateway-cached",
+      promptCache: { enabled: true, ttl: "1h" },
+    }, {
+      env: { CLAUDE_GATEWAY_API_KEY: "test-compatible-key" },
+      fetchImpl,
+    })({ prompt: "Hello.", system: "Cache maybe." });
+
+    expect(JSON.stringify(requestBodies[0])).not.toContain("cache_control");
+    expect(JSON.stringify(requestBodies[1])).toContain("\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}");
   });
 
   it("maps Anthropic tool_use blocks", async () => {

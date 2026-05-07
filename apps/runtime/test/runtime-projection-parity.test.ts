@@ -10,6 +10,7 @@ import {
   type StateSnapshot,
 } from "@cemeworm/shared";
 import { LocalRunStore } from "../src/index.js";
+import { shouldFlushStreamingEvent } from "../src/run-streaming.js";
 import type { RuntimeGateResolution } from "../src/runtime-gate-service.js";
 
 const BASE_TIME = 1_714_000_000_000;
@@ -151,6 +152,12 @@ describe("runtime projection parity guards", () => {
     expect(stream.snapshot).toEqual(live);
     expectFinalSnapshotParity(projected!, live);
     expect(live.checkpoints.length).toBeGreaterThan(0);
+    expect(live.events.some((event) =>
+      event.type === "node.updated" &&
+      event.payload &&
+      typeof event.payload === "object" &&
+      typeof (event.payload as { checkpoint?: unknown }).checkpoint === "object"
+    )).toBe(true);
 
     const reloaded = createStore(dataDir);
     const coldLive = StateSnapshotSchema.parse(reloaded.getRunState({ runId: handle.runId }));
@@ -174,6 +181,67 @@ describe("runtime projection parity guards", () => {
     expect(replayedProjected).toBeDefined();
     expect(replayedLive.events.at(-1)?.type).toBe("run.replayed");
     expectFinalSnapshotParity(replayedProjected!, replayedLive);
+  });
+
+  it("persists runtime event batches without duplicating cumulative snapshot events", () => {
+    const store = createStore();
+    const session = store.createSession({}) as { sessionId: string };
+    const runId = "run-compact-ledger";
+    const first = event(runId, 0, "message.delta", { role: "assistant", delta: "hello" });
+    const second = event(runId, 1, "run.done", { status: "succeeded", output: { text: "hello" } });
+    const live = snapshot({
+      runId,
+      sessionId: session.sessionId,
+      status: "succeeded",
+      events: [first, second],
+      output: { text: "hello" },
+      updatedAt: second.createdAt,
+    });
+
+    (store as unknown as {
+      appendRunStartedToLedger(args: {
+        sessionId: string;
+        runId: string;
+        turnIndex: number;
+        input: StateSnapshot["input"];
+        config: StateSnapshot["config"];
+        modeId?: string;
+        createdAt?: number;
+      }): void;
+      appendRuntimeEventBatchToLedger(
+        snapshot: StateSnapshot,
+        events: OraEventEnvelope[],
+        status?: StateSnapshot["status"],
+      ): StateSnapshot;
+    }).appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex: 1,
+      input: live.input,
+      config: live.config,
+      modeId: live.modeId,
+      createdAt: live.input.createdAt,
+    });
+    (store as unknown as {
+      appendRuntimeEventBatchToLedger(
+        snapshot: StateSnapshot,
+        events: OraEventEnvelope[],
+        status?: StateSnapshot["status"],
+      ): StateSnapshot;
+    }).appendRuntimeEventBatchToLedger(live, live.events, live.status);
+
+    const ledger = RuntimeSessionLedgerSchema.parse(
+      (store as unknown as { backend: { getSessionLedger(sessionId: string): unknown } }).backend.getSessionLedger(session.sessionId),
+    );
+    const eventBatch = ledger.entries.find((entry) => entry.type === "runtime.event_batch");
+    const payload = eventBatch?.payload as { events?: unknown[]; snapshot?: { events?: unknown[] } };
+    const projected = deriveRunSnapshot(ledger, runId);
+
+    expect(payload.events).toHaveLength(2);
+    expect(payload.snapshot?.events).toEqual([]);
+    expect(projected?.events).toEqual(live.events);
+    expect(projected?.status).toBe("succeeded");
+    expect(projected?.output).toEqual({ text: "hello" });
   });
 
   it("keeps streaming resume gate snapshots in parity with the ledger projection", () => {
@@ -264,6 +332,73 @@ describe("runtime projection parity guards", () => {
     expectParity(state, projectedFinal);
     expectParity(fromLedger!, projectedFinal);
     expect(stream.snapshot).toEqual(state);
+  });
+
+  it("rebases active reads over ledger projection with unflushed event tails", () => {
+    const store = createStore();
+    const session = store.createSession({}) as { sessionId: string };
+    const runId = "run-active-tail";
+    const ledgered = event(runId, 0, "message.delta", { role: "assistant", content: "working" });
+    const tail = event(runId, 1, "message.delta", { role: "assistant", content: "still working" });
+    const ledgeredSnapshot = snapshot({
+      runId,
+      sessionId: session.sessionId,
+      status: "running",
+      events: [ledgered],
+      updatedAt: ledgered.createdAt,
+    });
+    const activeSnapshot = StateSnapshotSchema.parse({
+      ...ledgeredSnapshot,
+      events: [ledgered, tail],
+      updatedAt: tail.createdAt,
+    });
+
+    (store as unknown as {
+      appendRunStartedToLedger(args: {
+        sessionId: string;
+        runId: string;
+        turnIndex: number;
+        input: StateSnapshot["input"];
+        config: StateSnapshot["config"];
+        modeId?: string;
+        createdAt?: number;
+      }): void;
+      appendRuntimeEventBatchToLedger(
+        snapshot: StateSnapshot,
+        events: OraEventEnvelope[],
+        status?: StateSnapshot["status"],
+      ): StateSnapshot;
+      runs: Map<string, StateSnapshot>;
+    }).appendRunStartedToLedger({
+      sessionId: session.sessionId,
+      runId,
+      turnIndex: 1,
+      input: ledgeredSnapshot.input,
+      config: ledgeredSnapshot.config,
+      modeId: ledgeredSnapshot.modeId,
+      createdAt: ledgeredSnapshot.input.createdAt,
+    });
+    (store as unknown as {
+      appendRuntimeEventBatchToLedger(
+        snapshot: StateSnapshot,
+        events: OraEventEnvelope[],
+        status?: StateSnapshot["status"],
+      ): StateSnapshot;
+    }).appendRuntimeEventBatchToLedger(ledgeredSnapshot, [ledgered], ledgeredSnapshot.status);
+    (store as unknown as { runs: Map<string, StateSnapshot> }).runs.set(runId, activeSnapshot);
+
+    const state = StateSnapshotSchema.parse(store.getRunState({ runId }));
+    const stream = store.streamRun({ runId });
+
+    expect(state.events.map((item) => item.id)).toEqual([ledgered.id, tail.id]);
+    expect(stream.events.map((item) => item.id)).toEqual([ledgered.id, tail.id]);
+  });
+
+  it("flushes durable state boundary events before crash-sensitive streaming gaps", () => {
+    expect(shouldFlushStreamingEvent(event("run-flush", 1, "approval.required", { actionId: "a1" }))).toBe(true);
+    expect(shouldFlushStreamingEvent(event("run-flush", 1, "checkpoint.created", { checkpointId: "c1" }))).toBe(true);
+    expect(shouldFlushStreamingEvent(event("run-flush", 1, "node.updated", { nodeId: "n1" }))).toBe(true);
+    expect(shouldFlushStreamingEvent(event("run-flush", 1, "message.delta", { content: "token" }))).toBe(false);
   });
 
   it("replays a hidden candidate branch from the ledger after reload", () => {

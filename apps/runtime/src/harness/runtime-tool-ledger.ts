@@ -13,6 +13,7 @@ export interface AppendRuntimeToolCallParams {
   source: OraToolCallSource;
   status: OraToolCallStatus;
   actionId?: string;
+  planStepId?: string;
   agentId?: string;
   nodeId?: string;
   result?: OraToolCallEnvelope["result"];
@@ -46,6 +47,7 @@ export class RuntimeToolCallLedger {
       nodeId: params.nodeId ?? existing?.nodeId,
       agentId: params.agentId ?? existing?.agentId,
       actionId: params.actionId ?? existing?.actionId,
+      planStepId: params.planStepId ?? existing?.planStepId,
       toolId: params.toolId,
       args: params.args,
       source: params.source,

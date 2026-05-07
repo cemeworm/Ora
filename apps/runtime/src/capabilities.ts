@@ -288,12 +288,14 @@ export class ActionLedger {
     input: unknown;
     approvalRequest?: ActionApprovalRequestCopy;
     planItemId?: string;
+    planStepId?: string;
     agentId?: string;
   }): ActionRecord {
     const record = ActionRecordSchema.parse({
       id: `${this.runId}:action:${params.id}`,
       runId: this.runId,
       planItemId: params.planItemId,
+      planStepId: params.planStepId,
       agentId: params.agentId,
       type: params.type,
       riskLevel: params.riskLevel,

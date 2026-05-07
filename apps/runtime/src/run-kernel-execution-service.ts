@@ -26,6 +26,10 @@ import {
 } from "./run-orchestration.js";
 import { runtimeConversationToModelMessages } from "./runtime-conversation.js";
 import { OraRuntimeError } from "./runtime-errors.js";
+import {
+  classifyContinuationDispatch,
+  continuationFrameAwaitingModel,
+} from "./run-continuation-dispatcher.js";
 
 interface RunKernelExecutionServiceDeps {
   clock: () => number;
@@ -104,6 +108,9 @@ export class RunKernelExecutionService {
       });
     }
     const resumedInput = resumedInputWithClarifications(params.snapshot.input, params.clarificationPatch);
+    const resumeSnapshot = params.resumeSnapshot ??
+      suspendedFrameResumeSnapshot(params.snapshot) ??
+      params.snapshot;
     return this.executeResume({
       runId: params.snapshot.runId,
       input: resumedInput,
@@ -118,7 +125,7 @@ export class RunKernelExecutionService {
       clarificationPatch: params.clarificationPatch,
       approvedActionIds: params.approvedActionIds,
       approvedActions: params.approvedActions,
-      resumeSnapshot: params.resumeSnapshot ?? params.snapshot,
+      resumeSnapshot,
       signal: params.signal,
       onEvent: params.onEvent,
       ...this.kernelDeps(params.snapshot.config, modeSpec),
@@ -219,4 +226,19 @@ export class RunKernelExecutionService {
       events: [...baseSnapshot.events, ...rebasedEvents],
     });
   }
+}
+
+function suspendedFrameResumeSnapshot(snapshot: StateSnapshot): StateSnapshot | undefined {
+  const decision = classifyContinuationDispatch(snapshot);
+  if (decision.kind === "diagnostic_failure") {
+    throw new OraRuntimeError(decision.message, -32004, {
+      runId: snapshot.runId,
+      frameId: decision.frame.id,
+      reason: decision.reason,
+    });
+  }
+  if (decision.kind !== "resume_suspended_node" || decision.frame.status !== "paused") {
+    return undefined;
+  }
+  return StateSnapshotSchema.parse(continuationFrameAwaitingModel(snapshot, decision.frame.id, snapshot.updatedAt));
 }

@@ -119,7 +119,7 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
           });
           return verifierNotes;
         }
-      });
+      }, bag);
     }
 
     if (bag.verdict === "pass") {

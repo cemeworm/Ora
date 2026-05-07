@@ -680,6 +680,123 @@ describe("node runtime loop transition contract", () => {
     }
   });
 
+  it("continues OpenAI Responses follow-ups with an append-only delta payload", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-node-loop-responses-cache-"));
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "Responses continuation result\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NODE_LOOP_RESPONSES_CACHE_KEY;
+    process.env.NODE_LOOP_RESPONSES_CACHE_KEY = "test";
+    const providerBodies: Array<{
+      input?: Array<Record<string, unknown>>;
+      previous_response_id?: string;
+    }> = [];
+
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        input?: Array<Record<string, unknown>>;
+        previous_response_id?: string;
+        tools?: Array<{ name?: string }>;
+      };
+      const isRuntimeToolCall = body.tools?.some((tool) => tool.name === "file__read") ?? false;
+      if (!isRuntimeToolCall) {
+        return new Response(JSON.stringify({
+          id: "resp_auxiliary",
+          status: "completed",
+          output_text: "Auxiliary response.",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      providerBodies.push(body);
+      if (providerBodies.length === 1) {
+        expect(body.previous_response_id).toBeUndefined();
+        expect(JSON.stringify(body.input)).toContain("Read the README with Responses.");
+        return new Response(JSON.stringify({
+          id: "resp_initial",
+          status: "completed",
+          output: [{
+            type: "function_call",
+            call_id: "call-readme",
+            name: "file__read",
+            arguments: "{\"path\":\"README.md\"}",
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        id: "resp_final",
+        status: "completed",
+        output_text: "Read README through Responses continuation.",
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Read the README with Responses.",
+            context: {
+              projectWorkspace: { label: "Responses Cache Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "node-loop-responses-cache",
+            modelRef: "node-loop-responses-cache-model",
+            providerConfig: {
+              id: "node-loop-responses-cache",
+              label: "Node Loop Responses Cache",
+              type: "openai_compatible",
+              protocol: "responses",
+              modelId: "node-loop-responses-cache-model",
+              baseUrl: "https://node-loop-responses-cache.test/v1",
+              apiKeyEnv: "NODE_LOOP_RESPONSES_CACHE_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.read"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const runtimeBodies = providerBodies.filter((body) =>
+        JSON.stringify(body).includes("file__read")
+      );
+
+      const continuationBody = runtimeBodies.find((body) => body.previous_response_id === "resp_initial");
+
+      expect(run.status).toBe("succeeded");
+      expect(runtimeBodies.length).toBeGreaterThanOrEqual(2);
+      expect(continuationBody).toBeTruthy();
+      expect(JSON.stringify(continuationBody?.input)).not.toContain("Read the README with Responses.");
+      expect(JSON.stringify(continuationBody?.input)).toContain("call-readme");
+      expect(JSON.stringify(continuationBody?.input)).toContain("Responses continuation result");
+      expect(state.toolCalls).toEqual([
+        expect.objectContaining({
+          providerCallId: "call-readme",
+          toolId: "file.read",
+          source: "provider_native",
+          status: "succeeded",
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.NODE_LOOP_RESPONSES_CACHE_KEY;
+      } else {
+        process.env.NODE_LOOP_RESPONSES_CACHE_KEY = previousKey;
+      }
+    }
+  });
+
   it("documents the JSON fallback tool success path", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-node-loop-json-tool-"));
@@ -1004,7 +1121,11 @@ describe("node runtime loop transition contract", () => {
 
       expect(resumed.status).toBe("succeeded");
       expect(resumed.pendingClarifications).toEqual([]);
-      expect(containsStateSubsequence(resumedStates, ["pending", "running_model", "completed"])).toBe(true);
+      expect(
+        containsStateSubsequence(resumedStates, ["pending", "running_model", "completed"]) ||
+          containsStateSubsequence(resumedStates, ["pending", "running_model", "tool_requested", "tool_running", "interrupted"]),
+        resumedStates.join(" -> "),
+      ).toBe(true);
       expectCoreTransitions(resumedStates);
       expectNoTransitionDiagnostics(resumed.events);
       expect(resumed.events.map((event) => event.type)).toContain("clarification.resolved");

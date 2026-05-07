@@ -493,6 +493,7 @@ export class LocalRunStore {
     return runRuntimeMaintenance(params, {
       runs: this.runs,
       backend: this.backend,
+      now: () => this.now(),
     });
   }
 
@@ -2463,6 +2464,7 @@ export class LocalRunStore {
     if (!snapshot.sessionId || events.length === 0) {
       return snapshot;
     }
+    const ledgerSnapshot = compactRuntimeEventBatchSnapshot(snapshot);
     const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:events-${events[0]?.seq ?? snapshot.events.length}-${events.at(-1)?.seq ?? snapshot.events.length}`,
       type: "runtime.event_batch",
@@ -2474,7 +2476,7 @@ export class LocalRunStore {
         status,
         output: snapshot.output,
         error: snapshot.error,
-        snapshot,
+        snapshot: ledgerSnapshot,
       },
     });
     if (snapshot.config.metadata.branchRole === "candidate") {
@@ -2498,6 +2500,7 @@ export class LocalRunStore {
     const existing = ledger ? deriveRunSnapshot(ledger, snapshot.runId, candidateLeaf ?? ledger.leafEntryId) : undefined;
     const existingEventCount = existing?.events.length ?? 0;
     const events = snapshot.events.slice(existingEventCount);
+    const ledgerSnapshot = compactRuntimeEventBatchSnapshot(snapshot);
     const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:update-${snapshot.updatedAt}-${ledger?.entries.length ?? 0}`,
       type: "runtime.event_batch",
@@ -2509,7 +2512,7 @@ export class LocalRunStore {
         status: snapshot.status,
         output: snapshot.output,
         error: snapshot.error,
-        snapshot,
+        snapshot: ledgerSnapshot,
       },
     }, { candidateParentId: candidateLeaf });
     if (candidate) {
@@ -4232,6 +4235,13 @@ function continuationSummary(snapshot: StateSnapshot) {
     conversationEntryCount: snapshot.conversation.length,
     toolResultCount: snapshot.toolResults.length,
   };
+}
+
+function compactRuntimeEventBatchSnapshot(snapshot: StateSnapshot): StateSnapshot {
+  return StateSnapshotSchema.parse({
+    ...snapshot,
+    events: [],
+  });
 }
 
 function previousMainlineRunBefore(

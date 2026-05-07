@@ -1,5 +1,5 @@
-import { UpdatePlanArgsSchema } from "@cemeworm/shared";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
+import { planListUpdatedPayload } from "./runtime-plan-list-state.js";
 import type { RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 
 export function planToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
@@ -21,6 +21,6 @@ export function planToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
 }
 
 function handleUpdatePlan(args: Record<string, unknown>): string {
-  const parsed = UpdatePlanArgsSchema.parse(args);
+  const parsed = planListUpdatedPayload(args);
   return `Plan updated with ${parsed.plan.length} steps.`;
 }

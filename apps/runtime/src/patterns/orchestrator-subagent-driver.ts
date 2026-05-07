@@ -159,7 +159,7 @@ async function executeStagedTranscriptMode(input: ModeExecutionInput): Promise<P
         }
       }
       return lastStageOutput;
-    });
+    }, bag);
   }
 
   context.remember({
@@ -268,7 +268,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           });
           return bag.synthesis;
         }
-      });
+      }, bag);
   }
 
   context.remember({

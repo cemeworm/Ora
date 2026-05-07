@@ -1225,7 +1225,7 @@ describe("session thread runtime behavior", () => {
       (event.payload as { toolId?: string }).toolId === "shell.execute"
     )).toBe(true);
     expect(capturedRequests.some((request) =>
-      request.prompt.includes("Workspace tool result for shell.execute") ||
+      (request.prompt?.includes("Workspace tool result for shell.execute") ?? false) ||
       request.messages.some((message) => message.content.includes("Workspace tool result for shell.execute"))
     )).toBe(true);
   });

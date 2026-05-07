@@ -8,14 +8,11 @@ import type {
   RunConfig,
 } from "@cemeworm/shared";
 import {
-  buildLocalCompactionRequest,
-  compactedContextFromSummary,
   resolveAutoCompactTokenLimit,
   resolvedContextWindow,
   resolveRunProviderConfig,
   usageForModelResponse,
 } from "../context-manager.js";
-import { invokeRunProvider } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse, ModelToolCall, ModelToolDefinition } from "../providers/index.js";
 import type { RuntimeCompletionController } from "./runtime-completion.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
@@ -557,45 +554,18 @@ export function createContextCompactionMiddleware(): RuntimeMiddleware {
       }
 
       context.emit(
-        "context.compaction.started",
+        "context.compaction.skipped",
         {
           phase: "mid_turn",
           implementation: "local",
-          reason: "context_limit",
+          reason: "preserve_provider_cache_prefix",
           beforeTokens: usage.totalTokens,
           limit,
           contextWindow,
         },
         eventContext,
       );
-      const compactResponse = await invokeRunProvider(
-        context.config,
-        buildLocalCompactionRequest([...messages], limit),
-      );
-      const compacted = compactedContextFromSummary({
-        summary: compactResponse.text,
-        phase: "mid_turn",
-        beforeTokens: usage.totalTokens,
-        limit,
-        contextWindow,
-        compactedThroughTurnIndex: 0,
-        now: context.now(),
-      });
-      context.replaceMessages?.(compacted.messages);
-      context.emit(
-        "context.compaction.completed",
-        {
-          phase: "mid_turn",
-          implementation: "local",
-          reason: "context_limit",
-          beforeTokens: usage.totalTokens,
-          afterTokens: compacted.contextState.activeTokenUsage.totalTokens,
-          limit,
-          contextWindow,
-        },
-        eventContext,
-      );
-      return next({ ...request, messages: compacted.messages });
+      return next(request);
     },
   };
 }

@@ -9,6 +9,7 @@ export async function runGenericModeNode(
   totalActiveNodes: number,
   completedNodes: number,
   execute: () => Promise<unknown>,
+  bag: Record<string, unknown> = {},
 ): Promise<number> {
   const clarificationQuestion = typeof node.config?.clarificationQuestion === "string"
     ? node.config.clarificationQuestion
@@ -38,25 +39,57 @@ export async function runGenericModeNode(
     inProgress: 1,
     completed: completedNodes,
   });
-  const recovered = await context.runRecoverableNode({
+  const agentId = node.ownerAgentId ?? node.id;
+  context.checkpointNode({
     nodeId: node.id,
     nodeTemplate: node.template,
     nodeLabel: node.label,
-    agentId: node.ownerAgentId ?? node.id,
-  }, () => (
-    nodeAtomIds(node).has("subagent_delegate")
-      ? context.runDelegatedTask({
-          taskId: `task:${node.id}`,
-          nodeId: node.id,
-          nodeLabel: node.label,
-          agentId: node.ownerAgentId ?? node.id,
-          title: titleForNode(node, node.label),
-        }, execute)
-      : execute()
-  ));
+    agentId,
+    status: "started",
+    bag,
+  });
+  let recovered: Awaited<ReturnType<PatternExecutionContext["runRecoverableNode"]>>;
+  try {
+    recovered = await context.runRecoverableNode({
+      nodeId: node.id,
+      nodeTemplate: node.template,
+      nodeLabel: node.label,
+      agentId,
+    }, () => (
+      nodeAtomIds(node).has("subagent_delegate")
+        ? context.runDelegatedTask({
+            taskId: `task:${node.id}`,
+            nodeId: node.id,
+            nodeLabel: node.label,
+            agentId,
+            title: titleForNode(node, node.label),
+          }, execute)
+        : execute()
+    ));
+  } catch (error) {
+    context.checkpointNode({
+      nodeId: node.id,
+      nodeTemplate: node.template,
+      nodeLabel: node.label,
+      agentId,
+      status: "failed",
+      bag,
+      output: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
   const result = recovered.output;
   const nextCompleted = completedNodes + 1;
   if (recovered.status === "skipped") {
+    context.checkpointNode({
+      nodeId: node.id,
+      nodeTemplate: node.template,
+      nodeLabel: node.label,
+      agentId,
+      status: "skipped",
+      bag,
+      output: result,
+    });
     context.setPlanStatus(node.id, "skipped");
     context.setQueueSummary({
       pending: Math.max(0, totalActiveNodes - nextCompleted),
@@ -65,6 +98,15 @@ export async function runGenericModeNode(
     });
     return nextCompleted;
   }
+  context.checkpointNode({
+    nodeId: node.id,
+    nodeTemplate: node.template,
+    nodeLabel: node.label,
+    agentId,
+    status: "completed",
+    bag,
+    output: result,
+  });
   if (modeSpec.runtimeAtoms.includes("memory_capture") && result !== undefined) {
     context.captureMemory({
       id: `atom-memory-${node.id}-${completedNodes + 1}`,

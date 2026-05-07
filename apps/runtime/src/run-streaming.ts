@@ -225,7 +225,28 @@ export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {
   if (event.type === "message.delta" || event.type === "token.delta") {
     return event.seq % 128 === 0;
   }
+  if (isDurableStateBoundaryEvent(event)) {
+    return true;
+  }
   return event.seq % 8 === 0 || event.type.startsWith("run.");
+}
+
+function isDurableStateBoundaryEvent(event: OraEventEnvelope): boolean {
+  return event.type.startsWith("run.") ||
+    event.type === "action.updated" ||
+    event.type === "tool.called" ||
+    event.type === "approval.required" ||
+    event.type === "approval.resolved" ||
+    event.type === "clarification.required" ||
+    event.type === "clarification.resolved" ||
+    event.type === "plan.updated" ||
+    event.type === "todo.updated" ||
+    event.type === "plan_list.updated" ||
+    event.type === "node.updated" ||
+    event.type === "checkpoint.created" ||
+    event.type === "shared_state.updated" ||
+    event.type === "artifact.exported" ||
+    event.type === "artifact.degraded";
 }
 
 function shouldAttachLiveSnapshot(events: readonly OraEventEnvelope[]): boolean {

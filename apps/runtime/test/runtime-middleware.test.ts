@@ -278,7 +278,7 @@ describe("runtime middleware chain", () => {
     expect(result.text).toBe("2");
   });
 
-  it("compacts oversized follow-up context before the next model call", async () => {
+  it("skips mid-turn compaction rewrites to preserve provider cache prefixes", async () => {
     const emitted: OraEventEnvelope[] = [];
     let replaced: readonly unknown[] | undefined;
     const ctx = context({
@@ -330,15 +330,11 @@ describe("runtime middleware chain", () => {
       },
     );
 
-    expect(result.text).toContain("Compacted prior session context:");
-    expect(replaced?.[0]).toMatchObject({
-      role: "system",
-      content: expect.stringContaining("Compacted prior session context:"),
-    });
+    expect(result.text).toContain("large context");
+    expect(replaced).toBeUndefined();
     expect(emitted.map((event) => event.type)).toEqual([
       "context.usage.updated",
-      "context.compaction.started",
-      "context.compaction.completed",
+      "context.compaction.skipped",
     ]);
     expect(emitted[0]).toMatchObject({
       agentId: "agent-1",

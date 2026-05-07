@@ -14,6 +14,7 @@ import {
   currentPendingApprovalToolActionIds,
   currentPendingClarifications,
 } from "./run-orchestration.js";
+import { activePlanStepId, planListUpdatedPayload } from "./harness/runtime-plan-list-state.js";
 
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
 
@@ -125,6 +126,15 @@ export async function completeApprovedToolContinuation(
       planItemId: existingFrame?.planItemId,
       modelIteration: existingFrame?.modelIteration,
       resumedFromFrameId: existingFrame?.resumedFromFrameId,
+      nodeCheckpoint: existingFrame?.nodeCheckpoint ?? {
+        modeId: snapshot.modeId,
+        agentId: existingFrame?.agentId,
+        nodeId: existingFrame?.nodeId,
+        planItemId: existingFrame?.planItemId,
+        eventSeq: snapshot.events.at(-1)?.seq,
+        conversationCursor: snapshot.conversation.length,
+        bag: {},
+      },
       createdAt,
       updatedAt: deps.now(),
     }),
@@ -149,12 +159,17 @@ export async function completeApprovedToolContinuation(
     result?: { output?: unknown; error?: string; content?: string },
   ) => {
     const updatedAt = deps.now();
+    const currentPlanStepId = activePlanStepId(working.planList);
     working = StateSnapshotSchema.parse({
       ...working,
+      planList: working.planList.length > 0
+        ? planListUpdatedPayload({ plan: working.planList }).plan
+        : working.planList,
       toolCalls: working.toolCalls.map((call) =>
         call.actionId === actionId
           ? {
               ...call,
+              planStepId: call.planStepId ?? currentPlanStepId,
               status,
               updatedAt,
               result: result

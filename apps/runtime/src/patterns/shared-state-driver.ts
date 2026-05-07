@@ -133,7 +133,7 @@ export async function executeSharedState(input: ModeExecutionInput): Promise<Pat
         });
         return bag.convergence;
       }
-    });
+    }, bag);
   }
 
   return {

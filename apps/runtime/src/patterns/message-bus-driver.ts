@@ -159,7 +159,7 @@ export async function executeMessageBus(input: ModeExecutionInput): Promise<Patt
         });
         return bag.response;
       }
-    });
+    }, bag);
   }
 
   return {

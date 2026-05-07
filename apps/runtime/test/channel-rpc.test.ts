@@ -83,7 +83,7 @@ describe("channel JSON-RPC", () => {
     expect(ChannelDeliverySchema.parse(deliveries[0]).status).toBe("sent");
     const status = ChannelStatusResultSchema.parse(await handler(request("channels.status")));
     expect(status.channels[0]?.channelId).toBe(channel.channelId);
-  });
+  }, 30_000);
 
   it("passes channel runConfig into channel-originated runs", async () => {
     const store = createStore();

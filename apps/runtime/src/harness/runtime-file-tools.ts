@@ -10,7 +10,23 @@ import {
 } from "./runtime-tool-utils.js";
 import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
 
-const SKIPPED_DIRS = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules", "target"]);
+const SKIPPED_DIRS = new Set([".git", ".next", ".turbo", ".ora", "build", "coverage", "dist", "node_modules", "target"]);
+const SKIPPED_FILE_SUFFIXES = [
+  ".db",
+  ".db-shm",
+  ".db-wal",
+  ".sqlite",
+  ".sqlite-shm",
+  ".sqlite-wal",
+  ".wal",
+];
+const BINARY_SNIFF_BYTES = 4096;
+
+type SkippedWorkspaceFile = {
+  path: string;
+  reason: "default_excluded" | "too_large" | "binary";
+  sizeBytes?: number;
+};
 
 export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   switch (toolId) {
@@ -108,6 +124,15 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limi
   if (stat.size > limits.fileReadMaxBytes) {
     throw new Error(`file.read target is too large (${stat.size} bytes).`);
   }
+  if (isProbablyBinaryFile(absolutePath)) {
+    return {
+      path: relativeWorkspacePath(rootPath, absolutePath),
+      sizeBytes: stat.size,
+      binary: true,
+      content: "",
+      skippedReason: "binary_file",
+    };
+  }
   return {
     path: relativeWorkspacePath(rootPath, absolutePath),
     sizeBytes: stat.size,
@@ -147,9 +172,15 @@ function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
   const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
   const matcher = globToRegExp(pattern);
   const limit = readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries);
+  const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, pattern, args);
+  const skipped: SkippedWorkspaceFile[] = [];
   const matches: string[] = [];
-  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles)) {
+  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles, { includeDefaultExcluded: explicitTarget, skipped })) {
     const relative = relativeWorkspacePath(rootPath, filePath);
+    if (!explicitTarget && isDefaultExcludedFile(relative)) {
+      skipped.push({ path: relative, reason: "default_excluded" });
+      continue;
+    }
     if (matcher.test(relative)) {
       matches.push(relative);
       if (matches.length >= limit) {
@@ -157,7 +188,7 @@ function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
       }
     }
   }
-  return { pattern, matches };
+  return { pattern, matches, skipped };
 }
 
 function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
@@ -170,15 +201,26 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
   const caseSensitive = args.caseSensitive !== false;
   const needle = caseSensitive ? pattern : pattern.toLowerCase();
   const limit = readPositiveInt(args.limit, limits.fileSearchMaxMatches, limits.fileSearchMaxMatches);
+  const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, include ? String(args.include) : undefined, args);
   const matches: Array<{ path: string; line: number; text: string }> = [];
+  const skipped: SkippedWorkspaceFile[] = [];
 
-  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles)) {
+  for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles, { includeDefaultExcluded: explicitTarget, skipped })) {
     const relative = relativeWorkspacePath(rootPath, filePath);
     if (include && !include.test(relative)) {
       continue;
     }
+    if (!explicitTarget && isDefaultExcludedFile(relative)) {
+      skipped.push({ path: relative, reason: "default_excluded" });
+      continue;
+    }
     const stat = fs.statSync(filePath);
     if (stat.size > limits.fileSearchMaxBytes) {
+      skipped.push({ path: relative, reason: "too_large", sizeBytes: stat.size });
+      continue;
+    }
+    if (isProbablyBinaryFile(filePath)) {
+      skipped.push({ path: relative, reason: "binary", sizeBytes: stat.size });
       continue;
     }
     const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
@@ -188,12 +230,12 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
       if (haystack.includes(needle)) {
         matches.push({ path: relative, line: index + 1, text: line });
         if (matches.length >= limit) {
-          return { pattern, matches, truncated: true };
+          return { pattern, matches, truncated: true, skipped };
         }
       }
     }
   }
-  return { pattern, matches, truncated: false };
+  return { pattern, matches, truncated: false, skipped };
 }
 
 function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
@@ -327,7 +369,12 @@ function longestCommonSubsequenceLength(left: string[], right: string[]): number
   return previous[right.length] ?? 0;
 }
 
-function walkFiles(rootPath: string, startPath: string, maxFiles: number): string[] {
+function walkFiles(
+  rootPath: string,
+  startPath: string,
+  maxFiles: number,
+  options: { includeDefaultExcluded?: boolean; skipped?: SkippedWorkspaceFile[] } = {},
+): string[] {
   const files: string[] = [];
   const visit = (currentPath: string) => {
     if (files.length >= maxFiles) {
@@ -342,7 +389,11 @@ function walkFiles(rootPath: string, startPath: string, maxFiles: number): strin
       return;
     }
     const name = path.basename(currentPath);
-    if (SKIPPED_DIRS.has(name) && currentPath !== rootPath) {
+    if (!options.includeDefaultExcluded && SKIPPED_DIRS.has(name) && currentPath !== rootPath) {
+      options.skipped?.push({
+        path: relativeWorkspacePath(rootPath, currentPath),
+        reason: "default_excluded",
+      });
       return;
     }
     for (const entry of fs.readdirSync(currentPath)) {
@@ -354,6 +405,53 @@ function walkFiles(rootPath: string, startPath: string, maxFiles: number): strin
   };
   visit(startPath);
   return files;
+}
+
+function hasExplicitSearchTarget(
+  rootPath: string,
+  basePath: string,
+  patternOrInclude: string | undefined,
+  args: Record<string, unknown>,
+): boolean {
+  const relativeBase = relativeWorkspacePath(rootPath, basePath);
+  if (relativeBase !== ".") {
+    return true;
+  }
+  if (typeof args.include === "string" && referencesDefaultExcludedPath(args.include)) {
+    return true;
+  }
+  return typeof patternOrInclude === "string" && referencesDefaultExcludedPath(patternOrInclude);
+}
+
+function referencesDefaultExcludedPath(value: string): boolean {
+  const normalized = value.split(path.sep).join("/");
+  return [...SKIPPED_DIRS].some((dir) => normalized === dir || normalized.startsWith(`${dir}/`) || normalized.includes(`/${dir}/`));
+}
+
+function isDefaultExcludedFile(relativePath: string): boolean {
+  const normalized = relativePath.split(path.sep).join("/");
+  const basename = path.basename(normalized).toLowerCase();
+  return SKIPPED_FILE_SUFFIXES.some((suffix) => basename.endsWith(suffix));
+}
+
+function isProbablyBinaryFile(filePath: string): boolean {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(BINARY_SNIFF_BYTES);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    if (bytesRead === 0) {
+      return false;
+    }
+    for (let index = 0; index < bytesRead; index += 1) {
+      if (buffer[index] === 0) {
+        return true;
+      }
+    }
+    const sample = buffer.subarray(0, bytesRead).toString("utf8");
+    return sample.includes("\uFFFD");
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function globToRegExp(pattern: string): RegExp {

@@ -86,6 +86,14 @@ export interface RunNodeRuntimeLoopDeps {
   now: () => number;
   eventsLength: () => number;
   planList: () => readonly PlanListStep[];
+  activePlanStepId: () => string | undefined;
+  autoAdvancePlanListFromLifecycle: (params: {
+    agentId: string;
+    nodeId: string;
+    title: string;
+    evidenceToolCallIds: string[];
+    planStepId?: string;
+  }) => boolean;
   toolCalls: () => readonly OraToolCallEnvelope[];
   runtimeToolExecutor: RuntimeToolExecutor;
   completion: RuntimeCompletionController;
@@ -272,6 +280,7 @@ export async function runNodeRuntimeLoop(
   const invokeProvider = options.streamProvider
     ? invokeRunProviderStream
     : invokeRunProvider;
+  let lastProviderRequestMessages: ModelMessage[] = [];
   const streamCallbacks = options.streamProvider
     ? {
         onTextDelta: (chunk: {
@@ -347,10 +356,14 @@ export async function runNodeRuntimeLoop(
 
   const invokeModel = (request: ModelRequest) =>
     invokeRuntimeModelCall({
-      request: withAbortSignal(request),
+      request: withAbortSignal(withStablePrefixCacheMetadata(request)),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
-      terminal: (nextRequest) => invokeProvider(config, nextRequest, streamCallbacks),
+      terminal: async (nextRequest) => {
+        const response = await invokeProvider(config, nextRequest, streamCallbacks);
+        lastProviderRequestMessages = [...(nextRequest.messages ?? [])];
+        return response;
+      },
     });
   const invokeFollowUpModel = (
     request: ModelRequest,
@@ -358,10 +371,14 @@ export async function runNodeRuntimeLoop(
     reason: string,
   ) =>
     invokeRuntimeModelCall({
-      request: withAbortSignal(request),
+      request: withAbortSignal(withFollowUpCacheMetadata(request, latestResponse, lastProviderRequestMessages)),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
-      terminal: (nextRequest) => invokeProvider(config, nextRequest, streamCallbacks),
+      terminal: async (nextRequest) => {
+        const response = await invokeProvider(config, nextRequest, streamCallbacks);
+        lastProviderRequestMessages = [...(nextRequest.messages ?? [])];
+        return response;
+      },
       metadata: {
         compaction: { latestResponse, reason },
       },
@@ -487,6 +504,7 @@ export async function runNodeRuntimeLoop(
     runtimeToolExecutor,
     actionDeps,
     actionLedger,
+    activePlanStepId: deps.activePlanStepId,
     now,
     eventsLength: () => events.length,
     appendToolCall,
@@ -531,10 +549,28 @@ export async function runNodeRuntimeLoop(
       middlewares: runtimeMiddlewares,
       terminal: async () => ({ kind: "unhandled" }),
     });
+  const guardCycleCounts = new Map<string, number>();
+  let lastAutoAdvanceEvidenceKey = "";
   const continueOrCompleteNaturally = async (
     currentResponse: ModelResponse,
     iteration: number,
   ): Promise<{ kind: "continue"; response: ModelResponse } | { kind: "complete"; response: ModelResponse }> => {
+    const evidenceToolCallIds = lifecycleEvidenceToolCallIds(deps.toolCalls(), params);
+    const evidencePlanStepId = lifecycleEvidencePlanStepId(deps.toolCalls(), evidenceToolCallIds);
+    const evidenceKey = evidenceToolCallIds.join("|");
+    if (evidenceKey && evidenceKey !== lastAutoAdvanceEvidenceKey) {
+      const advanced = deps.autoAdvancePlanListFromLifecycle({
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+        title: params.title,
+        evidenceToolCallIds,
+        planStepId: evidencePlanStepId,
+      });
+      if (advanced) {
+        lastAutoAdvanceEvidenceKey = evidenceKey;
+      }
+    }
+
     const guardResult = evaluateRuntimeCompletionGuards({
       actions: actionLedger.list(),
       planList: deps.planList(),
@@ -547,6 +583,17 @@ export async function runNodeRuntimeLoop(
         iteration,
       });
       return { kind: "complete", response: currentResponse };
+    }
+
+    const guardFingerprint = `${guardResult.reason}:${guardResult.detail}`;
+    const guardCycleCount = (guardCycleCounts.get(guardFingerprint) ?? 0) + 1;
+    guardCycleCounts.set(guardFingerprint, guardCycleCount);
+    if (guardCycleCount > 3) {
+      throw new Error([
+        "Runtime completion guard repeated without progress.",
+        `reason: ${guardResult.reason}`,
+        guardResult.detail,
+      ].join("\n"));
     }
 
     emitRuntimeStatusProgress(
@@ -796,4 +843,94 @@ export async function runNodeRuntimeLoop(
     title: params.title,
     emitNodeRuntimeState: emitForcedFinalProviderState,
   });
+}
+
+function lifecycleEvidenceToolCallIds(
+  toolCalls: readonly OraToolCallEnvelope[],
+  params: Pick<RunNodeRuntimeLoopParams, "agentId" | "nodeId">,
+): string[] {
+  return toolCalls
+    .filter((call) =>
+      call.status === "succeeded" &&
+      call.toolId !== "plan.update" &&
+      (!call.agentId || call.agentId === params.agentId) &&
+      (!call.nodeId || call.nodeId === params.nodeId || call.nodeId === params.agentId)
+    )
+    .map((call) => call.id)
+    .sort();
+}
+
+function lifecycleEvidencePlanStepId(
+  toolCalls: readonly OraToolCallEnvelope[],
+  evidenceToolCallIds: readonly string[],
+): string | undefined {
+  const ids = new Set(evidenceToolCallIds);
+  const planStepIds = [...new Set(toolCalls
+    .filter((call) => ids.has(call.id) && call.planStepId)
+    .map((call) => call.planStepId!)
+  )];
+  return planStepIds.length === 1 ? planStepIds[0] : undefined;
+}
+
+function withStablePrefixCacheMetadata(request: ModelRequest): ModelRequest {
+  if (!request.messages?.length) {
+    return request;
+  }
+  return {
+    ...request,
+    providerCache: {
+      ...request.providerCache,
+      stablePrefixMessageCount: request.providerCache?.stablePrefixMessageCount ?? request.messages.length,
+    },
+  };
+}
+
+function withFollowUpCacheMetadata(
+  request: ModelRequest,
+  latestResponse: ModelResponse,
+  previousMessages: readonly ModelMessage[],
+): ModelRequest {
+  const stableRequest = withStablePrefixCacheMetadata(request);
+  const previousResponseId = (latestResponse.providerResponseId ?? rawProviderResponseId(latestResponse.raw))?.trim();
+  if (!previousResponseId || !request.messages?.length || previousMessages.length === 0) {
+    return stableRequest;
+  }
+  if (!messagesHaveStablePrefix(previousMessages, request.messages)) {
+    return stableRequest;
+  }
+  const deltaMessages = request.messages.slice(previousMessages.length);
+  if (deltaMessages.length === 0) {
+    return stableRequest;
+  }
+  return {
+    ...stableRequest,
+    providerCache: {
+      ...stableRequest.providerCache,
+      openaiPreviousResponseId: previousResponseId,
+      openaiDeltaMessages: deltaMessages,
+    },
+  };
+}
+
+function rawProviderResponseId(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const id = (raw as Record<string, unknown>).id;
+  return typeof id === "string" ? id : undefined;
+}
+
+function messagesHaveStablePrefix(
+  previousMessages: readonly ModelMessage[],
+  nextMessages: readonly ModelMessage[],
+): boolean {
+  if (nextMessages.length < previousMessages.length) {
+    return false;
+  }
+  for (let index = 0; index < previousMessages.length; index += 1) {
+    if (JSON.stringify(previousMessages[index]) !== JSON.stringify(nextMessages[index])) {
+      return false;
+    }
+  }
+  return true;
 }
