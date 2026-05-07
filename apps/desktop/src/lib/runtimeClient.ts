@@ -448,7 +448,9 @@ export function createRuntimeClient() {
         const projects = await this.listProjects();
         const sessions = await this.listSessions();
         const firstSession = sessions[0] ?? await this.createSession();
-        const activeSessionDetail = await this.getSession(firstSession.sessionId);
+        const activeSessionDetail = await this.getSession(firstSession.sessionId, {
+          includeLatestSnapshot: false,
+        });
         return {
           bootstrap,
           projects,
@@ -733,8 +735,11 @@ export function createRuntimeClient() {
     async updateSelfIterationPolicy(policy: OraSelfIterationPolicy): Promise<OraSelfIterationPolicy> {
       return call<OraSelfIterationPolicy>("selfIteration.policy.update", { policy });
     },
-    async getSession(sessionId: string): Promise<OraSessionDetail> {
-      return call<OraSessionDetail>("sessions.get", { sessionId });
+    async getSession(
+      sessionId: string,
+      options: { includeLatestSnapshot?: boolean } = {},
+    ): Promise<OraSessionDetail> {
+      return call<OraSessionDetail>("sessions.get", { sessionId, ...options });
     },
     async getMemory(): Promise<OraLongTermMemoryProfile> {
       return call<OraLongTermMemoryProfile>("memory.get");
@@ -1355,7 +1360,10 @@ class LocalJsonRpcRuntime {
           bootstrap: this.dispatch("runtime.bootstrap", undefined),
           projects: this.dispatch("projects.list", undefined),
           sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
-          activeSessionDetail: this.getSessionDetail({ sessionId: firstSession.sessionId }),
+          activeSessionDetail: this.getSessionDetail({
+            sessionId: firstSession.sessionId,
+            includeLatestSnapshot: false,
+          }),
         };
       }
       case "runtime.maintenance":
@@ -3937,12 +3945,21 @@ class LocalJsonRpcRuntime {
       return messages;
     });
     const latestRunId = turns.at(-1)?.runId;
+    const includeLatestSnapshot =
+      typeof params === "object" &&
+      params !== null &&
+      "includeLatestSnapshot" in params &&
+      params.includeLatestSnapshot === false
+        ? false
+        : true;
     return {
       session: this.sessionWithLatestAttention(session),
       turns,
       transcript,
       branchGroups: buildMockBranchGroups(params.sessionId, [...this.runs.values()]),
-      latestSnapshot: latestRunId ? this.runs.get(latestRunId) : undefined,
+      latestSnapshot: includeLatestSnapshot && latestRunId
+        ? this.runs.get(latestRunId)
+        : undefined,
     };
   }
 

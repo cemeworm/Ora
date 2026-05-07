@@ -932,6 +932,7 @@ export type SessionListParams = z.infer<typeof SessionListParamsSchema>;
 
 export const SessionGetParamsSchema = z.object({
   sessionId: z.string().min(1),
+  includeLatestSnapshot: z.boolean().optional(),
 });
 export type SessionGetParams = z.infer<typeof SessionGetParamsSchema>;
 

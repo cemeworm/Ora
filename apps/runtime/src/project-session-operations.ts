@@ -148,7 +148,9 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
   const parsed = SessionGetParamsSchema.parse(params);
   const session = sessionWithLatestAttention(deps.getSessionOrThrow(parsed.sessionId), deps);
   const turns: SessionTurn[] = deps.runsForSession(parsed.sessionId).map((run) => toSessionTurn(attachTraceMetadata(run)));
-  const latestSnapshot = turns.length > 0
+  const latestSnapshot = parsed.includeLatestSnapshot === false
+    ? undefined
+    : turns.length > 0
     ? attachTraceMetadata(deps.getRunOrThrow(turns.at(-1)!.runId))
     : undefined;
   return SessionDetailSchema.parse({

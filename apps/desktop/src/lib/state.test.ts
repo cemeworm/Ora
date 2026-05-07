@@ -291,6 +291,53 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.status).toBe("succeeded");
   });
 
+  it("hydrates a selected session from turn summaries without loading the latest snapshot", () => {
+    const session = {
+      ...sessionSummary("session-summary"),
+      latestRunId: "run-summary",
+      latestModeId: SINGLE_AGENT_MODE_ID,
+      latestProviderId: "local-smoke",
+      latestModelRef: "local/smoke-model",
+      status: "succeeded" as const,
+      turnCount: 1,
+      updatedAt: 1_714_000_000_100,
+    };
+
+    const next = workbenchReducer(initialWorkbenchState, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [{
+          runId: "run-summary",
+          sessionId: session.sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "Show summary first.",
+          startedAt: 1_714_000_000_000,
+          updatedAt: 1_714_000_000_100,
+          eventCount: 12,
+          checkpointCount: 1,
+          artifactCount: 0,
+        }],
+        transcript: [],
+      },
+    });
+
+    expect(next.isLoading).toBe(false);
+    expect(next.selectedSessionId).toBe("session-summary");
+    expect(next.selectedTurnRunId).toBe("run-summary");
+    expect(next.activeSnapshot).toBeUndefined();
+    expect(next.activeSessionDetail?.latestSnapshot).toBeUndefined();
+    expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
+    expect(next.selectedProviderId).toBe("local-smoke");
+  });
+
   it("keeps unsent composer text scoped to the selected session", () => {
     let state: WorkbenchState = {
       ...initialWorkbenchState,

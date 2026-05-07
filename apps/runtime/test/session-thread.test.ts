@@ -156,16 +156,42 @@ describe("session thread runtime behavior", () => {
       method: "sessions.create",
       params: { label: "Latest" },
     }) as { sessionId: string };
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runs.start",
+      params: {
+        sessionId: latest.sessionId,
+        input: { prompt: "Summarize startup state." },
+        config: { pattern: "generator_verifier" },
+      },
+    }) as { runId: string };
 
     const bootstrap = RuntimeWorkbenchBootstrapSchema.parse(await handle({
       jsonrpc: "2.0",
-      id: 3,
+      id: 4,
       method: "runtime.workbenchBootstrap",
       params: {},
+    }));
+    const detail = SessionDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "sessions.get",
+      params: { sessionId: latest.sessionId },
+    }));
+    const summaryDetail = SessionDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "sessions.get",
+      params: { sessionId: latest.sessionId, includeLatestSnapshot: false },
     }));
 
     expect(bootstrap.sessions.map((session) => session.sessionId)).toEqual([latest.sessionId, older.sessionId]);
     expect(bootstrap.activeSessionDetail.session.sessionId).toBe(latest.sessionId);
+    expect(bootstrap.activeSessionDetail.latestSnapshot).toBeUndefined();
+    expect(bootstrap.activeSessionDetail.turns.map((turn) => turn.runId)).toEqual([run.runId]);
+    expect(detail.latestSnapshot?.runId).toBe(run.runId);
+    expect(summaryDetail.latestSnapshot).toBeUndefined();
   });
 
   it("creates and reloads empty sessions", () => {

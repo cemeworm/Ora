@@ -2803,6 +2803,11 @@ describe("Session thread contracts", () => {
       artifactCount: 0,
     });
     const getParams = SessionGetParamsSchema.parse({ sessionId: "session-1" });
+    const summaryGetParams = SessionGetParamsSchema.parse({
+      sessionId: "session-1",
+      includeLatestSnapshot: false,
+    });
+    expect(summaryGetParams.includeLatestSnapshot).toBe(false);
     const turn = SessionTurnSchema.parse({
       runId: "run-1",
       sessionId: "session-1",

@@ -529,47 +529,63 @@ function WorkbenchInner() {
   }, [state.activeSessionDetail]);
 
   useEffect(() => {
-    const turns = state.activeSessionDetail?.turns ?? [];
-    const missingRunIds = turns
-      .map((turn) => turn.runId)
-      .filter((runId) => turnSnapshots[runId] === undefined);
+    if (state.detailDrawer !== "trails" || !state.selectedTurnRunId) {
+      return;
+    }
 
-    if (missingRunIds.length === 0) {
+    const cached = turnSnapshots[state.selectedTurnRunId];
+    if (cached) {
+      if (state.activeSnapshot?.runId !== state.selectedTurnRunId) {
+        dispatch({
+          type: "SELECT_TURN",
+          runId: state.selectedTurnRunId,
+          snapshot: cached,
+        });
+      }
       return;
     }
 
     let cancelled = false;
     void (async () => {
-      for (const runId of missingRunIds) {
+      try {
+        const snapshot = await runtimeClient.getRunState(state.selectedTurnRunId!);
         if (cancelled) return;
-        try {
-          const snapshot = await runtimeClient.getRunState(runId);
-          if (cancelled) return;
-          setTurnSnapshots((current) => {
-            const existing = current[snapshot.runId];
-            const merged = mergeStateSnapshot(existing, snapshot);
-            if (!merged) {
-              return current;
-            }
-            if (
-              existing?.updatedAt === merged.updatedAt &&
-              existing.events.length === merged.events.length &&
-              existing.agentMessages.length === merged.agentMessages.length
-            ) {
-              return current;
-            }
-            return { ...current, [snapshot.runId]: merged };
-          });
-        } catch {
-          // Missing historical snapshots should not block switching sessions.
-        }
+        setTurnSnapshots((current) => {
+          const existing = current[snapshot.runId];
+          const merged = mergeStateSnapshot(existing, snapshot);
+          if (!merged) {
+            return current;
+          }
+          if (
+            existing?.updatedAt === merged.updatedAt &&
+            existing.events.length === merged.events.length &&
+            existing.agentMessages.length === merged.agentMessages.length
+          ) {
+            return current;
+          }
+          return { ...current, [snapshot.runId]: merged };
+        });
+        dispatch({
+          type: "SELECT_TURN",
+          runId: snapshot.runId,
+          snapshot,
+        });
+      } catch {
+        // Historical snapshots load on demand; a missing one should not block chat.
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [runtimeClient, state.activeSessionDetail]);
+  }, [
+    runtimeClient,
+    dispatch,
+    state.activeSnapshot?.runId,
+    state.detailDrawer,
+    state.selectedTurnRunId,
+    turnSnapshots,
+  ]);
 
   const activeSessionTurnSnapshots = useMemo(() => {
     const detail = state.activeSessionDetail;

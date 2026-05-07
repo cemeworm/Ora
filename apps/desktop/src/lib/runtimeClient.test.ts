@@ -4,12 +4,20 @@ import { createRuntimeClient } from "./runtimeClient";
 describe("desktop runtime client agent catalog", () => {
   it("bootstraps the workbench in one browser-fallback call", async () => {
     const client = createRuntimeClient();
+    const session = await client.createSession();
+    const snapshot = await client.startRun(
+      { prompt: "Keep startup light.", context: {} },
+      { modeId: "single_agent" },
+      session.sessionId,
+    );
 
     const bootstrap = await client.workbenchBootstrap();
 
     expect(bootstrap.bootstrap.health.ok).toBe(true);
     expect(bootstrap.sessions).toHaveLength(1);
     expect(bootstrap.activeSessionDetail.session.sessionId).toBe(bootstrap.sessions[0]?.sessionId);
+    expect(bootstrap.activeSessionDetail.turns.map((turn) => turn.runId)).toEqual([snapshot.runId]);
+    expect(bootstrap.activeSessionDetail.latestSnapshot).toBeUndefined();
     expect(bootstrap.projects).toEqual([]);
   });
 

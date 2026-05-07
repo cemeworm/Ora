@@ -778,7 +778,7 @@ export class LocalRunStore {
     const sessions = listSessionsOperation({}, deps);
     const firstSession = sessions[0] ?? this.createSession({});
     const activeSessionDetail = getSessionOperation(
-      { sessionId: firstSession.sessionId },
+      { sessionId: firstSession.sessionId, includeLatestSnapshot: false },
       this.projectSessionOperationDeps(),
     );
 

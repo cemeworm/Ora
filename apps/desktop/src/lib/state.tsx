@@ -1626,12 +1626,20 @@ export function workbenchReducer(
         ),
         selectedSessionId: action.detail.session.sessionId,
         selectedTurnRunId: normalizedSnapshot?.runId ?? latestTurn?.runId,
-        selectedPattern: normalizedSnapshot?.pattern ?? state.selectedPattern,
-        selectedModeId: normalizedSnapshot?.modeId ?? state.selectedModeId,
+        selectedPattern:
+          normalizedSnapshot?.pattern ??
+          latestTurn?.pattern ??
+          state.selectedPattern,
+        selectedModeId:
+          normalizedSnapshot?.modeId ??
+          latestTurn?.modeId ??
+          state.selectedModeId,
         selectedModeSelection:
           normalizedSnapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId:
-          normalizedSnapshot?.config.providerId ?? state.selectedProviderId,
+          normalizedSnapshot?.config.providerId ??
+          latestTurn?.providerId ??
+          state.selectedProviderId,
         selectedNodeId:
           normalizedSnapshot?.topology.nodes[1]?.id ??
           normalizedSnapshot?.topology.nodes[0]?.id ??
