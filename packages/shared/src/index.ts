@@ -9,6 +9,7 @@ export * from "./modes.js";
 export * from "./mode-studio-builder.js";
 export * from "./runtime.js";
 export * from "./runtime-ledger.js";
+export * from "./runtime-timeline.js";
 export * from "./evaluation.js";
 export * from "./feedback-loop.js";
 export * from "./self-iteration.js";

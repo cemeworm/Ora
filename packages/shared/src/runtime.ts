@@ -1559,6 +1559,40 @@ export function deriveRunAttention(snapshot: StateSnapshot): RunAttention {
   return deriveRunInteraction(snapshot).attention;
 }
 
+export type RuntimeAttentionStatus =
+  | "clarification_required"
+  | "approval_required"
+  | "decision_needed"
+  | "running"
+  | "paused"
+  | "cancelled"
+  | "failed"
+  | "done";
+
+export function runtimeStatusForRunAttention(attention: RunAttention | undefined): RuntimeAttentionStatus | undefined {
+  if (!attention) {
+    return undefined;
+  }
+  switch (attention.kind) {
+    case "needs_clarification":
+      return "clarification_required";
+    case "needs_approval":
+      return "approval_required";
+    case "needs_plan_decision":
+      return "decision_needed";
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    case "idle":
+      return "done";
+  }
+}
+
 export function normalizeRunAttention(snapshot: StateSnapshot): StateSnapshot {
   const normalized = StateSnapshotSchema.parse(snapshot);
   return StateSnapshotSchema.parse({
