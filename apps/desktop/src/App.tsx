@@ -2,6 +2,7 @@ import {
   Component,
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -42,6 +43,7 @@ import {
 import type {
   OraProjectFileEntry,
   OraProjectFileReadResult,
+  OraRunEventStream,
   OraStateSnapshot,
 } from "./lib/runtimeClient";
 import {
@@ -82,6 +84,12 @@ const MIN_DETAIL_PANEL_WIDTH = 360;
 const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora";
+const MAX_TURN_SNAPSHOTS = 40;
+
+interface BatchedStream {
+  stream: OraRunEventStream;
+  receivedAt: number;
+}
 
 function hasVerifiedRealProvider(
   providers: readonly { id: string; type: string }[] | undefined,
@@ -234,6 +242,45 @@ function WorkbenchInner() {
     activeSessionIdRef.current =
       state.activeSessionDetail?.session.sessionId;
   }, [state.activeSessionDetail?.session.sessionId]);
+
+  const streamBatchRef = useRef<BatchedStream[]>([]);
+  const streamFlushRafRef = useRef<number | undefined>(undefined);
+
+  const flushStreamBatch = useCallback(() => {
+    streamFlushRafRef.current = undefined;
+    const entries = streamBatchRef.current;
+    if (entries.length === 0) return;
+    streamBatchRef.current = [];
+
+    for (const { stream, receivedAt } of entries) {
+      dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
+    }
+
+    setTurnSnapshots((current) => {
+      let next = current;
+      for (const { stream } of entries) {
+        const merged = mergeRunStreamSnapshot(next[stream.runId], stream);
+        if (!merged) continue;
+        if (
+          next[stream.runId] &&
+          next[stream.runId]!.updatedAt === merged.updatedAt &&
+          next[stream.runId]!.events.length === merged.events.length
+        ) {
+          continue;
+        }
+        next = { ...next, [stream.runId]: merged };
+      }
+
+      const keys = Object.keys(next);
+      if (keys.length > MAX_TURN_SNAPSHOTS) {
+        const evict = keys.slice(0, keys.length - MAX_TURN_SNAPSHOTS);
+        for (const key of evict) {
+          delete next[key];
+        }
+      }
+      return next;
+    });
+  }, [dispatch]);
 
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(
     DEFAULT_ARTIFACT_PANEL_WIDTH,
@@ -440,20 +487,24 @@ function WorkbenchInner() {
     let cancelled = false;
     void runtimeClient
       .subscribeRunEvents((stream) => {
+        if (cancelled) return;
         const receivedAt = Date.now();
         const streamSessionId = stream.snapshot?.sessionId;
-        dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
-        if (
-          streamSessionId &&
-          activeSessionIdRef.current &&
-          streamSessionId !== activeSessionIdRef.current
-        ) {
-          return;
+        const isActive =
+          !streamSessionId ||
+          !activeSessionIdRef.current ||
+          streamSessionId === activeSessionIdRef.current;
+
+        if (isActive) {
+          streamBatchRef.current.push({ stream, receivedAt });
+          if (streamFlushRafRef.current === undefined) {
+            streamFlushRafRef.current = requestAnimationFrame(() => {
+              flushStreamBatch();
+            });
+          }
+        } else {
+          dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
         }
-        setTurnSnapshots((current) => {
-          const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
-          return merged ? { ...current, [stream.runId]: merged } : current;
-        });
       })
       .then((nextUnsubscribe) => {
         if (cancelled) {
@@ -465,8 +516,13 @@ function WorkbenchInner() {
     return () => {
       cancelled = true;
       unsubscribe?.();
+      if (streamFlushRafRef.current !== undefined) {
+        cancelAnimationFrame(streamFlushRafRef.current);
+        streamFlushRafRef.current = undefined;
+      }
+      streamBatchRef.current = [];
     };
-  }, [runtimeClient, dispatch]);
+  }, [runtimeClient, dispatch, flushStreamBatch]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -531,9 +587,22 @@ function WorkbenchInner() {
     });
   }, [state.activeSnapshot]);
 
+  function limitTurnSnapshots(current: Record<string, OraStateSnapshot>): Record<string, OraStateSnapshot> {
+    const keys = Object.keys(current);
+    if (keys.length <= MAX_TURN_SNAPSHOTS) return current;
+    const evict = keys.slice(0, keys.length - MAX_TURN_SNAPSHOTS);
+    const next = { ...current };
+    for (const key of evict) {
+      delete next[key];
+    }
+    return next;
+  }
+
   useEffect(() => {
     setTurnSnapshots((current) =>
-      pruneTurnSnapshotsForActiveSession(current, state.activeSessionDetail),
+      limitTurnSnapshots(
+        pruneTurnSnapshotsForActiveSession(current, state.activeSessionDetail),
+      ),
     );
   }, [state.activeSessionDetail]);
 
@@ -579,6 +648,7 @@ function WorkbenchInner() {
           runId: snapshot.runId,
           snapshot,
         });
+        setTurnSnapshots(limitTurnSnapshots);
       } catch {
         // Historical snapshots load on demand; a missing one should not block chat.
       }
@@ -645,14 +715,22 @@ function WorkbenchInner() {
     return runAlreadyMaterialized ? [] : adaptPendingRunMessages(pendingRun);
   }, [activeSessionTurnSnapshots, state.pendingRun, state.selectedSessionId]);
 
+  const chatMessagesCacheRef = useRef<{ key: string; result: ReturnType<typeof adaptChatMessages> } | null>(null);
+
   const chatMessages = useMemo(() => {
-    return [
-      ...adaptChatMessages(
-        state.activeSessionDetail?.transcript ?? [],
-        activeSessionTurnSnapshots,
-      ),
-      ...pendingRunMessages,
-    ];
+    const transcript = state.activeSessionDetail?.transcript ?? [];
+    const lastMsg = transcript.length > 0 ? transcript[transcript.length - 1] : null;
+    const lastFingerprint = lastMsg ? `${lastMsg.id}:${lastMsg.content.length}` : '';
+    const snapKeys = Object.keys(activeSessionTurnSnapshots).join(',');
+    const cacheKey = `${transcript.length}:${lastFingerprint}:${snapKeys}`;
+
+    const cache = chatMessagesCacheRef.current;
+    if (cache && cache.key === cacheKey) {
+      return [...cache.result, ...pendingRunMessages];
+    }
+    const adapted = adaptChatMessages(transcript, activeSessionTurnSnapshots);
+    chatMessagesCacheRef.current = { key: cacheKey, result: adapted };
+    return [...adapted, ...pendingRunMessages];
   }, [
     activeSessionTurnSnapshots,
     pendingRunMessages,
@@ -902,6 +980,7 @@ function WorkbenchInner() {
             agents={agents}
             busyCommand={state.busyCommand}
             chatMessages={chatMessages}
+            turnSnapshots={activeSessionTurnSnapshots}
             checkpoints={checkpoints}
             modeCards={modeCards}
             composerPrompt={state.promptText}
@@ -918,8 +997,7 @@ function WorkbenchInner() {
             onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
             onForkRun={actions.forkRun}
             onCreateAndRunBranchGroup={(params) => void actions.createAndRunBranchGroup(params)}
-            onAdoptBranchGroup={(branchGroupId, runId) => void actions.adoptBranchGroup(branchGroupId, runId)}
-            onDismissBranchGroup={(branchGroupId) => void actions.dismissBranchGroup(branchGroupId)}
+            onAdoptBranchGroup={(branchGroupId: string, runId: string) => void actions.adoptBranchGroup(branchGroupId, runId)}
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
