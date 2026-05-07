@@ -3298,6 +3298,21 @@ describe("desktop session view model", () => {
         }],
       } as unknown as OraStateSnapshot,
     }).find((message) => message.role === "assistant");
+    const internalStatusMessage = adaptChatMessages(transcript, {
+      "run-runtime-status": {
+        ...baseSnapshot,
+        events: [{
+          ...baseSnapshot.events[0],
+          payload: {
+            kind: "chat_progress",
+            source: "runtime_status",
+            trigger: "plan_list.incomplete",
+            summary: "Plan list still has unfinished steps; continuing the run.",
+            audience: "internal",
+          },
+        }],
+      } as unknown as OraStateSnapshot,
+    }).find((message) => message.role === "assistant");
 
     expect(statusMessage?.content).toBe("已选择单智能体模式，我准备好了");
     expect(statusMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
@@ -3307,6 +3322,9 @@ describe("desktop session view model", () => {
     expect(deltaMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
     expect(placeholderMessage?.content).toBe("");
     expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
+    expect(internalStatusMessage?.content).toBe("");
+    expect(internalStatusMessage?.turn?.liveProgressText).toBeUndefined();
+    expect(internalStatusMessage?.turn?.timelineItems).toEqual([]);
   });
 
   it("segments live assistant deltas by agent and ignores final cumulative content events", () => {

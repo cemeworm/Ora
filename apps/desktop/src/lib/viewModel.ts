@@ -1540,7 +1540,7 @@ function progressTextFromSnapshot(
     }
     if (
       event.payload.kind !== "chat_progress" ||
-      !isVisibleChatProgressSource(event.payload.source)
+      !isVisibleChatProgress(event.payload)
     ) {
       continue;
     }
@@ -1580,7 +1580,7 @@ function approvalProgressTextFromSnapshot(snapshot: OraStateSnapshot): string | 
     }
     if (
       event.payload.kind !== "chat_progress" ||
-      !isVisibleChatProgressSource(event.payload.source) ||
+      !isVisibleChatProgress(event.payload) ||
       event.payload.trigger !== "approval.required"
     ) {
       continue;
@@ -2613,9 +2613,21 @@ function isChatProgressEvent(event: OraEventEnvelope): boolean {
   return (
     isRecord(event.payload) &&
     event.payload.kind === "chat_progress" &&
-    isVisibleChatProgressSource(event.payload.source) &&
+    isVisibleChatProgress(event.payload) &&
     typeof event.payload.summary === "string" &&
     event.payload.summary.trim().length > 0
+  );
+}
+
+function isVisibleChatProgress(payload: Record<string, unknown>): boolean {
+  return !isInternalProgressPayload(payload) && isVisibleChatProgressSource(payload.source);
+}
+
+function isInternalProgressPayload(payload: Record<string, unknown>): boolean {
+  return (
+    payload.visibility === "internal" ||
+    payload.audience === "internal" ||
+    payload.public === false
   );
 }
 

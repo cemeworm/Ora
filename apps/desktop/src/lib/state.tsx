@@ -360,7 +360,37 @@ function cacheSessionDetail(
 ): Record<string, OraSessionDetail> {
   return {
     ...cache,
-    [detail.session.sessionId]: detail,
+    [detail.session.sessionId]: compactSessionDetailForCache(detail),
+  };
+}
+
+function compactSessionDetailForCache(detail: OraSessionDetail): OraSessionDetail {
+  return {
+    ...detail,
+    latestSnapshot: detail.latestSnapshot
+      ? compactSnapshotForDetailCache(detail.latestSnapshot)
+      : undefined,
+  };
+}
+
+function compactSnapshotForDetailCache(snapshot: OraStateSnapshot): OraStateSnapshot {
+  return {
+    ...snapshot,
+    memory: [],
+    plan: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    conversation: [],
+    toolResults: [],
+    policyDecisions: [],
+    events: [],
+    agentMessages: [],
+    artifacts: [],
+    activeAgents: [],
+    pendingClarifications: [],
+    pendingApprovals: [],
+    output: undefined,
   };
 }
 
@@ -852,6 +882,35 @@ export function mergeRunStreamSnapshot(
     events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
   });
+}
+
+export function pruneTurnSnapshotsForActiveSession(
+  snapshots: Record<string, OraStateSnapshot>,
+  detail: OraSessionDetail | undefined,
+): Record<string, OraStateSnapshot> {
+  if (!detail) {
+    return Object.keys(snapshots).length === 0 ? snapshots : {};
+  }
+
+  const activeSessionId = detail.session.sessionId;
+  const activeRunIds = new Set(detail.turns.map((turn) => turn.runId));
+  let changed = false;
+  const next: Record<string, OraStateSnapshot> = {};
+
+  for (const [runId, snapshot] of Object.entries(snapshots)) {
+    const matchesActiveSession =
+      !snapshot.sessionId || snapshot.sessionId === activeSessionId;
+    const belongsToActiveSession =
+      activeRunIds.has(runId) || snapshot.sessionId === activeSessionId;
+
+    if (matchesActiveSession && belongsToActiveSession) {
+      next[runId] = snapshot;
+    } else {
+      changed = true;
+    }
+  }
+
+  return changed ? next : snapshots;
 }
 
 function canAppendStreamEvents(

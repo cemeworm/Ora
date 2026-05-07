@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
-import { initialWorkbenchState, mergeRunStreamSnapshot, mergeStateSnapshot, workbenchReducer } from "./state";
+import {
+  initialWorkbenchState,
+  mergeRunStreamSnapshot,
+  mergeStateSnapshot,
+  pruneTurnSnapshotsForActiveSession,
+  workbenchReducer,
+} from "./state";
 import type { WorkbenchState } from "./state";
 import type { OraProviderConfig, OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
@@ -230,6 +236,7 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.sessionId).toBe("session-current");
     expect(next.promptText).toBe("draft for current");
     expect(next.sessionDetailsById["session-background"]?.latestSnapshot?.runId).toBe("run-background");
+    expect(next.sessionDetailsById["session-background"]?.latestSnapshot?.events).toEqual([]);
     expect(next.sessions.find((session) => session.sessionId === "session-background")?.status).toBe("running");
   });
 
@@ -577,6 +584,117 @@ describe("desktop workbench state", () => {
 
     expect(merged?.agentMessages.map((message) => message.transcript?.speakerLabel)).toEqual(["正方主辩", "反方主辩"]);
     expect(merged?.agentMessages.map((message) => message.content)).toEqual(["Opening argument.", "Opening response."]);
+  });
+
+  it("prunes cached turn snapshots outside the active session", () => {
+    const activeSnapshot = testSnapshot({
+      runId: "run-active",
+      sessionId: "session-active",
+      events: [{
+        id: "run-active:event:0",
+        runId: "run-active",
+        seq: 0,
+        type: "message.delta",
+        createdAt: 1_714_000_000_000,
+        payload: { role: "assistant", content: "Current", delta: "Current", streaming: true },
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+    const staleSnapshot = testSnapshot({
+      runId: "run-stale",
+      sessionId: "session-stale",
+      events: Array.from({ length: 100 }, (_, index) => ({
+        id: `run-stale:event:${index}`,
+        runId: "run-stale",
+        seq: index,
+        type: "message.delta",
+        createdAt: 1_714_000_000_000 + index,
+        payload: { role: "assistant", content: "Stale", delta: "Stale", streaming: true },
+      })) as unknown as OraStateSnapshot["events"],
+    });
+
+    const pruned = pruneTurnSnapshotsForActiveSession(
+      {
+        [activeSnapshot.runId]: activeSnapshot,
+        [staleSnapshot.runId]: staleSnapshot,
+      },
+      {
+        session: sessionSummary("session-active"),
+        turns: [{
+          runId: activeSnapshot.runId,
+          sessionId: "session-active",
+          turnIndex: 1,
+          status: "running",
+          pattern: activeSnapshot.pattern,
+          prompt: activeSnapshot.input.prompt,
+          startedAt: activeSnapshot.updatedAt,
+          updatedAt: activeSnapshot.updatedAt,
+          eventCount: activeSnapshot.events.length,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: activeSnapshot,
+      },
+    );
+
+    expect(Object.keys(pruned)).toEqual(["run-active"]);
+    expect(pruned["run-active"].events).toHaveLength(1);
+  });
+
+  it("compacts cached session details so prefetch does not retain heavyweight snapshots", () => {
+    const snapshot = testSnapshot({
+      runId: "run-heavy",
+      sessionId: "session-heavy",
+      events: Array.from({ length: 50 }, (_, index) => ({
+        id: `run-heavy:event:${index}`,
+        runId: "run-heavy",
+        seq: index,
+        type: "message.delta",
+        createdAt: 1_714_000_000_000 + index,
+        payload: { role: "assistant", content: "Heavy", delta: "Heavy", streaming: true },
+      })) as unknown as OraStateSnapshot["events"],
+    });
+
+    const next = workbenchReducer(initialWorkbenchState, {
+      type: "CACHE_SESSION_DETAIL",
+      detail: {
+        session: sessionSummary("session-heavy"),
+        turns: [{
+          runId: snapshot.runId,
+          sessionId: "session-heavy",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: snapshot.pattern,
+          prompt: snapshot.input.prompt,
+          startedAt: snapshot.updatedAt,
+          updatedAt: snapshot.updatedAt,
+          eventCount: snapshot.events.length,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: {
+          ...snapshot,
+          actions: [{
+            id: "run-heavy:action:0",
+            runId: snapshot.runId,
+            type: "agent.builder.invoke",
+            riskLevel: "low",
+            status: "succeeded",
+            input: {},
+            output: { events: Array.from({ length: 50 }, (_, index) => ({ index })) },
+            artifactIds: [],
+          }],
+          output: { text: "large final output" },
+        },
+      },
+    });
+
+    const cachedSnapshot = next.sessionDetailsById["session-heavy"]?.latestSnapshot;
+    expect(cachedSnapshot?.runId).toBe("run-heavy");
+    expect(cachedSnapshot?.events).toEqual([]);
+    expect(cachedSnapshot?.actions).toEqual([]);
+    expect(cachedSnapshot?.output).toBeUndefined();
   });
 
   it("preserves desktop and runtime latency marks when snapshots merge", () => {

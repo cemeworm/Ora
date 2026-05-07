@@ -28,6 +28,7 @@ import {
 import {
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
+  pruneTurnSnapshotsForActiveSession,
   useWorkbench,
   WorkbenchProvider,
 } from "./lib/state";
@@ -521,6 +522,12 @@ function WorkbenchInner() {
       return { ...current, [snapshot.runId]: merged };
     });
   }, [state.activeSnapshot]);
+
+  useEffect(() => {
+    setTurnSnapshots((current) =>
+      pruneTurnSnapshotsForActiveSession(current, state.activeSessionDetail),
+    );
+  }, [state.activeSessionDetail]);
 
   useEffect(() => {
     const turns = state.activeSessionDetail?.turns ?? [];

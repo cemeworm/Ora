@@ -1,8 +1,20 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, Circle, ListTodo, LoaderCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  Circle,
+  ListTodo,
+  LoaderCircle,
+} from "lucide-react";
 import type { TurnPlanListStep } from "../types";
 import { cn } from "../lib/utils";
-import { TaskItem, TaskItemMeta, TaskList, TaskListBody, TaskListHeader } from "./ai-elements/task";
+import {
+  TaskItem,
+  TaskItemMeta,
+  TaskList,
+  TaskListBody,
+  TaskListHeader,
+} from "./ai-elements/task";
 
 interface PlanStepsTrayProps {
   planSteps: TurnPlanListStep[];
@@ -18,7 +30,10 @@ export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
   }, [planSteps.length]);
 
   useEffect(() => {
-    if (planSteps.length > 0 && planSteps.every((s) => s.status === "completed")) {
+    if (
+      planSteps.length > 0 &&
+      planSteps.every((s) => s.status === "completed")
+    ) {
       setOpen(false);
     }
   }, [planSteps]);
@@ -26,12 +41,16 @@ export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
   if (planSteps.length === 0) return null;
 
   const done = planSteps.filter((s) => s.status === "completed").length;
-  const title = `Plan ${done}/${planSteps.length}`;
+  const title = `计划 ${done}/${planSteps.length}`;
 
   return (
     <div className="mb-2 rounded-2xl border border-border bg-muted/40 backdrop-blur-sm">
       <TaskList className="border-0 bg-transparent shadow-none">
-        <button type="button" onClick={() => setOpen((current) => !current)} className="w-full text-left">
+        <button
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          className="w-full text-left"
+        >
           <TaskListHeader>
             <div className="flex min-w-0 items-center gap-2">
               <ListTodo size={14} />
@@ -72,14 +91,24 @@ function PlanListStepItem({ item }: { item: TurnPlanListStep }) {
           {item.step}
         </p>
         <TaskItemMeta>
-          <span>{item.status === "in_progress" ? "进行中" : item.status === "completed" ? "已完成" : "待处理"}</span>
+          <span>
+            {item.status === "in_progress"
+              ? "进行中"
+              : item.status === "completed"
+                ? "已完成"
+                : "待处理"}
+          </span>
         </TaskItemMeta>
       </div>
     </TaskItem>
   );
 }
 
-function PlanStepStatusIcon({ status }: { status: TurnPlanListStep["status"] }) {
+function PlanStepStatusIcon({
+  status,
+}: {
+  status: TurnPlanListStep["status"];
+}) {
   switch (status) {
     case "completed":
       return (
@@ -103,7 +132,7 @@ function planSummary(items: TurnPlanListStep[]) {
   const done = items.filter((s) => s.status === "completed").length;
   const active = items.find((s) => s.status === "in_progress");
   if (active) {
-    return `${done}/${items.length} done - ${active.step}`;
+    return `正在进行 - ${active.step}`;
   }
-  return `${done}/${items.length} done`;
+  return ``;
 }
