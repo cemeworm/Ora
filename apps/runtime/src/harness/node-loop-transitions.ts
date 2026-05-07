@@ -13,6 +13,7 @@ export type NodeLoopTransitionResultKind =
   | "gate_required"
   | "tool_result"
   | "recovery_decision"
+  | "boundary_failure"
   | "forced_final"
   | "complete"
   | "fail";
@@ -104,6 +105,10 @@ const NODE_LOOP_TRANSITION_KIND_PATHS: Record<NodeLoopTransitionResultKind, read
     { from: "failed", to: "finalizing" },
     { from: "failed", to: "failed" },
   ],
+  boundary_failure: [
+    { from: "tool_requested", to: "finalizing" },
+    { from: "tool_requested", to: "failed" },
+  ],
   forced_final: [
     { from: "pending", to: "finalizing" },
     { from: "tool_requested", to: "finalizing" },
@@ -194,6 +199,37 @@ export interface NodeLoopReduction {
   invalidTransition?: NodeRuntimeTransition;
 }
 
+export type NodeLoopToolRequestedIntent =
+  | "model_response"
+  | "recovery_decision";
+
+export interface NodeLoopToolRequestedDecision {
+  state: Extract<NodeRuntimeLoopState, "tool_requested">;
+  intent?: NodeLoopToolRequestedIntent;
+}
+
+export interface NodeLoopForcedFinalDecision {
+  state: Extract<NodeRuntimeLoopState, "finalizing">;
+  intent?: Extract<NodeLoopTransitionResultKind, "forced_final">;
+}
+
+export interface NodeLoopGateRequiredDecision {
+  state: Extract<NodeRuntimeLoopState, "interrupted">;
+  intent?: Extract<NodeLoopTransitionResultKind, "gate_required">;
+}
+
+export type NodeLoopRecoveryState = Extract<
+  NodeRuntimeLoopState,
+  "degraded" | "tool_requested" | "repairing"
+>;
+
+export interface NodeLoopRecoveryDecision {
+  state: NodeLoopRecoveryState;
+  intent?: Extract<NodeLoopTransitionResultKind, "recovery_decision">;
+}
+
+export type NodeLoopForcedFinalProviderState = Extract<NodeRuntimeLoopState, "completed" | "failed">;
+
 export class NodeLoopReducer {
   private currentState?: NodeRuntimeLoopState;
   private readonly transitionsValue: NodeRuntimeTransition[] = [];
@@ -234,6 +270,73 @@ export class NodeLoopReducer {
       state,
       transition,
       invalidTransition,
+    };
+  }
+
+  decideToolRequested(): NodeLoopToolRequestedDecision {
+    if (this.currentState === "running_model") {
+      return {
+        state: "tool_requested",
+        intent: "model_response",
+      };
+    }
+    if (this.currentState === "degraded") {
+      return {
+        state: "tool_requested",
+        intent: "recovery_decision",
+      };
+    }
+    return {
+      state: "tool_requested",
+    };
+  }
+
+  decideForcedFinal(): NodeLoopForcedFinalDecision {
+    if (
+      this.currentState === "pending" ||
+      this.currentState === "tool_requested" ||
+      this.currentState === "tool_result_observed" ||
+      this.currentState === "failed"
+    ) {
+      return {
+        state: "finalizing",
+        intent: "forced_final",
+      };
+    }
+    return {
+      state: "finalizing",
+    };
+  }
+
+  decideGateRequired(): NodeLoopGateRequiredDecision {
+    if (
+      this.currentState === "tool_requested" ||
+      this.currentState === "tool_running" ||
+      this.currentState === "interrupted"
+    ) {
+      return {
+        state: "interrupted",
+        intent: "gate_required",
+      };
+    }
+    return {
+      state: "interrupted",
+    };
+  }
+
+  decideRecoveryState(state: NodeLoopRecoveryState): NodeLoopRecoveryDecision {
+    if (
+      state === "degraded" ||
+      state === "repairing" ||
+      (state === "tool_requested" && this.currentState === "degraded")
+    ) {
+      return {
+        state,
+        intent: "recovery_decision",
+      };
+    }
+    return {
+      state,
     };
   }
 
@@ -294,6 +397,12 @@ export class NodeLoopController {
     this.deps.emit(state, params);
   };
 
+  emitPending = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    this.emit("pending", params);
+  };
+
   emitTransitionResult = (
     kind: NodeLoopTransitionResultKind,
     state: NodeRuntimeLoopState,
@@ -306,6 +415,80 @@ export class NodeLoopController {
       });
     }
     this.emit(state, params);
+  };
+
+  emitToolRequested = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    const decision = this.reducer.decideToolRequested();
+    if (decision.intent) {
+      this.emitTransitionResult(decision.intent, decision.state, params);
+      return;
+    }
+    this.emit(decision.state, params);
+  };
+
+  emitToolRunning = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    this.emitTransitionResult("tool_request", "tool_running", params);
+  };
+
+  emitToolResultObserved = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    this.emitTransitionResult("tool_result", "tool_result_observed", params);
+  };
+
+  emitModelRequest = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    this.emitTransitionResult("model_request", "running_model", params);
+  };
+
+  emitForcedFinal = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    const decision = this.reducer.decideForcedFinal();
+    if (decision.intent) {
+      this.emitTransitionResult(decision.intent, decision.state, params);
+      return;
+    }
+    this.emit(decision.state, params);
+  };
+
+  emitGateRequired = (
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    const decision = this.reducer.decideGateRequired();
+    if (decision.intent) {
+      this.emitTransitionResult(decision.intent, decision.state, params);
+      return;
+    }
+    this.emit(decision.state, params);
+  };
+
+  emitRecoveryState = (
+    state: NodeLoopRecoveryState,
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    const decision = this.reducer.decideRecoveryState(state);
+    if (decision.intent) {
+      this.emitTransitionResult(decision.intent, decision.state, params);
+      return;
+    }
+    this.emit(decision.state, params);
+  };
+
+  emitForcedFinalProviderState = (
+    state: NodeLoopForcedFinalProviderState,
+    params: NodeLoopStateEmitParams,
+  ): void => {
+    if (state === "completed") {
+      this.emitTransitionResult("complete", state, params);
+      return;
+    }
+    this.emitTransitionResult("fail", state, params);
   };
 }
 

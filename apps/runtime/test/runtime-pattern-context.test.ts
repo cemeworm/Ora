@@ -1,6 +1,9 @@
 import type { BusStats, QueueSummary, SharedStateSummary } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
-import { createRuntimePatternExecutionContext } from "../src/harness/runtime-pattern-context.js";
+import {
+  createKernelPatternExecutionContextAdapter,
+  createRuntimePatternExecutionContext,
+} from "../src/harness/runtime-pattern-context.js";
 import type { PatternExecutionContext } from "../src/patterns/execution-context.js";
 
 function baseContext(overrides: {
@@ -109,5 +112,25 @@ describe("runtime pattern execution context", () => {
 
     expect(result).toBe("ok");
     expect(calls).toEqual(["delegated"]);
+  });
+
+  it("creates kernel adapters that produce live pattern contexts", () => {
+    let queueSummary: QueueSummary = {
+      mode: "dag",
+      pending: 1,
+      inProgress: 0,
+      completed: 0,
+      topics: [],
+    };
+    const adapter = createKernelPatternExecutionContextAdapter(baseContext({
+      queueSummary: () => queueSummary,
+      sharedStateSummary: () => ({ enabled: false, storeKind: "none", version: 0, entries: [] }),
+      busStats: () => ({ enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} }),
+    }));
+
+    const context = adapter.create();
+    queueSummary = { ...queueSummary, pending: 0, completed: 1 };
+
+    expect(context.queueSummary).toMatchObject({ pending: 0, completed: 1 });
   });
 });

@@ -64,6 +64,16 @@ export type RuntimeNodeState =
   | "interrupted"
   | "failed";
 
+export interface RuntimeNodeStateEmitParams {
+  agentId: string;
+  title?: string;
+  actionId?: string;
+  reason?: string;
+  detail?: string;
+  toolId?: string;
+  iteration?: number;
+}
+
 export interface RuntimeToolExecutionResult {
   output: unknown;
   fileChange?: RuntimeFileChangeMetadata;
@@ -87,16 +97,14 @@ export interface RuntimeToolExecutionContext extends RuntimeMiddlewareContext {
   actionDeps: () => RuntimeActionDeps;
   emitNodeRuntimeState: (
     state: RuntimeNodeState,
-    params: {
-      agentId: string;
-      title?: string;
-      actionId?: string;
-      reason?: string;
-      detail?: string;
-      toolId?: string;
-      iteration?: number;
-    },
+    params: RuntimeNodeStateEmitParams,
   ) => void;
+  emitToolRequested: (params: RuntimeNodeStateEmitParams) => void;
+  emitToolRunning: (params: RuntimeNodeStateEmitParams) => void;
+  emitToolResultObserved: (params: RuntimeNodeStateEmitParams) => void;
+  emitModelRequest: (params: RuntimeNodeStateEmitParams) => void;
+  emitForcedFinal: (params: RuntimeNodeStateEmitParams) => void;
+  emitGateRequired: (params: RuntimeNodeStateEmitParams) => void;
   eventsLength: () => number;
   clarificationAnswer: (key: string, id: string) => unknown;
   ensureClarification: (params: {
@@ -615,7 +623,7 @@ export function createClarificationToolMiddleware(): RuntimeMiddleware {
           toolCallRecord: request.toolCallRecord,
           now: context.now,
         });
-        context.emitNodeRuntimeState("interrupted", {
+        context.emitGateRequired({
           agentId: context.agentId,
           title: context.title,
           actionId: request.action.id,
@@ -696,14 +704,14 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
           { actionId: batchAction.id, status: "proposed", record: batchAction },
           { agentId: context.agentId, nodeId: context.nodeId },
         );
-        context.emitNodeRuntimeState("tool_requested", {
+        context.emitToolRequested({
           agentId: context.agentId,
           title: context.title,
           actionId: batchAction.id,
           toolId: "user.clarify",
           iteration: request.iteration,
         });
-        context.emitNodeRuntimeState("tool_running", {
+        context.emitToolRunning({
           agentId: context.agentId,
           title: context.title,
           actionId: batchAction.id,
@@ -726,7 +734,7 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
           });
         }
 
-        context.emitNodeRuntimeState("interrupted", {
+        context.emitGateRequired({
           agentId: context.agentId,
           title: context.title,
           actionId: batchAction.id,
@@ -797,7 +805,7 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
           });
         }
 
-        context.emitNodeRuntimeState("tool_result_observed", {
+        context.emitToolResultObserved({
           agentId: context.agentId,
           title: context.title,
           toolId: tc.tool,
@@ -827,7 +835,7 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
           agentId: context.agentId,
           nodeId: context.modelNodeId ?? context.nodeId,
         }) ?? "forced_final_answer";
-        context.emitNodeRuntimeState("finalizing", {
+        context.emitForcedFinal({
           agentId: context.agentId,
           title: context.title,
           reason: stopReason,
@@ -843,7 +851,7 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
         };
       }
 
-      context.emitNodeRuntimeState("running_model", {
+      context.emitModelRequest({
         agentId: context.agentId,
         title: context.title,
         iteration: request.iteration + 1,

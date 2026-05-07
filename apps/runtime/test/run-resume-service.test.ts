@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   getModePreset,
   modeSpecToPatternDefinition,
+  OraEventEnvelopeSchema,
   SINGLE_AGENT_MODE_ID,
   StateSnapshotSchema,
+  type OraEventEnvelope,
   type StateSnapshot,
 } from "@cemeworm/shared";
 import { createRunningRunSnapshot } from "../src/run-snapshots.js";
-import { RunResumeService, classifyRunResumeStrategy } from "../src/run-resume-service.js";
+import {
+  RunResumeService,
+  classifyRunResumeStrategy,
+  executeNonKernelResumeStrategy,
+} from "../src/run-resume-service.js";
 
 const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
 const definition = modeSpecToPatternDefinition(modeSpec);
@@ -120,6 +126,35 @@ function withApprovedTool(snapshot = baseSnapshot()): StateSnapshot {
   });
 }
 
+function mutationDeps() {
+  return {
+    appendEvent: (
+      snapshot: StateSnapshot,
+      type: OraEventEnvelope["type"],
+      payload: unknown,
+      extra?: Partial<OraEventEnvelope>,
+    ) => {
+      const event = OraEventEnvelopeSchema.parse({
+        id: `${snapshot.runId}:evt-${snapshot.events.length}`,
+        runId: snapshot.runId,
+        seq: snapshot.events.length,
+        type,
+        createdAt: 2_000,
+        pattern: snapshot.pattern,
+        payload,
+        ...extra,
+      });
+      return StateSnapshotSchema.parse({
+        ...snapshot,
+        events: [...snapshot.events, event],
+        updatedAt: 2_000,
+      });
+    },
+    now: () => 2_000,
+    syncTodos: (snapshot: StateSnapshot) => snapshot,
+  };
+}
+
 describe("RunResumeService", () => {
   it("classifies approved-tool continuation without taking execution authority", () => {
     const strategy = classifyRunResumeStrategy({
@@ -179,5 +214,48 @@ describe("RunResumeService", () => {
     expect(preparation.hasKernelWork).toBe(true);
     expect(preparation.strategy.kind).toBe("approved_tool_continuation");
     expect(preparation.strategy.approvedActionIds).toEqual(preparation.approvedActionIds);
+  });
+
+  it("executes non-kernel resume mutation without taking ledger or persistence authority", () => {
+    const nonKernelSnapshot = StateSnapshotSchema.parse({
+      ...withClarification(),
+      modeSpec: undefined,
+    });
+
+    const result = executeNonKernelResumeStrategy({
+      snapshot: nonKernelSnapshot,
+      reason: "Answered.",
+      patch: { clarifications: { scope: "Only docs." } },
+      clarificationPatch: { scope: "Only docs." },
+      deps: mutationDeps(),
+    });
+
+    expect(result.kind).toBe("completed");
+    expect(result.snapshot.status).toBe("succeeded");
+    expect(result.snapshot.pendingClarifications).toEqual([]);
+    expect(result.snapshot.events.map((event) => event.type)).toContain("run.resumed");
+    expect(result.snapshot.events.map((event) => event.type)).toContain("clarification.resolved");
+    expect(result.snapshot.events.map((event) => event.type)).toContain("run.done");
+  });
+
+  it("returns a non-kernel needs-input result when gates remain unresolved", () => {
+    const nonKernelSnapshot = StateSnapshotSchema.parse({
+      ...withClarification(),
+      modeSpec: undefined,
+    });
+
+    const result = executeNonKernelResumeStrategy({
+      snapshot: nonKernelSnapshot,
+      reason: "Still missing.",
+      patch: {},
+      clarificationPatch: {},
+      deps: mutationDeps(),
+    });
+
+    expect(result.kind).toBe("needs_input");
+    expect(result.snapshot.status).toBe("interrupted");
+    expect(result.snapshot.pendingClarifications).toHaveLength(1);
+    expect(result.snapshot.events.map((event) => event.type)).toContain("run.resumed");
+    expect(result.snapshot.events.map((event) => event.type)).not.toContain("run.done");
   });
 });

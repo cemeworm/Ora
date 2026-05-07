@@ -1,9 +1,13 @@
 import {
   RunResumeParamsSchema,
+  type OraEventEnvelope,
   type StateSnapshot,
 } from "@cemeworm/shared";
 import {
   approvedToolContinuationActions,
+  completeApprovedToolContinuation,
+  type ApprovedFileWriteResumeDeps,
+  type ApprovedToolContinuationResult,
 } from "./approved-file-write-resume.js";
 import {
   approvedActionsForResume,
@@ -12,6 +16,15 @@ import {
   type ApprovedResumeAction,
   type ParsedResumePatch,
 } from "./run-orchestration.js";
+import {
+  applyNonKernelResumeApprovals,
+  beginNonKernelResume,
+  completeNonKernelResumeMutation,
+  interruptedNonKernelResumeSnapshot,
+  nonKernelResumeNeedsInput,
+  resolveNonKernelResumeClarifications,
+  type NonKernelResumeMutationDeps,
+} from "./run-resume-mutation.js";
 import {
   RuntimeGateService,
   type RuntimeGateResolution,
@@ -48,6 +61,16 @@ export interface RunResumePreparation {
   hasKernelWork: boolean;
   strategy: RunResumeStrategy;
 }
+
+export type NonKernelResumeStrategyResult =
+  | {
+      kind: "needs_input";
+      snapshot: StateSnapshot;
+    }
+  | {
+      kind: "completed";
+      snapshot: StateSnapshot;
+    };
 
 export class RunResumeService {
   private readonly gateService = new RuntimeGateService();
@@ -106,4 +129,55 @@ export function classifyRunResumeStrategy(params: {
     kind: "non_kernel",
     approvedActionIds: params.approvedActionIds,
   };
+}
+
+export function executeNonKernelResumeStrategy(params: {
+  snapshot: StateSnapshot;
+  reason: string;
+  patch: unknown;
+  clarificationPatch: Record<string, unknown>;
+  deps: NonKernelResumeMutationDeps;
+}): NonKernelResumeStrategyResult {
+  let working = beginNonKernelResume({
+    snapshot: params.snapshot,
+    reason: params.reason,
+    patch: params.patch,
+    deps: params.deps,
+  });
+  working = resolveNonKernelResumeClarifications({
+    snapshot: working,
+    clarificationPatch: params.clarificationPatch,
+    appendEvent: params.deps.appendEvent,
+  });
+  working = applyNonKernelResumeApprovals(working, params.deps);
+
+  if (nonKernelResumeNeedsInput(working)) {
+    return {
+      kind: "needs_input",
+      snapshot: interruptedNonKernelResumeSnapshot(working, params.deps.now()),
+    };
+  }
+
+  const completed = completeNonKernelResumeMutation(working, params.deps);
+  return {
+    kind: "completed",
+    snapshot: params.deps.syncTodos(completed, "resume.completed"),
+  };
+}
+
+export function executeApprovedToolContinuationStrategy(params: {
+  snapshot: StateSnapshot;
+  approvedActionIds: string[];
+  reason?: string;
+  patch?: unknown;
+  deps: ApprovedFileWriteResumeDeps;
+  onEvent?: (event: OraEventEnvelope, snapshot: StateSnapshot) => void;
+}): Promise<ApprovedToolContinuationResult | undefined> {
+  return completeApprovedToolContinuation(
+    params.snapshot,
+    params.approvedActionIds,
+    { reason: params.reason, patch: params.patch },
+    params.deps,
+    params.onEvent,
+  );
 }

@@ -28,10 +28,27 @@ export interface RunStreamingSessionParams {
 }
 
 export class RunStreamingService {
+  private readonly activeAbortControllers = new Map<string, AbortController>();
+
   constructor(private readonly deps: RunStreamingServiceDeps) {}
 
   createSession(params: RunStreamingSessionParams): RunStreamingSession {
     return new RunStreamingSession(params, this.deps);
+  }
+
+  createAbortController(runId: string): AbortController {
+    const abortController = new AbortController();
+    this.activeAbortControllers.set(runId, abortController);
+    return abortController;
+  }
+
+  deleteAbortController(runId: string): void {
+    this.activeAbortControllers.delete(runId);
+  }
+
+  abort(runId: string, reason?: string): void {
+    this.activeAbortControllers.get(runId)?.abort(reason);
+    this.activeAbortControllers.delete(runId);
   }
 }
 

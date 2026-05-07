@@ -7,7 +7,7 @@ import {
   RunEventStreamSchema,
   RunReplayParamsSchema,
   RunStreamParamsSchema,
-  deriveRunAttention,
+  normalizeRunAttention,
   StateSnapshot,
   StateSnapshotSchema
 } from "@cemeworm/shared";
@@ -41,7 +41,7 @@ export function streamRun(params: unknown, deps: RunStateOperationDeps): RunEven
   const parsed = RunStreamParamsSchema.parse(params);
   const snapshot = deps.getRunOrThrow(parsed.runId);
   const fromSeq = parsed.afterSeq === undefined ? 0 : parsed.afterSeq + 1;
-  const normalized = normalizeSnapshotAttention(snapshot);
+  const normalized = normalizeRunAttention(snapshot);
   const settled = normalized.status !== "queued" && normalized.status !== "running";
   return RunEventStreamSchema.parse({
     runId: normalized.runId,
@@ -78,21 +78,13 @@ export function cancelRun(
 }
 
 export function getRunState(params: unknown, deps: RunStateOperationDeps): StateSnapshot {
-  return normalizeSnapshotAttention(attachTraceMetadata(deps.getRunOrThrow(deps.requireRunId(params))));
+  return normalizeRunAttention(attachTraceMetadata(deps.getRunOrThrow(deps.requireRunId(params))));
 }
 
 export function persistExternalSnapshot(snapshot: StateSnapshot, deps: RunStateOperationDeps): StateSnapshot {
   const tracedSnapshot = attachTraceMetadata(StateSnapshotSchema.parse(snapshot));
   deps.persistRun(tracedSnapshot);
   return tracedSnapshot;
-}
-
-function normalizeSnapshotAttention(snapshot: StateSnapshot): StateSnapshot {
-  const normalized = StateSnapshotSchema.parse(snapshot);
-  return StateSnapshotSchema.parse({
-    ...normalized,
-    attention: deriveRunAttention(normalized),
-  });
 }
 
 export function listCheckpoints(params: unknown, deps: RunStateOperationDeps): CheckpointMeta[] {

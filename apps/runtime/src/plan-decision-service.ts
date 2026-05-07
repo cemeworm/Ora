@@ -7,7 +7,7 @@ import {
   type RuntimeSessionEntryType,
 } from "@cemeworm/shared";
 import { OraRuntimeError } from "./runtime-errors.js";
-import { RuntimeGateService } from "./runtime-gate-service.js";
+import { createRuntimeGateAppendAdapter, RuntimeGateService } from "./runtime-gate-service.js";
 
 type AppendSessionLedgerEntry = (
   sessionId: string,
@@ -64,7 +64,9 @@ export class PlanDecisionService {
       updatedAt: Math.max(snapshot.updatedAt, now),
     }));
     if (this.deps.isLedgerBackedSession(parsed.sessionId)) {
-      this.deps.appendSessionLedgerEntry(parsed.sessionId, this.gateService.resolvePlanDecisionGate({
+      createRuntimeGateAppendAdapter((entry) => {
+        this.deps.appendSessionLedgerEntry(parsed.sessionId, entry);
+      }).appendGateLifecycleResult(this.gateService.resolvePlanDecisionGateLifecycle({
         runId: latestRunId,
         turnIndex: snapshot.turnIndex,
         decisionId: parsed.decisionId,

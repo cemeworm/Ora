@@ -1,6 +1,6 @@
 import {
   AgentConversationMessageSchema,
-  deriveRunAttention,
+  normalizeRunAttention,
   OraEventEnvelope,
   PendingClarificationSchema,
   RunEventStream,
@@ -22,9 +22,9 @@ export function publishRunStream(params: {
     return;
   }
   const snapshot = params.snapshot
-    ? normalizeSnapshotAttention(params.snapshot)
+    ? normalizeRunAttention(params.snapshot)
     : undefined;
-  const liveSnapshot = normalizeSnapshotAttention(params.liveSnapshot);
+  const liveSnapshot = normalizeRunAttention(params.liveSnapshot);
   const streamSnapshot = snapshot ?? (
     liveSnapshot.status === "queued" || liveSnapshot.status === "running"
       ? shouldAttachRunningLiveSnapshot(params.events, liveSnapshot) ? liveSnapshot : undefined
@@ -47,7 +47,7 @@ export function applyStreamingRunEvent(
   event: OraEventEnvelope,
 ): StateSnapshot {
   const projected = projectStreamingEvent(liveSnapshot, event);
-  return normalizeSnapshotAttention(StateSnapshotSchema.parse({
+  return normalizeRunAttention(StateSnapshotSchema.parse({
     ...projected,
     status: statusForRunEvent(event.type, liveSnapshot.status),
     events: [...liveSnapshot.events, event],
@@ -285,7 +285,7 @@ export function createStreamingFailure(params: {
   return {
     detail,
     event,
-    snapshot: normalizeSnapshotAttention(StateSnapshotSchema.parse({
+    snapshot: normalizeRunAttention(StateSnapshotSchema.parse({
       ...params.liveSnapshot,
       status: "failed",
       error: detail,
@@ -293,12 +293,4 @@ export function createStreamingFailure(params: {
       updatedAt: params.failedAt,
     })),
   };
-}
-
-function normalizeSnapshotAttention(snapshot: StateSnapshot): StateSnapshot {
-  const normalized = StateSnapshotSchema.parse(snapshot);
-  return StateSnapshotSchema.parse({
-    ...normalized,
-    attention: deriveRunAttention(normalized),
-  });
 }

@@ -1,6 +1,6 @@
 import type { PatternExecutionContext } from "../patterns/execution-context.js";
 
-type RuntimePatternExecutionContextParams = Omit<
+export type RuntimePatternExecutionContextParams = Omit<
   PatternExecutionContext,
   "queueSummary" | "sharedStateSummary" | "busStats"
 > & {
@@ -23,5 +23,17 @@ export function createRuntimePatternExecutionContext(
     get busStats() {
       return params.busStats();
     },
+  };
+}
+
+export interface KernelPatternExecutionContextAdapter {
+  create(): PatternExecutionContext;
+}
+
+export function createKernelPatternExecutionContextAdapter(
+  params: RuntimePatternExecutionContextParams,
+): KernelPatternExecutionContextAdapter {
+  return {
+    create: () => createRuntimePatternExecutionContext(params),
   };
 }

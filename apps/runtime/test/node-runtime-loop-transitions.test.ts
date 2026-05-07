@@ -22,6 +22,10 @@ function createTempStore() {
   });
 }
 
+function readRuntimeSource(relativePath: string): string {
+  return fs.readFileSync(path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", relativePath), "utf8");
+}
+
 function expectCoreTransitions(states: ReturnType<typeof nodeRuntimeStateSequence>) {
   const allowed = new Set(CORE_NODE_RUNTIME_TRANSITIONS.map((transition) => `${transition.from}->${transition.to}`));
   for (const transition of transitionPairs(states)) {
@@ -152,6 +156,190 @@ describe("node runtime loop transition contract", () => {
     expect(controller.state).toBe("completed");
   });
 
+  it("lets the reducer own tool-requested intent decisions", () => {
+    const emitted: Array<{ state: string; params: unknown }> = [];
+    const modelController = new NodeLoopController({
+      emit: (state, params) => emitted.push({ state, params }),
+      onInvalidTransition: "throw",
+    });
+
+    modelController.emit("pending", { agentId: ORA_ROOT_AGENT_ID });
+    modelController.emitTransitionResult("model_request", "running_model", { agentId: ORA_ROOT_AGENT_ID });
+    modelController.emitToolRequested({
+      agentId: ORA_ROOT_AGENT_ID,
+      title: "Respond",
+      toolId: "file.read",
+      iteration: 0,
+    });
+
+    expect(modelController.transitions).toEqual([
+      { from: "pending", to: "running_model" },
+      { from: "running_model", to: "tool_requested" },
+    ]);
+    expect(emitted.at(-1)).toEqual({
+      state: "tool_requested",
+      params: {
+        agentId: ORA_ROOT_AGENT_ID,
+        title: "Respond",
+        toolId: "file.read",
+        iteration: 0,
+      },
+    });
+
+    const recoveryController = new NodeLoopController({
+      emit: () => undefined,
+      onInvalidTransition: "throw",
+    });
+    recoveryController.emit("tool_running", { agentId: ORA_ROOT_AGENT_ID });
+    recoveryController.emitRecoveryState("degraded", { agentId: ORA_ROOT_AGENT_ID });
+    recoveryController.emitToolRequested({ agentId: ORA_ROOT_AGENT_ID, toolId: "file.read" });
+    expect(recoveryController.transitions).toEqual([
+      { from: "tool_running", to: "degraded" },
+      { from: "degraded", to: "tool_requested" },
+    ]);
+  });
+
+  it("lets the reducer own forced-final and gate-required decisions", () => {
+    const controller = new NodeLoopController({
+      emit: () => undefined,
+      onInvalidTransition: "throw",
+    });
+
+    controller.emit("pending", { agentId: ORA_ROOT_AGENT_ID });
+    controller.emitTransitionResult("model_request", "running_model", { agentId: ORA_ROOT_AGENT_ID });
+    controller.emitToolRequested({ agentId: ORA_ROOT_AGENT_ID, toolId: "file.write" });
+    controller.emitGateRequired({
+      agentId: ORA_ROOT_AGENT_ID,
+      actionId: "action-write",
+      toolId: "file.write",
+    });
+
+    expect(controller.transitions).toEqual([
+      { from: "pending", to: "running_model" },
+      { from: "running_model", to: "tool_requested" },
+      { from: "tool_requested", to: "interrupted" },
+    ]);
+
+    const forcedFinalController = new NodeLoopController({
+      emit: () => undefined,
+      onInvalidTransition: "throw",
+    });
+    forcedFinalController.emit("tool_requested", { agentId: ORA_ROOT_AGENT_ID });
+    forcedFinalController.emitForcedFinal({
+      agentId: ORA_ROOT_AGENT_ID,
+      reason: "tool_budget_exhausted",
+    });
+    expect(forcedFinalController.transitions).toEqual([
+      { from: "tool_requested", to: "finalizing" },
+    ]);
+  });
+
+  it("lets the reducer own recovery state decisions", () => {
+    const alternateController = new NodeLoopController({
+      emit: () => undefined,
+      onInvalidTransition: "throw",
+    });
+    alternateController.emit("tool_running", { agentId: ORA_ROOT_AGENT_ID });
+    alternateController.emitRecoveryState("degraded", { agentId: ORA_ROOT_AGENT_ID });
+    alternateController.emitRecoveryState("tool_requested", {
+      agentId: ORA_ROOT_AGENT_ID,
+      toolId: "file.read",
+    });
+    alternateController.emitToolRunning({
+      agentId: ORA_ROOT_AGENT_ID,
+      toolId: "file.read",
+    });
+
+    expect(alternateController.transitions).toEqual([
+      { from: "tool_running", to: "degraded" },
+      { from: "degraded", to: "tool_requested" },
+      { from: "tool_requested", to: "tool_running" },
+    ]);
+
+    const fallbackController = new NodeLoopController({
+      emit: () => undefined,
+      onInvalidTransition: "throw",
+    });
+    fallbackController.emit("tool_running", { agentId: ORA_ROOT_AGENT_ID });
+    fallbackController.emitRecoveryState("degraded", { agentId: ORA_ROOT_AGENT_ID });
+    fallbackController.emitRecoveryState("repairing", {
+      agentId: ORA_ROOT_AGENT_ID,
+      toolId: "file.read",
+    });
+    fallbackController.emitModelRequest({ agentId: ORA_ROOT_AGENT_ID });
+
+    expect(fallbackController.transitions).toEqual([
+      { from: "tool_running", to: "degraded" },
+      { from: "degraded", to: "repairing" },
+      { from: "repairing", to: "running_model" },
+    ]);
+  });
+
+  it("routes recovery and boundary-failure state emits through typed intents", () => {
+    const source = readRuntimeSource("src/harness/node-runtime-loop.ts");
+    const middlewareSource = readRuntimeSource("src/harness/runtime-middleware.ts");
+    const toolActionProposalSource = readRuntimeSource("src/harness/runtime-tool-action-proposal.ts");
+    const toolAttemptSource = readRuntimeSource("src/harness/runtime-tool-attempt.ts");
+    const toolBoundarySource = readRuntimeSource("src/harness/runtime-tool-boundary.ts");
+    const toolCallSource = readRuntimeSource("src/harness/runtime-tool-call-service.ts");
+    const toolRecoverySource = readRuntimeSource("src/harness/runtime-tool-recovery-service.ts");
+
+    expect(source).not.toContain("const emitRawRecoveryNodeRuntimeState =");
+    expect(source).not.toContain("const emitRawAlternateToolNodeRuntimeState =");
+    expect(source).not.toContain("const emitRawBoundaryFailureNodeRuntimeState =");
+    expect(source).not.toContain('nodeLoopController.state === "running_model"');
+    expect(source).toContain("new RuntimeToolRecoveryService({");
+    expect(source).toContain("toolRecoveryService.recoverToolFailure(failure)");
+    expect(source).not.toContain('recoveryDecision.action === "alternate_tool"');
+    expect(source).not.toContain('recoveryDecision.action === "fallback_artifact"');
+    expect(source).not.toContain("classifyRecoveryError(");
+    expect(source).toContain("new RuntimeToolCallService({");
+    expect(source).toContain("toolCallService.runToolTurn({");
+    expect(source).not.toContain("proposeRuntimeToolAction({");
+    expect(source).not.toContain("resolveRuntimeActionApproval({");
+    expect(source).not.toContain("recordRuntimeToolActionSucceeded({");
+    expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("degraded"');
+    expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("repairing"');
+    expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("tool_requested"');
+    expect(source).not.toContain('nodeLoopController.emitTransitionResult("recovery_decision"');
+    expect(source).not.toContain('emitNodeRuntimeState("finalizing"');
+    expect(toolCallSource).toContain('nodeLoopController.emitTransitionResult("tool_request", "tool_running"');
+    expect(toolCallSource).toContain('nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed"');
+    expect(source).toContain('nodeLoopController.emitTransitionResult("boundary_failure", "finalizing"');
+    expect(source).toContain('nodeLoopController.emitTransitionResult("boundary_failure", "failed"');
+    expect(source).toContain("nodeLoopController.emitToolRequested(toolRequestedParams)");
+    expect(source).toContain("nodeLoopController.emitPending({");
+    expect(source).toContain("nodeLoopController.emitForcedFinal({");
+    expect(source).toContain("nodeLoopController.emitForcedFinalProviderState(state, emitParams)");
+    expect(toolCallSource).toContain("nodeLoopController.emitGateRequired({");
+    expect(toolCallSource).toContain("proposeRuntimeToolAction({");
+    expect(toolRecoverySource).toContain("proposeRuntimeRecoveryToolAction({");
+    expect(source).toContain("registerRuntimeToolAttempt({");
+    expect(toolRecoverySource).toContain("registerRuntimeToolAttempt({");
+    expect(source).not.toContain("completion.registerToolAttempt(");
+    expect(source).not.toContain("const riskLevel = runtimeToolExecutor.riskLevel(toolCall)");
+    expect(source).not.toContain("const alternateRiskLevel =");
+    expect(source).not.toContain("id: `${params.agentId}-tool-${events.length}`");
+    expect(source).not.toContain("id: `${params.agentId}-tool-recovery-${events.length}`");
+    expect(toolActionProposalSource).toContain("params.runtimeToolExecutor.riskLevel(params.toolCall)");
+    expect(toolActionProposalSource).toContain("params.runtimeToolExecutor.approvalRequest(params.toolCall, params.inputPrompt)");
+    expect(toolAttemptSource).toContain("registerRuntimeToolAttempt");
+    expect(toolAttemptSource).toContain("params.completion.registerToolAttempt(params.toolCall, params.scope)");
+    expect(source).toContain("codeDevelopmentToolBoundaryError({");
+    expect(source).not.toContain("CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS");
+    expect(toolBoundarySource).toContain("CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS");
+    expect(source).not.toContain('emitNodeRuntimeState("pending"');
+    expect(source).not.toContain('nodeLoopController.emitTransitionResult("forced_final"');
+    expect(middlewareSource).toContain("context.emitToolRequested({");
+    expect(middlewareSource).toContain("context.emitToolRunning({");
+    expect(middlewareSource).toContain("context.emitToolResultObserved({");
+    expect(middlewareSource).toContain("context.emitGateRequired({");
+    expect(middlewareSource).toContain("context.emitForcedFinal({");
+    expect(middlewareSource).toContain("context.emitModelRequest({");
+    expect(middlewareSource).not.toContain('context.emitNodeRuntimeState("interrupted"');
+    expect(middlewareSource).not.toContain('context.emitNodeRuntimeState("finalizing"');
+  });
+
   it("reduces node loop transitions before controller emission", () => {
     const reducer = new NodeLoopReducer();
 
@@ -211,6 +399,24 @@ describe("node runtime loop transition contract", () => {
     })).toEqual({
       kind: "forced_final",
       transition: { from: "tool_result_observed", to: "finalizing" },
+      valid: true,
+    });
+
+    expect(nodeLoopTransitionResult("boundary_failure", {
+      from: "tool_requested",
+      to: "failed",
+    })).toEqual({
+      kind: "boundary_failure",
+      transition: { from: "tool_requested", to: "failed" },
+      valid: true,
+    });
+
+    expect(nodeLoopTransitionResult("boundary_failure", {
+      from: "tool_requested",
+      to: "finalizing",
+    })).toEqual({
+      kind: "boundary_failure",
+      transition: { from: "tool_requested", to: "finalizing" },
       valid: true,
     });
   });
@@ -293,6 +499,30 @@ describe("node runtime loop transition contract", () => {
     ).toThrow("Invalid node runtime transition: completed -> tool_running");
     expect(throwingController.state).toBe("completed");
     expect(throwingController.transitions).toEqual([]);
+  });
+
+  it("keeps simple and forced-final provider states behind controller helpers", () => {
+    const emitted: Array<{ state: string; title?: string }> = [];
+    const controller = new NodeLoopController({
+      onInvalidTransition: "throw",
+      emit: (state, params) => {
+        emitted.push({ state, title: params.title });
+      },
+    });
+
+    controller.emitPending({ agentId: ORA_ROOT_AGENT_ID, title: "Respond" });
+    controller.emitForcedFinal({ agentId: ORA_ROOT_AGENT_ID, title: "Respond" });
+    controller.emitForcedFinalProviderState("completed", { agentId: ORA_ROOT_AGENT_ID, title: "Respond" });
+
+    expect(controller.transitions).toEqual([
+      { from: "pending", to: "finalizing" },
+      { from: "finalizing", to: "completed" },
+    ]);
+    expect(emitted).toEqual([
+      { state: "pending", title: "Respond" },
+      { state: "finalizing", title: "Respond" },
+      { state: "completed", title: "Respond" },
+    ]);
   });
 
   it("documents the no-tool completion path", async () => {

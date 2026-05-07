@@ -1,5 +1,5 @@
 import type { CompletionStopReason, OraToolCallSource, RunConfig } from "@cemeworm/shared";
-import type { ModelToolCall } from "../providers/index.js";
+import type { ModelResponse, ModelToolCall } from "../providers/index.js";
 import { isRuntimeToolImplemented, type RuntimeToolCall } from "./runtime-tool-executor.js";
 
 export type RuntimeToolAttempt = RuntimeToolCall & {
@@ -30,6 +30,29 @@ export function providerToolCallToAttempt(call: ModelToolCall): RuntimeToolAttem
     providerCallId: call.id,
     source: "provider_native",
   };
+}
+
+export function selectRuntimeToolAttempt(params: {
+  response: Pick<ModelResponse, "text" | "toolCalls">;
+  toolIds: string[];
+  extractFallbackToolCall: (text: string, toolIds: string[]) => RuntimeToolCall | undefined;
+}): RuntimeToolAttempt | undefined {
+  const nativeToolCall = params.response.toolCalls
+    ?.map(providerToolCallToAttempt)
+    .find(Boolean);
+  if (nativeToolCall) {
+    return nativeToolCall;
+  }
+  const fallbackToolCall = params.extractFallbackToolCall(params.response.text, params.toolIds);
+  return fallbackToolCall
+    ? { ...fallbackToolCall, source: "json_fallback" }
+    : undefined;
+}
+
+export function nativeRuntimeToolAttempts(response: Pick<ModelResponse, "toolCalls">): RuntimeToolAttempt[] {
+  return (response.toolCalls
+    ?.map(providerToolCallToAttempt)
+    .filter(Boolean) as RuntimeToolAttempt[]) ?? [];
 }
 
 export function cacheKeyForRuntimeTool(

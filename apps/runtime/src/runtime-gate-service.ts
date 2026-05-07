@@ -27,6 +27,18 @@ export interface RuntimeGateAppendAdapter {
   appendGateLifecycleResult(result: RuntimeGateLifecycleResult): void | Promise<void>;
 }
 
+export function createRuntimeGateAppendAdapter(
+  appendEntry: (entry: RuntimeGateLedgerEntry) => void,
+): RuntimeGateAppendAdapter {
+  return {
+    appendGateLifecycleResult(result: RuntimeGateLifecycleResult): void {
+      for (const entry of result.entries) {
+        appendEntry(entry);
+      }
+    },
+  };
+}
+
 export interface ClarificationGateOpenedParams {
   runId: string;
   turnIndex?: number;

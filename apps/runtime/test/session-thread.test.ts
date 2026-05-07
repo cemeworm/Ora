@@ -1597,12 +1597,12 @@ describe("session thread runtime behavior", () => {
     expect(candidateAssistant).toBeTruthy();
 
     (store as unknown as {
-      branchCandidateLeafByRun: Map<string, string>;
+      runLedgerBranchService: { clearCandidateLeaf(runId: string): void };
       appendGateResolutionsForResume(
         snapshot: unknown,
         gateResolutions: RuntimeGateResolution[],
       ): void;
-    }).branchCandidateLeafByRun.delete(handle!.runId);
+    }).runLedgerBranchService.clearCandidateLeaf(handle!.runId);
     (store as unknown as {
       appendGateResolutionsForResume(
         snapshot: unknown,

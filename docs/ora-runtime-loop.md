@@ -276,4 +276,3 @@ plan run 输出 `<proposed_plan>` 后：
 - **Run lane**：run status、attention、checkpoint、session ledger。
 - **Mode lane**：node/stage、plan/todo、queue/topology。
 - **Agent lane**：model call、tool call、action approval、clarification、recovery。
-

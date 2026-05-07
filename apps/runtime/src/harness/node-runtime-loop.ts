@@ -8,32 +8,23 @@ import type {
   PendingClarificationOption,
   RunConfig,
 } from "@cemeworm/shared";
-import { CODE_DEVELOPMENT_MODE_ID } from "@cemeworm/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
-import {
-  classifyRecoveryError,
-  type RecoveryCoordinator,
-  type RecoveryDecision,
-  type RecoveryIncident,
+import type {
+  RecoveryCoordinator,
+  RecoveryDecision,
+  RecoveryIncident,
 } from "./recovery-policy.js";
 import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from "./runtime-completion.js";
 import { evaluateRuntimeCompletionGuards } from "./runtime-completion-guards.js";
-import { ApprovalInterruptError, ClarificationInterruptError } from "./runtime-interrupts.js";
 import { forcedFinalSystemPrompt } from "./runtime-output.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
 import {
-  recordRuntimeToolActionFailed,
-  recordRuntimeToolActionSucceeded,
-  resolveRuntimeActionApproval,
-  transitionRuntimeAction,
-} from "./runtime-action-runner.js";
-import {
   providerSupportsNativeTools,
-  providerToolCallToAttempt,
   cacheKeyForRuntimeTool,
   invalidatesRuntimeToolCache,
-  type RuntimeToolAttempt,
+  nativeRuntimeToolAttempts,
+  selectRuntimeToolAttempt,
 } from "./runtime-tool-loop.js";
 import { RuntimeToolExecutor, type RuntimeFileChangeMetadata, type RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
@@ -52,6 +43,10 @@ import {
 import {
   NodeLoopController,
 } from "./node-loop-transitions.js";
+import { registerRuntimeToolAttempt } from "./runtime-tool-attempt.js";
+import { codeDevelopmentToolBoundaryError } from "./runtime-tool-boundary.js";
+import { RuntimeToolCallService } from "./runtime-tool-call-service.js";
+import { RuntimeToolRecoveryService } from "./runtime-tool-recovery-service.js";
 
 export type NodeRuntimeLoopState =
   | "pending"
@@ -172,36 +167,6 @@ export interface RunNodeRuntimeLoopDeps {
   actionDeps: () => RuntimeActionDeps;
 }
 
-const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
-  "file.write",
-  "file.patch",
-  "file.delete",
-  "modes.applyDraft",
-  "selfIteration.apply",
-  "skills.create",
-  "skills.update",
-  "skills.setEnabled",
-]);
-
-function codeDevelopmentToolBoundaryError(params: {
-  modeSpec: ModeSpec;
-  agentId: string;
-  toolCall: RuntimeToolCall;
-  runtimeToolExecutor: RuntimeToolExecutor;
-}): string | undefined {
-  if (params.modeSpec.id !== CODE_DEVELOPMENT_MODE_ID || params.agentId !== "orchestrator") {
-    return undefined;
-  }
-  const isBlockedStaticTool = CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(params.toolCall.tool);
-  const isHighRiskShell =
-    params.toolCall.tool === "shell.execute" &&
-    params.runtimeToolExecutor.riskLevel(params.toolCall) === "high";
-  if (!isBlockedStaticTool && !isHighRiskShell) {
-    return undefined;
-  }
-  return "Code Development boundary violation: Orchestrator may plan and finalize, but code mutations must run in the Builder stage.";
-}
-
 export function isInternalProviderAssistantText(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -298,7 +263,6 @@ export async function runNodeRuntimeLoop(
     },
   });
   const emitNodeRuntimeState = nodeLoopController.emit;
-
   const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
   const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
   const nativeTools = providerSupportsNativeTools(config)
@@ -402,10 +366,23 @@ export async function runNodeRuntimeLoop(
         compaction: { latestResponse, reason },
       },
     });
+  const emitForcedFinalProviderState: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"] = (state, emitParams) => {
+    if (state === "completed" || state === "failed") {
+      nodeLoopController.emitForcedFinalProviderState(state, emitParams);
+      return;
+    }
+    nodeLoopController.emit(state, emitParams);
+  };
   const toolExecutionContext: RuntimeToolExecutionContext = {
     ...middlewareContext,
     actionDeps,
-    emitNodeRuntimeState,
+    emitNodeRuntimeState: emitForcedFinalProviderState,
+    emitToolRequested: nodeLoopController.emitToolRequested,
+    emitToolRunning: nodeLoopController.emitToolRunning,
+    emitToolResultObserved: nodeLoopController.emitToolResultObserved,
+    emitModelRequest: nodeLoopController.emitModelRequest,
+    emitForcedFinal: nodeLoopController.emitForcedFinal,
+    emitGateRequired: nodeLoopController.emitGateRequired,
     eventsLength: () => events.length,
     clarificationAnswer,
     ensureClarification,
@@ -447,304 +424,42 @@ export async function runNodeRuntimeLoop(
         };
       },
     });
-  const recoverToolFailure = async (
-    failure: RuntimeToolFailureRequest,
-  ): Promise<Awaited<ReturnType<RuntimeToolFailureContext["recoverToolFailure"]>>> => {
-    const { action, toolCall, toolCallRecord, error, iteration } = failure;
-    const detail = error instanceof Error ? error.message : String(error);
-    recordRuntimeToolActionFailed({
-      action,
-      context: { agentId: params.agentId, nodeId: params.agentId },
-      deps: actionDeps(),
-      toolCall,
-      detail,
-      toolCallRecord,
-      now,
-    });
-    emitNodeRuntimeState("degraded", {
-      agentId: params.agentId,
-      title: params.title,
-      actionId: action.id,
-      toolId: toolCall.tool,
-      detail,
-    });
-    await emitProgressNarration({
-      trigger: "tool.failed",
-      agentId: params.agentId,
-      nodeId: params.agentId,
-      title: params.title,
-      detail,
-    });
-
-    const incident = classifyRecoveryError(error, {
-      surface: "tool",
-      nodeId: params.agentId,
-      agentId: params.agentId,
-      toolId: toolCall.tool,
-      actionId: action.id,
-    });
-    const recoveryDecision = recoveryCoordinator.resolve(incident);
-    emitRecoveryDecision(incident, recoveryDecision);
-    await emitProgressNarration({
-      trigger: "recovery.updated",
-      agentId: params.agentId,
-      nodeId: params.agentId,
-      title: params.title,
-      detail: recoveryDecision.summary,
-    });
-
-    if (recoveryDecision.action === "retry") {
-      await sleep(recoveryDecision.retryDelayMs ?? 0);
-      return { kind: "retry" };
-    }
-
-    if (
-      recoveryDecision.action === "alternate_tool" &&
-      recoveryDecision.alternateToolId
-    ) {
-      const alternateCall: RuntimeToolCall = {
-        tool: recoveryDecision.alternateToolId as RuntimeToolCall["tool"],
-        args: toolCall.args,
-      };
-      const alternateAttemptDecision =
-        completion.registerToolAttempt(alternateCall, completionScope);
-      if (!alternateAttemptDecision.allowed) {
-        emitNodeRuntimeState("finalizing", {
-          agentId: params.agentId,
-          title: params.title,
-          toolId: alternateCall.tool,
-          reason: alternateAttemptDecision.reason,
-          iteration,
-        });
-        return {
-          kind: "return",
-          response: await runForcedFinalProviderCall({
-            invokeProvider,
-            config,
-            messages,
-            system: params.system,
-            nativeTools,
-            streamCallbacks,
-            reason: alternateAttemptDecision.reason,
-            agentId: params.agentId,
-            nodeId: params.nodeId,
-            title: params.title,
-            emitNodeRuntimeState,
-          }),
-        };
-      }
-      const alternateRiskLevel =
-        runtimeToolExecutor.riskLevel(alternateCall);
-      const alternateAction = actionLedger.propose({
-        id: `${params.agentId}-tool-recovery-${events.length}`,
-        type: alternateCall.tool,
-        riskLevel: alternateRiskLevel,
-        input: alternateCall.args,
-        approvalRequest:
-          alternateRiskLevel === "high"
-            ? runtimeToolExecutor.approvalRequest(
-                alternateCall,
-                input.prompt,
-              )
-            : undefined,
-        agentId: params.agentId,
-      });
-      emit(
-        "action.updated",
-        {
-          actionId: alternateAction.id,
-          status: "proposed",
-          record: alternateAction,
-        },
-        { agentId: params.agentId, nodeId: params.agentId },
-      );
-      const alternateApproval = await resolveRuntimeActionApproval({
-        action: alternateAction,
-        context: {
-          agentId: params.agentId,
-          nodeId: params.agentId,
-          title: params.title,
-        },
-        deps: actionDeps(),
-      });
-      transitionRuntimeAction({
-        action: alternateAction,
-        status: "running",
-        context: { agentId: params.agentId, nodeId: params.agentId },
-        deps: actionDeps(),
-      });
-      emitNodeRuntimeState("tool_running", {
-        agentId: params.agentId,
-        title: params.title,
-        actionId: alternateAction.id,
-        toolId: alternateCall.tool,
-        iteration,
-      });
-      const alternateExecution = await runtimeToolExecutor.executeWithMetadata(
-        alternateCall,
-        {
-          allowRisky:
-            alternateApproval.approvedForRiskyExecution,
-        },
-      );
-      const alternateOutput = alternateExecution.output;
-      const alternateArtifact = alternateExecution.fileChange
-        ? publishFileChangeArtifact(alternateExecution.fileChange, {
-            actionId: alternateAction.id,
-            agentId: params.agentId,
-            nodeId: params.agentId,
-          })
-        : undefined;
-      completion.markToolResultObserved(alternateCall, false, completionScope);
-      const { resultText: alternateResultText } =
-        recordRuntimeToolActionSucceeded({
-          action: alternateAction,
-          context: { agentId: params.agentId, nodeId: params.agentId },
-          deps: actionDeps(),
-          toolCall: alternateCall,
-          output: alternateOutput,
-          fileChange: alternateExecution.fileChange,
-          artifactIds: alternateArtifact ? [alternateArtifact.id] : undefined,
-          recoveredFrom: toolCall.tool,
-          now,
-        });
-      emitNodeRuntimeState("tool_result_observed", {
-        agentId: params.agentId,
-        title: params.title,
-        actionId: alternateAction.id,
-        toolId: alternateCall.tool,
-        iteration,
-      });
-      messages = [
-        ...messages,
-        { role: "assistant", content: failure.response.text },
-        {
-          role: "user",
-          content: `Workspace tool result for ${alternateCall.tool}:\n${alternateResultText}`,
-        },
-      ];
-      if (completion.forcedFinalIsActive(completionScope)) {
-        const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
-        emitNodeRuntimeState("finalizing", {
-          agentId: params.agentId,
-          title: params.title,
-          toolId: alternateCall.tool,
-          reason: stopReason,
-          iteration,
-        });
-        return {
-          kind: "return",
-          response: await runForcedFinalProviderCall({
-            invokeProvider,
-            config,
-            messages,
-            system: params.system,
-            nativeTools,
-            streamCallbacks,
-            reason: stopReason,
-            agentId: params.agentId,
-            nodeId: params.nodeId,
-            title: params.title,
-            emitNodeRuntimeState,
-          }),
-        };
-      }
-      emitNodeRuntimeState("running_model", {
-        agentId: params.agentId,
-        title: params.title,
-        iteration: iteration + 1,
-      });
-      return {
-        kind: "continue",
-        response: await invokeFollowUpModel({
-          messages,
-          system: params.system,
-          maxTokens: config.budget?.maxTokens,
-          tools: nativeTools,
-          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-        }, failure.response, "tool_follow_up"),
-      };
-    }
-
-    if (recoveryDecision.action === "fallback_artifact") {
-      const recoveryArtifact = publishRecoveryArtifact(
-        incident,
-        recoveryDecision,
-      );
-      const fallbackPrefix = modeSpec.runtimeAtoms.includes(
-        "tool_error_boundary",
-      )
-        ? "[tool-error-boundary]"
-        : "[recovery:fallback]";
-      emit(
-        "message.delta",
-        {
-          role: "assistant",
-          content: `${fallbackPrefix} ${toolCall.tool} degraded after ${incident.errorType}: ${incident.detail}`,
-          visibility: "internal",
-          boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
-            ? "recovery_policy"
-            : "tool_error_boundary",
-        },
-        { agentId: params.agentId, nodeId: params.agentId },
-      );
-      const fallbackOutput = recoveryDecision.usableOutput ?? {
-        degraded: true,
-        recoveryArtifactId: recoveryArtifact.id,
-        errorType: incident.errorType,
-        error: incident.detail,
-      };
-      const degradedToolContent = `Workspace tool degraded for ${toolCall.tool}:\n${JSON.stringify(fallbackOutput, null, 2)}`;
-      messages =
-        toolCall.source === "provider_native" && toolCall.providerCallId
-          ? [
-              ...messages,
-              {
-                role: "assistant",
-                content: failure.response.text,
-                reasoningContent: failure.response.reasoningContent,
-                toolCalls: failure.response.toolCalls?.filter(
-                  (call) => call.id === toolCall.providerCallId,
-                ),
-              },
-              {
-                role: "tool",
-                toolCallId: toolCall.providerCallId,
-                toolName: toolCall.tool,
-                content: degradedToolContent,
-              },
-            ]
-          : [
-              ...messages,
-              { role: "assistant", content: failure.response.text },
-              {
-                role: "user",
-                content: degradedToolContent,
-              },
-            ];
-      emitNodeRuntimeState("repairing", {
-        agentId: params.agentId,
-        title: params.title,
-        toolId: toolCall.tool,
-        detail: incident.detail,
-      });
-      if (/boundary violation/i.test(detail)) {
-        return { kind: "throw", error };
-      }
-      return {
-        kind: "continue",
-        response: await invokeFollowUpModel({
-          messages,
-          system: params.system,
-          maxTokens: config.budget?.maxTokens,
-          tools: nativeTools,
-          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-        }, failure.response, "tool_recovery_follow_up"),
-      };
-    }
-
-    return { kind: "throw", error };
-  };
+  const toolRecoveryService = new RuntimeToolRecoveryService({
+    agentId: params.agentId,
+    nodeId: params.nodeId,
+    title: params.title,
+    inputPrompt: input.prompt,
+    system: params.system,
+    config,
+    modeSpec,
+    nativeTools,
+    streamCallbacks,
+    invokeProvider,
+    completion,
+    completionScope,
+    recoveryCoordinator,
+    nodeLoopController,
+    runtimeToolExecutor,
+    actionDeps,
+    actionLedger,
+    now,
+    eventsLength: () => events.length,
+    getMessages: () => messages,
+    replaceMessages: (nextMessages) => {
+      messages = [...nextMessages];
+    },
+    emit,
+    emitProgressNarration,
+    emitRecoveryDecision,
+    runForcedFinalProviderCall,
+    emitForcedFinalProviderState,
+    invokeFollowUpModel,
+    publishRecoveryArtifact,
+    publishFileChangeArtifact,
+    sleep,
+  });
+  const recoverToolFailure = (failure: RuntimeToolFailureRequest) =>
+    toolRecoveryService.recoverToolFailure(failure);
   const toolFailureContext: RuntimeToolFailureContext = {
     ...toolExecutionContext,
     recoverToolFailure,
@@ -756,6 +471,37 @@ export async function runNodeRuntimeLoop(
       middlewares: runtimeMiddlewares,
       terminal: async ({ error }) => ({ kind: "throw", error }),
     });
+  const toolCallService = new RuntimeToolCallService({
+    agentId: params.agentId,
+    nodeId: params.nodeId,
+    title: params.title,
+    inputPrompt: input.prompt,
+    system: params.system,
+    config,
+    nativeTools,
+    streamCallbacks,
+    invokeProvider,
+    completion,
+    completionScope,
+    nodeLoopController,
+    runtimeToolExecutor,
+    actionDeps,
+    actionLedger,
+    now,
+    eventsLength: () => events.length,
+    appendToolCall,
+    getMessages: () => messages,
+    replaceMessages: (nextMessages) => {
+      messages = [...nextMessages];
+    },
+    emit,
+    emitProgressNarration,
+    runForcedFinalProviderCall,
+    emitForcedFinalProviderState,
+    invokeFollowUpModel,
+    invokeToolExecution,
+    invokeToolFailure,
+  });
   const modelResponseContext: RuntimeModelResponseContext = {
     ...toolExecutionContext,
     system: params.system,
@@ -774,7 +520,7 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
         title: params.title,
-        emitNodeRuntimeState,
+        emitNodeRuntimeState: emitForcedFinalProviderState,
       }),
     invokeFollowUpModel,
   };
@@ -834,7 +580,7 @@ export async function runNodeRuntimeLoop(
     };
   };
 
-  emitNodeRuntimeState("pending", {
+  nodeLoopController.emitPending({
     agentId: params.agentId,
     title: params.title,
   });
@@ -848,7 +594,7 @@ export async function runNodeRuntimeLoop(
       title: params.title,
     });
   } else {
-    nodeLoopController.emitTransitionResult("forced_final", "finalizing", {
+    nodeLoopController.emitForcedFinal({
       agentId: params.agentId,
       title: params.title,
     });
@@ -925,21 +671,15 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
         title: params.title,
-        emitNodeRuntimeState,
+        emitNodeRuntimeState: emitForcedFinalProviderState,
       });
     }
 
-    const nativeToolCall = response.toolCalls
-      ?.map(providerToolCallToAttempt)
-      .find(Boolean);
-    const fallbackToolCall = nativeToolCall
-      ? undefined
-      : runtimeToolExecutor.extractToolCall(response.text, params.toolIds);
-    const toolCall: RuntimeToolAttempt | undefined =
-      nativeToolCall ??
-      (fallbackToolCall
-        ? { ...fallbackToolCall, source: "json_fallback" }
-        : undefined);
+    const toolCall = selectRuntimeToolAttempt({
+      response,
+      toolIds: params.toolIds,
+      extractFallbackToolCall: (text, toolIds) => runtimeToolExecutor.extractToolCall(text, toolIds),
+    });
     if (!toolCall) {
       const completionResult = await continueOrCompleteNaturally(response, iteration);
       if (completionResult.kind === "continue") {
@@ -949,9 +689,7 @@ export async function runNodeRuntimeLoop(
       return completionResult.response;
     }
 
-    const allNativeToolCalls = (response.toolCalls
-      ?.map(providerToolCallToAttempt)
-      .filter(Boolean) as RuntimeToolAttempt[]) ?? [];
+    const allNativeToolCalls = nativeRuntimeToolAttempts(response);
 
     const responseResult = await invokeModelResponse({
       response,
@@ -975,15 +713,15 @@ export async function runNodeRuntimeLoop(
       toolId: toolCall.tool,
       iteration,
     };
-    if (nodeLoopController.state === "running_model") {
-      nodeLoopController.emitTransitionResult("model_response", "tool_requested", toolRequestedParams);
-    } else {
-      emitNodeRuntimeState("tool_requested", toolRequestedParams);
-    }
+    nodeLoopController.emitToolRequested(toolRequestedParams);
 
-    const attemptDecision = completion.registerToolAttempt(toolCall, completionScope);
+    const attemptDecision = registerRuntimeToolAttempt({
+      completion,
+      toolCall,
+      scope: completionScope,
+    });
     if (!attemptDecision.allowed) {
-      emitNodeRuntimeState("finalizing", {
+      nodeLoopController.emitTransitionResult("boundary_failure", "finalizing", {
         agentId: params.agentId,
         title: params.title,
         toolId: toolCall.tool,
@@ -1001,7 +739,7 @@ export async function runNodeRuntimeLoop(
         agentId: params.agentId,
         nodeId: params.nodeId,
         title: params.title,
-        emitNodeRuntimeState,
+        emitNodeRuntimeState: emitForcedFinalProviderState,
       });
     }
 
@@ -1012,7 +750,7 @@ export async function runNodeRuntimeLoop(
       runtimeToolExecutor,
     });
     if (boundaryError) {
-      emitNodeRuntimeState("failed", {
+      nodeLoopController.emitTransitionResult("boundary_failure", "failed", {
         agentId: params.agentId,
         title: params.title,
         toolId: toolCall.tool,
@@ -1022,193 +760,26 @@ export async function runNodeRuntimeLoop(
       throw new Error(boundaryError);
     }
 
-    const riskLevel = runtimeToolExecutor.riskLevel(toolCall);
-    const action = actionLedger.propose({
-      id: `${params.agentId}-tool-${events.length}`,
-      type: toolCall.tool,
-      riskLevel,
-      input: toolCall.args,
-      approvalRequest:
-        riskLevel === "high"
-          ? runtimeToolExecutor.approvalRequest(toolCall, input.prompt)
-          : undefined,
-      agentId: params.agentId,
-    });
-    const toolCallRecord = appendToolCall({
-      providerCallId: toolCall.providerCallId,
-      toolId: toolCall.tool,
-      args: toolCall.args,
-      source: toolCall.source,
-      status: "proposed",
-      actionId: action.id,
-      agentId: params.agentId,
-      nodeId: params.agentId,
-    });
-    emit(
-      "action.updated",
-      { actionId: action.id, status: "proposed", record: action },
-      { agentId: params.agentId, nodeId: params.agentId },
-    );
-
-    const { approvedForRiskyExecution } = await resolveRuntimeActionApproval({
-      action,
-      context: {
-        agentId: params.agentId,
-        nodeId: params.agentId,
-        title: params.title,
-      },
-      deps: actionDeps(),
-      toolCallRecord,
-    });
-
-    transitionRuntimeAction({
-      action,
-      status: "running",
-      context: { agentId: params.agentId, nodeId: params.agentId },
-      deps: actionDeps(),
-      toolCallRecord,
-    });
-    nodeLoopController.emitTransitionResult("tool_request", "tool_running", {
-      agentId: params.agentId,
-      title: params.title,
-      actionId: action.id,
-      toolId: toolCall.tool,
+    const toolTurnResult = await toolCallService.runToolTurn({
+      toolCall,
+      response,
       iteration,
     });
-
-    try {
-      const execution = await invokeToolExecution({
-        action,
-        toolCall,
-        toolCallRecord,
-        allowRisky: approvedForRiskyExecution,
-        iteration,
-      });
-      const output = execution.output;
-      completion.markToolResultObserved(toolCall, execution.cacheHit ?? false, completionScope);
-      const { resultText } = recordRuntimeToolActionSucceeded({
-        action,
-        context: { agentId: params.agentId, nodeId: params.agentId },
-        deps: actionDeps(),
-        toolCall,
-        output,
-        fileChange: execution.fileChange,
-        artifactIds: execution.artifact ? [execution.artifact.id] : undefined,
-        cacheHit: execution.cacheHit,
-        toolCallRecord,
-        now,
-      });
-      nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed", {
-        agentId: params.agentId,
-        title: params.title,
-        actionId: action.id,
-        toolId: toolCall.tool,
-        iteration,
-      });
-      await emitProgressNarration({
-        trigger: "tool.succeeded",
-        agentId: params.agentId,
-        nodeId: params.agentId,
-        title: params.title,
-        detail: `${toolCall.tool} returned a result.`,
-      });
-      if (toolCall.tool === "plan.update") {
-        const deps = actionDeps();
-        deps.emit("plan_list.updated", toolCall.args);
-      }
-
-      messages =
-        toolCall.source === "provider_native" && toolCall.providerCallId
-          ? [
-              ...messages,
-              {
-                role: "assistant",
-                content: response.text,
-                reasoningContent: response.reasoningContent,
-                toolCalls: response.toolCalls?.filter(
-                  (call) => call.id === toolCall.providerCallId,
-                ),
-              },
-              {
-                role: "tool",
-                toolCallId: toolCall.providerCallId,
-                toolName: toolCall.tool,
-                content: resultText,
-              },
-            ]
-          : [
-              ...messages,
-              { role: "assistant", content: response.text },
-              {
-                role: "user",
-                content: `Workspace tool result for ${toolCall.tool}:\n${resultText}`,
-              },
-            ];
-      if (completion.forcedFinalIsActive(completionScope)) {
-        const stopReason = completion.stopReasonForScope(completionScope) ?? "forced_final_answer";
-        nodeLoopController.emitTransitionResult("forced_final", "finalizing", {
-          agentId: params.agentId,
-          title: params.title,
-          toolId: toolCall.tool,
-          reason: stopReason,
-          iteration,
-        });
-        response = await runForcedFinalProviderCall({
-          invokeProvider,
-          config,
-          messages,
-          system: params.system,
-          nativeTools,
-          streamCallbacks,
-          reason: stopReason,
-          agentId: params.agentId,
-          nodeId: params.nodeId,
-          title: params.title,
-          emitNodeRuntimeState,
-        });
-        return response;
-      }
-      nodeLoopController.emitTransitionResult("model_request", "running_model", {
-        agentId: params.agentId,
-        title: params.title,
-        iteration: iteration + 1,
-      });
-      response = await invokeFollowUpModel({
-        messages,
-        system: params.system,
-        maxTokens: config.budget?.maxTokens,
-        tools: nativeTools,
-        toolChoice: nativeTools.length > 0 ? "auto" : undefined,
-      }, response, "tool_follow_up");
-    } catch (error) {
-      if (error instanceof ClarificationInterruptError) {
-        throw error;
-      }
-      const failureResult = await invokeToolFailure({
-        error,
-        action,
-        toolCall,
-        toolCallRecord,
-        allowRisky: approvedForRiskyExecution,
-        iteration,
-        response,
-      });
-      if (failureResult.kind === "retry") {
-        continue;
-      }
-      if (failureResult.kind === "return") {
-        return failureResult.response;
-      }
-      if (failureResult.kind === "continue") {
-        response = failureResult.response;
-        continue;
-      }
-      throw failureResult.error;
+    if (toolTurnResult.kind === "retry") {
+      continue;
     }
+    if (toolTurnResult.kind === "return") {
+      return toolTurnResult.response;
+    }
+    if (toolTurnResult.kind === "continue") {
+      response = toolTurnResult.response;
+      continue;
+    }
+    throw toolTurnResult.error;
   }
 
   completion.forceFinalAnswer("runtime_tool_loop_limit");
-  emitNodeRuntimeState("finalizing", {
+  nodeLoopController.emitForcedFinal({
     agentId: params.agentId,
     title: params.title,
     reason: "runtime_tool_loop_limit",
@@ -1223,6 +794,6 @@ export async function runNodeRuntimeLoop(
     reason: "runtime_tool_loop_limit",
     agentId: params.agentId,
     title: params.title,
-    emitNodeRuntimeState,
+    emitNodeRuntimeState: emitForcedFinalProviderState,
   });
 }

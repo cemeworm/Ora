@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { StateSnapshotSchema, type PendingClarification, type PlanDecisionGate } from "@cemeworm/shared";
 import {
   approvalGateId,
+  createRuntimeGateAppendAdapter,
   type RuntimeGateAppendAdapter,
   type RuntimeGateLifecycleResult,
   RuntimeGateService,
 } from "../src/runtime-gate-service.js";
+import { createRuntimeGateRunAppendAdapter } from "../src/runtime-gate-run-append-adapter.js";
 
 const gateService = new RuntimeGateService();
 
@@ -17,7 +19,7 @@ class RecordingGateAppendAdapter implements RuntimeGateAppendAdapter {
   }
 }
 
-function snapshot(overrides: { omitTurnIndex?: boolean } = {}) {
+function snapshot(overrides: { omitTurnIndex?: boolean; metadata?: Record<string, unknown> } = {}) {
   return StateSnapshotSchema.parse({
     runId: "run-gates-1",
     sessionId: "session-gates-1",
@@ -34,7 +36,7 @@ function snapshot(overrides: { omitTurnIndex?: boolean } = {}) {
       modelRef: "local/test-model",
       approvalMode: "high_risk_only",
       patternOptions: {},
-      metadata: {},
+      metadata: overrides.metadata ?? {},
     },
     topology: { nodes: [], edges: [] },
     profiles: [],
@@ -540,6 +542,94 @@ describe("RuntimeGateService", () => {
           resolvedAt: 2_000,
         },
       }],
+    }]);
+  });
+
+  it("creates append adapters that replay lifecycle result entries", () => {
+    const appended: RuntimeGateLifecycleResult["entries"] = [];
+    const adapter = createRuntimeGateAppendAdapter((entry) => {
+      appended.push(entry);
+    });
+
+    adapter.appendGateLifecycleResult(gateService.resolvePlanDecisionGateLifecycle({
+      runId: "run-gates-1",
+      turnIndex: 4,
+      decisionId: "decision-1",
+      status: "accepted",
+      resolvedAt: 2_000,
+    }));
+
+    expect(appended).toEqual([{
+      id: "run-gates-1:gate:decision-1:resolved",
+      type: "gate.resolved",
+      runId: "run-gates-1",
+      turnIndex: 4,
+      createdAt: 2_000,
+      payload: {
+        gateId: "decision-1",
+        status: "accepted",
+        resolvedAt: 2_000,
+      },
+    }]);
+  });
+
+  it("creates run-scoped append adapters for gate lifecycle entries", () => {
+    const currentSnapshot = snapshot();
+    const appended: Array<{ runId: string; entryId: string; candidateParentId?: string }> = [];
+    const adapter = createRuntimeGateRunAppendAdapter({
+      snapshot: currentSnapshot,
+      appendRunLedgerEntry: (runSnapshot, entry, options) => {
+        appended.push({ runId: runSnapshot.runId, entryId: entry.id, candidateParentId: options?.candidateParentId });
+        return {
+          ...entry,
+          sessionId: runSnapshot.sessionId ?? "session-gates-1",
+          seq: appended.length - 1,
+        };
+      },
+    });
+
+    adapter.appendGateLifecycleResult(gateService.resolvePlanDecisionGateLifecycle({
+      runId: currentSnapshot.runId,
+      turnIndex: currentSnapshot.turnIndex,
+      decisionId: "decision-1",
+      status: "accepted",
+      resolvedAt: 2_000,
+    }));
+
+    expect(appended).toEqual([{
+      runId: "run-gates-1",
+      entryId: "run-gates-1:gate:decision-1:resolved",
+      candidateParentId: undefined,
+    }]);
+  });
+
+  it("lets run-scoped append adapters own candidate append options", () => {
+    const currentSnapshot = snapshot({ metadata: { branchRole: "candidate" } });
+    const appended: Array<{ entryId: string; candidateParentId?: string }> = [];
+    const adapter = createRuntimeGateRunAppendAdapter({
+      snapshot: currentSnapshot,
+      candidateParentId: () => "candidate-leaf-1",
+      appendRunLedgerEntry: (_runSnapshot, entry, options) => {
+        appended.push({ entryId: entry.id, candidateParentId: options?.candidateParentId });
+        return {
+          ...entry,
+          sessionId: currentSnapshot.sessionId ?? "session-gates-1",
+          seq: appended.length - 1,
+        };
+      },
+    });
+
+    adapter.appendGateLifecycleResult(gateService.resolvePlanDecisionGateLifecycle({
+      runId: currentSnapshot.runId,
+      turnIndex: currentSnapshot.turnIndex,
+      decisionId: "decision-1",
+      status: "accepted",
+      resolvedAt: 2_000,
+    }));
+
+    expect(appended).toEqual([{
+      entryId: "run-gates-1:gate:decision-1:resolved",
+      candidateParentId: "candidate-leaf-1",
     }]);
   });
 

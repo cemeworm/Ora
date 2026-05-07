@@ -17,23 +17,14 @@ function readSource(relativePath: string): string {
 }
 
 function kernelRunnerSource(): string {
-  const source = readSource("src/harness/runtime-kernel.ts");
-  const classStart = source.indexOf("  class KernelRunner");
-  const classEnd = source.indexOf(
-    "\n\n  const snapshot = await new KernelRunner(kernelRunnerDeps).run();",
-    classStart,
-  );
-
-  expect(classStart).toBeGreaterThanOrEqual(0);
-  expect(classEnd).toBeGreaterThan(classStart);
-  return source.slice(classStart, classEnd);
+  return readSource("src/harness/runtime-kernel-runner.ts");
 }
 
 function kernelRunnerDepsSource(): string {
   const source = readSource("src/harness/runtime-kernel.ts");
-  const depsStart = source.indexOf("  const kernelRunnerDeps = {");
+  const depsStart = source.indexOf("  const snapshot = await new KernelRunner(createKernelRunnerDeps({");
   const depsEnd = source.indexOf(
-    "\n  type KernelRunnerDeps = Readonly<typeof kernelRunnerDeps>;",
+    "\n  })).run();",
     depsStart,
   );
 
@@ -54,10 +45,11 @@ describe("runtime kernel architecture guards", () => {
 
   it("keeps event timeline and plan-list projection owned by KernelRuntimeContext", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
+    const runnerSource = kernelRunnerSource();
 
     expect(source).toContain("private readonly eventsValue: OraEventEnvelope[] = []");
     expect(source).toContain("private planListValue: PlanListStep[]");
-    expect(source).toContain("eventSeq: kernelRuntimeContext.eventCount()");
+    expect(runnerSource).toContain("eventSeq: kernelRuntimeContext.eventCount()");
     expect(source).toContain("planList: this.planList");
     expect(source).toContain("events: this.events");
     expect(source).not.toContain("const events: OraEventEnvelope[] = []");
@@ -112,12 +104,13 @@ describe("runtime kernel architecture guards", () => {
 
   it("keeps topology ownership and status mutation inside KernelRuntimeContext", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
+    const runnerSource = kernelRunnerSource();
 
     expect(source).toContain("private readonly topologyValue: StateSnapshot[\"topology\"]");
     expect(source).toContain("initialTopology: StateSnapshot[\"topology\"]");
     expect(source).toContain("setTopologyStatus(");
     expect(source).toContain("topology: this.topology");
-    expect(source).toContain("emit(\"topology.updated\", kernelRuntimeContext.topology)");
+    expect(runnerSource).toContain("emit(\"topology.updated\", kernelRuntimeContext.topology)");
     expect(source).not.toContain("const topology = {");
     expect(source).not.toContain("for (const node of topology.nodes)");
   });
@@ -135,28 +128,43 @@ describe("runtime kernel architecture guards", () => {
 
   it("assembles continuation state through KernelRuntimeContext", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
+    const runnerSource = kernelRunnerSource();
 
     expect(source).toContain("assembleContinuation(params:");
     expect(source).toContain("pendingApprovalToolCallIds");
     expect(source).toContain("pendingClarificationIds: this.pendingClarifications.map");
     expect(source).toContain("const { continuation, pendingApprovals } = this.assembleContinuation");
-    expect(source).toContain("return kernelRuntimeContext.assembleFinalSnapshot");
+    expect(runnerSource).toContain("return kernelRuntimeContext.assembleFinalSnapshot");
     expect(source).not.toContain("const pendingApprovalToolCallIds = kernelRuntimeContext.toolCalls");
     expect(source).not.toContain("pendingClarificationIds: kernelRuntimeContext.pendingClarifications.map");
   });
 
   it("coordinates kernel lifecycle through KernelRunner", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
+    const runnerSource = kernelRunnerSource();
 
-    expect(source).toContain("class KernelRunner");
-    expect(source).toContain("async run(): Promise<StateSnapshot>");
-    expect(source).toContain("this.emitStartEvents();");
-    expect(source).toContain("await this.executeMode();");
-    expect(source).toContain("this.flushMemory();");
-    expect(source).toContain("return this.checkpoint();");
-    expect(source).toContain("constructor(private readonly deps: KernelRunnerDeps) {}");
-    expect(source).toContain("const snapshot = await new KernelRunner(kernelRunnerDeps).run();");
+    expect(source).toContain("from \"./runtime-kernel-runner.js\"");
+    expect(source).not.toContain("class KernelRunner");
+    expect(runnerSource).toContain("export class KernelRunner");
+    expect(runnerSource).toContain("async run(): Promise<StateSnapshot>");
+    expect(runnerSource).toContain("this.emitStartEvents();");
+    expect(runnerSource).toContain("await this.executeMode();");
+    expect(runnerSource).toContain("this.flushMemory();");
+    expect(runnerSource).toContain("return this.checkpoint();");
+    expect(runnerSource).toContain("constructor(private readonly deps: KernelRunnerDeps) {}");
+    expect(source).toContain("const snapshot = await new KernelRunner(createKernelRunnerDeps({");
     expect(source).not.toContain("\n  emit(\"run.started\"");
+  });
+
+  it("keeps delegated-agent wrapper node states behind a local helper", () => {
+    const source = readSource("src/harness/runtime-kernel.ts");
+
+    expect(source).toContain("const emitDelegatedAgentState = (");
+    expect(source).toContain('emitDelegatedAgentState("interrupted"');
+    expect(source).toContain('emitDelegatedAgentState("failed"');
+    expect(source).toContain('emitDelegatedAgentState("degraded"');
+    expect(source).not.toContain('emitNodeRuntimeState("interrupted"');
+    expect(source).not.toContain('emitNodeRuntimeState("degraded"');
   });
 
   it("documents the explicit KernelRunner dependency surface before extraction", () => {
@@ -165,58 +173,40 @@ describe("runtime kernel architecture guards", () => {
     const runnerSource = kernelRunnerSource();
 
     const explicitRunnerDependencyGroups = {
-      lifecycle: [
+      request: [
         "input",
         "config",
+        "options",
+      ],
+      runtime: [
+        "kernelRuntimeContext",
+        "emit",
+      ],
+      start: [
         "skills",
         "tools",
-        "options",
-        "kernelRuntimeContext",
         "profiles",
-        "emit",
+      ],
+      progress: [
         "emitPlanUpdated",
         "emitTodoUpdated",
+      ],
+      topology: [
         "setTopologyStatus",
+      ],
+      stores: [
         "planService",
         "todoService",
       ],
       execution: [
         "executeModeSpec",
-        "createRuntimePatternExecutionContext",
-        "projectId",
-        "kernelRuntimeContext",
-        "systemPrompt",
-        "setPlanStatus",
-        "runRecoverableNode",
-        "runDelegatedTask",
-        "ensureClarification",
-        "claimWorker",
-        "releaseWorker",
-        "agentLabel",
-        "callAgent",
-        "remember",
-        "captureMemory",
-        "publishArtifact",
-        "publishMessage",
-        "routeMessage",
-        "emitAgentMessage",
-        "writeSharedState",
-        "input",
-        "config",
+        "kernelPatternExecutionContextAdapter",
         "resolvedModeSpec",
         "resolvedDefinition",
-        "emit",
       ],
       preflight: [
-        "setTopologyStatus",
         "clarificationAnswer",
-        "resolvedModeSpec",
-        "config",
-        "options",
-        "emit",
-        "kernelRuntimeContext",
         "requestIntentClarificationQuestion",
-        "input",
         "ensureClarification",
         "rootTopology",
         "emitOraObservation",
@@ -225,39 +215,27 @@ describe("runtime kernel architecture guards", () => {
       finalization: [
         "inferCompletionStopReason",
         "modeProgressFinalizationError",
-        "planService",
-        "todoService",
         "outputWithCompletionMetadata",
         "completionMetadata",
-        "emit",
         "finalizeAsOra",
         "incompleteForcedFinalError",
       ],
       memory: [
         "memoryCaptureQueue",
         "memoryService",
-        "emit",
       ],
       checkpoint: [
         "runId",
         "checkpointLabelForStatus",
         "now",
-        "kernelRuntimeContext",
-        "emit",
-        "planService",
-        "input",
-        "config",
-        "resolvedModeSpec",
-        "profiles",
-        "memoryService",
-        "todoService",
         "actionLedger",
-        "options",
       ],
     };
 
-    expect(source).toContain("const kernelRunnerDeps = {");
-    expect(source).toContain("type KernelRunnerDeps = Readonly<typeof kernelRunnerDeps>;");
+    expect(source).not.toContain("const kernelRunnerDeps: KernelRunnerDeps = {");
+    expect(source).toContain("createKernelRunnerDeps({");
+    expect(runnerSource).toContain("export function createKernelRunnerDeps(deps: KernelRunnerDeps): KernelRunnerDeps");
+    expect(runnerSource).toContain("export interface KernelRunnerDeps");
     expect(runnerSource).toContain("constructor(private readonly deps: KernelRunnerDeps) {}");
     for (const [group, dependencies] of Object.entries(explicitRunnerDependencyGroups)) {
       expect(depsSource, `KernelRunner dependency group changed: ${group}`).toContain(`${group}: {`);
@@ -270,9 +248,14 @@ describe("runtime kernel architecture guards", () => {
     expect(depsSource).not.toContain("runtimeToolExecutor");
     expect(depsSource).not.toContain("runNodeRuntimeLoop(");
     expect(depsSource).not.toContain("new RuntimeToolExecutor");
+    expect(depsSource).not.toContain("createRuntimePatternExecutionContext");
+    expect(depsSource).not.toContain("runRecoverableNode");
+    expect(source).toContain("createKernelPatternExecutionContextAdapter({");
+    expect(runnerSource).toContain("kernelPatternExecutionContextAdapter.create()");
     expect(runnerSource).not.toContain("runtimeToolExecutor");
     expect(runnerSource).not.toContain("runNodeRuntimeLoop(");
     expect(runnerSource).not.toContain("new RuntimeToolExecutor");
+    expect(runnerSource).not.toContain("createRuntimePatternExecutionContext");
   });
 
   it("passes live summary getters into PatternExecutionContext", () => {
@@ -372,14 +355,15 @@ describe("runtime kernel architecture guards", () => {
 
   it("assembles the final snapshot through KernelRuntimeContext-owned sources", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
-    const callSiteStart = source.indexOf("return kernelRuntimeContext.assembleFinalSnapshot({");
-    const callSiteEnd = source.indexOf("\n    }", callSiteStart);
-    const finalSnapshotCallSite = source.slice(callSiteStart, callSiteEnd);
+    const runnerSource = kernelRunnerSource();
+    const callSiteStart = runnerSource.indexOf("return kernelRuntimeContext.assembleFinalSnapshot({");
+    const callSiteEnd = runnerSource.indexOf("\n    });", callSiteStart);
+    const finalSnapshotCallSite = runnerSource.slice(callSiteStart, callSiteEnd);
 
     expect(source).toContain("assembleFinalSnapshot(params:");
     expect(callSiteStart).toBeGreaterThanOrEqual(0);
     expect(callSiteEnd).toBeGreaterThan(callSiteStart);
-    expect(source).toContain("return kernelRuntimeContext.assembleFinalSnapshot({");
+    expect(runnerSource).toContain("return kernelRuntimeContext.assembleFinalSnapshot({");
     expect(source).toContain("continuation,");
     expect(source).toContain("pendingApprovals,");
     for (const contextOwnedSource of [
