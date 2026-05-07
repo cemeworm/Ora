@@ -2,6 +2,42 @@ import { describe, expect, it } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
 
 describe("desktop runtime client agent catalog", () => {
+  it("mirrors task flow aliases in browser fallback", async () => {
+    const client = createRuntimeClient();
+    const session = await client.createSession({});
+    const flow = await client.createFlow(
+      { prompt: "Run through the flow client.", context: {} },
+      { modeId: "single_agent", modelRef: "local/smoke-model" },
+      session.sessionId,
+    );
+    expect(flow.flowRunId).toBe(flow.runId);
+
+    const detail = await client.getFlowRun(flow.flowRunId);
+    expect(detail).toMatchObject({
+      flowRunId: flow.runId,
+      runId: flow.runId,
+      sessionId: session.sessionId,
+      definition: { source: "mode_spec", modeId: "single_agent" },
+    });
+    expect(detail.linkedSessionIds).toEqual([session.sessionId]);
+
+    const stream = await client.streamRun(flow.runId);
+    const flowStream = await client.replayFlow(flow.flowRunId, detail.checkpoints[0]?.id);
+    expect(stream.runId).toBe(flow.runId);
+    expect(flowStream.runId).toBe(flow.runId);
+
+    const fork = await client.forkFlow(flow.flowRunId, detail.checkpoints[0]!.id);
+    expect(fork.flowRunId).toBe(fork.runId);
+    expect(fork.runId).not.toBe(flow.runId);
+
+    const cancelled = await client.cancelFlow(fork.flowRunId, "Cancel flow client fork.");
+    expect(cancelled.status).toBe("cancelled");
+    expect((await client.getFlowRun(fork.flowRunId)).gates).toContainEqual(expect.objectContaining({
+      kind: "cancellation",
+      status: "cancelled",
+    }));
+  });
+
   it("mirrors automation lifecycle in browser fallback", async () => {
     const client = createRuntimeClient();
     const automation = await client.createAutomation({

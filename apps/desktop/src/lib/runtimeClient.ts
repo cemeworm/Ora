@@ -44,6 +44,8 @@ import type {
   EvaluationSpec as OraEvaluationSpec,
   FeedbackLoopActionResult as OraFeedbackLoopActionResult,
   FeedbackLoopCalibrationRule as OraFeedbackLoopCalibrationRule,
+  FlowRunDetail as OraFlowRunDetail,
+  FlowRunHandle as OraFlowRunHandle,
   JsonRpcRequest,
   JsonRpcResponse,
   LongTermMemoryProfile as OraLongTermMemoryProfile,
@@ -195,6 +197,8 @@ export type {
   OraPackageManifest,
   OraPackageStoreSnapshot,
   OraPatternDefinition,
+  OraFlowRunDetail,
+  OraFlowRunHandle,
   OraProviderConfig,
   OraProviderModelsResult,
   OraProviderRegistry,
@@ -799,6 +803,12 @@ export function createRuntimeClient() {
     async startStreamingRun(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraRunHandle> {
       return call<OraRunHandle>("runs.startStreaming", { input, config, sessionId });
     },
+    async createFlow(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraFlowRunHandle> {
+      return call<OraFlowRunHandle>("flows.create", { input, config, sessionId });
+    },
+    async createStreamingFlow(input: OraUserTaskInput, config: Partial<OraRunConfig>, sessionId?: string): Promise<OraFlowRunHandle> {
+      return call<OraFlowRunHandle>("flows.createStreaming", { input, config, sessionId });
+    },
     async subscribeRunEvents(callback: (stream: OraRunEventStream) => void): Promise<() => void> {
       if (!isTauriAvailable()) {
         return () => {};
@@ -816,6 +826,9 @@ export function createRuntimeClient() {
     async getRunState(runId: string): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.state", { runId });
     },
+    async getFlowRun(flowRunId: string): Promise<OraFlowRunDetail> {
+      return call<OraFlowRunDetail>("flows.get", { flowRunId });
+    },
     async getRunTrail(runId: string): Promise<OraRunTrail> {
       return call<OraRunTrail>("runs.trail", { runId });
     },
@@ -828,17 +841,32 @@ export function createRuntimeClient() {
     async resumeStreamingRun(runId: string, reason: string, patch: Record<string, unknown> = {}): Promise<OraRunHandle> {
       return call<OraRunHandle>("runs.resumeStreaming", { runId, reason, patch });
     },
+    async resumeFlow(flowRunId: string, reason: string, patch: Record<string, unknown> = {}): Promise<OraStateSnapshot> {
+      return call<OraStateSnapshot>("flows.resume", { flowRunId, reason, patch });
+    },
+    async resumeStreamingFlow(flowRunId: string, reason: string, patch: Record<string, unknown> = {}): Promise<OraRunHandle> {
+      return call<OraRunHandle>("flows.resumeStreaming", { flowRunId, reason, patch });
+    },
     async cancelRun(runId: string, reason = USER_CANCELLED_MESSAGE): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.cancel", { runId, reason });
     },
+    async cancelFlow(flowRunId: string, reason = USER_CANCELLED_MESSAGE): Promise<OraStateSnapshot> {
+      return call<OraStateSnapshot>("flows.cancel", { flowRunId, reason });
+    },
     async listCheckpoints(runId: string): Promise<OraCheckpointMeta[]> {
       return call<OraCheckpointMeta[]>("runs.checkpoints", { runId });
+    },
+    async listFlowCheckpoints(flowRunId: string): Promise<OraCheckpointMeta[]> {
+      return call<OraCheckpointMeta[]>("flows.checkpoints", { flowRunId });
     },
     async streamRun(runId: string, afterSeq?: number): Promise<OraRunEventStream> {
       return call<OraRunEventStream>("runs.stream", { runId, afterSeq });
     },
     async replayRun(runId: string, checkpointId?: string): Promise<OraRunEventStream> {
       return call<OraRunEventStream>("runs.replay", { runId, checkpointId });
+    },
+    async replayFlow(flowRunId: string, checkpointId?: string): Promise<OraRunEventStream> {
+      return call<OraRunEventStream>("flows.replay", { flowRunId, checkpointId });
     },
     async runtimeMaintenance(params: Partial<OraRuntimeMaintenanceParams> = {}): Promise<OraRuntimeMaintenanceResult> {
       return call<OraRuntimeMaintenanceResult>("runtime.maintenance", params);
@@ -851,6 +879,14 @@ export function createRuntimeClient() {
     ): Promise<OraStateSnapshot> {
       const handle = await call<OraRunHandle>("runs.fork", { runId, checkpointId, config, input });
       return call<OraStateSnapshot>("runs.state", { runId: handle.runId });
+    },
+    async forkFlow(
+      flowRunId: string,
+      checkpointId: string,
+      config: Partial<OraRunConfig> = {},
+      input: Partial<OraUserTaskInput> = {},
+    ): Promise<OraFlowRunHandle> {
+      return call<OraFlowRunHandle>("flows.fork", { flowRunId, checkpointId, config, input });
     },
     async exportReport(runId: string): Promise<{ artifact: OraArtifactRef; snapshot: OraStateSnapshot }> {
       const artifact = await call<OraArtifactRef>("runs.exportReport", { runId });
@@ -1707,6 +1743,72 @@ class LocalJsonRpcRuntime {
         if (!parsed) throw new Error("Self-Iteration policy update requires policy.");
         this.selfIterationPolicies.set(parsed.projectId, parsed);
         return parsed;
+      }
+      case "flows.create": {
+        const handle = this.startRun(params);
+        return { ...handle, flowRunId: handle.runId };
+      }
+      case "flows.createStreaming": {
+        const handle = this.startRun(params);
+        return { ...handle, flowRunId: handle.runId };
+      }
+      case "flows.get":
+        return buildMockFlowRunDetail(this.getRunState(params));
+      case "flows.stream": {
+        const snapshot = this.getRunState(params);
+        const afterSeq = typeof params === "object" && params !== null && "afterSeq" in params
+          ? (params as { afterSeq?: unknown }).afterSeq
+          : undefined;
+        const fromSeq = typeof afterSeq === "number" ? afterSeq + 1 : 0;
+        const events = snapshot.events.filter((event) => event.seq >= fromSeq);
+        return {
+          runId: snapshot.runId,
+          fromSeq,
+          events,
+          nextSeq: snapshot.events.length,
+          status: snapshot.status,
+          snapshot,
+        };
+      }
+      case "flows.resume":
+        return this.resumeRun(params);
+      case "flows.resumeStreaming":
+      {
+        const snapshot = this.resumeRun(params);
+        return {
+          runId: snapshot.runId,
+          flowRunId: snapshot.runId,
+          sessionId: snapshot.sessionId,
+          turnIndex: snapshot.turnIndex,
+          status: snapshot.status,
+          pattern: snapshot.pattern,
+          modeId: snapshot.modeId,
+          startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+        };
+      }
+      case "flows.cancel":
+        return this.transitionRun(params, "cancelled", "run.cancelled");
+      case "flows.checkpoints":
+        return this.getRunState(params).checkpoints;
+      case "flows.replay": {
+        const parsed = asReplayRunParams(params);
+        const snapshot = this.getRunState({ runId: parsed.runId });
+        const checkpoint = parsed.checkpointId
+          ? snapshot.checkpoints.find((item) => item.id === parsed.checkpointId)
+          : snapshot.checkpoints.at(-1);
+        if (!checkpoint) {
+          throw new Error("Checkpoint not found for replay.");
+        }
+        return {
+          runId: snapshot.runId,
+          fromSeq: 0,
+          events: snapshot.events.filter((event) => event.seq <= checkpoint.eventSeq),
+          nextSeq: snapshot.events.length,
+        };
+      }
+      case "flows.fork": {
+        const handle = this.dispatch("runs.fork", params) as OraRunHandle;
+        return { ...handle, flowRunId: handle.runId };
       }
       case "runs.start":
         return this.startRun(params);
@@ -5259,11 +5361,119 @@ function buildMockRunTrail(snapshot: OraStateSnapshot): OraRunTrail {
   };
 }
 
+function buildMockFlowRunDetail(snapshot: OraStateSnapshot): OraFlowRunDetail {
+  const flowRunId = snapshot.runId;
+  return {
+    flowRunId,
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId,
+    linkedSessionIds: snapshot.sessionId ? [snapshot.sessionId] : [],
+    turnIndex: snapshot.turnIndex,
+    status: snapshot.status,
+    attention: deriveRunAttention(snapshot),
+    definition: {
+      flowDefinitionId: snapshot.modeId ?? snapshot.pattern,
+      source: "mode_spec",
+      modeId: snapshot.modeId,
+      label: snapshot.modeSpec?.label,
+    },
+    checkpoints: snapshot.checkpoints,
+    gates: [
+      ...snapshot.pendingClarifications.map((clarification) => ({
+        gateId: clarification.id,
+        kind: "clarification" as const,
+        status: "open" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [clarification.id],
+        openedAt: clarification.requestedAt,
+      })),
+      ...(snapshot.pendingApprovals.length > 0 ? [{
+        gateId: `${snapshot.runId}:approval`,
+        kind: "approval" as const,
+        status: "open" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        pendingActionIds: snapshot.pendingApprovals,
+        pendingToolCallIds: snapshot.toolCalls
+          .filter((call) => call.status === "approval_required")
+          .map((call) => call.id),
+        pendingClarificationIds: [],
+      }] : []),
+      ...snapshot.planDecisions.map((decision) => ({
+        gateId: decision.id,
+        kind: "plan_decision" as const,
+        status: decision.status === "pending" ? "open" as const : "resolved" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: decision.sessionId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        planDecisionId: decision.id,
+        openedAt: decision.createdAt,
+        resolvedAt: decision.resolvedAt,
+      })),
+      ...(snapshot.status === "cancelled" ? [{
+        gateId: `${snapshot.runId}:cancellation`,
+        kind: "cancellation" as const,
+        status: "cancelled" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        reason: snapshot.error,
+        openedAt: snapshot.events.find((event) => event.type === "run.cancelled")?.createdAt ?? snapshot.updatedAt,
+      }] : []),
+    ],
+    activities: snapshot.toolCalls.map((call) => ({
+      activityId: call.id,
+      kind: "tool",
+      status: call.status === "succeeded"
+        ? "succeeded"
+        : call.status === "failed"
+          ? "failed"
+          : call.status === "interrupted"
+            ? "interrupted"
+            : call.status === "denied"
+              ? "denied"
+              : call.status === "running"
+                ? "running"
+                : "pending",
+      runId: snapshot.runId,
+      flowRunId,
+      nodeId: call.nodeId,
+      agentId: call.agentId,
+      toolId: call.toolId,
+      label: call.toolId,
+      startedAt: call.updatedAt,
+      updatedAt: call.updatedAt,
+    })),
+    eventCount: snapshot.events.length,
+    latestEventSeq: snapshot.events.at(-1)?.seq,
+    latestSnapshot: snapshot,
+    createdAt: snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt,
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
 function asRunId(params: unknown): string {
   if (typeof params === "object" && params !== null && "runId" in params) {
     const runId = (params as { runId: unknown }).runId;
     if (typeof runId === "string" && runId.length > 0) {
       return runId;
+    }
+  }
+  if (typeof params === "object" && params !== null && "flowRunId" in params) {
+    const flowRunId = (params as { flowRunId: unknown }).flowRunId;
+    if (typeof flowRunId === "string" && flowRunId.length > 0) {
+      return flowRunId;
     }
   }
   throw new Error("Missing runId");
@@ -5315,7 +5525,14 @@ function asForkRunParams(params: unknown): {
   if (typeof checkpointId !== "string" || checkpointId.length === 0) {
     throw new Error("Missing checkpointId");
   }
-  return params as {
+  return {
+    ...(params as {
+      input?: Partial<OraUserTaskInput>;
+      config?: Partial<OraRunConfig>;
+    }),
+    runId,
+    checkpointId,
+  } as {
     runId: string;
     checkpointId: string;
     input?: Partial<OraUserTaskInput>;
