@@ -15,8 +15,8 @@ describe("desktop session view model", () => {
 
     expect(viewModelSource).toContain("deriveRuntimeTimelineProjection(snapshot)");
     expect(viewModelSource).toContain("function deriveTimelineItems(");
-    expect(viewModelSource).toContain("const timelineProjection = deriveRuntimeTimelineProjection(snapshot)");
-    expect(viewModelSource).toContain("for (const event of timelineProjection.events)");
+    expect(viewModelSource).toContain("const projection = timelineProjection ?? deriveRuntimeTimelineProjection(snapshot)");
+    expect(viewModelSource).toContain("for (const event of projection.events)");
     expect(viewModelSource).toContain("function processStepLabel(");
     expect(viewModelSource).toContain("function processStepDetail(");
     expect(sharedTimelineSource).toContain(".filter((event) => event.runId === snapshot.runId)");

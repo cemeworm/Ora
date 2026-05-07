@@ -2,7 +2,6 @@ import {
   CoordinationPatternSchema,
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
-  StateSnapshotSchema,
   deriveSessionBranchGroupStatus,
   type ModeSelection,
   type PermissionMode,
@@ -1236,8 +1235,7 @@ function readActionStatus(
 }
 
 function normalizeDesktopSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
-  const normalized = StateSnapshotSchema.parse(snapshot);
-  return normalized as OraStateSnapshot;
+  return snapshot;
 }
 
 function streamRunStatus(

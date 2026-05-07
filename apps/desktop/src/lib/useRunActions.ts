@@ -254,13 +254,20 @@ export function useRunActions() {
   const selectedRunModeId = selectedMode?.id ?? state.selectedModeId;
   const selectedRunModeSelection = state.selectedModeSelection;
   const selectedNode = viewModel?.topologyNodes.find((node) => node.id === state.selectedNodeId) ?? viewModel?.topologyNodes[0];
-  const selectedBeat = viewModel?.beats.find((beat) => beat.id === state.selectedBeatId) ?? viewModel?.beats[0];
-  const selectedAgent =
+  const selectedBeat = useMemo(() => {
+    if (!state.detailDrawer && state.selectedBeatId === undefined) {
+      return undefined;
+    }
+    return viewModel?.beats.find((beat) => beat.id === state.selectedBeatId) ?? viewModel?.beats[0];
+  }, [viewModel, state.selectedBeatId, state.detailDrawer]);
+  const selectedAgent = useMemo(() =>
     viewModel?.agents.find((agent) => agent.id === selectedNode?.agentId) ??
     viewModel?.agents.find((agent) => agent.id === selectedBeat?.agentId) ??
-    viewModel?.agents[0];
-  const selectedCheckpoint =
-    viewModel?.checkpoints.find((checkpoint) => checkpoint.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0];
+    viewModel?.agents[0],
+  [viewModel, selectedNode?.agentId, selectedBeat?.agentId]);
+  const selectedCheckpoint = useMemo(() =>
+    viewModel?.checkpoints.find((checkpoint) => checkpoint.id === selectedBeat?.checkpointId) ?? viewModel?.checkpoints[0],
+  [viewModel, selectedBeat?.checkpointId]);
 
   async function loadProjects(): Promise<OraProjectSummary[]> {
     const projects = await runtimeClient.listProjects();

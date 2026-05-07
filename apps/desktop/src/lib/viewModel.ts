@@ -128,6 +128,7 @@ export function buildWorkbenchViewModel(
     patternCards[0];
   const activeMode = selectedMode ? adaptModeCard(selectedMode) : modeCards[0];
 
+  const snapshotEvents = detailSnapshot.events;
   return {
     patternCards,
     modeCards,
@@ -146,7 +147,7 @@ export function buildWorkbenchViewModel(
       effectivePattern,
     ),
     topologyEdges: adaptTopologyEdges(selectedPatternSnapshot.topology.edges),
-    streamLines: adaptStreamLines(detailSnapshot.events),
+    streamLines: adaptStreamLines(snapshotEvents),
     agents: selectedPatternSnapshot.profiles.map(adaptAgentProfile),
     memoryRecords: adaptMemoryRecords(
       selectedPatternSnapshot.memory,
@@ -158,7 +159,11 @@ export function buildWorkbenchViewModel(
     ),
     checkpoints: detailSnapshot.checkpoints.map(adaptCheckpoint),
     artifacts: userVisibleArtifacts(detailSnapshot.artifacts).map(adaptArtifact),
-    beats: adaptFilmstripBeats(detailSnapshot),
+    get beats() {
+      const value = adaptFilmstripBeats(detailSnapshot);
+      Object.defineProperty(this, "beats", { value, enumerable: true });
+      return value;
+    },
     activePattern,
     activeMode,
     activeSnapshot: detailSnapshot,
@@ -1709,10 +1714,11 @@ function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): bool
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
 ): AssistantTurnAttachment {
-  const processSteps = deriveProcessSteps(snapshot);
+  const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
+  const processSteps = deriveProcessSteps(snapshot, timelineProjection);
   const proposedPlan = proposedPlanFromSnapshot(snapshot);
   const status = adaptSnapshotRunStatus(snapshot);
-  const timelineItems = deriveTimelineItems(snapshot, processSteps);
+  const timelineItems = deriveTimelineItems(snapshot, processSteps, timelineProjection);
   return {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
@@ -1964,8 +1970,11 @@ function restoreTruncatedAgentMessageContent(content: string, fullContent?: stri
   return normalizedFullContent;
 }
 
-function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
-  const { events, visibleEvents } = visibleProcessEvents(snapshot);
+function deriveProcessSteps(
+  snapshot: OraStateSnapshot,
+  timelineProjection?: ReturnType<typeof deriveRuntimeTimelineProjection>,
+): TurnProcessStep[] {
+  const { events, visibleEvents } = visibleProcessEvents(snapshot, timelineProjection);
 
   const baseTime = events[0]?.createdAt ?? snapshot.updatedAt;
 
@@ -2023,12 +2032,15 @@ function deriveProcessSteps(snapshot: OraStateSnapshot): TurnProcessStep[] {
   return timed.sort((a, b) => a.rawTime - b.rawTime).map((t) => t.step);
 }
 
-function visibleProcessEvents(snapshot: OraStateSnapshot): {
+function visibleProcessEvents(
+  snapshot: OraStateSnapshot,
+  timelineProjection?: ReturnType<typeof deriveRuntimeTimelineProjection>,
+): {
   events: OraEventEnvelope[];
   visibleEvents: OraEventEnvelope[];
 } {
-  const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
-  const events = timelineProjection.events.filter(shouldShowProcessEvent);
+  const projection = timelineProjection ?? deriveRuntimeTimelineProjection(snapshot);
+  const events = projection.events.filter(shouldShowProcessEvent);
   const hasWorkEvent = events.some(isWorkProcessEvent);
   return {
     events,
@@ -2060,16 +2072,17 @@ function processStepFromEvent(
 function deriveTimelineItems(
   snapshot: OraStateSnapshot,
   processSteps: TurnProcessStep[],
+  timelineProjection?: ReturnType<typeof deriveRuntimeTimelineProjection>,
 ): TurnTimelineItem[] {
-  const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
-  const { events, visibleEvents } = visibleProcessEvents(snapshot);
-  const baseTime = timelineProjection.baseTime;
+  const projection = timelineProjection ?? deriveRuntimeTimelineProjection(snapshot);
+  const { events, visibleEvents } = visibleProcessEvents(snapshot, projection);
+  const baseTime = projection.baseTime;
   const finalText = outputTextFromSnapshot(snapshot);
   const hasVisibleProcessSeparators = visibleEvents.some((event) => isWorkProcessEvent(event));
   const proposedPlan = proposedPlanFromSnapshot(snapshot);
   const hasStartedProposedPlan = Boolean(proposedPlan);
   const hasCompleteFinalProposedPlan = proposedPlan?.hasCompletePlan === true;
-  const agentLabels = timelineProjection.agentLabels;
+  const agentLabels = projection.agentLabels;
   const processStepByEventId = new Map(processSteps.map((step) => [step.id, step]));
   const items: Array<{ rawTime: number; eventSeq: number; item: TurnTimelineItem }> = [];
   let pendingSteps: TurnProcessStep[] = [];
@@ -2132,7 +2145,7 @@ function deriveTimelineItems(
     pendingSteps = [];
   }
 
-  for (const event of timelineProjection.events) {
+  for (const event of projection.events) {
     if (isPublicAssistantDelta(snapshot, event)) {
       const text = assistantDeltaText(event);
       const shouldCollectText = shouldCollectAssistantDeltaForTimeline(event, finalText, hasVisibleProcessSeparators);

@@ -58,9 +58,6 @@ export function parseProposedPlan(text: string): ProposedPlanParseResult {
     state === "completed" &&
     contentLength >= MIN_PLAN_CONTENT_LENGTH;
 
-  console.log("[plan:parser] parseState=%s contentLength=%d hasCompletePlan=%s",
-    state, contentLength, hasCompletePlan);
-
   return {
     status,
     hasStartedPlan,

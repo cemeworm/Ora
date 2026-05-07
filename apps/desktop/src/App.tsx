@@ -346,13 +346,7 @@ function WorkbenchInner() {
     let cancelled = false;
     (async () => {
       try {
-        dispatch({ type: "RESET_RUNTIME_VIEW" });
-        const startedAt = performance.now();
         const workbenchBootstrap = await runtimeClient.workbenchBootstrap();
-        const finishedAt = performance.now();
-        console.debug("[Ora] workbench bootstrap completed", {
-          durationMs: Math.round(finishedAt - startedAt),
-        });
         if (cancelled) return;
         const { bootstrap, projects, sessions, activeSessionDetail } =
           workbenchBootstrap;
@@ -369,7 +363,6 @@ function WorkbenchInner() {
           providerStatuses: bootstrap.providerStatuses,
           health: bootstrap.health,
         });
-        if (cancelled) return;
         dispatch({
           type: "HYDRATE_SESSION",
           projects,
