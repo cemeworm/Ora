@@ -156,6 +156,10 @@ describe("runtime ledger authority guards", () => {
     expect(gateRunAppendAdapterSource).toContain('params.snapshot.config.metadata.branchRole === "candidate"');
     expect(gateRunAppendAdapterSource).toContain("candidateParentId: params.candidateParentId?.()");
     expect(gateRunAppendAdapterSource).toContain("params.appendRunLedgerEntry(params.snapshot, entry, candidateAppendOptions)");
+    expect(gateLedgerServiceSource).not.toContain("candidateParentId");
+    expect(gateLedgerServiceSource).not.toContain("candidateLedgerLeaf");
+    expect(gateServiceSource).not.toContain("candidateParentId");
+    expect(gateServiceSource).not.toContain("candidateLedgerLeaf");
     expect(source).toContain('const candidate = snapshot.config.metadata.branchRole === "candidate";');
     expect(methodBody(source, "appendRuntimeEventBatchToLedger")).toContain("this.appendRunLedgerEntry(snapshot");
     expect(methodBody(source, "appendRunSnapshotUpdateToLedger")).toContain("candidate ? this.candidateLedgerLeaf(snapshot) : undefined");
@@ -223,15 +227,32 @@ describe("runtime ledger authority guards", () => {
     expect(resumeServiceSource).toContain("executeApprovedToolContinuationStrategy(params:");
     expect(resumeServiceSource).toContain("completeApprovedToolContinuation(");
     expect(resumeServiceSource).not.toContain("appendRunSnapshotUpdateToLedger");
+    const resumeFinalizationServiceSource = readSource("src/run-resume-finalization-service.ts");
+    expect(source).toContain("private readonly runResumeFinalizationService: RunResumeFinalizationService");
+    expect(resumeFinalizationServiceSource).toContain("persistTerminal(params:");
+    expect(resumeFinalizationServiceSource).toContain("persistInterrupted(params:");
+    expect(resumeFinalizationServiceSource).toContain("persistStreamingTerminal(params:");
+    expect(resumeFinalizationServiceSource).toContain("persistStreamingFailure(params:");
+    expect(resumeFinalizationServiceSource).toContain("this.deps.withResumeResolutionEvents");
+    expect(resumeFinalizationServiceSource).toContain("this.deps.appendRunSnapshotUpdateToLedger");
+    expect(resumeFinalizationServiceSource).toContain("this.deps.persistRunWithGeneratedTitle(projected)");
+    expect(resumeFinalizationServiceSource).toContain("this.deps.persistRun(projected)");
+    expect(resumeFinalizationServiceSource).toContain("params.stream.replaceSnapshot(projected)");
+    expect(resumeFinalizationServiceSource).toContain("params.stream.markLedgerSynced()");
+    expect(resumeFinalizationServiceSource).toContain("params.stream.publish([], liveSnapshot)");
     expect(source).not.toContain("from \"./run-kernel-lifecycle.js\"");
     expect(source).toContain("private readonly runKernelExecutionService: RunKernelExecutionService");
     expect(source).toContain("this.runKernelExecutionService = new RunKernelExecutionService({");
     expect(resumeRun).toContain("this.appendGateResolutionsForResume");
     expect(resumeRun).toContain("executeApprovedToolContinuationStrategy({");
     expect(resumeRun).toContain("this.runKernelExecutionService.executeKernelResumeWork");
+    expect(resumeRun).toContain("this.runResumeFinalizationService.persistTerminal");
+    expect(resumeRun).toContain("this.runResumeFinalizationService.persistInterrupted");
     expect(resumeStreamingRun).toContain("this.appendGateResolutionsForResume");
     expect(resumeStreamingRun).toContain("executeApprovedToolContinuationStrategy({");
     expect(resumeStreamingRun).toContain("this.runKernelExecutionService.executeKernelResumeWork");
+    expect(resumeStreamingRun).toContain("this.runResumeFinalizationService.persistStreamingTerminal");
+    expect(resumeStreamingRun).toContain("this.runResumeFinalizationService.persistStreamingFailure");
   });
 
   it("keeps RunResumeStrategy wired as a read-only LocalRunStore boundary guard", () => {
@@ -309,13 +330,15 @@ describe("runtime ledger authority guards", () => {
     expect(resumeStreamingRun).toContain("executeApprovedToolContinuationStrategy({");
     expect(resumeStreamingRun).toContain("this.runKernelExecutionService.continueAfterApprovedTool");
     expect(resumeStreamingRun).toContain("this.runStreamingService.createSession");
-    expect(resumeStreamingRun).toContain("this.appendRunSnapshotUpdateToLedger");
-    expect(resumeStreamingRun).toContain("this.persistRunWithGeneratedTitle");
+    expect(resumeStreamingRun).toContain("this.runResumeFinalizationService.persistStreamingTerminal");
+    expect(resumeStreamingRun).toContain("this.runResumeFinalizationService.persistStreamingFailure");
+    expect(resumeStreamingRun).not.toContain("this.appendRunSnapshotUpdateToLedger");
+    expect(resumeStreamingRun).not.toContain("this.persistRunWithGeneratedTitle");
     expect(resumeRun).toContain("executeApprovedToolContinuationStrategy({");
     expect(resumeRun).toContain("this.runKernelExecutionService.continueAfterApprovedTool");
     expect(resumeRun).toContain("this.runKernelExecutionService.executeKernelResumeWork");
-    expect(resumeRun).toContain("this.appendRunSnapshotUpdateToLedger");
-    expect(resumeRun).toContain("this.persistRunWithGeneratedTitle");
+    expect(resumeRun).toContain("this.runResumeFinalizationService.persistTerminal");
+    expect(resumeRun).toContain("this.runResumeFinalizationService.persistInterrupted");
   });
 
   it("persists streaming resume failures through ledger snapshot updates", () => {
@@ -325,7 +348,11 @@ describe("runtime ledger authority guards", () => {
       source.indexOf("async startRunWithKernel"),
     );
 
-    expect(resumeStreamingRun.match(/appendRunSnapshotUpdateToLedger/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    const resumeFinalizationServiceSource = readSource("src/run-resume-finalization-service.ts");
+    expect(resumeStreamingRun).toContain("this.runResumeFinalizationService.persistStreamingFailure");
+    expect(resumeStreamingRun).not.toContain("appendRunSnapshotUpdateToLedger");
+    expect(resumeFinalizationServiceSource).toContain("persistStreamingFailure(params:");
+    expect(resumeFinalizationServiceSource).toContain("this.deps.appendRunSnapshotUpdateToLedger");
     expect(resumeStreamingRun).toContain("createStreamingFailure");
   });
 

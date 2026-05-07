@@ -6,7 +6,7 @@ import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, is
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop session view model", () => {
-  it("keeps runtime timeline facts in shared projection and desktop timeline item formatting local", () => {
+  it("freezes runtime timeline facts in shared projection and desktop timeline item formatting locally", () => {
     const viewModelSource = fs.readFileSync(new URL("./viewModel.ts", import.meta.url), "utf8");
     const sharedTimelineSource = fs.readFileSync(
       new URL("../../../../packages/shared/src/runtime-timeline.ts", import.meta.url),
@@ -15,6 +15,8 @@ describe("desktop session view model", () => {
 
     expect(viewModelSource).toContain("deriveRuntimeTimelineProjection(snapshot)");
     expect(viewModelSource).toContain("function deriveTimelineItems(");
+    expect(viewModelSource).toContain("const timelineProjection = deriveRuntimeTimelineProjection(snapshot)");
+    expect(viewModelSource).toContain("for (const event of timelineProjection.events)");
     expect(viewModelSource).toContain("function processStepLabel(");
     expect(viewModelSource).toContain("function processStepDetail(");
     expect(sharedTimelineSource).toContain(".filter((event) => event.runId === snapshot.runId)");

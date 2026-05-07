@@ -150,6 +150,7 @@ import {
   RunResumeService,
   type RunResumeStrategy,
 } from "./run-resume-service.js";
+import { RunResumeFinalizationService } from "./run-resume-finalization-service.js";
 import { RunStartService } from "./run-start-service.js";
 import type {
   RuntimePersistenceBackend,
@@ -329,6 +330,7 @@ export class LocalRunStore {
   private readonly channelService: ChannelService;
   private readonly automationService: AutomationService;
   private readonly planDecisionService: PlanDecisionService;
+  private readonly runResumeFinalizationService: RunResumeFinalizationService;
   private readonly runResumeService: RunResumeService;
   private readonly runStartService: RunStartService;
   private readonly runStreamingService: RunStreamingService;
@@ -366,6 +368,14 @@ export class LocalRunStore {
       updateSessionTitle: (sessionId, title) => this.updateSessionTitle(sessionId, title),
       scheduleLongTermMemoryUpdate: (snapshot) => scheduleLongTermMemoryUpdate(snapshot, this.memoryUpdateDeps()),
       queueSelfIterationAfterTerminalRun: (snapshot) => this.queueSelfIterationAfterTerminalRun(snapshot),
+    });
+    this.runResumeFinalizationService = new RunResumeFinalizationService({
+      withResumeResolutionEvents: (snapshot, original, clarificationPatch, approvedActionIds) =>
+        this.withResumeResolutionEvents(snapshot, original, clarificationPatch, approvedActionIds),
+      normalizeSnapshotForPersistence: (snapshot) => this.normalizeSnapshotForPersistence(snapshot),
+      appendRunSnapshotUpdateToLedger: (snapshot) => this.appendRunSnapshotUpdateToLedger(snapshot),
+      persistRun: (snapshot) => this.persistRun(snapshot),
+      persistRunWithGeneratedTitle: (snapshot) => this.persistRunWithGeneratedTitle(snapshot),
     });
     this.customAgentStore = new CustomAgentFileStore(defaultCustomAgentsDir(dataDir), this.clock);
     this.systemAgentOverrideStore = new SystemAgentOverrideFileStore(defaultSystemAgentOverridesDir(dataDir), this.clock);
@@ -1601,12 +1611,13 @@ export class LocalRunStore {
           streamingSession.publish([], cancelledAfterContinuation);
           return;
         }
-        liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-          this.withResumeResolutionEvents(completedSnapshot, snapshot, clarificationPatch, approvedActionIds),
-        ));
-        await this.persistRunWithGeneratedTitle(liveSnapshot);
-        liveSnapshot = streamingSession.replaceSnapshot(liveSnapshot);
-        streamingSession.publish([], liveSnapshot);
+        liveSnapshot = await this.runResumeFinalizationService.persistStreamingTerminal({
+          snapshot: completedSnapshot,
+          original: snapshot,
+          clarificationPatch,
+          approvedActionIds,
+          stream: streamingSession,
+        });
       }).catch(async (error) => {
         this.runStreamingService.deleteAbortController(snapshot.runId);
         const cancelled = this.cancelledSnapshot(snapshot.runId);
@@ -1622,12 +1633,11 @@ export class LocalRunStore {
           error,
           failedAt: this.now(),
         });
-        liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-          attachTraceMetadata(failure.snapshot),
-        ));
-        await this.persistRunWithGeneratedTitle(liveSnapshot);
-        liveSnapshot = streamingSession.replaceSnapshot(liveSnapshot);
-        streamingSession.publish([failure.event], liveSnapshot);
+        liveSnapshot = await this.runResumeFinalizationService.persistStreamingFailure({
+          snapshot: attachTraceMetadata(failure.snapshot),
+          events: [failure.event],
+          stream: streamingSession,
+        });
       });
       return toRunHandle(liveSnapshot);
     }
@@ -1658,13 +1668,14 @@ export class LocalRunStore {
         currentPendingClarifications(snapshot),
         clarificationPatch,
       ));
-      liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        this.withResumeResolutionEvents(finalSnapshot, snapshot, clarificationPatch, approvedActionIds),
-      ));
-      streamingSession.replaceSnapshot(liveSnapshot);
-      streamingSession.markLedgerSynced();
-      await this.persistRunWithGeneratedTitle(liveSnapshot);
-      streamingSession.publish([], liveSnapshot);
+      liveSnapshot = await this.runResumeFinalizationService.persistStreamingTerminal({
+        snapshot: finalSnapshot,
+        original: snapshot,
+        clarificationPatch,
+        approvedActionIds,
+        stream: streamingSession,
+        markLedgerSynced: true,
+      });
     }).catch(async (error) => {
       this.runStreamingService.deleteAbortController(snapshot.runId);
       const cancelled = this.cancelledSnapshot(snapshot.runId);
@@ -1680,12 +1691,11 @@ export class LocalRunStore {
         error,
         failedAt: this.now(),
       });
-      liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        attachTraceMetadata(failure.snapshot),
-      ));
-      await this.persistRunWithGeneratedTitle(liveSnapshot);
-      liveSnapshot = streamingSession.replaceSnapshot(liveSnapshot);
-      streamingSession.publish([failure.event], liveSnapshot);
+      liveSnapshot = await this.runResumeFinalizationService.persistStreamingFailure({
+        snapshot: attachTraceMetadata(failure.snapshot),
+        events: [failure.event],
+        stream: streamingSession,
+      });
     });
 
     return toRunHandle(liveSnapshot);
@@ -1877,11 +1887,12 @@ export class LocalRunStore {
             approvedActionIds,
           })
           : approvedToolContinuation.snapshot;
-        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-          this.withResumeResolutionEvents(completedApprovedTool, snapshot, clarificationPatch, approvedActionIds),
-        ));
-        await this.persistRunWithGeneratedTitle(projected);
-        return projected;
+        return this.runResumeFinalizationService.persistTerminal({
+          snapshot: completedApprovedTool,
+          original: snapshot,
+          clarificationPatch,
+          approvedActionIds,
+        });
       }
       if (hasKernelWork) {
         const resumedSnapshot = await this.runKernelExecutionService.executeKernelResumeWork({
@@ -1895,11 +1906,12 @@ export class LocalRunStore {
           currentPendingClarifications(snapshot),
           clarificationPatch,
         );
-        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-          this.withResumeResolutionEvents(tracedSnapshot, snapshot, clarificationPatch, approvedActionIds),
-        ));
-        await this.persistRunWithGeneratedTitle(projected);
-        return projected;
+        return this.runResumeFinalizationService.persistTerminal({
+          snapshot: tracedSnapshot,
+          original: snapshot,
+          clarificationPatch,
+          approvedActionIds,
+        });
       }
 
       const resumeMutationDeps = {
@@ -1922,18 +1934,20 @@ export class LocalRunStore {
       });
 
       if (nonKernelResume.kind === "needs_input") {
-        const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-          this.withResumeResolutionEvents(nonKernelResume.snapshot, snapshot, clarificationPatch, approvedActionIds),
-        ));
-        this.persistRun(projected);
-        return projected;
+        return this.runResumeFinalizationService.persistInterrupted({
+          snapshot: nonKernelResume.snapshot,
+          original: snapshot,
+          clarificationPatch,
+          approvedActionIds,
+        });
       }
 
-      const projected = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        this.withResumeResolutionEvents(nonKernelResume.snapshot, snapshot, clarificationPatch, approvedActionIds),
-      ));
-      await this.persistRunWithGeneratedTitle(projected);
-      return projected;
+      return this.runResumeFinalizationService.persistTerminal({
+        snapshot: nonKernelResume.snapshot,
+        original: snapshot,
+        clarificationPatch,
+        approvedActionIds,
+      });
     } catch (error) {
       const failure = createStreamingFailure({
         liveSnapshot,
@@ -1942,10 +1956,12 @@ export class LocalRunStore {
         error,
         failedAt: this.now(),
       });
-      liveSnapshot = this.appendRunSnapshotUpdateToLedger(this.normalizeSnapshotForPersistence(
-        this.withResumeResolutionEvents(attachTraceMetadata(failure.snapshot), snapshot, clarificationPatch, approvedActionIds),
-      ));
-      await this.persistRunWithGeneratedTitle(liveSnapshot);
+      liveSnapshot = await this.runResumeFinalizationService.persistTerminal({
+        snapshot: attachTraceMetadata(failure.snapshot),
+        original: snapshot,
+        clarificationPatch,
+        approvedActionIds,
+      });
       return liveSnapshot;
     }
   }

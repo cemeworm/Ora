@@ -167,7 +167,7 @@ describe("runtime kernel architecture guards", () => {
     expect(source).not.toContain('emitNodeRuntimeState("degraded"');
   });
 
-  it("documents the explicit KernelRunner dependency surface before extraction", () => {
+  it("freezes the explicit KernelRunner dependency surface as narrow runner-facing groups", () => {
     const source = readSource("src/harness/runtime-kernel.ts");
     const depsSource = kernelRunnerDepsSource();
     const runnerSource = kernelRunnerSource();
@@ -250,6 +250,10 @@ describe("runtime kernel architecture guards", () => {
     expect(depsSource).not.toContain("new RuntimeToolExecutor");
     expect(depsSource).not.toContain("createRuntimePatternExecutionContext");
     expect(depsSource).not.toContain("runRecoverableNode");
+    expect(depsSource).not.toContain("LocalRunStore");
+    expect(depsSource).not.toContain("RunLedgerService");
+    expect(depsSource).not.toContain("RunPersistenceService");
+    expect(depsSource).not.toContain("RuntimeGateService");
     expect(source).toContain("createKernelPatternExecutionContextAdapter({");
     expect(runnerSource).toContain("kernelPatternExecutionContextAdapter.create()");
     expect(runnerSource).not.toContain("runtimeToolExecutor");
