@@ -1,5 +1,10 @@
 import {
   deriveRunAttention,
+  FlowActivitySummary,
+  FlowRunDetail,
+  FlowRunDetailSchema,
+  FlowRunHandle,
+  FlowRunHandleSchema,
   RunHandle,
   RunHandleSchema,
   RunSummary,
@@ -25,6 +30,116 @@ export function toRunHandle(snapshot: StateSnapshot): RunHandle {
   });
 }
 
+export function toFlowRunHandle(snapshot: StateSnapshot): FlowRunHandle {
+  const handle = toRunHandle(snapshot);
+  return FlowRunHandleSchema.parse({
+    ...handle,
+    flowRunId: handle.runId,
+  });
+}
+
+export function toFlowRunDetail(snapshot: StateSnapshot): FlowRunDetail {
+  const attention = deriveRunAttention(snapshot);
+  const startedAt = snapshot.events[0]?.createdAt ?? snapshot.input.createdAt ?? snapshot.updatedAt;
+  const flowRunId = snapshot.runId;
+  const activities: FlowActivitySummary[] = [
+    ...snapshot.toolCalls.map((call) => ({
+      activityId: call.id,
+      kind: "tool" as const,
+      status: flowToolCallStatus(call.status),
+      runId: snapshot.runId,
+      flowRunId,
+      nodeId: call.nodeId,
+      agentId: call.agentId,
+      toolId: call.toolId,
+      label: call.toolId,
+      startedAt: call.updatedAt,
+      updatedAt: call.updatedAt,
+    })),
+    ...snapshot.agentMessages.map((message) => ({
+      activityId: message.id,
+      kind: "model" as const,
+      status: flowAgentMessageStatus(message.status),
+      runId: snapshot.runId,
+      flowRunId,
+      nodeId: message.nodeId,
+      agentId: message.fromAgentId,
+      label: message.topic ?? message.kind,
+      startedAt: message.createdAt,
+      updatedAt: message.createdAt,
+    })),
+  ];
+
+  return FlowRunDetailSchema.parse({
+    flowRunId,
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId,
+    linkedSessionIds: snapshot.sessionId ? [snapshot.sessionId] : [],
+    turnIndex: snapshot.turnIndex,
+    status: snapshot.status,
+    attention,
+    definition: {
+      flowDefinitionId: snapshot.modeId ?? snapshot.config.pattern,
+      source: "mode_spec",
+      modeId: snapshot.modeId,
+      label: snapshot.modeSpec?.label,
+    },
+    checkpoints: snapshot.checkpoints,
+    gates: [
+      ...snapshot.pendingClarifications.map((clarification) => ({
+        gateId: clarification.id,
+        kind: "clarification" as const,
+        status: "open" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        pendingClarificationIds: [clarification.id],
+        openedAt: clarification.requestedAt,
+      })),
+      ...(snapshot.pendingApprovals.length > 0 ? [{
+        gateId: `${snapshot.runId}:approval`,
+        kind: "approval" as const,
+        status: "open" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        pendingActionIds: snapshot.pendingApprovals,
+        pendingToolCallIds: snapshot.toolCalls
+          .filter((call) => call.status === "approval_required")
+          .map((call) => call.id),
+        openedAt: snapshot.events.find((event) => event.type === "approval.required")?.createdAt,
+      }] : []),
+      ...snapshot.planDecisions.map((decision) => ({
+        gateId: decision.id,
+        kind: "plan_decision" as const,
+        status: decision.status === "pending" ? "open" as const : "resolved" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: decision.sessionId,
+        planDecisionId: decision.id,
+        openedAt: decision.createdAt,
+        resolvedAt: decision.resolvedAt,
+      })),
+      ...(snapshot.status === "cancelled" ? [{
+        gateId: `${snapshot.runId}:cancellation`,
+        kind: "cancellation" as const,
+        status: "cancelled" as const,
+        runId: snapshot.runId,
+        flowRunId,
+        sessionId: snapshot.sessionId,
+        reason: snapshot.error,
+        openedAt: snapshot.events.find((event) => event.type === "run.cancelled")?.createdAt ?? snapshot.updatedAt,
+      }] : []),
+    ],
+    activities,
+    eventCount: snapshot.events.length,
+    latestEventSeq: snapshot.events.at(-1)?.seq,
+    latestSnapshot: snapshot,
+    createdAt: startedAt,
+    updatedAt: snapshot.updatedAt,
+  });
+}
+
 export function toRunSummary(snapshot: StateSnapshot): RunSummary {
   return RunSummarySchema.parse({
     runId: snapshot.runId,
@@ -40,6 +155,36 @@ export function toRunSummary(snapshot: StateSnapshot): RunSummary {
     checkpointCount: snapshot.checkpoints.length,
     artifactCount: snapshot.artifacts.length
   });
+}
+
+function flowToolCallStatus(status: StateSnapshot["toolCalls"][number]["status"]): FlowActivitySummary["status"] {
+  switch (status) {
+    case "succeeded":
+      return "succeeded";
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "interrupted";
+    case "denied":
+      return "denied";
+    case "running":
+      return "running";
+    default:
+      return "pending";
+  }
+}
+
+function flowAgentMessageStatus(status: StateSnapshot["agentMessages"][number]["status"]): FlowActivitySummary["status"] {
+  switch (status) {
+    case "done":
+      return "succeeded";
+    case "failed":
+      return "failed";
+    case "running":
+      return "running";
+    default:
+      return "pending";
+  }
 }
 
 export function toSessionTurn(snapshot: StateSnapshot): SessionTurn {

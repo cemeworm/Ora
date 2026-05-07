@@ -19,6 +19,16 @@ export interface RuntimeMethodHandlerOptions {
   onRunStream?: (stream: RunEventStream) => void;
 }
 
+function flowParamsAsRunParams(params: unknown): Record<string, unknown> {
+  const record = params && typeof params === "object" ? params as Record<string, unknown> : {};
+  const runId = typeof record.runId === "string" && record.runId.length > 0
+    ? record.runId
+    : typeof record.flowRunId === "string" && record.flowRunId.length > 0
+      ? record.flowRunId
+      : undefined;
+  return runId ? { ...record, runId } : record;
+}
+
 export function createRuntimeMethodHandler(
   store = new LocalRunStore(),
   _unusedSecondArg?: unknown,
@@ -226,6 +236,26 @@ export function createRuntimeMethodHandler(
         return store.runAutomationNow(request.params);
       case "automations.previewSchedule":
         return store.previewAutomationSchedule(request.params);
+      case "flows.create":
+        return store.createFlow(request.params);
+      case "flows.createStreaming":
+        return store.createStreamingFlow(request.params, { onStream: options.onRunStream });
+      case "flows.get":
+        return store.getFlowRun(flowParamsAsRunParams(request.params));
+      case "flows.stream":
+        return store.streamRun(flowParamsAsRunParams(request.params));
+      case "flows.resume":
+        return store.resumeRun(flowParamsAsRunParams(request.params));
+      case "flows.resumeStreaming":
+        return store.resumeStreamingRun(flowParamsAsRunParams(request.params), { onStream: options.onRunStream });
+      case "flows.cancel":
+        return store.cancelRun(flowParamsAsRunParams(request.params));
+      case "flows.checkpoints":
+        return store.listFlowCheckpoints(flowParamsAsRunParams(request.params));
+      case "flows.replay":
+        return store.replayRun(flowParamsAsRunParams(request.params));
+      case "flows.fork":
+        return store.forkFlow(flowParamsAsRunParams(request.params));
       case "runs.start":
         return store.startRun(request.params);
       case "runs.startStreaming":

@@ -271,6 +271,8 @@ import {
 import {
   attachTraceMetadata,
   buildRunTrailMetrics,
+  toFlowRunDetail,
+  toFlowRunHandle,
   toRunHandle,
   toRunSummary
 } from "./run-projections.js";
@@ -1318,6 +1320,11 @@ export class LocalRunStore {
     return toRunHandle(projectedSnapshot);
   }
 
+  async createFlow(params: unknown) {
+    const handle = await this.startRun(params);
+    return toFlowRunHandle(this.getRunState({ runId: handle.runId }));
+  }
+
   async startStreamingRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
     const latencyMarks: RunLatencyMark[] = [];
     const markRuntimeLatency = (name: string, detail: Record<string, unknown> = {}) => {
@@ -1463,6 +1470,11 @@ export class LocalRunStore {
     }, 0);
 
     return toRunHandle(liveSnapshot);
+  }
+
+  async createStreamingFlow(params: unknown, options: StreamingRunOptions = {}) {
+    const handle = await this.startStreamingRun(params, options);
+    return toFlowRunHandle(this.getRunState({ runId: handle.runId }));
   }
 
   private approvedFileWriteResumeDeps(): ApprovedFileWriteResumeDeps {
@@ -1982,6 +1994,11 @@ export class LocalRunStore {
     return getRunState(params, this.runStateOperationDeps());
   }
 
+  getFlowRun(params: unknown) {
+    const runId = this.requireFlowRunId(params);
+    return toFlowRunDetail(this.getRunState({ runId }));
+  }
+
   persistExternalSnapshot(snapshot: StateSnapshot): StateSnapshot {
     const parsed = StateSnapshotSchema.parse(snapshot);
     if (parsed.sessionId && this.isLedgerBackedSession(parsed.sessionId)) {
@@ -2027,6 +2044,10 @@ export class LocalRunStore {
 
   listCheckpoints(params: unknown): CheckpointMeta[] {
     return listCheckpoints(params, this.runStateOperationDeps());
+  }
+
+  listFlowCheckpoints(params: unknown): CheckpointMeta[] {
+    return this.listCheckpoints({ runId: this.requireFlowRunId(params) });
   }
 
   replayRun(params: unknown): RunEventStream {
@@ -2084,6 +2105,7 @@ export class LocalRunStore {
     if (continuationFrames.length === 0) {
       return forkHandle;
     }
+
     const forkSnapshot = this.getRunOrThrow(forkHandle.runId);
     const updated = StateSnapshotSchema.parse({
       ...forkSnapshot,
@@ -2103,6 +2125,12 @@ export class LocalRunStore {
     const projected = this.appendRunSnapshotUpdateToLedger(updated);
     this.persistRun(projected);
     return toRunHandle(projected);
+  }
+
+  async forkFlow(params: unknown) {
+    const parsed = RunForkParamsSchema.parse(this.withRunIdFromFlowRunId(params));
+    const handle = await this.forkRun(parsed);
+    return toFlowRunHandle(this.getRunState({ runId: handle.runId }));
   }
 
   exportReport(params: unknown): ArtifactRef {
@@ -3009,6 +3037,24 @@ export class LocalRunStore {
 
   private requireRunId(params: unknown): string {
     return RunIdParamsSchema.parse(params).runId;
+  }
+
+  private requireFlowRunId(params: unknown): string {
+    const record = params && typeof params === "object" ? params as Record<string, unknown> : {};
+    const flowRunId = typeof record.flowRunId === "string" && record.flowRunId.length > 0 ? record.flowRunId : undefined;
+    const runId = typeof record.runId === "string" && record.runId.length > 0 ? record.runId : undefined;
+    if (!flowRunId && !runId) {
+      throw new OraRuntimeError("Expected flowRunId or runId.", -32602, { params });
+    }
+    return flowRunId ?? runId!;
+  }
+
+  private withRunIdFromFlowRunId(params: unknown): Record<string, unknown> {
+    const record = params && typeof params === "object" ? params as Record<string, unknown> : {};
+    return {
+      ...record,
+      runId: this.requireFlowRunId(params),
+    };
   }
 
   private cancelledSnapshot(runId: string): StateSnapshot | undefined {

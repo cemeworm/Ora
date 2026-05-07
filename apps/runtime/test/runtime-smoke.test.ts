@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CODE_DEVELOPMENT_MODE_ID, DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition, type StateSnapshot } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, FlowRunDetailSchema, FlowRunHandleSchema, MODE_STUDIO_BUILDER_MODE_ID, ORA_ROOT_AGENT_ID, ORA_SELF_BUILDER_MODE_ID, RunConfigSchema, SINGLE_AGENT_MODE_ID, OraEventEnvelopeSchema, StateSnapshotSchema, getModePreset, modeSpecToPatternDefinition, type StateSnapshot } from "@cemeworm/shared";
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 import { nodeLoopTransitionDiagnostics } from "../src/harness/node-loop-transitions.js";
 import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
@@ -52,6 +52,112 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 describe("Ora runtime smoke path", () => {
   it("defaults run config mode selection to manual", () => {
     expect(RunConfigSchema.parse({ pattern: "orchestrator_subagent" }).modeSelection).toBe("manual");
+  });
+
+  it("exposes task flow aliases without changing session run behavior", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const session = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sessions.create",
+      params: {},
+    }) as { sessionId: string };
+
+    const flow = FlowRunHandleSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "flows.create",
+      params: {
+        sessionId: session.sessionId,
+        input: { prompt: "Run through the task flow adapter." },
+        config: { modeId: SINGLE_AGENT_MODE_ID, modelRef: "local/smoke-model" },
+      },
+    }));
+    expect(flow.flowRunId).toBe(flow.runId);
+    expect(flow.sessionId).toBe(session.sessionId);
+
+    const detail = FlowRunDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "flows.get",
+      params: { flowRunId: flow.flowRunId },
+    }));
+    expect(detail).toMatchObject({
+      flowRunId: flow.runId,
+      runId: flow.runId,
+      sessionId: session.sessionId,
+      status: "succeeded",
+      definition: { source: "mode_spec", modeId: SINGLE_AGENT_MODE_ID },
+    });
+    expect(detail.linkedSessionIds).toEqual([session.sessionId]);
+    expect(detail.latestSnapshot?.runId).toBe(flow.runId);
+
+    const sessionDetail = await handle({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "sessions.get",
+      params: { sessionId: session.sessionId },
+    }) as { turns: Array<{ runId: string }> };
+    expect(sessionDetail.turns.map((turn) => turn.runId)).toContain(flow.runId);
+
+    const stream = await handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "flows.stream",
+      params: { flowRunId: flow.flowRunId },
+    }) as { runId: string; events: Array<{ type: string }> };
+    expect(stream.runId).toBe(flow.runId);
+    expect(stream.events.some((event) => event.type === "run.done")).toBe(true);
+
+    const checkpoints = await handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "flows.checkpoints",
+      params: { flowRunId: flow.flowRunId },
+    }) as Array<{ id: string }>;
+    expect(checkpoints.length).toBeGreaterThan(0);
+
+    const replay = await handle({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "flows.replay",
+      params: { flowRunId: flow.flowRunId, checkpointId: checkpoints[0]!.id },
+    }) as { runId: string; events: Array<{ type: string }> };
+    expect(replay.runId).toBe(flow.runId);
+    expect(replay.events.at(-1)?.type).toBe("checkpoint.created");
+
+    const fork = FlowRunHandleSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "flows.fork",
+      params: {
+        flowRunId: flow.flowRunId,
+        checkpointId: checkpoints[0]!.id,
+        input: { prompt: "Fork through the flow adapter." },
+      },
+    }));
+    expect(fork.flowRunId).toBe(fork.runId);
+    expect(fork.runId).not.toBe(flow.runId);
+    expect(fork.sessionId).toBe(session.sessionId);
+
+    const cancelledFork = StateSnapshotSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "flows.cancel",
+      params: { flowRunId: fork.flowRunId, reason: "Flow adapter cancellation test." },
+    }));
+    expect(cancelledFork.status).toBe("cancelled");
+    const cancelledDetail = FlowRunDetailSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "flows.get",
+      params: { flowRunId: fork.flowRunId },
+    }));
+    expect(cancelledDetail.gates).toContainEqual(expect.objectContaining({
+      kind: "cancellation",
+      status: "cancelled",
+      flowRunId: fork.flowRunId,
+    }));
   });
 
   it("keeps branch candidates hidden until an empty-start candidate is adopted", async () => {
