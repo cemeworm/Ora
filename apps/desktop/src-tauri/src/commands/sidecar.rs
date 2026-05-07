@@ -9,7 +9,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -93,6 +93,7 @@ pub struct RuntimeSidecarManager {
     managed_langfuse: Mutex<ManagedLangfuseStatus>,
     active_streaming_children: StreamingChildRegistry,
     channel_daemon_child: Mutex<Option<Child>>,
+    request_bridge_child: Mutex<Option<PersistentJsonRpcChild>>,
 }
 
 impl Default for RuntimeSidecarManager {
@@ -104,6 +105,7 @@ impl Default for RuntimeSidecarManager {
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
             active_streaming_children: StreamingChildRegistry::default(),
             channel_daemon_child: Mutex::new(None),
+            request_bridge_child: Mutex::new(None),
         }
     }
 }
@@ -123,6 +125,7 @@ impl RuntimeSidecarManager {
             managed_langfuse: Mutex::new(managed_langfuse),
             active_streaming_children: StreamingChildRegistry::default(),
             channel_daemon_child: Mutex::new(None),
+            request_bridge_child: Mutex::new(None),
         };
         if process_spawn_available {
             manager.ensure_channel_daemon(Some(&app));
@@ -143,6 +146,7 @@ impl RuntimeSidecarManager {
             managed_langfuse: Mutex::new(disabled_managed_langfuse_status()),
             active_streaming_children: StreamingChildRegistry::default(),
             channel_daemon_child: Mutex::new(None),
+            request_bridge_child: Mutex::new(None),
         }
     }
 
@@ -225,12 +229,17 @@ impl RuntimeSidecarManager {
                 self.active_streaming_children.kill_run(&run_id);
             }
         }
-        match run_process_json_rpc_for_app(
-            &command,
-            request,
-            app,
-            self.active_streaming_children.clone(),
-        ) {
+        let response = if is_streaming_runtime_method(&request.method) {
+            run_streaming_process_json_rpc_for_app(
+                &command,
+                request,
+                app,
+                self.active_streaming_children.clone(),
+            )
+        } else {
+            self.run_persistent_process_json_rpc(&command, request)
+        };
+        match response {
             Ok(response) => {
                 if should_restart_channel_daemon_after_response(request, &response) {
                     self.stop_channel_daemon();
@@ -245,7 +254,48 @@ impl RuntimeSidecarManager {
         }
     }
 
+    fn run_persistent_process_json_rpc(
+        &self,
+        command: &RuntimeCommandSpec,
+        request: &RuntimeJsonRpcRequest,
+    ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+        let Ok(mut child_slot) = self.request_bridge_child.lock() else {
+            return Err(runtime_error(
+                -32058,
+                "Runtime sidecar request bridge lock failed",
+                Some(json!({ "command": command.display })),
+            ));
+        };
+
+        for attempt in 0..2 {
+            if child_slot.is_none() {
+                *child_slot = Some(PersistentJsonRpcChild::spawn(command)?);
+            }
+
+            let result = child_slot
+                .as_mut()
+                .expect("request bridge child should be initialized")
+                .request(command, request);
+            match result {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    child_slot.take();
+                    if attempt == 1 {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        Err(runtime_error(
+            -32058,
+            "Runtime sidecar request bridge failed",
+            Some(json!({ "command": command.display })),
+        ))
+    }
+
     fn disable_process_bridge(&self) {
+        self.stop_request_bridge();
         if let Ok(mut process_spawn_available) = self.process_spawn_available.lock() {
             *process_spawn_available = false;
         }
@@ -272,7 +322,16 @@ impl RuntimeSidecarManager {
 
     pub fn cleanup_streaming_children(&self) {
         self.active_streaming_children.kill_all();
+        self.stop_request_bridge();
         self.stop_channel_daemon();
+    }
+
+    fn stop_request_bridge(&self) {
+        let _ = self
+            .request_bridge_child
+            .lock()
+            .ok()
+            .and_then(|mut child_slot| child_slot.take());
     }
 
     fn ensure_channel_daemon(&self, app: Option<&AppHandle>) {
@@ -315,6 +374,132 @@ impl RuntimeSidecarManager {
                 Err(_error) => {
                     terminate_child_process_group(&mut child);
                 }
+            }
+        }
+    }
+}
+
+struct PersistentJsonRpcChild {
+    child: Child,
+    stdin: ChildStdin,
+    reader: BufReader<ChildStdout>,
+}
+
+impl PersistentJsonRpcChild {
+    fn spawn(command: &RuntimeCommandSpec) -> Result<Self, RuntimeJsonRpcError> {
+        let mut child = spawn_runtime_child(command)?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            runtime_error(
+                -32052,
+                "Runtime sidecar stdin unavailable",
+                Some(json!({ "command": command.display })),
+            )
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            runtime_error(
+                -32054,
+                "Runtime sidecar stdout unavailable",
+                Some(json!({ "command": command.display })),
+            )
+        })?;
+
+        Ok(Self {
+            child,
+            stdin,
+            reader: BufReader::new(stdout),
+        })
+    }
+
+    fn request(
+        &mut self,
+        command: &RuntimeCommandSpec,
+        request: &RuntimeJsonRpcRequest,
+    ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+        match self.child.try_wait() {
+            Ok(Some(_status)) => {
+                return Err(runtime_error(
+                    -32056,
+                    "Runtime sidecar request bridge exited",
+                    Some(json!({ "command": command.display })),
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(runtime_error(
+                    -32055,
+                    "Runtime sidecar status check failed",
+                    Some(json!({
+                        "command": command.display,
+                        "error": error.to_string()
+                    })),
+                ));
+            }
+        }
+
+        write_runtime_request(command, &mut self.stdin, request)?;
+
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes_read = self.reader.read_line(&mut line).map_err(|error| {
+                runtime_error(
+                    -32055,
+                    "Runtime sidecar read failed",
+                    Some(json!({
+                        "command": command.display,
+                        "error": error.to_string()
+                    })),
+                )
+            })?;
+
+            if bytes_read == 0 {
+                return Err(runtime_error(
+                    -32056,
+                    "Runtime sidecar returned no JSON-RPC response",
+                    Some(json!({ "command": command.display })),
+                ));
+            }
+
+            let value = serde_json::from_str::<Value>(line.trim()).map_err(|error| {
+                runtime_error(
+                    -32057,
+                    "Runtime sidecar response parse failed",
+                    Some(json!({
+                        "command": command.display,
+                        "error": error.to_string(),
+                        "response": line.trim()
+                    })),
+                )
+            })?;
+
+            if value.get("method").and_then(Value::as_str).is_some() {
+                continue;
+            }
+
+            if value.get("id") != request.id.as_ref() {
+                continue;
+            }
+
+            return serde_json::from_value(value).map_err(|error| {
+                runtime_error(
+                    -32057,
+                    "Runtime sidecar response parse failed",
+                    Some(json!({
+                        "command": command.display,
+                        "error": error.to_string()
+                    })),
+                )
+            });
+        }
+    }
+}
+
+impl Drop for PersistentJsonRpcChild {
+    fn drop(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_status)) => {}
+            Ok(None) | Err(_) => {
+                terminate_child_process_group(&mut self.child);
             }
         }
     }
@@ -3099,7 +3284,11 @@ fn terminate_child_process_group(child: &mut Child) {
     #[cfg(unix)]
     {
         let group = format!("-{}", child.id());
-        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        let _ = Command::new("kill")
+            .args(["-TERM", &group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
         for _ in 0..10 {
             match child.try_wait() {
                 Ok(Some(_)) => return,
@@ -3107,7 +3296,11 @@ fn terminate_child_process_group(child: &mut Child) {
                 Err(_) => break,
             }
         }
-        let _ = Command::new("kill").args(["-KILL", &group]).status();
+        let _ = Command::new("kill")
+            .args(["-KILL", &group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     let _ = child.kill();
@@ -3126,7 +3319,18 @@ fn channel_daemon_command(command: &RuntimeCommandSpec) -> RuntimeCommandSpec {
     )
 }
 
-fn run_process_json_rpc_for_app(
+fn is_streaming_runtime_method(method: &str) -> bool {
+    matches!(
+        method,
+        "runs.startStreaming"
+            | "runs.resumeStreaming"
+            | "flows.createStreaming"
+            | "flows.resumeStreaming"
+            | "sessions.branchGroups.createAndRun"
+    )
+}
+
+fn run_streaming_process_json_rpc_for_app(
     command: &RuntimeCommandSpec,
     request: &RuntimeJsonRpcRequest,
     app: Option<&AppHandle>,
@@ -3135,7 +3339,7 @@ fn run_process_json_rpc_for_app(
     run_process_json_rpc_internal(
         command,
         request,
-        if request.method == "runs.startStreaming" || request.method == "runs.resumeStreaming" {
+        if is_streaming_runtime_method(&request.method) {
             let app = app.cloned();
             Some(Box::new(move |payload| {
                 if let Some(app) = app.as_ref() {
@@ -3164,39 +3368,9 @@ fn run_process_json_rpc_internal(
     on_notification: Option<Box<dyn Fn(Value) + Send + 'static>>,
     active_streaming_children: Option<StreamingChildRegistry>,
 ) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
-    let mut process = Command::new(command.executable());
-    process
-        .args(command.args())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    #[cfg(unix)]
-    process.process_group(0);
-    if let Some(working_directory) = command.working_directory.as_ref() {
-        process.current_dir(working_directory);
-    }
-    for (key, value) in &command.environment {
-        process.env(key, value);
-    }
-    let mut child = process.spawn().map_err(|error| {
-            runtime_error(
-                -32050,
-                "Runtime sidecar process spawn failed",
-                Some(json!({
-                    "command": command.display,
-                    "error": error.to_string()
-                })),
-            )
-        })?;
+    let mut child = spawn_runtime_child(command)?;
 
     {
-        let request_json = serde_json::to_string(request).map_err(|error| {
-            runtime_error(
-                -32051,
-                "Runtime sidecar request serialization failed",
-                Some(json!({ "error": error.to_string() })),
-            )
-        })?;
         let mut stdin = child.stdin.take().ok_or_else(|| {
             runtime_error(
                 -32052,
@@ -3204,36 +3378,7 @@ fn run_process_json_rpc_internal(
                 Some(json!({ "command": command.display })),
             )
         })?;
-        stdin.write_all(request_json.as_bytes()).map_err(|error| {
-            runtime_error(
-                -32053,
-                "Runtime sidecar write failed",
-            Some(json!({
-                    "command": command.display,
-                    "error": error.to_string()
-                })),
-            )
-        })?;
-        stdin.write_all(b"\n").map_err(|error| {
-            runtime_error(
-                -32053,
-                "Runtime sidecar write failed",
-            Some(json!({
-                    "command": command.display,
-                    "error": error.to_string()
-                })),
-            )
-        })?;
-        stdin.flush().map_err(|error| {
-            runtime_error(
-                -32053,
-                "Runtime sidecar write failed",
-            Some(json!({
-                    "command": command.display,
-                    "error": error.to_string()
-                })),
-            )
-        })?;
+        write_runtime_request(command, &mut stdin, request)?;
     }
 
     let stdout = child.stdout.take().ok_or_else(|| {
@@ -3244,37 +3389,7 @@ fn run_process_json_rpc_internal(
         )
     })?;
     let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let bytes_read = reader.read_line(&mut line).map_err(|error| {
-        runtime_error(
-            -32055,
-            "Runtime sidecar read failed",
-            Some(json!({
-                "command": command.display,
-                "error": error.to_string()
-            })),
-        )
-    })?;
-
-    if bytes_read == 0 {
-        return Err(runtime_error(
-            -32056,
-            "Runtime sidecar returned no JSON-RPC response",
-            Some(json!({ "command": command.display })),
-        ));
-    }
-
-    let response = serde_json::from_str(line.trim()).map_err(|error| {
-        runtime_error(
-            -32057,
-            "Runtime sidecar response parse failed",
-            Some(json!({
-                "command": command.display,
-                "error": error.to_string(),
-                "response": line.trim()
-            })),
-        )
-    })?;
+    let response = read_runtime_response(command, &mut reader)?;
 
     if let Some(on_notification) = on_notification {
         let pid = child.id();
@@ -3305,7 +3420,7 @@ fn run_process_json_rpc_internal(
             }
         });
     } else {
-        // The sidecar process is one-shot; once a valid JSON-RPC response is read,
+        // One-shot fallback path; once a valid JSON-RPC response is read,
         // post-response cleanup must not block the desktop command path.
         match child.try_wait() {
             Ok(Some(_status)) => {}
@@ -3319,6 +3434,114 @@ fn run_process_json_rpc_internal(
     }
 
     Ok(response)
+}
+
+fn spawn_runtime_child(command: &RuntimeCommandSpec) -> Result<Child, RuntimeJsonRpcError> {
+    let mut process = Command::new(command.executable());
+    process
+        .args(command.args())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    #[cfg(unix)]
+    process.process_group(0);
+    if let Some(working_directory) = command.working_directory.as_ref() {
+        process.current_dir(working_directory);
+    }
+    for (key, value) in &command.environment {
+        process.env(key, value);
+    }
+    process.spawn().map_err(|error| {
+        runtime_error(
+            -32050,
+            "Runtime sidecar process spawn failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })
+}
+
+fn write_runtime_request(
+    command: &RuntimeCommandSpec,
+    stdin: &mut impl Write,
+    request: &RuntimeJsonRpcRequest,
+) -> Result<(), RuntimeJsonRpcError> {
+    let request_json = serde_json::to_string(request).map_err(|error| {
+        runtime_error(
+            -32051,
+            "Runtime sidecar request serialization failed",
+            Some(json!({ "error": error.to_string() })),
+        )
+    })?;
+    stdin.write_all(request_json.as_bytes()).map_err(|error| {
+        runtime_error(
+            -32053,
+            "Runtime sidecar write failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })?;
+    stdin.write_all(b"\n").map_err(|error| {
+        runtime_error(
+            -32053,
+            "Runtime sidecar write failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })?;
+    stdin.flush().map_err(|error| {
+        runtime_error(
+            -32053,
+            "Runtime sidecar write failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })
+}
+
+fn read_runtime_response(
+    command: &RuntimeCommandSpec,
+    reader: &mut impl BufRead,
+) -> Result<RuntimeJsonRpcResponse, RuntimeJsonRpcError> {
+    let mut line = String::new();
+    let bytes_read = reader.read_line(&mut line).map_err(|error| {
+        runtime_error(
+            -32055,
+            "Runtime sidecar read failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string()
+            })),
+        )
+    })?;
+
+    if bytes_read == 0 {
+        return Err(runtime_error(
+            -32056,
+            "Runtime sidecar returned no JSON-RPC response",
+            Some(json!({ "command": command.display })),
+        ));
+    }
+
+    serde_json::from_str(line.trim()).map_err(|error| {
+        runtime_error(
+            -32057,
+            "Runtime sidecar response parse failed",
+            Some(json!({
+                "command": command.display,
+                "error": error.to_string(),
+                "response": line.trim()
+            })),
+        )
+    })
 }
 
 fn parse_runtime_notification(line: &str) -> Option<Value> {
@@ -5579,11 +5802,11 @@ mod tests {
     fn runtime_json_rpc_uses_process_bridge_when_available() {
         let manager = process_bridge_manager(
             RuntimeCommandSpec::new(
-                "sh -c one-shot-json-rpc",
+                "sh -c persistent-json-rpc",
                 "sh",
                 vec![
                     "-c".to_string(),
-                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'".to_string(),
+                    "while read line; do printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'; done".to_string(),
                 ],
                 None,
                 Vec::new(),
@@ -5598,6 +5821,132 @@ mod tests {
         assert_eq!(response.jsonrpc, JSON_RPC_VERSION);
         assert_eq!(response.id, Some(json!(1)));
         assert_eq!(response.result.unwrap()["bridge"], json!("process"));
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn persistent_process_bridge_reuses_child_for_sequential_requests() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c persistent-counting-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "i=0; while read line; do i=$((i+1)); printf '%s\\n' \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"result\\\":{\\\"pid\\\":$$,\\\"count\\\":$i}}\"; done".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        let first = manager
+            .try_process_json_rpc(&request("runtime.health", None), None)
+            .expect("first persistent request should succeed");
+        let second = manager
+            .try_process_json_rpc(&request("sessions.list", None), None)
+            .expect("second persistent request should reuse the child");
+
+        let first_result = first.result.unwrap();
+        let second_result = second.result.unwrap();
+        assert_eq!(first_result["pid"], second_result["pid"]);
+        assert_eq!(first_result["count"], json!(1));
+        assert_eq!(second_result["count"], json!(2));
+
+        manager.cleanup_streaming_children();
+    }
+
+    #[test]
+    fn persistent_process_bridge_restarts_once_after_broken_child() {
+        let marker_path = env::temp_dir().join(format!("ora-bridge-restart-{}", now_ms()));
+        let script = format!(
+            "if [ ! -f '{marker}' ]; then touch '{marker}'; exit 1; fi; while read line; do printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"bridge\":\"restarted\"}}}}'; done",
+            marker = marker_path.to_string_lossy()
+        );
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c restart-once-json-rpc",
+                "sh",
+                vec!["-c".to_string(), script],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        let response = manager
+            .try_process_json_rpc(&request("runtime.health", None), None)
+            .expect("request bridge should restart once and return the response");
+
+        assert_eq!(response.result.unwrap()["bridge"], json!("restarted"));
+        manager.cleanup_streaming_children();
+        let _ = fs::remove_file(marker_path);
+    }
+
+    #[test]
+    fn streaming_methods_use_one_shot_process_bridge() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c long-running-streaming-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"running\"}}'; sleep 30".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        let response = manager
+            .try_process_json_rpc(
+                &request("flows.createStreaming", Some(json!({ "input": { "prompt": "hello" } }))),
+                None,
+            )
+            .expect("streaming request should return the initial handle");
+
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        assert_eq!(manager.active_streaming_children.len(), 1);
+        assert!(manager.request_bridge_child.lock().unwrap().is_none());
+
+        manager.cleanup_streaming_children();
+        assert_eq!(manager.active_streaming_children.len(), 0);
+    }
+
+    #[test]
+    fn branch_group_create_uses_streaming_process_bridge() {
+        assert!(is_streaming_runtime_method("sessions.branchGroups.createAndRun"));
+    }
+
+    #[test]
+    fn cleanup_stops_persistent_request_bridge_and_channel_daemon() {
+        let manager = process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c persistent-json-rpc-and-daemon",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "while read line; do printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"process\"}}'; done".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        );
+
+        manager
+            .try_process_json_rpc(&request("runtime.health", None), None)
+            .expect("persistent request bridge should start");
+        manager.ensure_channel_daemon(None);
+
+        assert!(manager.request_bridge_child.lock().unwrap().is_some());
+        assert!(manager.channel_daemon_child.lock().unwrap().is_some());
+
+        manager.cleanup_streaming_children();
+
+        assert!(manager.request_bridge_child.lock().unwrap().is_none());
+        assert!(manager.channel_daemon_child.lock().unwrap().is_none());
     }
 
     #[test]
