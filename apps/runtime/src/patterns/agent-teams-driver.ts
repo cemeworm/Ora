@@ -3,7 +3,7 @@ import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, initializeQueueSummary, isInternalAgentMessageText, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode } from "./generic-node-executor.js";
-import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag } from "./mode-driver-helpers.js";
+import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, COMPLEXITY_ASSESSMENT_INSTRUCTION, parseComplexityLevel } from "./mode-driver-helpers.js";
 
 export async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, config, modeSpec } = input;
@@ -15,27 +15,61 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
   const builderId = ownerForTemplate(nodes, "build", "builder");
   const reviewerId = ownerForTemplate(nodes, "check", "reviewer");
   const planIntent = config.metadata.taskIntent === "plan";
+  const enableDynamicSkip = modeSpec.runtimeAtoms.includes("dynamic_stage_skipping");
+  const skipNodeIds = new Set<string>();
   let completedNodes = 0;
 
   for (const [nodeIndex, node] of nodes.entries()) {
     const nextOwnerId = nodes[nodeIndex + 1]?.ownerAgentId;
+
+    if (skipNodeIds.has(node.id)) {
+      context.setPlanStatus(node.id, "skipped");
+      context.checkpointNode({
+        nodeId: node.id,
+        nodeTemplate: node.template,
+        nodeLabel: node.label,
+        agentId: node.ownerAgentId ?? node.id,
+        status: "skipped",
+        bag,
+      });
+      completedNodes++;
+      context.setQueueSummary({
+        pending: Math.max(0, totalActiveNodes - completedNodes),
+        inProgress: 0,
+        completed: completedNodes,
+      });
+      continue;
+    }
+
     completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
       if (node.template === "triage") {
         const agentId = node.ownerAgentId ?? leadId;
         const targetAgentId = nextOwnerId ?? builderId;
+        let triagePrompt = promptTemplate(
+          node,
+          runtimeFallbackPrompt(modeSpec.family, node.template),
+          bag,
+        );
+        if (enableDynamicSkip) {
+          triagePrompt += COMPLEXITY_ASSESSMENT_INSTRUCTION;
+        }
         bag.triage = await context.callAgent({
           agentId,
           planItemId: node.id,
           title: titleForNode(node, "Triage backlog"),
-          prompt: promptTemplate(
-            node,
-            runtimeFallbackPrompt(modeSpec.family, node.template),
-            bag,
-          ),
+          prompt: triagePrompt,
           system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
         });
+        if (enableDynamicSkip) {
+          const level = parseComplexityLevel(bag.triage);
+          if (level && modeSpec.complexitySkipRules?.[level]) {
+            for (const nodeId of modeSpec.complexitySkipRules[level]) {
+              skipNodeIds.add(nodeId);
+            }
+          }
+        }
         if (!planIntent) {
           bag.triageMessageId = context.emitAgentMessage({
             fromAgentId: agentId,

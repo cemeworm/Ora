@@ -116,6 +116,7 @@ export const ModeRuntimeAtomIdSchema = z.enum([
   "shared_blackboard",
   "artifact_publish",
   "token_usage_trace",
+  "dynamic_stage_skipping",
 ]);
 export type ModeRuntimeAtomId = z.infer<typeof ModeRuntimeAtomIdSchema>;
 
@@ -149,6 +150,17 @@ export const ModeRuntimeAtomDefinitionSchema = z.object({
   defaultEnabled: z.boolean().default(false),
 });
 export type ModeRuntimeAtomDefinition = z.infer<typeof ModeRuntimeAtomDefinitionSchema>;
+
+export const ComplexityLevelSchema = z.enum(["L0", "L1", "L2", "L3"]);
+export type ComplexityLevel = z.infer<typeof ComplexityLevelSchema>;
+
+export const ComplexitySkipRulesSchema = z.object({
+  L0: z.array(z.string().min(1)).default([]),
+  L1: z.array(z.string().min(1)).default([]),
+  L2: z.array(z.string().min(1)).default([]),
+  L3: z.array(z.string().min(1)).default([]),
+});
+export type ComplexitySkipRules = z.infer<typeof ComplexitySkipRulesSchema>;
 
 export const ModeStageSpecSchema = z.object({
   id: z.string().min(1),
@@ -275,6 +287,7 @@ export const ModeSpecSchema = z.object({
   defaultBudget: ResourceBudgetSchema,
   profiles: z.array(AgentProfileSchema).min(1),
   runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
+  complexitySkipRules: ComplexitySkipRulesSchema.optional(),
   stages: z.array(ModeStageSpecSchema).optional(),
   transcriptLayout: ModeTranscriptLayoutSchema.optional(),
   completionPolicy: ModeCompletionPolicySchema.default(COMPLETION_POLICY_PRESETS.balanced),
@@ -922,6 +935,21 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
       presentation: "mode_capability",
       edgeKind: "control",
       edgeLabel: "trace",
+    },
+    defaultEnabled: false,
+  },
+  {
+    id: "dynamic_stage_skipping",
+    scope: "mode",
+    label: "Dynamic Stage Skipping",
+    description: "Let triage assess task complexity and skip downstream stages for trivial/simple tasks to reduce latency.",
+    compatibleFamilies: ["agent_teams"],
+    requiresTools: [],
+    requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "skip",
     },
     defaultEnabled: false,
   },
@@ -2392,7 +2420,11 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
       skillIds: ["long-task-protocol", "hunt", "check"],
       toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
-    runtimeAtoms: defaultRuntimeAtomsForFamily("agent_teams"),
+    runtimeAtoms: [...defaultRuntimeAtomsForFamily("agent_teams"), "dynamic_stage_skipping"],
+    complexitySkipRules: {
+      L0: ["review", "debug", "handoff"],
+      L1: ["debug", "handoff"],
+    },
     editorConstraints: {
       allowedNodeTemplates: MODE_FAMILY_RULES.agent_teams.allowedTemplates,
       requiredNodeTemplates: MODE_FAMILY_RULES.agent_teams.requiredTemplates,

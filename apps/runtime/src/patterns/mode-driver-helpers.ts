@@ -24,3 +24,22 @@ export function finishPlanModeAfterProposedPlan(
     completed: totalActiveNodes,
   });
 }
+
+export const COMPLEXITY_ASSESSMENT_INSTRUCTION = `
+<complexity_assessment>
+Analyze the task and classify its complexity:
+- L0 (trivial): single file, CSS/text/config only, one-line change, no logic change
+- L1 (simple): single file, logic change with clear scope
+- L2 (normal): multi-file, cross-module, needs careful review
+- L3 (complex): architecture change, new feature, large refactor
+
+Output format: Level: L0|L1|L2|L3
+Rationale: <one sentence>
+</complexity_assessment>`;
+
+export type ComplexityLevel = "L0" | "L1" | "L2" | "L3";
+
+export function parseComplexityLevel(triageOutput: unknown): ComplexityLevel | null {
+  const match = /<complexity_assessment>\s*Level:\s*(L[0-3])/i.exec(asText(triageOutput));
+  return (match?.[1] as ComplexityLevel) ?? null;
+}
