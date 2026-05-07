@@ -441,6 +441,8 @@ describe("provider adapters", () => {
 
     expect(response?.text).toBe("Hello");
     expect(chunks).toEqual(["Hel", "lo"]);
+    expect(response?.raw).toMatchObject({ streamMode: "sse", eventCount: 2 });
+    expect(response?.raw).not.toHaveProperty("events");
   });
 
   it("treats SSE [DONE] as terminal even when the connection remains open", async () => {
@@ -822,6 +824,8 @@ describe("provider adapters", () => {
     expect(response?.text).toBe("好的，我先看看。");
     expect(chunks).toEqual(["好的，我先看看。"]);
     expect(response?.reasoningContent).toBe("Need README.");
+    expect(response?.raw).toMatchObject({ streamMode: "sse", protocol: "chat_completions", eventCount: 4 });
+    expect(response?.raw).not.toHaveProperty("events");
     expect(response?.toolCalls).toEqual([
       expect.objectContaining({ id: "call-readme", toolId: "file.read", args: { path: "README.md" } }),
     ]);
@@ -995,6 +999,8 @@ describe("provider adapters", () => {
     expect(response?.toolCalls).toEqual([
       expect.objectContaining({ id: "call-search", toolId: "web.search", args: { query: "Ora" } }),
     ]);
+    expect(response?.raw).toMatchObject({ streamMode: "sse", protocol: "responses", eventCount: 1 });
+    expect(response?.raw).not.toHaveProperty("events");
   });
 
   it("blocks custom provider base URLs unless explicitly enabled", async () => {

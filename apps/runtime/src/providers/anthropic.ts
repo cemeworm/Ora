@@ -325,7 +325,7 @@ export function createAnthropicStyleProvider(
       text,
       raw: {
         streamMode: "sse",
-        events: rawEvents,
+        eventCount: rawEvents.length,
       },
       usage: extractAnthropicUsage(rawEvents),
     } satisfies ModelResponse;

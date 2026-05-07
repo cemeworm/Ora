@@ -10,10 +10,11 @@ import type {
 } from "@cemeworm/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
-import type {
-  RecoveryCoordinator,
-  RecoveryDecision,
-  RecoveryIncident,
+import {
+  classifyRecoveryError,
+  type RecoveryCoordinator,
+  type RecoveryDecision,
+  type RecoveryIncident,
 } from "./recovery-policy.js";
 import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from "./runtime-completion.js";
 import { evaluateRuntimeCompletionGuards } from "./runtime-completion-guards.js";
@@ -205,9 +206,14 @@ function emitRuntimeStatusProgress(
       title: params.title,
       summary,
       basedOnSeq,
+      ...(isInternalRuntimeStatusTrigger(trigger) ? { audience: "internal" } : {}),
     },
     { agentId: params.agentId, nodeId: params.nodeId },
   );
+}
+
+function isInternalRuntimeStatusTrigger(trigger: string): boolean {
+  return trigger === "plan_list.incomplete" || trigger === "runtime_work.pending";
 }
 
 export async function runNodeRuntimeLoop(
@@ -354,16 +360,58 @@ export async function runNodeRuntimeLoop(
     signal: request.signal ?? deps.signal,
   });
 
-  const invokeModel = (request: ModelRequest) =>
+  const invokeProviderWithRecovery = async (
+    request: ModelRequest,
+    options: { emitRetryModelState: boolean },
+  ): Promise<ModelResponse> => {
+    while (true) {
+      try {
+        const response = await invokeProvider(config, request, streamCallbacks);
+        lastProviderRequestMessages = [...(request.messages ?? [])];
+        return response;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const incident = classifyRecoveryError(error, {
+          surface: "provider",
+          nodeId: params.agentId,
+          agentId: params.agentId,
+        });
+        const recoveryDecision = recoveryCoordinator.resolve(incident);
+        if (recoveryDecision.action !== "retry") {
+          throw error;
+        }
+        emitRecoveryDecision(incident, recoveryDecision);
+        await emitProgressNarration({
+          trigger: "recovery.updated",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          title: params.title,
+          detail: recoveryDecision.summary,
+        });
+        await sleep(recoveryDecision.retryDelayMs ?? 0);
+        if (options.emitRetryModelState) {
+          nodeLoopController.emitTransitionResult("model_request", "running_model", {
+            agentId: params.agentId,
+            title: params.title,
+            reason: "provider_retry",
+            detail,
+          });
+        }
+      }
+    }
+  };
+
+  const invokeModel = (
+    request: ModelRequest,
+    options: { emitRetryModelState?: boolean } = {},
+  ) =>
     invokeRuntimeModelCall({
       request: withAbortSignal(withStablePrefixCacheMetadata(request)),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
-      terminal: async (nextRequest) => {
-        const response = await invokeProvider(config, nextRequest, streamCallbacks);
-        lastProviderRequestMessages = [...(nextRequest.messages ?? [])];
-        return response;
-      },
+      terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
+        emitRetryModelState: options.emitRetryModelState ?? true,
+      }),
     });
   const invokeFollowUpModel = (
     request: ModelRequest,
@@ -374,11 +422,9 @@ export async function runNodeRuntimeLoop(
       request: withAbortSignal(withFollowUpCacheMetadata(request, latestResponse, lastProviderRequestMessages)),
       context: middlewareContext,
       middlewares: runtimeMiddlewares,
-      terminal: async (nextRequest) => {
-        const response = await invokeProvider(config, nextRequest, streamCallbacks);
-        lastProviderRequestMessages = [...(nextRequest.messages ?? [])];
-        return response;
-      },
+      terminal: (nextRequest) => invokeProviderWithRecovery(nextRequest, {
+        emitRetryModelState: true,
+      }),
       metadata: {
         compaction: { latestResponse, reason },
       },
@@ -666,7 +712,9 @@ export async function runNodeRuntimeLoop(
   };
   let response: ModelResponse;
   try {
-    response = await invokeModel(initialRequest);
+    response = await invokeModel(initialRequest, {
+      emitRetryModelState: initialToolsAllowed,
+    });
   } catch (error) {
     if (!initialToolsAllowed) {
       nodeLoopController.emitTransitionResult("fail", "failed", {

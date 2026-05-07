@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   SINGLE_AGENT_MODE_ID,
+  ORA_ROOT_AGENT_ID,
   getModePreset,
   modeSpecToPatternDefinition,
 } from "@cemeworm/shared";
@@ -42,10 +43,47 @@ vi.mock("../src/providers/index.js", async () => {
 });
 
 import { executeRuntimeKernel } from "../src/index.js";
+import { createScopedRuntimeEventEmitter } from "../src/harness/runtime-scoped-emitter.js";
 
 describe("runtime plan list completion guard", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
+  });
+
+  it("defaults missing event attribution from the scoped runtime emitter", () => {
+    const emit = vi.fn((type, payload, extra) => ({
+      id: "event-1",
+      runId: "run-1",
+      seq: 1,
+      type,
+      createdAt: 1,
+      pattern: "orchestrator_subagent",
+      payload,
+      ...extra,
+    }));
+    const scopedEmit = createScopedRuntimeEventEmitter(emit, {
+      agentId: "builder",
+      nodeId: "builder-node",
+    });
+
+    scopedEmit("task.progress", { summary: "Scoped progress" });
+    scopedEmit("task.progress", { summary: "Explicit progress" }, {
+      agentId: "reviewer",
+      nodeId: "review-node",
+    });
+
+    expect(emit).toHaveBeenNthCalledWith(
+      1,
+      "task.progress",
+      { summary: "Scoped progress" },
+      { agentId: "builder", nodeId: "builder-node" },
+    );
+    expect(emit).toHaveBeenNthCalledWith(
+      2,
+      "task.progress",
+      { summary: "Explicit progress" },
+      { agentId: "reviewer", nodeId: "review-node" },
+    );
   });
 
   it("keeps looping when a model tries to finish with unfinished plan list steps", async () => {
@@ -91,6 +129,9 @@ describe("runtime plan list completion guard", () => {
     ]);
     const planListEvents = snapshot.events.filter((event) => event.type === "plan_list.updated");
     expect(planListEvents.at(-1)?.payload).toMatchObject({ plan: snapshot.planList });
+    expect(planListEvents.length).toBeGreaterThan(0);
+    expect(planListEvents.every((event) => event.agentId === ORA_ROOT_AGENT_ID)).toBe(true);
+    expect(planListEvents.every((event) => typeof event.nodeId === "string" && event.nodeId.length > 0)).toBe(true);
     expect(snapshot.events.map((event) => event.seq)).toEqual(snapshot.events.map((_, index) => index));
     const checkpoint = snapshot.checkpoints[0];
     expect(checkpoint).toBeDefined();

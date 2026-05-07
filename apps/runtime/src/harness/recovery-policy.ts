@@ -7,6 +7,7 @@ import {
 } from "@cemeworm/shared";
 
 export interface RecoveryIncident {
+  surface?: RecoveryFailureSurface;
   errorType: RecoveryErrorType;
   detail: string;
   nodeId?: string;
@@ -14,7 +15,19 @@ export interface RecoveryIncident {
   agentId?: string;
   toolId?: string;
   actionId?: string;
+  currentState?: string;
+  ownerActionId?: string;
+  ownerToolId?: string;
 }
+
+export type RecoveryFailureSurface =
+  | "tool"
+  | "provider"
+  | "transport"
+  | "sidecar"
+  | "model"
+  | "node"
+  | "unknown";
 
 export interface RecoveryDecision {
   action: RecoveryAction;
@@ -126,12 +139,15 @@ export class RecoveryCoordinator {
 }
 
 export function classifyRecoveryError(error: unknown, context: {
-  surface: "provider" | "tool" | "node" | "model";
+  surface: RecoveryFailureSurface;
   nodeId?: string;
   nodeTemplate?: string;
   agentId?: string;
   toolId?: string;
   actionId?: string;
+  currentState?: string;
+  ownerActionId?: string;
+  ownerToolId?: string;
 }): RecoveryIncident {
   const detail = errorDetail(error);
   const lowered = detail.toLowerCase();
@@ -139,7 +155,11 @@ export function classifyRecoveryError(error: unknown, context: {
 
   if (/boundary violation/i.test(lowered)) {
     errorType = "boundary_violation";
-  } else if (context.surface === "provider") {
+  } else if (
+    context.surface === "provider" ||
+    context.surface === "transport" ||
+    context.surface === "sidecar"
+  ) {
     if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
       errorType = "provider_quota";
     } else if (matchesAny(lowered, ["unknown provider", "api key", "authentication", "unauthorized", "forbidden", "access denied", "permission", "requires a baseurl"])) {
@@ -164,6 +184,7 @@ export function classifyRecoveryError(error: unknown, context: {
   }
 
   return {
+    surface: context.surface,
     errorType,
     detail,
     nodeId: context.nodeId,
@@ -171,6 +192,9 @@ export function classifyRecoveryError(error: unknown, context: {
     agentId: context.agentId,
     toolId: context.toolId,
     actionId: context.actionId,
+    currentState: context.currentState,
+    ownerActionId: context.ownerActionId,
+    ownerToolId: context.ownerToolId,
   };
 }
 

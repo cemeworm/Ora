@@ -24,6 +24,7 @@ import type {
 import {
   proposeRuntimeToolAction,
 } from "./runtime-tool-action-proposal.js";
+import { createScopedRuntimeEventEmitter } from "./runtime-scoped-emitter.js";
 import { planListUpdatedPayload } from "./runtime-plan-list-state.js";
 import type {
   RuntimeToolAttempt,
@@ -123,6 +124,14 @@ export class RuntimeToolCallService {
     iteration: number;
   }): Promise<RuntimeToolCallTurnResult> {
     const { toolCall, response, iteration } = params;
+    const scopedEmit = createScopedRuntimeEventEmitter(this.deps.emit, {
+      agentId: this.deps.agentId,
+      nodeId: this.deps.nodeId,
+    });
+    const actionDeps: RuntimeActionDeps = {
+      ...this.deps.actionDeps(),
+      emit: scopedEmit,
+    };
     const { action, toolCallRecord } = proposeRuntimeToolAction({
       agentId: this.deps.agentId,
       inputPrompt: this.deps.inputPrompt,
@@ -132,7 +141,7 @@ export class RuntimeToolCallService {
       runtimeToolExecutor: this.deps.runtimeToolExecutor,
       actionLedger: this.deps.actionLedger,
       appendToolCall: this.deps.appendToolCall,
-      emit: this.deps.emit,
+      emit: scopedEmit,
     });
 
     const { approvedForRiskyExecution } = await resolveRuntimeActionApproval({
@@ -142,7 +151,7 @@ export class RuntimeToolCallService {
         nodeId: this.deps.agentId,
         title: this.deps.title,
       },
-      deps: this.deps.actionDeps(),
+      deps: actionDeps,
       toolCallRecord,
     }).catch((error) => {
       if (error instanceof ApprovalInterruptError) {
@@ -162,7 +171,7 @@ export class RuntimeToolCallService {
       action,
       status: "running",
       context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
-      deps: this.deps.actionDeps(),
+      deps: actionDeps,
       toolCallRecord,
     });
     this.deps.nodeLoopController.emitTransitionResult("tool_request", "tool_running", {
@@ -173,102 +182,15 @@ export class RuntimeToolCallService {
       iteration,
     });
 
+    let execution: RuntimeToolExecutionResult;
     try {
-      const execution = await this.deps.invokeToolExecution({
+      execution = await this.deps.invokeToolExecution({
         action,
         toolCall,
         toolCallRecord,
         allowRisky: approvedForRiskyExecution,
         iteration,
       });
-      this.deps.completion.markToolResultObserved(toolCall, execution.cacheHit ?? false, this.deps.completionScope);
-      const { resultText } = recordRuntimeToolActionSucceeded({
-        action,
-        context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
-        deps: this.deps.actionDeps(),
-        toolCall,
-        output: execution.output,
-        fileChange: execution.fileChange,
-        artifactIds: execution.artifact ? [execution.artifact.id] : undefined,
-        cacheHit: execution.cacheHit,
-        toolCallRecord,
-        now: this.deps.now,
-      });
-      this.deps.nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed", {
-        agentId: this.deps.agentId,
-        title: this.deps.title,
-        actionId: action.id,
-        toolId: toolCall.tool,
-        iteration,
-      });
-      await this.deps.emitProgressNarration({
-        trigger: "tool.succeeded",
-        agentId: this.deps.agentId,
-        nodeId: this.deps.agentId,
-        title: this.deps.title,
-        detail: `${toolCall.tool} returned a result.`,
-      });
-      if (toolCall.tool === "plan.update") {
-        this.deps.actionDeps().emit("plan_list.updated", planListUpdatedPayload(toolCall.args));
-      }
-
-      this.deps.replaceMessages(
-        toolCall.source === "provider_native" && toolCall.providerCallId
-          ? [
-              ...this.deps.getMessages(),
-              {
-                role: "assistant",
-                content: response.text,
-                reasoningContent: response.reasoningContent,
-                toolCalls: response.toolCalls?.filter(
-                  (call) => call.id === toolCall.providerCallId,
-                ),
-              },
-              {
-                role: "tool",
-                toolCallId: toolCall.providerCallId,
-                toolName: toolCall.tool,
-                content: resultText,
-              },
-            ]
-          : [
-              ...this.deps.getMessages(),
-              { role: "assistant", content: response.text },
-              {
-                role: "user",
-                content: `Workspace tool result for ${toolCall.tool}:\n${resultText}`,
-              },
-            ],
-      );
-      if (this.deps.completion.forcedFinalIsActive(this.deps.completionScope)) {
-        const stopReason = this.deps.completion.stopReasonForScope(this.deps.completionScope) ?? "forced_final_answer";
-        this.deps.nodeLoopController.emitForcedFinal({
-          agentId: this.deps.agentId,
-          title: this.deps.title,
-          toolId: toolCall.tool,
-          reason: stopReason,
-          iteration,
-        });
-        return {
-          kind: "return",
-          response: await this.runForcedFinal(stopReason),
-        };
-      }
-      this.deps.nodeLoopController.emitTransitionResult("model_request", "running_model", {
-        agentId: this.deps.agentId,
-        title: this.deps.title,
-        iteration: iteration + 1,
-      });
-      return {
-        kind: "continue",
-        response: await this.deps.invokeFollowUpModel({
-          messages: this.deps.getMessages(),
-          system: this.deps.system,
-          maxTokens: this.deps.config.budget?.maxTokens,
-          tools: this.deps.nativeTools,
-          toolChoice: this.deps.nativeTools.length > 0 ? "auto" : undefined,
-        }, response, "tool_follow_up"),
-      };
     } catch (error) {
       if (error instanceof ClarificationInterruptError) {
         throw error;
@@ -284,6 +206,94 @@ export class RuntimeToolCallService {
       });
       return failureResult;
     }
+    this.deps.completion.markToolResultObserved(toolCall, execution.cacheHit ?? false, this.deps.completionScope);
+    const { resultText } = recordRuntimeToolActionSucceeded({
+      action,
+      context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+      deps: actionDeps,
+      toolCall,
+      output: execution.output,
+      fileChange: execution.fileChange,
+      artifactIds: execution.artifact ? [execution.artifact.id] : undefined,
+      cacheHit: execution.cacheHit,
+      toolCallRecord,
+      now: this.deps.now,
+    });
+    this.deps.nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed", {
+      agentId: this.deps.agentId,
+      title: this.deps.title,
+      actionId: action.id,
+      toolId: toolCall.tool,
+      iteration,
+    });
+    await this.deps.emitProgressNarration({
+      trigger: "tool.succeeded",
+      agentId: this.deps.agentId,
+      nodeId: this.deps.agentId,
+      title: this.deps.title,
+      detail: `${toolCall.tool} returned a result.`,
+    });
+    if (toolCall.tool === "plan.update") {
+      actionDeps.emit("plan_list.updated", planListUpdatedPayload(toolCall.args));
+    }
+
+    this.deps.replaceMessages(
+      toolCall.source === "provider_native" && toolCall.providerCallId
+        ? [
+            ...this.deps.getMessages(),
+            {
+              role: "assistant",
+              content: response.text,
+              reasoningContent: response.reasoningContent,
+              toolCalls: response.toolCalls?.filter(
+                (call) => call.id === toolCall.providerCallId,
+              ),
+            },
+            {
+              role: "tool",
+              toolCallId: toolCall.providerCallId,
+              toolName: toolCall.tool,
+              content: resultText,
+            },
+          ]
+        : [
+            ...this.deps.getMessages(),
+            { role: "assistant", content: response.text },
+            {
+              role: "user",
+              content: `Workspace tool result for ${toolCall.tool}:\n${resultText}`,
+            },
+          ],
+    );
+    if (this.deps.completion.forcedFinalIsActive(this.deps.completionScope)) {
+      const stopReason = this.deps.completion.stopReasonForScope(this.deps.completionScope) ?? "forced_final_answer";
+      this.deps.nodeLoopController.emitForcedFinal({
+        agentId: this.deps.agentId,
+        title: this.deps.title,
+        toolId: toolCall.tool,
+        reason: stopReason,
+        iteration,
+      });
+      return {
+        kind: "return",
+        response: await this.runForcedFinal(stopReason),
+      };
+    }
+    this.deps.nodeLoopController.emitTransitionResult("model_request", "running_model", {
+      agentId: this.deps.agentId,
+      title: this.deps.title,
+      iteration: iteration + 1,
+    });
+    return {
+      kind: "continue",
+      response: await this.deps.invokeFollowUpModel({
+        messages: this.deps.getMessages(),
+        system: this.deps.system,
+        maxTokens: this.deps.config.budget?.maxTokens,
+        tools: this.deps.nativeTools,
+        toolChoice: this.deps.nativeTools.length > 0 ? "auto" : undefined,
+      }, response, "tool_follow_up"),
+    };
   }
 
   private runForcedFinal(reason: Parameters<RuntimeCompletionController["forceFinalAnswer"]>[0]) {

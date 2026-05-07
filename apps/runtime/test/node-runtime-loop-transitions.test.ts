@@ -2,8 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CODE_DEVELOPMENT_MODE_ID, ORA_ROOT_AGENT_ID, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, MVP_MODES, ORA_ROOT_AGENT_ID, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
+import { RecoveryCoordinator } from "../src/harness/recovery-policy.js";
+import { RuntimeToolRecoveryService } from "../src/harness/runtime-tool-recovery-service.js";
 import {
   containsStateSubsequence,
   CORE_NODE_RUNTIME_TRANSITIONS,
@@ -275,6 +277,109 @@ describe("node runtime loop transition contract", () => {
     ]);
   });
 
+  it("diagnoses misrouted tool recovery without degrading from running_model", async () => {
+    const emitted: Array<{ type: string; payload: any; extra?: any; agentId?: string; nodeId?: string }> = [];
+    const nodeLoopController = new NodeLoopController({
+      emit: (state, params) => {
+        emitted.push({
+          type: "node.updated",
+          agentId: params.agentId,
+          nodeId: params.agentId,
+          payload: { state, ...params },
+        });
+      },
+      onInvalidTransition: "throw",
+    });
+    nodeLoopController.emitPending({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitModelRequest({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    const modeSpec = MVP_MODES.find((mode) => mode.id === SINGLE_AGENT_MODE_ID)!;
+    const error = new Error("fetch failed");
+    const service = new RuntimeToolRecoveryService({
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+      title: "Root",
+      inputPrompt: "List files",
+      system: "system",
+      config: {} as never,
+      modeSpec,
+      nativeTools: [],
+      invokeProvider: async () => {
+        throw new Error("provider should not be invoked");
+      },
+      completion: {} as never,
+      completionScope: { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID },
+      recoveryCoordinator: new RecoveryCoordinator(modeSpec, []),
+      nodeLoopController,
+      runtimeToolExecutor: {} as never,
+      actionDeps: () => ({
+        actionLedger: {} as never,
+        emit: () => undefined,
+        appendToolCall: () => undefined as never,
+      }),
+      actionLedger: {} as never,
+      now: () => 123,
+      eventsLength: () => emitted.length,
+      getMessages: () => [],
+      replaceMessages: () => undefined,
+      emit: (type, payload, extra = {}) => {
+        emitted.push({ type, payload, extra, agentId: extra.agentId, nodeId: extra.nodeId });
+        return { type, payload, ...extra } as never;
+      },
+      emitProgressNarration: async () => undefined,
+      emitRecoveryDecision: () => undefined,
+      runForcedFinalProviderCall: async () => {
+        throw new Error("forced final should not run");
+      },
+      emitForcedFinalProviderState: () => undefined,
+      invokeFollowUpModel: async () => {
+        throw new Error("follow-up should not run");
+      },
+      publishRecoveryArtifact: () => ({ id: "artifact-1" }),
+      publishFileChangeArtifact: () => ({ id: "file-artifact-1" }) as never,
+      sleep: async () => undefined,
+    });
+
+    const result = await service.recoverToolFailure({
+      error,
+      action: { id: "action-file-list", type: "file.list", riskLevel: "low", status: "running", input: {}, agentId: ORA_ROOT_AGENT_ID } as never,
+      toolCall: { tool: "file.list", args: { path: "apps/runtime/src" } },
+      toolCallRecord: { id: "tool-record-1" } as never,
+      allowRisky: false,
+      iteration: 0,
+      response: {
+        providerId: "provider",
+        providerType: "openai_compatible",
+        modelId: "model",
+        text: "",
+        raw: {},
+      },
+      surface: "transport",
+    });
+    const states = nodeRuntimeStateSequence(emitted as never, { agentId: ORA_ROOT_AGENT_ID });
+    const diagnostic = emitted.find((event) =>
+      event.type === "task.progress" &&
+      event.payload?.source === "tool_recovery_boundary"
+    );
+
+    expect(result).toEqual({ kind: "throw", error });
+    expect(transitionPairs(states)).not.toContainEqual({
+      from: "running_model",
+      to: "degraded",
+    });
+    expect(nodeLoopController.state).toBe("running_model");
+    expect(diagnostic?.payload).toEqual(expect.objectContaining({
+      kind: "runtime_diagnostic",
+      source: "tool_recovery_boundary",
+      surface: "transport",
+      currentState: "running_model",
+      actionId: "action-file-list",
+      toolId: "file.list",
+      ownerActionId: "action-file-list",
+      ownerToolId: "file.list",
+      error: "fetch failed",
+    }));
+  });
+
   it("routes recovery and boundary-failure state emits through typed intents", () => {
     const source = readRuntimeSource("src/harness/node-runtime-loop.ts");
     const middlewareSource = readRuntimeSource("src/harness/runtime-middleware.ts");
@@ -292,7 +397,8 @@ describe("node runtime loop transition contract", () => {
     expect(source).toContain("toolRecoveryService.recoverToolFailure(failure)");
     expect(source).not.toContain('recoveryDecision.action === "alternate_tool"');
     expect(source).not.toContain('recoveryDecision.action === "fallback_artifact"');
-    expect(source).not.toContain("classifyRecoveryError(");
+    expect(source).toContain("classifyRecoveryError(");
+    expect(source).toContain("invokeProviderWithRecovery");
     expect(source).toContain("new RuntimeToolCallService({");
     expect(source).toContain("toolCallService.runToolTurn({");
     expect(source).not.toContain("proposeRuntimeToolAction({");
@@ -1332,6 +1438,16 @@ describe("node runtime loop transition contract", () => {
         "recovery.detected",
         "recovery.applied",
       ]));
+      expect(state.events.find((event) => event.type === "recovery.detected")?.payload).toEqual(
+        expect.objectContaining({
+          incident: expect.objectContaining({
+            surface: "tool",
+            currentState: "tool_running",
+            ownerToolId: "web.fetch",
+            ownerActionId: expect.any(String),
+          }),
+        }),
+      );
       expect(state.events.map((event) => event.type)).not.toContain("run.failed");
       expect(state.toolCalls).toEqual([
         expect.objectContaining({
@@ -1518,6 +1634,169 @@ describe("node runtime loop transition contract", () => {
         delete process.env.NODE_LOOP_RETRY_RECOVERY_KEY;
       } else {
         process.env.NODE_LOOP_RETRY_RECOVERY_KEY = previousKey;
+      }
+    }
+  });
+
+  it("retries a transient follow-up provider failure without re-running the successful tool", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NODE_LOOP_FOLLOWUP_RETRY_KEY;
+    process.env.NODE_LOOP_FOLLOWUP_RETRY_KEY = "test";
+    let providerCalls = 0;
+    let followUpProviderCalls = 0;
+    let webFetchCalls = 0;
+
+    globalThis.fetch = (async (input, init) => {
+      if (String(input) === "https://example.com/node-loop-followup-retry") {
+        webFetchCalls += 1;
+        return new Response("Follow-up retry content", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        tool_choice?: string;
+        messages?: Array<{ role?: string; tool_call_id?: string; content?: string }>;
+      };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Recovered after retrying the follow-up provider call." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      const hasToolResult = body.messages?.some((message) =>
+        message.role === "tool" &&
+        message.tool_call_id === "call-followup-retry" &&
+        String(message.content ?? "").includes("Follow-up retry content")
+      ) ?? false;
+      if (hasToolResult) {
+        followUpProviderCalls += 1;
+        if (followUpProviderCalls === 1) {
+          return new Response("temporary provider outage", {
+            status: 503,
+            headers: { "content-type": "text/plain" },
+          });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Recovered after retrying the follow-up provider call." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call-followup-retry",
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/node-loop-followup-retry\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const cloned = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "modes.cloneFromPreset",
+        params: {
+          sourceModeId: SINGLE_AGENT_MODE_ID,
+          modeId: "node-loop-followup-retry",
+          label: "Node Loop Follow-up Retry",
+        },
+      }) as any;
+
+      await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "modes.update",
+        params: {
+          modeId: cloned.id,
+          spec: {
+            ...cloned,
+            recoveryPolicy: {
+              ...cloned.recoveryPolicy,
+              defaults: {
+                ...cloned.recoveryPolicy.defaults,
+                backoffMs: 0,
+                capDelayMs: 0,
+              },
+            },
+          },
+        },
+      });
+
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Fetch once, then recover if the follow-up provider call is transiently unavailable." },
+          config: {
+            modeId: cloned.id,
+            providerId: "node-loop-followup-retry",
+            modelRef: "node-loop-followup-retry-model",
+            providerConfig: {
+              id: "node-loop-followup-retry",
+              label: "Node Loop Follow-up Retry",
+              type: "openai_compatible",
+              modelId: "node-loop-followup-retry-model",
+              baseUrl: "https://node-loop-followup-retry.test/v1",
+              apiKeyEnv: "NODE_LOOP_FOLLOWUP_RETRY_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
+
+      expect(run.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(3);
+      expect(followUpProviderCalls).toBe(2);
+      expect(webFetchCalls).toBe(1);
+      expect(containsStateSubsequence(states, [
+        "pending",
+        "running_model",
+        "tool_requested",
+        "tool_running",
+        "tool_result_observed",
+        "running_model",
+        "running_model",
+        "completed",
+      ]), states.join(" -> ")).toBe(true);
+      expect(transitionPairs(states)).not.toContainEqual({ from: "running_model", to: "degraded" });
+      expectCoreTransitions(states);
+      expectNoTransitionDiagnostics(state.events);
+      expect(state.events.filter((event) => event.type === "recovery.detected")).toHaveLength(1);
+      expect(state.events.filter((event) => event.type === "recovery.retry_scheduled")).toHaveLength(1);
+      const providerIncident = (state.events.find((event) => event.type === "recovery.detected")?.payload as { incident?: Record<string, unknown> }).incident;
+      expect(providerIncident).toEqual(expect.objectContaining({ surface: "provider" }));
+      expect(providerIncident?.toolId).not.toBe("file.list");
+      expect(providerIncident?.currentState).toBeUndefined();
+      expect(state.events.map((event) => event.type)).not.toContain("run.failed");
+      expect(state.toolCalls.filter((call) => call.providerCallId === "call-followup-retry")).toEqual([
+        expect.objectContaining({ toolId: "web.fetch", status: "succeeded" }),
+      ]);
+      expect(state.output?.text).toContain("Recovered after retrying the follow-up provider call.");
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.NODE_LOOP_FOLLOWUP_RETRY_KEY;
+      } else {
+        process.env.NODE_LOOP_FOLLOWUP_RETRY_KEY = previousKey;
       }
     }
   });

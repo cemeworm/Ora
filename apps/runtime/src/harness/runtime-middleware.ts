@@ -17,6 +17,7 @@ import type { ModelMessage, ModelRequest, ModelResponse, ModelToolCall, ModelToo
 import type { RuntimeCompletionController } from "./runtime-completion.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
 import { recordRuntimeToolActionSucceeded } from "./runtime-action-runner.js";
+import type { RecoveryFailureSurface } from "./recovery-policy.js";
 import type { RuntimeToolAttempt } from "./runtime-tool-loop.js";
 import type { RuntimeFileChangeMetadata, RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
@@ -127,6 +128,7 @@ export type RuntimeToolFailureResult =
 export interface RuntimeToolFailureRequest extends RuntimeToolExecutionRequest {
   error: unknown;
   response: ModelResponse;
+  surface?: RecoveryFailureSurface;
 }
 
 export interface RuntimeToolFailureContext extends RuntimeToolExecutionContext {

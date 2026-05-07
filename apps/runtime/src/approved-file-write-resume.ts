@@ -449,6 +449,7 @@ export async function completeApprovedToolContinuation(
       trigger: guardResult.progressTrigger,
       title: "Runtime",
       summary: guardResult.progressSummary,
+      audience: "internal",
       basedOnSeq: Math.max(0, working.events.length - 1),
     });
     working = StateSnapshotSchema.parse({

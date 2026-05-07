@@ -10,6 +10,7 @@ import {
   classifyRecoveryError,
   type RecoveryCoordinator,
   type RecoveryDecision,
+  type RecoveryFailureSurface,
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import type { RuntimeCompletionController, RuntimeToolScope } from "./runtime-completion.js";
@@ -128,6 +129,22 @@ export class RuntimeToolRecoveryService {
   ): Promise<RuntimeToolFailureResult> {
     const { action, toolCall, toolCallRecord, error, iteration } = failure;
     const detail = error instanceof Error ? error.message : String(error);
+    const surface: RecoveryFailureSurface = failure.surface ?? "tool";
+    const currentState = this.deps.nodeLoopController.state;
+    if (currentState !== "tool_running") {
+      const incident = classifyRecoveryError(error, {
+        surface: surface === "tool" ? "unknown" : surface,
+        nodeId: this.deps.agentId,
+        agentId: this.deps.agentId,
+        toolId: toolCall.tool,
+        actionId: action.id,
+        currentState,
+        ownerActionId: action.id,
+        ownerToolId: toolCall.tool,
+      });
+      this.emitMisroutedToolRecoveryDiagnostic(incident, iteration);
+      return { kind: "throw", error };
+    }
     recordRuntimeToolActionFailed({
       action,
       context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
@@ -153,11 +170,14 @@ export class RuntimeToolRecoveryService {
     });
 
     const incident = classifyRecoveryError(error, {
-      surface: "tool",
+      surface,
       nodeId: this.deps.agentId,
       agentId: this.deps.agentId,
       toolId: toolCall.tool,
       actionId: action.id,
+      currentState,
+      ownerActionId: action.id,
+      ownerToolId: toolCall.tool,
     });
     const recoveryDecision = this.deps.recoveryCoordinator.resolve(incident);
     this.deps.emitRecoveryDecision(incident, recoveryDecision);
@@ -186,6 +206,32 @@ export class RuntimeToolRecoveryService {
     }
 
     return { kind: "throw", error };
+  }
+
+  private emitMisroutedToolRecoveryDiagnostic(
+    incident: RecoveryIncident,
+    iteration: number,
+  ): void {
+    this.deps.emit(
+      "task.progress",
+      {
+        kind: "runtime_diagnostic",
+        source: "tool_recovery_boundary",
+        severity: "warning",
+        title: this.deps.title,
+        detail: "Tool recovery was invoked while the node loop was not running a tool.",
+        surface: incident.surface ?? "unknown",
+        currentState: incident.currentState,
+        errorType: incident.errorType,
+        error: incident.detail,
+        actionId: incident.ownerActionId ?? incident.actionId,
+        toolId: incident.ownerToolId ?? incident.toolId,
+        ownerActionId: incident.ownerActionId ?? incident.actionId,
+        ownerToolId: incident.ownerToolId ?? incident.toolId,
+        iteration,
+      },
+      { agentId: this.deps.agentId, nodeId: this.deps.nodeId },
+    );
   }
 
   private async recoverWithAlternateTool(

@@ -423,7 +423,8 @@ export function createOpenAICompatibleProvider(
       raw: {
         streamMode: "sse",
         protocol,
-        events: rawEvents,
+        eventCount: rawEvents.length,
+        ...(protocol === "responses" ? { responseId: openAiResponsesStreamResponseId(rawEvents) } : {}),
       },
       usage: extractOpenAiUsage(rawEvents),
       toolCalls: protocol === "responses"

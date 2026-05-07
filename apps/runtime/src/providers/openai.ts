@@ -253,7 +253,8 @@ export function createOpenAIProvider(
       text,
       raw: {
         streamMode: "sse",
-        events: rawEvents,
+        eventCount: rawEvents.length,
+        responseId: openAiResponsesStreamResponseId(rawEvents),
       },
       usage: extractOpenAiUsage(rawEvents),
       toolCalls: extractOpenAiResponsesStreamToolCalls(rawEvents, request.tools),
