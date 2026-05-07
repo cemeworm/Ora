@@ -85,6 +85,7 @@ const ZH_COPY: Record<string, string> = {
   "Dismiss branch group": "关闭分支组",
   "Adopt branch candidate": "采纳分支候选",
   Adopt: "采纳",
+  "I prefer this": "我更喜欢这个",
   "Refresh documents": "刷新文件树",
   "Close documents": "关闭文件树",
   "Loading documents": "正在加载文件树",

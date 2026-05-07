@@ -2,12 +2,18 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 import { FileText } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import { AssistantTurnCard } from "./AssistantTurnCard";
+import { BranchComparisonTurn } from "./BranchComparisonTurn";
 import type { ActionRecord, AgentProfile, ChatMessage, PlanItem } from "../types";
+import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
 import { Conversation, ConversationContent } from "./ai-elements/conversation";
 import { cn } from "../lib/utils";
+import type { AppLanguage } from "../lib/i18n";
 
 interface ChatMessagesProps {
   chatMessages: ChatMessage[];
+  branchGroups?: OraSessionBranchGroup[];
+  turnSnapshots?: Record<string, OraStateSnapshot | undefined>;
+  language?: AppLanguage;
   agents?: AgentProfile[];
   actionRecords?: ActionRecord[];
   planItems?: PlanItem[];
@@ -18,6 +24,7 @@ interface ChatMessagesProps {
   bottomInsetPx?: number;
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
+  onAdoptBranchGroup?: (branchGroupId: string, runId: string) => void;
 }
 
 export function messageBottomPaddingPx({
@@ -42,6 +49,9 @@ function formatFileSize(bytes: number): string {
 
 export function ChatMessages({
   chatMessages,
+  branchGroups = [],
+  turnSnapshots = {},
+  language = "zh",
   agents: _agents,
   actionRecords: _actionRecords = [],
   planItems: _planItems,
@@ -52,6 +62,7 @@ export function ChatMessages({
   bottomInsetPx,
   onOpenArtifact,
   onSubmitFeedback,
+  onAdoptBranchGroup,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -80,6 +91,20 @@ export function ChatMessages({
         >
         {chatMessages.map((message) => {
           if (message.role === "assistant") {
+            const branchComparison = branchComparisonForMessage(branchGroups, message);
+            if (branchComparison) {
+              return (
+                <div key={message.id} className="w-full">
+                  <BranchComparisonTurn
+                    group={branchComparison}
+                    snapshots={turnSnapshots}
+                    language={language}
+                    onAdoptBranchGroup={onAdoptBranchGroup}
+                  />
+                </div>
+              );
+            }
+
             return (
               <div key={message.id} className="w-full">
                 <AssistantTurnCard
@@ -124,5 +149,20 @@ export function ChatMessages({
         </ConversationContent>
       </Conversation>
     </div>
+  );
+}
+
+function branchComparisonForMessage(
+  branchGroups: readonly OraSessionBranchGroup[],
+  message: ChatMessage,
+): OraSessionBranchGroup | undefined {
+  const runId = message.metadata?.runId;
+  if (!runId) return undefined;
+  return branchGroups.find((group) =>
+    group.target === "replace_latest" &&
+    group.replaceRunId === runId &&
+    group.status !== "adopted" &&
+    group.status !== "dismissed" &&
+    group.candidates.length > 0
   );
 }

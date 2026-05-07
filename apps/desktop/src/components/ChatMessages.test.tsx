@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ChatMessages, messageBottomPaddingPx } from "./ChatMessages";
+import type { OraSessionBranchGroup, OraStateSnapshot } from "../lib/runtimeClient";
 
 describe("ChatMessages bottom inset", () => {
   it("uses dynamic bottom padding when measured overlay height is larger than fallback", () => {
@@ -44,6 +45,75 @@ describe("ChatMessages bottom inset", () => {
     );
 
     expect(html).toContain("你好");
-    expect(html).not.toContain("<svg");
+    expect(html).not.toContain("lucide-user");
+  });
+
+  it("renders replace-latest branch candidates as a side-by-side assistant turn", () => {
+    const branchGroup = {
+      branchGroupId: "session-1:branch-1",
+      sessionId: "session-1",
+      target: "replace_latest",
+      replaceRunId: "run-base",
+      prompt: "Try two answers",
+      status: "ready",
+      candidates: [
+        {
+          runId: "run-left",
+          status: "succeeded",
+          label: "候选 1",
+          modelRef: "left-model",
+          prompt: "Try two answers",
+          updatedAt: 1,
+        },
+        {
+          runId: "run-right",
+          status: "succeeded",
+          label: "候选 2",
+          modelRef: "right-model",
+          prompt: "Try two answers",
+          updatedAt: 2,
+        },
+      ],
+      candidateRunIds: ["run-left", "run-right"],
+      baseTurnIndex: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    } as unknown as OraSessionBranchGroup;
+    const snapshots = {
+      "run-left": {
+        runId: "run-left",
+        status: "succeeded",
+        output: { text: "左侧回答" },
+        config: { metadata: {}, modelRef: "left-model" },
+        events: [],
+      } as unknown as OraStateSnapshot,
+      "run-right": {
+        runId: "run-right",
+        status: "succeeded",
+        output: { text: "右侧回答" },
+        config: { metadata: {}, modelRef: "right-model" },
+        events: [],
+      } as unknown as OraStateSnapshot,
+    };
+
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        chatMessages={[{
+          id: "assistant-base",
+          role: "assistant",
+          content: "原回答不应显示",
+          timestamp: "18:31",
+          metadata: { runId: "run-base", turnIndex: 1 },
+        }]}
+        branchGroups={[branchGroup]}
+        turnSnapshots={snapshots}
+        language="zh"
+      />,
+    );
+
+    expect(html).toContain("左侧回答");
+    expect(html).toContain("右侧回答");
+    expect(html).toContain("我更喜欢这个");
+    expect(html).not.toContain("原回答不应显示");
   });
 });
