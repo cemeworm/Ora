@@ -43,6 +43,7 @@ export const PlanListStepStatusSchema = z.enum(["pending", "in_progress", "compl
 export type PlanListStepStatus = z.infer<typeof PlanListStepStatusSchema>;
 
 export const PlanListStepSchema = z.object({
+  id: z.string().min(1).optional(),
   step: z.string().min(1),
   status: PlanListStepStatusSchema,
 });
@@ -84,6 +85,7 @@ export const ActionRecordSchema = z.object({
   id: z.string().min(1),
   runId: z.string().min(1),
   planItemId: z.string().min(1).optional(),
+  planStepId: z.string().min(1).optional(),
   agentId: z.string().min(1).optional(),
   type: z.string().min(1),
   riskLevel: ActionRiskLevelSchema,
@@ -134,6 +136,7 @@ export const OraToolCallEnvelopeSchema = z.object({
   nodeId: z.string().min(1).optional(),
   agentId: z.string().min(1).optional(),
   actionId: z.string().min(1).optional(),
+  planStepId: z.string().min(1).optional(),
   toolId: z.string().min(1),
   args: z.record(z.unknown()).default({}),
   source: OraToolCallSourceSchema,

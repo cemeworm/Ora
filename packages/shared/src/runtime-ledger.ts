@@ -747,9 +747,9 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
       output: run.output ?? run.finalSnapshot.output,
       error: run.error ?? run.finalSnapshot.error,
       contextState: contextState ?? run.finalSnapshot.contextState,
-      events: run.finalSnapshot.events,
-      checkpoints: run.finalSnapshot.checkpoints,
-      toolResults: run.finalSnapshot.toolResults,
+      events: run.events,
+      checkpoints: run.checkpoints.length > 0 ? run.checkpoints : run.finalSnapshot.checkpoints,
+      toolResults: run.toolResults.length > 0 ? run.toolResults : run.finalSnapshot.toolResults,
       updatedAt: run.updatedAt,
     }), run.gates);
   }

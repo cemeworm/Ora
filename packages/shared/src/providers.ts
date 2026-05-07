@@ -19,6 +19,12 @@ export const ProviderCapabilitySchema = z.enum([
 ]);
 export type ProviderCapability = z.infer<typeof ProviderCapabilitySchema>;
 
+export const ProviderPromptCacheSchema = z.object({
+  enabled: z.boolean().optional(),
+  ttl: z.enum(["5m", "1h"]).default("5m"),
+}).default({});
+export type ProviderPromptCache = z.infer<typeof ProviderPromptCacheSchema>;
+
 export const ProviderConfigSchema = z.object({
   id: z.string().min(1),
   type: ProviderTypeSchema,
@@ -34,6 +40,7 @@ export const ProviderConfigSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
   maxContextWindow: z.number().int().positive().optional(),
   autoCompactTokenLimit: z.number().int().positive().optional(),
+  promptCache: ProviderPromptCacheSchema.optional(),
   capabilities: z.array(ProviderCapabilitySchema).default(["chat"]),
   dropParams: z.array(z.string().min(1)).default([]),
   headers: z.record(z.string().min(1)).default({}),

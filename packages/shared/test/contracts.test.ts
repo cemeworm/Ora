@@ -1178,13 +1178,24 @@ describe("Ora shared contracts", () => {
       runId: "run-1",
       status: "paused",
       reason: "approval_required",
+      agentId: "builder",
+      nodeId: "builder",
       conversationCursor: 1,
       pendingActionIds: ["run-1:action:tool-0"],
       pendingToolCallIds: ["run-1:tool-call-0"],
+      nodeCheckpoint: {
+        modeId: "single_agent",
+        agentId: "builder",
+        nodeId: "builder",
+        eventSeq: 2,
+        conversationCursor: 1,
+        bag: { partial: "state" },
+      },
       createdAt: 1,
       updatedAt: 1,
     });
     expect(frame.pendingClarificationIds).toEqual([]);
+    expect(frame.nodeCheckpoint?.bag).toEqual({ partial: "state" });
 
     expect(() =>
       RunContinuationFrameSchema.parse({

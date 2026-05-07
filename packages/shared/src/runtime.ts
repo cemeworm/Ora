@@ -517,6 +517,7 @@ export const OraEventTypeSchema = z.enum([
   "context.compaction.started",
   "context.compaction.completed",
   "context.compaction.failed",
+  "context.compaction.skipped",
   "queue.updated",
   "shared_state.updated",
   "worker.claimed",
@@ -661,6 +662,15 @@ export const RunContinuationFrameSchema = z.object({
   approvedActionIds: z.array(z.string().min(1)).default([]),
   resolvedClarificationIds: z.array(z.string().min(1)).default([]),
   resumedFromFrameId: z.string().min(1).optional(),
+  nodeCheckpoint: z.object({
+    modeId: ModeIdSchema.optional(),
+    agentId: z.string().min(1).optional(),
+    nodeId: z.string().min(1).optional(),
+    planItemId: z.string().min(1).optional(),
+    eventSeq: z.number().int().nonnegative().optional(),
+    conversationCursor: z.number().int().nonnegative().optional(),
+    bag: z.record(z.unknown()).default({}),
+  }).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -768,6 +778,8 @@ export const ModelTokenUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative().default(0),
   reasoningTokens: z.number().int().nonnegative().optional(),
+  cacheCreationInputTokens: z.number().int().nonnegative().optional(),
+  cacheReadInputTokens: z.number().int().nonnegative().optional(),
   totalTokens: z.number().int().nonnegative(),
   source: ModelTokenUsageSourceSchema.default("estimate"),
 });
@@ -989,6 +1001,7 @@ export type RunStreamParams = z.infer<typeof RunStreamParamsSchema>;
 export const RuntimeMaintenanceParamsSchema = z.object({
   compactStreamingEvents: z.boolean().default(true),
   vacuum: z.boolean().default(true),
+  staleRunningMs: z.number().int().nonnegative().default(0),
 }).default({});
 export type RuntimeMaintenanceParams = z.infer<typeof RuntimeMaintenanceParamsSchema>;
 
@@ -1003,8 +1016,10 @@ export type RuntimeStorageOptimizationResult = z.infer<typeof RuntimeStorageOpti
 export const RuntimeMaintenanceResultSchema = z.object({
   compactStreamingEvents: z.boolean(),
   vacuum: z.boolean(),
+  staleRunningMs: z.number().int().nonnegative(),
   runsScanned: z.number().int().nonnegative(),
   runsCompacted: z.number().int().nonnegative(),
+  staleRunsFailed: z.number().int().nonnegative().default(0),
   messageDeltaEventsCompacted: z.number().int().nonnegative(),
   rawPayloadsRemoved: z.number().int().nonnegative(),
   estimatedSnapshotBytesBefore: z.number().int().nonnegative(),
