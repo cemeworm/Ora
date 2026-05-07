@@ -136,6 +136,7 @@ import {
   RecoveryErrorTypeSchema,
   ResourceBudgetSchema,
   RuntimeBootstrapSchema,
+  RuntimeWorkbenchBootstrapSchema,
   RunConfigSchema,
   RunEventStreamSchema,
   RunForkParamsSchema,
@@ -2597,6 +2598,51 @@ describe("RuntimeBootstrapSchema", () => {
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");
+  });
+
+  it("accepts workbench bootstrap payloads with first-session data", () => {
+    const bootstrap = RuntimeBootstrapSchema.parse({
+      health: {
+        ok: true,
+        service: "ora-runtime",
+        version: "0.1.0",
+        mode: "runtime",
+        detail: "Ora runtime bootstrap is served from the shared runtime kernel."
+      },
+      patterns: MVP_PATTERNS,
+      atoms: MVP_MODE_RUNTIME_ATOMS,
+      providers: {
+        providers: DEFAULT_PROVIDERS,
+        defaultProviderId: "local-smoke"
+      },
+      tools: {
+        tools: MVP_TOOLS,
+        defaultPolicyId: "default-policy"
+      },
+      modes: MVP_MODES,
+      skills: { skills: [] }
+    });
+    const session = {
+      sessionId: "session-0001",
+      title: "New Chat",
+      turnCount: 0,
+      createdAt: 1,
+      updatedAt: 1
+    };
+
+    const parsed = RuntimeWorkbenchBootstrapSchema.parse({
+      bootstrap,
+      projects: [],
+      sessions: [session],
+      activeSessionDetail: {
+        session,
+        turns: [],
+        transcript: []
+      }
+    });
+
+    expect(parsed.sessions[0]?.sessionId).toBe("session-0001");
+    expect(parsed.activeSessionDetail.session.sessionId).toBe("session-0001");
   });
 });
 

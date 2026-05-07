@@ -51,6 +51,9 @@ import {
   ProjectSignalSchema,
   ProjectSummary,
   ProjectSummarySchema,
+  RuntimeWorkbenchBootstrapSchema,
+  type RuntimeBootstrap,
+  type RuntimeWorkbenchBootstrap,
   type RuntimeAcceptedPlanHandoff,
   RunConfig,
   RunConfigSchema,
@@ -766,6 +769,25 @@ export class LocalRunStore {
   getSession(params: unknown): SessionDetail {
     this.refreshAllSessionLedgerProjections();
     return getSessionOperation(params, this.projectSessionOperationDeps());
+  }
+
+  workbenchBootstrap(bootstrap: RuntimeBootstrap): RuntimeWorkbenchBootstrap {
+    this.refreshAllSessionLedgerProjections();
+    const deps = this.projectSessionOperationDeps();
+    const projects = listProjectsOperation({}, deps);
+    const sessions = listSessionsOperation({}, deps);
+    const firstSession = sessions[0] ?? this.createSession({});
+    const activeSessionDetail = getSessionOperation(
+      { sessionId: firstSession.sessionId },
+      this.projectSessionOperationDeps(),
+    );
+
+    return RuntimeWorkbenchBootstrapSchema.parse({
+      bootstrap,
+      projects,
+      sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+      activeSessionDetail,
+    });
   }
 
   listSessionBranchGroups(params: unknown): SessionBranchGroup[] {

@@ -85,6 +85,7 @@ import type {
   ProviderStatus as OraProviderStatus,
   RunTraceMetadata as OraRunTraceMetadata,
   RuntimeBootstrap as OraRuntimeBootstrap,
+  RuntimeWorkbenchBootstrap as OraRuntimeWorkbenchBootstrap,
   SelfIterationCandidate as OraSelfIterationCandidate,
   SelfIterationPolicy as OraSelfIterationPolicy,
   SelfIterationScanResult as OraSelfIterationScanResult,
@@ -276,6 +277,13 @@ export interface RuntimeBootstrap {
   providerStatuses: OraProviderStatus[];
 }
 
+export interface RuntimeWorkbenchBootstrap {
+  bootstrap: RuntimeBootstrap;
+  projects: OraProjectSummary[];
+  sessions: OraSessionSummary[];
+  activeSessionDetail: OraSessionDetail;
+}
+
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown };
 const CUSTOM_PROVIDER_STORAGE_KEY = "ora.customProviders.v1";
 export const RUN_EVENT_NOTIFICATION = "ora://runtime/run-event";
@@ -356,6 +364,35 @@ export function createRuntimeClient() {
     return unwrapJsonRpc<T>(response);
   }
 
+  async function normalizeRuntimeBootstrap(
+    bootstrap: OraRuntimeBootstrap,
+    sidecarStatus: Record<string, unknown> | undefined,
+  ): Promise<RuntimeBootstrap> {
+    const providerRegistry = mergeCustomProviders(bootstrap.providers);
+    const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
+    const providerStatuses = deriveProviderStatuses(providerRegistry.providers, providerSecretStatuses);
+
+    return {
+      health: lastHealth ?? {
+        ok: bootstrap.health.ok,
+        mode: "browser_mock",
+        service: bootstrap.health.service,
+        detail: sidecarStatus
+          ? String(sidecarStatus.reason ?? bootstrap.health.detail)
+          : "Browser dev fallback is serving deterministic Ora JSON-RPC.",
+      },
+      patterns: bootstrap.patterns,
+      modes: bootstrap.modes,
+      atoms: bootstrap.atoms,
+      providerRegistry,
+      toolRegistry: bootstrap.tools,
+      packageStore: bootstrap.packages ?? await call<OraPackageStoreSnapshot>("packages.active"),
+      skillRegistry: bootstrap.skills,
+      providerSecretStatuses,
+      providerStatuses,
+    };
+  }
+
   return {
     async bootstrap(): Promise<RuntimeBootstrap> {
       const sidecarStatus = await readTauriSidecarStatus();
@@ -393,28 +430,39 @@ export function createRuntimeClient() {
       }
 
       const bootstrap = await call<OraRuntimeBootstrap>("runtime.bootstrap");
-      const providerRegistry = mergeCustomProviders(bootstrap.providers);
-      const providerSecretStatuses = await getProviderSecretStatuses(providerRegistry.providers);
-      const providerStatuses = deriveProviderStatuses(providerRegistry.providers, providerSecretStatuses);
+      return normalizeRuntimeBootstrap(bootstrap, sidecarStatus);
+    },
+    async workbenchBootstrap(): Promise<RuntimeWorkbenchBootstrap> {
+      const sidecarStatus = await readTauriSidecarStatus();
+      processBridgeEnabled = Boolean(sidecarStatus?.process_spawn_available);
+      managedLangfuseDetail = formatManagedLangfuseStatus(sidecarStatus);
+      tauriUnavailableReason = sidecarStatus
+        ? compactDetails([
+          String(sidecarStatus.reason ?? "Runtime sidecar process bridge is unavailable."),
+          managedLangfuseDetail,
+        ])
+        : "Runtime sidecar process bridge is unavailable.";
 
+      if (isTauriAvailable() && !processBridgeEnabled) {
+        const bootstrap = await this.bootstrap();
+        const projects = await this.listProjects();
+        const sessions = await this.listSessions();
+        const firstSession = sessions[0] ?? await this.createSession();
+        const activeSessionDetail = await this.getSession(firstSession.sessionId);
+        return {
+          bootstrap,
+          projects,
+          sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+          activeSessionDetail,
+        };
+      }
+
+      const result = await call<OraRuntimeWorkbenchBootstrap>("runtime.workbenchBootstrap");
       return {
-        health: lastHealth ?? {
-          ok: bootstrap.health.ok,
-          mode: "browser_mock",
-          service: bootstrap.health.service,
-          detail: sidecarStatus
-            ? String(sidecarStatus.reason ?? bootstrap.health.detail)
-            : "Browser dev fallback is serving deterministic Ora JSON-RPC.",
-        },
-        patterns: bootstrap.patterns,
-        modes: bootstrap.modes,
-        atoms: bootstrap.atoms,
-        providerRegistry,
-        toolRegistry: bootstrap.tools,
-        packageStore: bootstrap.packages ?? await call<OraPackageStoreSnapshot>("packages.active"),
-        skillRegistry: bootstrap.skills,
-        providerSecretStatuses,
-        providerStatuses,
+        bootstrap: await normalizeRuntimeBootstrap(result.bootstrap, sidecarStatus),
+        projects: result.projects,
+        sessions: result.sessions,
+        activeSessionDetail: result.activeSessionDetail,
       };
     },
     async createSession(params: OraSessionCreateParams = {}): Promise<OraSessionSummary> {
@@ -1300,6 +1348,16 @@ class LocalJsonRpcRuntime {
             defaultProviderId: "local-smoke",
           },
         };
+      case "runtime.workbenchBootstrap": {
+        const sessions = this.dispatch("sessions.list", undefined) as OraSessionSummary[];
+        const firstSession = sessions[0] ?? this.createSession({});
+        return {
+          bootstrap: this.dispatch("runtime.bootstrap", undefined),
+          projects: this.dispatch("projects.list", undefined),
+          sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+          activeSessionDetail: this.getSessionDetail({ sessionId: firstSession.sessionId }),
+        };
+      }
       case "runtime.maintenance":
         return {
           compactStreamingEvents: true,

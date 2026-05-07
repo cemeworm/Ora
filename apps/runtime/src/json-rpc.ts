@@ -10,6 +10,7 @@ import { OraRuntimeError } from "./runtime-errors.js";
 import { createDefaultProviderRegistry, fetchProviderModels, verifyProviderConfig } from "./providers/index.js";
 import { RuntimeToolRegistry } from "./harness/capability-registries.js";
 import { MVP_MODE_RUNTIME_ATOMS, ProviderModelsParamsSchema, ProviderVerifyParamsSchema, RuntimeBootstrapSchema, SkillRegistrySchema, ToolRegistrySchema } from "@cemeworm/shared";
+import type { RuntimeBootstrap } from "@cemeworm/shared";
 import type { RunEventStream } from "@cemeworm/shared";
 import { PackageManager } from "./package-manager.js";
 
@@ -37,25 +38,28 @@ export function createRuntimeMethodHandler(
   const providerRegistry = createDefaultProviderRegistry().config;
   const toolRegistry = new RuntimeToolRegistry().snapshot();
   const packageManager = new PackageManager();
+  const runtimeBootstrap = (): RuntimeBootstrap => RuntimeBootstrapSchema.parse({
+    health: {
+      ...store.health(),
+      mode: "runtime",
+      detail: "Ora runtime bootstrap is served from the shared runtime kernel."
+    },
+    patterns: store.listPatterns(),
+    modes: store.listModes(),
+    atoms: MVP_MODE_RUNTIME_ATOMS,
+    tools: toolRegistry,
+    packages: packageManager.snapshot(),
+    skills: store.listSkills(),
+    providers: providerRegistry
+  });
   return (request) => {
     switch (request.method) {
       case "runtime.health":
         return store.health();
       case "runtime.bootstrap":
-        return RuntimeBootstrapSchema.parse({
-          health: {
-            ...store.health(),
-            mode: "runtime",
-            detail: "Ora runtime bootstrap is served from the shared runtime kernel."
-          },
-          patterns: store.listPatterns(),
-          modes: store.listModes(),
-          atoms: MVP_MODE_RUNTIME_ATOMS,
-          tools: toolRegistry,
-          packages: packageManager.snapshot(),
-          skills: store.listSkills(),
-          providers: providerRegistry
-        });
+        return runtimeBootstrap();
+      case "runtime.workbenchBootstrap":
+        return store.workbenchBootstrap(runtimeBootstrap());
       case "runtime.maintenance":
         return store.runtimeMaintenance(request.params);
       case "patterns.list":

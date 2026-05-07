@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveSessionProjection, RuntimeSessionLedgerSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
+import { deriveSessionProjection, RuntimeSessionLedgerSchema, RuntimeWorkbenchBootstrapSchema, SessionDetailSchema, StateSnapshotSchema } from "@cemeworm/shared";
 import type { RuntimeGateResolution } from "../src/runtime-gate-service.js";
 
 const capturedRequests: Array<{
@@ -119,6 +119,53 @@ describe("session thread runtime behavior", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
     titleResponses.length = 0;
+  });
+
+  it("bootstraps the workbench and creates the first session when empty", async () => {
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: freshStoreDir(), clock }));
+
+    const bootstrap = RuntimeWorkbenchBootstrapSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runtime.workbenchBootstrap",
+      params: {},
+    }));
+
+    expect(bootstrap.bootstrap.health.ok).toBe(true);
+    expect(bootstrap.sessions).toHaveLength(1);
+    expect(bootstrap.sessions[0]?.turnCount).toBe(0);
+    expect(bootstrap.activeSessionDetail.session.sessionId).toBe(bootstrap.sessions[0]?.sessionId);
+  });
+
+  it("bootstraps the workbench with the latest existing session", async () => {
+    let now = FIXED_TIME;
+    const handle = createRuntimeMethodHandler(new LocalRunStore({
+      dataDir: freshStoreDir(),
+      clock: () => now,
+    }));
+    const older = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sessions.create",
+      params: { label: "Older" },
+    }) as { sessionId: string };
+    now += 1;
+    const latest = await handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sessions.create",
+      params: { label: "Latest" },
+    }) as { sessionId: string };
+
+    const bootstrap = RuntimeWorkbenchBootstrapSchema.parse(await handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runtime.workbenchBootstrap",
+      params: {},
+    }));
+
+    expect(bootstrap.sessions.map((session) => session.sessionId)).toEqual([latest.sessionId, older.sessionId]);
+    expect(bootstrap.activeSessionDetail.session.sessionId).toBe(latest.sessionId);
   });
 
   it("creates and reloads empty sessions", () => {

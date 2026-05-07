@@ -347,9 +347,15 @@ function WorkbenchInner() {
     (async () => {
       try {
         dispatch({ type: "RESET_RUNTIME_VIEW" });
-        const bootstrap = await runtimeClient.bootstrap();
-        const projects = await runtimeClient.listProjects();
+        const startedAt = performance.now();
+        const workbenchBootstrap = await runtimeClient.workbenchBootstrap();
+        const finishedAt = performance.now();
+        console.debug("[Ora] workbench bootstrap completed", {
+          durationMs: Math.round(finishedAt - startedAt),
+        });
         if (cancelled) return;
+        const { bootstrap, projects, sessions, activeSessionDetail } =
+          workbenchBootstrap;
         dispatch({
           type: "BOOTSTRAP",
           patterns: bootstrap.patterns,
@@ -363,19 +369,12 @@ function WorkbenchInner() {
           providerStatuses: bootstrap.providerStatuses,
           health: bootstrap.health,
         });
-        const sessions = await runtimeClient.listSessions();
-        const firstSession =
-          sessions[0] ?? (await runtimeClient.createSession());
-        const detail = await runtimeClient.getSession(firstSession.sessionId);
         if (cancelled) return;
         dispatch({
           type: "HYDRATE_SESSION",
           projects,
-          sessions:
-            firstSession === sessions[0]
-              ? sessions
-              : [firstSession, ...sessions],
-          detail,
+          sessions,
+          detail: activeSessionDetail,
         });
       } catch (error) {
         if (cancelled) return;

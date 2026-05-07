@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
 
 describe("desktop runtime client agent catalog", () => {
+  it("bootstraps the workbench in one browser-fallback call", async () => {
+    const client = createRuntimeClient();
+
+    const bootstrap = await client.workbenchBootstrap();
+
+    expect(bootstrap.bootstrap.health.ok).toBe(true);
+    expect(bootstrap.sessions).toHaveLength(1);
+    expect(bootstrap.activeSessionDetail.session.sessionId).toBe(bootstrap.sessions[0]?.sessionId);
+    expect(bootstrap.projects).toEqual([]);
+  });
+
   it("mirrors task flow aliases in browser fallback", async () => {
     const client = createRuntimeClient();
     const session = await client.createSession({});
