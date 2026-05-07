@@ -40,40 +40,45 @@ Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型
 
 ## Runtime loop 结构
 
-Ora 的 runtime loop 不是单一循环，而是三层嵌套：外层 run 生命周期负责 mode selection、context/memory 注入、kernel 执行、interrupt/resume 和 plan decision；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清、恢复和 finalization。更完整的说明见 [Ora runtime loop 结构图](docs/ora-runtime-loop.md)。
+Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：Task Flow 是当前 run 基础设施上的 orchestration 入口，`LocalRunStore` 保持兼容 facade，run/resume/streaming/gate/ledger/projection 服务负责生命周期和持久投影；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清、恢复和 finalization。更完整的说明见 [Ora runtime loop 结构图](docs/ora-runtime-loop.md)。
 
 ### 外层 run lifecycle
 
 ```mermaid
 flowchart TD
-  A["User / Channel input"] --> B["RunStore: create or resume run"]
-  B --> C["resolveModeSelection"]
+  A["User / Channel / Automation input"] --> A1["flows.* / runs.* RPC"]
+  A1 --> A2["FlowRun projection (flowRunId = runId for now)"]
+  A2 --> B["LocalRunStore compatibility facade"]
+  B --> B1["Lifecycle / resume / streaming services"]
+  B --> B2["Gate / ledger / projection services"]
+  B1 --> C["resolveModeSelection"]
   C --> C1{"modeSelection = auto?"}
   C1 -->|yes| C2["Auto mode router selects modeId + taskIntent"]
   C1 -->|no| C3["Use requested/manual mode"]
   C2 --> D["Resolve ModeSpec + PatternDefinition"]
   C3 --> D
   D --> E["withMemoryPrompt + conversation context"]
-  E --> F["executeTracedKernelRun / executeTracedKernelResume"]
+  E --> F["RunKernelExecutionService"]
   F --> G["executeRuntimeKernel"]
 
   G --> H{"clarification preflight?"}
-  H -->|needs clarification| I["clarification.required"]
+  H -->|needs clarification| I["gate.opened + clarification.required"]
   I --> J["run.interrupted + continuation frame"]
   J --> K["User answers clarification / approves action"]
-  K --> L["runs.resume with patch"]
-  L --> F
+  K --> L["flows.resume / runs.resume with patch"]
+  L --> L1["gate.resolved + resume finalization"]
+  L1 --> B1
 
   H -->|no / already answered| M["executeModeSpec"]
   M --> N{"mode output"}
   N -->|success| O["Ora root finalizer if needed"]
-  O --> P["run.done"]
+  O --> P["run.done + ledger snapshot projection"]
   N -->|provider/tool failure unrecovered| Q["run.failed"]
-  N -->|approval required| R["approval_required"]
+  N -->|approval required| R["gate.opened + approval_required"]
   R --> J
 
   P --> S{"taskIntent = plan and output has proposed_plan?"}
-  S -->|yes| T["PlanDecisionGate pending"]
+  S -->|yes| T["FlowGate: plan decision pending"]
   T --> U["User accepts / declines"]
   U -->|accepted| V["accepted plan handoff"]
   V --> W["Next implement run consumes accepted plan"]
@@ -85,7 +90,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  A["executeModeSpec"] --> B["orderedEnabledModeNodes(modeSpec)"]
+  A["executeModeSpec"] --> A1["ModeDriverRegistry selects driver"]
+  A1 --> B["orderedEnabledModeNodes(modeSpec)"]
   B --> C["initializeQueueSummary"]
   C --> D["For each mode node / stage"]
 
@@ -132,7 +138,7 @@ stateDiagram-v2
 
   tool_requested --> finalizing: attempt denied by completion policy
   tool_requested --> failed: code-development boundary violation
-  tool_requested --> approval_required: risky/manual action needs approval
+  tool_requested --> approval_required: definition/policy requires approval
   approval_required --> interrupted: ApprovalInterruptError
   interrupted --> running_model: resume approved action
 

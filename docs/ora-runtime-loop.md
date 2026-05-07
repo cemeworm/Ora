@@ -1,60 +1,98 @@
 # Ora runtime loop 结构图
 
-本文描述当前 Ora runtime loop 的主结构：run 外层生命周期、mode 编排层、单个 node 内部的 model-tool loop，以及中断、澄清、决策、mode 编排如何影响整个循环。
+本文描述当前 Ora runtime loop 的主结构：Task Flow 兼容层、run 外层生命周期、mode 编排层、单个 node 内部的 model-tool loop，以及中断、澄清、审批、决策如何进入持久 projection。
 
 ## 阅读地图
 
-Ora 的 runtime loop 不是单一循环，而是三层嵌套：
+Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 
-1. **Run 生命周期层**：从用户输入开始，完成 mode selection、context/memory 注入、kernel 执行、interrupt/resume、plan decision handoff。
-2. **Mode 编排层**：`executeModeSpec` 按 mode nodes/stages 推进 agent 调用，并同步 plan、todo、queue、topology。
-3. **Node 执行层**：`runNodeRuntimeLoop` 在单个 agent/node 内做模型调用、工具调用、审批、澄清、恢复和强制 finalization。
+1. **Task Flow 兼容层**：`flows.*` 是 `runs.*` 上的 orchestration alias，`flowRunId` 当前等于 `runId`，不引入第二套持久状态。
+2. **Run 生命周期层**：`LocalRunStore` 保持 public API facade，生命周期、resume、streaming、gate、ledger、projection 等服务负责具体边界。
+3. **Mode 编排层**：`executeModeSpec` 按 mode nodes/stages 推进 agent 调用，并同步 plan、todo、queue、topology。
+4. **Node 执行层**：`runNodeRuntimeLoop` 在单个 agent/node 内做模型调用、工具调用、审批、澄清、恢复和强制 finalization。
 
 主要源码入口：
 
 - `/apps/runtime/src/run-store.ts`
 - `/apps/runtime/src/mode-selection.ts`
+- `/apps/runtime/src/run-projections.ts`
+- `/apps/runtime/src/run-kernel-execution-service.ts`
+- `/apps/runtime/src/run-resume-finalization-service.ts`
+- `/apps/runtime/src/runtime-gate-ledger-service.ts`
 - `/apps/runtime/src/run-kernel-lifecycle.ts`
 - `/apps/runtime/src/harness/runtime-kernel.ts`
 - `/apps/runtime/src/harness/node-runtime-loop.ts`
+- `/apps/runtime/src/harness/runtime-tool-call-service.ts`
+- `/apps/runtime/src/harness/runtime-tool-recovery-service.ts`
 - `/apps/runtime/src/harness/runtime-clarifications.ts`
 - `/apps/runtime/src/harness/runtime-interrupts.ts`
-- `/apps/runtime/src/patterns/driver-registry.ts`
+- `/apps/runtime/src/patterns/mode-driver-registry.ts`
 - `/packages/shared/src/runtime.ts`
 - `/packages/shared/src/runtime-ledger.ts`
+- `/packages/shared/src/runtime-timeline.ts`
+
+## 0. Task Flow、Run、Session 的边界
+
+```mermaid
+flowchart TD
+  A["User / Channel / Automation input"] --> B["flows.* / runs.* RPC"]
+  B --> C["FlowRun projection"]
+  C --> C1["flowRunId = runId in this slice"]
+  C --> D["LocalRunStore compatibility facade"]
+
+  D --> E["Run lifecycle / resume / streaming services"]
+  D --> F["Gate / ledger / persistence / projection services"]
+  E --> G["Kernel execution"]
+  F --> H["Session ledger + latest snapshot"]
+
+  G --> I["Mode drivers"]
+  I --> J["Node model-tool loop"]
+  J --> K["Executor runtimes: model / tool / shell / MCP / channel"]
+  K --> F
+
+  H --> L["Session detail / list / desktop attention"]
+  C --> M["flows.get detail: gates, checkpoints, activities, latest snapshot"]
+```
+
+这一层的重点是所有 flow 概念都先映射到现有 run 基础设施。`FlowRun` 是当前 `StateSnapshot` 和 run projection 的编排视角，`FlowGate` 来自现有 clarification、approval、plan decision 和 cancellation projection。Session 仍然是用户看到的对话容器，flow/run 是持久执行身份。
 
 ## 1. 外层 run lifecycle
 
 ```mermaid
 flowchart TD
-  A["User / Channel input"] --> B["RunStore: create or resume run"]
-  B --> C["resolveModeSelection"]
+  A["User / Channel / Automation input"] --> A1["flows.* / runs.* RPC"]
+  A1 --> A2["FlowRun projection (flowRunId = runId for now)"]
+  A2 --> B["LocalRunStore compatibility facade"]
+  B --> B1["Lifecycle / resume / streaming services"]
+  B --> B2["Gate / ledger / projection services"]
+  B1 --> C["resolveModeSelection"]
   C --> C1{"modeSelection = auto?"}
   C1 -->|yes| C2["Auto mode router selects modeId + taskIntent"]
   C1 -->|no| C3["Use requested/manual mode"]
   C2 --> D["Resolve ModeSpec + PatternDefinition"]
   C3 --> D
   D --> E["withMemoryPrompt + conversation context"]
-  E --> F["executeTracedKernelRun / executeTracedKernelResume"]
+  E --> F["RunKernelExecutionService"]
   F --> G["executeRuntimeKernel"]
 
   G --> H{"clarification preflight?"}
-  H -->|needs clarification| I["clarification.required"]
+  H -->|needs clarification| I["gate.opened + clarification.required"]
   I --> J["run.interrupted + continuation frame"]
   J --> K["User answers clarification / approves action"]
-  K --> L["runs.resume with patch"]
-  L --> F
+  K --> L["flows.resume / runs.resume with patch"]
+  L --> L1["gate.resolved + resume finalization"]
+  L1 --> B1
 
   H -->|no / already answered| M["executeModeSpec"]
   M --> N{"mode output"}
   N -->|success| O["Ora root finalizer if needed"]
-  O --> P["run.done"]
+  O --> P["run.done + ledger snapshot projection"]
   N -->|provider/tool failure unrecovered| Q["run.failed"]
-  N -->|approval required| R["approval_required"]
+  N -->|approval required| R["gate.opened + approval_required"]
   R --> J
 
   P --> S{"taskIntent = plan and output has proposed_plan?"}
-  S -->|yes| T["PlanDecisionGate pending"]
+  S -->|yes| T["FlowGate: plan decision pending"]
   T --> U["User accepts / declines"]
   U -->|accepted| V["accepted plan handoff"]
   V --> W["Next implement run consumes accepted plan"]
@@ -64,17 +102,20 @@ flowchart TD
 
 外层循环的关键点：
 
+- `flows.*` 是当前 `runs.*` 的兼容 alias。它暴露 flow vocabulary，但不改变 `runId`、session UX 或持久格式。
+- `LocalRunStore` 现在更像兼容 facade。kernel 执行、resume finalization、gate lifecycle、ledger append、persistence 和 projection 已经拆到更窄的服务边界。
 - `resolveModeSelection` 先把输入解析成确定的 `ModeSpec`、`PatternDefinition` 和完整 `RunConfig`。
 - `modeSelection: "auto"` 会调用 auto mode router，选择 `modeId`，并在 `taskIntentMode: "auto"` 时推断 `taskIntent`。
-- `executeTracedKernelRun` 和 `executeTracedKernelResume` 都进入同一个 `executeRuntimeKernel`，resume 只是额外带入 clarification patch、approved action ids 和上一轮 resume state。
-- kernel 捕获 `ClarificationInterruptError` 和 `ApprovalInterruptError` 后，把 run 标记为 `interrupted`，并写入 `continuation` frame。
+- 普通 start 和 resume 都会通过 kernel execution 边界进入 `executeRuntimeKernel`，resume 额外带入 clarification patch、approved action ids 和上一轮 resume state。
+- kernel 捕获 `ClarificationInterruptError` 和 `ApprovalInterruptError` 后，把 run 标记为 `interrupted`，写入 `continuation` frame，并通过 gate ledger 写入 durable gate facts。
 - plan 模式输出完整 `<proposed_plan>` 后，run 本身可以是 `succeeded`，但 session attention 会变成 `needs_plan_decision`，等待用户接受或拒绝计划。
 
 ## 2. Mode 编排层
 
 ```mermaid
 flowchart TD
-  A["executeModeSpec"] --> B["orderedEnabledModeNodes(modeSpec)"]
+  A["executeModeSpec"] --> A1["ModeDriverRegistry selects driver"]
+  A1 --> B["orderedEnabledModeNodes(modeSpec)"]
   B --> C["initializeQueueSummary"]
   C --> D["For each mode node / stage"]
 
@@ -110,7 +151,7 @@ flowchart TD
 Mode 编排影响 loop 的方式：
 
 - mode 决定 `nodes`、`profiles`、`stages`、`runtimeAtoms`、tool/skill scope、默认 budget、completion policy 和 recovery policy。
-- `driver-registry.ts` 里的不同 driver 会把 mode 转成不同执行形态，例如 single owner、orchestrator/subagent、generator/verifier、agent teams、staged transcript。
+- `ModeDriverRegistry` 里的不同 driver 会把 mode 转成不同执行形态，例如 single owner、orchestrator/subagent、generator/verifier、agent teams、staged transcript。
 - 每个 node 进入 `runNode` 时会更新 plan/todo/queue 状态，运行结束后再同步 topology 和 queue。
 - 带 `clarification_interrupt` atom 的 mode/node 可以在执行前或执行中主动挂起，等待用户补充信息。
 - 带 `subagent_delegate` atom 的 node 会通过 delegated task 事件显式标记任务委派。
@@ -130,7 +171,7 @@ stateDiagram-v2
 
   tool_requested --> finalizing: attempt denied by completion policy
   tool_requested --> failed: code-development boundary violation
-  tool_requested --> approval_required: risky/manual action needs approval
+  tool_requested --> approval_required: definition/policy requires approval
   approval_required --> interrupted: ApprovalInterruptError
   interrupted --> running_model: resume approved action
 
@@ -172,10 +213,11 @@ stateDiagram-v2
 
 - provider 支持 native tools 时优先走 native tool call；否则从文本里解析 JSON fallback tool call。
 - 每次工具调用都会注册 completion attempt，用于限制重复调用、工具预算、loop safety limit。
-- 高风险或 manual approval 模式下，工具 action 会进入 approval gate；未批准时抛 `ApprovalInterruptError`。
+- 工具执行走 definition-first registry。`RuntimeToolCallService` 负责普通工具调用 orchestration，definition 和 policy hook 决定风险、审批 copy 和执行行为。
+- 高风险、manual approval 或 policy hook 要求审批时，工具 action 会进入 approval gate；未批准时抛 `ApprovalInterruptError`。
 - 工具或 middleware 需要用户信息时，通过 `ensureClarification(s)` 抛 `ClarificationInterruptError`。
 - 工具成功后，结果会被写回 messages，然后继续下一次模型调用。
-- 工具失败后先进入 recovery：可 retry、alternate tool、fallback artifact，或最终 fail。
+- 工具失败后进入 `RuntimeToolRecoveryService`：可 retry、alternate tool、fallback artifact，或最终 fail。
 - 当工具预算耗尽、重复调用被拦截或 runtime loop limit 到达时，进入 forced final answer，禁止继续调用工具。
 
 ## 中断、澄清、审批、决策的区别
@@ -190,13 +232,15 @@ flowchart LR
 
   C --> C1["clarification.required event"]
   C1 --> C2["ClarificationInterruptError"]
-  C2 --> C3["run.interrupted"]
+  C2 --> C3["gate.opened + run.interrupted"]
   C3 --> C4["resume with clarifications patch"]
+  C4 --> C5["gate.resolved + resumed projection"]
 
   D --> D1["action/tool approval_required"]
   D1 --> D2["ApprovalInterruptError"]
-  D2 --> D3["run.interrupted"]
+  D2 --> D3["gate.opened + run.interrupted"]
   D3 --> D4["resume with approvedActionIds / approvedActions"]
+  D4 --> D5["gate.resolved + resumed projection"]
 
   E --> E1["run.done but PlanDecisionGate pending"]
   E1 --> E2["attention: needs_plan_decision"]
@@ -204,13 +248,14 @@ flowchart LR
   E3 --> E4["next implement run consumes handoff"]
 
   F --> F1["run.interrupted or run.cancelled"]
+  F1 --> F2["cancellation / manual attention projection"]
 ```
 
 Important distinction:
 
-- **Clarification/approval** 会中断当前 kernel run，并依赖 `runs.resume` 回到同一个 kernel loop。
+- **Clarification/approval** 会中断当前 kernel run，并依赖 `flows.resume` / `runs.resume` 回到同一个 kernel loop。
 - **Plan decision** 不一定中断 run；它通常发生在 plan run 成功之后，是 session-level gate。
-- **Attention** 是 UI/会话层看到的阻塞状态，由 `deriveRunAttention` 从 snapshot 的 pending clarifications、pending approvals、plan decisions、status 推导出来。
+- **Attention** 是 UI/会话层看到的阻塞状态。当前实现从 ledger-backed snapshot 和 gate projection 推导 attention，再供 session detail、session list、latest snapshot、desktop sidebar/chat/timeline 使用。clarification、approval、plan decision 和 cancellation 都应该表现为 durable gate/projection 事实，不能只依赖 UI 本地状态。
 
 ## Mode 编排对 loop 的影响清单
 
@@ -260,19 +305,22 @@ plan run 输出 `<proposed_plan>` 后：
 
 1. kernel 创建 `continuation.activeFrameId`。
 2. frame 记录 pending action/tool/clarification ids、agent、node、plan item、conversation cursor。
-3. resume 时，RunStore 合并 clarification patch 或 approved actions。
-4. `executeTracedKernelResume` 重新进入 `executeRuntimeKernel`，同时传入上一轮 snapshot state。
+3. resume 时，`flows.resume` / `runs.resume` 把 clarification patch 或 approved actions 交给 resume service 边界。
+4. gate ledger 记录 `gate.resolved`，resume finalization 负责最终 snapshot、ledger、persistence 和 session projection 收敛。
+5. kernel resume 通过 `RunKernelExecutionService` 重新进入 `executeRuntimeKernel`，同时传入上一轮 snapshot state。
 
 ## 建议的文档呈现方式
 
-推荐在架构文档或产品说明里使用三张图，而不是合并为一张：
+推荐在架构文档或产品说明里分层画图，而不是合并为一张：
 
-- 第一张给产品/前端理解：为什么有 running、interrupted、needs decision、resume。
-- 第二张给 mode 作者理解：mode spec 如何映射到 runtime 编排。
-- 第三张给 runtime 工程理解：模型、工具、审批、澄清、恢复在一个 node 内如何循环。
+- Flow/Run/Session 边界图给产品和平台接口理解：为什么 flow 是持久执行身份，session 是用户对话容器。
+- Run lifecycle 图给前端和 runtime 调用方理解：为什么有 running、interrupted、needs decision、resume。
+- Mode 编排图给 mode 作者理解：mode spec 如何映射到 runtime 编排。
+- Node loop 图给 runtime 工程理解：模型、工具、审批、澄清、恢复在一个 node 内如何循环。
 
-如果要做交互式可视化，可以把三层映射成：
+如果要做交互式可视化，可以把边界映射成：
 
+- **Flow lane**：flowRunId、linked sessions、gates、checkpoints、activities。
 - **Run lane**：run status、attention、checkpoint、session ledger。
 - **Mode lane**：node/stage、plan/todo、queue/topology。
 - **Agent lane**：model call、tool call、action approval、clarification、recovery。
