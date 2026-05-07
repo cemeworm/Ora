@@ -66,8 +66,14 @@ flowchart TD
   I --> J["run.interrupted + continuation frame"]
   J --> K["User answers clarification / approves action"]
   K --> L["flows.resume / runs.resume with patch"]
-  L --> L1["gate.resolved + resume finalization"]
-  L1 --> B1
+  L --> L1["RunContinuationDispatcher"]
+  L1 -->|owner-backed frame| L2["resume suspended node"]
+  L1 -->|approved deterministic tool| L3["replay tool, then resume owner"]
+  L1 -->|legacy fallback| L4["resume whole mode"]
+  L1 -->|missing owner| L5["diagnostic failure"]
+  L2 --> L6["gate.resolved + resume finalization"]
+  L3 --> L6
+  L4 --> B1
 
   H -->|no / already answered| M["executeModeSpec"]
   M --> N{"mode output"}
@@ -133,8 +139,10 @@ stateDiagram-v2
   pending --> finalizing: tool budget exhausted
 
   running_model --> tool_requested: native/fallback tool call detected
-  running_model --> completed: no tool + completion guards pass
-  running_model --> running_model: completion guard asks follow-up
+  running_model --> plan_lifecycle: no tool + completion candidate
+  plan_lifecycle --> completed: plan lifecycle + guards pass
+  plan_lifecycle --> running_model: guard follow-up
+  plan_lifecycle --> failed: unchanged guard cycle bound
 
   tool_requested --> finalizing: attempt denied by completion policy
   tool_requested --> failed: code-development boundary violation
@@ -150,11 +158,12 @@ stateDiagram-v2
   tool_running --> tool_result_observed: tool succeeded
   tool_result_observed --> running_model: append tool result as context
 
-  tool_running --> degraded: tool/provider failure
+  tool_running --> degraded: tool execution failure
   degraded --> tool_running: recovery retry / alternate tool
   degraded --> repairing: fallback artifact
   repairing --> running_model: follow-up with degraded result
   degraded --> failed: recovery exhausted
+  running_model --> running_model: provider transient retry
 
   running_model --> finalizing: max tool calls / repeat / loop limit
   finalizing --> completed: forced final provider call
