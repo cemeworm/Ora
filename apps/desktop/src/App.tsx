@@ -222,10 +222,18 @@ function WorkbenchInner() {
     DEFAULT_DETAIL_PANEL_WIDTH,
   );
   const projectsRef = useRef(state.projects);
+  const activeSessionIdRef = useRef<string | undefined>(
+    state.activeSessionDetail?.session.sessionId,
+  );
 
   useEffect(() => {
     projectsRef.current = state.projects;
   }, [state.projects]);
+
+  useEffect(() => {
+    activeSessionIdRef.current =
+      state.activeSessionDetail?.session.sessionId;
+  }, [state.activeSessionDetail?.session.sessionId]);
 
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(
     DEFAULT_ARTIFACT_PANEL_WIDTH,
@@ -433,7 +441,15 @@ function WorkbenchInner() {
     void runtimeClient
       .subscribeRunEvents((stream) => {
         const receivedAt = Date.now();
+        const streamSessionId = stream.snapshot?.sessionId;
         dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
+        if (
+          streamSessionId &&
+          activeSessionIdRef.current &&
+          streamSessionId !== activeSessionIdRef.current
+        ) {
+          return;
+        }
         setTurnSnapshots((current) => {
           const merged = mergeRunStreamSnapshot(current[stream.runId], stream);
           return merged ? { ...current, [stream.runId]: merged } : current;

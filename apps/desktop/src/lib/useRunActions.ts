@@ -320,7 +320,9 @@ export function useRunActions() {
     const previousSessionId = state.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
-    dispatch({ type: "SELECT_SESSION", sessionId });
+    if (state.sessionDetailsById[sessionId]) {
+      dispatch({ type: "SELECT_SESSION", sessionId });
+    }
     try {
       await hydrateSession(sessionId, undefined, undefined, {
         refreshCollections: false,
@@ -374,7 +376,6 @@ export function useRunActions() {
     try {
       dispatch({ type: "SELECT_PROJECT", projectId: undefined });
       const created = await runtimeClient.createSession();
-      dispatch({ type: "SELECT_SESSION", sessionId: created.sessionId });
       await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.", {
         shouldApply: () => sessionRequestRef.current === requestId,
       });
@@ -393,7 +394,6 @@ export function useRunActions() {
     try {
       const created = await runtimeClient.createSession({ projectId });
       dispatch({ type: "SELECT_PROJECT", projectId });
-      dispatch({ type: "SELECT_SESSION", sessionId: created.sessionId });
       await hydrateSession(created.sessionId, undefined, "Created a new project session.", {
         shouldApply: () => sessionRequestRef.current === requestId,
       });

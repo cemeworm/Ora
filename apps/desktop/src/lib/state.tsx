@@ -359,37 +359,7 @@ function cacheSessionDetail(
 ): Record<string, OraSessionDetail> {
   return {
     ...cache,
-    [detail.session.sessionId]: compactSessionDetailForCache(detail),
-  };
-}
-
-function compactSessionDetailForCache(detail: OraSessionDetail): OraSessionDetail {
-  return {
-    ...detail,
-    latestSnapshot: detail.latestSnapshot
-      ? compactSnapshotForDetailCache(detail.latestSnapshot)
-      : undefined,
-  };
-}
-
-function compactSnapshotForDetailCache(snapshot: OraStateSnapshot): OraStateSnapshot {
-  return {
-    ...snapshot,
-    memory: [],
-    plan: [],
-    todos: [],
-    actions: [],
-    toolCalls: [],
-    conversation: [],
-    toolResults: [],
-    policyDecisions: [],
-    events: [],
-    agentMessages: [],
-    artifacts: [],
-    activeAgents: [],
-    pendingClarifications: [],
-    pendingApprovals: [],
-    output: undefined,
+    [detail.session.sessionId]: detail,
   };
 }
 
@@ -2036,6 +2006,12 @@ export function workbenchReducer(
           false);
       const streamBelongsToActiveTurn =
         streamMatchesActiveSession && streamReferencesActiveRun;
+      if (!streamMatchesActiveSession) {
+        const streamStatus = streamRunStatus(action.stream, action.stream.snapshot);
+        if (!isSettledRunStatus(streamStatus) && !action.stream.snapshot) {
+          return state;
+        }
+      }
       const activeSnapshot = streamBelongsToActiveTurn
         ? markDesktopLatencyForStream(
             mergeRunStreamSnapshot(state.activeSnapshot, action.stream),
