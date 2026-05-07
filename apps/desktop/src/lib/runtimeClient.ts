@@ -447,14 +447,14 @@ export function createRuntimeClient() {
         const bootstrap = await this.bootstrap();
         const projects = await this.listProjects();
         const sessions = await this.listSessions();
-        const firstSession = sessions[0] ?? await this.createSession();
+        const firstSession = await this.createSession();
         const activeSessionDetail = await this.getSession(firstSession.sessionId, {
           includeLatestSnapshot: false,
         });
         return {
           bootstrap,
           projects,
-          sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+          sessions: [firstSession, ...sessions],
           activeSessionDetail,
         };
       }
@@ -1355,11 +1355,11 @@ class LocalJsonRpcRuntime {
         };
       case "runtime.workbenchBootstrap": {
         const sessions = this.dispatch("sessions.list", undefined) as OraSessionSummary[];
-        const firstSession = sessions[0] ?? this.createSession({});
+        const firstSession = this.createSession({});
         return {
           bootstrap: this.dispatch("runtime.bootstrap", undefined),
           projects: this.dispatch("projects.list", undefined),
-          sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+          sessions: [firstSession, ...sessions],
           activeSessionDetail: this.getSessionDetail({
             sessionId: firstSession.sessionId,
             includeLatestSnapshot: false,

@@ -776,7 +776,7 @@ export class LocalRunStore {
     const deps = this.projectSessionOperationDeps();
     const projects = listProjectsOperation({}, deps);
     const sessions = listSessionsOperation({}, deps);
-    const firstSession = sessions[0] ?? this.createSession({});
+    const firstSession = this.createSession({});
     const activeSessionDetail = getSessionOperation(
       { sessionId: firstSession.sessionId, includeLatestSnapshot: false },
       this.projectSessionOperationDeps(),
@@ -785,7 +785,7 @@ export class LocalRunStore {
     return RuntimeWorkbenchBootstrapSchema.parse({
       bootstrap,
       projects,
-      sessions: firstSession === sessions[0] ? sessions : [firstSession, ...sessions],
+      sessions: [firstSession, ...sessions],
       activeSessionDetail,
     });
   }
