@@ -382,6 +382,8 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                     )}
                   </div>
                 </div>
+                <SelfIterationScoreEvidence candidate={candidate} />
+                <SelfIterationApplyResult candidate={candidate} />
                 {candidate.status !== "applied" && candidate.status !== "rejected" && (
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button
@@ -561,6 +563,248 @@ function CandidateKindPill({ kind }: { kind: OraSelfIterationCandidate["targetKi
       {kind}
     </span>
   );
+}
+
+function SelfIterationScoreEvidence({ candidate }: { candidate: OraSelfIterationCandidate }) {
+  const evaluation = selfIterationEvaluation(candidate);
+  const scoreEvidence = evaluation?.scoreEvidence ?? scoreEvidenceFromApplyResult(candidate.applyResult);
+  if (!evaluation && !scoreEvidence) return null;
+
+  const before = scoreEvidence?.before;
+  const after = scoreEvidence?.after;
+  const delta = scoreEvidence?.delta;
+  const passed = typeof evaluation?.passed === "boolean" ? evaluation.passed : undefined;
+
+  return (
+    <div className="mt-4 border-t border-border/70 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-foreground">Evaluation result</p>
+          {evaluation?.message && (
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{evaluation.message}</p>
+          )}
+        </div>
+        {passed !== undefined && (
+          <span className={cn(
+            "rounded-full px-2 py-0.5 text-[11px] font-medium",
+            passed ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800",
+          )}>
+            {passed ? "passed" : "failed"}
+          </span>
+        )}
+      </div>
+      {(before || after || delta) && (
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <ScoreColumn
+            label="Before"
+            score={before?.overallScore}
+            passRate={before?.passRate}
+            regressions={before?.regressionCount}
+          />
+          <ScoreColumn
+            label="After"
+            score={after?.overallScore}
+            passRate={after?.passRate}
+            regressions={after?.regressionCount}
+          />
+          <ScoreColumn
+            label="Delta"
+            score={delta?.overallScore}
+            passRate={delta?.passRate}
+            regressions={delta?.regressionCount}
+            signed
+          />
+        </div>
+      )}
+      {scoreEvidence?.evaluationRunId && !candidate.evaluationRunId && (
+        <p className="mt-2 text-[11px] text-muted-foreground">Evaluation: {scoreEvidence.evaluationRunId}</p>
+      )}
+    </div>
+  );
+}
+
+function SelfIterationApplyResult({ candidate }: { candidate: OraSelfIterationCandidate }) {
+  if (candidate.applyResult === undefined) return null;
+  const summary = summarizeApplyResult(candidate.applyResult);
+  return (
+    <div className="mt-3 border-t border-border/70 pt-3">
+      <p className="text-xs font-semibold text-foreground">Apply result</p>
+      {summary.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {summary.map(([label, value]) => (
+            <span key={label} className="rounded bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+              <span className="font-medium text-foreground">{label}</span>: {value}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{formatCompactValue(candidate.applyResult)}</p>
+      )}
+    </div>
+  );
+}
+
+function ScoreColumn({
+  label,
+  score,
+  passRate,
+  regressions,
+  signed = false,
+}: {
+  label: string;
+  score?: number;
+  passRate?: number;
+  regressions?: number;
+  signed?: boolean;
+}) {
+  return (
+    <div className="min-w-0 rounded-md bg-muted/45 px-2.5 py-2">
+      <p className="text-[11px] font-semibold text-foreground">{label}</p>
+      <dl className="mt-1 space-y-1 text-[11px] text-muted-foreground">
+        <ScoreRow label="Score" value={score} signed={signed} />
+        <ScoreRow label="Pass" value={passRate} format="percent" signed={signed} />
+        <ScoreRow label="Reg." value={regressions} signed={signed} />
+      </dl>
+    </div>
+  );
+}
+
+function ScoreRow({ label, value, format = "number", signed = false }: { label: string; value?: number; format?: "number" | "percent"; signed?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <dt>{label}</dt>
+      <dd className="font-medium text-foreground">{formatScoreValue(value, format, signed)}</dd>
+    </div>
+  );
+}
+
+type SelfIterationScoreSnapshot = {
+  configId?: string;
+  overallScore?: number;
+  passRate?: number;
+  regressionCount?: number;
+  caseCount?: number;
+};
+
+type SelfIterationScoreDelta = {
+  overallScore?: number;
+  passRate?: number;
+  regressionCount?: number;
+};
+
+type SelfIterationScoreEvidenceValue = {
+  evaluationRunId?: string;
+  before?: SelfIterationScoreSnapshot;
+  after?: SelfIterationScoreSnapshot;
+  delta?: SelfIterationScoreDelta;
+};
+
+type SelfIterationEvaluationValue = {
+  passed?: boolean;
+  message?: string;
+  scoreEvidence?: SelfIterationScoreEvidenceValue;
+};
+
+function selfIterationEvaluation(candidate: OraSelfIterationCandidate): SelfIterationEvaluationValue | undefined {
+  const raw = recordValue(candidate.proposedChange.metadata.selfIterationEvaluation);
+  if (!raw) return undefined;
+  return {
+    passed: typeof raw.passed === "boolean" ? raw.passed : undefined,
+    message: typeof raw.message === "string" ? raw.message : undefined,
+    scoreEvidence: parseScoreEvidence(raw.scoreEvidence),
+  };
+}
+
+function scoreEvidenceFromApplyResult(applyResult: unknown): SelfIterationScoreEvidenceValue | undefined {
+  const raw = recordValue(applyResult);
+  if (!raw) return undefined;
+  return parseScoreEvidence(raw.scoreEvidence);
+}
+
+function parseScoreEvidence(value: unknown): SelfIterationScoreEvidenceValue | undefined {
+  const raw = recordValue(value);
+  if (!raw) return undefined;
+  return {
+    evaluationRunId: typeof raw.evaluationRunId === "string" ? raw.evaluationRunId : undefined,
+    before: parseScoreSnapshot(raw.before),
+    after: parseScoreSnapshot(raw.after),
+    delta: parseScoreDelta(raw.delta),
+  };
+}
+
+function parseScoreSnapshot(value: unknown): SelfIterationScoreSnapshot | undefined {
+  const raw = recordValue(value);
+  if (!raw) return undefined;
+  return {
+    configId: typeof raw.configId === "string" ? raw.configId : undefined,
+    overallScore: numberValue(raw.overallScore),
+    passRate: numberValue(raw.passRate),
+    regressionCount: numberValue(raw.regressionCount),
+    caseCount: numberValue(raw.caseCount),
+  };
+}
+
+function parseScoreDelta(value: unknown): SelfIterationScoreDelta | undefined {
+  const raw = recordValue(value);
+  if (!raw) return undefined;
+  return {
+    overallScore: numberValue(raw.overallScore),
+    passRate: numberValue(raw.passRate),
+    regressionCount: numberValue(raw.regressionCount),
+  };
+}
+
+function summarizeApplyResult(value: unknown): Array<[string, string]> {
+  const raw = recordValue(value);
+  if (!raw) return [];
+  const source = recordValue(raw.result) ?? raw;
+  const keys = ["applied", "modeId", "nodeId", "skillId", "name", "datasetId", "acceptedCaseId", "feedbackId", "handoff", "message", "reason"];
+  return keys
+    .flatMap((key): Array<[string, string]> => {
+      const item = source[key] ?? raw[key];
+      if (item === undefined || item === null || typeof item === "object") return [];
+      return [[labelForApplyKey(key), formatCompactValue(item)]];
+    })
+    .slice(0, 6);
+}
+
+function labelForApplyKey(key: string): string {
+  switch (key) {
+    case "modeId": return "mode";
+    case "nodeId": return "node";
+    case "skillId": return "skill";
+    case "datasetId": return "dataset";
+    case "acceptedCaseId": return "case";
+    case "feedbackId": return "feedback";
+    default: return key;
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatScoreValue(value: number | undefined, format: "number" | "percent", signed: boolean): string {
+  if (value === undefined) return "n/a";
+  const scaled = format === "percent" ? value * 100 : value;
+  const rounded = Math.round(scaled * 100) / 100;
+  const prefix = signed && rounded > 0 ? "+" : "";
+  return `${prefix}${rounded}${format === "percent" ? "%" : ""}`;
+}
+
+function formatCompactValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
+  if (typeof value === "string") return value.length > 48 ? `${value.slice(0, 45)}...` : value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function SeverityDot({ severity }: { severity: OraProjectSignal["severity"] }) {
