@@ -70,6 +70,12 @@ import {
   FeedbackLoopRuleUpdateParamsSchema,
   FeedbackLoopRulesListParamsSchema,
   FeedbackLoopSignalsListParamsSchema,
+  FlowActivitySummarySchema,
+  FlowDefinitionRefSchema,
+  FlowGateSchema,
+  FlowRunDetailSchema,
+  FlowRunHandleSchema,
+  FlowRunIdParamsSchema,
   EvaluationImportParamsSchema,
   EvaluationMetricIdSchema,
   EvaluationRunDetailSchema,
@@ -366,6 +372,9 @@ describe("Ora shared contracts", () => {
     expect(AutomationPreviewScheduleParamsSchema.parse({ schedule }).limit).toBe(5);
     expect(RuntimeJsonRpcMethodSchema.parse("automations.create")).toBe("automations.create");
     expect(RuntimeJsonRpcMethodSchema.parse("automations.runNow")).toBe("automations.runNow");
+    expect(RuntimeJsonRpcMethodSchema.parse("flows.create")).toBe("flows.create");
+    expect(RuntimeJsonRpcMethodSchema.parse("flows.get")).toBe("flows.get");
+    expect(RuntimeJsonRpcMethodSchema.parse("flows.fork")).toBe("flows.fork");
   });
 
   it("accepts agentic efficiency evaluation metric ids", () => {
@@ -1640,6 +1649,85 @@ describe("Ora shared contracts", () => {
         runId: summary.runId,
       }).runId
     ).toBe(summary.runId);
+  });
+
+  it("validates adapter-first flow contracts over run identity", () => {
+    const handle = FlowRunHandleSchema.parse({
+      runId: "run-0001",
+      flowRunId: "run-0001",
+      sessionId: "session-0001",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      startedAt: 1,
+    });
+    expect(handle.flowRunId).toBe(handle.runId);
+    expect(FlowRunIdParamsSchema.parse({ flowRunId: handle.flowRunId }).flowRunId).toBe(handle.flowRunId);
+    expect(FlowRunIdParamsSchema.parse({ runId: handle.runId }).runId).toBe(handle.runId);
+    expect(() => FlowRunIdParamsSchema.parse({})).toThrow();
+    expect(FlowDefinitionRefSchema.parse({
+      flowDefinitionId: "single_agent",
+      modeId: "single_agent",
+      label: "Single Agent",
+    }).source).toBe("mode_spec");
+    expect(FlowGateSchema.parse({
+      gateId: "gate-1",
+      kind: "approval",
+      status: "open",
+      runId: handle.runId,
+      flowRunId: handle.flowRunId,
+      pendingActionIds: ["action-1"],
+    }).kind).toBe("approval");
+    expect(FlowActivitySummarySchema.parse({
+      activityId: "tool-call-1",
+      kind: "tool",
+      status: "succeeded",
+      runId: handle.runId,
+      flowRunId: handle.flowRunId,
+      toolId: "file.read",
+    }).status).toBe("succeeded");
+
+    const snapshot = StateSnapshotSchema.parse({
+      runId: handle.runId,
+      sessionId: handle.sessionId,
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: "single_agent",
+      input: { prompt: "Flow task" },
+      config: { pattern: "orchestrator_subagent", modeId: "single_agent" },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      updatedAt: 2,
+    });
+    const detail = FlowRunDetailSchema.parse({
+      flowRunId: handle.flowRunId,
+      runId: handle.runId,
+      sessionId: handle.sessionId,
+      linkedSessionIds: [handle.sessionId],
+      turnIndex: 1,
+      status: "succeeded",
+      attention: { kind: "idle", blocking: false },
+      definition: { flowDefinitionId: "single_agent", modeId: "single_agent" },
+      checkpoints: [],
+      gates: [],
+      activities: [],
+      eventCount: 0,
+      latestSnapshot: snapshot,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    expect(detail.flowRunId).toBe(detail.runId);
+    expect(detail.latestSnapshot?.runId).toBe(detail.runId);
   });
 
   it("validates trail metadata on turns and trail payloads", () => {

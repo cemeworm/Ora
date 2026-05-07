@@ -1164,6 +1164,91 @@ export const RunTrailSchema = z.object({
 });
 export type RunTrail = z.infer<typeof RunTrailSchema>;
 
+export const FlowDefinitionRefSchema = z.object({
+  flowDefinitionId: z.string().min(1),
+  source: z.enum(["mode_spec"]).default("mode_spec"),
+  modeId: ModeIdSchema.optional(),
+  label: z.string().min(1).optional(),
+});
+export type FlowDefinitionRef = z.infer<typeof FlowDefinitionRefSchema>;
+
+export const FlowGateKindSchema = z.enum(["clarification", "approval", "plan_decision", "cancellation"]);
+export type FlowGateKind = z.infer<typeof FlowGateKindSchema>;
+
+export const FlowGateStatusSchema = z.enum(["open", "resolved", "cancelled"]);
+export type FlowGateStatus = z.infer<typeof FlowGateStatusSchema>;
+
+export const FlowGateSchema = z.object({
+  gateId: z.string().min(1),
+  kind: FlowGateKindSchema,
+  status: FlowGateStatusSchema,
+  runId: z.string().min(1),
+  flowRunId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  pendingActionIds: z.array(z.string().min(1)).default([]),
+  pendingToolCallIds: z.array(z.string().min(1)).default([]),
+  pendingClarificationIds: z.array(z.string().min(1)).default([]),
+  planDecisionId: z.string().min(1).optional(),
+  reason: z.string().min(1).optional(),
+  openedAt: z.number().int().nonnegative().optional(),
+  resolvedAt: z.number().int().nonnegative().optional(),
+});
+export type FlowGate = z.infer<typeof FlowGateSchema>;
+
+export const FlowActivityKindSchema = z.enum(["node", "model", "tool", "channel", "worker"]);
+export type FlowActivityKind = z.infer<typeof FlowActivityKindSchema>;
+
+export const FlowActivityStatusSchema = z.enum(["pending", "running", "succeeded", "failed", "interrupted", "cancelled", "denied"]);
+export type FlowActivityStatus = z.infer<typeof FlowActivityStatusSchema>;
+
+export const FlowActivitySummarySchema = z.object({
+  activityId: z.string().min(1),
+  kind: FlowActivityKindSchema,
+  status: FlowActivityStatusSchema,
+  runId: z.string().min(1),
+  flowRunId: z.string().min(1),
+  nodeId: z.string().min(1).optional(),
+  agentId: z.string().min(1).optional(),
+  toolId: z.string().min(1).optional(),
+  label: z.string().min(1).optional(),
+  startedAt: z.number().int().nonnegative().optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
+});
+export type FlowActivitySummary = z.infer<typeof FlowActivitySummarySchema>;
+
+export const FlowRunHandleSchema = RunHandleSchema.extend({
+  flowRunId: z.string().min(1),
+});
+export type FlowRunHandle = z.infer<typeof FlowRunHandleSchema>;
+
+export const FlowRunDetailSchema = z.object({
+  flowRunId: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  linkedSessionIds: z.array(z.string().min(1)).default([]),
+  turnIndex: z.number().int().positive().optional(),
+  status: RunStatusSchema,
+  attention: RunAttentionSchema,
+  definition: FlowDefinitionRefSchema,
+  checkpoints: z.array(CheckpointMetaSchema).default([]),
+  gates: z.array(FlowGateSchema).default([]),
+  activities: z.array(FlowActivitySummarySchema).default([]),
+  eventCount: z.number().int().nonnegative(),
+  latestEventSeq: z.number().int().nonnegative().optional(),
+  latestSnapshot: z.lazy(() => StateSnapshotSchema).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type FlowRunDetail = z.infer<typeof FlowRunDetailSchema>;
+
+export const FlowRunIdParamsSchema = z.object({
+  flowRunId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+}).refine((params) => params.flowRunId !== undefined || params.runId !== undefined, {
+  message: "Expected flowRunId or runId.",
+});
+export type FlowRunIdParams = z.infer<typeof FlowRunIdParamsSchema>;
+
 export const QueueSummarySchema = z.object({
   mode: z.enum(["dag", "backlog", "event_bus", "shared_state"]).default("dag"),
   pending: z.number().int().nonnegative().default(0),
