@@ -192,6 +192,20 @@ export function workspaceSystemPrompt(workspace: unknown): string | undefined {
   ].filter(Boolean).join("\n");
 }
 
+export function channelProjectGuidancePrompt(context: Record<string, unknown> | undefined, workspace: unknown): string | undefined {
+  if (!context || context.source !== "channel") {
+    return undefined;
+  }
+  if (workspace && typeof workspace === "object" && workspace !== null && typeof (workspace as Record<string, unknown>).rootPath === "string") {
+    return undefined;
+  }
+  return [
+    "你正在通过消息通道回复用户。要操作本地文件，用户需要先设置项目文件夹。",
+    '请引导用户使用 /project <项目路径> 命令设置项目文件夹，例如 /project /Users/me/my-project。',
+    "设置后，用户需要发送一条新消息来触发新的项目上下文。",
+  ].join("\n");
+}
+
 export function attachedProjectFilesSystemPrompt(attachedFiles: unknown): string | undefined {
   if (!Array.isArray(attachedFiles)) {
     return undefined;

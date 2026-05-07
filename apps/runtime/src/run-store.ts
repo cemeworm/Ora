@@ -771,6 +771,26 @@ export class LocalRunStore {
     return getSessionOperation(params, this.projectSessionOperationDeps());
   }
 
+  setSessionProject(params: unknown): SessionSummary {
+    const parsed = z.object({
+      sessionId: z.string().min(1),
+      projectId: z.string().min(1),
+    }).parse(params);
+    this.getProjectOrThrow(parsed.projectId);
+    const existing = this.getSessionOrThrow(parsed.sessionId);
+    const previousProjectId = existing.projectId;
+    const updated = SessionSummarySchema.parse({
+      ...existing,
+      projectId: parsed.projectId,
+      updatedAt: this.now(),
+    });
+    this.persistSession(updated);
+    if (previousProjectId && previousProjectId !== parsed.projectId) {
+      this.syncProjectSummary(previousProjectId);
+    }
+    return this.getSessionOrThrow(parsed.sessionId);
+  }
+
   workbenchBootstrap(bootstrap: RuntimeBootstrap): RuntimeWorkbenchBootstrap {
     this.refreshAllSessionLedgerProjections();
     const deps = this.projectSessionOperationDeps();

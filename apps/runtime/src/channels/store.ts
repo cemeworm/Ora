@@ -136,6 +136,16 @@ export class ChannelStore {
     return binding;
   }
 
+  updateBindingMetadata(binding: ChannelBinding, metadata: Record<string, unknown>): ChannelBinding {
+    const next = ChannelBindingSchema.parse({
+      ...binding,
+      metadata,
+      updatedAt: this.clock(),
+    });
+    this.backend.saveChannelBinding(next);
+    return next;
+  }
+
   listBindings(params: unknown = {}): ChannelBinding[] {
     return this.backend.listChannelBindings(params as Parameters<RuntimePersistenceBackend["listChannelBindings"]>[0]);
   }

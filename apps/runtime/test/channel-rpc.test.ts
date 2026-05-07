@@ -193,6 +193,189 @@ describe("channel JSON-RPC", () => {
     expect(fresh.sessionId).not.toBe(help.sessionId);
   });
 
+  it("discovers local project candidates and continues the original request after numeric confirmation", async () => {
+    const scanRoot = fs.mkdtempSync(path.join(tempDir, "home-scan-"));
+    const vaultRoot = path.join(scanRoot, "Obsidian", "DeepSeek Vault");
+    fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "DeepSeek.md"), "# DeepSeek\n");
+    fs.writeFileSync(path.join(vaultRoot, "Other.md"), "# Other\n");
+
+    const store = createStore();
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "channel-project-discovery",
+      label: "Project Discovery",
+      kind: "http_webhook",
+      config: { projectDiscoveryRoots: [scanRoot] },
+    }));
+
+    const discovery = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-discovery",
+      externalMessageId: "project-discovery-1",
+      externalChatId: "chat-project-discovery",
+      text: "搜索 Obsidian 中 DeepSeek 相关文档",
+    })));
+    expect(discovery.runId).toBeUndefined();
+    expect(discovery.outboundMessage?.text).toContain("请回复数字确认");
+    expect(discovery.outboundMessage?.text).toContain("DeepSeek Vault");
+    expect(store.listRuns({ sessionId: discovery.sessionId })).toHaveLength(0);
+
+    const selected = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-discovery",
+      externalMessageId: "project-discovery-2",
+      externalChatId: "chat-project-discovery",
+      text: "1",
+    })));
+    expect(selected.sessionId).toBe(discovery.sessionId);
+    expect(selected.runId).toBeTruthy();
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: selected.runId }));
+    expect(snapshot.input.prompt).toBe("搜索 Obsidian 中 DeepSeek 相关文档");
+    expect(snapshot.input.context.projectWorkspace).toMatchObject({
+      rootPath: vaultRoot,
+      markdownFiles: 2,
+    });
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: selected.sessionId }));
+    expect(detail.session.projectId).toBe(snapshot.input.projectId);
+
+    const followUp = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-discovery",
+      externalMessageId: "project-discovery-3",
+      externalChatId: "chat-project-discovery",
+      text: "继续查找 README",
+    })));
+    const followUpSnapshot = StateSnapshotSchema.parse(store.getRunState({ runId: followUp.runId }));
+    expect(followUpSnapshot.input.context.projectWorkspace).toMatchObject({ rootPath: vaultRoot });
+  });
+
+  it("uses an existing Ora project without asking for channel confirmation", async () => {
+    const vaultRoot = fs.mkdtempSync(path.join(tempDir, "known-deepseek-vault-"));
+    fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "DeepSeek.md"), "# DeepSeek\n");
+
+    const store = createStore();
+    const project = store.createProject({ rootPath: vaultRoot, label: "DeepSeek Vault" });
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "channel-known-project",
+      label: "Known Project",
+      kind: "http_webhook",
+    }));
+
+    const result = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-known-project",
+      externalMessageId: "known-project-1",
+      externalChatId: "chat-known-project",
+      text: "搜索 Obsidian 中 DeepSeek 相关文档",
+    })));
+    expect(result.runId).toBeTruthy();
+    expect(result.outboundMessage?.text).not.toContain("请回复数字确认");
+    const snapshot = StateSnapshotSchema.parse(store.getRunState({ runId: result.runId }));
+    expect(snapshot.input.projectId).toBe(project.projectId);
+    expect(snapshot.input.context.projectWorkspace).toMatchObject({ rootPath: vaultRoot });
+  });
+
+  it("rediscovers project candidates when the user rejects the first list", async () => {
+    const scanRoot = fs.mkdtempSync(path.join(tempDir, "home-rescan-"));
+    const firstVault = path.join(scanRoot, "Obsidian", "First Vault");
+    const secondVault = path.join(scanRoot, "Notes", "Second Vault");
+    fs.mkdirSync(path.join(firstVault, ".obsidian"), { recursive: true });
+    fs.mkdirSync(path.join(secondVault, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(firstVault, "one.md"), "# One\n");
+    fs.writeFileSync(path.join(secondVault, "two.md"), "# Two\n");
+
+    const store = createStore();
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "channel-project-rescan",
+      label: "Project Rescan",
+      kind: "http_webhook",
+      config: { projectDiscoveryRoots: [scanRoot], projectDiscoveryLimit: 1 },
+    }));
+
+    const discovery = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-rescan",
+      externalMessageId: "project-rescan-1",
+      externalChatId: "chat-project-rescan",
+      text: "搜索本地 vault",
+    })));
+    expect(discovery.outboundMessage?.text).toContain("First Vault");
+
+    const rediscovery = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-rescan",
+      externalMessageId: "project-rescan-2",
+      externalChatId: "chat-project-rescan",
+      text: "不对",
+    })));
+    expect(rediscovery.runId).toBeUndefined();
+    expect(rediscovery.outboundMessage?.text).toContain("Second Vault");
+  });
+
+  it("binds a project from /project discovery without starting a model run", async () => {
+    const scanRoot = fs.mkdtempSync(path.join(tempDir, "home-command-project-"));
+    const vaultRoot = path.join(scanRoot, "Command Vault");
+    fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "note.md"), "# Note\n");
+
+    const store = createStore();
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "channel-project-command",
+      label: "Project Command",
+      kind: "http_webhook",
+      config: { projectDiscoveryRoots: [scanRoot] },
+    }));
+
+    const discovery = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-command",
+      externalMessageId: "project-command-1",
+      externalChatId: "chat-project-command",
+      type: "command",
+      text: "/project command",
+    })));
+    expect(discovery.runId).toBeUndefined();
+    expect(discovery.outboundMessage?.text).toContain("Command Vault");
+
+    const selected = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-project-command",
+      externalMessageId: "project-command-2",
+      externalChatId: "chat-project-command",
+      text: "1",
+    })));
+    expect(selected.runId).toBeUndefined();
+    expect(selected.outboundMessage?.text).toContain("项目文件夹切换为");
+    expect(store.listRuns({ sessionId: selected.sessionId })).toHaveLength(0);
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: selected.sessionId }));
+    expect(detail.session.projectId).toBeTruthy();
+  });
+
+  it("binds an existing Ora project from /project without asking for confirmation", async () => {
+    const vaultRoot = fs.mkdtempSync(path.join(tempDir, "known-command-vault-"));
+    fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "note.md"), "# Note\n");
+
+    const store = createStore();
+    const project = store.createProject({ rootPath: vaultRoot, label: "Known Command Vault" });
+    const handler = createRuntimeMethodHandler(store);
+    await handler(request("channels.create", {
+      channelId: "channel-known-project-command",
+      label: "Known Project Command",
+      kind: "http_webhook",
+    }));
+
+    const result = ChannelIngestResultSchema.parse(await handler(request("channels.ingest", {
+      channelId: "channel-known-project-command",
+      externalMessageId: "known-project-command-1",
+      externalChatId: "chat-known-project-command",
+      type: "command",
+      text: "/project known",
+    })));
+    expect(result.runId).toBeUndefined();
+    expect(result.outboundMessage?.text).toContain("项目文件夹切换为");
+    expect(result.outboundMessage?.text).not.toContain("请回复数字确认");
+    const detail = SessionDetailSchema.parse(store.getSession({ sessionId: result.sessionId }));
+    expect(detail.session.projectId).toBe(project.projectId);
+  });
+
   it("serializes concurrent messages for the same external thread", async () => {
     const store = createStore();
     const handler = createRuntimeMethodHandler(store);

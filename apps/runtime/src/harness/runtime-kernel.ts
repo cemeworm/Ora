@@ -90,6 +90,7 @@ import { buildAgentPromptContext, userClarificationContextPrompt } from "./promp
 import {
   attachedLocalFilesSystemPrompt,
   attachedProjectFilesSystemPrompt,
+  channelProjectGuidancePrompt,
   checkpointLabelForStatus,
   userFacingLanguagePrompt,
   workspaceSystemPrompt,
@@ -1188,6 +1189,7 @@ export async function executeRuntimeKernel(
 
   const workspaceContext = [
     workspaceSystemPrompt(input.context?.projectWorkspace),
+    channelProjectGuidancePrompt(input.context, input.context?.projectWorkspace),
     attachedProjectFilesSystemPrompt(input.context?.attachedProjectFiles),
     attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
   ].filter(Boolean).join("\n\n") || undefined;
