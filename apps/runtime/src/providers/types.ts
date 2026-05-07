@@ -37,6 +37,11 @@ export interface ModelRequest {
   reasoningEffort?: Exclude<ModeReasoningEffort, "none">;
   tools?: readonly ModelToolDefinition[];
   toolChoice?: ModelToolChoice;
+  providerCache?: {
+    stablePrefixMessageCount?: number;
+    openaiPreviousResponseId?: string;
+    openaiDeltaMessages?: readonly ModelMessage[];
+  };
   signal?: AbortSignal;
 }
 
@@ -50,6 +55,7 @@ export interface ModelResponse {
   usage?: ModelTokenUsage;
   toolCalls?: ModelToolCall[];
   finishReason?: string;
+  providerResponseId?: string;
 }
 
 export interface ModelStreamChunk {

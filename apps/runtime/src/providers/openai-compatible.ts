@@ -198,16 +198,25 @@ function configuredPayload<T extends Record<string, unknown>>(payload: T, dropPa
 }
 
 function createResponsesPayload(config: ProviderConfig, request: Parameters<ModelProvider>[0]) {
+  const previousResponseId = request.providerCache?.openaiPreviousResponseId?.trim();
+  const deltaMessages = request.providerCache?.openaiDeltaMessages;
+  const canUseContinuation = Boolean(previousResponseId && deltaMessages?.length);
+  const input = canUseContinuation
+    ? buildResponsesInput({ ...request, messages: deltaMessages, system: undefined, providerCache: undefined })
+    : buildResponsesInput(request);
   const body = appendIfDefined(
     {
       model: config.modelId,
-      input: buildResponsesInput(request),
+      input,
       ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
     },
     "max_output_tokens",
     request.maxTokens ?? config.maxTokens
   );
-  const withTools = appendIfDefined(body, "tools", openAiResponsesTools(request.tools));
+  const withPreviousResponse = canUseContinuation
+    ? appendIfDefined(body, "previous_response_id", previousResponseId)
+    : body;
+  const withTools = appendIfDefined(withPreviousResponse, "tools", openAiResponsesTools(request.tools));
   const withChoice = request.tools?.length
     ? appendIfDefined(withTools, "tool_choice", request.toolChoice ?? "auto")
     : withTools;
@@ -342,6 +351,9 @@ export function createOpenAICompatibleProvider(
         : typeof (raw as Record<string, unknown>).status === "string"
           ? (raw as Record<string, unknown>).status as string
           : undefined,
+      providerResponseId: typeof (raw as Record<string, unknown>).id === "string"
+        ? (raw as Record<string, unknown>).id as string
+        : undefined,
     } satisfies ModelResponse;
   };
 
@@ -417,8 +429,26 @@ export function createOpenAICompatibleProvider(
       toolCalls: protocol === "responses"
         ? extractOpenAiResponsesStreamToolCalls(rawEvents, request.tools)
         : extractOpenAiChatStreamToolCalls(rawEvents, request.tools),
+      providerResponseId: protocol === "responses"
+        ? openAiResponsesStreamResponseId(rawEvents)
+        : undefined,
     } satisfies ModelResponse;
   };
 
   return provider;
+}
+
+function openAiResponsesStreamResponseId(rawEvents: readonly unknown[]): string | undefined {
+  for (const event of rawEvents) {
+    if (!event || typeof event !== "object") continue;
+    const record = event as Record<string, unknown>;
+    const response = record.response;
+    if (response && typeof response === "object" && typeof (response as Record<string, unknown>).id === "string") {
+      return (response as Record<string, unknown>).id as string;
+    }
+    if (typeof record.id === "string" && record.id.startsWith("resp_")) {
+      return record.id;
+    }
+  }
+  return undefined;
 }

@@ -45,6 +45,24 @@ export function providerToolName(toolId: string): string {
   return normalized || "tool";
 }
 
+function sortedJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortedJsonValue);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, sortedJsonValue(child)]),
+  );
+}
+
+function sortedTools(tools: readonly ModelToolDefinition[] | undefined): ModelToolDefinition[] {
+  return [...(tools ?? [])].sort((left, right) => left.id.localeCompare(right.id));
+}
+
 export function runtimeToolIdFromProviderName(name: string, tools: readonly ModelToolDefinition[] | undefined): string {
   return tools?.find((tool) => providerToolName(tool.id) === name)?.id ?? name;
 }
@@ -52,7 +70,7 @@ export function runtimeToolIdFromProviderName(name: string, tools: readonly Mode
 export function toolParametersSchema(tool: ModelToolDefinition): Record<string, unknown> {
   const parameters = tool.parameters;
   if (parameters && typeof parameters.type === "string") {
-    return parameters;
+    return sortedJsonValue(parameters) as Record<string, unknown>;
   }
   return {
     type: "object",
@@ -65,7 +83,7 @@ export function openAiChatTools(tools: readonly ModelToolDefinition[] | undefine
   if (!tools?.length) {
     return undefined;
   }
-  return tools.map((tool) => ({
+  return sortedTools(tools).map((tool) => ({
     type: "function",
     function: {
       name: providerToolName(tool.id),
@@ -79,7 +97,7 @@ export function openAiResponsesTools(tools: readonly ModelToolDefinition[] | und
   if (!tools?.length) {
     return undefined;
   }
-  return tools.map((tool) => ({
+  return sortedTools(tools).map((tool) => ({
     type: "function",
     name: providerToolName(tool.id),
     description: tool.description ?? tool.id,
@@ -91,7 +109,7 @@ export function anthropicTools(tools: readonly ModelToolDefinition[] | undefined
   if (!tools?.length) {
     return undefined;
   }
-  return tools.map((tool) => ({
+  return sortedTools(tools).map((tool) => ({
     name: providerToolName(tool.id),
     description: tool.description ?? tool.id,
     input_schema: toolParametersSchema(tool),
@@ -202,12 +220,16 @@ export function extractAnthropicUsage(raw: unknown): ModelTokenUsage | undefined
   const inputTokens = (numericToken(usage.input_tokens) ?? 0)
     + (numericToken(usage.cache_creation_input_tokens) ?? 0)
     + (numericToken(usage.cache_read_input_tokens) ?? 0);
+  const cacheCreationInputTokens = numericToken(usage.cache_creation_input_tokens);
+  const cacheReadInputTokens = numericToken(usage.cache_read_input_tokens);
   const outputTokens = numericToken(usage.output_tokens) ?? 0;
   const totalTokens = numericToken(usage.total_tokens) ?? inputTokens + outputTokens;
 
   return {
     inputTokens,
     outputTokens,
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
     totalTokens,
     source: "provider",
   };

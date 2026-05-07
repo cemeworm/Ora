@@ -151,6 +151,7 @@ export function createAnthropicStyleProvider(
     defaultVersion?: string;
     errorLabel?: string;
     unsupportedOnNotImplemented?: boolean;
+    promptCacheDefaultEnabled?: boolean;
   }
 ): ModelProvider {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -161,27 +162,33 @@ export function createAnthropicStyleProvider(
     const { instructions, dialog } = splitInstructionMessages(messages);
     const system = [request.system?.trim(), instructions].filter(Boolean).join("\n\n");
     const conversation: ModelMessage[] = dialog.length > 0 ? dialog : [{ role: "user", content: request.prompt?.trim() || "" }];
+    const cacheControl = anthropicCacheControl(config, settings);
+    const stablePrefixMessageCount = Math.max(0, request.providerCache?.stablePrefixMessageCount ?? 0);
+    const messageCacheBoundary = cacheControl && stablePrefixMessageCount > 0
+      ? Math.min(stablePrefixMessageCount, conversation.length) - 1
+      : -1;
 
     const body = appendIfDefined(
       {
         model: config.modelId,
         max_tokens: request.maxTokens ?? config.maxTokens ?? 1024,
-        messages: conversation.map((message) => {
+        messages: conversation.map((message, index) => {
+          const markMessageCacheBoundary = index === messageCacheBoundary;
           if (message.role === "tool") {
             return {
               role: "user",
-              content: [{
+              content: withAnthropicCacheControl([{
                 type: "tool_result",
                 tool_use_id: message.toolCallId,
                 content: message.content,
                 is_error: false,
-              }],
+              }], markMessageCacheBoundary ? cacheControl : undefined),
             };
           }
           if (message.role === "assistant" && message.toolCalls?.length) {
             return {
               role: "assistant",
-              content: [
+              content: withAnthropicCacheControl([
                 ...(message.content.trim() ? [{ type: "text", text: message.content }] : []),
                 ...message.toolCalls.map((call) => ({
                   type: "tool_use",
@@ -189,7 +196,13 @@ export function createAnthropicStyleProvider(
                   name: providerToolName(call.toolId),
                   input: call.args ?? {},
                 })),
-              ],
+              ], markMessageCacheBoundary ? cacheControl : undefined),
+            };
+          }
+          if (markMessageCacheBoundary && cacheControl) {
+            return {
+              role: message.role === "developer" ? "assistant" : message.role,
+              content: withAnthropicCacheControl([{ type: "text", text: message.content }], cacheControl),
             };
           }
           return {
@@ -199,9 +212,13 @@ export function createAnthropicStyleProvider(
         }),
       },
       "system",
-      system || undefined
+      anthropicSystemValue(system, cacheControl && messageCacheBoundary < 0 ? cacheControl : undefined)
     );
-    const withTools = appendIfDefined(body, "tools", anthropicTools(request.tools));
+    const rawTools = anthropicTools(request.tools);
+    const tools = cacheControl && !system && messageCacheBoundary < 0
+      ? withAnthropicCacheControl(rawTools, cacheControl)
+      : rawTools;
+    const withTools = appendIfDefined(body, "tools", tools);
     const withChoice = request.tools?.length && request.toolChoice === "none"
       ? appendIfDefined(withTools, "tool_choice", { type: "none" })
       : withTools;
@@ -324,5 +341,45 @@ export function createAnthropicProvider(
   return createAnthropicStyleProvider(config, options, {
     fallbackEnvName: "ANTHROPIC_API_KEY",
     errorLabel: "Anthropic",
+    promptCacheDefaultEnabled: true,
   });
+}
+
+type AnthropicCacheControl = { type: "ephemeral"; ttl?: "5m" | "1h" };
+
+function anthropicCacheControl(
+  config: ProviderConfig,
+  settings: { promptCacheDefaultEnabled?: boolean },
+): AnthropicCacheControl | undefined {
+  const enabled = config.promptCache?.enabled ?? settings.promptCacheDefaultEnabled ?? false;
+  if (!enabled) {
+    return undefined;
+  }
+  return { type: "ephemeral", ttl: config.promptCache?.ttl ?? "5m" };
+}
+
+function anthropicSystemValue(system: string, cacheControl: AnthropicCacheControl | undefined) {
+  if (!system) {
+    return undefined;
+  }
+  if (!cacheControl) {
+    return system;
+  }
+  return [{
+    type: "text",
+    text: system,
+    cache_control: cacheControl,
+  }];
+}
+
+function withAnthropicCacheControl<T extends Record<string, unknown>>(
+  blocks: readonly T[] | undefined,
+  cacheControl: AnthropicCacheControl | undefined,
+): T[] | undefined {
+  if (!blocks?.length || !cacheControl) {
+    return blocks ? [...blocks] : undefined;
+  }
+  return blocks.map((block, index) => index === blocks.length - 1
+    ? { ...block, cache_control: cacheControl }
+    : { ...block });
 }

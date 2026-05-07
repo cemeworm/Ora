@@ -5,6 +5,12 @@ type SseMessage = {
   data: string;
 };
 
+export interface ReadSseMessagesOptions {
+  idleTimeoutMs?: number;
+}
+
+const DEFAULT_SSE_IDLE_TIMEOUT_MS = 120_000;
+
 export async function emitTextDelta(
   callbacks: ModelStreamCallbacks | undefined,
   chunk: ModelStreamChunk
@@ -14,7 +20,8 @@ export async function emitTextDelta(
 
 export async function readSseMessages(
   response: Response,
-  onMessage: (message: SseMessage) => Promise<void> | void
+  onMessage: (message: SseMessage) => Promise<void> | void,
+  options: ReadSseMessagesOptions = {},
 ): Promise<unknown[]> {
   if (!response.body) {
     throw new Error("Streaming response did not include a readable body.");
@@ -23,18 +30,23 @@ export async function readSseMessages(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const rawEvents: unknown[] = [];
+  const idleTimeoutMs = positiveTimeout(options.idleTimeoutMs, DEFAULT_SSE_IDLE_TIMEOUT_MS);
   let buffer = "";
 
   while (true) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readWithIdleTimeout(reader, idleTimeoutMs);
     buffer += decoder.decode(value, { stream: !done });
     const frames = buffer.split(/\r?\n\r?\n/);
     buffer = frames.pop() ?? "";
 
     for (const frame of frames) {
       const message = parseSseFrame(frame);
-      if (!message || message.data === "[DONE]") {
+      if (!message) {
         continue;
+      }
+      if (message.data === "[DONE]") {
+        await reader.cancel().catch(() => undefined);
+        return rawEvents;
       }
       rawEvents.push(parseJsonOrText(message.data));
       await onMessage(message);
@@ -46,12 +58,41 @@ export async function readSseMessages(
   }
 
   const tail = parseSseFrame(buffer);
-  if (tail && tail.data !== "[DONE]") {
+  if (tail && tail.data === "[DONE]") {
+    return rawEvents;
+  }
+  if (tail) {
     rawEvents.push(parseJsonOrText(tail.data));
     await onMessage(tail);
   }
 
   return rawEvents;
+}
+
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) => {
+        timeout = setTimeout(() => {
+          void reader.cancel().catch(() => undefined);
+          reject(new Error(`Streaming response timed out after ${idleTimeoutMs}ms without data.`));
+        }, idleTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function positiveTimeout(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 export function openAiResponsesDelta(data: unknown): string {
