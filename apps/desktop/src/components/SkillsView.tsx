@@ -1,6 +1,6 @@
 import { Eye, FileCode2, FileText, Pencil, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useWorkbench } from "../lib/state";
+import { useWorkbenchDispatch } from "../lib/state";
 import type { OraSkillDetail, OraSkillPackageFileContent, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
 import { PageHeader } from "./PageHeader";
@@ -88,7 +88,7 @@ function formatFrontmatterValue(value: string): string {
 }
 
 export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) {
-  const { dispatch } = useWorkbench();
+  const dispatch = useWorkbenchDispatch();
   const [registry, setRegistry] = useState<OraSkillRegistry>({ skills: [] });
   const [selectedSkill, setSelectedSkill] = useState<OraSkillDetail | undefined>();
   const [mode, setMode] = useState<SkillMode>("gallery");

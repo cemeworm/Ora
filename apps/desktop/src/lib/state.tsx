@@ -344,7 +344,7 @@ function selectedSnapshotFromDetail(
   return mergeStateSnapshot(undefined, detail.latestSnapshot);
 }
 
-function emptySessionDetail(session: OraSessionSummary): OraSessionDetail {
+export function emptySessionDetail(session: OraSessionSummary): OraSessionDetail {
   return {
     session,
     turns: [],
@@ -353,14 +353,23 @@ function emptySessionDetail(session: OraSessionSummary): OraSessionDetail {
   };
 }
 
+const MAX_CACHED_SESSION_DETAILS = 12;
+
 function cacheSessionDetail(
   cache: Record<string, OraSessionDetail>,
   detail: OraSessionDetail,
 ): Record<string, OraSessionDetail> {
-  return {
+  const next = {
     ...cache,
     [detail.session.sessionId]: detail,
   };
+  const keys = Object.keys(next);
+  if (keys.length <= MAX_CACHED_SESSION_DETAILS) return next;
+  const evicted = keys.slice(0, keys.length - MAX_CACHED_SESSION_DETAILS);
+  for (const key of evicted) {
+    delete next[key];
+  }
+  return next;
 }
 
 function sessionPromptText(
@@ -2357,27 +2366,42 @@ export function workbenchReducer(
   }
 }
 
-interface WorkbenchContextValue {
-  state: WorkbenchState;
-  dispatch: Dispatch<WorkbenchAction>;
-}
-
-const WorkbenchContext = createContext<WorkbenchContextValue | null>(null);
+const WorkbenchStateContext = createContext<WorkbenchState | null>(null);
+const WorkbenchDispatchContext = createContext<Dispatch<WorkbenchAction> | null>(null);
 
 export function WorkbenchProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(workbenchReducer, initialWorkbenchState);
-  const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
+
   return (
-    <WorkbenchContext.Provider value={value}>
-      {children}
-    </WorkbenchContext.Provider>
+    <WorkbenchStateContext.Provider value={state}>
+      <WorkbenchDispatchContext.Provider value={dispatch}>
+        {children}
+      </WorkbenchDispatchContext.Provider>
+    </WorkbenchStateContext.Provider>
   );
 }
 
 export function useWorkbench() {
-  const context = useContext(WorkbenchContext);
-  if (!context) {
+  const state = useContext(WorkbenchStateContext);
+  const dispatch = useContext(WorkbenchDispatchContext);
+  if (!state || !dispatch) {
     throw new Error("useWorkbench must be used within a WorkbenchProvider");
   }
-  return context;
+  return { state, dispatch };
+}
+
+export function useWorkbenchState() {
+  const state = useContext(WorkbenchStateContext);
+  if (!state) {
+    throw new Error("useWorkbenchState must be used within a WorkbenchProvider");
+  }
+  return state;
+}
+
+export function useWorkbenchDispatch() {
+  const dispatch = useContext(WorkbenchDispatchContext);
+  if (!dispatch) {
+    throw new Error("useWorkbenchDispatch must be used within a WorkbenchProvider");
+  }
+  return dispatch;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   Bot,
@@ -15,7 +15,7 @@ import {
   Settings,
   Sparkles,
 } from "lucide-react";
-import { useWorkbench } from "../lib/state";
+import { useWorkbenchDispatch } from "../lib/state";
 import {
   getSharedRuntimeClient,
   type OraRunAttention,
@@ -199,7 +199,7 @@ function SessionLeadingIndicator({ status }: { status: RunStatus }) {
   return null;
 }
 
-function SessionRow({
+const SessionRow = memo(function SessionRow({
   title,
   status,
   selected,
@@ -284,7 +284,7 @@ function SessionRow({
       )}
     </div>
   );
-}
+});
 
 function SessionSearchDialog({
   open,
@@ -378,8 +378,18 @@ function SessionSearchDialog({
   );
 }
 
-export function Sidebar() {
-  const { state, dispatch } = useWorkbench();
+export interface SidebarState {
+  projects: import("../lib/state").WorkbenchState["projects"];
+  sessions: import("../lib/state").WorkbenchState["sessions"];
+  expandedProjectIds: import("../lib/state").WorkbenchState["expandedProjectIds"];
+  activeView: import("../lib/state").WorkbenchState["activeView"];
+  selectedSessionId: import("../lib/state").WorkbenchState["selectedSessionId"];
+  language: import("../lib/state").WorkbenchState["language"];
+  settingsOpen: import("../lib/state").WorkbenchState["settingsOpen"];
+}
+
+export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: SidebarState }) {
+  const dispatch = useWorkbenchDispatch();
   const { actions } = useRunActions();
   const { open } = useSidebar();
   const [expandedSessionLists, setExpandedSessionLists] = useState<Record<string, boolean>>({});
@@ -387,10 +397,10 @@ export function Sidebar() {
   const [confirmArchiveSessionId, setConfirmArchiveSessionId] = useState<string | undefined>();
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
-  const projects = useMemo(() => state.projects.map((project) => ({
+  const projects = useMemo(() => sidebarState.projects.map((project) => ({
     ...project,
-    expanded: state.expandedProjectIds[project.projectId] ?? true,
-    sessions: state.sessions
+    expanded: sidebarState.expandedProjectIds[project.projectId] ?? true,
+    sessions: sidebarState.sessions
       .filter((session) => session.projectId === project.projectId)
       .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
       .map((session) => ({
@@ -398,21 +408,21 @@ export function Sidebar() {
         title: session.title,
         status: statusFromSession(session.status, session.attention),
       })),
-  })), [state.expandedProjectIds, state.projects, state.sessions]);
+  })), [sidebarState.expandedProjectIds, sidebarState.projects, sidebarState.sessions]);
   const sessionSearchResults = useMemo(
-    () => buildSessionSearchResults(state.sessions, state.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
-    [sessionSearchQuery, state.projects, state.sessions],
+    () => buildSessionSearchResults(sidebarState.sessions, sidebarState.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
+    [sessionSearchQuery, sidebarState.projects, sidebarState.sessions],
   );
-  const recentChats = useMemo(() => state.sessions
+  const recentChats = useMemo(() => sidebarState.sessions
     .filter((session) => !session.projectId)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
     .map((session) => ({
       id: session.sessionId,
       title: session.title,
       status: statusFromSession(session.status, session.attention),
-    })), [state.sessions]);
+    })), [sidebarState.sessions]);
   const showSectionDivider = projects.length > 0;
-  const chatSessionSelected = state.activeView === "chat";
+  const chatSessionSelected = sidebarState.activeView === "chat";
   const visiblePrefetchSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const project of projects) {
@@ -462,7 +472,7 @@ export function Sidebar() {
       label: "Agents",
       title: "Agents",
       icon: <Bot size={16} />,
-      active: state.activeView === "agents",
+      active: sidebarState.activeView === "agents",
       onClick: () => dispatch({ type: "SET_VIEW", view: "agents" }),
       gapClass: "mt-2",
     },
@@ -471,7 +481,7 @@ export function Sidebar() {
       label: "Modes",
       title: "Modes",
       icon: <GitBranchPlus size={16} />,
-      active: state.activeView === "modes",
+      active: sidebarState.activeView === "modes",
       onClick: () => dispatch({ type: "SET_VIEW", view: "modes" }),
       gapClass: "mt-1",
     },
@@ -480,7 +490,7 @@ export function Sidebar() {
       label: "Skills",
       title: "Skills",
       icon: <Sparkles size={16} />,
-      active: state.activeView === "skills",
+      active: sidebarState.activeView === "skills",
       onClick: () => dispatch({ type: "SET_VIEW", view: "skills" }),
       gapClass: "mt-1",
     },
@@ -489,7 +499,7 @@ export function Sidebar() {
       label: "Evaluation",
       title: "Evaluation",
       icon: <ChartNoAxesColumn size={16} />,
-      active: state.activeView === "evaluation",
+      active: sidebarState.activeView === "evaluation",
       onClick: () => dispatch({ type: "SET_VIEW", view: "evaluation" }),
       gapClass: "mt-1",
     },
@@ -498,12 +508,12 @@ export function Sidebar() {
       label: "定时任务",
       title: "定时任务",
       icon: <Clock size={16} />,
-      active: state.activeView === "automations",
+      active: sidebarState.activeView === "automations",
       onClick: () => dispatch({ type: "SET_VIEW", view: "automations" }),
       gapClass: "mt-1",
     },
   ];
-  const navigationToggleLabel = state.language === "zh"
+  const navigationToggleLabel = sidebarState.language === "zh"
     ? navigationExpanded ? "折叠" : "展开"
     : navigationExpanded ? "Less" : "More";
   const collapsedNavigationMask = "linear-gradient(to bottom, #000 0%, #000 58%, rgba(0,0,0,0.72) 72%, rgba(0,0,0,0.28) 88%, transparent 100%)";
@@ -577,10 +587,10 @@ export function Sidebar() {
                     item.gapClass,
                     !open && "justify-center px-0",
                   )}
-                  title={translateCopy(state.language, item.title)}
+                  title={translateCopy(sidebarState.language, item.title)}
                 >
                   <SidebarIconSlot>{item.icon}</SidebarIconSlot>
-                  {open && <span>{translateCopy(state.language, item.label)}</span>}
+                  {open && <span>{translateCopy(sidebarState.language, item.label)}</span>}
                 </button>
               ))}
             </div>
@@ -592,7 +602,7 @@ export function Sidebar() {
               "mt-1 flex h-7 w-full items-center justify-center gap-1 rounded-md text-[12px] font-medium text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-95",
               !open && "px-0",
             )}
-            title={state.language === "zh" ? navigationToggleLabel : navigationExpanded ? "Collapse navigation" : "Expand navigation"}
+            title={sidebarState.language === "zh" ? navigationToggleLabel : navigationExpanded ? "Collapse navigation" : "Expand navigation"}
             aria-expanded={navigationExpanded}
           >
             <ChevronDown
@@ -661,7 +671,7 @@ export function Sidebar() {
                             ) : (
                               <div className="flex flex-col gap-0">
                                 {visibleSessions.map((session) => {
-                                  const selected = chatSessionSelected && session.id === state.selectedSessionId;
+                                  const selected = chatSessionSelected && session.id === sidebarState.selectedSessionId;
                                   return (
                                     <SessionRow
                                       key={session.id}
@@ -740,7 +750,7 @@ export function Sidebar() {
                     <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
                   ) : (
                     recentChats.map((session) => {
-                      const selected = chatSessionSelected && session.id === state.selectedSessionId;
+                      const selected = chatSessionSelected && session.id === sidebarState.selectedSessionId;
                       return (
                         <SessionRow
                           key={session.id}
@@ -774,7 +784,7 @@ export function Sidebar() {
             className={cn(
               "flex h-9 items-center gap-2 rounded-md px-2 text-sm text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               !open && "justify-center px-0",
-              state.settingsOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
+              sidebarState.settingsOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
             )}
             title="Settings"
           >
@@ -796,4 +806,4 @@ export function Sidebar() {
       />
     </aside>
   );
-}
+});

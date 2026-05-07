@@ -97,6 +97,94 @@ export function buildWorkbenchViewModel(
   selectedPattern: CoordinationPattern,
   selectedModeId: string,
 ): WorkbenchViewModel {
+  const stable = buildStableViewModel(
+    patterns,
+    modes,
+    sessions,
+    sessionDetail,
+    selectedPattern,
+    selectedModeId,
+  );
+  const dynamic = buildDynamicViewModel(
+    patterns,
+    modes,
+    sessionDetail,
+    activeSnapshot,
+    selectedPattern,
+    selectedModeId,
+  );
+  return { ...stable, ...dynamic };
+}
+
+export function buildStableViewModel(
+  patterns: OraPatternDefinition[],
+  modes: OraModeSpec[],
+  sessions: OraSessionSummary[],
+  sessionDetail: OraSessionDetail,
+  selectedPattern: CoordinationPattern,
+  selectedModeId: string,
+) {
+  const selectedMode =
+    modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
+  const activeDefinition = selectedMode
+    ? modeSpecToPatternDefinition(selectedMode)
+    : findPattern(patterns, selectedPattern);
+  const effectivePattern = activeDefinition.id;
+  const detailSnapshot =
+    sessionDetail.latestSnapshot ??
+    createEmptySessionPreview(
+      activeDefinition,
+      sessionDetail.session,
+      selectedMode,
+    );
+  const selectedPatternSnapshot =
+    detailSnapshot.pattern === effectivePattern &&
+    detailSnapshot.modeId === selectedMode?.id
+      ? detailSnapshot
+      : createPreviewFromPattern(
+          detailSnapshot,
+          activeDefinition,
+          selectedMode,
+        );
+
+  const patternCards = patterns.map(adaptPatternCard);
+  const modeCards = modes.map(adaptModeCard);
+  const activePattern =
+    patternCards.find((pattern) => pattern.id === effectivePattern) ??
+    patternCards[0];
+  const activeMode = selectedMode ? adaptModeCard(selectedMode) : modeCards[0];
+
+  return {
+    patternCards,
+    modeCards,
+    activePattern,
+    activeMode,
+    sessions: sessions.map((session) =>
+      adaptSession(
+        session,
+        effectivePattern,
+        detailSnapshot.sessionId === session.sessionId
+          ? detailSnapshot
+          : undefined,
+      ),
+    ),
+    turns: sessionDetail.turns.map(adaptTurn),
+    topologyNodes: adaptTopologyNodes(
+      selectedPatternSnapshot.topology.nodes,
+      effectivePattern,
+    ),
+    topologyEdges: adaptTopologyEdges(selectedPatternSnapshot.topology.edges),
+  };
+}
+
+export function buildDynamicViewModel(
+  patterns: OraPatternDefinition[],
+  modes: OraModeSpec[],
+  sessionDetail: OraSessionDetail,
+  activeSnapshot: OraStateSnapshot | undefined,
+  selectedPattern: CoordinationPattern,
+  selectedModeId: string,
+) {
   const selectedMode =
     modes.find((mode) => mode.id === selectedModeId) ?? modes[0];
   const activeDefinition = selectedMode
@@ -121,32 +209,8 @@ export function buildWorkbenchViewModel(
           selectedMode,
         );
 
-  const patternCards = patterns.map(adaptPatternCard);
-  const modeCards = modes.map(adaptModeCard);
-  const activePattern =
-    patternCards.find((pattern) => pattern.id === effectivePattern) ??
-    patternCards[0];
-  const activeMode = selectedMode ? adaptModeCard(selectedMode) : modeCards[0];
-
   const snapshotEvents = detailSnapshot.events;
   return {
-    patternCards,
-    modeCards,
-    sessions: sessions.map((session) =>
-      adaptSession(
-        session,
-        effectivePattern,
-        detailSnapshot.sessionId === session.sessionId
-          ? detailSnapshot
-          : undefined,
-      ),
-    ),
-    turns: sessionDetail.turns.map(adaptTurn),
-    topologyNodes: adaptTopologyNodes(
-      selectedPatternSnapshot.topology.nodes,
-      effectivePattern,
-    ),
-    topologyEdges: adaptTopologyEdges(selectedPatternSnapshot.topology.edges),
     streamLines: adaptStreamLines(snapshotEvents),
     agents: selectedPatternSnapshot.profiles.map(adaptAgentProfile),
     memoryRecords: adaptMemoryRecords(
@@ -164,8 +228,6 @@ export function buildWorkbenchViewModel(
       Object.defineProperty(this, "beats", { value, enumerable: true });
       return value;
     },
-    activePattern,
-    activeMode,
     activeSnapshot: detailSnapshot,
   };
 }
@@ -1314,7 +1376,7 @@ export function isSessionProcessing(
   );
 }
 
-function assistantTextFromSnapshot(
+export function assistantTextFromSnapshot(
   snapshot: OraStateSnapshot,
 ): string | undefined {
   if (snapshot.status === "cancelled") {
@@ -1711,15 +1773,20 @@ function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): bool
   );
 }
 
+const turnAttachmentCache = new WeakMap<OraStateSnapshot, AssistantTurnAttachment>();
+
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
 ): AssistantTurnAttachment {
+  const cached = turnAttachmentCache.get(snapshot);
+  if (cached) return cached;
+
   const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
   const processSteps = deriveProcessSteps(snapshot, timelineProjection);
   const proposedPlan = proposedPlanFromSnapshot(snapshot);
   const status = adaptSnapshotRunStatus(snapshot);
   const timelineItems = deriveTimelineItems(snapshot, processSteps, timelineProjection);
-  return {
+  const result: AssistantTurnAttachment = {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
     status,
@@ -1743,6 +1810,8 @@ function buildAssistantTurnAttachment(
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
     activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, proposedPlan, timelineItems),
   };
+  turnAttachmentCache.set(snapshot, result);
+  return result;
 }
 
 function activeLoadingTargetFromSnapshot(

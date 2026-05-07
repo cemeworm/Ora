@@ -4,8 +4,8 @@ import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
-import { useWorkbench, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
-import { buildWorkbenchViewModel } from "./viewModel";
+import { useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
+import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
@@ -235,18 +235,46 @@ export function useRunActions() {
   const sessionRequestRef = useRef(0);
   const sessionPrefetchesRef = useRef(new Set<string>());
 
-  const viewModel = useMemo(() => {
+  // Stable viewModel parts — cached by session identity to skip recomputation during streaming
+  const stableViewModelRef = useRef<ReturnType<typeof buildStableViewModel>>();
+  const lastStableSessionIdRef = useRef<string>();
+
+  const activeSessionId = state.activeSessionDetail?.session.sessionId;
+  if (state.patterns.length > 0 && state.activeSessionDetail) {
+    if (lastStableSessionIdRef.current !== activeSessionId || !stableViewModelRef.current) {
+      lastStableSessionIdRef.current = activeSessionId;
+      stableViewModelRef.current = buildStableViewModel(
+        state.patterns,
+        state.modes,
+        state.sessions,
+        state.activeSessionDetail,
+        state.selectedPattern,
+        state.selectedModeId,
+      );
+    }
+  } else {
+    stableViewModelRef.current = undefined;
+    lastStableSessionIdRef.current = undefined;
+  }
+  const stableViewModel = stableViewModelRef.current;
+
+  // Dynamic viewModel parts — updates each frame during streaming
+  const dynamicViewModel = useMemo(() => {
     if (state.patterns.length === 0 || !state.activeSessionDetail) return undefined;
-    return buildWorkbenchViewModel(
+    return buildDynamicViewModel(
       state.patterns,
       state.modes,
-      state.sessions,
       state.activeSessionDetail,
       state.activeSnapshot,
       state.selectedPattern,
       state.selectedModeId,
     );
-  }, [state.patterns, state.modes, state.sessions, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern, state.selectedModeId]);
+  }, [state.patterns, state.modes, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern, state.selectedModeId]);
+
+  const viewModel = useMemo(() => {
+    if (!stableViewModel || !dynamicViewModel) return undefined;
+    return { ...stableViewModel, ...dynamicViewModel };
+  }, [stableViewModel, dynamicViewModel]);
 
   const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
   const selectedMode = state.modes.find((mode) => mode.id === state.selectedModeId);
@@ -376,8 +404,18 @@ export function useRunActions() {
     try {
       dispatch({ type: "SELECT_PROJECT", projectId: undefined });
       const created = await runtimeClient.createSession();
-      await hydrateSession(created.sessionId, undefined, "Created a new empty chat session.", {
-        shouldApply: () => sessionRequestRef.current === requestId,
+      if (sessionRequestRef.current !== requestId) return;
+      const detail = emptySessionDetail(created);
+      const sessions = [
+        detail.session,
+        ...state.sessions.filter((s) => s.sessionId !== created.sessionId),
+      ];
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects: state.projects,
+        sessions,
+        detail,
+        feedback: "Created a new empty chat session.",
       });
       cleanupPreviousSessionIfDisposable(previousSessionId, created.sessionId);
     } catch (error) {
@@ -393,9 +431,24 @@ export function useRunActions() {
     dispatch({ type: "SET_LOADING", loading: true });
     try {
       const created = await runtimeClient.createSession({ projectId });
+      if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SELECT_PROJECT", projectId });
-      await hydrateSession(created.sessionId, undefined, "Created a new project session.", {
-        shouldApply: () => sessionRequestRef.current === requestId,
+      const detail = emptySessionDetail(created);
+      const sessions = [
+        detail.session,
+        ...state.sessions.filter((s) => s.sessionId !== created.sessionId),
+      ];
+      const projects = state.projects.map((p) =>
+        p.projectId === projectId
+          ? { ...p, sessionCount: p.sessionCount + 1 }
+          : p,
+      );
+      dispatch({
+        type: "HYDRATE_SESSION",
+        projects,
+        sessions,
+        detail,
+        feedback: "Created a new project session.",
       });
       cleanupPreviousSessionIfDisposable(previousSessionId, created.sessionId);
     } catch (error) {

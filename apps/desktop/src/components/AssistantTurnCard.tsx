@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Check,
@@ -59,7 +59,7 @@ interface AssistantTurnCardProps {
   }) => Promise<void>;
 }
 
-export function AssistantTurnCard({
+export const AssistantTurnCard = memo(function AssistantTurnCard({
   content,
   turn,
   isPlaceholder = false,
@@ -290,7 +290,7 @@ export function AssistantTurnCard({
       </Dialog>
     </Message>
   );
-}
+});
 
 function shouldSuppressClarificationBody(
   content: string,
