@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
 import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
 import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop session view model", () => {
+  it("keeps runtime timeline facts in shared projection and desktop timeline item formatting local", () => {
+    const viewModelSource = fs.readFileSync(new URL("./viewModel.ts", import.meta.url), "utf8");
+    const sharedTimelineSource = fs.readFileSync(
+      new URL("../../../../packages/shared/src/runtime-timeline.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(viewModelSource).toContain("deriveRuntimeTimelineProjection(snapshot)");
+    expect(viewModelSource).toContain("function deriveTimelineItems(");
+    expect(viewModelSource).toContain("function processStepLabel(");
+    expect(viewModelSource).toContain("function processStepDetail(");
+    expect(sharedTimelineSource).toContain(".filter((event) => event.runId === snapshot.runId)");
+    expect(sharedTimelineSource).toContain(".sort((left, right) => left.createdAt - right.createdAt || left.seq - right.seq)");
+    expect(sharedTimelineSource).toContain("agentLabels");
+    expect(sharedTimelineSource).not.toContain("assistant_text");
+    expect(sharedTimelineSource).not.toContain("status_group");
+    expect(sharedTimelineSource).not.toContain("plan_update");
+    expect(sharedTimelineSource).not.toContain("final_text");
+  });
+
   it("uses an empty assistant placeholder for newly pending runs", () => {
     const messages = adaptPendingRunMessages({
       sessionId: "session-pending",

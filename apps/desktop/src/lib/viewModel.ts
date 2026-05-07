@@ -1,4 +1,10 @@
-import { modeSpecToPatternDefinition, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL } from "@cemeworm/shared";
+import {
+  deriveRuntimeTimelineProjection,
+  modeSpecToPatternDefinition,
+  ORA_ROOT_AGENT_ID,
+  ORA_ROOT_AGENT_LABEL,
+  runtimeStatusForRunAttention,
+} from "@cemeworm/shared";
 import type {
   ActionRecord,
   AgentProfile,
@@ -372,25 +378,7 @@ function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
 }
 
 function adaptAttentionStatus(attention: OraRunAttention | undefined): RunStatus | undefined {
-  if (!attention) return undefined;
-  switch (attention.kind) {
-    case "needs_clarification":
-      return "clarification_required";
-    case "needs_approval":
-      return "approval_required";
-    case "needs_plan_decision":
-      return "decision_needed";
-    case "running":
-      return "running";
-    case "paused":
-      return "paused";
-    case "cancelled":
-      return "cancelled";
-    case "failed":
-      return "failed";
-    case "idle":
-      return "done";
-  }
+  return runtimeStatusForRunAttention(attention) as RunStatus | undefined;
 }
 
 function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
@@ -2039,9 +2027,8 @@ function visibleProcessEvents(snapshot: OraStateSnapshot): {
   events: OraEventEnvelope[];
   visibleEvents: OraEventEnvelope[];
 } {
-  const events = snapshot.events.filter(
-    (event) => event.runId === snapshot.runId && shouldShowProcessEvent(event),
-  );
+  const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
+  const events = timelineProjection.events.filter(shouldShowProcessEvent);
   const hasWorkEvent = events.some(isWorkProcessEvent);
   return {
     events,
@@ -2074,17 +2061,15 @@ function deriveTimelineItems(
   snapshot: OraStateSnapshot,
   processSteps: TurnProcessStep[],
 ): TurnTimelineItem[] {
+  const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
   const { events, visibleEvents } = visibleProcessEvents(snapshot);
-  const baseTime = events[0]?.createdAt ?? snapshot.events[0]?.createdAt ?? snapshot.updatedAt;
+  const baseTime = timelineProjection.baseTime;
   const finalText = outputTextFromSnapshot(snapshot);
   const hasVisibleProcessSeparators = visibleEvents.some((event) => isWorkProcessEvent(event));
   const proposedPlan = proposedPlanFromSnapshot(snapshot);
   const hasStartedProposedPlan = Boolean(proposedPlan);
   const hasCompleteFinalProposedPlan = proposedPlan?.hasCompletePlan === true;
-  const agentLabels = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
-  if (!agentLabels.has(ORA_ROOT_AGENT_ID)) {
-    agentLabels.set(ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL);
-  }
+  const agentLabels = timelineProjection.agentLabels;
   const processStepByEventId = new Map(processSteps.map((step) => [step.id, step]));
   const items: Array<{ rawTime: number; eventSeq: number; item: TurnTimelineItem }> = [];
   let pendingSteps: TurnProcessStep[] = [];
@@ -2147,7 +2132,7 @@ function deriveTimelineItems(
     pendingSteps = [];
   }
 
-  for (const event of snapshot.events.filter((event) => event.runId === snapshot.runId)) {
+  for (const event of timelineProjection.events) {
     if (isPublicAssistantDelta(snapshot, event)) {
       const text = assistantDeltaText(event);
       const shouldCollectText = shouldCollectAssistantDeltaForTimeline(event, finalText, hasVisibleProcessSeparators);
