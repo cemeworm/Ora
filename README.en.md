@@ -8,15 +8,17 @@ The project is still early. It is built for people who want to organize local AI
 
 ## What Ora Is For
 
-Most AI tools push every task into the same chat box. Ora treats work as something you can route. A task can run through a single agent, a generator-verifier loop, an orchestrator with subagents, an agent team, or a custom topology you draw yourself.
+Most AI tools give you one chat entry point. Simple Q&A, code generation, multi-step research, team collaboration. All handled the same way. But real work isn't like that. Different tasks need different levels of coordination and different decision paths.
 
-For users, Ora cuts down the switching between chat apps, coding tools, model dashboards, and project context. For developers, it gives multi-agent workflows a runtime you can inspect, tune, replay, and evaluate.
+Ora turns this into a workbench: choose how to run first, then hand it to the right agents. A single task can go through a solo agent, a generator-verifier loop, an orchestrator with subagents, or an agent team, each mode paired with its own agents, skills, and permissions. Simple things stay fast. Complex things don't get crammed into a chat box.
+
+For users, Ora cuts down the switching between chat apps, coding tools, and model dashboards. For developers, it turns multi-agent workflows from prompt engineering into an observable, tunable, replayable runtime.
 
 ## Core Capabilities
 
 - Composable workflows: choose a coordination mode, then pair it with agents and skills.
 - Visual orchestration: use generator-verifier, orchestrator-subagent, agent-team presets, or design your own nodes and edges.
-- Model provider support: OpenAI, Anthropic, OpenRouter, OpenAI-compatible APIs, and Anthropic-compatible APIs.
+- Model providers: OpenAI, Anthropic, OpenRouter, and OpenAI-compatible and Anthropic-compatible services.
 - Run history: state, events, checkpoints, and trails make each run easier to inspect.
 - Permissions and approvals: tool calls are grouped by risk, with default, read-only, and full-trust policies.
 - Self-iteration: Ora analyzes runs and project signals, then proposes reviewable improvements.
@@ -125,7 +127,7 @@ Build artifacts are written under `apps/desktop/src-tauri/target/release/bundle`
 
 ## Project Status
 
-Ora is best treated as a local development and internal testing project for now. The capabilities listed here come from the current repository, and some integrations still require API keys, external services, or more product work before they feel ready for general use.
+Ora is best treated as a local development and internal testing project for now. Channel adapters, search, Langfuse tracing, and similar features need separate API keys or external services before they work.
 
 ## License
 

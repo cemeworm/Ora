@@ -2,25 +2,27 @@
 
 简体中文 | [English](README.en.md)
 
-Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型服务提供方放在同一个工作界面里，让你先选合适的跑法，再把任务交给合适的智能体完成。
+Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型提供商放在同一个界面里，让你先选怎么跑，再交给对应的智能体。
 
-当前项目仍在早期开发阶段，主要面向想在本地组织 AI 工作流、调试多智能体协作、接入不同模型服务和消息渠道的用户与开发者。
+当前项目仍在早期开发阶段，面向想在本地组织 AI 工作流、调试多智能体协作，或接入不同模型服务和消息渠道的用户与开发者。
 
 ## Ora 解决什么问题
 
-很多 AI 工具把所有任务都塞进同一个聊天框。Ora 的思路更接近一个工作台：同一个任务可以用单智能体、生成-验证、编排调度、团队协作等不同模式来跑；每个模式可以搭配不同的智能体、技能和权限策略。
+大多数 AI 工具只有一个聊天入口，简单问答、代码生成、多步骤研究、团队协作全用同一种方式处理。但实际工作中，不同任务需要不同的协作深度和决策路径。
 
-对普通用户来说，Ora 希望减少在聊天工具、代码工具、模型控制台和项目上下文之间来回切换的成本。对开发者来说，Ora 提供一个可以观察、调整和复盘的运行时，让多智能体工作流不只停留在 prompt 里。
+Ora 把它做成一个工作台：先选怎么跑，再交给对应的智能体。同一个任务可以用单智能体快速处理、生成-验证、编排调度或团队协作，每种模式搭配不同的智能体、技能和权限。简单的事不用绕远路，复杂的事不会塞进一个对话框。
+
+对普通用户，Ora 减少了在聊天工具、代码编辑器、模型控制台之间来回切窗口的麻烦。对开发者，它把多智能体工作流从 prompt 工程变成一个可观测、可调优、可回放的运行时。
 
 ## 核心能力
 
 - 组合式工作流：按任务选择协调模式，再搭配智能体和技能。
 - 可视化编排：支持生成-验证、编排调度、团队协作等拓扑，也可以自己设计节点和连线。
-- 多模型提供方：内置 OpenAI、Anthropic、OpenRouter，以及 OpenAI-compatible 和 Anthropic-compatible 服务配置。
+- 多模型提供方：内置 OpenAI、Anthropic、OpenRouter，也支持 OpenAI-compatible 和 Anthropic-compatible 服务。
 - 运行记录与复盘：保留 run state、events、checkpoints、trails，方便查看任务如何推进。
 - 权限与审批：把工具调用按风险分层，支持默认策略、只读策略和完全信任策略。
 - 自我迭代：分析运行记录和项目线索，提出可审阅的改进建议。
-- 多渠道入口：运行时已经包含 HTTP webhook、Slack、飞书、微信、企业微信、Telegram、Discord、钉钉等 channel adapter。
+- 多渠道入口：运行时包含 HTTP webhook、Slack、飞书、微信、企业微信、Telegram、Discord、钉钉等 channel adapter。
 - 本地优先的桌面体验：Tauri 桌面壳负责应用窗口和 sidecar，React 前端负责工作台界面，TypeScript runtime 负责执行。
 
 ## 技术结构
@@ -40,7 +42,7 @@ Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型
 
 ## Runtime loop 结构
 
-Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：Task Flow 是当前 run 基础设施上的 orchestration 入口，`LocalRunStore` 保持兼容 facade，run/resume/streaming/gate/ledger/projection 服务负责生命周期和持久投影；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清、恢复和 finalization。更完整的说明见 [Ora runtime loop 结构图](docs/ora-runtime-loop.md)。
+Ora 的 runtime loop 由三层嵌套组成。外层负责 run 生命周期和持久投影，`LocalRunStore` 保持兼容 facade；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清和恢复。
 
 ### 外层 run lifecycle
 
@@ -213,7 +215,7 @@ pnpm --filter @ora/runtime smoke
 
 ## 配置模型
 
-第一次打开 Ora 时，onboarding 会引导你选择模型服务提供方。你可以从 OpenRouter 等免费模型入口开始，也可以填入自己的 OpenAI、Anthropic 或兼容服务 API key。
+第一次打开 Ora 时，onboarding 会引导你选择模型提供商。你可以从 OpenRouter 等免费模型入口开始，也可以填入自己的 OpenAI、Anthropic 或兼容服务 API key。
 
 API key 可以在应用内配置。搜索和 Langfuse trace 这类可选能力可以参考 `.env.example`，按需在 shell 环境里设置：
 
@@ -257,7 +259,7 @@ pnpm version:check
 
 ## 项目状态
 
-Ora 现在更适合本地开发和内部试用。README 里的能力以当前仓库代码为准，部分集成可能还需要配置密钥、启动外部服务或补齐产品化流程。
+Ora 目前更适合本地开发和内部试用。渠道接入、搜索、Langfuse trace 等功能需要额外配置密钥或外部服务。
 
 ## 许可证
 
