@@ -174,6 +174,116 @@ describe("desktop workbench state", () => {
     expect(state.selectedProviderId).toBe(enabled.id);
   });
 
+  it("caches background session hydration without changing the selected session", () => {
+    const currentSnapshot = testSnapshot({
+      runId: "run-current",
+      sessionId: "session-current",
+    });
+    const backgroundSnapshot = testSnapshot({
+      runId: "run-background",
+      sessionId: "session-background",
+      status: "running",
+      updatedAt: 1_714_000_000_100,
+    });
+    const currentSession = {
+      ...sessionSummary("session-current"),
+      latestRunId: currentSnapshot.runId,
+    };
+    const backgroundSession = {
+      ...sessionSummary("session-background"),
+      latestRunId: backgroundSnapshot.runId,
+      status: "running" as const,
+      updatedAt: backgroundSnapshot.updatedAt,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [currentSession, sessionSummary("session-background")],
+      selectedSessionId: currentSession.sessionId,
+      selectedTurnRunId: currentSnapshot.runId,
+      activeSnapshot: currentSnapshot,
+      activeSessionDetail: {
+        session: currentSession,
+        turns: [{ runId: currentSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: currentSnapshot,
+      },
+      promptText: "draft for current",
+      sessionPromptTexts: { [currentSession.sessionId]: "draft for current" },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [backgroundSession, currentSession],
+      detail: {
+        session: backgroundSession,
+        turns: [{ runId: backgroundSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: backgroundSnapshot,
+      },
+      preserveSelection: true,
+    });
+
+    expect(next.selectedSessionId).toBe("session-current");
+    expect(next.selectedTurnRunId).toBe("run-current");
+    expect(next.activeSnapshot?.runId).toBe("run-current");
+    expect(next.activeSessionDetail?.session.sessionId).toBe("session-current");
+    expect(next.promptText).toBe("draft for current");
+    expect(next.sessionDetailsById["session-background"]?.latestSnapshot?.runId).toBe("run-background");
+    expect(next.sessions.find((session) => session.sessionId === "session-background")?.status).toBe("running");
+  });
+
+  it("refreshes the selected session when preserved hydration targets the current session", () => {
+    const oldSnapshot = testSnapshot({
+      runId: "run-current-old",
+      sessionId: "session-current",
+      updatedAt: 1_714_000_000_000,
+    });
+    const refreshedSnapshot = testSnapshot({
+      runId: "run-current-new",
+      sessionId: "session-current",
+      status: "succeeded",
+      updatedAt: 1_714_000_000_100,
+    });
+    const refreshedSession = {
+      ...sessionSummary("session-current"),
+      latestRunId: refreshedSnapshot.runId,
+      status: "succeeded" as const,
+      updatedAt: refreshedSnapshot.updatedAt,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [sessionSummary("session-current")],
+      selectedSessionId: "session-current",
+      selectedTurnRunId: oldSnapshot.runId,
+      activeSnapshot: oldSnapshot,
+      activeSessionDetail: {
+        session: sessionSummary("session-current"),
+        turns: [{ runId: oldSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: oldSnapshot,
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [refreshedSession],
+      detail: {
+        session: refreshedSession,
+        turns: [{ runId: refreshedSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: refreshedSnapshot,
+      },
+      preserveSelection: true,
+    });
+
+    expect(next.selectedSessionId).toBe("session-current");
+    expect(next.selectedTurnRunId).toBe("run-current-new");
+    expect(next.activeSnapshot?.runId).toBe("run-current-new");
+    expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+  });
+
   it("keeps unsent composer text scoped to the selected session", () => {
     let state: WorkbenchState = {
       ...initialWorkbenchState,

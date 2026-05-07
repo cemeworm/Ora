@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getComposerTrayVisibility, getContextRingState } from "./ChatInput";
+import {
+  getComposerTrayVisibility,
+  getContextRingState,
+  scrollComposerTextareaToBottom,
+} from "./ChatInput";
 
 describe("chat input tray visibility", () => {
   it("prioritizes clarification over plan decision", () => {
@@ -153,5 +157,19 @@ describe("chat input context ring", () => {
         compactionCount: 0,
       },
     }).contextPct).toBe(1);
+  });
+});
+
+describe("chat input textarea scrolling", () => {
+  it("scrolls pasted overflow content to the bottom", () => {
+    const textarea = {
+      scrollHeight: 640,
+      scrollTop: 0,
+      style: { height: "" },
+    } as HTMLTextAreaElement;
+
+    scrollComposerTextareaToBottom(textarea);
+
+    expect(textarea.scrollTop).toBe(640);
   });
 });

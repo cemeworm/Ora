@@ -1304,8 +1304,10 @@ class LocalJsonRpcRuntime {
         return {
           compactStreamingEvents: true,
           vacuum: false,
+          staleRunningMs: 0,
           runsScanned: 0,
           runsCompacted: 0,
+          staleRunsFailed: 0,
           messageDeltaEventsCompacted: 0,
           rawPayloadsRemoved: 0,
           estimatedSnapshotBytesBefore: 0,

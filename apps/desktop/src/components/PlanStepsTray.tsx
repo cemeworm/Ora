@@ -29,7 +29,7 @@ export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
   const title = `Plan ${done}/${planSteps.length}`;
 
   return (
-    <div className="mb-2 rounded-2xl border border-border bg-card/96 shadow-lift backdrop-blur-sm">
+    <div className="mb-2 rounded-2xl border border-border bg-muted/40 backdrop-blur-sm">
       <TaskList className="border-0 bg-transparent shadow-none">
         <button type="button" onClick={() => setOpen((current) => !current)} className="w-full text-left">
           <TaskListHeader>

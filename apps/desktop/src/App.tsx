@@ -221,15 +221,11 @@ function WorkbenchInner() {
     DEFAULT_DETAIL_PANEL_WIDTH,
   );
   const projectsRef = useRef(state.projects);
-  const selectedSessionIdRef = useRef(state.selectedSessionId);
 
   useEffect(() => {
     projectsRef.current = state.projects;
   }, [state.projects]);
 
-  useEffect(() => {
-    selectedSessionIdRef.current = state.selectedSessionId;
-  }, [state.selectedSessionId]);
   const [artifactPanelWidth, setArtifactPanelWidth] = useState(
     DEFAULT_ARTIFACT_PANEL_WIDTH,
   );
@@ -480,16 +476,13 @@ function WorkbenchInner() {
           if (!event.sessionId) return;
           const detail = await runtimeClient.getSession(event.sessionId);
           if (cancelled) return;
-          if (selectedSessionIdRef.current === event.sessionId) {
-            dispatch({
-              type: "HYDRATE_SESSION",
-              projects: projectsRef.current,
-              sessions,
-              detail,
-            });
-          } else {
-            dispatch({ type: "CACHE_SESSION_DETAIL", detail });
-          }
+          dispatch({
+            type: "HYDRATE_SESSION",
+            projects: projectsRef.current,
+            sessions,
+            detail,
+            preserveSelection: true,
+          });
         } catch {
           // Channel updates are best-effort UI sync; the next bootstrap/manual refresh will catch up.
         }

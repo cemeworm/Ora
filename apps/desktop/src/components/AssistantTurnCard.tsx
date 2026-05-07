@@ -545,7 +545,7 @@ function TimelineStatusGroup({
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="group flex w-full items-center justify-between gap-3 text-left"
+        className="group flex w-full items-center gap-3 text-left"
       >
         <InlineTimelineMeta
           icon={active ? <LoaderCircle size={14} className="animate-spin" /> : null}

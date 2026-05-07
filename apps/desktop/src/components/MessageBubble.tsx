@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
 import type { ChatMessage } from "../types";
 import { cn } from "../lib/utils";
 import { MarkdownContent } from "./MarkdownContent";

@@ -163,6 +163,7 @@ export type WorkbenchAction =
       detail: OraSessionDetail;
       snapshot?: OraStateSnapshot;
       feedback?: string;
+      preserveSelection?: boolean;
     }
   | { type: "CACHE_SESSION_DETAIL"; detail: OraSessionDetail }
   | {
@@ -1521,6 +1522,27 @@ export function workbenchReducer(
         },
         latestSnapshot: normalizedSnapshot ?? action.detail.latestSnapshot,
       };
+      const sessions = replaceSessionSummary(
+        action.sessions.filter(
+          (session) => session.sessionId !== action.detail.session.sessionId,
+        ),
+        normalizedDetail.session,
+      );
+      if (
+        action.preserveSelection &&
+        state.selectedSessionId &&
+        action.detail.session.sessionId !== state.selectedSessionId
+      ) {
+        return {
+          ...state,
+          projects: action.projects,
+          sessions,
+          sessionDetailsById: cacheSessionDetail(
+            state.sessionDetailsById,
+            normalizedDetail,
+          ),
+        };
+      }
       const preservePendingRun = shouldPreserveAcceptedPlanPendingRun(
         state.pendingPlanDecisionResolution,
         state.pendingRun,
@@ -1529,12 +1551,7 @@ export function workbenchReducer(
       return {
         ...state,
         projects: action.projects,
-        sessions: replaceSessionSummary(
-          action.sessions.filter(
-            (session) => session.sessionId !== action.detail.session.sessionId,
-          ),
-          normalizedDetail.session,
-        ),
+        sessions,
         selectedProjectId: action.detail.session.projectId,
         expandedProjectIds: action.detail.session.projectId
           ? {

@@ -151,9 +151,20 @@ export function getContextRingState({
   };
 }
 
-function resizeComposerTextarea(target: HTMLTextAreaElement) {
+type ComposerTextareaMetrics = Pick<
+  HTMLTextAreaElement,
+  "scrollHeight" | "scrollTop" | "style"
+>;
+
+function resizeComposerTextarea(target: ComposerTextareaMetrics) {
   target.style.height = "auto";
   target.style.height = `${Math.min(target.scrollHeight, 220)}px`;
+}
+
+export function scrollComposerTextareaToBottom(
+  target: ComposerTextareaMetrics,
+) {
+  target.scrollTop = target.scrollHeight;
 }
 
 export function ChatInput({
@@ -207,6 +218,7 @@ export function ChatInput({
   const overlayRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastOverlayHeightRef = useRef<number | undefined>();
+  const shouldScrollPastedTextRef = useRef(false);
   const [openPicker, setOpenPicker] = useState<
     | "pattern"
     | "provider"
@@ -287,6 +299,10 @@ export function ChatInput({
     const target = textareaRef.current;
     if (!target) return;
     resizeComposerTextarea(target);
+    if (shouldScrollPastedTextRef.current) {
+      shouldScrollPastedTextRef.current = false;
+      scrollComposerTextareaToBottom(target);
+    }
     if (!composerPrompt) {
       target.scrollLeft = 0;
       target.scrollTop = 0;
@@ -615,6 +631,9 @@ export function ChatInput({
                 style={{ height: "auto", overflowY: "auto" }}
                 onInput={(e) => {
                   resizeComposerTextarea(e.target as HTMLTextAreaElement);
+                }}
+                onPaste={() => {
+                  shouldScrollPastedTextRef.current = true;
                 }}
               />
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
