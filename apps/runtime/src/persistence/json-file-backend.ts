@@ -151,6 +151,25 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     });
   }
 
+  getSessionLedgerExcludingEvents(sessionId: string): RuntimeSessionLedger | undefined {
+    this.ensureDirs();
+    const ledgerPath = this.sessionLedgerPath(sessionId);
+    if (!fs.existsSync(ledgerPath)) return undefined;
+    const entries = parseLedgerJsonl(fs.readFileSync(ledgerPath, "utf8"))
+      .filter((entry) => entry.sessionId === sessionId && entry.type !== "runtime.event_batch");
+    const meta = this.readSessionLedgerMeta(sessionId);
+    const entryIds = new Set(entries.map((entry) => entry.id));
+    const leafEntryId = meta?.leafEntryId && entryIds.has(meta.leafEntryId)
+      ? meta.leafEntryId
+      : entries.sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt || a.id.localeCompare(b.id)).at(-1)?.id;
+    return RuntimeSessionLedgerSchema.parse({ sessionId, leafEntryId, entries });
+  }
+
+  getSessionLedgerLeafEntryId(sessionId: string): string | null {
+    const meta = this.readSessionLedgerMeta(sessionId);
+    return meta?.leafEntryId ?? null;
+  }
+
   listSessionLedgers(): RuntimeSessionLedger[] {
     this.ensureDirs();
     return fs.readdirSync(this.sessionLedgerDir)

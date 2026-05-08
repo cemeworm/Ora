@@ -351,6 +351,7 @@ export class LocalRunStore {
   private runs = new Map<string, RuntimeRunReadModel>();
   private manifest: StoreManifest;
   private sessionLedgerRevision: string | undefined;
+  private sessionLedgerLeafEntryIds = new Map<string, string | undefined>();
 
   constructor(options: LocalRunStoreOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -473,6 +474,12 @@ export class LocalRunStore {
     }
     this.backend.saveManifest(this.manifest);
     this.sessionLedgerRevision = this.backend.ledgerRevision?.();
+    for (const sessionId of this.sessions.keys()) {
+      this.sessionLedgerLeafEntryIds.set(
+        sessionId,
+        this.backend.getSessionLedgerLeafEntryId?.(sessionId) ?? undefined,
+      );
+    }
     if (options.autoStartChannels) {
       this.channelService.startAll().catch((err) => {
         console.error("[LocalRunStore] channel 自动启动失败:", err instanceof Error ? err.message : err);
@@ -772,7 +779,8 @@ export class LocalRunStore {
 
   getSession(params: unknown): SessionDetail {
     const t0 = Date.now();
-    this.refreshAllSessionLedgerProjections();
+    const sessionId = (params as Record<string, unknown>)?.sessionId as string;
+    this.refreshSessionIfStale(sessionId);
     const t1 = Date.now();
     const result = getSessionOperation(params, this.projectSessionOperationDeps());
     const t2 = Date.now();
@@ -2899,13 +2907,20 @@ export class LocalRunStore {
     return this.runLedgerService.appendSessionLedgerEntries(sessionId, entries, options);
   }
 
-  private refreshSessionFromLedger(sessionId: string, leafEntryId?: string): SessionSummary {
-    const ledger = this.backend.getSessionLedger(sessionId);
+  private refreshSessionFromLedger(
+    sessionId: string,
+    leafEntryId?: string,
+    options: { excludeEvents?: boolean } = {},
+  ): SessionSummary {
+    const ledger = options.excludeEvents
+      ? this.backend.getSessionLedgerExcludingEvents?.(sessionId)
+      : this.backend.getSessionLedger(sessionId);
     if (!ledger) {
       return this.getSessionOrThrow(sessionId);
     }
     const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
     this.sessions.set(sessionId, projection.session);
+    this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
     const projectedRunIds = new Set(projection.runs.map((run) => run.runId));
     for (const [runId, snapshot] of this.runs.entries()) {
       if (snapshot.sessionId === sessionId && !projectedRunIds.has(runId)) {
@@ -2928,9 +2943,21 @@ export class LocalRunStore {
     }
     const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
     for (const ledger of ledgers) {
-      this.refreshSessionFromLedger(ledger.sessionId, ledger.leafEntryId);
+      this.refreshSessionFromLedger(ledger.sessionId, ledger.leafEntryId, { excludeEvents: true });
     }
     this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
+  }
+
+  private isSessionLedgerStale(sessionId: string): boolean {
+    const currentLeafId = this.backend.getSessionLedgerLeafEntryId?.(sessionId) ?? undefined;
+    const cachedLeafId = this.sessionLedgerLeafEntryIds.get(sessionId);
+    return currentLeafId !== cachedLeafId;
+  }
+
+  private refreshSessionIfStale(sessionId: string): void {
+    if (!this.isSessionLedgerStale(sessionId)) return;
+    const leafEntryId = this.backend.getSessionLedgerLeafEntryId?.(sessionId) ?? undefined;
+    this.refreshSessionFromLedger(sessionId, leafEntryId, { excludeEvents: true });
   }
 
   private ledgerSnapshotOrFallback(snapshot: StateSnapshot, leafEntryId?: string): StateSnapshot {
