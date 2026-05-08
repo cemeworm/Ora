@@ -10,7 +10,27 @@ export async function runGenericModeNode(
   completedNodes: number,
   execute: () => Promise<unknown>,
   bag: Record<string, unknown> = {},
+  options?: { skipNodeIds?: Set<string> },
 ): Promise<number> {
+  if (options?.skipNodeIds?.has(node.id)) {
+    context.setPlanStatus(node.id, "skipped");
+    context.checkpointNode({
+      nodeId: node.id,
+      nodeTemplate: node.template,
+      nodeLabel: node.label,
+      agentId: node.ownerAgentId ?? node.id,
+      status: "skipped",
+      bag,
+    });
+    const nextCompleted = completedNodes + 1;
+    context.setQueueSummary({
+      pending: Math.max(0, totalActiveNodes - nextCompleted),
+      inProgress: 0,
+      completed: nextCompleted,
+    });
+    return nextCompleted;
+  }
+
   const clarificationQuestion = typeof node.config?.clarificationQuestion === "string"
     ? node.config.clarificationQuestion
     : undefined;

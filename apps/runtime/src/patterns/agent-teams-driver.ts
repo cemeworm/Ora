@@ -22,25 +22,6 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
   for (const [nodeIndex, node] of nodes.entries()) {
     const nextOwnerId = nodes[nodeIndex + 1]?.ownerAgentId;
 
-    if (skipNodeIds.has(node.id)) {
-      context.setPlanStatus(node.id, "skipped");
-      context.checkpointNode({
-        nodeId: node.id,
-        nodeTemplate: node.template,
-        nodeLabel: node.label,
-        agentId: node.ownerAgentId ?? node.id,
-        status: "skipped",
-        bag,
-      });
-      completedNodes++;
-      context.setQueueSummary({
-        pending: Math.max(0, totalActiveNodes - completedNodes),
-        inProgress: 0,
-        completed: completedNodes,
-      });
-      continue;
-    }
-
     completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
       if (node.template === "triage") {
         const agentId = node.ownerAgentId ?? leadId;
@@ -215,7 +196,7 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         });
         return bag.handoff;
       }
-    }, bag);
+    }, bag, { skipNodeIds });
     if (planIntent && node.template === "triage") {
       if (containsCompleteProposedPlan(bag.triage) && !isInternalAgentMessageText(bag.triage)) {
         finishPlanModeAfterProposedPlan(context, nodes, nodeIndex, totalActiveNodes);
@@ -231,7 +212,7 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
           },
         };
       }
-      context.setPlanStatus(node.id, "blocked");
+      context.setPlanStatus(node.id, "failed");
       finishPlanModeAfterProposedPlan(context, nodes, nodeIndex, totalActiveNodes);
       return {
         output: {
