@@ -120,6 +120,8 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "evaluation.datasets.import",
   "evaluation.datasets.list",
   "evaluation.datasets.get",
+  "evaluation.datasets.importFromLangfuse",
+  "evaluation.datasets.exportToLangfuse",
   "evaluation.blueprints.create",
   "evaluation.blueprints.update",
   "evaluation.blueprints.list",

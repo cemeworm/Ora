@@ -46,6 +46,7 @@ import {
   EvaluationExportParamsSchema,
   EvaluationExportResult,
   EvaluationExportResultSchema,
+  LangfuseScoreWriteStatusSchema,
   EvaluationFeedbackAcceptParamsSchema,
   EvaluationFeedbackDraftCase,
   EvaluationFeedbackDraftCaseSchema,
@@ -57,6 +58,8 @@ import {
   EvaluationFeedbackSubmitParamsSchema,
   EvaluationFeedbackUpdateParamsSchema,
   EvaluationImportParamsSchema,
+  EvaluationLangfuseImportParamsSchema,
+  EvaluationLangfuseExportParamsSchema,
   EvaluationMetricId,
   EvaluationMetricScore,
   EvaluationMetricScoreSchema,
@@ -96,6 +99,14 @@ import { z } from "zod";
 import { buildAgenticEfficiencyLedger } from "./agentic-efficiency.js";
 import { parseJsonObject } from "./provider-json.js";
 import { invokeRunProvider } from "./providers/index.js";
+import {
+  getLangfuseRunTraceMetadata,
+  scoreLangfuseTrace,
+  importLangfuseDataset,
+  exportDatasetToLangfuse,
+  createLangfuseExperiment,
+  logLangfuseExperimentResult,
+} from "./telemetry/langfuse.js";
 
 const EvaluationManifestSchema = z.object({
   schemaVersion: z.literal(1).default(1),
@@ -272,6 +283,47 @@ export class LocalEvaluationStore {
     this.datasets.set(dataset.id, detail);
     this.saveDataset(detail);
     return detail;
+  }
+
+  async importDatasetFromLangfuse(params: unknown): Promise<EvaluationDatasetDetail> {
+    const parsed = EvaluationLangfuseImportParamsSchema.parse(params);
+    const result = await importLangfuseDataset(parsed.datasetName);
+    if (result.error) {
+      throw new Error(`Failed to import dataset from Langfuse: ${result.error}`);
+    }
+    const now = this.now();
+    const dataset = EvaluationDatasetSchema.parse({
+      id: this.nextDatasetId(),
+      name: parsed.name?.trim() || parsed.datasetName,
+      description: parsed.description?.trim() || `Imported from Langfuse dataset "${parsed.datasetName}"`,
+      sourceFileName: parsed.datasetName,
+      sourceFormat: "langfuse",
+      schemaVersion: 1,
+      caseCount: result.cases.length,
+      tags: parsed.tags,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const detail = EvaluationDatasetDetailSchema.parse({
+      dataset,
+      cases: result.cases,
+      metadataKeys: collectMetadataKeys(result.cases),
+      tagCounts: collectTagCounts(result.cases),
+    });
+    this.datasets.set(dataset.id, detail);
+    this.saveDataset(detail);
+    return detail;
+  }
+
+  async exportDatasetToLangfuse(params: unknown): Promise<{ status: string; error?: string }> {
+    const parsed = EvaluationLangfuseExportParamsSchema.parse(params);
+    const detail = this.getDataset({ datasetId: parsed.datasetId });
+    const result = await exportDatasetToLangfuse(
+      parsed.langfuseDatasetName,
+      detail.cases,
+      parsed.description
+    );
+    return result;
   }
 
   listDatasets(params: unknown = {}): EvaluationDataset[] {
@@ -545,6 +597,19 @@ export class LocalEvaluationStore {
       repetitionCount: spec.repetitions,
     });
 
+    const isLangfuseDataset = dataset.dataset.sourceFormat === "langfuse";
+    const langfuseExperimentName = isLangfuseDataset
+      ? `ora-eval-${evaluationRunId}`
+      : undefined;
+
+    if (langfuseExperimentName && dataset.dataset.sourceFileName) {
+      await createLangfuseExperiment(
+        dataset.dataset.sourceFileName,
+        langfuseExperimentName,
+        `Ora evaluation run ${evaluationRunId}`
+      );
+    }
+
     for (const evaluationCase of dataset.cases) {
       for (const config of spec.configs) {
         for (let repetition = 1; repetition <= spec.repetitions; repetition += 1) {
@@ -596,6 +661,59 @@ export class LocalEvaluationStore {
             updatedAt: snapshot.updatedAt,
           });
           attempts.push(attempt);
+
+          const traceMeta = getLangfuseRunTraceMetadata(snapshot.runId);
+          const traceId = traceMeta?.traceId;
+          if (traceId) {
+            try {
+              const scoreComment = attempt.evaluatorResults
+                .filter((result) => result.evaluatorKind === "llm_judge" && result.rationale)
+                .map((result) => `[${result.evaluatorId}] ${result.rationale}`)
+                .join("\n") || undefined;
+
+              const results = await Promise.all([
+                scoreLangfuseTrace(
+                  traceId,
+                  "evaluation.overall",
+                  attempt.score.overallScore,
+                  { comment: scoreComment }
+                ),
+                ...attempt.metricScores.map((metric) =>
+                  scoreLangfuseTrace(
+                    traceId,
+                    `evaluation.metric.${metric.metricId}`,
+                    metric.score
+                  )
+                ),
+                ...attempt.evaluatorResults
+                  .filter((result) => result.score !== undefined)
+                  .map((result) =>
+                    scoreLangfuseTrace(
+                      traceId,
+                      `evaluation.evaluator.${result.evaluatorId}`,
+                      result.score!,
+                      { comment: result.rationale }
+                    )
+                  ),
+              ]);
+              attempt.langfuseScoreWriteStatus = results.every((r) => r.status === "succeeded")
+                ? "succeeded"
+                : "failed";
+            } catch {
+              attempt.langfuseScoreWriteStatus = "failed";
+            }
+
+            if (langfuseExperimentName) {
+              await logLangfuseExperimentResult(
+                langfuseExperimentName,
+                evaluationCase.id,
+                traceId,
+              );
+            }
+          } else {
+            attempt.langfuseScoreWriteStatus = "failed";
+          }
+
           for (const task of assessment.annotationTasks) {
             const annotation = EvaluationAnnotationTaskSchema.parse({
               ...task,
@@ -1921,6 +2039,8 @@ function parseCases(content: string, sourceFormat: EvaluationDatasetSourceFormat
       return normalizeRecords(parseCsvContent(content));
     case "inline":
       return normalizeRecords(parseJsonContent(content));
+    case "langfuse":
+      throw new Error("Langfuse datasets are imported via the API, not from file content.");
   }
 }
 

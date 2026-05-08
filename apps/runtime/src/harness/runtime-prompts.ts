@@ -1,4 +1,18 @@
-import type { StateSnapshot } from "@cemeworm/shared";
+import type { ModeSpec, StateSnapshot } from "@cemeworm/shared";
+import { fetchLangfusePrompt } from "../telemetry/langfuse.js";
+
+export async function resolveModeSystemPrompt(mode: ModeSpec): Promise<string | undefined> {
+  const ref = mode.langfusePromptRef;
+  if (!ref) {
+    return undefined;
+  }
+  const result = await fetchLangfusePrompt(ref.name, ref.version, ref.label);
+  if (result.error) {
+    process.stderr.write(`Failed to fetch Langfuse prompt "${ref.name}": ${result.error}\n`);
+    return undefined;
+  }
+  return result.text;
+}
 
 export function checkpointLabelForStatus(status: StateSnapshot["status"]): string {
   switch (status) {

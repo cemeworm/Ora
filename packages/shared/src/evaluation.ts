@@ -200,6 +200,7 @@ export const EvaluationDatasetSourceFormatSchema = z.enum([
   "jsonl",
   "csv",
   "inline",
+  "langfuse",
 ]);
 export type EvaluationDatasetSourceFormat = z.infer<typeof EvaluationDatasetSourceFormatSchema>;
 
@@ -238,6 +239,21 @@ export const EvaluationImportParamsSchema = z.object({
   { message: "Dataset import requires content or filePath." }
 );
 export type EvaluationImportParams = z.infer<typeof EvaluationImportParamsSchema>;
+
+export const EvaluationLangfuseImportParamsSchema = z.object({
+  datasetName: z.string().min(1),
+  name: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+  tags: z.array(z.string().min(1)).default([]),
+});
+export type EvaluationLangfuseImportParams = z.infer<typeof EvaluationLangfuseImportParamsSchema>;
+
+export const EvaluationLangfuseExportParamsSchema = z.object({
+  datasetId: z.string().min(1),
+  langfuseDatasetName: z.string().min(1),
+  description: z.string().min(1).optional(),
+});
+export type EvaluationLangfuseExportParams = z.infer<typeof EvaluationLangfuseExportParamsSchema>;
 
 export const EvaluationConfigRunConfigSchema = RunConfigSchema.partial().extend({
   pattern: CoordinationPatternSchema,
@@ -454,6 +470,13 @@ export const EvaluationAttemptStatusSchema = z.enum([
 ]);
 export type EvaluationAttemptStatus = z.infer<typeof EvaluationAttemptStatusSchema>;
 
+export const LangfuseScoreWriteStatusSchema = z.enum([
+  "pending",
+  "succeeded",
+  "failed",
+]);
+export type LangfuseScoreWriteStatus = z.infer<typeof LangfuseScoreWriteStatusSchema>;
+
 export const EvaluationScoreSchema = z.object({
   outcomeScore: z.number().min(0).max(1),
   processScore: z.number().min(0).max(1),
@@ -483,6 +506,7 @@ export const EvaluationAttemptSchema = z.object({
   costUsd: z.number().nonnegative().default(0),
   startedAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  langfuseScoreWriteStatus: LangfuseScoreWriteStatusSchema.optional(),
 });
 export type EvaluationAttempt = z.infer<typeof EvaluationAttemptSchema>;
 

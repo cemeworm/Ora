@@ -10,6 +10,7 @@ import {
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import type {
   CoordinationPattern,
+  EvaluationCase,
   RunConfig,
   RunTraceMetadata,
   StateSnapshot,
@@ -439,6 +440,236 @@ export async function traceLangfuseGeneration(
     });
     generation.end();
     throw error;
+  }
+}
+
+export interface LangfuseScoreOptions {
+  comment?: string;
+  observationId?: string;
+  dataType?: "NUMERIC" | "BOOLEAN" | "CATEGORICAL";
+  configId?: string;
+  environment?: string;
+}
+
+export async function scoreLangfuseTrace(
+  traceId: string,
+  name: string,
+  value: number,
+  options?: LangfuseScoreOptions
+): Promise<{ status: "succeeded" | "failed"; error?: string }> {
+  if (!initLangfuseTelemetry()) {
+    return { status: "failed", error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    const client = getLangfuseApiClient();
+    await client.legacy.scoreV1.create({
+      traceId,
+      name,
+      value,
+      comment: options?.comment,
+      observationId: options?.observationId,
+      dataType: options?.dataType ?? "NUMERIC",
+      configId: options?.configId,
+      environment: options?.environment,
+    });
+    return { status: "succeeded" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Langfuse score write failed (trace=${traceId}, name=${name}): ${message}\n`);
+    return { status: "failed", error: message };
+  }
+}
+
+export async function scoreLangfuseGeneration(
+  traceId: string,
+  observationId: string,
+  name: string,
+  value: number,
+  options?: LangfuseScoreOptions
+): Promise<{ status: "succeeded" | "failed"; error?: string }> {
+  return scoreLangfuseTrace(traceId, name, value, { ...options, observationId });
+}
+
+export async function importLangfuseDataset(
+  datasetName: string
+): Promise<{ cases: EvaluationCase[]; error?: string }> {
+  if (!initLangfuseTelemetry()) {
+    return { cases: [], error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    const client = getLangfuseApiClient();
+    const response = await client.datasetItems.list({ datasetName });
+    const cases: EvaluationCase[] = response.data.map((item) => ({
+      id: item.id,
+      input: {
+        prompt: typeof item.input === "string" ? item.input : JSON.stringify(item.input ?? ""),
+        context: typeof item.input === "object" && item.input !== null && !Array.isArray(item.input)
+          ? item.input as Record<string, unknown>
+          : {},
+      },
+      expected: item.expectedOutput ? {
+        text: typeof item.expectedOutput === "string" ? item.expectedOutput : JSON.stringify(item.expectedOutput),
+      } : undefined,
+      metadata: (typeof item.metadata === "object" && item.metadata !== null
+        ? item.metadata as Record<string, unknown>
+        : {}),
+    }));
+    return { cases };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { cases: [], error: message };
+  }
+}
+
+export async function exportDatasetToLangfuse(
+  datasetName: string,
+  cases: EvaluationCase[],
+  description?: string
+): Promise<{ status: "succeeded" | "failed"; error?: string }> {
+  if (!initLangfuseTelemetry()) {
+    return { status: "failed", error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    const client = getLangfuseApiClient();
+
+    try {
+      await client.datasets.create({ name: datasetName, description, metadata: { source: "ora-runtime" } });
+    } catch {
+      // Dataset may already exist; continue
+    }
+
+    for (const evaluationCase of cases) {
+      await client.datasetItems.create({
+        datasetName,
+        id: evaluationCase.id,
+        input: evaluationCase.input,
+        expectedOutput: evaluationCase.expected,
+        metadata: evaluationCase.metadata,
+      });
+    }
+    return { status: "succeeded" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Langfuse dataset export failed (dataset=${datasetName}): ${message}\n`);
+    return { status: "failed", error: message };
+  }
+}
+
+export async function createLangfuseExperiment(
+  datasetName: string,
+  runName: string,
+  description?: string
+): Promise<{ status: "succeeded" | "failed"; error?: string }> {
+  if (!initLangfuseTelemetry()) {
+    return { status: "failed", error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    // In Langfuse, experiments are dataset runs. Dataset runs are implicitly
+    // created when datasetRunItems are created, so this is a no-op placeholder
+    // that verifies the dataset exists.
+    const client = getLangfuseApiClient();
+    await client.datasets.get(datasetName);
+    return { status: "succeeded" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Langfuse experiment creation failed (dataset=${datasetName}, run=${runName}): ${message}\n`);
+    return { status: "failed", error: message };
+  }
+}
+
+export async function logLangfuseExperimentResult(
+  runName: string,
+  datasetItemId: string,
+  traceId: string,
+  observationId?: string
+): Promise<{ status: "succeeded" | "failed"; error?: string }> {
+  if (!initLangfuseTelemetry()) {
+    return { status: "failed", error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    const client = getLangfuseApiClient();
+    await client.datasetRunItems.create({
+      runName,
+      datasetItemId,
+      traceId,
+      observationId,
+    });
+    return { status: "succeeded" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `Langfuse experiment result logging failed (run=${runName}, item=${datasetItemId}): ${message}\n`
+    );
+    return { status: "failed", error: message };
+  }
+}
+
+export interface LangfusePromptRef {
+  name: string;
+  version?: number;
+  label?: string;
+}
+
+export async function fetchLangfusePrompt(
+  promptName: string,
+  version?: number,
+  label?: string
+): Promise<{ text: string; version: number; error?: string }> {
+  if (!initLangfuseTelemetry()) {
+    return { text: "", version: 0, error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    const client = getLangfuseApiClient();
+    const prompt = await client.prompts.get(promptName, { version, label });
+
+    if ("prompt" in prompt && typeof prompt.prompt === "string") {
+      return { text: prompt.prompt, version: prompt.version };
+    }
+    if ("prompt" in prompt && Array.isArray(prompt.prompt)) {
+      const text = prompt.prompt
+        .map((msg) => {
+          if (typeof msg === "object" && msg !== null && "content" in msg) {
+            return `${msg.role}: ${(msg as { content: string }).content}`;
+          }
+          return JSON.stringify(msg);
+        })
+        .join("\n");
+      return { text, version: prompt.version };
+    }
+    return { text: JSON.stringify(prompt), version: 0, error: "Unexpected prompt format." };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { text: "", version: 0, error: message };
+  }
+}
+
+export async function listLangfusePrompts(): Promise<{
+  prompts: Array<{ name: string; versions: number[]; labels: string[] }>;
+  error?: string;
+}> {
+  if (!initLangfuseTelemetry()) {
+    return { prompts: [], error: "Langfuse telemetry is disabled." };
+  }
+
+  try {
+    const client = getLangfuseApiClient();
+    const response = await client.prompts.list();
+    return {
+      prompts: response.data.map((meta) => ({
+        name: meta.name,
+        versions: meta.versions,
+        labels: meta.labels,
+      })),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { prompts: [], error: message };
   }
 }
 

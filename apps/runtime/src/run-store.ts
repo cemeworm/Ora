@@ -2186,6 +2186,14 @@ export class LocalRunStore {
     return this.evaluationStore.importDataset(params);
   }
 
+  importEvaluationDatasetFromLangfuse(params: unknown) {
+    return this.evaluationStore.importDatasetFromLangfuse(params);
+  }
+
+  exportEvaluationDatasetToLangfuse(params: unknown) {
+    return this.evaluationStore.exportDatasetToLangfuse(params);
+  }
+
   listEvaluationDatasets(params: unknown = {}) {
     return this.evaluationStore.listDatasets(params);
   }

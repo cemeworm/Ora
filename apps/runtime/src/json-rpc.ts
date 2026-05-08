@@ -294,6 +294,10 @@ export function createRuntimeMethodHandler(
         return store.listEvaluationDatasets(request.params);
       case "evaluation.datasets.get":
         return store.getEvaluationDataset(request.params);
+      case "evaluation.datasets.importFromLangfuse":
+        return store.importEvaluationDatasetFromLangfuse(request.params);
+      case "evaluation.datasets.exportToLangfuse":
+        return store.exportEvaluationDatasetToLangfuse(request.params);
       case "evaluation.blueprints.create":
         return store.createEvaluationBlueprint(request.params);
       case "evaluation.blueprints.update":
