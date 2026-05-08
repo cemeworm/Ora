@@ -1171,6 +1171,7 @@ export const RunTrailMetricsSchema = z.object({
   warningCount: z.number().int().nonnegative(),
   errorCount: z.number().int().nonnegative(),
   estimatedCostUsd: z.number().nonnegative(),
+  costAvailable: z.boolean().default(false),
 });
 export type RunTrailMetrics = z.infer<typeof RunTrailMetricsSchema>;
 

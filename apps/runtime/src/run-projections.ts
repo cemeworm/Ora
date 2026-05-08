@@ -255,7 +255,8 @@ export function buildRunTrailMetrics(
     activeAgentCount: snapshot.activeAgents.length,
     warningCount,
     errorCount,
-    estimatedCostUsd: Number((tracedCost > 0 ? tracedCost : snapshot.events.length * 0.0002).toFixed(4)),
+    estimatedCostUsd: Number(tracedCost.toFixed(4)),
+    costAvailable: tracedCost > 0,
   };
 }
 

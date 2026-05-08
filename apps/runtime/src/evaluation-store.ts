@@ -2461,6 +2461,9 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
     run: {
       status: snapshot.status,
       outputText: extractOutputText(snapshot),
+      output: {
+        text: extractOutputText(snapshot),
+      },
       runtimeMs,
       costUsd: efficiencyLedger.estimatedCostUsd,
       agenticCost: efficiencyLedger,
@@ -2478,6 +2481,7 @@ function extractEvaluationObservations(snapshot: StateSnapshot, runtimeMs: numbe
       efficiencyLedger,
     },
     trace: {
+      events: evaluationTraceEvents(snapshot),
       eventTypes: snapshot.events.map((event) => event.type),
       eventCount: snapshot.events.length,
       toolCallIds: snapshot.toolCalls.map((call) => call.toolId),
@@ -2977,13 +2981,161 @@ function outputForObjective(
   };
 }
 
+function evaluationTraceEvents(snapshot: StateSnapshot): Array<Record<string, unknown>> {
+  const events: Array<Record<string, unknown>> = snapshot.events.map((event) => {
+    const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? event.payload as Record<string, unknown>
+      : {};
+    const agentRole = stringValue(payload.agentRole)
+      ?? stringValue(payload.role)
+      ?? stringValue(payload.agentId)
+      ?? event.agentId
+      ?? event.nodeId;
+    const toolName = stringValue(payload.toolName) ?? stringValue(payload.toolId);
+    const toolNames = toolName ? toolNameAliases(toolName) : [];
+    return {
+      ...event,
+      ...(agentRole ? { agentRole } : {}),
+      ...(toolName ? { toolName, toolNames } : {}),
+    };
+  });
+
+  for (const result of snapshot.toolResults) {
+    events.push({
+      type: "tool.result_observed",
+      toolName: result.toolId,
+      toolNames: toolNameAliases(result.toolId),
+      status: result.status,
+      toolCallId: result.resultToolCallId,
+    });
+  }
+
+  return events;
+}
+
+function toolNameAliases(toolName: string): string[] {
+  const aliases = new Set([toolName]);
+  const legacy: Record<string, string[]> = {
+    "file.read": ["read_file"],
+    "file.write": ["write_file"],
+    "file.patch": ["patch_file"],
+    "file.delete": ["delete_file"],
+    "file.list": ["list_files", "list_directory"],
+    "file.search": ["search_files"],
+    "shell.execute": ["run_shell_command"],
+    "web.search": ["web_search"],
+    "web.fetch": ["web_fetch"],
+  };
+  for (const alias of legacy[toolName] ?? []) {
+    aliases.add(alias);
+  }
+  return [...aliases];
+}
+
 function getObservationPath(source: unknown, pathExpression: string): unknown {
-  return pathExpression.split(".").reduce<unknown>((current, segment) => {
+  return splitPathExpression(pathExpression).reduce<unknown>((current, segment) => {
+    if (segment === "length") {
+      return Array.isArray(current) || typeof current === "string" ? current.length : undefined;
+    }
+
+    const filtered = applyArrayFilterSegment(current, segment);
+    if (filtered.matched) {
+      return filtered.value;
+    }
+
     if (!current || typeof current !== "object" || Array.isArray(current)) {
       return undefined;
     }
     return (current as Record<string, unknown>)[segment];
   }, source);
+}
+
+function splitPathExpression(pathExpression: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let bracketDepth = 0;
+  let quote: "'" | "\"" | undefined;
+  for (const char of pathExpression) {
+    if ((char === "'" || char === "\"") && bracketDepth > 0) {
+      quote = quote === char ? undefined : quote ?? char;
+    }
+    if (!quote) {
+      if (char === "[") bracketDepth += 1;
+      if (char === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    }
+    if (char === "." && bracketDepth === 0 && !quote) {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current) segments.push(current);
+  return segments;
+}
+
+function applyArrayFilterSegment(current: unknown, segment: string): { matched: boolean; value?: unknown } {
+  const match = /^([^\[]+)\[\?\((.*)\)\]$/.exec(segment);
+  if (!match) {
+    return { matched: false };
+  }
+  if (!current || typeof current !== "object" || Array.isArray(current)) {
+    return { matched: true, value: undefined };
+  }
+  const sourceArray = (current as Record<string, unknown>)[match[1] ?? ""];
+  if (!Array.isArray(sourceArray)) {
+    return { matched: true, value: undefined };
+  }
+  const expression = match[2] ?? "";
+  return {
+    matched: true,
+    value: sourceArray.filter((item) => filterExpressionMatches(item, expression)),
+  };
+}
+
+function filterExpressionMatches(item: unknown, expression: string): boolean {
+  return splitBooleanExpression(expression, "||").some((orPart) => (
+    splitBooleanExpression(orPart, "&&").every((andPart) => filterConditionMatches(item, andPart.trim()))
+  ));
+}
+
+function splitBooleanExpression(expression: string, operator: "&&" | "||"): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | undefined;
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+    if (char === "'" || char === "\"") {
+      quote = quote === char ? undefined : quote ?? char;
+    }
+    if (!quote && expression.slice(index, index + operator.length) === operator) {
+      parts.push(current);
+      current = "";
+      index += operator.length - 1;
+      continue;
+    }
+    current += char;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function filterConditionMatches(item: unknown, condition: string): boolean {
+  const match = /^@\.([A-Za-z0-9_.-]+)\s*==\s*(['"])(.*?)\2$/.exec(condition);
+  if (!match) {
+    return false;
+  }
+  const actual = getObservationPath(item, match[1] ?? "");
+  const expected = match[3] ?? "";
+  if ((match[1] ?? "") === "toolName") {
+    const aliases = getObservationPath(item, "toolNames");
+    if (Array.isArray(aliases) && aliases.some((value) => valuesEqual(value, expected))) {
+      return true;
+    }
+  }
+  return Array.isArray(actual)
+    ? actual.some((value) => valuesEqual(value, expected))
+    : valuesEqual(actual, expected);
 }
 
 function evaluateAssertion(assertion: EvaluationAssertion, actual: unknown): boolean {
@@ -3001,6 +3153,9 @@ function evaluateAssertion(assertion: EvaluationAssertion, actual: unknown): boo
     case "max":
       return typeof actual === "number" && typeof assertion.value === "number" && actual <= assertion.value;
     case "exists":
+      if (Array.isArray(actual)) {
+        return actual.length > 0;
+      }
       return actual !== undefined && actual !== null && actual !== "";
     case "contains":
       return typeof actual === "string" && typeof assertion.value === "string" && actual.includes(assertion.value);
