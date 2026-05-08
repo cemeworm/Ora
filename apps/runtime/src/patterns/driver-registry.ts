@@ -1,6 +1,7 @@
 import {
   createModeSpecFromPattern,
   modeSpecToPatternDefinition,
+  type BuiltInCoordinationPattern,
   type CoordinationPattern,
 } from "@cemeworm/shared";
 import type { PatternDriver, PatternExecutionResult } from "./execution-context.js";
@@ -27,7 +28,7 @@ export function getPatternDriver(pattern: CoordinationPattern): PatternDriver {
   return {
     id: pattern,
     async execute(context, prompt) {
-      const modeSpec = createModeSpecFromPattern(pattern);
+      const modeSpec = createModeSpecFromPattern(pattern as BuiltInCoordinationPattern);
       const definition = modeSpecToPatternDefinition(modeSpec);
       return executeModeSpec({
         context,

@@ -66,6 +66,7 @@ export const CORE_NODE_RUNTIME_TRANSITIONS: readonly NodeRuntimeTransition[] = [
   { from: "failed", to: "finalizing" },
   { from: "failed", to: "failed" },
   { from: "interrupted", to: "interrupted" },
+  { from: "interrupted", to: "pending" },
 ];
 
 const NODE_LOOP_TRANSITION_KIND_PATHS: Record<NodeLoopTransitionResultKind, readonly NodeRuntimeTransition[]> = {
@@ -88,6 +89,7 @@ const NODE_LOOP_TRANSITION_KIND_PATHS: Record<NodeLoopTransitionResultKind, read
     { from: "tool_requested", to: "interrupted" },
     { from: "tool_running", to: "interrupted" },
     { from: "interrupted", to: "interrupted" },
+    { from: "interrupted", to: "pending" },
   ],
   tool_result: [
     { from: "tool_running", to: "tool_result_observed" },

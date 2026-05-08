@@ -1,16 +1,16 @@
 import { orderedEnabledModeNodes } from "@cemeworm/shared";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { asText, initializeQueueSummary, isInternalAgentMessageText, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { asText, dispatchNodeTemplate, initializeQueueSummary, isInternalAgentMessageText, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode } from "./generic-node-executor.js";
-import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, COMPLEXITY_ASSESSMENT_INSTRUCTION, parseComplexityLevel } from "./mode-driver-helpers.js";
+import { containsCompleteProposedPlan, finishPlanModeAfterProposedPlan, type ExecutionBag, type AgentTeamsBag, COMPLEXITY_ASSESSMENT_INSTRUCTION, parseComplexityLevel } from "./mode-driver-helpers.js";
 
 export async function executeAgentTeams(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, config, modeSpec } = input;
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
-  const bag: ExecutionBag = { prompt };
+  const bag: AgentTeamsBag = { prompt };
   const leadId = ownerForTemplate(nodes, "triage", "team_lead");
   const builderId = ownerForTemplate(nodes, "build", "builder");
   const reviewerId = ownerForTemplate(nodes, "check", "reviewer");
@@ -196,6 +196,12 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
         });
         return bag.handoff;
       }
+      return dispatchNodeTemplate(context, modeSpec, node, bag, {
+        bagKey: node.template,
+        agentId: node.ownerAgentId ?? leadId,
+        title: titleForNode(node, node.label),
+        fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
+      });
     }, bag, { skipNodeIds });
     if (planIntent && node.template === "triage") {
       if (containsCompleteProposedPlan(bag.triage) && !isInternalAgentMessageText(bag.triage)) {

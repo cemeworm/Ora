@@ -1,9 +1,9 @@
 import { orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
 import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { asText, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode } from "./generic-node-executor.js";
-import { type ExecutionBag } from "./mode-driver-helpers.js";
+import { type ExecutionBag, type OrchestratorSubagentBag } from "./mode-driver-helpers.js";
 
 function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
   return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
@@ -268,6 +268,13 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           });
           return bag.synthesis;
         }
+        // Custom template fallback
+        return dispatchNodeTemplate(context, modeSpec, node, bag, {
+          bagKey: node.template,
+          agentId: node.ownerAgentId ?? primaryAgentId,
+          title: titleForNode(node, node.label),
+          fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
+        });
       }, bag);
   }
 

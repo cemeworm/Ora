@@ -1,4 +1,5 @@
 import {
+  BuiltInCoordinationPattern,
   CoordinationPattern,
   ModeSpec,
   StateSnapshot,
@@ -33,7 +34,8 @@ export function patternActionType(pattern: CoordinationPattern, modeSpec: ModeSp
   if (modeUsesSingleOwner(modeSpec)) {
     return `mode.${modeSpec.id}.respond`;
   }
-  switch (pattern) {
+  const builtInPattern = pattern as BuiltInCoordinationPattern;
+  switch (builtInPattern) {
     case "generator_verifier":
       return "pattern.generator_verifier.verify_candidate";
     case "orchestrator_subagent":
@@ -44,8 +46,10 @@ export function patternActionType(pattern: CoordinationPattern, modeSpec: ModeSp
       return "pattern.message_bus.publish_event";
     case "shared_state":
       return "pattern.shared_state.write_board";
+    default:
+      builtInPattern satisfies never;
+      throw new OraRuntimeError(`Unsupported pattern action type: ${pattern}`, -32002, { pattern });
   }
-  throw new OraRuntimeError(`Unsupported pattern action type: ${pattern}`, -32002, { pattern });
 }
 
 export function patternMemoryNamespace(
@@ -54,7 +58,8 @@ export function patternMemoryNamespace(
   modeSpec: ModeSpec,
 ): string[] {
   const projectNamespace = projectId ?? "local-project";
-  switch (pattern) {
+  const builtInPattern = pattern as BuiltInCoordinationPattern;
+  switch (builtInPattern) {
     case "generator_verifier":
       return ["session", projectNamespace, modeSpec.id];
     case "orchestrator_subagent":
@@ -65,8 +70,10 @@ export function patternMemoryNamespace(
       return ["session", projectNamespace, modeSpec.id];
     case "shared_state":
       return ["project", projectNamespace, modeSpec.id];
+    default:
+      builtInPattern satisfies never;
+      throw new OraRuntimeError(`Unsupported pattern memory namespace: ${pattern}`, -32002, { pattern });
   }
-  throw new OraRuntimeError(`Unsupported pattern memory namespace: ${pattern}`, -32002, { pattern });
 }
 
 export function patternOutput(
@@ -92,7 +99,8 @@ export function patternOutput(
       },
     };
   }
-  switch (pattern) {
+  const builtInPattern = pattern as BuiltInCoordinationPattern;
+  switch (builtInPattern) {
     case "generator_verifier":
       return {
         token: "verified",
@@ -174,15 +182,24 @@ export function patternOutput(
           ],
         },
       };
+    default:
+      builtInPattern satisfies never;
+      throw new OraRuntimeError(`Unsupported pattern output: ${pattern}`, -32002, { pattern });
   }
-  throw new OraRuntimeError(`Unsupported pattern output: ${pattern}`, -32002, { pattern });
 }
 
+/**
+ * Transitions topology node statuses for resume. Preserves per-node state from the snapshot:
+ * - "done" nodes stay "done" (already completed before interruption)
+ * - "failed" nodes stay "failed"
+ * - All other nodes transition to the target status.
+ * This prevents already-completed nodes from being re-executed on resume.
+ */
 export function withTopologyStatus(snapshot: StateSnapshot, status: "running" | "done"): StateSnapshot["topology"] {
   return {
     nodes: snapshot.topology.nodes.map((node) => ({
       ...node,
-      status,
+      status: node.status === "done" || node.status === "failed" ? node.status : status,
     })),
     edges: snapshot.topology.edges,
   };

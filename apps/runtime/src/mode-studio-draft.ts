@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  BuiltInCoordinationPattern,
   CoordinationPattern,
   CustomAgentGeneratedDraft,
   DEFAULT_WEB_TOOL_IDS,
@@ -856,7 +857,8 @@ export function modeStudioTopologyChoices() {
 }
 
 export function modeStudioFamilyReason(family: CoordinationPattern): string {
-  switch (family) {
+  const builtInFamily = family as BuiltInCoordinationPattern;
+  switch (builtInFamily) {
     case "generator_verifier":
       return "a production stage followed by explicit verification";
     case "agent_teams":
@@ -866,7 +868,9 @@ export function modeStudioFamilyReason(family: CoordinationPattern): string {
     case "shared_state":
       return "collaboration through shared state or memory";
     case "orchestrator_subagent":
+      return "decomposition and delegated subagent work";
     default:
+      builtInFamily satisfies never;
       return "decomposition and delegated subagent work";
   }
 }

@@ -12,7 +12,8 @@ import {
   RunConfig,
   SINGLE_AGENT_MODE_ID,
   createModeSpecFromPattern,
-  getPatternDefinition
+  getPatternDefinition,
+  type BuiltInCoordinationPattern,
 } from "@cemeworm/shared";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import {
@@ -84,7 +85,7 @@ export function buildModeStudioDraft(
   const pattern = getPatternDefinition(family);
   const base = params.currentDraft && params.currentDraft.family === family
     ? params.currentDraft
-    : createModeSpecFromPattern(family);
+    : createModeSpecFromPattern(family as BuiltInCoordinationPattern);
   const rolePlans = modeStudioRolePlans(family, userText);
   const agentDrafts: ModeStudioDraftBundle["agentDrafts"] = [];
   const modeDraft = prepareModeStudioDraft(base, userText, agentDrafts, params);
@@ -252,7 +253,7 @@ function modeStudioBundleFromProvider(
     ? params.currentDraft
     : source.family === rawFamily
       ? source
-      : createModeSpecFromPattern(rawFamily);
+      : createModeSpecFromPattern(rawFamily as BuiltInCoordinationPattern);
   const now = deps.now();
   const idSeed = typeof rawMode.id === "string"
     ? rawMode.id
@@ -266,7 +267,7 @@ function modeStudioBundleFromProvider(
     family: rawFamily,
     label: typeof rawMode.label === "string" && rawMode.label.trim() ? rawMode.label.trim() : modeStudioLabel(text),
     summary: typeof rawMode.summary === "string" && rawMode.summary.trim() ? rawMode.summary.trim() : modeStudioSummary(text, base.summary),
-    description: typeof rawMode.description === "string" && rawMode.description.trim() ? rawMode.description.trim() : modeStudioDescription(text, getPatternDefinition(rawFamily)),
+    description: typeof rawMode.description === "string" && rawMode.description.trim() ? rawMode.description.trim() : modeStudioDescription(text, getPatternDefinition(rawFamily as BuiltInCoordinationPattern)),
     recommendedUse: typeof rawMode.recommendedUse === "string" && rawMode.recommendedUse.trim() ? rawMode.recommendedUse.trim() : `Use when the user wants: ${modeStudioPurpose(text)}.`,
     systemPreset: false,
     visibility: "user",

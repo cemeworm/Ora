@@ -2,9 +2,9 @@ import { orderedEnabledModeNodes } from "@cemeworm/shared";
 import { assessGeneratorVerifierResponse } from "./generator-verifier-utils.js";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { agentMessageContent, asText, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { agentMessageContent, asText, dispatchNodeTemplate, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode } from "./generic-node-executor.js";
-import { type ExecutionBag } from "./mode-driver-helpers.js";
+import { type ExecutionBag, type GeneratorVerifierBag } from "./mode-driver-helpers.js";
 
 export async function executeGeneratorVerifier(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, config, modeSpec } = input;
@@ -12,7 +12,7 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const maxIterations = modeSpec.stopPolicy.maxIterations ?? 3;
-  const bag: ExecutionBag = {
+  const bag: GeneratorVerifierBag = {
     prompt,
     rubric: [
       "addresses the user request",
@@ -119,6 +119,12 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
           });
           return verifierNotes;
         }
+        return dispatchNodeTemplate(context, modeSpec, node, bag, {
+          bagKey: node.template,
+          agentId: node.ownerAgentId ?? "verifier",
+          title: titleForNode(node, node.label),
+          fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
+        });
       }, bag);
     }
 

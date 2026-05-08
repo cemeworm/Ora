@@ -3,8 +3,10 @@ import {
   OraEventEnvelope,
   StateSnapshot,
   StateSnapshotSchema,
-  createModeSpecFromPattern
+  createModeSpecFromPattern,
+  type BuiltInCoordinationPattern,
 } from "@cemeworm/shared";
+import { checkpointLabelForStatus } from "./harness/runtime-prompts.js";
 import type { MemoryRecord } from "@cemeworm/shared";
 import {
   patternMemoryNamespace,
@@ -28,6 +30,28 @@ export interface NonKernelResumeMutationDeps {
   appendEvent: AppendRunEvent;
   now: () => number;
   syncTodos: (snapshot: StateSnapshot, reason: string) => StateSnapshot;
+}
+
+/**
+ * Shared checkpoint creation for both kernel and non-kernel resume paths.
+ * Ensures consistent structure and labeling across all resume flows.
+ */
+export function createResumeCheckpoint(params: {
+  runId: string;
+  index: number;
+  label?: string;
+  now: number;
+  eventSeq: number;
+  stateHash?: string;
+}): CheckpointMeta {
+  return {
+    id: `${params.runId}:checkpoint-${params.index}`,
+    runId: params.runId,
+    label: params.label ?? checkpointLabelForStatus("succeeded"),
+    createdAt: params.now,
+    eventSeq: params.eventSeq,
+    stateHash: params.stateHash ?? `${params.runId}:resume:${params.eventSeq}`,
+  };
 }
 
 export function beginNonKernelResume(params: {
@@ -117,7 +141,7 @@ export function applyNonKernelResumeApprovals(
       { actionId: action.id, status: "running", record: running },
     );
 
-    const workingModeSpec = working.modeSpec ?? createModeSpecFromPattern(working.pattern);
+    const workingModeSpec = working.modeSpec ?? createModeSpecFromPattern(working.pattern as BuiltInCoordinationPattern);
     const output = patternOutput(working.pattern, working.input.prompt, workingModeSpec);
     const createdAt = deps.now();
     const memory: MemoryRecord = {
@@ -172,14 +196,13 @@ export function completeNonKernelResumeMutation(
   deps: Pick<NonKernelResumeMutationDeps, "appendEvent" | "now">,
 ): StateSnapshot {
   let working = snapshot;
-  const checkpoint: CheckpointMeta = {
-    id: `${working.runId}:checkpoint-${working.checkpoints.length}`,
+  const checkpoint = createResumeCheckpoint({
     runId: working.runId,
+    index: working.checkpoints.length,
     label: "Resume checkpoint",
-    createdAt: deps.now(),
+    now: deps.now(),
     eventSeq: working.events.length,
-    stateHash: `${working.pattern}:resume:${working.events.length}`,
-  };
+  });
   working = deps.appendEvent(
     {
       ...working,

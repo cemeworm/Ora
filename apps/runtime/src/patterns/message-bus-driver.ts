@@ -1,16 +1,16 @@
 import { orderedEnabledModeNodes } from "@cemeworm/shared";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { agentMessageContent, asText, correlationId, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { agentMessageContent, asText, correlationId, dispatchNodeTemplate, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode } from "./generic-node-executor.js";
-import { type ExecutionBag } from "./mode-driver-helpers.js";
+import { type ExecutionBag, type MessageBusBag } from "./mode-driver-helpers.js";
 
 export async function executeMessageBus(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, modeSpec } = input;
   const nodes = orderedEnabledModeNodes(modeSpec);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
-  const bag: ExecutionBag = {
+  const bag: MessageBusBag = {
     prompt,
     correlationId: correlationId("bus"),
   };
@@ -159,6 +159,12 @@ export async function executeMessageBus(input: ModeExecutionInput): Promise<Patt
         });
         return bag.response;
       }
+      return dispatchNodeTemplate(context, modeSpec, node, bag, {
+        bagKey: node.template,
+        agentId: node.ownerAgentId ?? routerId,
+        title: titleForNode(node, node.label),
+        fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
+      });
     }, bag);
   }
 

@@ -161,4 +161,30 @@ export async function runGenericModeNode(
   return nextCompleted;
 }
 
+/**
+ * Executes a layer of independent nodes in parallel. All nodes in the layer share
+ * the same `completedNodes` baseline (they have no dependencies on each other).
+ * Returns the updated completed count after all nodes in the layer finish.
+ */
+export async function runModeLayer(
+  context: PatternExecutionContext,
+  modeSpec: ModeSpec,
+  nodes: ModeNodeSpec[],
+  totalActiveNodes: number,
+  completedNodes: number,
+  executeNode: (node: ModeNodeSpec) => Promise<unknown>,
+  bag: Record<string, unknown>,
+): Promise<number> {
+  if (nodes.length === 0) return completedNodes;
+  if (nodes.length === 1) {
+    return runGenericModeNode(context, modeSpec, nodes[0]!, totalActiveNodes, completedNodes, () => executeNode(nodes[0]!), bag);
+  }
+  const results = await Promise.all(
+    nodes.map((node) =>
+      runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, () => executeNode(node), bag),
+    ),
+  );
+  return Math.max(...results);
+}
+
 export { runGenericModeNode as runModeNode };

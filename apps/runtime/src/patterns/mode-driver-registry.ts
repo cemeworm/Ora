@@ -1,5 +1,7 @@
 import {
+  BuiltInCoordinationPatternSchema,
   CoordinationPatternSchema,
+  type BuiltInCoordinationPattern,
   type CoordinationPattern,
   type ModeSpec,
   type PatternDefinition,
@@ -16,7 +18,7 @@ export interface ModeExecutionInput {
 }
 
 export type ModeDriverExecutor = (input: ModeExecutionInput) => Promise<PatternExecutionResult>;
-export type BuiltInModeDriverExecutors = Record<CoordinationPattern, ModeDriverExecutor>;
+export type BuiltInModeDriverExecutors = Record<BuiltInCoordinationPattern, ModeDriverExecutor>;
 
 export class ModeDriverRegistry {
   private readonly executors = new Map<CoordinationPattern, ModeDriverExecutor>();
@@ -38,7 +40,7 @@ export class ModeDriverRegistry {
   }
 
   assertCoversBuiltInFamilies(): void {
-    const missing = CoordinationPatternSchema.options.filter((family) => !this.executors.has(family));
+    const missing = BuiltInCoordinationPatternSchema.options.filter((family) => !this.executors.has(family));
     if (missing.length > 0) {
       throw new Error(`Missing built-in mode driver registrations: ${missing.join(", ")}`);
     }
@@ -47,7 +49,7 @@ export class ModeDriverRegistry {
 
 export function createBuiltInModeDriverRegistry(executors: BuiltInModeDriverExecutors): ModeDriverRegistry {
   const registry = new ModeDriverRegistry();
-  for (const family of CoordinationPatternSchema.options) {
+  for (const family of BuiltInCoordinationPatternSchema.options) {
     registry.register(family, executors[family]);
   }
   registry.assertCoversBuiltInFamilies();

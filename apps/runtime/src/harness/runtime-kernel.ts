@@ -121,6 +121,7 @@ import { createKernelPatternExecutionContextAdapter } from "./runtime-pattern-co
 import { KernelRunner, createKernelRunnerDeps } from "./runtime-kernel-runner.js";
 import { activePlanStepId, advancePlanListFromLifecycle, planListUpdatedPayload } from "./runtime-plan-list-state.js";
 import { classifyContinuationDispatch } from "../run-continuation-dispatcher.js";
+import { createResumeCheckpoint } from "../run-resume-mutation.js";
 import {
   injectRootAgentTopology,
   rootAgentProfile,
@@ -151,7 +152,7 @@ export interface RuntimeKernelOptions {
     approvedActionIds?: string[];
     approvedActions?: ApprovedResumeAction[];
   };
-  resumeState?: Pick<StateSnapshot, "plan" | "planList" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation">;
+  resumeState?: Pick<StateSnapshot, "plan" | "planList" | "todos" | "actions" | "toolCalls" | "toolResults" | "continuation" | "conversation" | "topology">;
   streamProvider?: boolean;
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
@@ -675,10 +676,13 @@ export async function executeRuntimeKernel(
   const actionLedger = new ActionLedger(runId, options.resumeState?.actions);
   const policyService = new PolicyService(runId, now);
   const resumeApprovals = createResumeApprovalMatcher(options.resumeContext);
-  const rootTopology = injectRootAgentTopology({
-    nodes: definition.topology.nodes.map((node) => ({ ...node })),
-    edges: definition.topology.edges,
-  }, modeSpec);
+  const resumeTopology = options.resumeState?.topology;
+  const rootTopology = resumeTopology
+    ? { nodes: resumeTopology.nodes.map((n) => ({ ...n })), edges: resumeTopology.edges }
+    : injectRootAgentTopology({
+        nodes: definition.topology.nodes.map((node) => ({ ...node })),
+        edges: definition.topology.edges,
+      }, modeSpec);
   const initialQueueSummary: QueueSummary = {
     mode:
       definition.coordinationKind === "bus"
@@ -1717,14 +1721,13 @@ export async function executeRuntimeKernel(
     });
     emit("memory.updated", { record: memoryRecord });
     emit("run.done", { status: "succeeded", output });
-    const checkpoint: CheckpointMeta = {
-      id: `${runId}:checkpoint-0`,
+    const checkpoint = createResumeCheckpoint({
       runId,
-      label: checkpointLabelForStatus("succeeded"),
-      createdAt: now(),
+      index: 0,
+      now: now(),
       eventSeq: kernelRuntimeContext.eventCount(),
       stateHash: JSON.stringify(output),
-    };
+    });
     emit(
       "checkpoint.created",
       {

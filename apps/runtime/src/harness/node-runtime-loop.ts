@@ -75,6 +75,9 @@ export interface RunNodeRuntimeLoopParams {
   prompt: string;
   system: string;
   toolIds: string[];
+  /** Optional per-node timeout in milliseconds. If set, the node automatically
+   *  transitions to `degraded` if execution exceeds this duration. */
+  timeoutMs?: number;
 }
 
 export interface RunNodeRuntimeLoopDeps {
@@ -276,6 +279,27 @@ export async function runNodeRuntimeLoop(
       );
     },
   });
+  let nodeTimeoutSignal: AbortSignal | undefined;
+  if (params.timeoutMs && params.timeoutMs > 0) {
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      abortController.abort();
+      nodeLoopController.emit("degraded", {
+        agentId: params.agentId,
+        title: params.title,
+        reason: `Node timeout after ${params.timeoutMs}ms`,
+      });
+    }, params.timeoutMs);
+    nodeTimeoutSignal = abortController.signal;
+    const externalSignal = deps.signal;
+    if (externalSignal) {
+      externalSignal.addEventListener("abort", () => {
+        abortController.abort();
+        clearTimeout(timeoutHandle);
+      }, { once: true });
+    }
+  }
+
   const emitNodeRuntimeState = nodeLoopController.emit;
   const completionScope = { agentId: params.agentId, nodeId: params.nodeId };
   const enabledTools = runtimeToolExecutor.enabledToolIds(params.toolIds);
@@ -355,10 +379,13 @@ export async function runNodeRuntimeLoop(
       messages = [...nextMessages];
     },
   };
-  const withAbortSignal = (request: ModelRequest): ModelRequest => ({
-    ...request,
-    signal: request.signal ?? deps.signal,
-  });
+  const withAbortSignal = (request: ModelRequest): ModelRequest => {
+    const effectiveSignal = nodeTimeoutSignal ?? deps.signal;
+    return {
+      ...request,
+      signal: request.signal ?? effectiveSignal,
+    };
+  };
 
   const invokeProviderWithRecovery = async (
     request: ModelRequest,

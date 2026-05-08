@@ -1,23 +1,27 @@
-import { orderedEnabledModeNodes } from "@cemeworm/shared";
+import { orderedEnabledModeLayers } from "@cemeworm/shared";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { agentMessageContent, asText, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
-import { runGenericModeNode } from "./generic-node-executor.js";
-import { type ExecutionBag } from "./mode-driver-helpers.js";
+import { agentMessageContent, asText, dispatchNodeTemplate, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, resolveConditionalSkips, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { runModeLayer } from "./generic-node-executor.js";
+import { type ExecutionBag, type SharedStateBag } from "./mode-driver-helpers.js";
 
 export async function executeSharedState(input: ModeExecutionInput): Promise<PatternExecutionResult> {
   const { context, prompt, modeSpec } = input;
-  const nodes = orderedEnabledModeNodes(modeSpec);
-  const totalActiveNodes = nodes.length;
+  const layers = orderedEnabledModeLayers(modeSpec);
+  const allNodes = layers.flat();
+  const totalActiveNodes = allNodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
-  const bag: ExecutionBag = { prompt };
-  const orchestratorId = ownerForTemplate(nodes, "seed", "orchestrator");
-  const researcherId = ownerForTemplate(nodes, "research", "researcher");
-  const reviewerId = ownerForTemplate(nodes, "converge", "reviewer");
+  const bag: SharedStateBag = { prompt };
+  const orchestratorId = ownerForTemplate(allNodes, "seed", "orchestrator");
+  const researcherId = ownerForTemplate(allNodes, "research", "researcher");
+  const reviewerId = ownerForTemplate(allNodes, "converge", "reviewer");
   let completedNodes = 0;
 
-  for (const node of nodes) {
-      completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
+  for (const layer of layers) {
+    const skipIds = completedNodes > 0 ? resolveConditionalSkips(modeSpec, bag, new Set(layer.map((n) => n.id))) : new Set<string>();
+    const activeLayerNodes = layer.filter((n) => !skipIds.has(n.id));
+
+    completedNodes = await runModeLayer(context, modeSpec, activeLayerNodes, totalActiveNodes, completedNodes, async (node) => {
         if (node.template === "seed") {
         const agentId = node.ownerAgentId ?? orchestratorId;
         bag.seed = await context.callAgent({
@@ -133,6 +137,13 @@ export async function executeSharedState(input: ModeExecutionInput): Promise<Pat
         });
         return bag.convergence;
       }
+      // Custom template fallback: use generic dispatch
+      return dispatchNodeTemplate(context, modeSpec, node, bag, {
+        bagKey: node.template,
+        agentId: node.ownerAgentId ?? reviewerId,
+        title: titleForNode(node, node.label),
+        fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
+      });
     }, bag);
   }
 

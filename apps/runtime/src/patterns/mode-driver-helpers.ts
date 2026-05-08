@@ -5,6 +5,51 @@ export { runGenericModeNode, runModeNode } from "./generic-node-executor.js";
 
 export type ExecutionBag = Record<string, unknown>;
 
+/** Bag keys for orchestrator-subagent pattern: decompose → research → review → synthesize. */
+export interface OrchestratorSubagentBag extends ExecutionBag {
+  prompt: string;
+  research?: string;
+  review?: string;
+  build?: string;
+  handoff?: string;
+  plan?: string;
+  isGitWorktree?: boolean;
+}
+
+/** Bag keys for generator-verifier pattern: draft → verify → decide. */
+export interface GeneratorVerifierBag extends ExecutionBag {
+  prompt: string;
+  candidate?: string;
+  verdict?: string;
+  rubric?: string[];
+}
+
+/** Bag keys for agent-teams pattern: triage → build → check → handoff. */
+export interface AgentTeamsBag extends ExecutionBag {
+  prompt: string;
+  triage?: string;
+  build?: string;
+  check?: string;
+  handoff?: string;
+}
+
+/** Bag keys for message-bus pattern: publish → route → handle → respond. */
+export interface MessageBusBag extends ExecutionBag {
+  prompt: string;
+  routingPlan?: string;
+  correlationId?: string;
+  published?: string;
+  response?: string;
+}
+
+/** Bag keys for shared-state pattern: seed → contribute → converge. */
+export interface SharedStateBag extends ExecutionBag {
+  prompt: string;
+  seed?: string;
+  findings?: string;
+  convergence?: string;
+}
+
 export function containsCompleteProposedPlan(value: unknown): boolean {
   return /<proposed_plan>\s*[\s\S]+?\s*<\/proposed_plan>/.test(asText(value));
 }
