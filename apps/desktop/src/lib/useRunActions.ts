@@ -5,6 +5,7 @@ import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE,
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
 import { useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
+import { timeStart, timeEnd } from "./debugTiming";
 import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
@@ -263,6 +264,7 @@ export function useRunActions() {
     });
     if (lastStableCacheKeyRef.current !== cacheKey || !stableViewModelRef.current) {
       lastStableCacheKeyRef.current = cacheKey;
+      timeStart("stableViewModel build");
       stableViewModelRef.current = buildStableViewModel(
         state.patterns,
         state.modes,
@@ -271,6 +273,7 @@ export function useRunActions() {
         state.selectedPattern,
         state.selectedModeId,
       );
+      timeEnd("stableViewModel build");
     }
   } else {
     stableViewModelRef.current = undefined;
@@ -281,7 +284,8 @@ export function useRunActions() {
   // Dynamic viewModel parts — updates each frame during streaming
   const dynamicViewModel = useMemo(() => {
     if (state.patterns.length === 0 || !state.activeSessionDetail) return undefined;
-    return buildDynamicViewModel(
+    timeStart("dynamicViewModel compute");
+    const result = buildDynamicViewModel(
       state.patterns,
       state.modes,
       state.activeSessionDetail,
@@ -289,11 +293,19 @@ export function useRunActions() {
       state.selectedPattern,
       state.selectedModeId,
     );
+    timeEnd("dynamicViewModel compute");
+    return result;
   }, [state.patterns, state.modes, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern, state.selectedModeId]);
 
   const viewModel = useMemo(() => {
-    if (!stableViewModel || !dynamicViewModel) return undefined;
-    return { ...stableViewModel, ...dynamicViewModel };
+    timeStart("viewModel compute");
+    if (!stableViewModel || !dynamicViewModel) {
+      timeEnd("viewModel compute");
+      return undefined;
+    }
+    const result = { ...stableViewModel, ...dynamicViewModel };
+    timeEnd("viewModel compute");
+    return result;
   }, [stableViewModel, dynamicViewModel]);
 
   const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
@@ -365,6 +377,7 @@ export function useRunActions() {
   }
 
   async function selectSession(sessionId: string) {
+    timeStart("selectSession");
     const previousSessionId = state.selectedSessionId;
     const requestId = ++sessionRequestRef.current;
     dispatch({ type: "SET_LOADING", loading: true });
@@ -372,16 +385,19 @@ export function useRunActions() {
       dispatch({ type: "SELECT_SESSION", sessionId });
     }
     try {
+      timeStart("getSession RPC");
       await hydrateSession(sessionId, undefined, undefined, {
         refreshCollections: false,
         shouldApply: () => sessionRequestRef.current === requestId,
       });
+      timeEnd("getSession RPC");
       cleanupPreviousSessionIfDisposable(previousSessionId, sessionId);
     } catch (error) {
       if (sessionRequestRef.current !== requestId) return;
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Session load failed." });
       dispatch({ type: "SET_LOADING", loading: false });
     }
+    timeEnd("selectSession");
   }
 
   async function prefetchSession(sessionId: string) {

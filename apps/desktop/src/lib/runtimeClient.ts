@@ -1,3 +1,4 @@
+import { timeStart, timeEnd } from "./debugTiming";
 import type {
   ActionRecord as OraActionRecord,
   AgentCatalogResult as OraAgentCatalogResult,
@@ -309,6 +310,8 @@ export function createRuntimeClient() {
   let managedLangfuseDetail: string | undefined;
 
   async function call<T>(method: string, params?: unknown): Promise<T> {
+    const isSessionGet = method === "sessions.get";
+    if (isSessionGet) timeStart("RPC sessions.get (bridge)");
     const request: JsonRpcRequest = {
       jsonrpc: "2.0",
       id: requestId++,
@@ -316,52 +319,56 @@ export function createRuntimeClient() {
       params,
     };
 
-    const tauriAvailable = isTauriAvailable();
-    const tauriResponse = tauriAvailable
-      ? await tryTauriJsonRpc(request)
-      : { ok: false as const, tauriAvailable };
-    if (tauriResponse.ok) {
+    try {
+      const tauriAvailable = isTauriAvailable();
+      const tauriResponse = tauriAvailable
+        ? await tryTauriJsonRpc(request)
+        : { ok: false as const, tauriAvailable };
+      if (tauriResponse.ok) {
+        lastHealth = {
+          ok: true,
+          mode: "tauri",
+          service: "ora-runtime",
+          detail: processBridgeEnabled
+            ? compactDetails([
+              "Tauri command bridge is serving Ora JSON-RPC.",
+              managedLangfuseDetail,
+            ])
+            : tauriUnavailableReason,
+        };
+        if (method.startsWith("channels.wechat")) {
+          console.warn("[ora:debug] channels.wechat response (tauri ok):", JSON.stringify(tauriResponse.response));
+        }
+        return unwrapJsonRpc<T>(tauriResponse.response);
+      }
+
+      if (tauriAvailable) {
+        lastHealth = {
+          ok: false,
+          mode: "unavailable",
+          service: "ora-runtime",
+          detail: tauriUnavailableReason,
+        };
+        if (method.startsWith("channels.wechat")) {
+          console.warn("[ora:debug] channels.wechat tauri failed:", tauriUnavailableReason, tauriResponse);
+        }
+        throw new Error(tauriUnavailableReason);
+      }
+
+      const response = await local.handle(request);
       lastHealth = {
         ok: true,
-        mode: "tauri",
-        service: "ora-runtime",
-        detail: processBridgeEnabled
-          ? compactDetails([
-            "Tauri command bridge is serving Ora JSON-RPC.",
-            managedLangfuseDetail,
-          ])
-          : tauriUnavailableReason,
+        mode: "browser_mock",
+        service: "ora-runtime-mock",
+        detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
       };
       if (method.startsWith("channels.wechat")) {
-        console.warn("[ora:debug] channels.wechat response (tauri ok):", JSON.stringify(tauriResponse.response));
+        console.warn("[ora:debug] channels.wechat response (mock):", JSON.stringify(response));
       }
-      return unwrapJsonRpc<T>(tauriResponse.response);
+      return unwrapJsonRpc<T>(response);
+    } finally {
+      if (isSessionGet) timeEnd("RPC sessions.get (bridge)");
     }
-
-    if (tauriAvailable) {
-      lastHealth = {
-        ok: false,
-        mode: "unavailable",
-        service: "ora-runtime",
-        detail: tauriUnavailableReason,
-      };
-      if (method.startsWith("channels.wechat")) {
-        console.warn("[ora:debug] channels.wechat tauri failed:", tauriUnavailableReason, tauriResponse);
-      }
-      throw new Error(tauriUnavailableReason);
-    }
-
-    const response = await local.handle(request);
-    lastHealth = {
-      ok: true,
-      mode: "browser_mock",
-      service: "ora-runtime-mock",
-      detail: "Browser dev fallback is serving deterministic Ora JSON-RPC.",
-    };
-    if (method.startsWith("channels.wechat")) {
-      console.warn("[ora:debug] channels.wechat response (mock):", JSON.stringify(response));
-    }
-    return unwrapJsonRpc<T>(response);
   }
 
   async function normalizeRuntimeBootstrap(

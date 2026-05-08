@@ -27,6 +27,7 @@ import {
   readStoredLanguage,
   type AppLanguage,
 } from "./i18n";
+import { timeStart, timeEnd } from "./debugTiming";
 import { chooseEnabledProviderId } from "./providerSelection";
 import type {
   OraModeSpec,
@@ -1548,6 +1549,7 @@ export function workbenchReducer(
     }
 
     case "HYDRATE_SESSION": {
+      timeStart("HYDRATE_SESSION reducer");
       const snapshot = selectedSnapshotFromDetail(
         action.detail,
         action.snapshot,
@@ -1577,6 +1579,7 @@ export function workbenchReducer(
         state.selectedSessionId &&
         action.detail.session.sessionId !== state.selectedSessionId
       ) {
+        timeEnd("HYDRATE_SESSION reducer");
         return {
           ...state,
           projects: action.projects,
@@ -1592,6 +1595,7 @@ export function workbenchReducer(
         state.pendingRun,
         action.detail.session.sessionId,
       );
+      timeEnd("HYDRATE_SESSION reducer");
       return {
         ...state,
         projects: action.projects,

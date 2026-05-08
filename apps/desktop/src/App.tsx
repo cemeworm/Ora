@@ -35,6 +35,7 @@ import {
 } from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
+import { getRecords, clearRecords } from "./lib/debugTiming";
 import {
   adaptChatMessages,
   adaptPendingRunMessages,
@@ -1125,7 +1126,83 @@ function WorkbenchInner() {
           </>
         )}
       </div>
+      <DebugTimingOverlay />
     </AppShell>
+  );
+}
+
+function DebugTimingOverlay() {
+  const [records, setRecords] = useState(getRecords());
+  const [visible, setVisible] = useState(false);
+  const clickCountRef = useRef(0);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    if (!visible) return;
+    const interval = setInterval(() => {
+      setRecords(getRecords());
+    }, 200);
+    return () => clearInterval(interval);
+  }, [visible]);
+
+  const handleHotspotClick = () => {
+    clickCountRef.current += 1;
+    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    if (clickCountRef.current >= 3) {
+      clickCountRef.current = 0;
+      setVisible(true);
+    } else {
+      clickTimerRef.current = setTimeout(() => { clickCountRef.current = 0; }, 600);
+    }
+  };
+
+  if (!visible) {
+    return (
+      <div
+        onClick={handleHotspotClick}
+        className="fixed bottom-0 right-0 z-[9999] h-5 w-5"
+      />
+    );
+  }
+
+  return (
+    <div className="fixed bottom-2 right-2 z-[9999] max-h-[320px] w-[280px] overflow-auto rounded-lg border border-gray-700 bg-gray-900/95 p-2 font-mono text-[10px] leading-relaxed shadow-xl backdrop-blur">
+      <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-gray-300">
+        <span>⏱ 性能计时</span>
+        <div className="flex gap-1">
+          <button
+            onClick={() => { clearRecords(); setRecords([]); }}
+            className="rounded px-1 text-gray-500 hover:bg-gray-700 hover:text-gray-300"
+          >
+            清除
+          </button>
+          <button
+            onClick={() => setVisible(false)}
+            className="rounded px-1 text-gray-500 hover:bg-gray-700 hover:text-gray-300"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+      {records.length === 0 ? (
+        <div className="py-2 text-center text-gray-600">点击 session 查看耗时</div>
+      ) : (
+        records.map((r, i) => (
+          <div
+            key={i}
+            className="flex justify-between border-b border-gray-800 py-0.5"
+          >
+            <span className="text-gray-400">{r.label}</span>
+            <span className={cn(
+              "tabular-nums",
+              r.elapsed > 100 ? "text-red-400 font-semibold" : r.elapsed > 30 ? "text-yellow-400" : "text-green-400",
+            )}>
+              {r.elapsed.toFixed(1)}ms
+            </span>
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
