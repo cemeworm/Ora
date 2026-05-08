@@ -150,6 +150,8 @@ export type EvaluationEvaluatorSpec = z.infer<typeof EvaluationEvaluatorSpecSche
 export const EvaluationEvaluatorResultSchema = z.object({
   evaluatorId: z.string().min(1),
   evaluatorKind: EvaluationEvaluatorKindSchema,
+  scorerVersion: z.string().min(1).default("1.0.0"),
+  rubricVersion: z.string().min(1).optional(),
   score: z.number().min(0).max(1).optional(),
   passed: z.boolean().optional(),
   rationale: z.string().min(1).optional(),
@@ -204,6 +206,13 @@ export const EvaluationDatasetSourceFormatSchema = z.enum([
 ]);
 export type EvaluationDatasetSourceFormat = z.infer<typeof EvaluationDatasetSourceFormatSchema>;
 
+export const EvaluationBenchmarkMaturitySchema = z.enum([
+  "seed",
+  "compatible",
+  "official",
+]);
+export type EvaluationBenchmarkMaturity = z.infer<typeof EvaluationBenchmarkMaturitySchema>;
+
 export const EvaluationDatasetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -213,6 +222,11 @@ export const EvaluationDatasetSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   caseCount: z.number().int().nonnegative(),
   tags: z.array(z.string().min(1)).default([]),
+  benchmarkMaturity: EvaluationBenchmarkMaturitySchema.default("seed"),
+  benchmarkFamily: z.string().min(1).optional(),
+  scorerContract: z.string().min(1).optional(),
+  fixtureRequirements: z.array(z.string().min(1)).default([]),
+  knownLimitations: z.array(z.string().min(1)).default([]),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -275,6 +289,7 @@ export const EvaluationSpecSchema = z.object({
   configs: z.array(EvaluationConfigSchema).min(1),
   repetitions: z.number().int().positive().max(10).default(1),
   concurrency: z.number().int().positive().max(32).default(1),
+  timeoutMs: z.number().int().positive().max(600000).default(120000),
   baselineId: z.string().min(1).optional(),
   metadata: z.record(z.unknown()).default({}),
 });
@@ -360,6 +375,7 @@ export const EvaluationRunPlanSchema = z.object({
   providerConfig: z.unknown().optional(),
   repetitions: z.number().int().positive().max(10).default(1),
   concurrency: z.number().int().positive().max(32).default(1),
+  timeoutMs: z.number().int().positive().max(600000).default(120000),
   baselineId: z.string().min(1).optional(),
   routerOnly: z.boolean().default(false),
   gateThreshold: z.number().min(0).max(1).optional(),
@@ -467,6 +483,8 @@ export const EvaluationAttemptStatusSchema = z.enum([
   "running",
   "succeeded",
   "failed",
+  "timeout",
+  "cancelled",
 ]);
 export type EvaluationAttemptStatus = z.infer<typeof EvaluationAttemptStatusSchema>;
 
@@ -509,6 +527,47 @@ export const EvaluationAttemptSchema = z.object({
   langfuseScoreWriteStatus: LangfuseScoreWriteStatusSchema.optional(),
 });
 export type EvaluationAttempt = z.infer<typeof EvaluationAttemptSchema>;
+
+export const EvaluationAttemptEvidenceSchema = z.object({
+  environment: z.object({
+    nodeVersion: z.string().min(1).optional(),
+    platform: z.string().min(1).optional(),
+    arch: z.string().min(1).optional(),
+    oraVersion: z.string().min(1).optional(),
+    gitCommit: z.string().min(1).optional(),
+    gitBranch: z.string().min(1).optional(),
+  }).passthrough().default({}),
+  model: z.object({
+    providerId: z.string().min(1).optional(),
+    modelRef: z.string().min(1).optional(),
+    modelVersion: z.string().min(1).optional(),
+  }).passthrough().default({}),
+  scorerVersions: z.record(z.string().min(1)).default({}),
+  toolCalls: z.array(z.object({
+    toolId: z.string().min(1),
+    toolName: z.string().min(1),
+    status: z.string().min(1).optional(),
+    runtimeMs: z.number().int().nonnegative().optional(),
+  }).passthrough()).default([]),
+  artifactLinks: z.array(z.string().min(1)).default([]),
+  traceLinks: z.array(z.string().min(1)).default([]),
+  sandboxState: z.record(z.unknown()).default({}),
+  seedInfo: z.object({
+    caseId: z.string().min(1),
+    configId: z.string().min(1),
+    repetition: z.number().int().positive(),
+  }).passthrough().optional(),
+}).passthrough();
+export type EvaluationAttemptEvidence = z.infer<typeof EvaluationAttemptEvidenceSchema>;
+
+export const EvaluationScorerInfoSchema = z.object({
+  kind: EvaluationEvaluatorKindSchema,
+  version: z.string().min(1).default("1.0.0"),
+  rubricVersion: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  providerId: z.string().min(1).optional(),
+}).passthrough();
+export type EvaluationScorerInfo = z.infer<typeof EvaluationScorerInfoSchema>;
 
 export const EvaluationComparisonSchema = z.object({
   compatible: z.boolean(),
@@ -574,6 +633,8 @@ export const EvaluationRunStatusSchema = z.enum([
   "running",
   "succeeded",
   "failed",
+  "cancelled",
+  "timeout",
 ]);
 export type EvaluationRunStatus = z.infer<typeof EvaluationRunStatusSchema>;
 
@@ -590,6 +651,8 @@ export const EvaluationRunSchema = z.object({
   startedAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   completedAt: z.number().int().nonnegative().optional(),
+  cancelledAt: z.number().int().nonnegative().optional(),
+  resumable: z.boolean().default(false),
 });
 export type EvaluationRun = z.infer<typeof EvaluationRunSchema>;
 
@@ -620,7 +683,11 @@ export const EvaluationStreamEventSchema = z.object({
   type: z.enum([
     "evaluation.run.started",
     "evaluation.attempt.completed",
+    "evaluation.attempt.failed",
+    "evaluation.attempt.timeout",
     "evaluation.run.completed",
+    "evaluation.run.cancelled",
+    "evaluation.run.resumed",
     "evaluation.baseline.promoted",
     "evaluation.annotation.created",
     "evaluation.annotation.submitted",
@@ -850,3 +917,39 @@ export const EvaluationAnnotationSubmitParamsSchema = z.object({
   correctedOutput: z.unknown().optional(),
 });
 export type EvaluationAnnotationSubmitParams = z.infer<typeof EvaluationAnnotationSubmitParamsSchema>;
+
+export const EvaluationReportSchema = z.object({
+  evaluationRunId: z.string().min(1),
+  generatedAt: z.number().int().nonnegative(),
+  generatorVersion: z.string().min(1).default("1.0.0"),
+  run: z.lazy(() => EvaluationRunSchema),
+  configs: z.array(z.lazy(() => EvaluationConfigSchema)),
+  dataset: z.lazy(() => EvaluationDatasetSchema),
+  scorecard: z.lazy(() => EvaluationScorecardSchema),
+  failures: z.array(z.object({
+    caseId: z.string().min(1),
+    configId: z.string().min(1),
+    failureTags: z.array(z.string().min(1)),
+    score: z.number().min(0).max(1),
+    rationale: z.string().min(1).optional(),
+  })).default([]),
+  slices: z.array(z.lazy(() => EvaluationSliceSummarySchema)).default([]),
+  baselineDelta: z.object({
+    baselineId: z.string().min(1).optional(),
+    overallDelta: z.number().min(-1).max(1).optional(),
+    regressionCount: z.number().int().nonnegative().default(0),
+  }).passthrough().optional(),
+  traceLinks: z.array(z.object({
+    caseId: z.string().min(1),
+    configId: z.string().min(1),
+    runId: z.string().min(1),
+  })).default([]),
+  recommendedActions: z.array(z.string().min(1)).default([]),
+}).passthrough();
+export type EvaluationReport = z.infer<typeof EvaluationReportSchema>;
+
+export const EvaluationReportGenerateParamsSchema = z.object({
+  evaluationRunId: z.string().min(1),
+  format: z.enum(["json", "markdown", "html"]).default("markdown"),
+});
+export type EvaluationReportGenerateParams = z.infer<typeof EvaluationReportGenerateParamsSchema>;

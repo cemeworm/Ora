@@ -326,8 +326,16 @@ export function createRuntimeMethodHandler(
         return store.streamEvaluationRun(request.params);
       case "evaluation.runs.promoteBaseline":
         return store.promoteEvaluationBaseline(request.params);
+      case "evaluation.runs.cancel":
+        return store.cancelEvaluationRun(request.params);
+      case "evaluation.runs.resume":
+        return store.resumeEvaluationRun(request.params);
       case "evaluation.runs.export":
         return store.exportEvaluationRun(request.params);
+      case "evaluation.runs.report":
+        return store.generateEvaluationReport(request.params);
+      case "evaluation.runs.formatReport":
+        return store.formatEvaluationReport(request.params);
       case "evaluation.baselines.list":
         return store.listEvaluationBaselines(request.params);
       case "evaluation.feedback.submit":

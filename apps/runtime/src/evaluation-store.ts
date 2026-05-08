@@ -7,6 +7,8 @@ import {
   EvaluationAnnotationTask,
   EvaluationAnnotationTaskSchema,
   EvaluationAttempt,
+  EvaluationAttemptEvidence,
+  EvaluationAttemptEvidenceSchema,
   EvaluationAttemptSchema,
   EvaluationAssertion,
   EvaluationBaseline,
@@ -78,6 +80,9 @@ import {
   EvaluationRunStream,
   EvaluationRunStreamParamsSchema,
   EvaluationRunStreamSchema,
+  EvaluationReport,
+  EvaluationReportGenerateParamsSchema,
+  EvaluationReportSchema,
   EvaluationScore,
   EvaluationScoreSchema,
   EvaluationScorecard,
@@ -207,6 +212,43 @@ CREATE TABLE IF NOT EXISTS evaluation_annotations (
   data TEXT NOT NULL
 );
 `;
+
+class Semaphore {
+  private permits: number;
+  private readonly queue: Array<() => void> = [];
+
+  constructor(count: number) {
+    this.permits = Math.max(1, count);
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits -= 1;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    const next = this.queue.shift();
+    if (next) {
+      next();
+    } else {
+      this.permits += 1;
+    }
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+}
 
 export class LocalEvaluationStore {
   private readonly storage: "sqlite" | "file";
@@ -571,12 +613,59 @@ export class LocalEvaluationStore {
     });
   }
 
+  cancelEvaluationRun(params: unknown): EvaluationRunDetail {
+    const parsed = EvaluationRunGetParamsSchema.parse(params);
+    const run = this.runs.get(parsed.evaluationRunId);
+    if (!run) {
+      throw new Error(`Evaluation run not found: ${parsed.evaluationRunId}`);
+    }
+    const now = this.now();
+    const updatedRun = EvaluationRunSchema.parse({
+      ...run.detail.run,
+      status: "cancelled",
+      updatedAt: now,
+      cancelledAt: now,
+      completedAt: run.detail.run.completedAt ?? now,
+      resumable: false,
+    });
+    run.events.push(EvaluationStreamEventSchema.parse({
+      id: `${parsed.evaluationRunId}:evt-${run.events.length}`,
+      evaluationRunId: parsed.evaluationRunId,
+      seq: run.events.length,
+      type: "evaluation.run.cancelled",
+      createdAt: now,
+      payload: { status: "cancelled", cancelledAt: now },
+    }));
+    const detail = EvaluationRunDetailSchema.parse({
+      ...run.detail,
+      run: updatedRun,
+    });
+    this.runs.set(parsed.evaluationRunId, { detail, events: run.events });
+    this.saveRun(parsed.evaluationRunId);
+    return detail;
+  }
+
+  resumeEvaluationRun(params: unknown): EvaluationRunDetail {
+    const parsed = EvaluationRunGetParamsSchema.parse(params);
+    const run = this.runs.get(parsed.evaluationRunId);
+    if (!run) {
+      throw new Error(`Evaluation run not found: ${parsed.evaluationRunId}`);
+    }
+    if (!run.detail.run.resumable) {
+      throw new Error(`Evaluation run is not resumable: ${parsed.evaluationRunId}`);
+    }
+    if (run.detail.run.status !== "queued" && run.detail.run.status !== "running") {
+      throw new Error(`Evaluation run cannot be resumed in status "${run.detail.run.status}": ${parsed.evaluationRunId}`);
+    }
+    return run.detail;
+  }
+
   async startRun(params: unknown, executeRun: RunExecutor): Promise<EvaluationRunDetail> {
     const spec = EvaluationSpecSchema.parse(params);
     const dataset = this.getDataset({ datasetId: spec.datasetId });
     const evaluationRunId = this.nextEvaluationRunId();
     const startedAt = this.now();
-    const attempts: EvaluationAttempt[] = [];
+    const totalAttempts = dataset.cases.length * spec.configs.length * spec.repetitions;
     const events: EvaluationStreamEvent[] = [];
     const appendEvent = (type: EvaluationStreamEvent["type"], payload: unknown) => {
       const event = EvaluationStreamEventSchema.parse({
@@ -597,6 +686,30 @@ export class LocalEvaluationStore {
       repetitionCount: spec.repetitions,
     });
 
+    // Phase 1: Persist run as "queued" before starting attempts
+    const initialRun = EvaluationRunSchema.parse({
+      id: evaluationRunId,
+      spec,
+      status: "queued",
+      totalAttempts,
+      completedAttempts: 0,
+      failedAttempts: 0,
+      attemptIds: [],
+      caseResults: [],
+      scorecard: emptyScorecard(spec.configs),
+      startedAt,
+      updatedAt: startedAt,
+      resumable: true,
+    });
+    const initialDetail = EvaluationRunDetailSchema.parse({
+      run: initialRun,
+      attempts: [],
+      dataset: dataset.dataset,
+      configs: spec.configs,
+    });
+    this.runs.set(evaluationRunId, { detail: initialDetail, events });
+    this.saveRun(evaluationRunId);
+
     const isLangfuseDataset = dataset.dataset.sourceFormat === "langfuse";
     const langfuseExperimentName = isLangfuseDataset
       ? `ora-eval-${evaluationRunId}`
@@ -610,158 +723,116 @@ export class LocalEvaluationStore {
       );
     }
 
+    // Phase 1: Transition to "running"
+    initialRun.status = "running";
+    initialRun.updatedAt = this.now();
+    this.runs.set(evaluationRunId, { detail: { ...initialDetail, run: initialRun }, events });
+    this.saveRun(evaluationRunId);
+
+    // Phase 2: Build work items and execute with bounded concurrency
+    const workItems: Array<{ evaluationCase: EvaluationCase; config: EvaluationConfig; repetition: number }> = [];
     for (const evaluationCase of dataset.cases) {
       for (const config of spec.configs) {
         for (let repetition = 1; repetition <= spec.repetitions; repetition += 1) {
-          const attemptStartedAt = this.now();
-          const snapshot = await executeRun({
-            input: {
-              taskId: evaluationCase.id,
-              prompt: evaluationCase.input.prompt,
-              context: {
-                ...evaluationCase.input.context,
-                evaluationCaseId: evaluationCase.id,
-                evaluationMetadata: evaluationCase.metadata,
-                evaluationRunId,
-                evaluationConfigId: config.id,
-                evaluationProfileId: spec.profileId,
-              },
-              createdAt: attemptStartedAt,
-            },
-            config: {
-              ...config.runConfig,
-              metadata: {
-                ...(config.runConfig.metadata ?? {}),
-                evaluationRunId,
-                evaluationCaseId: evaluationCase.id,
-                evaluationConfigId: config.id,
-                evaluationProfileId: spec.profileId,
-              },
-            },
-          });
-          const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? attemptStartedAt));
-          const assessment = await this.scoreEvaluationAttempt(spec, evaluationCase, config, snapshot, runtimeMs);
-          const attempt = EvaluationAttemptSchema.parse({
-            id: `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`,
-            evaluationRunId,
-            caseId: evaluationCase.id,
-            configId: config.id,
-            repetition,
-            status: snapshot.status === "failed" ? "failed" : "succeeded",
-            underlyingRunId: snapshot.runId,
-            output: assessment.output ?? snapshot.output,
-            error: snapshot.error,
-            score: assessment.score,
-            metricScores: assessment.metricScores,
-            evaluatorResults: assessment.evaluatorResults,
-            observations: assessment.observations,
-            runtimeMs,
-            costUsd: estimateCostUsd(snapshot),
-            startedAt: attemptStartedAt,
-            updatedAt: snapshot.updatedAt,
-          });
-          attempts.push(attempt);
-
-          const traceMeta = getLangfuseRunTraceMetadata(snapshot.runId);
-          const traceId = traceMeta?.traceId;
-          if (traceId) {
-            try {
-              const scoreComment = attempt.evaluatorResults
-                .filter((result) => result.evaluatorKind === "llm_judge" && result.rationale)
-                .map((result) => `[${result.evaluatorId}] ${result.rationale}`)
-                .join("\n") || undefined;
-
-              const results = await Promise.all([
-                scoreLangfuseTrace(
-                  traceId,
-                  "evaluation.overall",
-                  attempt.score.overallScore,
-                  { comment: scoreComment }
-                ),
-                ...attempt.metricScores.map((metric) =>
-                  scoreLangfuseTrace(
-                    traceId,
-                    `evaluation.metric.${metric.metricId}`,
-                    metric.score
-                  )
-                ),
-                ...attempt.evaluatorResults
-                  .filter((result) => result.score !== undefined)
-                  .map((result) =>
-                    scoreLangfuseTrace(
-                      traceId,
-                      `evaluation.evaluator.${result.evaluatorId}`,
-                      result.score!,
-                      { comment: result.rationale }
-                    )
-                  ),
-              ]);
-              attempt.langfuseScoreWriteStatus = results.every((r) => r.status === "succeeded")
-                ? "succeeded"
-                : "failed";
-            } catch {
-              attempt.langfuseScoreWriteStatus = "failed";
-            }
-
-            if (langfuseExperimentName) {
-              await logLangfuseExperimentResult(
-                langfuseExperimentName,
-                evaluationCase.id,
-                traceId,
-              );
-            }
-          } else {
-            attempt.langfuseScoreWriteStatus = "failed";
-          }
-
-          for (const task of assessment.annotationTasks) {
-            const annotation = EvaluationAnnotationTaskSchema.parse({
-              ...task,
-              id: this.nextAnnotationId(),
-              evaluationRunId,
-              attemptId: attempt.id,
-              caseId: evaluationCase.id,
-              configId: config.id,
-              input: evaluationCase.input,
-              output: attempt.output,
-              expected: evaluationCase.expected,
-              status: "pending",
-              createdAt: this.now(),
-              updatedAt: this.now(),
-            });
-            this.annotations.set(annotation.id, annotation);
-            this.saveAnnotation(annotation);
-            appendEvent("evaluation.annotation.created", { annotationTaskId: annotation.id, attemptId: attempt.id });
-          }
-          appendEvent("evaluation.attempt.completed", {
-            attemptId: attempt.id,
-            caseId: attempt.caseId,
-            configId: attempt.configId,
-            repetition,
-            status: attempt.status,
-            underlyingRunId: attempt.underlyingRunId,
-            overallScore: attempt.score.overallScore,
-          });
+          workItems.push({ evaluationCase, config, repetition });
         }
       }
     }
 
+    const attempts: EvaluationAttempt[] = [];
+    const concurrency = Math.max(1, spec.concurrency);
+    const semaphore = new Semaphore(concurrency);
+
+    // Phase 2 & 3: Execute work items concurrently with per-attempt isolation
+    await Promise.all(workItems.map((item) =>
+      semaphore.run(async () => {
+        let attempt: EvaluationAttempt;
+        let annotationTasks: Array<Partial<EvaluationAnnotationTask>> = [];
+        try {
+          const result = await this.executeSingleAttempt(
+            item.evaluationCase,
+            item.config,
+            item.repetition,
+            evaluationRunId,
+            spec,
+            executeRun,
+            langfuseExperimentName,
+            dataset
+          );
+          attempt = result.attempt;
+          annotationTasks = result.annotationTasks;
+        } catch (error) {
+          // Phase 3: Failure isolation - record failed attempt and continue
+          attempt = this.createFailedAttempt(
+            item.evaluationCase,
+            item.config,
+            item.repetition,
+            evaluationRunId,
+            spec,
+            error
+          );
+        }
+
+        attempts.push(attempt);
+
+        // Create annotation tasks from evaluator results
+        for (const task of annotationTasks) {
+          const annotation = EvaluationAnnotationTaskSchema.parse({
+            ...task,
+            id: this.nextAnnotationId(),
+            evaluationRunId,
+            attemptId: attempt.id,
+            caseId: item.evaluationCase.id,
+            configId: item.config.id,
+            input: item.evaluationCase.input,
+            output: attempt.output,
+            expected: item.evaluationCase.expected,
+            status: "pending",
+            createdAt: this.now(),
+            updatedAt: this.now(),
+          });
+          this.annotations.set(annotation.id, annotation);
+          this.saveAnnotation(annotation);
+          appendEvent("evaluation.annotation.created", { annotationTaskId: annotation.id, attemptId: attempt.id });
+        }
+
+        appendEvent("evaluation.attempt.completed", {
+          attemptId: attempt.id,
+          caseId: attempt.caseId,
+          configId: attempt.configId,
+          repetition: item.repetition,
+          status: attempt.status,
+          underlyingRunId: attempt.underlyingRunId,
+          overallScore: attempt.score.overallScore,
+        });
+
+        // Phase 1: Incremental progress persistence after each attempt
+        this.updateRunProgress(evaluationRunId, attempts, dataset, spec, events, startedAt);
+      })
+    ));
+
+    // Phase 4: Determine final run status
+    const failedCount = attempts.filter((a) => a.status === "failed" || a.status === "timeout").length;
+    const finalStatus: EvaluationRun["status"] = failedCount === totalAttempts ? "failed" : "succeeded";
+
+    // Build final results
     const baseline = spec.baselineId ? this.baselines.get(spec.baselineId) : undefined;
     const caseResults = buildCaseResults(dataset.cases, spec.configs, attempts, baseline ? this.runs.get(baseline.evaluationRunId)?.detail : undefined, baseline);
     const scorecard = buildScorecard(spec.configs, attempts, caseResults);
     const run = EvaluationRunSchema.parse({
       id: evaluationRunId,
       spec,
-      status: "succeeded",
-      totalAttempts: attempts.length,
+      status: finalStatus,
+      totalAttempts,
       completedAttempts: attempts.length,
-      failedAttempts: attempts.filter((attempt) => attempt.status === "failed").length,
-      attemptIds: attempts.map((attempt) => attempt.id),
+      failedAttempts: failedCount,
+      attemptIds: attempts.map((a) => a.id),
       caseResults,
       scorecard,
       startedAt,
       updatedAt: this.now(),
       completedAt: this.now(),
+      resumable: false,
     });
     appendEvent("evaluation.run.completed", {
       overallScore: run.scorecard.overallScore,
@@ -770,7 +841,7 @@ export class LocalEvaluationStore {
     });
 
     const detail = EvaluationRunDetailSchema.parse({
-      run: { ...run, updatedAt: this.now(), completedAt: this.now() },
+      run,
       attempts,
       dataset: dataset.dataset,
       configs: spec.configs,
@@ -853,6 +924,7 @@ export class LocalEvaluationStore {
         evaluatorResults.push(EvaluationEvaluatorResultSchema.parse({
           evaluatorId: evaluator.id,
           evaluatorKind: evaluator.kind,
+          scorerVersion: "1.0.0",
           score: aggregate.overallScore,
           passed: aggregate.overallScore >= 0.75,
           rationale: aggregate.judgeRationale,
@@ -875,6 +947,7 @@ export class LocalEvaluationStore {
       evaluatorResults.push(EvaluationEvaluatorResultSchema.parse({
         evaluatorId: evaluator.id,
         evaluatorKind: evaluator.kind,
+        scorerVersion: "1.0.0",
         status: "pending",
         rationale: "Waiting for human annotation.",
       }));
@@ -932,6 +1005,8 @@ export class LocalEvaluationStore {
       return EvaluationEvaluatorResultSchema.parse({
         evaluatorId: evaluator.id,
         evaluatorKind: evaluator.kind,
+        scorerVersion: "1.0.0",
+        rubricVersion: evaluator.rubric ? "1.0.0" : undefined,
         score: Math.max(0, Math.min(1, score)),
         passed,
         rationale: typeof parsed.rationale === "string" ? parsed.rationale : "LLM judge returned a score.",
@@ -942,6 +1017,7 @@ export class LocalEvaluationStore {
       return EvaluationEvaluatorResultSchema.parse({
         evaluatorId: evaluator.id,
         evaluatorKind: evaluator.kind,
+        scorerVersion: "1.0.0",
         status: "failed",
         score: 0,
         passed: false,
@@ -949,6 +1025,228 @@ export class LocalEvaluationStore {
         failureTags: ["judge_failed"],
       });
     }
+  }
+
+  private buildAttemptEvidence(
+    evaluationCase: EvaluationCase,
+    config: EvaluationConfig,
+    repetition: number,
+    snapshot: StateSnapshot,
+    _runtimeMs: number
+  ): EvaluationAttemptEvidence {
+    const toolCalls = (snapshot.toolCalls ?? []).map((call) => ({
+      toolId: call.toolId,
+      toolName: call.toolId,
+      status: call.status,
+      runtimeMs: Math.max(0, call.updatedAt - call.requestedAt),
+    }));
+    const traceLinks = snapshot.trace?.traceId ? [snapshot.trace.traceId] : [];
+    const evidence = EvaluationAttemptEvidenceSchema.parse({
+      environment: {
+        nodeVersion: typeof process !== "undefined" ? process.version : undefined,
+        platform: typeof process !== "undefined" ? process.platform : undefined,
+        arch: typeof process !== "undefined" ? process.arch : undefined,
+      },
+      model: {
+        providerId: typeof config.runConfig.providerId === "string" ? config.runConfig.providerId : undefined,
+        modelRef: typeof config.runConfig.modelRef === "string" ? config.runConfig.modelRef : undefined,
+      },
+      scorerVersions: {
+        heuristic: "1.0.0",
+      },
+      toolCalls,
+      traceLinks,
+      seedInfo: {
+        caseId: evaluationCase.id,
+        configId: config.id,
+        repetition,
+      },
+    });
+    return evidence;
+  }
+
+  private async executeSingleAttempt(
+    evaluationCase: EvaluationCase,
+    config: EvaluationConfig,
+    repetition: number,
+    evaluationRunId: string,
+    spec: EvaluationSpec,
+    executeRun: RunExecutor,
+    langfuseExperimentName: string | undefined,
+    dataset: EvaluationDatasetDetail
+  ): Promise<{ attempt: EvaluationAttempt; annotationTasks: Array<Partial<EvaluationAnnotationTask>> }> {
+    const attemptStartedAt = this.now();
+    const timeoutMs = spec.timeoutMs ?? 120000;
+
+    const runPromise = executeRun({
+      input: {
+        taskId: evaluationCase.id,
+        prompt: evaluationCase.input.prompt,
+        context: {
+          ...evaluationCase.input.context,
+          evaluationCaseId: evaluationCase.id,
+          evaluationMetadata: evaluationCase.metadata,
+          evaluationRunId,
+          evaluationConfigId: config.id,
+          evaluationProfileId: spec.profileId,
+        },
+        createdAt: attemptStartedAt,
+      },
+      config: {
+        ...config.runConfig,
+        metadata: {
+          ...(config.runConfig.metadata ?? {}),
+          evaluationRunId,
+          evaluationCaseId: evaluationCase.id,
+          evaluationConfigId: config.id,
+          evaluationProfileId: spec.profileId,
+        },
+      },
+    });
+
+    let snapshot: StateSnapshot;
+    if ((spec.timeoutMs ?? 0) > 0) {
+      const timeoutPromise = new Promise<StateSnapshot>((_, reject) =>
+        setTimeout(() => reject(new Error(`Attempt timed out after ${timeoutMs}ms`)), timeoutMs)
+      );
+      snapshot = await Promise.race([runPromise, timeoutPromise]);
+    } else {
+      snapshot = await runPromise;
+    }
+
+    const runtimeMs = Math.max(0, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? attemptStartedAt));
+    const assessment = await this.scoreEvaluationAttempt(spec, evaluationCase, config, snapshot, runtimeMs);
+    const evidence = this.buildAttemptEvidence(evaluationCase, config, repetition, snapshot, runtimeMs);
+    const attemptStatus: EvaluationAttempt["status"] = snapshot.status === "failed" ? "failed" : "succeeded";
+
+    const attempt = EvaluationAttemptSchema.parse({
+      id: `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`,
+      evaluationRunId,
+      caseId: evaluationCase.id,
+      configId: config.id,
+      repetition,
+      status: attemptStatus,
+      underlyingRunId: snapshot.runId,
+      output: assessment.output ?? snapshot.output,
+      error: snapshot.error,
+      score: assessment.score,
+      metricScores: assessment.metricScores,
+      evaluatorResults: assessment.evaluatorResults,
+      observations: { ...assessment.observations, evidence },
+      runtimeMs,
+      costUsd: estimateCostUsd(snapshot),
+      startedAt: attemptStartedAt,
+      updatedAt: snapshot.updatedAt,
+    });
+
+    // Langfuse integration
+    const traceMeta = getLangfuseRunTraceMetadata(snapshot.runId);
+    const traceId = traceMeta?.traceId;
+    if (traceId) {
+      try {
+        const scoreComment = attempt.evaluatorResults
+          .filter((result) => result.evaluatorKind === "llm_judge" && result.rationale)
+          .map((result) => `[${result.evaluatorId}] ${result.rationale}`)
+          .join("\n") || undefined;
+        const results = await Promise.all([
+          scoreLangfuseTrace(traceId, "evaluation.overall", attempt.score.overallScore, { comment: scoreComment }),
+          ...attempt.metricScores.map((metric) =>
+            scoreLangfuseTrace(traceId, `evaluation.metric.${metric.metricId}`, metric.score)
+          ),
+          ...attempt.evaluatorResults
+            .filter((result) => result.score !== undefined)
+            .map((result) =>
+              scoreLangfuseTrace(traceId, `evaluation.evaluator.${result.evaluatorId}`, result.score!, { comment: result.rationale })
+            ),
+        ]);
+        attempt.langfuseScoreWriteStatus = results.every((r) => r.status === "succeeded") ? "succeeded" : "failed";
+      } catch {
+        attempt.langfuseScoreWriteStatus = "failed";
+      }
+      if (langfuseExperimentName) {
+        await logLangfuseExperimentResult(langfuseExperimentName, evaluationCase.id, traceId);
+      }
+    } else {
+      attempt.langfuseScoreWriteStatus = "failed";
+    }
+
+    return { attempt, annotationTasks: assessment.annotationTasks ?? [] };
+  }
+
+  private createFailedAttempt(
+    evaluationCase: EvaluationCase,
+    config: EvaluationConfig,
+    repetition: number,
+    evaluationRunId: string,
+    spec: EvaluationSpec,
+    error: unknown
+  ): EvaluationAttempt {
+    const now = this.now();
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isTimeout = errorMessage.includes("timed out");
+    const status: EvaluationAttempt["status"] = isTimeout ? "timeout" : "failed";
+    const failureTag = isTimeout ? "attempt_timeout" : "execution_error";
+
+    return EvaluationAttemptSchema.parse({
+      id: `${evaluationRunId}:attempt:${config.id}:${evaluationCase.id}:r${repetition}`,
+      evaluationRunId,
+      caseId: evaluationCase.id,
+      configId: config.id,
+      repetition,
+      status,
+      error: errorMessage,
+      score: {
+        outcomeScore: 0,
+        processScore: 0,
+        efficiencyScore: 0,
+        safetyScore: isTimeout ? 0.3 : 0.1,
+        overallScore: 0,
+        judgeRationale: `Execution failed: ${errorMessage}`,
+        failureTags: [failureTag],
+      },
+      metricScores: [],
+      evaluatorResults: [],
+      observations: {
+        evidence: this.buildAttemptEvidence(evaluationCase, config, repetition, {} as StateSnapshot, 0),
+      },
+      runtimeMs: 0,
+      costUsd: 0,
+      startedAt: now,
+      updatedAt: now,
+    });
+  }
+
+  private updateRunProgress(
+    evaluationRunId: string,
+    attempts: EvaluationAttempt[],
+    dataset: EvaluationDatasetDetail,
+    spec: EvaluationSpec,
+    events: EvaluationStreamEvent[],
+    startedAt: number
+  ) {
+    const run = this.runs.get(evaluationRunId);
+    if (!run) return;
+    const totalAttempts = dataset.cases.length * spec.configs.length * spec.repetitions;
+    const failedAttempts = attempts.filter((a) => a.status === "failed" || a.status === "timeout").length;
+    const succeededAttempts = attempts.filter((a) => a.status === "succeeded").length;
+    const completedCount = failedAttempts + succeededAttempts;
+
+    run.detail = EvaluationRunDetailSchema.parse({
+      ...run.detail,
+      run: EvaluationRunSchema.parse({
+        ...run.detail.run,
+        status: completedCount >= totalAttempts
+          ? (failedAttempts === totalAttempts ? "failed" : "succeeded")
+          : "running",
+        totalAttempts,
+        completedAttempts: completedCount,
+        failedAttempts,
+        attemptIds: attempts.map((a) => a.id),
+        updatedAt: this.now(),
+      }),
+      attempts: [...attempts],
+    });
+    this.saveRun(evaluationRunId);
   }
 
   promoteBaseline(params: unknown): EvaluationBaseline {
@@ -1022,6 +1320,84 @@ export class LocalEvaluationStore {
       format: "csv",
       content: `${rows.join("\n")}\n`,
     });
+  }
+
+  generateReport(params: unknown): EvaluationReport {
+    const parsed = EvaluationReportGenerateParamsSchema.parse(params);
+    const run = this.getRun({ evaluationRunId: parsed.evaluationRunId });
+    const now = this.now();
+
+    const failures = run.run.caseResults
+      .filter((result) => result.averageScore.overallScore < 0.75)
+      .map((result) => ({
+        caseId: result.caseId,
+        configId: result.configId,
+        failureTags: result.averageScore.failureTags,
+        score: result.averageScore.overallScore,
+        rationale: result.averageScore.judgeRationale || undefined,
+      }));
+
+    const traces = run.run.caseResults.flatMap((result) =>
+      result.traceRunIds.map((runId) => ({
+        caseId: result.caseId,
+        configId: result.configId,
+        runId,
+      }))
+    );
+
+    const baselineDelta = run.run.caseResults.some((r) => r.comparisonToBaseline?.compatible)
+      ? {
+          baselineId: run.run.caseResults.find((r) => r.comparisonToBaseline?.compatible)?.comparisonToBaseline?.baselineId,
+          overallDelta: roundScore(
+            run.run.caseResults
+              .filter((r) => r.comparisonToBaseline?.compatible)
+              .reduce((sum, r) => sum + (r.comparisonToBaseline?.deltaOverallScore ?? 0), 0) /
+            Math.max(1, run.run.caseResults.filter((r) => r.comparisonToBaseline?.compatible).length)
+          ),
+          regressionCount: run.run.scorecard.regressionCount,
+        }
+      : undefined;
+
+    const recommendedActions: string[] = [];
+    if (run.run.scorecard.passRate < 0.8) {
+      recommendedActions.push("Pass rate below 80%: review failure clusters and consider prompt or mode adjustments.");
+    }
+    if (run.run.scorecard.regressionCount > 0) {
+      recommendedActions.push(`${run.run.scorecard.regressionCount} regressions detected: compare against baseline results.`);
+    }
+    if (failures.length > 0) {
+      const topTags = [...new Set(failures.flatMap((f) => f.failureTags))].slice(0, 5);
+      if (topTags.length > 0) {
+        recommendedActions.push(`Top failure tags: ${topTags.join(", ")}. Review relevant scorer rationales.`);
+      }
+    }
+
+    return EvaluationReportSchema.parse({
+      evaluationRunId: parsed.evaluationRunId,
+      generatedAt: now,
+      generatorVersion: "1.0.0",
+      run: run.run,
+      configs: run.configs,
+      dataset: run.dataset,
+      scorecard: run.run.scorecard,
+      failures,
+      slices: run.run.scorecard.slices,
+      baselineDelta,
+      traceLinks: traces,
+      recommendedActions,
+    });
+  }
+
+  formatReport(params: unknown): string {
+    const parsed = EvaluationReportGenerateParamsSchema.parse(params);
+    const report = this.generateReport({ evaluationRunId: parsed.evaluationRunId, format: "json" }) as EvaluationReport;
+    if (parsed.format === "markdown") {
+      return renderReportToMarkdown(report);
+    }
+    if (parsed.format === "html") {
+      return renderReportToHtml(report);
+    }
+    return JSON.stringify(report, null, 2);
   }
 
   async submitFeedback(
@@ -1847,6 +2223,7 @@ function compileEvaluationBlueprint(
       }],
       repetitions: blueprint.runPlan.repetitions,
       concurrency: blueprint.runPlan.concurrency,
+      timeoutMs: blueprint.runPlan.timeoutMs,
       baselineId: blueprint.runPlan.baselineId,
       metadata: {
         ...baseMetadata,
@@ -1883,6 +2260,7 @@ function compileEvaluationBlueprint(
       })),
       repetitions: blueprint.runPlan.repetitions,
       concurrency: blueprint.runPlan.concurrency,
+      timeoutMs: blueprint.runPlan.timeoutMs,
       baselineId: blueprint.runPlan.baselineId,
       objective: blueprint.target === "run.output"
         ? {
@@ -2277,6 +2655,29 @@ function compareToBaseline(
   };
 }
 
+function emptyScorecard(configs: EvaluationConfig[]): EvaluationScorecard {
+  return EvaluationScorecardSchema.parse({
+    overallScore: 0,
+    passRate: 0,
+    averageRuntimeMs: 0,
+    averageCostUsd: 0,
+    regressionCount: 0,
+    pendingAnnotationCount: 0,
+    configSummaries: configs.map((config) => ({
+      configId: config.id,
+      label: config.label,
+      overallScore: 0,
+      passRate: 0,
+      averageRuntimeMs: 0,
+      averageCostUsd: 0,
+      caseCount: 0,
+      regressionCount: 0,
+      failureTagCounts: {},
+    })),
+    slices: [],
+  });
+}
+
 function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt[], caseResults: EvaluationCaseResult[]): EvaluationScorecard {
   const overallScore = roundScore(average(attempts.map((attempt) => attempt.score.overallScore)));
   const passRate = roundScore(average(attempts.map((attempt) => attempt.score.overallScore >= 0.75 ? 1 : 0)));
@@ -2400,6 +2801,8 @@ function aggregateEvaluatorResultsFromAttempts(attempts: EvaluationAttempt[]): E
     return EvaluationEvaluatorResultSchema.parse({
       evaluatorId,
       evaluatorKind: latest.evaluatorKind,
+      scorerVersion: latest.scorerVersion ?? "1.0.0",
+      rubricVersion: latest.rubricVersion,
       score: roundScore(average(scored.map((result) => result.score ?? 0))),
       passed: average(scored.map((result) => result.passed ? 1 : 0)) >= 0.75,
       rationale: latest.rationale ?? "Aggregated evaluator results.",
@@ -3356,4 +3759,143 @@ function nextCounter(ids: string[], pattern: RegExp) {
 
 function csvCell(value: string) {
   return `"${value.replaceAll("\"", "\"\"")}"`;
+}
+
+function renderReportToMarkdown(report: EvaluationReport): string {
+  const lines: string[] = [];
+  lines.push(`# Evaluation Report: ${report.evaluationRunId}`);
+  lines.push("");
+  lines.push(`**Generated:** ${new Date(report.generatedAt).toISOString()}`);
+  lines.push(`**Generator:** Ora Evaluation v${report.generatorVersion}`);
+  lines.push(`**Status:** ${report.run.status}`);
+  lines.push(`**Dataset:** ${report.dataset.name} (${report.dataset.caseCount} cases)`);
+  lines.push(`**Profile:** ${report.run.spec.profileId}`);
+  lines.push("");
+
+  lines.push("## Scorecard");
+  lines.push("");
+  const sc = report.scorecard;
+  lines.push(`| Metric | Value |`);
+  lines.push(`|--------|-------|`);
+  lines.push(`| Overall Score | ${sc.overallScore.toFixed(4)} |`);
+  lines.push(`| Pass Rate | ${(sc.passRate * 100).toFixed(1)}% |`);
+  lines.push(`| Average Runtime | ${sc.averageRuntimeMs}ms |`);
+  lines.push(`| Average Cost | $${sc.averageCostUsd.toFixed(4)} |`);
+  lines.push(`| Regressions | ${sc.regressionCount} |`);
+  lines.push(`| Pending Annotations | ${sc.pendingAnnotationCount} |`);
+  lines.push("");
+
+  lines.push("### Config Summaries");
+  lines.push("");
+  lines.push(`| Config | Score | Pass Rate | Runtime | Cost | Cases | Regressions |`);
+  lines.push(`|--------|-------|-----------|---------|------|-------|-------------|`);
+  for (const cs of sc.configSummaries) {
+    lines.push(`| ${cs.label} | ${cs.overallScore.toFixed(4)} | ${(cs.passRate * 100).toFixed(1)}% | ${cs.averageRuntimeMs}ms | $${cs.averageCostUsd.toFixed(4)} | ${cs.caseCount} | ${cs.regressionCount} |`);
+  }
+  lines.push("");
+
+  if (report.slices.length > 0) {
+    lines.push("### Slices");
+    lines.push("");
+    const dimensions = [...new Set(report.slices.map((s) => s.dimension))];
+    for (const dim of dimensions) {
+      lines.push(`**${dim}:**`);
+      for (const slice of report.slices.filter((s) => s.dimension === dim)) {
+        lines.push(`- ${slice.value}: ${slice.overallScore.toFixed(4)} (${slice.caseCount} cases, config ${slice.configId})`);
+      }
+      lines.push("");
+    }
+  }
+
+  if (report.failures.length > 0) {
+    lines.push("## Failures");
+    lines.push("");
+    lines.push(`${report.failures.length} cases scored below threshold:`);
+    lines.push("");
+    for (const f of report.failures.slice(0, 20)) {
+      lines.push(`- **${f.caseId}** (${f.configId}): score=${f.score.toFixed(4)}, tags=${f.failureTags.join(", ") || "none"}`);
+      if (f.rationale) lines.push(`  - Rationale: ${f.rationale.slice(0, 200)}`);
+    }
+    if (report.failures.length > 20) {
+      lines.push(`- ... and ${report.failures.length - 20} more failures`);
+    }
+    lines.push("");
+  }
+
+  if (report.baselineDelta) {
+    lines.push("## Baseline Comparison");
+    lines.push("");
+    lines.push(`- Baseline: ${report.baselineDelta.baselineId ?? "N/A"}`);
+    lines.push(`- Overall Delta: ${(report.baselineDelta.overallDelta ?? 0).toFixed(4)}`);
+    lines.push(`- Regressions: ${report.baselineDelta.regressionCount}`);
+    lines.push("");
+  }
+
+  if (report.traceLinks.length > 0) {
+    lines.push("## Trace Links");
+    lines.push("");
+    for (const link of report.traceLinks.slice(0, 10)) {
+      lines.push(`- ${link.caseId}/${link.configId}: run \`${link.runId}\``);
+    }
+    if (report.traceLinks.length > 10) {
+      lines.push(`- ... and ${report.traceLinks.length - 10} more traces`);
+    }
+    lines.push("");
+  }
+
+  if (report.recommendedActions.length > 0) {
+    lines.push("## Recommended Actions");
+    lines.push("");
+    for (const action of report.recommendedActions) {
+      lines.push(`- [ ] ${action}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+function renderReportToHtml(report: EvaluationReport): string {
+  const md = renderReportToMarkdown(report);
+  return [
+    "<!DOCTYPE html>",
+    '<html lang="en">',
+    "<head>",
+    '<meta charset="utf-8">',
+    `<title>Evaluation Report: ${report.evaluationRunId}</title>`,
+    "<style>",
+    "body{font-family:system-ui,sans-serif;max-width:960px;margin:0 auto;padding:2rem;color:#1a1a1a;background:#fff}",
+    "h1{font-size:1.75rem;border-bottom:2px solid #1a56db;padding-bottom:.5rem}",
+    "h2{font-size:1.25rem;margin-top:2rem;color:#1a56db}",
+    "table{border-collapse:collapse;width:100%;margin:1rem 0}",
+    "th,td{border:1px solid #e5e7eb;padding:.5rem .75rem;text-align:left}",
+    "th{background:#f3f4f6;font-weight:600}",
+    ".score-good{color:#059669}.score-warn{color:#d97706}.score-bad{color:#dc2626}",
+    "code{background:#f3f4f6;padding:.125rem .25rem;border-radius:4px;font-size:.875em}",
+    "ul{margin:.5rem 0}",
+    "</style>",
+    "</head>",
+    "<body>",
+    ...md.split("\n").map((line) => {
+      if (line.startsWith("# ")) return `<h1>${line.slice(2)}</h1>`;
+      if (line.startsWith("## ")) return `<h2>${line.slice(3)}</h2>`;
+      if (line.startsWith("### ")) return `<h3>${line.slice(4)}</h3>`;
+      if (line.startsWith("**") && line.includes(":**")) {
+        const colonIdx = line.indexOf(":**");
+        return `<p><strong>${line.slice(2, colonIdx)}</strong>:${line.slice(colonIdx + 3)}</p>`;
+      }
+      if (line.startsWith("| ")) return `<tr>${line.split("|").filter(Boolean).map((c) => {
+        const isHeader = line.includes("|---");
+        const tag = isHeader ? "th" : "td";
+        return `<${tag}>${c.trim()}</${tag}>`;
+      }).join("")}</tr>`;
+      if (line.startsWith("- [")) return `<li><input type="checkbox"> ${line.slice(5)}</li>`;
+      if (line.startsWith("- ")) return `<li>${line.slice(2)}</li>`;
+      if (line.startsWith("`")) return `<pre><code>${line}</code></pre>`;
+      if (line.trim() === "") return "<br>";
+      return `<p>${line}</p>`;
+    }),
+    "</body>",
+    "</html>",
+  ].join("\n");
 }

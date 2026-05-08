@@ -26,6 +26,8 @@ async function main() {
     "  ora-runtime eval compile-blueprint --blueprint <path-or-id> [--dataset-id <dataset-id>] [--output <path>]",
     "  ora-runtime eval list [--dataset-id <dataset-id>]",
     "  ora-runtime eval export --run <evaluation-run-id> [--format json|csv] [--output <path>]",
+    "  ora-runtime eval report --run <evaluation-run-id> [--format json|markdown|html] [--output <path>]",
+    "  ora-runtime eval cancel --run <evaluation-run-id>",
     "  ora-runtime eval promote-baseline --run <evaluation-run-id> --config <config-id> [--name <baseline-name>]",
   ].join("\n") + "\n");
   process.exitCode = 2;
@@ -211,6 +213,35 @@ async function runEvalCommand(args: string[]) {
           configId,
           name: flags["--name"],
         }
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    case "report": {
+      const evaluationRunId = requiredFlag(flags, "--run");
+      const format = flags["--format"] ?? "markdown";
+      const result = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "evaluation.runs.formatReport",
+        params: { evaluationRunId, format },
+      });
+      const outputPath = flags["--output"];
+      if (outputPath) {
+        fs.writeFileSync(outputPath, String(result), "utf8");
+        process.stdout.write(`${outputPath}\n`);
+      } else {
+        process.stdout.write(String(result));
+      }
+      return;
+    }
+    case "cancel": {
+      const evaluationRunId = requiredFlag(flags, "--run");
+      const result = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "evaluation.runs.cancel",
+        params: { evaluationRunId },
       });
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;

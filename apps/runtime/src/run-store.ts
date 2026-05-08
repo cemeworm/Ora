@@ -2296,6 +2296,22 @@ export class LocalRunStore {
     return this.evaluationStore.exportRun(params);
   }
 
+  cancelEvaluationRun(params: unknown) {
+    return this.evaluationStore.cancelEvaluationRun(params);
+  }
+
+  resumeEvaluationRun(params: unknown) {
+    return this.evaluationStore.resumeEvaluationRun(params);
+  }
+
+  generateEvaluationReport(params: unknown) {
+    return this.evaluationStore.generateReport(params);
+  }
+
+  formatEvaluationReport(params: unknown) {
+    return this.evaluationStore.formatReport(params);
+  }
+
   async submitEvaluationFeedback(params: unknown): Promise<EvaluationFeedbackRecord> {
     const runId = this.requireRunId(params);
     const snapshot = attachTraceMetadata(this.getRunOrThrow(runId));
