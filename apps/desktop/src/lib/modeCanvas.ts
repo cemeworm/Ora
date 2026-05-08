@@ -4,6 +4,7 @@ import {
   ensureModeNodePositions,
   getModeFamilyRule,
   orderedEnabledModeNodes,
+  type BuiltInCoordinationPattern,
   type CoordinationPattern,
   type ModeEdgeSpec,
   type ModeNodeTemplate,
@@ -87,7 +88,7 @@ export function hydrateModeDraft(mode: OraModeSpec): OraModeSpec {
   });
 }
 
-export function resetModeDraftFamily(mode: OraModeSpec, family: CoordinationPattern): OraModeSpec {
+export function resetModeDraftFamily(mode: OraModeSpec, family: BuiltInCoordinationPattern): OraModeSpec {
   const preset = createModeSpecFromPattern(family);
   return {
     ...mode,

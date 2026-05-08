@@ -1,12 +1,14 @@
 import { z } from "zod";
 
-export const CoordinationPatternSchema = z.enum([
+export const BuiltInCoordinationPatternSchema = z.enum([
   "generator_verifier",
   "orchestrator_subagent",
   "agent_teams",
   "message_bus",
   "shared_state"
 ]);
+export type BuiltInCoordinationPattern = z.infer<typeof BuiltInCoordinationPatternSchema>;
+export const CoordinationPatternSchema = BuiltInCoordinationPatternSchema.or(z.string());
 export type CoordinationPattern = z.infer<typeof CoordinationPatternSchema>;
 export const CoordinationKindSchema = CoordinationPatternSchema;
 export type CoordinationKind = CoordinationPattern;

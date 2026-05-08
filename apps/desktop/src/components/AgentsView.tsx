@@ -1,7 +1,7 @@
 import { ArrowLeft, Bot, MessageSquarePlus, Pencil, Plus, RefreshCcw, Send, Sparkles, Trash2 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { autoLayoutModeSpec, createModeSpecFromPattern, type CoordinationPattern } from "@cemeworm/shared";
+import { autoLayoutModeSpec, createModeSpecFromPattern, type BuiltInCoordinationPattern, type CoordinationPattern } from "@cemeworm/shared";
 import { useWorkbench } from "../lib/state";
 import type { OraAgentCatalogResult, OraCustomAgentGenerateDraftResult, OraCustomAgentSummary, OraModeCreateParams, RuntimeClient } from "../lib/runtimeClient";
 import { cn } from "../lib/utils";
@@ -35,7 +35,7 @@ const EMPTY_DRAFT: AgentDraft = {
   soul: "",
 };
 
-const TEAM_FAMILIES: CoordinationPattern[] = [
+const TEAM_FAMILIES: BuiltInCoordinationPattern[] = [
   "generator_verifier",
   "agent_teams",
   "message_bus",
@@ -71,7 +71,7 @@ export function AgentsView({
   const [draftInput, setDraftInput] = useState("");
   const [draftIssues, setDraftIssues] = useState<OraCustomAgentGenerateDraftResult["issues"]>([]);
   const [teamLabel, setTeamLabel] = useState("Agent Team");
-  const [teamFamily, setTeamFamily] = useState<CoordinationPattern>("agent_teams");
+  const [teamFamily, setTeamFamily] = useState<BuiltInCoordinationPattern>("agent_teams");
   const [teamAssignments, setTeamAssignments] = useState<Record<string, string>>({});
   const [editingName, setEditingName] = useState<string | undefined>();
   const [busy, setBusy] = useState<string>("");
@@ -608,7 +608,7 @@ export function AgentsView({
                   <select
                     value={teamFamily}
                     onChange={(event) => {
-                      setTeamFamily(event.target.value as CoordinationPattern);
+                      setTeamFamily(event.target.value as BuiltInCoordinationPattern);
                       setTeamAssignments({});
                     }}
                     className="h-10 w-full rounded-md border border-bench-200 bg-bench-50 px-3 text-sm outline-none transition focus:border-bench-900"

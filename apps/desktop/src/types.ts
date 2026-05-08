@@ -1,9 +1,5 @@
-export type CoordinationPattern =
-  | "generator_verifier"
-  | "orchestrator_subagent"
-  | "agent_teams"
-  | "message_bus"
-  | "shared_state";
+import type { CoordinationPattern, BuiltInCoordinationPattern } from "@cemeworm/shared";
+export type { CoordinationPattern, BuiltInCoordinationPattern };
 
 export type RunStatus =
   | "running"
@@ -93,7 +89,7 @@ export interface ModeCard {
 export interface TopologyNode {
   id: string;
   label: string;
-  kind: "run" | "agent" | "capability" | "checkpoint" | "artifact";
+  kind: string;
   role: string;
   agentId?: string;
   status: "active" | "idle" | "blocked" | "done";
@@ -110,7 +106,7 @@ export interface TopologyEdge {
   from: string;
   to: string;
   label: string;
-  kind?: "control" | "delegation" | "verification" | "memory" | "artifact";
+  kind?: string;
 }
 
 export interface RunBeat {

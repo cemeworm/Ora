@@ -2,6 +2,7 @@ import { ArrowLeft, Check, Copy, Database, FileText, GitBranchPlus, Globe, Layer
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionRiskLevelSchema,
+  BuiltInCoordinationPatternSchema,
   CoordinationPatternSchema,
   completionPolicyForPreset,
   ensureModeNodePositions,
@@ -9,6 +10,7 @@ import {
   getPatternDefinition,
   RecoveryActionSchema,
   RecoveryErrorTypeSchema,
+  type BuiltInCoordinationPattern,
   type CoordinationPattern,
 } from "@cemeworm/shared";
 import ReactFlow, {
@@ -1624,9 +1626,9 @@ function ModeSettingsPanel({
           <Select
             aria-label="Mode family"
             value={draft.family}
-            onChange={(event) => onPatchDraft((current) => resetModeDraftFamily(current, event.target.value as CoordinationPattern))}
+            onChange={(event) => onPatchDraft((current) => resetModeDraftFamily(current, event.target.value as BuiltInCoordinationPattern))}
           >
-            {CoordinationPatternSchema.options.map((family) => (
+            {BuiltInCoordinationPatternSchema.options.map((family) => (
               <option key={family} value={family}>{family}</option>
             ))}
           </Select>

@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
-import { AgentProfileSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
-import type { AgentProfile, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
+import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import type { AgentProfile, BuiltInCoordinationPattern, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
 
@@ -49,7 +49,7 @@ export const ModeStopPolicySchema = z.object({
 });
 export type ModeStopPolicy = z.infer<typeof ModeStopPolicySchema>;
 
-export const ModeNodeTemplateSchema = z.enum([
+export const BuiltInModeNodeTemplateSchema = z.enum([
   "draft",
   "verify",
   "decide",
@@ -68,6 +68,7 @@ export const ModeNodeTemplateSchema = z.enum([
   "seed",
   "converge",
 ]);
+export const ModeNodeTemplateSchema = BuiltInModeNodeTemplateSchema.or(z.string());
 export type ModeNodeTemplate = z.infer<typeof ModeNodeTemplateSchema>;
 
 export const ModeNodePositionSchema = z.object({
@@ -87,7 +88,14 @@ export const ModeNodeSpecSchema = z.object({
   instructions: z.string().min(1).optional(),
   prompt: z.string().min(1).optional(),
   riskLevel: ActionRiskLevelSchema.optional(),
-  config: z.record(z.unknown()).default({}),
+  config: z.object({
+    atoms: z.array(z.string()).optional(),
+    customAgentId: z.string().optional(),
+    clarificationQuestion: z.string().optional(),
+    clarificationKey: z.string().optional(),
+    story: z.unknown().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  }).passthrough().default({}),
 });
 export type ModeNodeSpec = z.infer<typeof ModeNodeSpecSchema>;
 
@@ -98,10 +106,14 @@ export const ModeEdgeSpecSchema = z.object({
   label: z.string().min(1).optional(),
   kind: TopologyEdgeSchema.shape.kind.default("control"),
   enabled: z.boolean().default(true),
+  /** Optional condition expression. When set, the edge only routes execution to `target`
+   *  if the source node's output satisfies the condition. The condition references fields
+   *  of the source node output via JSONPath-like dot notation (e.g. "status == 'pass'"). */
+  condition: z.string().min(1).optional(),
 });
 export type ModeEdgeSpec = z.infer<typeof ModeEdgeSpecSchema>;
 
-export const ModeRuntimeAtomIdSchema = z.enum([
+export const BuiltInModeRuntimeAtomIdSchema = z.enum([
   "thread_workspace",
   "recovery_policy",
   "tool_error_boundary",
@@ -118,6 +130,7 @@ export const ModeRuntimeAtomIdSchema = z.enum([
   "token_usage_trace",
   "dynamic_stage_skipping",
 ]);
+export const ModeRuntimeAtomIdSchema = BuiltInModeRuntimeAtomIdSchema.or(z.string());
 export type ModeRuntimeAtomId = z.infer<typeof ModeRuntimeAtomIdSchema>;
 
 export const ModeRuntimeAtomScopeSchema = z.enum(["mode", "node"]);
@@ -308,6 +321,11 @@ export const ModeSpecSchema = z.object({
   memoryPolicy: ModeMemoryPolicySchema.default({}),
   toolLimits: ModeToolLimitsSchema.default({}),
   permissionProfileId: z.string().min(1).optional(),
+  langfusePromptRef: z.object({
+    name: z.string().min(1),
+    version: z.number().int().positive().optional(),
+    label: z.string().min(1).optional(),
+  }).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -735,7 +753,7 @@ function defaultNodeInstructions(family: CoordinationPattern, template: ModeNode
   return MODE_NODE_RUNTIME_TEMPLATE_LIBRARY[family]?.[template]?.fallbackInstructions;
 }
 
-const ALL_COORDINATION_PATTERNS = [...CoordinationPatternSchema.options] as CoordinationPattern[];
+const ALL_COORDINATION_PATTERNS = [...BuiltInCoordinationPatternSchema.options] as BuiltInCoordinationPattern[];
 
 export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
   {
@@ -967,12 +985,8 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
   },
 ];
 
-export function getModeRuntimeAtom(id: ModeRuntimeAtomId): ModeRuntimeAtomDefinition {
-  const atom = MVP_MODE_RUNTIME_ATOMS.find((candidate) => candidate.id === id);
-  if (!atom) {
-    throw new Error(`Unknown runtime atom '${id}'.`);
-  }
-  return atom;
+export function getModeRuntimeAtom(id: ModeRuntimeAtomId): ModeRuntimeAtomDefinition | undefined {
+  return MVP_MODE_RUNTIME_ATOMS.find((candidate) => candidate.id === id);
 }
 
 export function defaultRuntimeAtomsForFamily(family: CoordinationPattern): ModeRuntimeAtomId[] {
@@ -1188,7 +1202,7 @@ export function projectModeRuntimeTopology(mode: ModeSpec): { nodes: TopologyNod
   for (const node of orderedNodes) {
     for (const atomId of nodeRuntimeAtomIds(node)) {
       const atom = getModeRuntimeAtom(atomId);
-      if (atom.scope !== "node" || atom.topology.presentation !== "stage_attachment") {
+      if (!atom || atom.scope !== "node" || atom.topology.presentation !== "stage_attachment") {
         continue;
       }
       const capabilityNode = nodeAttachmentCapabilityNode(atom, mode, orderedNodes, node);
@@ -1633,6 +1647,56 @@ export function orderedEnabledModeNodes(mode: Pick<ModeSpec, "nodes" | "edges">)
   return ordered.length === enabledNodes.length ? ordered : enabledNodes;
 }
 
+/**
+ * Groups enabled ModeNodes into topological layers. Nodes within the same layer have no
+ * dependencies on each other and can be executed in parallel (e.g. via Promise.all).
+ */
+export function orderedEnabledModeLayers(mode: Pick<ModeSpec, "nodes" | "edges">): ModeNodeSpec[][] {
+  const enabledNodes = mode.nodes.filter((node) => node.enabled);
+  const nodeIds = new Set(enabledNodes.map((node) => node.id));
+  const indegree = new Map(enabledNodes.map((node) => [node.id, 0]));
+  const adjacency = new Map(enabledNodes.map((node) => [node.id, [] as string[]]));
+
+  for (const edge of activeEnabledModeEdges(mode).filter((candidate) => nodeIds.has(candidate.source) && nodeIds.has(candidate.target))) {
+    adjacency.get(edge.source)?.push(edge.target);
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+  }
+
+  const layers: ModeNodeSpec[][] = [];
+  let currentLayer = enabledNodes.filter((node) => (indegree.get(node.id) ?? 0) === 0);
+
+  while (currentLayer.length > 0) {
+    layers.push(currentLayer);
+    const nextIndegree = new Map(indegree);
+    for (const node of currentLayer) {
+      for (const target of adjacency.get(node.id) ?? []) {
+        const next = (nextIndegree.get(target) ?? 0) - 1;
+        nextIndegree.set(target, next);
+      }
+    }
+    indegree.clear();
+    for (const [key, value] of nextIndegree) {
+      indegree.set(key, value);
+    }
+    currentLayer = enabledNodes.filter((node) => (indegree.get(node.id) ?? 0) === 0 && !layers.flat().some((n) => n.id === node.id));
+  }
+
+  // Degrade to ordered list if not all nodes reachable (cycle detected)
+  if (layers.flat().length !== enabledNodes.length) {
+    const unreachableIds = enabledNodes
+      .filter((n) => !layers.flat().some((o) => o.id === n.id))
+      .map((n) => n.id);
+    const modeLabel = "label" in mode && typeof mode.label === "string" ? mode.label : "unknown";
+    console.warn(
+      `[topology] Cycle detected in mode "${modeLabel}" — layer grouping degraded. ` +
+      `Unreachable nodes: ${unreachableIds.join(", ")}.`,
+    );
+    return [enabledNodes];
+  }
+
+  return layers;
+}
+
 export function computeModeNodePositions(mode: Pick<ModeSpec, "nodes" | "edges">): Record<string, ModeNodePosition> {
   const enabledNodes = orderedEnabledModeNodes(mode);
   const disabledNodes = mode.nodes.filter((node) => !node.enabled);
@@ -1704,8 +1768,8 @@ export function autoLayoutModeSpec(mode: ModeSpec): ModeSpec {
   };
 }
 
-export function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpec {
-  const definition = getPatternDefinition(pattern);
+export function createModeSpecFromPattern(pattern: BuiltInCoordinationPattern): ModeSpec {
+  const definition = getPatternDefinition(pattern)!;
   const now = 0;
   return autoLayoutModeSpec(ModeSpecSchema.parse({
     id: definition.id,
@@ -2613,7 +2677,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
   }));
 }
 
-const BUILTIN_PATTERN_MODES = CoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern));
+const BUILTIN_PATTERN_MODES = BuiltInCoordinationPatternSchema.options.map((pattern) => createModeSpecFromPattern(pattern as BuiltInCoordinationPattern));
 const ORCHESTRATOR_MODE_INDEX = BUILTIN_PATTERN_MODES.findIndex((mode) => mode.id === "orchestrator_subagent");
 
 export const MVP_MODES = [
@@ -2677,6 +2741,10 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
 
   for (const atomId of spec.runtimeAtoms) {
     const atom = getModeRuntimeAtom(atomId);
+    if (!atom) {
+      warnings.push(`Runtime atom '${atomId}' is a custom atom — compatibility checks are skipped.`);
+      continue;
+    }
     if (!atom.compatibleFamilies.includes(spec.family)) {
       errors.push(`Runtime atom '${atomId}' is not compatible with family '${spec.family}'.`);
     }
@@ -2695,8 +2763,12 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
       errors.push(`Duplicate node id '${node.id}'.`);
     }
     nodeIds.add(node.id);
-    if (!rule.allowedTemplates.includes(node.template)) {
+    const isBuiltInTemplate = BuiltInModeNodeTemplateSchema.safeParse(node.template).success;
+    if (isBuiltInTemplate && !rule.allowedTemplates.includes(node.template)) {
       errors.push(`Node template '${node.template}' is not allowed for family '${spec.family}'.`);
+    }
+    if (!isBuiltInTemplate) {
+      warnings.push(`Node '${node.id}' uses custom template '${node.template}' — family rule checks are skipped.`);
     }
 
     const configuredAtoms = Array.isArray(node.config?.atoms)
@@ -2709,6 +2781,10 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
         continue;
       }
       const atom = getModeRuntimeAtom(parsed.data);
+      if (!atom) {
+        warnings.push(`Node '${node.id}' uses custom runtime atom '${atomId}' — compatibility checks are skipped.`);
+        continue;
+      }
       if (!atom.compatibleFamilies.includes(spec.family)) {
         errors.push(`Node '${node.id}' cannot use runtime atom '${atom.id}' in family '${spec.family}'.`);
       }
@@ -2848,6 +2924,12 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
     seenEdgePairs.add(pairKey);
     if (enabledNodeIds.has(edge.source) && enabledNodeIds.has(edge.target)) {
       adjacency.get(edge.source)?.push(edge.target);
+    }
+    if (edge.condition) {
+      const conditionPattern = /^[a-zA-Z_.]+ (==|!=) '[^']*'$/;
+      if (!conditionPattern.test(edge.condition)) {
+        warnings.push(`Edge '${edge.id}' condition '${edge.condition}' may have invalid syntax. Expected format: "field == 'value'" or "field != 'value'".`);
+      }
     }
   }
 

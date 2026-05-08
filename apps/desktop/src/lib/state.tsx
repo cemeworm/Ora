@@ -1,4 +1,5 @@
 import {
+  BuiltInCoordinationPatternSchema,
   CoordinationPatternSchema,
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
@@ -259,8 +260,8 @@ export type WorkbenchAction =
   | { type: "CLOSE_ARTIFACT_PANEL" }
   | { type: "SET_LANGUAGE"; language: AppLanguage };
 
-const initialSelectedPattern = CoordinationPatternSchema
-  .options[0] as CoordinationPattern;
+const initialSelectedPattern = BuiltInCoordinationPatternSchema
+  .options[0];
 
 export const initialWorkbenchState: WorkbenchState = {
   selectedPattern: initialSelectedPattern,
