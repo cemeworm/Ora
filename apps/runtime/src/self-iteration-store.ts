@@ -54,6 +54,7 @@ export interface SelfIterationDerivationInput {
   runs: StateSnapshot[];
   evaluationRuns: EvaluationRun[];
   feedbackRecords: EvaluationFeedbackRecord[];
+  enrichCandidate?: (candidate: SelfIterationCandidate, input: SelfIterationDerivationInput) => Promise<SelfIterationCandidate>;
 }
 
 export interface SelfIterationApplyDeps {
@@ -61,6 +62,8 @@ export interface SelfIterationApplyDeps {
   applyPromptCandidate(candidate: SelfIterationCandidate): unknown;
   applySkillCandidate(candidate: SelfIterationCandidate): unknown;
   applyModeCandidate(candidate: SelfIterationCandidate): unknown;
+  captureBeforeSnapshot?(candidate: SelfIterationCandidate): unknown;
+  rollbackSnapshot?(candidate: SelfIterationCandidate): unknown;
 }
 
 export interface SelfIterationEvaluationOutcome {
@@ -79,6 +82,7 @@ export interface SelfIterationEvaluateDeps {
 export class LocalSelfIterationStore {
   private readonly statePath: string;
   private state: SelfIterationState;
+  private readonly inflightEvaluations = new Set<string>();
 
   constructor(private readonly baseDir: string, private readonly clock: () => number = Date.now) {
     this.statePath = path.join(baseDir, "state.json");
@@ -86,12 +90,15 @@ export class LocalSelfIterationStore {
     this.state = this.readState();
   }
 
-  scan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
+  async scan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
     const parsed = SelfIterationScanParamsSchema.parse(params ?? {});
     const projectId = parsed.projectId ?? firstProjectId(input) ?? DEFAULT_PROJECT_ID;
-    const candidates = candidateGenerators(projectId, input, this.clock())
+    const generated = candidateGenerators(projectId, input, this.clock())
       .filter((candidate) => parsed.projectId ? candidate.projectId === parsed.projectId : true);
-    const upserted = candidates.map((candidate) => this.upsertCandidate(candidate));
+    const enriched = input.enrichCandidate
+      ? await Promise.all(generated.map((c) => input.enrichCandidate!(c, input).catch(() => c)))
+      : generated;
+    const upserted = enriched.map((candidate) => this.upsertCandidate(candidate));
     const policy = this.policyForProject(projectId);
     const autoApplied: SelfIterationCandidate[] = [];
     if ((parsed.autoApplyEvaluation ?? policy.evaluationAutoApply) && policy.autonomy === "low_risk_auto") {
@@ -109,7 +116,7 @@ export class LocalSelfIterationStore {
     return SelfIterationScanResultSchema.parse({ run, candidates: upserted, autoApplied });
   }
 
-  triggerCuratorScan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
+  async triggerCuratorScan(params: unknown, input: SelfIterationDerivationInput, deps: Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
     const parsed = SelfIterationCuratorTriggerParamsSchema.parse(params ?? {});
     const projectId = parsed.projectId ?? firstProjectId(input) ?? DEFAULT_PROJECT_ID;
     const policy = this.policyForProject(projectId);
@@ -121,7 +128,7 @@ export class LocalSelfIterationStore {
     if (!parsed.force && typeof lastScanAt === "number" && now - lastScanAt < policy.scanCadenceMs) {
       return { scanned: false as const, reason: "cadence", projectId, trigger: parsed.trigger, lastScanAt };
     }
-    const result = this.scan({ projectId }, input, deps);
+    const result = await this.scan({ projectId }, input, deps);
     this.state.curator[projectId] = { lastScanAt: now, lastTrigger: parsed.trigger };
     this.saveState();
     return { scanned: true as const, projectId, trigger: parsed.trigger, result };
@@ -150,9 +157,10 @@ export class LocalSelfIterationStore {
   async evaluateCandidate(params: unknown, deps?: SelfIterationEvaluateDeps) {
     const parsed = SelfIterationCandidateEvaluateParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
-    if (candidate.status === "evaluating") {
+    if (this.inflightEvaluations.has(candidate.id)) {
       throw new Error(`Candidate ${candidate.id} is already being evaluated.`);
     }
+    this.inflightEvaluations.add(candidate.id);
     const evaluating = SelfIterationCandidateSchema.parse({
       ...candidate,
       status: "evaluating",
@@ -219,6 +227,8 @@ export class LocalSelfIterationStore {
       });
       this.saveState();
       return next;
+    } finally {
+      this.inflightEvaluations.delete(candidate.id);
     }
   }
 
@@ -236,6 +246,21 @@ export class LocalSelfIterationStore {
     return next;
   }
 
+  isEvaluating(candidateId: string): boolean {
+    return this.inflightEvaluations.has(candidateId);
+  }
+
+  updateCandidateVerification(candidateId: string, verification: Record<string, unknown>): void {
+    const candidate = this.state.candidates[candidateId];
+    if (!candidate) return;
+    this.state.candidates[candidateId] = SelfIterationCandidateSchema.parse({
+      ...candidate,
+      verification: { ...(candidate.verification ?? {}), ...verification },
+      updatedAt: this.clock(),
+    });
+    this.saveState();
+  }
+
   applyCandidate(params: unknown, deps: SelfIterationApplyDeps | Pick<SelfIterationApplyDeps, "applyEvaluationCandidate">) {
     const parsed = SelfIterationCandidateApplyParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
@@ -247,11 +272,20 @@ export class LocalSelfIterationStore {
     if (candidate.targetKind !== "evaluation" && !parsed.confirmed && requiresConfirmation(candidate, policy)) {
       throw new Error(`${candidate.targetKind} self-iteration candidates require confirmation before apply.`);
     }
+    const beforeSnapshot = "captureBeforeSnapshot" in deps ? deps.captureBeforeSnapshot?.(candidate) : undefined;
     const applyResult = applyCandidateChange(candidate, deps);
+    const evaluationMeta = selfIterationEvaluationMetadata(candidate);
+    const verification = candidate.targetKind !== "evaluation" && evaluationMeta?.score != null ? {
+      status: "pending" as const,
+      baselineScore: evaluationMeta.score as number,
+      baselinePassRate: evaluationMeta.passRate as number | undefined,
+    } : candidate.verification;
     const next = SelfIterationCandidateSchema.parse({
       ...candidate,
       status: "applied",
       applyResult,
+      beforeSnapshot: beforeSnapshot ?? candidate.beforeSnapshot,
+      verification,
       updatedAt: this.clock(),
     });
     this.state.candidates[next.id] = next;
@@ -261,6 +295,35 @@ export class LocalSelfIterationStore {
       candidateIds: [next.id],
       message: `Applied Self-Iteration candidate ${next.id}.`,
       metadata: { targetKind: next.targetKind },
+    });
+    this.saveState();
+    return next;
+  }
+
+  rollbackCandidate(params: unknown, deps: SelfIterationApplyDeps) {
+    const parsed = SelfIterationCandidateGetParamsSchema.parse(params);
+    const candidate = this.getCandidate(parsed);
+    if (candidate.status !== "applied") {
+      throw new Error(`Candidate ${candidate.id} is not in applied state.`);
+    }
+    if (!candidate.beforeSnapshot && !deps.rollbackSnapshot) {
+      throw new Error(`No rollback snapshot available for candidate ${candidate.id}.`);
+    }
+    if (deps.rollbackSnapshot) {
+      deps.rollbackSnapshot(candidate);
+    }
+    const next = SelfIterationCandidateSchema.parse({
+      ...candidate,
+      status: "rejected",
+      rejectionReason: "Rolled back by user.",
+      updatedAt: this.clock(),
+    });
+    this.state.candidates[next.id] = next;
+    this.recordRun({
+      projectId: next.projectId,
+      kind: "apply",
+      candidateIds: [next.id],
+      message: `Rolled back Self-Iteration candidate ${next.id}.`,
     });
     this.saveState();
     return next;
@@ -330,12 +393,23 @@ export class LocalSelfIterationStore {
     try {
       return SelfIterationStateSchema.parse(JSON.parse(fs.readFileSync(this.statePath, "utf8")));
     } catch {
+      const tmpPath = `${this.statePath}.tmp`;
+      if (fs.existsSync(tmpPath)) {
+        try {
+          return SelfIterationStateSchema.parse(JSON.parse(fs.readFileSync(tmpPath, "utf8")));
+        } catch {
+          // tmp backup also corrupted
+        }
+      }
       return SelfIterationStateSchema.parse({});
     }
   }
 
   private saveState(): void {
-    fs.writeFileSync(this.statePath, `${JSON.stringify(SelfIterationStateSchema.parse(this.state), null, 2)}\n`);
+    const tmpPath = `${this.statePath}.tmp`;
+    const serialized = `${JSON.stringify(SelfIterationStateSchema.parse(this.state), null, 2)}\n`;
+    fs.writeFileSync(tmpPath, serialized, "utf8");
+    fs.renameSync(tmpPath, this.statePath);
   }
 }
 

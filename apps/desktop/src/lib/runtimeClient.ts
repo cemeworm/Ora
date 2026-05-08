@@ -729,6 +729,9 @@ export function createRuntimeClient() {
     async applySelfIterationCandidate(candidateId: string, confirmed = false): Promise<OraSelfIterationCandidate> {
       return call<OraSelfIterationCandidate>("selfIteration.candidates.apply", { candidateId, confirmed });
     },
+    async rollbackSelfIterationCandidate(candidateId: string): Promise<OraSelfIterationCandidate> {
+      return call<OraSelfIterationCandidate>("selfIteration.candidates.rollback", { candidateId });
+    },
     async getSelfIterationPolicy(projectId?: string): Promise<OraSelfIterationPolicy> {
       return call<OraSelfIterationPolicy>("selfIteration.policy.get", { projectId });
     },

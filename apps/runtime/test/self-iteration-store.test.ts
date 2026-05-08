@@ -11,11 +11,11 @@ function tempDir() {
 }
 
 describe("LocalSelfIterationStore", () => {
-  it("creates and auto-applies evaluation candidates under low-risk policy", () => {
+  it("creates and auto-applies evaluation candidates under low-risk policy", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 1000);
     const applied: string[] = [];
     const feedback = feedbackRecord("feedback-1", "The answer missed the required citation.");
-    const result = store.scan({}, {
+    const result = await store.scan({}, {
       signals: [],
       insights: [],
       runs: [],
@@ -34,10 +34,10 @@ describe("LocalSelfIterationStore", () => {
     expect(applied).toEqual(["feedback-1"]);
   });
 
-  it("requires confirmation before applying prompt candidates", () => {
+  it("requires confirmation before applying prompt candidates", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 2000);
     const signal = recoverySignal();
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [signal],
       insights: [],
       runs: [],
@@ -68,7 +68,7 @@ describe("LocalSelfIterationStore", () => {
   it("attaches real evaluation outcome metadata before review", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 2500);
     const signal = recoverySignal();
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [signal],
       insights: [],
       runs: [],
@@ -121,7 +121,7 @@ describe("LocalSelfIterationStore", () => {
     if (feedback.status !== "pending") {
       runtime.updateEvaluationFeedback({ feedbackId: feedback.id, draftCase: feedback.draft.case });
     }
-    const scan = runtime.scanSelfIteration({ autoApplyEvaluation: false });
+    const scan = await runtime.scanSelfIteration({ autoApplyEvaluation: false });
     const candidate = scan.candidates.find((item) => item.targetKind === "evaluation")!;
 
     const evaluated = await runtime.evaluateSelfIterationCandidate({ candidateId: candidate.id });
@@ -131,7 +131,7 @@ describe("LocalSelfIterationStore", () => {
     expect(evaluated.status).toBe("ready");
     expect(evaluationRunId).toMatch(/^eval-run-/);
     expect(detail.run.status).toBe("succeeded");
-    expect(detail.run.totalAttempts).toBe(2);
+    expect(detail.run.totalAttempts).toBe(6);
     expect(evaluated.proposedChange.metadata.selfIterationEvaluation).toMatchObject({
       passed: true,
       gateKind: "safety",
@@ -159,7 +159,7 @@ describe("LocalSelfIterationStore", () => {
 
   it("keeps invalid generated mode drafts from being applied", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 2800);
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [],
       insights: [modeInsight()],
       runs: [],
@@ -201,9 +201,9 @@ describe("LocalSelfIterationStore", () => {
     expect(store.getCandidate({ candidateId: candidate.id }).status).toBe("ready");
   });
 
-  it("creates skill candidates from successful multi-tool runs", () => {
+  it("creates skill candidates from successful multi-tool runs", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 3000);
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [],
       insights: [],
       runs: [successfulRun()],
@@ -217,7 +217,7 @@ describe("LocalSelfIterationStore", () => {
     expect(candidate.proposedChange.after).toMatchObject({ name: "learned-single-agent" });
   });
 
-  it("deduplicates opportunistic curator scans by project cadence", () => {
+  it("deduplicates opportunistic curator scans by project cadence", async () => {
     let now = 4000;
     const dir = tempDir();
     const store = new LocalSelfIterationStore(dir, () => now);
@@ -237,21 +237,21 @@ describe("LocalSelfIterationStore", () => {
     };
     const deps = { applyEvaluationCandidate: () => ({ applied: true }) };
 
-    const first = store.triggerCuratorScan({ trigger: "feedback_submitted" }, input, deps);
+    const first = await store.triggerCuratorScan({ trigger: "feedback_submitted" }, input, deps);
     expect(first.scanned).toBe(true);
-    const second = store.triggerCuratorScan({ trigger: "run_completed_idle" }, input, deps);
+    const second = await store.triggerCuratorScan({ trigger: "run_completed_idle" }, input, deps);
     expect(second).toMatchObject({ scanned: false, reason: "cadence", projectId: "local-project" });
 
     now = 5001;
-    const third = store.triggerCuratorScan({ trigger: "run_completed_idle" }, input, deps);
+    const third = await store.triggerCuratorScan({ trigger: "run_completed_idle" }, input, deps);
     expect(third.scanned).toBe(true);
 
     const reloaded = new LocalSelfIterationStore(dir, () => now);
-    const skipped = reloaded.triggerCuratorScan({ trigger: "feedback_submitted" }, input, deps);
+    const skipped = await reloaded.triggerCuratorScan({ trigger: "feedback_submitted" }, input, deps);
     expect(skipped).toMatchObject({ scanned: false, reason: "cadence", projectId: "local-project" });
   });
 
-  it("creates opt-in environment observer signals without raw file content", () => {
+  it("creates opt-in environment observer signals without raw file content", async () => {
     const workspaceDir = tempDir();
     fs.mkdirSync(path.join(workspaceDir, "src"), { recursive: true });
     fs.mkdirSync(path.join(workspaceDir, "node_modules", "pkg"), { recursive: true });
@@ -287,7 +287,7 @@ describe("LocalSelfIterationStore", () => {
       excludedGlobs: ["node_modules/**"],
     });
 
-    const scan = runtime.scanSelfIteration({ projectId: project.projectId, autoApplyEvaluation: false });
+    const scan = await runtime.scanSelfIteration({ projectId: project.projectId, autoApplyEvaluation: false });
     expect(scan.candidates.some((candidate) => candidate.id === `${project.projectId}:self:mode:environment-observer`)).toBe(true);
 
     const paused = runtime.updateSelfIterationPolicy({
@@ -304,7 +304,7 @@ describe("LocalSelfIterationStore", () => {
     expect(runtime.listProjectSignals({ projectId: project.projectId, source: "project_file" })).toEqual([]);
   });
 
-  it("honors project curator pause policy", () => {
+  it("honors project curator pause policy", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 6000);
     store.updatePolicy({
       policy: {
@@ -314,7 +314,7 @@ describe("LocalSelfIterationStore", () => {
       },
     });
 
-    const result = store.triggerCuratorScan({ trigger: "feedback_submitted" }, {
+    const result = await store.triggerCuratorScan({ trigger: "feedback_submitted" }, {
       signals: [],
       insights: [],
       runs: [],
@@ -331,7 +331,7 @@ describe("LocalSelfIterationStore", () => {
   it("exposes safety gate and impact evaluation metadata for prompt candidates", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 7000);
     const signal = recoverySignal();
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [signal],
       insights: [],
       runs: [],
@@ -389,7 +389,7 @@ describe("LocalSelfIterationStore", () => {
   it("produces distinct before/after impact configs for prompt candidates", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 8000);
     const signal = recoverySignal();
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [signal],
       insights: [],
       runs: [],
@@ -437,7 +437,7 @@ describe("LocalSelfIterationStore", () => {
   it("does not persist changes during evaluation", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 9000);
     const signal = recoverySignal();
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [signal],
       insights: [],
       runs: [],
@@ -489,7 +489,7 @@ describe("LocalSelfIterationStore", () => {
   it("rejects duplicate evaluation for a candidate already being evaluated", async () => {
     const store = new LocalSelfIterationStore(tempDir(), () => 10000);
     const signal = recoverySignal();
-    store.scan({ autoApplyEvaluation: false }, {
+    await store.scan({ autoApplyEvaluation: false }, {
       signals: [signal],
       insights: [],
       runs: [],
@@ -520,6 +520,168 @@ describe("LocalSelfIterationStore", () => {
 
     await firstPromise;
     expect(store.getCandidate({ candidateId: candidate.id }).status).toBe("ready");
+  });
+
+  it("rolls back an applied prompt candidate and restores the original prompt", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 11000);
+    const signal = recoverySignal();
+    await store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, { applyEvaluationCandidate: () => ({ applied: true }) });
+    const candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    // Apply with a before snapshot
+    const snapshot = { kind: "prompt", modeId: "single_agent", nodeId: "node-1", prompt: "original prompt" };
+    const appliedRollback: string[] = [];
+    const applied = store.applyCandidate({ candidateId: candidate.id, confirmed: true }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ modeId: "single_agent" }),
+      applySkillCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+      captureBeforeSnapshot: () => snapshot,
+    });
+    expect(applied.status).toBe("applied");
+    expect(applied.beforeSnapshot).toEqual(snapshot);
+
+    // Rollback
+    const rolled = store.rollbackCandidate({ candidateId: candidate.id }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ modeId: "single_agent" }),
+      applySkillCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+      rollbackSnapshot: (c) => { appliedRollback.push(c.id); },
+    });
+    expect(rolled.status).toBe("rejected");
+    expect(rolled.rejectionReason).toBe("Rolled back by user.");
+    expect(appliedRollback).toEqual([candidate.id]);
+  });
+
+  it("rejects rollback for a candidate not in applied state", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 12000);
+    const signal = recoverySignal();
+    await store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, { applyEvaluationCandidate: () => ({ applied: true }) });
+    const candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    expect(() => store.rollbackCandidate({ candidateId: candidate.id }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ modeId: "single_agent" }),
+      applySkillCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+    })).toThrow(/not in applied state/);
+  });
+
+  it("captures verification baseline on apply for non-evaluation candidates", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 13000);
+    const signal = recoverySignal();
+    await store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, { applyEvaluationCandidate: () => ({ applied: true }) });
+    let candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    // First evaluate to get score metadata
+    const evaluated = await store.evaluateCandidate({ candidateId: candidate.id }, {
+      evaluateCandidate: () => ({
+        evaluationRunId: "eval-verify-1",
+        passed: true,
+        message: "ok",
+        metadata: { gateKind: "safety", score: 0.85, passRate: 0.9 },
+      }),
+    });
+    expect(evaluated.status).toBe("ready");
+
+    // Then apply
+    candidate = store.getCandidate({ candidateId: candidate.id });
+    const applied = store.applyCandidate({ candidateId: candidate.id, confirmed: true }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ modeId: "single_agent" }),
+      applySkillCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+    });
+    expect(applied.verification).toMatchObject({
+      status: "pending",
+      baselineScore: 0.85,
+      baselinePassRate: 0.9,
+    });
+  });
+
+  it("updates candidate verification status", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 14000);
+    const signal = recoverySignal();
+    await store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, { applyEvaluationCandidate: () => ({ applied: true }) });
+    let candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    const evaluated = await store.evaluateCandidate({ candidateId: candidate.id }, {
+      evaluateCandidate: () => ({
+        evaluationRunId: "eval-vfy-2",
+        passed: true,
+        message: "ok",
+        metadata: { gateKind: "safety", score: 0.7 },
+      }),
+    });
+    candidate = store.getCandidate({ candidateId: candidate.id });
+    store.applyCandidate({ candidateId: candidate.id, confirmed: true }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ modeId: "single_agent" }),
+      applySkillCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+    });
+
+    store.updateCandidateVerification(candidate.id, {
+      status: "verified",
+      lastVerifiedAt: 14001,
+      verifiedRunId: "eval-vfy-3",
+    });
+
+    const updated = store.getCandidate({ candidateId: candidate.id });
+    expect(updated.verification).toMatchObject({
+      status: "verified",
+      baselineScore: 0.7,
+      lastVerifiedAt: 14001,
+      verifiedRunId: "eval-vfy-3",
+    });
+  });
+
+  it("preserves state file integrity through atomic write", () => {
+    const dir = tempDir();
+    const statePath = `${dir}/state.json`;
+
+    // Write initial state
+    const store1 = new LocalSelfIterationStore(dir, () => 15000);
+    store1.updatePolicy({ policy: { projectId: "test", updatedAt: 15000 } });
+
+    // Verify tmp file is cleaned up (only state.json exists)
+    const files = fs.readdirSync(dir).filter((f) => f.startsWith("state.json"));
+    expect(files).toEqual(["state.json"]);
+
+    // Corrupt the state file and verify readState falls back gracefully
+    fs.writeFileSync(statePath, "not valid json", "utf8");
+    // Write a valid tmp file that can be recovered
+    fs.writeFileSync(`${statePath}.tmp`, JSON.stringify({ schemaVersion: 1, candidates: { "test-id": { id: "test-id", projectId: "test", targetKind: "prompt", targetRef: { kind: "prompt", id: "x" }, title: "T", summary: "S", evidence: [{ id: "e1", label: "E", target: { kind: "project_file", id: "f1" } }], proposedChange: { operation: "op", title: "T", summary: "S" }, riskLevel: "high", status: "draft", createdAt: 1, updatedAt: 1 } }, policies: {}, runs: [], curator: {} }), "utf8");
+
+    const store2 = new LocalSelfIterationStore(dir, () => 16000);
+    // Should recover from tmp file
+    const recovered = store2.getCandidate({ candidateId: "test-id" });
+    expect(recovered.id).toBe("test-id");
   });
 });
 

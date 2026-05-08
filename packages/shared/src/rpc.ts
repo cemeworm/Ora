@@ -155,6 +155,7 @@ export const RuntimeJsonRpcMethodSchema = z.enum([
   "selfIteration.candidates.evaluate",
   "selfIteration.candidates.reject",
   "selfIteration.candidates.apply",
+  "selfIteration.candidates.rollback",
   "selfIteration.policy.get",
   "selfIteration.policy.update"
 ]);

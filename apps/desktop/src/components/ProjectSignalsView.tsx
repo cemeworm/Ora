@@ -191,6 +191,15 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
     }
   }
 
+  async function rollbackSelfIteration(candidate: OraSelfIterationCandidate) {
+    try {
+      await runtimeClient.rollbackSelfIterationCandidate(candidate.id);
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to rollback Self-Iteration candidate.");
+    }
+  }
+
   async function dismissInsight(insight: OraProjectInsight) {
     try {
       await runtimeClient.dismissProjectInsight(insight.id, "Dismissed from Project Signals.");
@@ -384,6 +393,17 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                 </div>
                 <SelfIterationScoreEvidence candidate={candidate} />
                 <SelfIterationApplyResult candidate={candidate} />
+                {candidate.status === "applied" && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void rollbackSelfIteration(candidate)}
+                      className="h-8 rounded-md border border-rose-300 bg-transparent px-3 text-xs font-medium text-rose-700 transition hover:bg-rose-50"
+                    >
+                      Rollback
+                    </button>
+                  </div>
+                )}
                 {candidate.status !== "applied" && candidate.status !== "rejected" && (
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button

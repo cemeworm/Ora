@@ -168,7 +168,7 @@ import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
 import { LocalEvaluationStore } from "./evaluation-store.js";
 import { LocalFeedbackLoopStore } from "./feedback-loop-store.js";
-import { LocalSelfIterationStore } from "./self-iteration-store.js";
+import { LocalSelfIterationStore, type SelfIterationDerivationInput } from "./self-iteration-store.js";
 import {
   projectWorkspaceContext
 } from "./project-workspace.js";
@@ -326,6 +326,7 @@ export class LocalRunStore {
   private readonly evaluationStore: LocalEvaluationStore;
   private readonly feedbackLoopStore: LocalFeedbackLoopStore;
   private readonly selfIterationStore: LocalSelfIterationStore;
+  private readonly selfIterationDatasetCache = new Map<string, string>();
   private readonly customAgentStore: CustomAgentFileStore;
   private readonly systemAgentOverrideStore: SystemAgentOverrideFileStore;
   private readonly modeStore: ModeSpecFileStore;
@@ -1337,7 +1338,7 @@ export class LocalRunStore {
           completed: definition.planTemplate.length,
         },
         output: {
-          text: `Evaluation router-only run selected mode '${modeSpec.id}'.`,
+          text: routerOnlyRunOutputText(modeSpec.id),
           selectedModeId: modeSpec.id,
           autoModeRouter: fullConfig.metadata.autoModeRouter,
         },
@@ -2340,10 +2341,36 @@ export class LocalRunStore {
     return this.feedbackLoopStore.updateRule(params);
   }
 
-  scanSelfIteration(params: unknown = {}) {
-    return this.selfIterationStore.scan(params, this.selfIterationInput(), {
+  async scanSelfIteration(params: unknown = {}) {
+    const result = await this.selfIterationStore.scan(params, this.selfIterationInput(), {
       applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
     });
+    await this.verifyPendingSelfIterationCandidates();
+    return result;
+  }
+
+  private async verifyPendingSelfIterationCandidates(): Promise<void> {
+    const now = this.clock();
+    const pending = this.selfIterationStore.listCandidates({ status: "applied" })
+      .filter((candidate) => candidate.verification?.status === "pending")
+      .filter((candidate) => {
+        const hoursSinceApply = (now - candidate.updatedAt) / (60 * 60 * 1000);
+        return hoursSinceApply >= 1;
+      });
+    for (const candidate of pending) {
+      if (this.selfIterationStore.isEvaluating(candidate.id)) continue;
+      try {
+        const impactResult = await this.runSelfIterationImpactEvaluation(candidate);
+        const result = impactResult ?? await this.runSelfIterationEvaluation(candidate);
+        this.selfIterationStore.updateCandidateVerification(candidate.id, {
+          status: result.passed ? "verified" : "regressed",
+          lastVerifiedAt: now,
+          verifiedRunId: result.evaluationRunId,
+        });
+      } catch {
+        // Verification is best-effort
+      }
+    }
   }
 
   listSelfIterationCandidates(params: unknown = {}) {
@@ -2386,7 +2413,79 @@ export class LocalRunStore {
       applyPromptCandidate: (candidate) => this.applyPromptSelfIterationCandidate(candidate),
       applySkillCandidate: (candidate) => this.applySkillSelfIterationCandidate(candidate),
       applyModeCandidate: (candidate) => this.applyModeSelfIterationCandidate(candidate),
+      captureBeforeSnapshot: (candidate) => this.captureSelfIterationBeforeSnapshot(candidate),
     });
+  }
+
+  rollbackSelfIterationCandidate(params: unknown) {
+    return this.selfIterationStore.rollbackCandidate(params, {
+      applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
+      applyPromptCandidate: (candidate) => this.applyPromptSelfIterationCandidate(candidate),
+      applySkillCandidate: (candidate) => this.applySkillSelfIterationCandidate(candidate),
+      applyModeCandidate: (candidate) => this.applyModeSelfIterationCandidate(candidate),
+      rollbackSnapshot: (candidate) => this.rollbackSelfIterationSnapshot(candidate),
+    });
+  }
+
+  private captureSelfIterationBeforeSnapshot(candidate: SelfIterationCandidate): unknown {
+    if (candidate.targetKind === "prompt") {
+      const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+      const mode = this.modeStore.get({ modeId });
+      const nodeId = candidate.targetRef.nodeId;
+      const targetNode = mode.nodes.find((node) => node.id === nodeId) ?? mode.nodes.find((node) => node.enabled) ?? mode.nodes[0];
+      return { kind: "prompt", modeId, nodeId: targetNode?.id, prompt: targetNode?.prompt ?? targetNode?.instructions ?? "" };
+    }
+    if (candidate.targetKind === "mode") {
+      const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+      const mode = this.modeStore.get({ modeId });
+      return { kind: "mode", modeId, spec: mode };
+    }
+    if (candidate.targetKind === "skill") {
+      const skillName = candidate.targetRef.skillName ?? String(candidate.proposedChange.metadata.skillName ?? "");
+      const skill = skillName ? this.skillRegistry.get({ name: skillName }) : undefined;
+      return { kind: "skill", skillName, content: skill?.content };
+    }
+    return { kind: candidate.targetKind };
+  }
+
+  private rollbackSelfIterationSnapshot(candidate: SelfIterationCandidate): void {
+    const snapshot = candidate.beforeSnapshot as Record<string, unknown> | undefined;
+    if (!snapshot) return;
+    if (snapshot.kind === "prompt" && typeof snapshot.modeId === "string") {
+      const mode = this.modeStore.get({ modeId: snapshot.modeId });
+      const nodeId = snapshot.nodeId as string | undefined;
+      const targetNode = mode.nodes.find((node) => node.id === nodeId);
+      if (!targetNode) return; // mode structure changed, cannot safely rollback
+      if (typeof snapshot.prompt === "string") {
+        this.modeStore.update({
+          modeId: snapshot.modeId,
+          spec: modeCreateParamsFromSpec({
+            ...mode,
+            nodes: mode.nodes.map((node) => node.id === targetNode.id ? { ...node, prompt: snapshot.prompt as string } : node),
+          }),
+        });
+      }
+    }
+    if (snapshot.kind === "skill" && typeof snapshot.skillName === "string" && typeof snapshot.content === "string") {
+      try { this.skillRegistry.delete({ name: snapshot.skillName }); } catch { /* ignore */ }
+      this.skillRegistry.create({
+        name: snapshot.skillName,
+        content: snapshot.content,
+        enabled: true,
+      });
+    }
+    if (snapshot.kind === "mode" && typeof snapshot.modeId === "string" && snapshot.spec) {
+      const tempId = `${snapshot.modeId}-rollback-tmp-${this.now()}`;
+      try {
+        this.modeStore.create(modeCreateParamsFromSpec({ ...(snapshot.spec as ModeSpec), id: tempId } as ModeSpec));
+        try { this.modeStore.delete({ modeId: snapshot.modeId }); } catch { /* ignore */ }
+        this.modeStore.create(modeCreateParamsFromSpec(snapshot.spec as ModeSpec));
+      } catch {
+        // If create-from-snapshot fails, temp copy preserves the data
+      } finally {
+        try { this.modeStore.delete({ modeId: tempId }); } catch { /* ignore */ }
+      }
+    }
   }
 
   getSelfIterationPolicy(params: unknown = {}) {
@@ -3037,9 +3136,9 @@ export class LocalRunStore {
     this.selfIterationCuratorTimers.set(key, timer);
   }
 
-  private runSelfIterationCurator(trigger: SelfIterationCuratorTrigger, projectId?: string): void {
+  private async runSelfIterationCurator(trigger: SelfIterationCuratorTrigger, projectId?: string): Promise<void> {
     try {
-      this.selfIterationStore.triggerCuratorScan({ projectId, trigger }, this.selfIterationInput(), {
+      await this.selfIterationStore.triggerCuratorScan({ projectId, trigger }, this.selfIterationInput(), {
         applyEvaluationCandidate: (candidate) => this.applyEvaluationSelfIterationCandidate(candidate),
       });
     } catch {
@@ -3766,7 +3865,60 @@ export class LocalRunStore {
       runs: feedbackLoopInput.runs,
       evaluationRuns: feedbackLoopInput.evaluationRuns,
       feedbackRecords: feedbackLoopInput.feedbackRecords,
+      enrichCandidate: (candidate: SelfIterationCandidate, _input: SelfIterationDerivationInput) => this.enrichSelfIterationCandidate(candidate),
     };
+  }
+
+  private async enrichSelfIterationCandidate(candidate: SelfIterationCandidate): Promise<SelfIterationCandidate> {
+    const policy = this.selfIterationStore.getPolicy({ projectId: candidate.projectId });
+    if (!(policy as Record<string, unknown>).candidateGenerationLLM) return candidate;
+
+    const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+    const mode = this.modeStore.get({ modeId });
+    const enrichmentModelRef = (policy as Record<string, unknown>).enrichmentModelRef as string | undefined;
+    const modelRef = enrichmentModelRef ?? resolveProfileModelRef(mode);
+    if (!modelRef) return candidate;
+
+    const prompt = [
+      "You are improving an Ora self-iteration candidate. Based on the evidence below, rewrite the candidate to be more specific and actionable.",
+      `Current title: ${candidate.title}`,
+      `Current summary: ${candidate.summary}`,
+      `Target kind: ${candidate.targetKind}`,
+      `Proposed operation: ${candidate.proposedChange.operation}`,
+      "Evidence:",
+      ...candidate.evidence.map((e, i) => `${i + 1}. ${e.label}: ${e.summary ?? ""}`).filter(Boolean),
+      "Output ONLY a JSON object with keys: title (under 100 chars), summary (under 300 chars, specific to the evidence), after (a short string describing the concrete change to apply). Do not include any other text.",
+    ].join("\n");
+
+    try {
+      const response = await invokeRunProvider(RunConfigSchema.parse({
+        modeId,
+        modeSelection: "manual",
+        modelRef,
+      }), {
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        maxTokens: 512,
+      });
+
+      const text = response.text.replace(/```json\s*|\s*```/g, "").trim();
+      const parsed = JSON.parse(text) as { title?: string; summary?: string; after?: string };
+      if (parsed.title && parsed.summary) {
+        return {
+          ...candidate,
+          title: parsed.title.slice(0, 100),
+          summary: parsed.summary.slice(0, 300),
+          proposedChange: {
+            ...candidate.proposedChange,
+            after: parsed.after ?? candidate.proposedChange.after,
+            metadata: { ...candidate.proposedChange.metadata, llmEnriched: true },
+          },
+        } as SelfIterationCandidate;
+      }
+    } catch {
+      // LLM enrichment is best-effort; silently fall back to template candidate
+    }
+    return candidate;
   }
 
   private async runSelfIterationEvaluation(candidate: SelfIterationCandidate) {
@@ -3775,6 +3927,8 @@ export class LocalRunStore {
       : undefined;
     const datasetId = this.selfIterationEvaluationDatasetId(candidate);
     const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+    const safetyMode = this.modeStore.get({ modeId });
+    const modelRef = resolveProfileModelRef(safetyMode);
     const spec = EvaluationSpecSchema.parse({
       datasetId,
       profileId: "outcome",
@@ -3797,8 +3951,7 @@ export class LocalRunStore {
           pattern: "orchestrator_subagent",
           modeId,
           modeSelection: "manual",
-          providerId: "local-smoke",
-          modelRef: "local/smoke-model",
+          ...(modelRef ? { modelRef } : {}),
           metadata: {
             evaluationKind: "self_iteration_safety",
             evaluationRouterOnly: true,
@@ -3808,7 +3961,7 @@ export class LocalRunStore {
           },
         },
       })),
-      repetitions: 1,
+      repetitions: 3,
       concurrency: 1,
       metadata: {
         source: "self_iteration",
@@ -3932,17 +4085,17 @@ export class LocalRunStore {
               modeId,
               modeSelection: "manual",
               ...(modelRef ? { modelRef } : {}),
+              skillIds: [created.name],
               metadata: {
                 evaluationKind: "self_iteration_impact",
                 selfIterationCandidateId: candidate.id,
                 selfIterationTargetKind: candidate.targetKind,
                 selfIterationScorePhase: "after",
-                selfIterationSkillOverlay: String(draft.name ?? candidate.targetRef.skillName ?? "learned-workflow"),
               },
             },
           },
         ],
-        repetitions: 1,
+        repetitions: 3,
         concurrency: 1,
         metadata: {
           source: "self_iteration",
@@ -4037,7 +4190,7 @@ export class LocalRunStore {
           },
         },
       ],
-      repetitions: 1,
+      repetitions: 3,
       concurrency: 1,
       metadata: {
         source: "self_iteration",
@@ -4096,6 +4249,8 @@ export class LocalRunStore {
         }
       }
     }
+    const cached = this.selfIterationDatasetCache.get(candidate.id);
+    if (cached) return cached;
     const caseRecord = selfIterationEvaluationCase(candidate);
     const dataset = this.evaluationStore.importDataset({
       name: `Self-Iteration Gate · ${candidate.targetKind}`,
@@ -4104,6 +4259,7 @@ export class LocalRunStore {
       content: JSON.stringify([caseRecord]),
       tags: ["self-iteration", candidate.targetKind],
     });
+    this.selfIterationDatasetCache.set(candidate.id, dataset.dataset.id);
     return dataset.dataset.id;
   }
 
@@ -4322,7 +4478,7 @@ function projectIdForSnapshotLocal(run: StateSnapshot, sessions: Map<string, Ses
 
 function selfIterationEvaluationCase(candidate: SelfIterationCandidate) {
   const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
-  const expectedText = `Evaluation router-only run selected mode '${modeId}'.`;
+  const expectedText = routerOnlyRunOutputText(modeId);
   return {
     id: `self-iteration-${safeSelfIterationId(candidate.id)}`,
     input: {
@@ -4397,6 +4553,10 @@ function selfIterationScoreSnapshot(summary: EvaluationConfigSummary) {
 
 function roundSelfIterationScore(value: number): number {
   return Math.round(value * 10_000) / 10_000;
+}
+
+function routerOnlyRunOutputText(modeId: string): string {
+  return `Evaluation router-only run selected mode '${modeId}'.`;
 }
 
 function safeSelfIterationId(value: string): string {

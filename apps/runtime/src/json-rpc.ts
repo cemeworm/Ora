@@ -373,6 +373,8 @@ export function createRuntimeMethodHandler(
         return store.rejectSelfIterationCandidate(request.params);
       case "selfIteration.candidates.apply":
         return store.applySelfIterationCandidate(request.params);
+      case "selfIteration.candidates.rollback":
+        return store.rollbackSelfIterationCandidate(request.params);
       case "selfIteration.policy.get":
         return store.getSelfIterationPolicy(request.params);
       case "selfIteration.policy.update":

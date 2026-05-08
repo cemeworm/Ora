@@ -51,6 +51,14 @@ export const SelfIterationCandidateSchema = z.object({
   evaluationRunId: z.string().min(1).optional(),
   rejectionReason: z.string().min(1).optional(),
   applyResult: z.unknown().optional(),
+  beforeSnapshot: z.unknown().optional(),
+  verification: z.object({
+    status: z.enum(["pending", "verified", "regressed"]).default("pending"),
+    baselineScore: z.number().optional(),
+    baselinePassRate: z.number().optional(),
+    lastVerifiedAt: z.number().int().nonnegative().optional(),
+    verifiedRunId: z.string().optional(),
+  }).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -88,6 +96,8 @@ export const SelfIterationPolicySchema = z.object({
   curatorEnabled: z.boolean().default(true),
   scanCadenceMs: z.number().int().nonnegative().default(5 * 60 * 1000),
   idleScanDelayMs: z.number().int().nonnegative().default(30 * 1000),
+  candidateGenerationLLM: z.boolean().default(false),
+  enrichmentModelRef: z.string().min(1).optional(),
   environmentObserver: SelfIterationEnvironmentObserverPolicySchema.default({}),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -140,6 +150,11 @@ export const SelfIterationCandidateApplyParamsSchema = z.object({
   confirmed: z.boolean().default(false),
 });
 export type SelfIterationCandidateApplyParams = z.infer<typeof SelfIterationCandidateApplyParamsSchema>;
+
+export const SelfIterationCandidateRollbackParamsSchema = z.object({
+  candidateId: z.string().min(1),
+});
+export type SelfIterationCandidateRollbackParams = z.infer<typeof SelfIterationCandidateRollbackParamsSchema>;
 
 export const SelfIterationPolicyGetParamsSchema = z.object({
   projectId: z.string().min(1).optional(),
