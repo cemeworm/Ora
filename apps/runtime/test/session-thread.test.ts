@@ -186,10 +186,13 @@ describe("session thread runtime behavior", () => {
       params: { sessionId: latest.sessionId, includeLatestSnapshot: false },
     }));
 
-    expect(bootstrap.sessions.map((session) => session.sessionId)).toEqual([latest.sessionId, older.sessionId]);
-    expect(bootstrap.activeSessionDetail.session.sessionId).toBe(latest.sessionId);
+    expect(bootstrap.sessions.map((session) => session.sessionId)).toEqual([
+      bootstrap.activeSessionDetail.session.sessionId,
+      latest.sessionId,
+      older.sessionId,
+    ]);
+    expect(bootstrap.activeSessionDetail.turns).toEqual([]);
     expect(bootstrap.activeSessionDetail.latestSnapshot).toBeUndefined();
-    expect(bootstrap.activeSessionDetail.turns.map((turn) => turn.runId)).toEqual([run.runId]);
     expect(detail.latestSnapshot?.runId).toBe(run.runId);
     expect(summaryDetail.latestSnapshot).toBeUndefined();
   });

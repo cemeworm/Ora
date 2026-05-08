@@ -579,7 +579,7 @@ describe("Ora runtime smoke path", () => {
           invalidPlanReason: "invalid_or_internal_triage_output",
         }),
       });
-      expect(state.plan.find((item) => item.id === `${run.runId}:triage`)?.status).toBe("blocked");
+      expect(state.plan.find((item) => item.id === `${run.runId}:triage`)?.status).toBe("failed");
       expect(state.plan.filter((item) => item.status === "skipped").map((item) => item.id)).toEqual([
         `${run.runId}:build`,
         `${run.runId}:review`,
@@ -674,7 +674,7 @@ describe("Ora runtime smoke path", () => {
           invalidPlanReason: "invalid_or_internal_triage_output",
         }),
       });
-      expect(state.plan.find((item) => item.id === `${run.runId}:triage`)?.status).toBe("blocked");
+      expect(state.plan.find((item) => item.id === `${run.runId}:triage`)?.status).toBe("failed");
       expect(state.plan.filter((item) => item.status === "skipped").map((item) => item.id)).toEqual([
         `${run.runId}:build`,
         `${run.runId}:review`,
