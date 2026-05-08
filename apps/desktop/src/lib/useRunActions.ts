@@ -5,8 +5,8 @@ import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE,
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
 import { useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
-import { timeStart, timeEnd } from "./debugTiming";
 import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
+import { timeStart, timeEnd } from "./debugTiming";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
@@ -247,6 +247,8 @@ interface DeleteCustomProviderOptions {
 export function useRunActions() {
   const { state, dispatch } = useWorkbench();
   const runtimeClient = getSharedRuntimeClient();
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const sessionRequestRef = useRef(0);
   const sessionPrefetchesRef = useRef(new Set<string>());
 
@@ -342,18 +344,19 @@ export function useRunActions() {
     options: {
       refreshCollections?: boolean;
       shouldApply?: () => boolean;
+      preserveSelection?: boolean;
     } = {},
   ) {
     const refreshCollections = options.refreshCollections ?? true;
     const [projects, sessions, detail] = await Promise.all([
       refreshCollections ? runtimeClient.listProjects() : Promise.resolve(state.projects),
       refreshCollections ? runtimeClient.listSessions() : Promise.resolve(state.sessions),
-      runtimeClient.getSession(sessionId),
+      runtimeClient.getSession(sessionId, { includeLatestSnapshot: false }),
     ]);
     if (options.shouldApply && !options.shouldApply()) {
       return { projects, sessions, detail };
     }
-    dispatch({ type: "HYDRATE_SESSION", projects, sessions, detail, snapshot, feedback });
+    dispatch({ type: "HYDRATE_SESSION", projects, sessions, detail, snapshot, feedback, preserveSelection: options.preserveSelection });
     return { projects, sessions, detail };
   }
 
@@ -576,7 +579,7 @@ export function useRunActions() {
   async function refreshCurrentSession(snapshot?: OraStateSnapshot, feedback?: string) {
     const sessionId = snapshot?.sessionId ?? state.selectedSessionId;
     if (!sessionId) return;
-    await hydrateSession(sessionId, snapshot, feedback);
+    await hydrateSession(sessionId, snapshot, feedback, { preserveSelection: true });
   }
 
   async function submitClarificationOption(answer: string) {
@@ -810,11 +813,24 @@ export function useRunActions() {
   }
 
   async function cancelRun() {
-    if (!state.selectedTurnRunId) return;
-    dispatch({ type: "SET_BUSY_COMMAND", command: "Cancel" });
+    const runId = state.selectedTurnRunId;
+    if (!runId) return;
+    dispatch({
+      type: "REQUEST_RUN_CANCEL",
+      runId,
+      reason: USER_CANCELLED_MESSAGE,
+      updatedAt: Date.now(),
+    });
     try {
-      const snapshot = await runtimeClient.cancelRun(state.selectedTurnRunId, USER_CANCELLED_MESSAGE);
-      await refreshCurrentSession(snapshot, `Cancel completed against ${snapshot.runId}.`);
+      const snapshot = await runtimeClient.cancelRun(runId, USER_CANCELLED_MESSAGE);
+      dispatch({ type: "SELECT_TURN", runId: snapshot.runId, snapshot });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `Cancel completed against ${snapshot.runId}.` });
+      void refreshCurrentSession(snapshot).catch((error) => {
+        dispatch({
+          type: "SET_COMMAND_FEEDBACK",
+          feedback: error instanceof Error ? error.message : "Session refresh failed after cancel.",
+        });
+      });
     } catch (error) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Cancel failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
@@ -1068,7 +1084,7 @@ export function useRunActions() {
       dispatch({ type: "SET_PROVIDER_SECRET_STATUSES", statuses });
       dispatch({
         type: "SET_PROVIDER_STATUSES",
-        statuses: runtimeClient.refreshProviderStatuses(registry.providers, statuses, state.providerStatuses),
+        statuses: runtimeClient.refreshProviderStatuses(registry.providers, statuses, stateRef.current.providerStatuses),
       });
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: `${provider.label} is ready to configure.` });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });

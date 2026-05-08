@@ -8,6 +8,7 @@ import {
   type PermissionMode,
   type TaskIntent,
 } from "@cemeworm/shared";
+import { timeStart, timeEnd } from "./debugTiming";
 import {
   createContext,
   useContext,
@@ -27,7 +28,6 @@ import {
   readStoredLanguage,
   type AppLanguage,
 } from "./i18n";
-import { timeStart, timeEnd } from "./debugTiming";
 import { chooseEnabledProviderId } from "./providerSelection";
 import type {
   OraModeSpec,
@@ -194,6 +194,7 @@ export type WorkbenchAction =
   | { type: "SET_PROVIDER_STATUSES"; statuses: OraProviderStatus[] }
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
+  | { type: "REQUEST_RUN_CANCEL"; runId: string; reason: string; updatedAt: number }
   | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream; receivedAt?: number }
   | {
       type: "BEGIN_RUN_RESUME";
@@ -1332,6 +1333,28 @@ function applyStreamToSessionDetail(
     };
   });
 
+  const existing = turns.some((t) => t.runId === stream.runId);
+  if (!existing && snapshot) {
+    turns.push({
+      runId: stream.runId,
+      sessionId: snapshot.sessionId ?? detail.session.sessionId,
+      turnIndex: snapshot.turnIndex ?? turns.length + 1,
+      status: status ?? snapshot.status,
+      attention: snapshot.attention,
+      pattern: snapshot.pattern,
+      modeId: snapshot.modeId,
+      providerId: snapshot.config.providerId,
+      modelRef: snapshot.config.modelRef,
+      prompt: snapshot.input.prompt,
+      startedAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+      updatedAt: updatedAt ?? snapshot.updatedAt,
+      eventCount: snapshot.events.length,
+      checkpointCount: snapshot.checkpoints.length,
+      artifactCount: snapshot.artifacts.length,
+      trace: snapshot.trace,
+    });
+  }
+
   return {
     ...detail,
     session: {
@@ -1461,6 +1484,78 @@ function markSnapshotResuming(
   });
 }
 
+function markSnapshotCancelRequested(
+  snapshot: OraStateSnapshot | undefined,
+  runId: string,
+  reason: string,
+  updatedAt: number,
+): OraStateSnapshot | undefined {
+  if (!snapshot || snapshot.runId !== runId || isSettledRunStatus(snapshot.status)) {
+    return snapshot;
+  }
+
+  const seq = snapshot.events.length;
+  return normalizeDesktopSnapshot({
+    ...snapshot,
+    status: "cancelled",
+    attention: {
+      kind: "cancelled",
+      blocking: false,
+      sourceRunId: runId,
+      reason,
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    },
+    queueSummary: {
+      ...snapshot.queueSummary,
+      inProgress: 0,
+    },
+    events: [
+      ...snapshot.events,
+      {
+        id: `${runId}:desktop-cancel-requested:${seq}`,
+        runId,
+        seq,
+        type: "run.cancelled",
+        createdAt: updatedAt,
+        pattern: snapshot.pattern,
+        payload: { reason },
+      } as OraStateSnapshot["events"][number],
+    ],
+    updatedAt,
+  });
+}
+
+function applyCancelRequestedToSessionDetail(
+  detail: OraSessionDetail | undefined,
+  snapshot: OraStateSnapshot | undefined,
+  runId: string,
+  updatedAt: number,
+): OraSessionDetail | undefined {
+  if (!detail || !detail.turns.some((turn) => turn.runId === runId)) {
+    return detail;
+  }
+  return {
+    ...detail,
+    session: {
+      ...detail.session,
+      status: "cancelled",
+      attention: snapshot?.attention ?? detail.session.attention,
+      updatedAt: Math.max(detail.session.updatedAt, updatedAt),
+    },
+    turns: detail.turns.map((turn) =>
+      turn.runId === runId
+        ? { ...turn, status: "cancelled", updatedAt: Math.max(turn.updatedAt, updatedAt) }
+        : turn
+    ),
+    latestSnapshot:
+      snapshot && (detail.latestSnapshot?.runId === runId || detail.session.latestRunId === runId)
+        ? snapshot
+        : detail.latestSnapshot,
+  };
+}
+
 function shouldPreserveAcceptedPlanPendingRun(
   pendingResolution: WorkbenchState["pendingPlanDecisionResolution"],
   pendingRun: WorkbenchState["pendingRun"],
@@ -1579,7 +1674,6 @@ export function workbenchReducer(
         state.selectedSessionId &&
         action.detail.session.sessionId !== state.selectedSessionId
       ) {
-        timeEnd("HYDRATE_SESSION reducer");
         return {
           ...state,
           projects: action.projects,
@@ -1595,8 +1689,7 @@ export function workbenchReducer(
         state.pendingRun,
         action.detail.session.sessionId,
       );
-      timeEnd("HYDRATE_SESSION reducer");
-      return {
+      const nextState = {
         ...state,
         projects: action.projects,
         sessions,
@@ -1650,6 +1743,8 @@ export function workbenchReducer(
         isLoading: preservePendingRun ? true : false,
         busyCommand: undefined,
       };
+      timeEnd("HYDRATE_SESSION reducer");
+      return nextState;
     }
 
     case "SET_COLLECTIONS":
@@ -1983,7 +2078,10 @@ export function workbenchReducer(
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
-        pendingRun: undefined,
+        pendingRun:
+          state.pendingRun?.sessionId === action.sessionId
+            ? state.pendingRun
+            : undefined,
         pendingPlanDecisionResolution: undefined,
       };
     }
@@ -2007,6 +2105,48 @@ export function workbenchReducer(
         pendingPlanDecisionResolution: snapshot
           ? undefined
           : state.pendingPlanDecisionResolution,
+      };
+    }
+
+    case "REQUEST_RUN_CANCEL": {
+      const activeSnapshot = markSnapshotCancelRequested(
+        state.activeSnapshot,
+        action.runId,
+        action.reason,
+        action.updatedAt,
+      );
+      const activeSessionDetail = applyCancelRequestedToSessionDetail(
+        state.activeSessionDetail,
+        activeSnapshot,
+        action.runId,
+        action.updatedAt,
+      );
+      return {
+        ...state,
+        sessions: state.sessions.map((session) =>
+          session.latestRunId === action.runId
+            ? {
+                ...session,
+                status: "cancelled",
+                attention: activeSnapshot?.attention ?? session.attention,
+                updatedAt: Math.max(session.updatedAt, action.updatedAt),
+              }
+            : session
+        ),
+        activeSessionDetail,
+        sessionDetailsById: activeSessionDetail
+          ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
+          : state.sessionDetailsById,
+        activeSnapshot,
+        pendingRun:
+          state.pendingRun &&
+          ((activeSnapshot?.sessionId && state.pendingRun.sessionId === activeSnapshot.sessionId) ||
+            (!activeSnapshot?.sessionId && state.pendingRun.sessionId === state.selectedSessionId))
+            ? undefined
+            : state.pendingRun,
+        isLoading: false,
+        busyCommand: undefined,
+        commandFeedback: "Stop requested.",
       };
     }
 
@@ -2077,18 +2217,18 @@ export function workbenchReducer(
           if (streamSessionId && streamSessionId !== activeSessionId) {
             const cachedDetail = state.sessionDetailsById[streamSessionId];
             if (cachedDetail) {
-              next = cacheSessionDetail(
-                next,
-                applyBranchStreamToSessionDetail(
-                  applyStreamToSessionDetail(
-                    cachedDetail,
-                    action.stream,
-                    streamSnapshot,
-                  ),
+              const updatedDetail = applyBranchStreamToSessionDetail(
+                applyStreamToSessionDetail(
+                  cachedDetail,
                   action.stream,
                   streamSnapshot,
-                )!,
+                ),
+                action.stream,
+                streamSnapshot,
               );
+              if (updatedDetail) {
+                next = cacheSessionDetail(next, updatedDetail);
+              }
             }
           }
           return next;

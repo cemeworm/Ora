@@ -771,8 +771,18 @@ export class LocalRunStore {
   }
 
   getSession(params: unknown): SessionDetail {
+    const t0 = Date.now();
     this.refreshAllSessionLedgerProjections();
-    return getSessionOperation(params, this.projectSessionOperationDeps());
+    const t1 = Date.now();
+    const result = getSessionOperation(params, this.projectSessionOperationDeps());
+    const t2 = Date.now();
+    if (t2 - t0 > 500) {
+      try {
+        const line = JSON.stringify({ refresh: t1 - t0, operation: t2 - t1, total: t2 - t0, sessionId: (params as any)?.sessionId }) + "\n";
+        require("node:fs").appendFileSync("/tmp/ora-session-timing.txt", line);
+      } catch (_) { /* best effort */ }
+    }
+    return result;
   }
 
   setSessionProject(params: unknown): SessionSummary {
@@ -1911,6 +1921,8 @@ export class LocalRunStore {
   }
 
   interruptRun(params: unknown): StateSnapshot {
+    const runId = this.requireRunId(params);
+    this.runStreamingService.abort(runId, USER_INTERRUPTED_MESSAGE);
     return interruptRun(params, this.runStateOperationDeps(), USER_INTERRUPTED_MESSAGE);
   }
 
@@ -2236,9 +2248,28 @@ export class LocalRunStore {
     params: unknown,
     createRun: (params: { input: UserTaskInput; config: Partial<RunConfig> }) => Promise<StateSnapshot>
   ) {
-    const detail = await this.evaluationStore.startRun(params, createRun);
-    this.queueSelfIterationCurator("evaluation_run_completed");
-    return detail;
+    const evalSession = this.createSession({});
+    const evalSessionId = evalSession.sessionId;
+
+    try {
+      const detail = await this.evaluationStore.startRun(params, async (runParams) => {
+        return createRun({
+          input: runParams.input,
+          config: {
+            ...runParams.config,
+            metadata: {
+              ...(runParams.config?.metadata ?? {}),
+              evalSessionId,
+            },
+          },
+        });
+      });
+
+      this.queueSelfIterationCurator("evaluation_run_completed");
+      return detail;
+    } finally {
+      this.archiveSession({ sessionId: evalSessionId });
+    }
   }
 
   listEvaluationRuns(params: unknown = {}) {
@@ -2879,7 +2910,8 @@ export class LocalRunStore {
     if (revision && revision === this.sessionLedgerRevision) {
       return;
     }
-    for (const ledger of this.backend.listSessionLedgers()) {
+    const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
+    for (const ledger of ledgers) {
       this.refreshSessionFromLedger(ledger.sessionId, ledger.leafEntryId);
     }
     this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
@@ -3970,7 +4002,8 @@ export class LocalRunStore {
       },
     });
     const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-      const handle = await this.startRun({ input, config });
+      const sessionId = config?.metadata?.evalSessionId as string | undefined;
+      const handle = await this.startRun({ input, config, sessionId });
       return this.getRunState({ runId: handle.runId });
     });
     const scorecard = detail.run.scorecard;
@@ -4106,7 +4139,8 @@ export class LocalRunStore {
       });
 
       const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-        const handle = await this.startRun({ input, config });
+        const sessionId = config?.metadata?.evalSessionId as string | undefined;
+        const handle = await this.startRun({ input, config, sessionId });
         return this.getRunState({ runId: handle.runId });
       });
 
@@ -4201,7 +4235,8 @@ export class LocalRunStore {
     });
 
     const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
-      const handle = await this.startRun({ input, config });
+      const sessionId = config?.metadata?.evalSessionId as string | undefined;
+      const handle = await this.startRun({ input, config, sessionId });
       return this.getRunState({ runId: handle.runId });
     });
 

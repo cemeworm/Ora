@@ -1060,6 +1060,57 @@ describe("desktop workbench state", () => {
     expect(next.activeSnapshot?.pendingClarifications).toEqual([]);
   });
 
+  it("optimistically marks a running turn cancelled before the runtime responds", () => {
+    const snapshot = testSnapshot({
+      runId: "run-cancel",
+      sessionId: "session-cancel",
+      status: "running",
+      updatedAt: 1_714_000_000_000,
+    });
+    const session = {
+      ...sessionSummary("session-cancel"),
+      latestRunId: snapshot.runId,
+      status: "running" as const,
+      updatedAt: snapshot.updatedAt,
+    };
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: session.sessionId,
+      selectedTurnRunId: snapshot.runId,
+      sessions: [session],
+      activeSnapshot: snapshot,
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId: snapshot.runId,
+          status: "running",
+          updatedAt: snapshot.updatedAt,
+        } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+      pendingRun: { sessionId: session.sessionId, prompt: snapshot.input.prompt, createdAt: snapshot.input.createdAt ?? 0 },
+      isLoading: true,
+      busyCommand: "Cancel",
+    }, {
+      type: "REQUEST_RUN_CANCEL",
+      runId: snapshot.runId,
+      reason: "Stopped processing as instructed.",
+      updatedAt: 1_714_000_000_123,
+    });
+
+    expect(next.activeSnapshot?.status).toBe("cancelled");
+    expect(next.activeSnapshot?.attention?.kind).toBe("cancelled");
+    expect(next.activeSessionDetail?.session.status).toBe("cancelled");
+    expect(next.activeSessionDetail?.turns[0]?.status).toBe("cancelled");
+    expect(next.sessions[0]?.status).toBe("cancelled");
+    expect(next.pendingRun).toBeUndefined();
+    expect(next.isLoading).toBe(false);
+    expect(next.busyCommand).toBeUndefined();
+    expect(next.commandFeedback).toBe("Stop requested.");
+  });
+
   it("does not merge same-run snapshots from different sessions", () => {
     const existing = testSnapshot({
       runId: "run-shared-id",

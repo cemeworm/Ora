@@ -1384,3 +1384,244 @@ describe("provider adapters", () => {
     expect(status.detail).toContain("BROKEN_API_KEY");
   });
 });
+
+describe("DeepSeek provider", () => {
+  const deepseekConfig = {
+    id: "deepseek",
+    type: "openai_compatible" as const,
+    label: "DeepSeek",
+    modelId: "deepseek-v4-flash",
+    baseUrl: "https://api.deepseek.com",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+    protocol: "chat_completions" as const,
+    capabilities: ["chat", "tool_use", "reasoning"] as const,
+    headers: {},
+  };
+
+  it("sends thinking instead of reasoning_effort for DeepSeek chat completions", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.thinking).toEqual({ type: "enabled" });
+      expect(body).not.toHaveProperty("reasoning_effort");
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "DeepSeek reasoning answer." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider({ prompt: "Think.", reasoningEffort: "high" });
+    expect(response.text).toBe("DeepSeek reasoning answer.");
+  });
+
+  it("ensures reasoning_content is present for DeepSeek tool-call assistant messages", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; reasoning_content?: string; tool_calls?: unknown[] }>;
+      };
+      const assistantMsg = body.messages.find((m) => m.role === "assistant" && m.tool_calls);
+      expect(assistantMsg).toBeDefined();
+      expect(assistantMsg).toHaveProperty("reasoning_content");
+      expect(assistantMsg!.reasoning_content).toBe("");
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Done." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await provider({
+      messages: [
+        { role: "user", content: "Check this." },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call-1", toolId: "file.read", args: { path: "test" } }],
+        },
+        { role: "tool", toolCallId: "call-1", toolName: "file.read", content: "ok" },
+      ],
+      tools: [{ id: "file.read", description: "Read file" }],
+      toolChoice: "auto",
+    });
+  });
+
+  it("sends stream_options for DeepSeek streaming", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.stream).toBe(true);
+      expect(body.stream_options).toEqual({ include_usage: true });
+      return new Response([
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Streaming.\"}}]}\n\n",
+        "data: [DONE]\n\n",
+      ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider.stream?.({ prompt: "Stream." });
+    expect(response?.text).toBe("Streaming.");
+  });
+
+  it("parses DeepSeek cache hit/miss tokens from usage", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "Cached." } }],
+      usage: {
+        prompt_tokens: 200,
+        completion_tokens: 50,
+        total_tokens: 250,
+        prompt_cache_hit_tokens: 150,
+        prompt_cache_miss_tokens: 50,
+        completion_tokens_details: { reasoning_tokens: 30 },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider({ prompt: "Hello." });
+    expect(response.usage).toEqual({
+      inputTokens: 200,
+      outputTokens: 50,
+      reasoningTokens: 30,
+      promptCacheHitTokens: 150,
+      promptCacheMissTokens: 50,
+      totalTokens: 250,
+      source: "provider",
+    });
+  });
+
+  it("parses DeepSeek cache hit/miss from streaming usage chunks", async () => {
+    const fetchImpl = vi.fn(async () => new Response([
+      "data: {\"choices\":[{\"delta\":{\"content\":\"Cached stream.\"}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110,\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20}}\n\n",
+      "data: [DONE]\n\n",
+    ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider.stream?.({ prompt: "Stream." });
+    expect(response?.usage).toMatchObject({
+      promptCacheHitTokens: 80,
+      promptCacheMissTokens: 20,
+    });
+  });
+
+  it("parses OpenAI-style prompt_tokens_details.cached_tokens as promptCacheHitTokens", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "Cached." } }],
+      usage: {
+        prompt_tokens: 300,
+        completion_tokens: 60,
+        total_tokens: 360,
+        prompt_tokens_details: { cached_tokens: 200 },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    const response = await provider({ prompt: "Hello." });
+    expect(response.usage?.promptCacheHitTokens).toBe(200);
+  });
+
+  it("does not send DeepSeek-specific fields to generic OpenAI-compatible providers", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).not.toHaveProperty("thinking");
+      expect(body.stream_options).toBeUndefined();
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Generic." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider({
+      id: "openrouter",
+      type: "openai_compatible",
+      label: "OpenRouter",
+      modelId: "openai/gpt-4o",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { OPENROUTER_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await provider({ prompt: "Test.", reasoningEffort: "high" });
+
+    const streamFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.stream_options).toBeUndefined();
+      return new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+
+    const streamProvider = createModelProvider({
+      id: "openrouter",
+      type: "openai_compatible",
+      label: "OpenRouter",
+      modelId: "openai/gpt-4o",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { OPENROUTER_API_KEY: "test-key" },
+      fetchImpl: streamFetch,
+    });
+
+    await streamProvider.stream?.({ prompt: "Stream." });
+  });
+
+  it("preserves provided reasoning_content for DeepSeek tool-call history", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; reasoning_content?: string; tool_calls?: unknown[] }>;
+      };
+      const assistantMsg = body.messages.find((m) => m.role === "assistant" && m.tool_calls);
+      expect(assistantMsg?.reasoning_content).toBe("Need to think first.");
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Done." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const provider = createModelProvider(deepseekConfig, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await provider({
+      messages: [
+        { role: "user", content: "Check." },
+        {
+          role: "assistant",
+          content: "Let me check.",
+          reasoningContent: "Need to think first.",
+          toolCalls: [{ id: "call-2", toolId: "file.read", args: { path: "x" } }],
+        },
+        { role: "tool", toolCallId: "call-2", toolName: "file.read", content: "ok" },
+      ],
+      tools: [{ id: "file.read", description: "Read file" }],
+      toolChoice: "auto",
+    });
+  });
+});
