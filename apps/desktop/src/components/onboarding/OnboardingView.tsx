@@ -2,9 +2,9 @@ import {
   ArrowLeft,
   ArrowRight,
   KeyRound,
-  Layers,
-  Radio,
-  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Workflow,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../../lib/utils";
@@ -25,19 +25,19 @@ const steps = [
 
 const modeFeatures = [
   {
-    icon: Layers,
-    title: "模式 × 智能体 × 技能，自由组合",
-    body: "选一个协调模式，搭配适合的智能体和技能包。写代码、做研究、审方案，每种任务有自己的最优编排。",
+    icon: Workflow,
+    title: "自由编排，专属工作流",
+    body: "模式、智能体、技能随意组合。串行验证、并行调度、多智能体协作——为每个任务搭建最优解法。",
   },
   {
-    icon: RefreshCw,
-    title: "越用越懂你，自己会进化",
-    body: "Ora 分析每次运行记录，发现可以优化的地方，主动提出改进。低风险变更自动生效，重要的你来拍板。",
+    icon: ShieldCheck,
+    title: "稳定执行，每一步都看得见",
+    body: "内置 harness 保证运行一致性，失败自动重试。全链路追踪，输入、中间结果、最终输出一目了然。",
   },
   {
-    icon: Radio,
-    title: "哪里都能找到你",
-    body: "微信、飞书、Discord、Slack……同一个 Ora，连着你常用的通讯工具。消息来了自动处理。",
+    icon: Sparkles,
+    title: "越用越聪明，哪里都能找到你",
+    body: "分析每次运行记录，主动提出优化建议，低风险变更自动生效。桌面端、微信、飞书、Discord 全渠道接入，消息来了自动处理。",
   },
 ] as const;
 
@@ -172,24 +172,22 @@ function WelcomeStep() {
           className="animate-fade-in mt-5 text-5xl font-semibold leading-[0.95] tracking-[-0.05em] text-bench-900 sm:text-6xl lg:text-7xl"
           style={{ animationDelay: "320ms" }}
         >
-          把事情做完，
+          很高兴
           <span className="block font-serif italic tracking-[-0.04em]">
-            不用切来切去。
+            见到你。
           </span>
         </h1>
         <p
           className="animate-fade-in mt-7 max-w-md text-base leading-8 text-bench-700"
           style={{ animationDelay: "520ms" }}
         >
-          Ora 是你的 AI 工作台。自由组合模式、智能体和技能，它会在使用中越来越懂你。
+          下面的信息，可以帮你更好地了解我。
         </p>
         <div
           className="animate-fade-in mt-8 inline-flex items-center gap-3 rounded-full border border-bench-200 bg-white/55 px-4 py-2 text-sm text-bench-700 shadow-sm"
           style={{ animationDelay: "720ms" }}
         >
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          三步即可开始使用
-        </div>
+      </div>
       </div>
 
       <div
@@ -219,9 +217,6 @@ function WelcomeStep() {
                 <p className="animate-ink-in mt-3 font-serif text-6xl font-bold leading-none text-bench-900 sm:text-7xl">
                   Ora
                 </p>
-              </div>
-              <div className="animate-ink-in rounded-full border border-[#dac8ad] bg-[#f6ead8] px-3 py-1 text-xs font-medium text-bench-700">
-                先聊清楚，再动手
               </div>
             </div>
 
