@@ -607,7 +607,7 @@ export class ChannelManager {
         inbound,
         channel,
         nextBinding,
-        `已将当前 channel session 的项目文件夹切换为：${formatCandidatePath(selected.path)}`,
+        `已将当前渠道会话的项目文件夹切换为：${formatCandidatePath(selected.path)}`,
         "command_response",
       );
     }
@@ -714,7 +714,7 @@ export class ChannelManager {
         inbound,
         channel,
         nextBinding,
-        `已将当前 channel session 的项目文件夹切换为：${formatCandidatePath(project.rootPath)}`,
+        `已将当前渠道会话的项目文件夹切换为：${formatCandidatePath(project.rootPath)}`,
         "command_response",
       );
     }
