@@ -295,7 +295,8 @@ export function runtimeSessionEntryPath(
     seen.add(cursor);
     const entry = entriesById.get(cursor);
     if (!entry) {
-      throw new Error(`Leaf path references missing runtime session entry '${cursor}'.`);
+      // Parent was filtered out (e.g. lazy-loaded event batch); stop here.
+      break;
     }
     path.push(entry);
     cursor = entry.parentId;
@@ -400,11 +401,12 @@ export function deriveRunProjection(
 export function deriveRunSnapshot(
   ledger: RuntimeSessionLedger,
   runId: string,
-  leafEntryId = ledger.leafEntryId,
+  leafEntryId?: string,
+  projection?: RuntimeSessionProjection,
 ): StateSnapshot | undefined {
-  const projection = deriveSessionProjection(ledger, leafEntryId);
-  const run = projection.runs.find((candidate) => candidate.runId === runId);
-  return run ? runtimeRunProjectionToSnapshot(run, projection.contextState) : undefined;
+  const proj = projection ?? deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
+  const run = proj.runs.find((candidate) => candidate.runId === runId);
+  return run ? runtimeRunProjectionToSnapshot(run, proj.contextState) : undefined;
 }
 
 export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId" | "status" | "gates" | "error" | "events">): RunAttention {

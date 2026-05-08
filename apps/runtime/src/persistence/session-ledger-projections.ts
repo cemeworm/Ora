@@ -15,7 +15,7 @@ export function deriveRuntimeReadModelsFromLedgers(ledgers: RuntimeSessionLedger
     const projection = deriveSessionProjection(ledger);
     sessions.push(projection.session);
     for (const run of projection.runs) {
-      const snapshot = deriveRunSnapshot(ledger, run.runId);
+      const snapshot = deriveRunSnapshot(ledger, run.runId, undefined, projection);
       if (snapshot) {
         runs.push(snapshot);
       }

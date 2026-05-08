@@ -147,7 +147,8 @@ export function archiveSession(params: unknown, deps: ProjectSessionOperationDep
 export function getSession(params: unknown, deps: ProjectSessionOperationDeps): SessionDetail {
   const parsed = SessionGetParamsSchema.parse(params);
   const session = sessionWithLatestAttention(deps.getSessionOrThrow(parsed.sessionId), deps);
-  const turns: SessionTurn[] = deps.runsForSession(parsed.sessionId).map((run) => toSessionTurn(attachTraceMetadata(run)));
+  const sessionRuns = deps.runsForSession(parsed.sessionId);
+  const turns: SessionTurn[] = sessionRuns.map((run) => toSessionTurn(attachTraceMetadata(run)));
   const latestSnapshot = parsed.includeLatestSnapshot === false
     ? undefined
     : turns.length > 0
@@ -157,7 +158,7 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
     session,
     turns,
     transcript: deps.sessionTranscript(parsed.sessionId),
-    branchGroups: deps.branchGroupsForSession?.(parsed.sessionId) ?? branchGroupsForSession(parsed.sessionId, [...deps.runs.values()]),
+    branchGroups: deps.branchGroupsForSession?.(parsed.sessionId) ?? branchGroupsForSession(parsed.sessionId, sessionRuns),
     latestSnapshot,
   });
 }

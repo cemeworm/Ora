@@ -164,11 +164,15 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtLoadAllProjects: Database.Statement;
   private readonly stmtInsertSessionEntry: Database.Statement;
   private readonly stmtLoadSessionEntries: Database.Statement;
+  private readonly stmtLoadAllSessionEntries: Database.Statement;
+  private readonly stmtLoadAllSessionEntriesExcludingEvents: Database.Statement;
+  private readonly stmtLoadEventBatchesForRun: Database.Statement;
   private readonly stmtListSessionEntryIds: Database.Statement;
   private readonly stmtSessionLedgerEntryRevision: Database.Statement;
   private readonly stmtSessionLedgerMetaRevision: Database.Statement;
   private readonly stmtSaveSessionLedgerMeta: Database.Statement;
   private readonly stmtGetSessionLedgerMeta: Database.Statement;
+  private readonly stmtLoadAllSessionLedgerMetas: Database.Statement;
   private readonly stmtSaveProject: Database.Statement;
   private readonly stmtSaveArtifact: Database.Statement;
   private readonly stmtLoadArtifact: Database.Statement;
@@ -219,6 +223,9 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       "INSERT OR IGNORE INTO session_entries (sessionId, entryId, parentId, runId, turnIndex, seq, createdAt, type, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     this.stmtLoadSessionEntries = this.db.prepare("SELECT data FROM session_entries WHERE sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
+    this.stmtLoadAllSessionEntries = this.db.prepare("SELECT sessionId, data FROM session_entries ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC");
+    this.stmtLoadAllSessionEntriesExcludingEvents = this.db.prepare("SELECT sessionId, data FROM session_entries WHERE type != 'runtime.event_batch' ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC");
+    this.stmtLoadEventBatchesForRun = this.db.prepare("SELECT data FROM session_entries WHERE runId = ? AND type = 'runtime.event_batch' AND sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
     this.stmtListSessionEntryIds = this.db.prepare("SELECT DISTINCT sessionId FROM session_entries ORDER BY sessionId ASC");
     this.stmtSessionLedgerEntryRevision = this.db.prepare("SELECT COUNT(*) AS count, COALESCE(MAX(rowid), 0) AS maxRowid FROM session_entries");
     this.stmtSessionLedgerMetaRevision = this.db.prepare("SELECT COALESCE(group_concat(sessionId || ':' || COALESCE(leafEntryId, ''), '|'), '') AS meta FROM (SELECT sessionId, leafEntryId FROM session_ledger_meta ORDER BY sessionId ASC)");
@@ -226,6 +233,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       "INSERT INTO session_ledger_meta (sessionId, leafEntryId) VALUES (?, ?) ON CONFLICT(sessionId) DO UPDATE SET leafEntryId = excluded.leafEntryId"
     );
     this.stmtGetSessionLedgerMeta = this.db.prepare("SELECT leafEntryId FROM session_ledger_meta WHERE sessionId = ? LIMIT 1");
+    this.stmtLoadAllSessionLedgerMetas = this.db.prepare("SELECT sessionId, leafEntryId FROM session_ledger_meta");
     this.stmtSaveProject = this.db.prepare(
       "INSERT INTO projects (projectId, updatedAt, data) VALUES (?, ?, ?) ON CONFLICT(projectId) DO UPDATE SET updatedAt = excluded.updatedAt, data = excluded.data"
     );
@@ -279,7 +287,16 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       projects.push(ProjectSummarySchema.parse(JSON.parse(row.data)));
     }
 
-    const ledgerState = deriveRuntimeReadModelsFromLedgers(this.listSessionLedgers());
+    let ledgerState;
+    try {
+      ledgerState = deriveRuntimeReadModelsFromLedgers(this.listLedgersExcludingEvents());
+    } catch (err) {
+      const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      try {
+        require("node:fs").writeFileSync("/tmp/ora-lite-load-error.txt", message);
+      } catch (_) { /* best effort */ }
+      ledgerState = deriveRuntimeReadModelsFromLedgers(this.listSessionLedgers());
+    }
 
     // Ensure nextRunNumber is at least greater than any existing run number
     const maxRunNumber = ledgerState.runs.reduce((max, run) => {
@@ -385,10 +402,52 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listSessionLedgers(): RuntimeSessionLedger[] {
-    const rows = this.stmtListSessionEntryIds.all() as { sessionId: string }[];
-    return rows
-      .map((row) => this.getSessionLedger(row.sessionId))
-      .filter((ledger): ledger is RuntimeSessionLedger => ledger !== undefined);
+    const allRows = this.stmtLoadAllSessionEntries.all() as { sessionId: string; data: string }[];
+    if (allRows.length === 0) return [];
+    return this.buildLedgersFromRows(allRows);
+  }
+
+  listLedgersExcludingEvents(): RuntimeSessionLedger[] {
+    const allRows = this.stmtLoadAllSessionEntriesExcludingEvents.all() as { sessionId: string; data: string }[];
+    if (allRows.length === 0) return [];
+    return this.buildLedgersFromRows(allRows);
+  }
+
+  getEventBatchesForRun(sessionId: string, runId: string): RuntimeSessionEntry[] {
+    const rows = this.stmtLoadEventBatchesForRun.all(runId, sessionId) as { data: string }[];
+    return rows.map((row) => RuntimeSessionEntrySchema.parse(JSON.parse(row.data)));
+  }
+
+  private buildLedgersFromRows(allRows: { sessionId: string; data: string }[]): RuntimeSessionLedger[] {
+    const rowsBySession = new Map<string, { data: string }[]>();
+    for (const row of allRows) {
+      const group = rowsBySession.get(row.sessionId);
+      if (group) {
+        group.push(row);
+      } else {
+        rowsBySession.set(row.sessionId, [row]);
+      }
+    }
+
+    const metaRows = this.stmtLoadAllSessionLedgerMetas.all() as { sessionId: string; leafEntryId: string | null }[];
+    const metaBySession = new Map<string, string | null>();
+    for (const meta of metaRows) {
+      metaBySession.set(meta.sessionId, meta.leafEntryId);
+    }
+
+    const ledgers: RuntimeSessionLedger[] = [];
+    for (const [sessionId, rows] of rowsBySession) {
+      const entries = rows.map((row) => RuntimeSessionEntrySchema.parse(JSON.parse(row.data)));
+      const meta = metaBySession.get(sessionId);
+      const entryIds = new Set(entries.map((entry) => entry.id));
+      const leafEntryId = meta && entryIds.has(meta) ? meta : entries.at(-1)?.id;
+      ledgers.push(RuntimeSessionLedgerSchema.parse({
+        sessionId,
+        leafEntryId,
+        entries,
+      }));
+    }
+    return ledgers;
   }
 
   private databaseFileBytes(): number {

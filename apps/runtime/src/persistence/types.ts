@@ -44,6 +44,8 @@ export interface RuntimePersistenceBackend {
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined;
   listSessionLedgers(): RuntimeSessionLedger[];
+  listLedgersExcludingEvents?(): RuntimeSessionLedger[];
+  getEventBatchesForRun?(sessionId: string, runId: string): RuntimeSessionEntry[];
   saveManifest(manifest: StoreManifest): void;
   saveProject(project: StoredProject): void;
   saveArtifact(artifact: PersistedArtifact): ArtifactRef;
