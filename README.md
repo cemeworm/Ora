@@ -40,6 +40,60 @@ Ora 把它做成一个工作台：先选怎么跑，再交给对应的智能体�
 
 桌面端通过 Tauri 启动 runtime sidecar。前端和 sidecar 之间使用 shared 包里的 JSON-RPC 合约通信，运行时负责模型调用、工具执行、channel 事件、存储、评测和 trace。
 
+## 图数据模型
+
+Ora 将智能体和工作流统一建模为**有向图**，整个框架自研，不依赖 LangGraph、Dagre 等外部图库。
+
+### 拓扑节点与边
+
+图由两种基础元素构成（`packages/shared/src/topology.ts`）：
+
+**节点（TopologyNode）** 是图中的执行单元，有五种类型：
+
+| kind | 含义 |
+| --- | --- |
+| `run` | 运行入口节点 |
+| `agent` | 智能体节点，通过 `agentId` 绑定 AgentProfile |
+| `capability` | 运行时能力节点（共享黑板、事件主题、检查点等） |
+| `checkpoint` | 快照检查点 |
+| `artifact` | 产物节点 |
+
+每个节点有独立的状态机：`idle` → `running` → `done` / `blocked` / `failed`。
+
+**边（TopologyEdge）** 定义节点间关系，有五种类型：
+
+| kind | 含义 |
+| --- | --- |
+| `control` | 控制流，表示执行顺序 |
+| `delegation` | 委派，任务分发 |
+| `verification` | 验证，检查 / 评审关系 |
+| `memory` | 记忆读写 |
+| `artifact` | 产物传递 |
+
+### 模式即图
+
+每个工作模式（ModeSpec）本质是一个可编辑的有向图：
+
+- **节点（ModeNodeSpec）**：从 17 种模板（draft、verify、research、build、check、handoff 等）中选择，绑定到具体的 AgentProfile
+- **边（ModeEdgeSpec）**：定义节点间的执行顺序和数据流向
+- **运行时原子（Runtime Atoms）**：15 种可插拔的运行时能力（memory_capture、subagent_delegate、clarification_interrupt 等），按需注入为 capability 节点
+
+用户可以在 Mode Studio 中可视化编辑节点和连线，自定义工作流拓扑。
+
+### 五大协调模式
+
+Ora 内置五种协调模式（CoordinationPattern），每种都是一个预定义的拓扑蓝图（PatternDefinition），包含完整的节点、边、AgentProfile 列表和执行模板：
+
+| 模式 | 协调方式 | 状态模型 | 默认智能体 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| Orchestrator-Subagent | 层级委派 | 临时 | orchestrator, researcher, reviewer | 可分解任务，需可审查的委派链路 |
+| Generator-Verifier | 循环验证 | 临时 | generator, verifier | 有明确验收标准的任务 |
+| Agent Teams | 团队协作 | 持久 Worker | team_lead, builder, reviewer | Worker 需跨任务保持身份和记忆 |
+| Message Bus | 事件路由 | 事件驱动 | router, researcher, responder | 事件驱动的可扩展管线 |
+| Shared State | 共享黑板 | 共享状态 | orchestrator, researcher, reviewer | 智能体需近实时基于彼此发现协作 |
+
+运行时内核根据选定模式实例化拓扑图，按节点顺序驱动智能体执行。完整说明见 [docs/ora-graph-framework.md](docs/ora-graph-framework.md)。
+
 ## Runtime loop 结构
 
 Ora 的 runtime loop 由三层嵌套组成。外层负责 run 生命周期和持久投影，`LocalRunStore` 保持兼容 facade；中层 mode 编排按节点和阶段推进 agent 调用；内层 node loop 处理模型调用、工具调用、审批、澄清和恢复。
