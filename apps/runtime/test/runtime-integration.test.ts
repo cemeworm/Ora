@@ -1587,6 +1587,159 @@ describe("LocalRunStore", () => {
     expect(exportResult.content).toContain("case_id,config_id,overall_score");
   });
 
+  it("scores structured assertions that filter trace events", async () => {
+    const store = createStore();
+    const dataset = EvaluationDatasetDetailSchema.parse(store.importEvaluationDataset({
+      name: "Trace Filter Dataset",
+      sourceFileName: "trace-filter.json",
+      sourceFormat: "json",
+      content: JSON.stringify([{
+        id: "case-1",
+        prompt: "Run a tool and report success.",
+        expected: {
+          structured: {
+            assertions: [
+              { type: "exists", path: "trace.events[?(@.type=='agent.started' && @.agentRole=='researcher')]" },
+              { type: "min", path: "trace.events[?(@.type=='tool.called' && @.toolName=='file.read')].length", value: 1 },
+              { type: "min", path: "trace.events[?(@.type=='tool.called' && @.toolName=='read_file')].length", value: 1 },
+              { type: "exists", path: "trace.events[?(@.type=='tool.result_observed')]" },
+              { type: "contains", path: "run.output.text", value: "done" },
+            ],
+          },
+        },
+      }, {
+        id: "case-2",
+        prompt: "Expect a verifier that will not appear.",
+        expected: {
+          structured: {
+            assertions: [
+              { type: "exists", path: "trace.events[?(@.type=='agent.started' && @.agentRole=='verifier')]" },
+            ],
+          },
+        },
+      }]),
+    }));
+
+    const detail = EvaluationRunDetailSchema.parse(await store.startEvaluationRun({
+      datasetId: dataset.dataset.id,
+      objective: {
+        kind: "assertions",
+        target: "trace.events",
+        metrics: ["assertion_pass_rate"],
+      },
+      repetitions: 1,
+      concurrency: 1,
+      configs: [{
+        id: "trace",
+        label: "Trace",
+        runConfig: { pattern: "orchestrator_subagent", modelRef: "local/smoke-model" },
+      }],
+      metadata: {},
+    }, async ({ input, config }) => {
+      const runId = `run-${input.taskId}`;
+      return StateSnapshotSchema.parse({
+        runId,
+        status: "succeeded",
+        pattern: "orchestrator_subagent",
+        modeId: "orchestrator_subagent",
+        input,
+        config: {
+          pattern: "orchestrator_subagent",
+          profileIds: [],
+          skillIds: [],
+          toolIds: [],
+          modelRef: "local/smoke-model",
+          approvalMode: "high_risk_only",
+          patternOptions: {},
+          metadata: config.metadata ?? {},
+          deterministicSeed: "trace-filter",
+        },
+        topology: { nodes: [], edges: [] },
+        profiles: [],
+        memory: [],
+        plan: [],
+        todos: [],
+        actions: [],
+        toolCalls: [{
+          id: "call-read",
+          runId,
+          toolId: "file.read",
+          args: { path: "README.md" },
+          source: "provider_native",
+          status: "succeeded",
+          requestedAt: FIXED_TIME,
+          updatedAt: FIXED_TIME,
+        }],
+        toolResults: [{
+          key: "file.read:{\"path\":\"README.md\"}",
+          toolId: "file.read",
+          argsDigest: "{\"path\":\"README.md\"}",
+          resultToolCallId: "call-read",
+          status: "succeeded",
+          output: { content: "done" },
+          createdAt: FIXED_TIME,
+          updatedAt: FIXED_TIME,
+        }],
+        policyDecisions: [],
+        checkpoints: [],
+        events: [
+          {
+            id: `${runId}:evt-0`,
+            runId,
+            seq: 0,
+            type: "agent.started",
+            createdAt: FIXED_TIME,
+            pattern: "orchestrator_subagent",
+            agentId: "researcher",
+            nodeId: "researcher",
+            payload: { title: "Research" },
+          },
+          {
+            id: `${runId}:evt-1`,
+            runId,
+            seq: 1,
+            type: "tool.called",
+            createdAt: FIXED_TIME,
+            pattern: "orchestrator_subagent",
+            agentId: "researcher",
+            nodeId: "researcher",
+            payload: { toolId: "file.read", status: "succeeded" },
+          },
+          {
+            id: `${runId}:evt-2`,
+            runId,
+            seq: 2,
+            type: "run.done",
+            createdAt: FIXED_TIME,
+            pattern: "orchestrator_subagent",
+            payload: {},
+          },
+        ],
+        artifacts: [],
+        activeAgents: [],
+        queueSummary: {},
+        sharedStateSummary: {},
+        busStats: {},
+        pendingClarifications: [],
+        pendingApprovals: [],
+        output: { text: "done" },
+        updatedAt: FIXED_TIME,
+      });
+    }));
+
+    expect(detail.run.caseResults[0]?.metricScores.find((metric) => metric.metricId === "assertion_pass_rate")).toMatchObject({
+      score: 1,
+      passed: true,
+    });
+    expect(detail.run.caseResults[1]?.metricScores.find((metric) => metric.metricId === "assertion_pass_rate")).toMatchObject({
+      score: 0,
+      passed: false,
+    });
+    expect(detail.attempts[0]?.observations.trace).toMatchObject({
+      toolCallCount: 1,
+    });
+  });
+
   it("persists evaluation history in sqlite runtime storage", async () => {
     const dbPath = path.join(tempDir, "runtime.db");
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
