@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  BarChart3,
   Bot,
   Boxes,
   CheckCircle2,
@@ -29,13 +30,20 @@ import type {
   SessionRun,
   TopologyNode,
 } from "../types";
-import { getSharedRuntimeClient, type OraRunTrail, type OraStateSnapshot } from "../lib/runtimeClient";
+import { getSharedRuntimeClient, type OraRunTrail, type OraSessionRunSummary, type OraStateSnapshot } from "../lib/runtimeClient";
 import {
   buildAgentLanes,
   buildActiveMemorySummary,
+  buildCommunicationGraph,
+  buildContextWindowSummary,
+  buildConversationView,
   buildEffectiveStrategySummary,
+  buildMemoryDetailSummary,
+  buildPlanProgressSummary,
+  buildPolicyDecisionsSummary,
   buildPendingApprovalItems,
   buildSemanticTimeline,
+  buildTodoProgressSummary,
   buildToolLedger,
   buildLatencyDiagnostics,
   agentStatusLabel,
@@ -49,14 +57,21 @@ import {
   tabLabel,
   toolSourceLabel,
   toolStatusLabel,
+  type CommunicationEdge,
+  type ContextWindowSummary,
+  type ConversationViewEntry,
+  type MemoryDetailSummary,
+  type PlanProgressSummary,
+  type PolicyDecisionsSummary,
   type SemanticTimelineItem,
+  type TodoProgressSummary,
   type TrailDebuggerTab,
   type TrailFinding,
   type TrailFindingSeverity,
   type TrailLatencyDiagnostics,
 } from "../lib/trailViewModel";
 
-const trailsTabs: TrailDebuggerTab[] = ["overview", "flow", "agents", "tools", "latency", "evidence"];
+const trailsTabs: TrailDebuggerTab[] = ["overview", "flow", "agents", "tools", "latency", "evidence", "compare"];
 const severityOptions: Array<TrailFindingSeverity | "all"> = ["all", "error", "warning", "info"];
 
 interface TrailsTabsProps {
@@ -106,6 +121,9 @@ export function TrailsTabs({
   const [eventKindFilter, setEventKindFilter] = useState<string>("all");
   const [showInternalEvents, setShowInternalEvents] = useState(false);
   const [expandedTimelineId, setExpandedTimelineId] = useState<string | undefined>(undefined);
+  const [conversationView, setConversationView] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [agentFilter, setAgentFilter] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,8 +172,39 @@ export function TrailsTabs({
   const effectiveStrategy = useMemo(() => buildEffectiveStrategySummary(activeSnapshot), [activeSnapshot]);
   const activeMemorySummary = useMemo(() => buildActiveMemorySummary(activeSnapshot), [activeSnapshot]);
   const pendingClarifications = snapshotPendingClarifications(activeSnapshot);
+  const conversationEntries = useMemo(() => buildConversationView(activeSnapshot), [activeSnapshot]);
+  const planProgress = useMemo(() => buildPlanProgressSummary(activeSnapshot), [activeSnapshot]);
+  const policyDecisions = useMemo(() => buildPolicyDecisionsSummary(activeSnapshot), [activeSnapshot]);
+  const todoProgress = useMemo(() => buildTodoProgressSummary(activeSnapshot), [activeSnapshot]);
+  const memoryDetail = useMemo(() => buildMemoryDetailSummary(activeSnapshot), [activeSnapshot]);
+  const contextWindow = useMemo(() => buildContextWindowSummary(activeSnapshot), [activeSnapshot]);
+  const communicationEdges = useMemo(() => buildCommunicationGraph(activeSnapshot), [activeSnapshot]);
   const visibleFindings = severityFilter === "all" ? findings : findings.filter((finding) => finding.severity === severityFilter);
-  const visibleTimeline = timelineItems.filter((item) => eventKindFilter === "all" || item.kind === eventKindFilter);
+  const searchLower = searchQuery.toLowerCase().trim();
+  const visibleTimeline = timelineItems
+    .filter((item) => eventKindFilter === "all" || item.kind === eventKindFilter)
+    .filter((item) => {
+      if (!searchLower) return true;
+      if (item.label.toLowerCase().includes(searchLower)) return true;
+      if (item.detail.toLowerCase().includes(searchLower)) return true;
+      if (item.agentLabel?.toLowerCase().includes(searchLower)) return true;
+      if (item.nodeLabel?.toLowerCase().includes(searchLower)) return true;
+      if (JSON.stringify(item.rawPayload).toLowerCase().includes(searchLower)) return true;
+      return false;
+    })
+    .filter((item) => {
+      if (agentFilter.length === 0) return true;
+      return agentFilter.some((a) => item.agentLabel === a || item.agentId === a);
+    });
+  const allAgentLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const e of activeSnapshot.events) {
+      if (e.agentId && !labels.has(e.agentId)) {
+        labels.set(e.agentId, e.agentId);
+      }
+    }
+    return [...labels.values()].sort();
+  }, [activeSnapshot]);
   const traceOpenUnavailable = !canOpenLangfuseTrace(trace);
   const traceOpenDisabled = traceOpenUnavailable || openingTrace;
 
@@ -192,7 +241,7 @@ export function TrailsTabs({
           </div>
           <div className="shrink-0 text-right text-[11px] leading-5 text-bench-700">
             <p>{summary.metrics.runtime}</p>
-            <p>{summary.metrics.cost} · {summary.metrics.messages} msg</p>
+            <p>{summary.metrics.costAvailable === false ? "成本数据不可用" : summary.metrics.cost} · {summary.metrics.messages} msg</p>
           </div>
         </div>
 
@@ -220,29 +269,42 @@ export function TrailsTabs({
             busyCommand={busyCommand}
             checkpoints={checkpoints}
             commandFeedback={commandFeedback}
+            contextWindow={contextWindow}
             findings={visibleFindings}
+            memoryDetail={memoryDetail}
             onCancelRun={onCancelRun}
             onFindingClick={jumpToFinding}
             onForkRun={onForkRun}
             onResumeRun={onResumeRun}
             pendingApprovals={pendingApprovals}
             pendingClarifications={pendingClarifications}
+            planProgress={planProgress}
+            policyDecisions={policyDecisions}
             effectiveStrategy={effectiveStrategy}
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
             selectedSession={selectedSession}
             summary={summary}
             timelineItems={timelineItems}
+            todoProgress={todoProgress}
           />
         )}
 
         {selectedTab === "flow" && (
           <TrailFlow
+            agentFilter={agentFilter}
+            allAgentLabels={allAgentLabels}
+            conversationEntries={conversationEntries}
+            conversationView={conversationView}
             eventKindFilter={eventKindFilter}
             eventKinds={eventKinds}
             expandedTimelineId={expandedTimelineId}
             items={visibleTimeline}
+            searchQuery={searchQuery}
+            onAgentFilterChange={setAgentFilter}
+            onConversationViewChange={setConversationView}
             onEventKindFilterChange={setEventKindFilter}
+            onSearchChange={setSearchQuery}
             onToggleItem={(id) => setExpandedTimelineId((current) => current === id ? undefined : id)}
             onToggleInternalEvents={() => setShowInternalEvents((current) => !current)}
             selectedBeat={selectedBeat}
@@ -252,8 +314,11 @@ export function TrailsTabs({
 
         {selectedTab === "agents" && (
           <TrailAgents
+            communicationEdges={communicationEdges}
             lanes={agentLanes}
             selectedAgentId={selectedAgent?.id}
+            topologyEdges={activeSnapshot.topology.edges}
+            topologyNodes={activeSnapshot.topology.nodes}
           />
         )}
 
@@ -282,6 +347,14 @@ export function TrailsTabs({
             trail={trail}
             trailError={trailError}
             trailLoading={trailLoading}
+          />
+        )}
+
+        {selectedTab === "compare" && (
+          <TrailCompare
+            activeSnapshot={activeSnapshot}
+            sessionId={activeSnapshot.sessionId}
+            runtimeClient={runtimeClient}
           />
         )}
 
@@ -314,15 +387,20 @@ function TrailOverview({
   busyCommand,
   checkpoints,
   commandFeedback,
+  contextWindow,
   findings,
+  memoryDetail,
   pendingApprovals,
   pendingClarifications,
+  planProgress,
+  policyDecisions,
   effectiveStrategy,
   selectedCheckpoint,
   selectedNode,
   selectedSession,
   summary,
   timelineItems,
+  todoProgress,
   onCancelRun,
   onFindingClick,
   onForkRun,
@@ -334,15 +412,20 @@ function TrailOverview({
   busyCommand?: string;
   checkpoints: CheckpointRecord[];
   commandFeedback: string;
+  contextWindow?: ContextWindowSummary;
   findings: TrailFinding[];
+  memoryDetail?: MemoryDetailSummary;
   pendingApprovals: ReturnType<typeof buildPendingApprovalItems>;
   pendingClarifications: OraStateSnapshot["pendingClarifications"];
+  planProgress?: PlanProgressSummary;
+  policyDecisions?: PolicyDecisionsSummary;
   effectiveStrategy: ReturnType<typeof buildEffectiveStrategySummary>;
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
   selectedSession: SessionRun;
   summary: ReturnType<typeof buildTrailDebugSummary>;
   timelineItems: SemanticTimelineItem[];
+  todoProgress?: TodoProgressSummary;
   onCancelRun: () => void;
   onFindingClick: (finding: TrailFinding) => void;
   onForkRun: () => void;
@@ -460,6 +543,105 @@ function TrailOverview({
         )}
       </DockCard>
 
+      {contextWindow && (
+        <DockCard title="上下文窗口" icon={<Database size={16} />}>
+          <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-bench-900">
+                {contextWindow.inputTokens.toLocaleString()} / {contextWindow.contextWindow?.toLocaleString() ?? "?"} tokens
+              </span>
+              <StatusChip tone={contextWindow.needsCompaction ? "warning" : "success"}>
+                {contextWindow.usagePercent !== undefined ? `${contextWindow.usagePercent}%` : "未知"}
+              </StatusChip>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-bench-700">
+              输入 {contextWindow.inputTokens.toLocaleString()} · 输出 {contextWindow.outputTokens.toLocaleString()} · 已压缩 {contextWindow.compactionCount} 次
+            </p>
+            {contextWindow.needsCompaction && (
+              <p className="mt-1 text-xs leading-5 text-amber-900">上下文使用率超过 80%，建议关注是否即将触发压缩。</p>
+            )}
+          </div>
+        </DockCard>
+      )}
+
+      {planProgress && (
+        <DockCard title="执行计划" icon={<CheckCircle2 size={16} />}>
+          <div className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-sm font-semibold text-bench-900">计划进度</span>
+              <span className="text-[11px] text-bench-700">{planProgress.completedSteps}/{planProgress.totalSteps} 步</span>
+            </div>
+            {planProgress.planList.length > 0 && (
+              <div className="space-y-1">
+                {planProgress.planList.map((step, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs">
+                    <span className={step.status === "completed" ? "text-emerald-600" : step.status === "in_progress" ? "text-amber-600" : "text-bench-400"}>
+                      {step.status === "completed" ? "✓" : step.status === "in_progress" ? "○" : "·"}
+                    </span>
+                    <span className="text-bench-700">{step.step}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {planProgress.planItems.map((item, i) => (
+              <div key={i} className="mt-1 text-[11px] text-bench-700">
+                {item.title} · {item.status}{item.owner ? ` · ${item.owner}` : ""}
+              </div>
+            ))}
+          </div>
+        </DockCard>
+      )}
+
+      {todoProgress && (
+        <DockCard title="任务进度" icon={<CheckCircle2 size={16} />}>
+          <div className="space-y-1.5">
+            <p className="text-xs text-bench-700">{todoProgress.completed}/{todoProgress.total} 已完成</p>
+            {todoProgress.todos.map((todo, i) => (
+              <div key={i} className="rounded-md bg-bench-50 px-3 py-1.5 ring-1 ring-inset ring-bench-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-bench-800">{todo.label}</span>
+                  <span className="text-[10px] text-bench-500">{todo.status}</span>
+                </div>
+                {todo.detail && <p className="mt-0.5 text-[11px] text-bench-600">{todo.detail}</p>}
+              </div>
+            ))}
+          </div>
+        </DockCard>
+      )}
+
+      {policyDecisions && (
+        <DockCard title="策略决策" icon={<Radar size={16} />}>
+          <div className="space-y-1.5">
+            {policyDecisions.decisions.map((d, i) => (
+              <div key={i} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                <p className="text-xs font-medium text-bench-800">{d.policyId}</p>
+                <p className="mt-0.5 text-[11px] text-bench-600">{d.reason}</p>
+                <span className="mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold bg-bench-100 text-bench-700">
+                  {d.requiredApproval ? "需确认" : "自动通过"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </DockCard>
+      )}
+
+      {memoryDetail && (
+        <DockCard title="记忆详情" icon={<Database size={16} />}>
+          <p className="text-xs text-bench-700 mb-2">共 {memoryDetail.total} 条记录</p>
+          <div className="space-y-1.5">
+            {memoryDetail.records.slice(0, 5).map((r, i) => (
+              <div key={i} className="rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-bench-700">{r.namespace}</span>
+                  <span className="text-[10px] text-bench-500">{r.kind}</span>
+                </div>
+                <p className="mt-0.5 truncate text-[11px] text-bench-600">{r.value}</p>
+              </div>
+            ))}
+          </div>
+        </DockCard>
+      )}
+
       <DockCard title="操作" icon={<Activity size={16} />}>
         <p className="mb-3 text-xs leading-5 text-bench-700">{commandFeedback}</p>
         <div className="flex flex-wrap gap-2">
@@ -479,112 +661,473 @@ function TrailOverview({
 }
 
 function TrailFlow({
+  agentFilter,
+  allAgentLabels,
+  conversationEntries,
+  conversationView,
   eventKindFilter,
   eventKinds,
   expandedTimelineId,
   items,
+  searchQuery,
   selectedBeat,
   showInternalEvents,
+  onAgentFilterChange,
+  onConversationViewChange,
   onEventKindFilterChange,
+  onSearchChange,
   onToggleInternalEvents,
   onToggleItem,
 }: {
+  agentFilter: string[];
+  allAgentLabels: string[];
+  conversationEntries: ConversationViewEntry[];
+  conversationView: boolean;
   eventKindFilter: string;
   eventKinds: string[];
   expandedTimelineId?: string;
   items: SemanticTimelineItem[];
+  searchQuery: string;
   selectedBeat?: RunBeat;
   showInternalEvents: boolean;
+  onAgentFilterChange: (value: string[]) => void;
+  onConversationViewChange: (value: boolean) => void;
   onEventKindFilterChange: (value: string) => void;
+  onSearchChange: (value: string) => void;
   onToggleInternalEvents: () => void;
   onToggleItem: (id: string) => void;
 }) {
   return (
     <>
-      <DockCard title="流程筛选" icon={<ListFilter size={16} />}>
+      <DockCard title="搜索与筛选" icon={<ListFilter size={16} />}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="搜索事件、payload、智能体、节点..."
+          className="w-full rounded-md bg-white px-3 py-2 text-xs ring-1 ring-inset ring-bench-200 placeholder:text-bench-400 focus:outline-none focus:ring-2 focus:ring-bench-900 mb-2"
+        />
+        {allAgentLabels.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {allAgentLabels.map((label) => (
+              <button
+                key={label}
+                onClick={() => {
+                  onAgentFilterChange(
+                    agentFilter.includes(label)
+                      ? agentFilter.filter((a) => a !== label)
+                      : [...agentFilter, label],
+                  );
+                }}
+                className={`rounded px-2 py-0.5 text-[10px] font-semibold transition active:scale-95 ${
+                  agentFilter.includes(label) ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-600 ring-1 ring-inset ring-bench-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </DockCard>
+
+      <DockCard title="视图模式" icon={<ListFilter size={16} />}>
         <div className="flex flex-wrap gap-2">
-          {eventKinds.map((kind) => (
-            <button
-              key={kind}
-              onClick={() => onEventKindFilterChange(kind)}
-              className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
-                eventKindFilter === kind ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
-              }`}
-            >
-              {eventKindLabel(kind as SemanticTimelineItem["kind"] | "all")}
-            </button>
-          ))}
           <button
-            type="button"
-            onClick={onToggleInternalEvents}
+            onClick={() => onConversationViewChange(false)}
             className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
-              showInternalEvents ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+              !conversationView ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
             }`}
           >
-            {showInternalEvents ? "隐藏内部事件" : "显示内部事件"}
+            流程事件
+          </button>
+          <button
+            onClick={() => onConversationViewChange(true)}
+            className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
+              conversationView ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+            }`}
+          >
+            对话内容
           </button>
         </div>
       </DockCard>
 
-      <div className="space-y-2">
-        {items.length === 0 ? (
-          <p className="rounded-lg bg-white p-3 text-xs leading-5 text-bench-700 shadow-sm ring-1 ring-inset ring-bench-200">没有符合当前筛选条件的流程事件。</p>
-        ) : items.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onToggleItem(item.id)}
-            className={`block w-full rounded-lg p-3 text-left ring-1 ring-inset transition active:scale-[0.99] ${
-              selectedBeat?.id === item.id
-                ? "bg-bench-100 ring-bench-900"
-                : timelineClassName(item.severity)
-            }`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-bench-900">{item.label}</p>
-                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-semibold tracking-[0.06em] text-bench-700">
-                    {eventKindLabel(item.kind)}
-                  </span>
-                  {item.severity !== "neutral" ? <SeverityPill severity={item.severity} /> : null}
-                </div>
-                <p className="mt-1 text-xs leading-5 text-bench-700">{item.detail}</p>
-                {item.agentLabel || item.nodeLabel ? (
-                  <p className="mt-1 text-[11px] text-bench-700">{[item.agentLabel, item.nodeLabel].filter(Boolean).join(" · ")}</p>
-                ) : null}
-              </div>
-              <div className="shrink-0 text-right">
-                <p className="font-mono text-[11px] text-bench-700">#{item.seq}</p>
-                <p className="mt-1 text-[11px] text-bench-600">{item.timestamp}</p>
-              </div>
+      {conversationView ? (
+        <TrailConversation entries={conversationEntries} />
+      ) : (
+        <>
+          <DockCard title="流程筛选" icon={<ListFilter size={16} />}>
+            <div className="flex flex-wrap gap-2">
+              {eventKinds.map((kind) => (
+                <button
+                  key={kind}
+                  onClick={() => onEventKindFilterChange(kind)}
+                  className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
+                    eventKindFilter === kind ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+                  }`}
+                >
+                  {eventKindLabel(kind as SemanticTimelineItem["kind"] | "all")}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={onToggleInternalEvents}
+                className={`rounded px-2.5 py-1 text-[11px] font-semibold transition active:scale-95 ${
+                  showInternalEvents ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+                }`}
+              >
+                {showInternalEvents ? "隐藏内部事件" : "显示内部事件"}
+              </button>
             </div>
-            {expandedTimelineId === item.id ? (
-              <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-                <EvidenceSnippet label="输入" value={item.inputPreview ?? "暂无输入摘要"} />
-                <EvidenceSnippet label="输出" value={item.outputPreview ?? "暂无输出摘要"} />
-                <div className="sm:col-span-2 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
-                  <JsonTree data={item.rawPayload} defaultExpanded={1} />
+          </DockCard>
+
+          <div className="space-y-2">
+            {items.length === 0 ? (
+              <p className="rounded-lg bg-white p-3 text-xs leading-5 text-bench-700 shadow-sm ring-1 ring-inset ring-bench-200">没有符合当前筛选条件的流程事件。</p>
+            ) : items.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => onToggleItem(item.id)}
+                className={`block w-full rounded-lg p-3 text-left ring-1 ring-inset transition active:scale-[0.99] ${
+                  selectedBeat?.id === item.id
+                    ? "bg-bench-100 ring-bench-900"
+                    : timelineClassName(item.severity)
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-bench-900">{item.label}</p>
+                      <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-semibold tracking-[0.06em] text-bench-700">
+                        {eventKindLabel(item.kind)}
+                      </span>
+                      {item.severity !== "neutral" ? <SeverityPill severity={item.severity} /> : null}
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-bench-700">{item.detail}</p>
+                    {item.agentLabel || item.nodeLabel ? (
+                      <p className="mt-1 text-[11px] text-bench-700">{[item.agentLabel, item.nodeLabel].filter(Boolean).join(" · ")}</p>
+                    ) : null}
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="font-mono text-[11px] text-bench-700">#{item.seq}</p>
+                    <p className="mt-1 text-[11px] text-bench-600">{item.timestamp}</p>
+                  </div>
                 </div>
-              </div>
-            ) : null}
-          </button>
-        ))}
-      </div>
+                {expandedTimelineId === item.id ? (
+                  <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                    <EvidenceSnippet label="输入" value={item.inputPreview ?? "暂无输入摘要"} />
+                    <EvidenceSnippet label="输出" value={item.outputPreview ?? "暂无输出摘要"} />
+                    <div className="sm:col-span-2 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
+                      <JsonTree data={item.rawPayload} defaultExpanded={1} />
+                    </div>
+                  </div>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </>
   );
 }
 
-function TrailAgents({ lanes, selectedAgentId }: { lanes: ReturnType<typeof buildAgentLanes>; selectedAgentId?: string }) {
-  if (lanes.length === 0) {
+function TrailConversation({ entries }: { entries: ConversationViewEntry[] }) {
+  if (entries.length === 0) {
     return (
-      <DockCard title="智能体泳道" icon={<Bot size={16} />}>
-        <p className="text-xs leading-5 text-bench-700">本轮运行没有记录智能体级活动。</p>
-      </DockCard>
+      <div className="rounded-lg bg-white p-3 text-xs leading-5 text-bench-700 shadow-sm ring-1 ring-inset ring-bench-200">
+        本轮运行没有记录模型对话内容。对话数据来自运行时状态快照中的 conversation 字段。
+      </div>
     );
   }
   return (
     <div className="space-y-3">
-      {lanes.map((lane) => (
+      {entries.map((entry) => (
+        <div
+          key={entry.id}
+          className={`rounded-lg p-3 shadow-sm ring-1 ring-inset ${
+            entry.role === "assistant"
+              ? "bg-sky-50/60 ring-sky-200"
+              : entry.role === "user"
+                ? "bg-white ring-bench-200"
+                : entry.role === "system"
+                  ? "bg-amber-50/60 ring-amber-200"
+                  : "bg-emerald-50/60 ring-emerald-200"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-[0.06em] ${
+              entry.role === "assistant"
+                ? "bg-sky-200 text-sky-900"
+                : entry.role === "user"
+                  ? "bg-bench-200 text-bench-800"
+                  : entry.role === "system"
+                    ? "bg-amber-200 text-amber-900"
+                    : "bg-emerald-200 text-emerald-900"
+            }`}>
+              {conversationRoleLabel(entry.role)}
+            </span>
+            <span className="text-[10px] text-bench-500">{entry.timestamp}</span>
+          </div>
+          <p className="text-xs leading-5 text-bench-800 whitespace-pre-wrap break-words">{entry.content}</p>
+          {entry.toolId && (
+            <p className="mt-1 text-[10px] text-bench-500">
+              工具: {entry.toolId}{entry.toolCallId ? ` · ${entry.toolCallId}` : ""}{entry.toolStatus ? ` · ${entry.toolStatus}` : ""}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function conversationRoleLabel(role: ConversationViewEntry["role"]) {
+  switch (role) {
+    case "assistant":
+      return "模型回答";
+    case "user":
+      return "用户消息";
+    case "system":
+      return "系统提示";
+    case "tool":
+      return "工具结果";
+  }
+}
+
+function TrailCompare({
+  activeSnapshot,
+  sessionId,
+  runtimeClient,
+}: {
+  activeSnapshot: OraStateSnapshot;
+  sessionId?: string;
+  runtimeClient: ReturnType<typeof getSharedRuntimeClient>;
+}) {
+  const [sessionRuns, setSessionRuns] = useState<OraSessionRunSummary[]>([]);
+  const [loadingRuns, setLoadingRuns] = useState(false);
+  const [compareRunId, setCompareRunId] = useState<string | undefined>(undefined);
+  const [compareTrail, setCompareTrail] = useState<OraRunTrail | undefined>(undefined);
+  const [loadingTrail, setLoadingTrail] = useState(false);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    setLoadingRuns(true);
+    runtimeClient.listSessionRuns(sessionId)
+      .then((runs) => { if (!cancelled) setSessionRuns(runs); })
+      .catch(() => { if (!cancelled) setSessionRuns([]); })
+      .finally(() => { if (!cancelled) setLoadingRuns(false); });
+    return () => { cancelled = true; };
+  }, [sessionId, runtimeClient]);
+
+  useEffect(() => {
+    if (!compareRunId) { setCompareTrail(undefined); return; }
+    let cancelled = false;
+    setLoadingTrail(true);
+    runtimeClient.getRunTrail(compareRunId)
+      .then((trail) => { if (!cancelled) setCompareTrail(trail); })
+      .catch(() => { if (!cancelled) setCompareTrail(undefined); })
+      .finally(() => { if (!cancelled) setLoadingTrail(false); });
+    return () => { cancelled = true; };
+  }, [compareRunId, runtimeClient]);
+
+  const currentRuntimeMs = Math.max(0, activeSnapshot.updatedAt - (activeSnapshot.input.createdAt ?? activeSnapshot.updatedAt));
+  const currentEventCount = activeSnapshot.events.length;
+  const currentMessageCount = activeSnapshot.events.filter((e) => e.type === "message.delta").length;
+  const currentToolCount = activeSnapshot.toolCalls.length;
+  const currentAgentCount = activeSnapshot.activeAgents.length;
+  const currentCheckpointCount = activeSnapshot.checkpoints.length;
+  const otherRuns = sessionRuns.filter((r) => r.runId !== activeSnapshot.runId);
+
+  return (
+    <>
+      <DockCard title="选择对比运行" icon={<BarChart3 size={16} />}>
+        {loadingRuns ? (
+          <p className="text-xs leading-5 text-bench-700">正在加载 session 运行列表...</p>
+        ) : otherRuns.length === 0 ? (
+          <p className="text-xs leading-5 text-bench-700">此 session 中暂无其他可对比的运行。</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {otherRuns.map((run) => (
+              <button
+                key={run.runId}
+                onClick={() => setCompareRunId(run.runId === compareRunId ? undefined : run.runId)}
+                className={`rounded px-2.5 py-1.5 text-[11px] font-semibold transition active:scale-95 ${
+                  run.runId === compareRunId ? "bg-bench-900 text-white" : "bg-bench-50 text-bench-700 ring-1 ring-inset ring-bench-200"
+                }`}
+              >
+                {run.modeId ?? run.pattern} · #{run.turnIndex ?? "?"}
+              </button>
+            ))}
+          </div>
+        )}
+      </DockCard>
+
+      {loadingTrail && (
+        <DockCard title="运行对比" icon={<BarChart3 size={16} />}>
+          <p className="text-xs leading-5 text-bench-700">正在加载对比运行数据...</p>
+        </DockCard>
+      )}
+
+      {compareTrail && (
+        <DockCard title="运行对比" icon={<BarChart3 size={16} />}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-bench-200">
+                  <th className="py-2 pr-3 text-left font-semibold text-bench-700">指标</th>
+                  <th className="py-2 pr-3 text-left font-semibold text-bench-700">当前运行</th>
+                  <th className="py-2 text-left font-semibold text-bench-700">对比运行</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-bench-100">
+                <CompareRow label="运行时长" current={formatDurationMs(currentRuntimeMs)} other={formatDurationMs(compareTrail.liveMetrics.runtimeMs)} />
+                <CompareRow label="事件数" current={String(currentEventCount)} other={String(compareTrail.liveMetrics.eventCount)} />
+                <CompareRow label="消息数" current={String(currentMessageCount)} other={String(compareTrail.liveMetrics.messageCount)} />
+                <CompareRow label="工具调用" current={String(currentToolCount)} other={String(compareTrail.observations.filter((o) => o.type === "tool").length)} />
+                <CompareRow label="活跃智能体" current={String(currentAgentCount)} other={String(compareTrail.liveMetrics.activeAgentCount)} />
+                <CompareRow label="检查点数" current={String(currentCheckpointCount)} other={String(compareTrail.liveMetrics.checkpointCount)} />
+                <CompareRow label="拓扑变更" current={String(activeSnapshot.events.filter((e) => e.type === "topology.updated").length)} other={String(compareTrail.liveMetrics.topologyChangeCount)} />
+                <CompareRow label="成本" current="—" other={compareTrail.liveMetrics.costAvailable ? formatUsd(compareTrail.liveMetrics.estimatedCostUsd) : "不可用"} />
+                <CompareRow label="告警" current="—" other={String(compareTrail.liveMetrics.warningCount)} />
+                <CompareRow label="错误" current="—" other={String(compareTrail.liveMetrics.errorCount)} />
+              </tbody>
+            </table>
+          </div>
+        </DockCard>
+      )}
+      {sessionRuns.length > 0 && (
+        <DockCard title="Session 运行历史" icon={<BarChart3 size={16} />}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="border-b border-bench-200 text-left text-bench-600">
+                  <th className="py-1.5 pr-2 font-semibold">#</th>
+                  <th className="py-1.5 pr-2 font-semibold">状态</th>
+                  <th className="py-1.5 pr-2 font-semibold">模式</th>
+                  <th className="py-1.5 pr-2 font-semibold">事件</th>
+                  <th className="py-1.5 pr-2 font-semibold">工具</th>
+                  <th className="py-1.5 font-semibold">时间</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-bench-100">
+                {[...sessionRuns]
+                  .sort((a, b) => b.updatedAt - a.updatedAt)
+                  .map((run) => (
+                  <tr key={run.runId} className={`text-bench-700 ${run.runId === activeSnapshot.runId ? "bg-bench-100 font-semibold text-bench-900" : ""}`}>
+                    <td className="py-1.5 pr-2">{run.turnIndex ?? "?"}</td>
+                    <td className="py-1.5 pr-2">{run.status}</td>
+                    <td className="py-1.5 pr-2 max-w-[120px] truncate">{run.modeId ?? run.pattern}</td>
+                    <td className="py-1.5 pr-2">{run.eventCount}</td>
+                    <td className="py-1.5 pr-2">—</td>
+                    <td className="py-1.5 text-bench-500">{new Date(run.updatedAt).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {sessionRuns.length >= 3 && (
+            <div className="mt-3 rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200">
+              <p className="text-xs font-semibold text-bench-800">趋势摘要</p>
+              <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+                <div>
+                  <span className="text-bench-500">运行次数</span>
+                  <p className="font-semibold text-bench-900">{sessionRuns.length}</p>
+                </div>
+                <div>
+                  <span className="text-bench-500">成功</span>
+                  <p className="font-semibold text-emerald-700">{sessionRuns.filter((r) => r.status === "succeeded").length}</p>
+                </div>
+                <div>
+                  <span className="text-bench-500">失败</span>
+                  <p className="font-semibold text-rose-700">{sessionRuns.filter((r) => r.status === "failed").length}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </DockCard>
+      )}
+    </>
+  );
+}
+
+function formatDurationMs(ms: number) {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+function CompareRow({ label, current, other }: { label: string; current: string; other: string }) {
+  return (
+    <tr>
+      <td className="py-2 pr-3 text-bench-700">{label}</td>
+      <td className="py-2 pr-3 font-semibold text-bench-900">{current}</td>
+      <td className="py-2 font-semibold text-bench-900">{other}</td>
+    </tr>
+  );
+}
+
+function TrailAgents({
+  communicationEdges,
+  lanes,
+  selectedAgentId,
+  topologyEdges,
+  topologyNodes,
+}: {
+  communicationEdges: CommunicationEdge[];
+  lanes: ReturnType<typeof buildAgentLanes>;
+  selectedAgentId?: string;
+  topologyEdges: OraStateSnapshot["topology"]["edges"];
+  topologyNodes: OraStateSnapshot["topology"]["nodes"];
+}) {
+  const agentLabels = new Map(topologyNodes.map((n) => [n.id, n.label]));
+
+  return (
+    <div className="space-y-3">
+      {(topologyNodes.length > 0 || topologyEdges.length > 0) && (
+        <DockCard title="执行拓扑" icon={<Network size={16} />}>
+          <div className="space-y-2">
+            {topologyNodes.map((node) => (
+              <div key={node.id} className={`rounded-md px-3 py-2 ring-1 ring-inset ${node.id === selectedAgentId ? "bg-bench-100 ring-bench-900" : "bg-bench-50 ring-bench-200"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-semibold text-bench-900">{node.label}</span>
+                  <span className="shrink-0 text-[11px] capitalize text-bench-700">{node.status}</span>
+                </div>
+                <p className="truncate text-[11px] text-bench-700">{node.kind}{node.agentId ? ` · ${node.agentId}` : ""}</p>
+              </div>
+            ))}
+            {topologyEdges.map((edge, i) => (
+              <div key={i} className="flex items-center gap-2 rounded-md bg-bench-50/50 px-3 py-1.5 text-[11px] text-bench-600">
+                <span className="font-medium text-bench-700">{agentLabels.get(edge.source) ?? edge.source}</span>
+                <span>→</span>
+                <span className="font-medium text-bench-700">{agentLabels.get(edge.target) ?? edge.target}</span>
+                {edge.kind && <span className="text-bench-400">({edge.kind})</span>}
+              </div>
+            ))}
+          </div>
+        </DockCard>
+      )}
+
+      {communicationEdges.length > 0 && (
+        <DockCard title="通信关系" icon={<GitBranch size={16} />}>
+          <div className="space-y-1.5">
+            {communicationEdges.map((edge, i) => (
+              <div key={i} className="flex items-center gap-2 rounded-md bg-bench-50 px-3 py-2 ring-1 ring-inset ring-bench-200 text-[11px]">
+                <span className="font-medium text-bench-800">{edge.fromLabel}</span>
+                <span className="text-bench-400">→</span>
+                <span className="font-medium text-bench-800">{edge.toLabel}</span>
+                <span className="rounded-full bg-bench-100 px-1.5 py-0.5 text-[10px] text-bench-600">{edge.kind}</span>
+                {edge.count > 1 && <span className="text-bench-400">×{edge.count}</span>}
+              </div>
+            ))}
+          </div>
+        </DockCard>
+      )}
+
+      {lanes.length === 0 ? (
+        <DockCard title="智能体泳道" icon={<Bot size={16} />}>
+          <p className="text-xs leading-5 text-bench-700">本轮运行没有记录智能体级活动。</p>
+        </DockCard>
+      ) : lanes.map((lane) => (
         <div
           key={lane.id}
           className={`rounded-lg bg-white p-3 shadow-sm ring-1 ring-inset ${lane.id === selectedAgentId ? "ring-bench-900" : "ring-bench-200"}`}
@@ -698,13 +1241,25 @@ function TrailLatency({ diagnostics }: { diagnostics: TrailLatencyDiagnostics })
 }
 
 function TrailTools({ commandFeedback, items }: { commandFeedback: string; items: ReturnType<typeof buildToolLedger> }) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  function toggleExpand(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
   return (
     <DockCard title="工具记录" icon={<Wrench size={16} />}>
       {items.length === 0 ? (
         <p className="text-xs leading-5 text-bench-700">本次 run 未调用结构化工具。{commandFeedback ? ` ${commandFeedback}` : ""}</p>
       ) : (
         <div className="space-y-2">
-          {items.map((item) => (
+          {items.map((item) => {
+            const isExpanded = expandedIds.has(item.id);
+            const resultFull = item.resultPreview && item.resultPreview.length > 180;
+            const argsFull = item.argsPreview && item.argsPreview.length > 180;
+            return (
             <div key={item.id} className="rounded-md bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -719,11 +1274,19 @@ function TrailTools({ commandFeedback, items }: { commandFeedback: string; items
                 <p className="mt-2 text-xs leading-5 text-amber-800">{(item.repairReason ?? item.error)?.replace(/_/g, " ")}</p>
               ) : null}
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <EvidenceSnippet label="参数" value={item.argsPreview} />
-                <EvidenceSnippet label="结果" value={item.resultPreview || "暂无结果记录"} />
+                <EvidenceSnippet label="参数" value={isExpanded && item.rawArgs !== undefined ? formatRawValue(item.rawArgs) : item.argsPreview} />
+                <EvidenceSnippet label="结果" value={isExpanded && item.rawResult !== undefined ? formatRawValue(item.rawResult) : (item.resultPreview || "暂无结果记录")} />
               </div>
+              {(resultFull || argsFull) && (
+                <button
+                  onClick={() => toggleExpand(item.id)}
+                  className="mt-2 text-[11px] font-semibold text-bench-600 hover:text-bench-900 transition"
+                >
+                  {isExpanded ? "收起完整内容" : "展开完整内容"}
+                </button>
+              )}
             </div>
-          ))}
+          )})}
         </div>
       )}
     </DockCard>
@@ -899,6 +1462,11 @@ function SeverityPill({ severity }: { severity: TrailFindingSeverity }) {
       {severityLabel(severity)}
     </span>
   );
+}
+
+function formatRawValue(value: unknown): string {
+  if (value === undefined || value === null) return "无数据";
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function agentMessageKindLabel(kind: string) {

@@ -94,6 +94,7 @@ import type {
   RunAttention as OraRunAttention,
   RunEventStream as OraRunEventStream,
   RunHandle as OraRunHandle,
+  RunSummary as OraSessionRunSummary,
   RuntimeMaintenanceParams as OraRuntimeMaintenanceParams,
   RuntimeMaintenanceResult as OraRuntimeMaintenanceResult,
   RunTrail as OraRunTrail,
@@ -224,6 +225,7 @@ export type {
   OraRunTraceMetadata,
   OraRunTrail,
   OraRunTrailMetrics,
+  OraSessionRunSummary,
   OraSelfIterationCandidate,
   OraSelfIterationPolicy,
   OraSelfIterationScanResult,
@@ -894,6 +896,12 @@ export function createRuntimeClient() {
     },
     async getRunTrail(runId: string): Promise<OraRunTrail> {
       return call<OraRunTrail>("runs.trail", { runId });
+    },
+    async listSessionRuns(sessionId: string): Promise<OraSessionRunSummary[]> {
+      return call<OraSessionRunSummary[]>("runs.list", { sessionId });
+    },
+    async listAllRuns(): Promise<OraSessionRunSummary[]> {
+      return call<OraSessionRunSummary[]>("runs.list", {});
     },
     async interruptRun(runId: string, reason: string): Promise<OraStateSnapshot> {
       return call<OraStateSnapshot>("runs.interrupt", { runId, reason });
@@ -5425,6 +5433,7 @@ function buildMockRunTrail(snapshot: OraStateSnapshot): OraRunTrail {
     warningCount: observations.filter((observation) => observation.level === "WARNING").length,
     errorCount: observations.filter((observation) => observation.level === "ERROR").length,
     estimatedCostUsd: trace.generationRefs.reduce((sum, generation) => sum + (generation.totalCostUsd ?? 0), 0),
+    costAvailable: trace.generationRefs.length > 0,
   };
 
   return {

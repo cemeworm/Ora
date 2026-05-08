@@ -1,7 +1,13 @@
+/**
+ * Trails 数据源策略：
+ * - `snapshot` (OraStateSnapshot): 实时 UI 的主要数据源 (Flow/Tools/Agents/Overview/Latency)
+ * - `trail.observations` (OraRunTrail): Evidence 标签页的合并视图 (本地 + Langfuse)
+ * - 两个数据源不应交叉使用，保持职责清晰
+ */
 import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
 
-export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence";
+export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
 export type TrailFindingSeverity = "error" | "warning" | "info";
 
 type LatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
@@ -61,6 +67,7 @@ export interface TrailDebugSummary {
     runtime: string;
     cost: string;
     messages: string;
+    costAvailable?: boolean;
   };
 }
 
@@ -120,6 +127,8 @@ export interface ToolLedgerItem {
   latency: string;
   argsPreview: string;
   resultPreview: string;
+  rawArgs?: unknown;
+  rawResult?: unknown;
   repairReason?: string;
   error?: string;
 }
@@ -154,6 +163,30 @@ export interface ActiveMemorySummary {
   warnings: string[];
 }
 
+export interface ConversationViewEntry {
+  id: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  createdAt: number;
+  timestamp: string;
+  toolCallId?: string;
+  toolId?: string;
+  toolStatus?: string;
+}
+
+export function buildConversationView(snapshot: OraStateSnapshot): ConversationViewEntry[] {
+  return (snapshot.conversation ?? []).map((entry, index) => ({
+    id: `${entry.role}:${index}`,
+    role: entry.role,
+    content: typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content),
+    createdAt: entry.createdAt,
+    timestamp: formatTimestamp(entry.createdAt),
+    toolCallId: entry.role === "tool" ? (entry as { toolCallId?: string }).toolCallId : undefined,
+    toolId: entry.role === "tool" ? (entry as { toolId?: string }).toolId : undefined,
+    toolStatus: entry.role === "tool" ? (entry as { status?: string }).status : undefined,
+  }));
+}
+
 export function buildTrailDebugSummary(
   snapshot: OraStateSnapshot,
   trail: OraRunTrail | undefined,
@@ -185,6 +218,7 @@ export function buildTrailDebugSummary(
       runtime: formatDuration(liveMetrics?.runtimeMs ?? Math.max(0, snapshot.updatedAt - (snapshot.input.createdAt ?? snapshot.updatedAt))),
       cost: formatUsd(liveMetrics?.estimatedCostUsd ?? trace?.generationRefs.reduce((sum, ref) => sum + (ref.totalCostUsd ?? 0), 0) ?? 0),
       messages: String(liveMetrics?.messageCount ?? snapshot.events.filter((event) => event.type === "message.delta").length),
+      costAvailable: liveMetrics?.costAvailable ?? ((trace?.generationRefs.length ?? 0) > 0),
     },
   };
 }
@@ -288,7 +322,8 @@ export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatenc
     .sort((left, right) => left.at - right.at || left.source.localeCompare(right.source) || left.name.localeCompare(right.name));
   const baseAt = sortedMarks[0]?.at ?? snapshot.input.createdAt ?? snapshot.updatedAt;
   const markByKey = new Map(sortedMarks.map((mark) => [`${mark.source}:${mark.name}`, mark]));
-  const segments = LATENCY_SEGMENT_DEFINITIONS.map((definition) => buildLatencySegment(definition, markByKey));
+  const rawSegments = LATENCY_SEGMENT_DEFINITIONS.map((definition) => buildLatencySegment(definition, markByKey));
+  const segments = mergeMissingSegments(rawSegments);
   const firstText = markByKey.get("runtime:firstTextDelta") ?? markByKey.get("desktop:firstMessageDeltaAt");
   const firstReadableText = markByKey.get("runtime:firstUserReadableAssistantTextProduced") ?? markByKey.get("desktop:firstNonProgressAssistantTextAt");
   const firstProgressNarration = markByKey.get("runtime:firstProgressNarration");
@@ -352,10 +387,18 @@ export function buildToolLedger(snapshot: OraStateSnapshot): ToolLedgerItem[] {
     latency: formatDuration(Math.max(0, (call.result?.updatedAt ?? call.updatedAt) - call.requestedAt)),
     argsPreview: previewValue(call.args) ?? "{}",
     resultPreview: previewValue(call.result?.output ?? call.result?.content ?? call.result?.error) ?? "暂无结果记录",
+    rawArgs: call.args,
+    rawResult: call.result?.output ?? call.result?.content ?? call.result?.error,
     repairReason: call.repairReason,
     error: call.error ?? call.result?.error,
   }));
 }
+
+type FindingCheck = (ctx: {
+  snapshot: OraStateSnapshot;
+  trailError: string | undefined;
+  trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined;
+}) => TrailFinding[];
 
 export function collectTrailFindings(
   snapshot: OraStateSnapshot,
@@ -363,38 +406,54 @@ export function collectTrailFindings(
   trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined,
   _actions: ActionRecord[],
 ): TrailFinding[] {
+  const ctx = { snapshot, trailError, trace };
   const findings: TrailFinding[] = [];
-  const push = (finding: TrailFinding) => {
-    if (!findings.some((candidate) => candidate.id === finding.id)) {
-      findings.push(finding);
+  for (const check of FINDING_CHECKS) {
+    for (const finding of check(ctx)) {
+      if (!findings.some((candidate) => candidate.id === finding.id)) {
+        findings.push(finding);
+      }
     }
-  };
+  }
+  return findings;
+}
+
+// ---- Finding check functions ----
+
+function checkRunFailure(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const { snapshot } = ctx;
+  if (snapshot.status !== "failed") return [];
   const failureDetail = latestFailureDetail(snapshot);
-  if (snapshot.status === "failed") {
-    push({
-      id: "run.failed",
-      severity: "error",
-      title: "运行失败",
-      message: failureDetail
-        ? `运行失败：${failureDetail}`
-        : "本轮运行以失败状态结束。请查看最新事件和追踪记录定位失败分支。",
-      targetType: "run",
-      suggestedTab: "flow",
-    });
-  }
-  if (snapshot.config.effectiveStrategy?.providerPolicyStatus === "degraded") {
-    push({
-      id: "strategy.provider-degraded",
-      severity: "warning",
-      title: "模型思考策略降级",
-      message: snapshot.config.effectiveStrategy.notes[0] ?? "当前模型提供方无法满足该模式请求的推理策略。",
-      targetType: "run",
-      suggestedTab: "overview",
-    });
-  }
-  for (const call of snapshot.toolCalls ?? []) {
+  return [{
+    id: "run.failed",
+    severity: "error",
+    title: "运行失败",
+    message: failureDetail
+      ? `运行失败：${failureDetail}`
+      : "本轮运行以失败状态结束。请查看最新事件和追踪记录定位失败分支。",
+    targetType: "run",
+    suggestedTab: "flow",
+  }];
+}
+
+function checkStrategyDegradation(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const { snapshot } = ctx;
+  if (snapshot.config.effectiveStrategy?.providerPolicyStatus !== "degraded") return [];
+  return [{
+    id: "strategy.provider-degraded",
+    severity: "warning",
+    title: "模型思考策略降级",
+    message: snapshot.config.effectiveStrategy.notes[0] ?? "当前模型提供方无法满足该模式请求的推理策略。",
+    targetType: "run",
+    suggestedTab: "overview",
+  }];
+}
+
+function checkToolFailures(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const findings: TrailFinding[] = [];
+  for (const call of ctx.snapshot.toolCalls ?? []) {
     if (call.status === "failed") {
-      push({
+      findings.push({
         id: `tool.failed:${call.id}`,
         severity: "error",
         title: "工具调用失败",
@@ -405,7 +464,7 @@ export function collectTrailFindings(
       });
     }
     if (call.status === "repaired") {
-      push({
+      findings.push({
         id: `tool.repaired:${call.id}`,
         severity: "warning",
         title: "工具结果已恢复",
@@ -416,7 +475,7 @@ export function collectTrailFindings(
       });
     }
     if (call.status === "interrupted") {
-      push({
+      findings.push({
         id: `tool.interrupted:${call.id}`,
         severity: "warning",
         title: "工具调用已中断",
@@ -427,7 +486,7 @@ export function collectTrailFindings(
       });
     }
     if (call.status === "approval_required") {
-      push({
+      findings.push({
         id: `tool.approval:${call.id}`,
         severity: "warning",
         title: "工具调用等待确认",
@@ -438,66 +497,81 @@ export function collectTrailFindings(
       });
     }
   }
-  if (buildPendingApprovalItems(snapshot).length > 0) {
-    push({
-      id: "approval.pending",
-      severity: "warning",
-      title: "等待确认",
-      message: "有待确认操作正在阻塞后续进度。",
-      targetType: "run",
-      suggestedTab: "overview",
-    });
-  }
-  const continuation = snapshot.continuation ?? { frames: [] };
-  const activeContinuation = continuation.frames.find((frame) =>
-    frame.id === continuation.activeFrameId
-  );
-  if (activeContinuation) {
-    push({
-      id: `continuation.${activeContinuation.status}:${activeContinuation.id}`,
-      severity: activeContinuation.status === "failed" ? "error" : "info",
-      title: "运行续接中",
-      message: `运行续接状态：${toolStatusLabel(activeContinuation.status)}，原因：${activeContinuation.reason}。`,
-      targetType: "run",
-      suggestedTab: "flow",
-    });
-  }
-  for (const clarification of snapshotPendingClarifications(snapshot)) {
-    push({
-      id: `clarification.pending:${clarification.id}`,
-      severity: "warning",
-      title: "等待补充信息",
-      message: clarification.question,
-      targetType: "event",
-      targetId: clarification.id,
-      suggestedTab: "flow",
-    });
-  }
-  const recoveryExhausted = [...snapshot.events].reverse().find((event) => event.type === "recovery.exhausted");
-  if (recoveryExhausted) {
-    push({
-      id: `recovery.exhausted:${recoveryExhausted.id}`,
-      severity: "error",
-      title: "恢复失败",
-      message: timelineDetail(recoveryExhausted),
-      targetType: "event",
-      targetId: recoveryExhausted.id,
-      suggestedTab: "flow",
-    });
-  }
-  const stopReason = stopReasonFromSnapshot(snapshot);
-  if (stopReason) {
-    push({
-      id: "run.stop-reason",
-      severity: "info",
-      title: "停止原因",
-      message: `运行停止原因：${stopReasonLabel(stopReason) ?? stopReason}。`,
-      targetType: "run",
-      suggestedTab: "evidence",
-    });
-  }
+  return findings;
+}
+
+function checkApprovals(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  if (buildPendingApprovalItems(ctx.snapshot).length === 0) return [];
+  return [{
+    id: "approval.pending",
+    severity: "warning",
+    title: "等待确认",
+    message: "有待确认操作正在阻塞后续进度。",
+    targetType: "run",
+    suggestedTab: "overview",
+  }];
+}
+
+function checkContinuation(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const continuation = ctx.snapshot.continuation ?? { frames: [] };
+  const activeContinuation = continuation.frames.find((frame) => frame.id === continuation.activeFrameId);
+  if (!activeContinuation) return [];
+  return [{
+    id: `continuation.${activeContinuation.status}:${activeContinuation.id}`,
+    severity: activeContinuation.status === "failed" ? "error" : "info",
+    title: "运行续接中",
+    message: `运行续接状态：${toolStatusLabel(activeContinuation.status)}，原因：${activeContinuation.reason}。`,
+    targetType: "run",
+    suggestedTab: "flow",
+  }];
+}
+
+function checkClarifications(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  return snapshotPendingClarifications(ctx.snapshot).map((clarification) => ({
+    id: `clarification.pending:${clarification.id}`,
+    severity: "warning" as const,
+    title: "等待补充信息",
+    message: clarification.question,
+    targetType: "event" as const,
+    targetId: clarification.id,
+    suggestedTab: "flow" as const,
+  }));
+}
+
+function checkRecovery(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const recoveryExhausted = [...ctx.snapshot.events].reverse().find((event) => event.type === "recovery.exhausted");
+  if (!recoveryExhausted) return [];
+  return [{
+    id: `recovery.exhausted:${recoveryExhausted.id}`,
+    severity: "error",
+    title: "恢复失败",
+    message: timelineDetail(recoveryExhausted),
+    targetType: "event",
+    targetId: recoveryExhausted.id,
+    suggestedTab: "flow",
+  }];
+}
+
+function checkStopReason(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const stopReason = stopReasonFromSnapshot(ctx.snapshot);
+  if (!stopReason) return [];
+  return [{
+    id: "run.stop-reason",
+    severity: "info",
+    title: "停止原因",
+    message: `运行停止原因：${stopReasonLabel(stopReason) ?? stopReason}。`,
+    targetType: "run",
+    suggestedTab: "evidence",
+  }];
+}
+
+function checkTraceStatus(ctx: {
+  trace: OraRunTrail["trace"] | OraStateSnapshot["trace"] | undefined
+}): TrailFinding[] {
+  const findings: TrailFinding[] = [];
+  const { trace } = ctx;
   if (trace?.provider === "ora" || trace?.source === "local") {
-    push({
+    findings.push({
       id: "trace.local",
       severity: "info",
       title: "本地轨迹已启用",
@@ -506,7 +580,7 @@ export function collectTrailFindings(
       suggestedTab: "evidence",
     });
   } else if (!trace?.enabled) {
-    push({
+    findings.push({
       id: "trace.disabled",
       severity: "info",
       title: "远程追踪未启用",
@@ -515,7 +589,7 @@ export function collectTrailFindings(
       suggestedTab: "evidence",
     });
   } else if (!trace.available) {
-    push({
+    findings.push({
       id: "trace.degraded",
       severity: "warning",
       title: "远程追踪不可用",
@@ -524,28 +598,189 @@ export function collectTrailFindings(
       suggestedTab: "evidence",
     });
   }
-  if (trailError) {
-    push({
-      id: "trace.fetch-error",
-      severity: "warning",
-      title: "追踪数据获取降级",
-      message: `追踪数据获取降级：${trailError}`,
-      targetType: "trace",
-      suggestedTab: "evidence",
-    });
+  return findings;
+}
+
+function checkTrailError(ctx: { trailError: string | undefined }): TrailFinding[] {
+  if (!ctx.trailError) return [];
+  return [{
+    id: "trace.fetch-error",
+    severity: "warning",
+    title: "追踪数据获取降级",
+    message: `追踪数据获取降级：${ctx.trailError}`,
+    targetType: "trace",
+    suggestedTab: "evidence",
+  }];
+}
+
+function checkEmptyEvents(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  if (ctx.snapshot.events.length > 0) return [];
+  return [{
+    id: "events.empty",
+    severity: "info",
+    title: "暂无运行事件",
+    message: "本轮运行尚未记录运行时事件。",
+    targetType: "run",
+    suggestedTab: "evidence",
+  }];
+}
+
+// ---- 新增诊断规则 (P2-1) ----
+
+function checkContextWindowUsage(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const ctxState = ctx.snapshot.contextState;
+  if (!ctxState?.contextWindow || ctxState.activeTokenUsage?.inputTokens === undefined) return [];
+  const usagePercent = Math.round((ctxState.activeTokenUsage.inputTokens / ctxState.contextWindow) * 100);
+  if (usagePercent <= 80) return [];
+  return [{
+    id: "context.window-high",
+    severity: "warning",
+    title: "上下文窗口使用率高",
+    message: `当前已用 ${ctxState.activeTokenUsage.inputTokens.toLocaleString()} / ${ctxState.contextWindow.toLocaleString()} tokens（${usagePercent}%），超过 80% 阈值。`,
+    targetType: "run",
+    suggestedTab: "overview",
+  }];
+}
+
+function checkToolCallLoop(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const calls = ctx.snapshot.toolCalls ?? [];
+  const keyCounts = new Map<string, number>();
+  for (const call of calls) {
+    const key = `${call.toolId}:${JSON.stringify(call.args)}`;
+    keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
   }
-  if (snapshot.events.length === 0) {
-    push({
-      id: "events.empty",
-      severity: "info",
-      title: "暂无运行事件",
-      message: "本轮运行尚未记录运行时事件。",
-      targetType: "run",
-      suggestedTab: "evidence",
+  const findings: TrailFinding[] = [];
+  for (const [key, count] of keyCounts) {
+    if (count >= 5) {
+      const toolId = key.split(":")[0];
+      findings.push({
+        id: `tool.loop:${key.slice(0, 40)}`,
+        severity: "warning",
+        title: "工具重复调用",
+        message: `${toolDisplayLabel(toolId)} 被相同参数调用了 ${count} 次，可能存在死循环。`,
+        targetType: "tool",
+        suggestedTab: "tools",
+      });
+    }
+  }
+  return findings;
+}
+
+function checkModelOutputQuality(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const findings: TrailFinding[] = [];
+  const conversation = ctx.snapshot.conversation ?? [];
+  for (let i = 0; i < conversation.length; i++) {
+    const entry = conversation[i];
+    if (entry.role !== "assistant") continue;
+    const content = entry.content;
+    if (typeof content !== "string") continue;
+    if (content.trim().length === 0) {
+      findings.push({
+        id: `model.empty-response:${i}`,
+        severity: "warning",
+        title: "模型空响应",
+        message: `第 ${i + 1} 轮对话助手返回了空内容。`,
+        targetType: "event",
+        suggestedTab: "flow",
+      });
+    }
+    if (content.includes("truncated") || content.includes("[截断]")) {
+      findings.push({
+        id: `model.truncated:${i}`,
+        severity: "warning",
+        title: "模型输出可能截断",
+        message: `第 ${i + 1} 轮对话助手输出包含截断标记。`,
+        targetType: "event",
+        suggestedTab: "flow",
+      });
+    }
+  }
+  const failedJsonEvents = ctx.snapshot.events.filter((e) =>
+    e.type === "tool.repaired" &&
+    isRecord(e.payload) && typeof e.payload.error === "string" && e.payload.error.includes("JSON"),
+  );
+  if (failedJsonEvents.length > 0) {
+    findings.push({
+      id: "model.json-parse",
+      severity: "warning",
+      title: "模型 JSON 输出解析失败",
+      message: `检测到 ${failedJsonEvents.length} 次 JSON 解析失败，可能导致工具调用或结构化输出异常。`,
+      targetType: "event",
+      suggestedTab: "tools",
     });
   }
   return findings;
 }
+
+function checkAgentCommunication(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const findings: TrailFinding[] = [];
+  const messages = ctx.snapshot.agentMessages ?? [];
+  const knownAgentIds = new Set([
+    ...ctx.snapshot.profiles.map((p) => p.id),
+    ...ctx.snapshot.activeAgents,
+  ]);
+  for (const msg of messages) {
+    for (const toId of msg.toAgentIds) {
+      if (!knownAgentIds.has(toId)) {
+        findings.push({
+          id: `comm.unknown-target:${msg.id}:${toId}`,
+          severity: "warning",
+          title: "消息目标不存在",
+          message: `智能体 "${msg.fromAgentId}" 向未知目标 "${toId}" 发送了 ${msg.kind} 消息。`,
+          targetType: "agent",
+          targetId: msg.fromAgentId,
+          suggestedTab: "agents",
+        });
+      }
+    }
+    if (msg.status === "failed") {
+      findings.push({
+        id: `comm.failed:${msg.id}`,
+        severity: "warning",
+        title: "消息投递失败",
+        message: `智能体 "${msg.fromAgentId}" 的 ${msg.kind} 消息投递失败（${msg.status}）。`,
+        targetType: "agent",
+        targetId: msg.fromAgentId,
+        suggestedTab: "agents",
+      });
+    }
+  }
+  return findings;
+}
+
+function checkToolBudgetExceeded(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
+  const budget = ctx.snapshot.config.effectiveStrategy?.budget;
+  if (!budget?.maxToolCalls) return [];
+  const toolCallCount = (ctx.snapshot.toolCalls ?? []).length;
+  if (toolCallCount <= budget.maxToolCalls) return [];
+  return [{
+    id: "budget.tool-exceeded",
+    severity: "warning",
+    title: "工具调用超预算",
+    message: `工具调用 ${toolCallCount} 次，超出配置预算 ${budget.maxToolCalls} 次。`,
+    targetType: "run",
+    suggestedTab: "tools",
+  }];
+}
+
+const FINDING_CHECKS: FindingCheck[] = [
+  checkRunFailure,
+  checkStrategyDegradation,
+  checkToolFailures,
+  checkApprovals,
+  checkContinuation,
+  checkClarifications,
+  checkRecovery,
+  checkStopReason,
+  checkTraceStatus,
+  checkTrailError,
+  checkEmptyEvents,
+  checkContextWindowUsage,
+  checkToolCallLoop,
+  checkModelOutputQuality,
+  checkAgentCommunication,
+  checkToolBudgetExceeded,
+];
 
 export function buildPendingApprovalItems(snapshot: OraStateSnapshot): PendingApprovalItem[] {
   const topologyNodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
@@ -686,6 +921,8 @@ export function tabLabel(tab: TrailDebuggerTab) {
       return "延迟";
     case "evidence":
       return "证据";
+    case "compare":
+      return "对比";
   }
 }
 
@@ -936,6 +1173,44 @@ function latencyMarkLabel(key: string): string {
     default:
       return name ?? key;
   }
+}
+
+function mergeMissingSegments(segments: TrailLatencySegment[]): TrailLatencySegment[] {
+  const result: TrailLatencySegment[] = [];
+  let pendingMissing: TrailLatencySegment[] = [];
+  for (const segment of segments) {
+    if (segment.status === "missing") {
+      pendingMissing.push(segment);
+    } else {
+      if (pendingMissing.length > 0) {
+        const merged = mergeSegmentGroup(pendingMissing);
+        if (merged) result.push(merged);
+        pendingMissing = [];
+      }
+      result.push(segment);
+    }
+  }
+  if (pendingMissing.length > 0) {
+    const merged = mergeSegmentGroup(pendingMissing);
+    if (merged) result.push(merged);
+  }
+  return result;
+}
+
+function mergeSegmentGroup(group: TrailLatencySegment[]): TrailLatencySegment | null {
+  if (group.length === 0) return null;
+  if (group.length === 1) return group[0];
+  const first = group[0];
+  const last = group[group.length - 1];
+  return {
+    id: `${first.id}--${last.id}`,
+    label: `${first.label.split("→")[0].trim()} → ${last.label.split("→")[1]?.trim() ?? last.to}`,
+    from: first.from,
+    to: last.to,
+    duration: "未记录",
+    status: "missing",
+    note: `合并分段（因中间 marks 缺失）：${group.map((s) => s.label).join(", ")}`,
+  };
 }
 
 function latencyRecommendation(params: {
@@ -1412,4 +1687,145 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+// ---- Phase 2: 未使用字段展示 ----
+
+export interface PlanProgressSummary {
+  planList: { step: string; status: string }[];
+  planItems: { title: string; status: string; owner?: string }[];
+  totalSteps: number;
+  completedSteps: number;
+}
+
+export function buildPlanProgressSummary(snapshot: OraStateSnapshot): PlanProgressSummary | undefined {
+  const planList = snapshot.planList ?? [];
+  const plan = snapshot.plan ?? [];
+  if (planList.length === 0 && plan.length === 0) return undefined;
+  const completedSteps = planList.filter((s) => s.status === "completed").length;
+  return {
+    planList: planList.map((s) => ({ step: s.step, status: s.status })),
+    planItems: plan.map((p) => ({ title: p.title, status: p.status, owner: p.ownerAgentId })),
+    totalSteps: planList.length,
+    completedSteps,
+  };
+}
+
+export interface PolicyDecisionsSummary {
+  decisions: { policyId: string; reason: string; requiredApproval: boolean }[];
+}
+
+export function buildPolicyDecisionsSummary(snapshot: OraStateSnapshot): PolicyDecisionsSummary | undefined {
+  const decisions = snapshot.policyDecisions ?? [];
+  if (decisions.length === 0) return undefined;
+  return {
+    decisions: decisions.map((d) => ({
+      policyId: d.policyId,
+      reason: d.reason,
+      requiredApproval: d.requiredApproval,
+    })),
+  };
+}
+
+export interface TodoProgressSummary {
+  todos: { label: string; detail?: string; status: string }[];
+  total: number;
+  completed: number;
+}
+
+export function buildTodoProgressSummary(snapshot: OraStateSnapshot): TodoProgressSummary | undefined {
+  const todos = snapshot.todos ?? [];
+  if (todos.length === 0) return undefined;
+  const completed = todos.filter((t) => t.status === "done").length;
+  return {
+    todos: todos.map((t) => ({ label: t.label, detail: t.detail, status: t.status })),
+    total: todos.length,
+    completed,
+  };
+}
+
+export interface MemoryDetailSummary {
+  records: { namespace: string; kind: string; value: string }[];
+  total: number;
+}
+
+export function buildMemoryDetailSummary(snapshot: OraStateSnapshot): MemoryDetailSummary | undefined {
+  const memory = snapshot.memory ?? [];
+  if (memory.length === 0) return undefined;
+  return {
+    records: memory.map((m) => ({
+      namespace: Array.isArray(m.namespace) ? m.namespace.join("/") : String(m.namespace ?? ""),
+      kind: m.kind,
+      value: typeof m.value === "string" ? m.value.slice(0, 200) : JSON.stringify(m.value).slice(0, 200),
+    })),
+    total: memory.length,
+  };
+}
+
+// ---- Phase 2: 上下文窗口监控 ----
+
+export interface ContextWindowSummary {
+  inputTokens: number;
+  outputTokens: number;
+  contextWindow?: number;
+  usagePercent?: number;
+  compactionCount: number;
+  needsCompaction: boolean;
+}
+
+export function buildContextWindowSummary(snapshot: OraStateSnapshot): ContextWindowSummary | undefined {
+  const ctx = snapshot.contextState;
+  if (!ctx) return undefined;
+  const usage = ctx.activeTokenUsage ?? {};
+  const inputTokens = typeof usage.inputTokens === "number" ? usage.inputTokens : 0;
+  const outputTokens = typeof usage.outputTokens === "number" ? usage.outputTokens : 0;
+  const contextWindow = typeof ctx.contextWindow === "number" ? ctx.contextWindow : undefined;
+  const usagePercent = contextWindow ? Math.round((inputTokens / contextWindow) * 100) : undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    contextWindow,
+    usagePercent,
+    compactionCount: ctx.compactionCount ?? 0,
+    needsCompaction: usagePercent !== undefined && usagePercent > 80,
+  };
+}
+
+// ---- Phase 2: 通信图 ----
+
+export interface CommunicationEdge {
+  from: string;
+  fromLabel: string;
+  to: string;
+  toLabel: string;
+  kind: string;
+  count: number;
+}
+
+export function buildCommunicationGraph(snapshot: OraStateSnapshot): CommunicationEdge[] {
+  const messages = snapshot.agentMessages ?? [];
+  const agentLabels = new Map<string, string>();
+  for (const profile of snapshot.profiles) {
+    agentLabels.set(profile.id, profile.label);
+  }
+  const edgeMap = new Map<string, CommunicationEdge>();
+  for (const msg of messages) {
+    for (const toId of msg.toAgentIds) {
+      const key = `${msg.fromAgentId}->${toId}:${msg.kind}`;
+      const existing = edgeMap.get(key);
+      if (existing) {
+        existing.count++;
+      } else {
+        edgeMap.set(key, {
+          from: msg.fromAgentId,
+          fromLabel: agentLabels.get(msg.fromAgentId) ?? msg.fromAgentId,
+          to: toId,
+          toLabel: agentLabels.get(toId) ?? toId,
+          kind: msg.kind,
+          count: 1,
+        });
+      }
+    }
+  }
+  return [...edgeMap.values()].sort((a, b) => b.count - a.count);
 }
