@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Activity, CheckCircle2, ExternalLink, Gauge, GitBranchPlus, Inbox, RefreshCcw, ShieldAlert } from "lucide-react";
+import { translateCopy } from "../lib/i18n";
 import { useWorkbench } from "../lib/state";
 import type {
   OraFeedbackLoopActionResult,
@@ -34,6 +35,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
   const [error, setError] = useState<string>();
   const [actionResult, setActionResult] = useState<OraFeedbackLoopActionResult>();
   const [pendingAction, setPendingAction] = useState<OraFeedbackLoopActionResult>();
+  const t = (value: string) => translateCopy(state.language, value);
 
   const projectIdParam = selectedProjectId === "all" ? undefined : selectedProjectId;
 
@@ -71,9 +73,9 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
   const recoveryCount = signals.filter((signal) => signal.source === "recovery_event").length;
   const environmentSignal = signals.find((signal) => signal.source === "project_file" && signal.metadata.observerKind === "environment_snapshot");
   const selectedProjectLabel = useMemo(() => {
-    if (selectedProjectId === "all") return "All projects";
+    if (selectedProjectId === "all") return t("All projects");
     return state.projects.find((project) => project.projectId === selectedProjectId)?.label ?? selectedProjectId;
-  }, [selectedProjectId, state.projects]);
+  }, [selectedProjectId, state.language, state.projects]);
 
   async function openEvidence(signal: OraProjectSignal) {
     const target = signal.evidence[0]?.target;
@@ -228,23 +230,23 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-sidebar">
-      <header className="flex shrink-0 items-center justify-between border-b border-border/70 px-6 py-4">
-        <div>
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border/70 px-6 py-4">
+        <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
             <Activity size={14} />
-            Project feedback loop
+            {t("Project feedback loop")}
           </div>
-          <h1 className="mt-1 text-2xl font-semibold text-foreground">Signals</h1>
+          <h1 className="mt-1 text-2xl font-semibold text-foreground">{t("Signals")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{selectedProjectLabel} · {bridgeStatus.mode}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Select
-            aria-label="Project filter"
+            aria-label={t("Project filter")}
             value={selectedProjectId}
             onChange={(event) => setSelectedProjectId(event.target.value)}
-            className="h-9 text-sm"
+            className="h-9 min-w-36 text-sm"
           >
-            <option value="all">All projects</option>
+            <option value="all">{t("All projects")}</option>
             {state.projects.map((project) => (
               <option key={project.projectId} value={project.projectId}>{project.label}</option>
             ))}
@@ -255,7 +257,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
             className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted"
           >
             <RefreshCcw size={15} />
-            Refresh
+            {t("Refresh")}
           </button>
           <button
             type="button"
@@ -263,7 +265,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
             className="inline-flex h-9 items-center gap-2 rounded-md bg-foreground px-3 text-sm font-medium text-background shadow-sm transition hover:bg-foreground/90"
           >
             <GitBranchPlus size={15} />
-            Self-Iteration
+            {t("Self-Iteration")}
           </button>
         </div>
       </header>
@@ -279,8 +281,8 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
           <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-sm font-semibold text-amber-900">Confirm action</p>
-                <p className="mt-1 text-sm text-amber-800">{pendingAction.message}</p>
+                <p className="text-sm font-semibold text-amber-900">{t("Confirm action")}</p>
+                <p className="mt-1 text-sm text-amber-800">{t(pendingAction.message)}</p>
               </div>
               <div className="flex shrink-0 gap-2">
                 <button
@@ -288,14 +290,14 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                   onClick={() => setPendingAction(undefined)}
                   className="h-8 rounded-md border border-amber-300 bg-transparent px-3 text-xs font-medium text-amber-900 transition hover:bg-amber-100"
                 >
-                  Cancel
+                  {t("Cancel")}
                 </button>
                 <button
                   type="button"
                   onClick={() => void confirmPendingAction()}
                   className="h-8 rounded-md bg-amber-900 px-3 text-xs font-medium text-white transition hover:bg-amber-950"
                 >
-                  Apply
+                  {t("Apply")}
                 </button>
               </div>
             </div>
@@ -303,17 +305,17 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
         )}
 
         <section className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <Metric icon={<Gauge size={16} />} label="Open insights" value={openSignals.length} tone={openSignals.length > 0 ? "warning" : "neutral"} />
-          <Metric icon={<ShieldAlert size={16} />} label="Critical signals" value={criticalCount} tone={criticalCount > 0 ? "critical" : "neutral"} />
-          <Metric icon={<Inbox size={16} />} label="Pending feedback" value={pendingFeedbackCount} tone={pendingFeedbackCount > 0 ? "warning" : "neutral"} />
-          <Metric icon={<GitBranchPlus size={16} />} label="Recovery signals" value={recoveryCount} tone={recoveryCount > 0 ? "warning" : "neutral"} />
+          <Metric icon={<Gauge size={16} />} label={t("Open insights")} value={openSignals.length} tone={openSignals.length > 0 ? "warning" : "neutral"} />
+          <Metric icon={<ShieldAlert size={16} />} label={t("Critical signals")} value={criticalCount} tone={criticalCount > 0 ? "critical" : "neutral"} />
+          <Metric icon={<Inbox size={16} />} label={t("Pending feedback")} value={pendingFeedbackCount} tone={pendingFeedbackCount > 0 ? "warning" : "neutral"} />
+          <Metric icon={<GitBranchPlus size={16} />} label={t("Recovery signals")} value={recoveryCount} tone={recoveryCount > 0 ? "warning" : "neutral"} />
         </section>
 
         <section className="mt-5">
-          <SectionTitle title="Environment Observer" subtitle="Opt-in metadata-only workspace observation" />
+          <SectionTitle title={t("Environment Observer")} subtitle={t("Opt-in metadata-only workspace observation")} />
           <div className="mt-3 rounded-lg border border-border bg-background p-4 shadow-sm">
             {selectedProjectId === "all" || !selfIterationPolicy ? (
-              <p className="text-sm text-muted-foreground">Select one project to enable scoped observation. Ora will not watch all projects at once.</p>
+              <p className="text-sm text-muted-foreground">{t("Select one project to enable scoped observation. Ora will not watch all projects at once.")}</p>
             ) : (
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
@@ -323,17 +325,19 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                       selfIterationPolicy.environmentObserver.enabled && !selfIterationPolicy.environmentObserver.paused ? "bg-emerald-100 text-emerald-800" : "bg-muted text-muted-foreground",
                     )}>
                       {selfIterationPolicy.environmentObserver.enabled
-                        ? selfIterationPolicy.environmentObserver.paused ? "paused" : "enabled"
-                        : "disabled"}
+                        ? selfIterationPolicy.environmentObserver.paused ? t("paused") : t("enabled")
+                        : t("disabled")}
                     </span>
-                    <span className="text-xs text-muted-foreground">Budget {selfIterationPolicy.environmentObserver.scanBudgetFiles} files · max {Math.round(selfIterationPolicy.environmentObserver.maxFileBytes / 1024)} KB/file</span>
+                    <span className="text-xs text-muted-foreground">
+                      {t("Budget")} {selfIterationPolicy.environmentObserver.scanBudgetFiles} {t("files")} · {t("max")} {Math.round(selfIterationPolicy.environmentObserver.maxFileBytes / 1024)} {t("KB/file")}
+                    </span>
                   </div>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    Watches {selfIterationPolicy.environmentObserver.watchedPaths.join(", ")} and excludes {selfIterationPolicy.environmentObserver.excludedGlobs.join(", ")}. Observation records file paths, sizes, modified times, extension counts, and run-status summaries only.
+                    {t("Watches")} {selfIterationPolicy.environmentObserver.watchedPaths.join(", ")} {t("and excludes")} {selfIterationPolicy.environmentObserver.excludedGlobs.join(", ")}. {t("Observation records file paths, sizes, modified times, extension counts, and run-status summaries only.")}
                   </p>
                   {environmentSignal && (
                     <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                      Latest signal: {String(environmentSignal.metadata.observedFiles ?? 0)} files observed · raw content policy {String(environmentSignal.metadata.privacy ?? "metadata_only")}
+                      {t("Latest signal:")} {String(environmentSignal.metadata.observedFiles ?? 0)} {t("files observed")} · {t("raw content policy")} {t(String(environmentSignal.metadata.privacy ?? "metadata_only"))}
                     </p>
                   )}
                 </div>
@@ -343,7 +347,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                     onClick={() => void updateEnvironmentObserver({ enabled: !selfIterationPolicy.environmentObserver.enabled, paused: false })}
                     className="h-8 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted"
                   >
-                    {selfIterationPolicy.environmentObserver.enabled ? "Disable" : "Enable"}
+                    {selfIterationPolicy.environmentObserver.enabled ? t("Disable") : t("Enable")}
                   </button>
                   <button
                     type="button"
@@ -351,14 +355,14 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                     onClick={() => void updateEnvironmentObserver({ paused: !selfIterationPolicy.environmentObserver.paused })}
                     className="h-8 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {selfIterationPolicy.environmentObserver.paused ? "Resume" : "Pause"}
+                    {selfIterationPolicy.environmentObserver.paused ? t("Resume") : t("Pause")}
                   </button>
                   <button
                     type="button"
                     onClick={() => void refresh()}
                     className="h-8 rounded-md bg-foreground px-3 text-xs font-medium text-background transition hover:bg-foreground/90"
                   >
-                    Observe now
+                    {t("Observe now")}
                   </button>
                 </div>
               </div>
@@ -367,11 +371,11 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
         </section>
 
         <section className="mt-5">
-          <SectionTitle title="Self-Iteration" subtitle={`${selfIterationCandidates.length} evidence-backed candidates`} />
+          <SectionTitle title={t("Self-Iteration")} subtitle={t(`${selfIterationCandidates.length} evidence-backed candidates`)} />
           <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
             {selfIterationCandidates.length === 0 && (
               <div className="xl:col-span-2">
-                <EmptyState title="No Self-Iteration candidates yet" detail="Run a scan to convert signals, feedback, and evaluation results into reviewable improvement candidates." />
+                <EmptyState title={t("No Self-Iteration candidates yet")} detail={t("Run a scan to convert signals, feedback, and evaluation results into reviewable improvement candidates.")} />
               </div>
             )}
             {selfIterationCandidates.map((candidate) => (
@@ -380,14 +384,14 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <CandidateKindPill kind={candidate.targetKind} />
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{candidate.status}</span>
-                      <span className="text-xs text-muted-foreground">{candidate.riskLevel}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{t(candidate.status)}</span>
+                      <span className="text-xs text-muted-foreground">{t(candidate.riskLevel)}</span>
                     </div>
-                    <h2 className="mt-2 text-base font-semibold text-foreground">{candidate.title}</h2>
-                    <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">{candidate.summary}</p>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{candidate.proposedChange.summary}</p>
+                    <h2 className="mt-2 text-base font-semibold text-foreground">{t(candidate.title)}</h2>
+                    <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">{t(candidate.summary)}</p>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{t(candidate.proposedChange.summary)}</p>
                     {candidate.evaluationRunId && (
-                      <p className="mt-1 text-xs text-muted-foreground">Evaluation: {candidate.evaluationRunId}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{t("Evaluation:")} {candidate.evaluationRunId}</p>
                     )}
                   </div>
                 </div>
@@ -400,7 +404,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                       onClick={() => void rollbackSelfIteration(candidate)}
                       className="h-8 rounded-md border border-rose-300 bg-transparent px-3 text-xs font-medium text-rose-700 transition hover:bg-rose-50"
                     >
-                      Rollback
+                      {t("Rollback")}
                     </button>
                   </div>
                 )}
@@ -411,21 +415,21 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                       onClick={() => void evaluateSelfIteration(candidate)}
                       className="h-8 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted"
                     >
-                      Evaluate
+                      {t("Evaluate")}
                     </button>
                     <button
                       type="button"
                       onClick={() => void applySelfIteration(candidate)}
                       className="h-8 rounded-md bg-foreground px-3 text-xs font-medium text-background transition hover:bg-foreground/90"
                     >
-                      Apply
+                      {t("Apply")}
                     </button>
                     <button
                       type="button"
                       onClick={() => void rejectSelfIteration(candidate)}
                       className="h-8 rounded-md border border-border px-3 text-xs font-medium text-muted-foreground transition hover:bg-muted"
                     >
-                      Reject
+                      {t("Reject")}
                     </button>
                   </div>
                 )}
@@ -436,19 +440,19 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
 
         <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="min-w-0">
-            <SectionTitle title="Insights" subtitle={`${insights.length} clustered interpretations`} />
+            <SectionTitle title={t("Insights")} subtitle={t(`${insights.length} clustered interpretations`)} />
             <div className="mt-3 flex flex-col gap-3">
-              {insights.length === 0 && <EmptyState title="No insights yet" detail={loadState === "loading" ? "Loading project signal clusters..." : "Ora has not found enough related evidence to cluster."} />}
+              {insights.length === 0 && <EmptyState title={t("No insights yet")} detail={loadState === "loading" ? t("Loading project signal clusters...") : t("Ora has not found enough related evidence to cluster.")} />}
               {insights.map((insight) => (
                 <article key={insight.id} className="rounded-lg border border-border bg-background p-4 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <StatusPill status={insight.status} />
-                        <span className="text-xs text-muted-foreground">{Math.round(insight.confidence * 100)}% confidence</span>
+                        <span className="text-xs text-muted-foreground">{Math.round(insight.confidence * 100)}% {t("confidence")}</span>
                       </div>
-                      <h2 className="mt-2 text-base font-semibold text-foreground">{insight.title}</h2>
-                      <p className="mt-1 text-sm leading-6 text-muted-foreground">{insight.summary}</p>
+                      <h2 className="mt-2 text-base font-semibold text-foreground">{t(insight.title)}</h2>
+                      <p className="mt-1 text-sm leading-6 text-muted-foreground">{t(insight.summary)}</p>
                     </div>
                     {insight.status === "open" && (
                       <button
@@ -456,7 +460,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                         onClick={() => void dismissInsight(insight)}
                         className="h-8 shrink-0 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
                       >
-                        Dismiss
+                        {t("Dismiss")}
                       </button>
                     )}
                   </div>
@@ -470,7 +474,7 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                           className="inline-flex h-8 items-center gap-2 rounded-md bg-foreground px-3 text-xs font-medium text-background transition hover:bg-foreground/90"
                         >
                           <CheckCircle2 size={14} />
-                          {action.label}
+                          {t(action.label)}
                         </button>
                       ))}
                     </div>
@@ -481,16 +485,16 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
           </div>
 
           <aside className="min-w-0">
-            <SectionTitle title="Calibration Rules" subtitle={`${rules.length} deterministic rules`} />
+            <SectionTitle title={t("Calibration Rules")} subtitle={t(`${rules.length} deterministic rules`)} />
             <div className="mt-3 flex flex-col gap-2">
               {rules.map((rule) => (
                 <div key={rule.id} className="rounded-lg border border-border bg-background p-3 shadow-sm">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-foreground">{rule.name}</p>
-                    <span className="text-xs text-muted-foreground">{rule.enabled ? "On" : "Off"}</span>
+                    <p className="truncate text-sm font-semibold text-foreground">{t(rule.name)}</p>
+                    <span className="text-xs text-muted-foreground">{rule.enabled ? t("On") : t("Off")}</span>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    {rule.sourceFilters.join(", ") || "all sources"} · {rule.severityThreshold}+ · review {rule.humanReviewRequired ? "required" : "optional"}
+                    {rule.sourceFilters.map((source) => t(source)).join(", ") || t("all sources")} · {t(rule.severityThreshold)}+ · {t("review")} {rule.humanReviewRequired ? t("required") : t("optional")}
                   </p>
                 </div>
               ))}
@@ -499,10 +503,10 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
         </section>
 
         <section className="mt-5">
-          <SectionTitle title="Signals" subtitle={`${signals.length} normalized evidence records`} />
+          <SectionTitle title={t("Signals")} subtitle={t(`${signals.length} normalized evidence records`)} />
           <div className="mt-3 overflow-hidden rounded-lg border border-border bg-background shadow-sm">
             {signals.length === 0 ? (
-              <EmptyState title="No project signals yet" detail={loadState === "loading" ? "Loading signals..." : "Run failures, recovery events, Evaluation feedback, and approvals will appear here."} />
+              <EmptyState title={t("No project signals yet")} detail={loadState === "loading" ? t("Loading signals...") : t("Run failures, recovery events, Evaluation feedback, and approvals will appear here.")} />
             ) : (
               <div className="divide-y divide-border">
                 {signals.map((signal) => (
@@ -515,10 +519,10 @@ export function ProjectSignalsView({ runtimeClient, bridgeStatus, onOpenEvidence
                     <SeverityDot severity={signal.severity} />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-foreground">{signal.title}</p>
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{signal.source}</span>
+                        <p className="truncate text-sm font-semibold text-foreground">{t(signal.title)}</p>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{t(signal.source)}</span>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{signal.summary}</p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{t(signal.summary)}</p>
                     </div>
                     <ExternalLink size={14} className="mt-1 shrink-0 text-muted-foreground" />
                   </button>

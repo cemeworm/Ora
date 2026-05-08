@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { statusFromSession } from "./Sidebar";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SessionStatusBadge, statusFromSession } from "./Sidebar";
+import { translateCopy } from "../lib/i18n";
 import { checkOraReleaseUpdate, isReleaseNewer } from "../lib/releaseUpdate";
 
 describe("sidebar session status", () => {
@@ -28,6 +31,10 @@ describe("sidebar session status", () => {
     expect(statusFromSession("interrupted")).toBe("paused");
     expect(statusFromSession("running")).toBe("running");
     expect(statusFromSession("succeeded")).toBe("done");
+  });
+
+  it("does not render a visible badge for paused sessions", () => {
+    expect(renderToStaticMarkup(createElement(SessionStatusBadge, { status: "paused" }))).toBe("");
   });
 
   it("does not show paused when refreshed attention closes a stale interrupted resume", () => {
@@ -89,5 +96,15 @@ describe("sidebar release update check", () => {
       latestVersion: "v0.1.1",
       releaseUrl: "https://github.com/cemeworm/Ora/releases/tag/v0.1.1",
     });
+  });
+});
+
+describe("sidebar archive copy", () => {
+  it("localizes archive confirmation copy", () => {
+    expect(translateCopy("zh", "Archive this chat?")).toBe("归档这个对话？");
+    expect(translateCopy("zh", "Archive")).toBe("归档");
+    expect(translateCopy("zh", "Archive current channel session")).toBe(
+      "归档 当前渠道会话",
+    );
   });
 });

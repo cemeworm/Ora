@@ -123,7 +123,7 @@ function ReleaseUpdatePill() {
   );
 }
 
-function SessionStatusBadge({ status }: { status: RunStatus }) {
+export function SessionStatusBadge({ status }: { status: RunStatus }) {
   if (status === "running") {
     return (
       <span className="inline-flex items-center rounded-full bg-emerald-100/85 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
@@ -160,14 +160,6 @@ function SessionStatusBadge({ status }: { status: RunStatus }) {
     return (
       <span className="inline-flex items-center rounded-full bg-rose-100/75 px-2 py-0.5 text-[10px] font-medium text-rose-700">
         Failed
-      </span>
-    );
-  }
-
-  if (status === "paused") {
-    return (
-      <span className="inline-flex items-center rounded-full bg-bench-100 px-2 py-0.5 text-[10px] font-medium text-bench-700">
-        Paused
       </span>
     );
   }
