@@ -1,0 +1,187 @@
+{
+  "description": "验证多轮对话中的上下文保留、澄清追问、纠错和话题切换能力。使用 depends_on 链式依赖在同一会话中顺序执行。",
+  "cases": [
+    {
+      "id": "mt-ctx-001",
+      "prompt": "我正在开发一个名为 Nebula 的分布式链路追踪系统，技术栈是 Go + gRPC + ClickHouse。请记住这些信息。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "初始上下文设置应成功" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 0, "rationale": "记住信息不一定需要工具调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "context_setup", "difficulty": "easy", "thread": "nebula_project" }
+    },
+    {
+      "id": "mt-ctx-002",
+      "prompt": "我刚才说的项目叫什么名字？使用什么技术栈？",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常回答" },
+            { "type": "contains", "path": "run.outputText", "value": "Nebula", "rationale": "应记住项目名称" }
+          ]
+        }
+      },
+      "metadata": { "category": "context_retrieval", "difficulty": "easy", "depends_on": "mt-ctx-001", "thread": "nebula_project" }
+    },
+    {
+      "id": "mt-ctx-003",
+      "prompt": "不对，我记错了，项目名字应该是 Cosmos，不是 Nebula。技术栈不变。请更新并确认一下现在的项目信息。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常更新" },
+            { "type": "contains", "path": "run.outputText", "value": "Cosmos", "rationale": "应使用更新后的项目名" }
+          ]
+        }
+      },
+      "metadata": { "category": "context_update", "difficulty": "medium", "depends_on": "mt-ctx-002", "thread": "nebula_project" }
+    },
+    {
+      "id": "mt-ctx-004",
+      "prompt": "给我的项目写一个简短的 README 大纲，包含项目简介、技术栈和快速开始三部分",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常生成" },
+            { "type": "contains", "path": "run.outputText", "value": "Cosmos", "rationale": "README应使用当前项目名" },
+            { "type": "contains", "path": "run.outputText", "value": "Go", "rationale": "应包含正确的技术栈信息" }
+          ]
+        }
+      },
+      "metadata": { "category": "context_application", "difficulty": "medium", "depends_on": "mt-ctx-003", "thread": "nebula_project" }
+    },
+    {
+      "id": "mt-clarify-001",
+      "prompt": "帮我优化一下系统性能，最近响应变慢了",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "即使是模糊请求也不应直接失败" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 0, "rationale": "模糊请求应先澄清，不需要立即调用工具" }
+          ]
+        }
+      },
+      "metadata": { "category": "ambiguous_request", "difficulty": "medium", "thread": "performance_issue" }
+    },
+    {
+      "id": "mt-clarify-002",
+      "prompt": "主要是数据库查询慢，特别是用户列表页面，数据量大概有500万条。请给出具体的优化方案",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "明确问题后应给出方案" },
+            { "type": "contains", "path": "run.outputText", "value": "索引", "rationale": "数据库优化方案应提到索引" }
+          ]
+        }
+      },
+      "metadata": { "category": "clarified_request", "difficulty": "medium", "depends_on": "mt-clarify-001", "thread": "performance_issue" }
+    },
+    {
+      "id": "mt-clarify-003",
+      "prompt": "你说的这些方案中，哪个对 500 万数据量的分页查询最有效？能不能写一个具体的 SQL 示例？",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应基于前一轮的优化方案深入回答" },
+            { "type": "contains", "path": "run.outputText", "value": "SELECT", "rationale": "应包含具体的SQL示例" }
+          ]
+        }
+      },
+      "metadata": { "category": "deepen_context", "difficulty": "hard", "depends_on": "mt-clarify-002", "thread": "performance_issue" }
+    },
+    {
+      "id": "mt-correct-001",
+      "prompt": "写一个 React 组件，用来展示用户的个人信息卡片",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常生成组件" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "应写出代码文件" }
+          ]
+        }
+      },
+      "metadata": { "category": "code_generation", "difficulty": "easy", "thread": "react_component" }
+    },
+    {
+      "id": "mt-correct-002",
+      "prompt": "不对，我说的不是前端 React 组件。我需要的是后端 Go 语言的用户信息结构体和 JSON 序列化方法。重新写",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "纠错后应正常生成" },
+            { "type": "contains", "path": "run.outputText", "value": "struct", "rationale": "应改为Go结构体而非React组件" }
+          ]
+        }
+      },
+      "metadata": { "category": "correction", "difficulty": "medium", "depends_on": "mt-correct-001", "thread": "react_component" }
+    },
+    {
+      "id": "mt-correct-003",
+      "prompt": "好的，现在在这个结构体基础上，加上数据库 ORM 的标签（gorm），并且添加字段验证的注释",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应在前一轮Go代码基础上扩展" },
+            { "type": "contains", "path": "run.outputText", "value": "gorm", "rationale": "应包含gorm标签" }
+          ]
+        }
+      },
+      "metadata": { "category": "incremental_build", "difficulty": "medium", "depends_on": "mt-correct-002", "thread": "react_component" }
+    },
+    {
+      "id": "mt-switch-001",
+      "prompt": "审查一下 apps/runtime/src/run-store.ts 的代码结构，指出可能的改进点",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "代码审查应正常进行" },
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "需要读取文件进行审查" }
+          ]
+        }
+      },
+      "metadata": { "category": "code_review", "difficulty": "medium", "thread": "topic_switch" }
+    },
+    {
+      "id": "mt-switch-002",
+      "prompt": "好的先不管代码审查了。现在我需要把这个项目部署到 AWS ECS 上，帮我写一个 Terraform 配置文件",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "话题切换后应正常响应新需求" },
+            { "type": "contains", "path": "run.outputText", "value": "aws", "rationale": "应切换到部署话题" }
+          ]
+        }
+      },
+      "metadata": { "category": "topic_switch", "difficulty": "medium", "depends_on": "mt-switch-001", "thread": "topic_switch" }
+    },
+    {
+      "id": "mt-ref-001",
+      "prompt": "设计一个 API 端点 GET /api/users，支持分页参数 page 和 pageSize，默认 page=1, pageSize=20，响应超时设置为 300ms",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常设计API" }
+          ]
+        }
+      },
+      "metadata": { "category": "context_setup", "difficulty": "easy", "thread": "api_design" }
+    },
+    {
+      "id": "mt-ref-002",
+      "prompt": "把超时时间改成 500ms，另外加一个 sort 参数支持按创建时间排序",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正确解析指代" },
+            { "type": "contains", "path": "run.outputText", "value": "500", "rationale": "应理解'超时时间'指代前一轮的300ms并更新为500ms" }
+          ]
+        }
+      },
+      "metadata": { "category": "reference_resolution", "difficulty": "hard", "depends_on": "mt-ref-001", "thread": "api_design" }
+    }
+  ]
+}

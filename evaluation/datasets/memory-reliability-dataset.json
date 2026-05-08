@@ -1,0 +1,15 @@
+{
+  "description": "验证记忆系统的写入、检索和持久化能力。",
+  "cases": [
+    { "id": "mem-001", "prompt": "记住：我的名字是张三，我在一家科技公司工作，我的职位是高级前端工程师", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='memory.updated' || @.type=='memory.captured')]", "rationale": "应有记忆捕获或更新事件" }] } }, "metadata": { "category": "memory_write", "difficulty": "easy" } },
+    { "id": "mem-002", "prompt": "我之前告诉你我叫什么名字？在哪家公司工作？", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='agent.started')]" }] } }, "metadata": { "category": "memory_retrieval", "difficulty": "easy", "depends_on": "mem-001" } },
+    { "id": "mem-003", "prompt": "存储以下项目信息：项目名=Ora，技术栈=TypeScript+React+Tauri，数据库=SQLite", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='memory.updated' || @.type=='memory.captured')]" }] } }, "metadata": { "category": "memory_write_structured", "difficulty": "easy" } },
+    { "id": "mem-004", "prompt": "我之前告诉你的项目 Ora 使用什么技术栈？", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='agent.started')]" }] } }, "metadata": { "category": "memory_retrieval", "difficulty": "easy", "depends_on": "mem-003" } },
+    { "id": "mem-005", "prompt": "更新我的职位信息：我现在是技术总监了，不再是高级前端工程师", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='memory.updated' || @.type=='memory.captured')]" }] } }, "metadata": { "category": "memory_update", "difficulty": "easy", "depends_on": "mem-001" } },
+    { "id": "mem-006", "prompt": "我现在在什么职位？", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='agent.started')]" }] } }, "metadata": { "category": "memory_verify_update", "difficulty": "easy", "depends_on": "mem-005" } },
+    { "id": "mem-007", "prompt": "记住以下多组信息：1) 最喜欢的编程语言是 TypeScript 2) 常用的编辑器是 VS Code 3) 操作系统是 macOS 4) 最喜欢的颜色是蓝色 5) 常听的音乐是爵士乐", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='memory.updated' || @.type=='memory.captured')]" }] } }, "metadata": { "category": "memory_bulk_write", "difficulty": "medium" } },
+    { "id": "mem-008", "prompt": "我喜欢什么编程语言和音乐？", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='agent.started')]" }] } }, "metadata": { "category": "memory_multi_retrieval", "difficulty": "medium", "depends_on": "mem-007" } },
+    { "id": "mem-009", "prompt": "忘记我之前告诉你的关于我喜好的所有信息", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='memory.updated' || @.type=='memory.deleted')]" }] } }, "metadata": { "category": "memory_delete", "difficulty": "medium" } },
+    { "id": "mem-010", "prompt": "列出你记得的关于我的所有个人信息", "expected": { "structured": { "assertions": [{ "type": "exists", "path": "trace.events[?(@.type=='agent.started')]" }] } }, "metadata": { "category": "memory_list", "difficulty": "medium", "depends_on": "mem-009" } }
+  ]
+}

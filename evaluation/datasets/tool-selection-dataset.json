@@ -1,0 +1,169 @@
+{
+  "description": "验证 Agent 是否为不同任务选择正确的工具。覆盖最优工具选择、工具避免、调用顺序和复合工具链。",
+  "cases": [
+    {
+      "id": "ts-select-001",
+      "prompt": "读取 package.json 文件，告诉我这个项目的名称",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "需要至少一次文件读取工具调用" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "已知文件路径，不应超过3次工具调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "任务应成功完成" }
+          ]
+        }
+      },
+      "metadata": { "category": "known_file_read", "optimal_tool": "Read", "anti_pattern": "shell_cat", "difficulty": "easy" }
+    },
+    {
+      "id": "ts-select-002",
+      "prompt": "搜索项目中所有包含 'LocalEvaluationStore' 的文件",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "需要搜索工具调用" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 5, "rationale": "代码搜索不应需要大量工具调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "任务应成功" }
+          ]
+        }
+      },
+      "metadata": { "category": "code_search", "optimal_tool": "grep", "anti_pattern": "read_every_file", "difficulty": "easy" }
+    },
+    {
+      "id": "ts-select-003",
+      "prompt": "列出当前目录下的所有文件和子目录",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "至少一次工具调用" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 2, "rationale": "列出目录是简单操作" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "list_directory", "optimal_tool": "Bash_ls", "anti_pattern": "Read_directory", "difficulty": "easy" }
+    },
+    {
+      "id": "ts-select-004",
+      "prompt": "JavaScript 中的闭包是什么？请用中文简单解释",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "max", "path": "trace.toolCallCount", "value": 1, "rationale": "纯知识问答不需要工具调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常回答" }
+          ]
+        }
+      },
+      "metadata": { "category": "pure_knowledge", "optimal_tool": "none", "anti_pattern": "unnecessary_web_search", "difficulty": "easy" }
+    },
+    {
+      "id": "ts-select-005",
+      "prompt": "创建目录 /tmp/ora-test-dir，然后在里面创建一个 README.md 文件，内容为 '# Test'",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 2, "rationale": "至少需要创建目录和写文件两步" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 4, "rationale": "两个操作不应超过4次调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "sequential_ops", "optimal_order": ["mkdir", "write_file"], "difficulty": "medium" }
+    },
+    {
+      "id": "ts-select-006",
+      "prompt": "帮我运行 git status 命令查看当前的仓库状态",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "需要执行shell命令" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 2, "rationale": "单个git命令不应超过2次调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "shell_command", "optimal_tool": "Bash", "anti_pattern": "Read_dot_git", "difficulty": "easy" }
+    },
+    {
+      "id": "ts-select-007",
+      "prompt": "获取 https://httpbin.org/json 的内容，提取其中的 slideshow 标题",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "需要网络获取工具" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "web_fetch", "optimal_tool": "WebFetch", "anti_pattern": "curl_shell", "difficulty": "medium" }
+    },
+    {
+      "id": "ts-select-008",
+      "prompt": "查找 evaluation/datasets/ 目录下所有的 JSON 文件，统计文件数量",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "需要目录列表或搜索工具" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "文件统计不应需要大量调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "file_discovery", "optimal_tool": "Glob_or_Bash", "anti_pattern": "guess_and_read", "difficulty": "medium" }
+    },
+    {
+      "id": "ts-select-009",
+      "prompt": "写一个 Python 函数计算斐波那契数列的第 n 项，然后运行几个测试用例验证正确性",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 2, "rationale": "需要写文件和运行测试两个步骤" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "code_with_execution", "optimal_order": ["Write", "Bash"], "difficulty": "medium" }
+    },
+    {
+      "id": "ts-select-010",
+      "prompt": "找出项目根目录下所有 .json 文件中包含 'Ora' 关键字的行。注意不要搜索 node_modules 目录",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "至少需要搜索工具" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 4, "rationale": "有明确范围限制的搜索不应过度调用工具" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "scoped_search", "optimal_tool": "grep", "anti_pattern": "read_all_json", "difficulty": "medium" }
+    },
+    {
+      "id": "ts-select-011",
+      "prompt": "1+1等于几？",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "max", "path": "trace.toolCallCount", "value": 0, "rationale": "简单算术问题不需要任何工具调用" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "trivial_question", "optimal_tool": "none", "anti_pattern": "shell_calc", "difficulty": "easy" }
+    },
+    {
+      "id": "ts-select-012",
+      "prompt": "检查 /tmp 目录下是否存在 ora-test-readme.md 文件，如果存在读取它，不存在则创建它并写入默认内容",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "min", "path": "trace.toolCallCount", "value": 1, "rationale": "至少需要检查或创建操作" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "条件文件操作不应过度" },
+            { "type": "not_equals", "path": "run.status", "value": "failed" }
+          ]
+        }
+      },
+      "metadata": { "category": "conditional_ops", "optimal_order": ["check", "read_or_write"], "difficulty": "medium" }
+    }
+  ]
+}

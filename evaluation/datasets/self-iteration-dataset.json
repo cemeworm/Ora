@@ -1,0 +1,139 @@
+{
+  "description": "验证自迭代系统是否正确识别迭代需求、评估候选方案、避免不必要的迭代。覆盖迭代触发、改进验证、终止条件和过度迭代避免。",
+  "cases": [
+    {
+      "id": "si-quality-001",
+      "prompt": "写一个 Python 函数来验证一个字符串是否是有效的 IPv4 地址。要求：处理边界情况（空字符串、超长字符串、非数字段）并附带测试用例。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "任务应成功完成" },
+            { "type": "contains", "path": "run.outputText", "value": "test", "rationale": "应包含测试用例" },
+            { "type": "contains", "path": "run.outputText", "value": "255", "rationale": "应处理IPv4地址范围边界" }
+          ]
+        }
+      },
+      "metadata": { "category": "iterative_improvement", "expects_iteration": true, "improvement_target": "edge_cases", "difficulty": "medium" }
+    },
+    {
+      "id": "si-quality-002",
+      "prompt": "实现一个简单的 LRU 缓存类，包含 get 和 put 方法，要求 O(1) 时间复杂度。先给出第一版实现，然后自己审查是否有问题。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "任务应成功" },
+            { "type": "contains", "path": "run.outputText", "value": "HashMap", "rationale": "LRU的O(1)实现应使用HashMap+双向链表" }
+          ]
+        }
+      },
+      "metadata": { "category": "iterative_improvement", "expects_iteration": true, "improvement_target": "algorithm_correctness", "difficulty": "hard" }
+    },
+    {
+      "id": "si-quality-003",
+      "prompt": "写一个函数来解析 CSV 文件内容。第一个版本只需处理基本逗号分隔。然后思考还需要处理哪些特殊情况，逐步改进。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "任务应成功" },
+            { "type": "contains", "path": "run.outputText", "value": "引号", "rationale": "应处理CSV中的引号转义问题" }
+          ]
+        }
+      },
+      "metadata": { "category": "iterative_improvement", "expects_iteration": true, "improvement_target": "edge_cases", "difficulty": "medium" }
+    },
+    {
+      "id": "si-quality-004",
+      "prompt": "为一个 REST API 设计错误响应格式。先提出一个方案，然后考虑安全性、可调试性和国际化等因素进行改进。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "任务应成功" },
+            { "type": "contains", "path": "run.outputText", "value": "error", "rationale": "应包含错误响应结构" }
+          ]
+        }
+      },
+      "metadata": { "category": "iterative_improvement", "expects_iteration": true, "improvement_target": "design_completeness", "difficulty": "hard" }
+    },
+    {
+      "id": "si-noop-001",
+      "prompt": "1+1等于几？",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "简单问题应正常回答" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 1, "rationale": "简单问题不应触发自迭代，工具调用应极少" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_iteration_needed", "expects_iteration": false, "difficulty": "easy" }
+    },
+    {
+      "id": "si-noop-002",
+      "prompt": "解释一下什么是 Git，用一句话概括",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "简单解释不应触发迭代" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 1, "rationale": "一句话解释不需要工具调用或迭代" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_iteration_needed", "expects_iteration": false, "difficulty": "easy" }
+    },
+    {
+      "id": "si-noop-003",
+      "prompt": "列出当前目录的文件",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "直接工具调用不应触发迭代" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 2, "rationale": "目录列表是直接操作" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_iteration_needed", "expects_iteration": false, "difficulty": "easy" }
+    },
+    {
+      "id": "si-evaluate-001",
+      "prompt": "下面有两段实现用户认证的代码方案。方案A使用JWT令牌+Redis黑名单，方案B使用有状态Session+Cookie。请评估两个方案的安全性、扩展性和性能，给出推荐。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "评估应正常完成" },
+            { "type": "contains", "path": "run.outputText", "value": "JWT", "rationale": "应分析方案A" },
+            { "type": "contains", "path": "run.outputText", "value": "Session", "rationale": "应分析方案B" }
+          ]
+        }
+      },
+      "metadata": { "category": "candidate_evaluation", "expects_iteration": true, "difficulty": "medium" }
+    },
+    {
+      "id": "si-evaluate-002",
+      "prompt": "对比以下三种数据库分片策略：Range Sharding、Hash Sharding 和 Directory-based Sharding。分析各自的优缺点和最佳适用场景，并给出选择建议。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "对比分析应正常完成" },
+            { "type": "contains", "path": "run.outputText", "value": "Range", "rationale": "应包含Range分片分析" },
+            { "type": "contains", "path": "run.outputText", "value": "Hash", "rationale": "应包含Hash分片分析" }
+          ]
+        }
+      },
+      "metadata": { "category": "candidate_evaluation", "expects_iteration": true, "difficulty": "hard" }
+    },
+    {
+      "id": "si-terminate-001",
+      "prompt": "写一个计算斐波那契数列第n项的函数，要求包含迭代和递归两种实现，并比较性能。不需要反复优化，给出正确可用的实现即可。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常完成" },
+            { "type": "contains", "path": "run.outputText", "value": "递", "rationale": "应包含递归实现" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 8, "rationale": "用户明说不需要反复优化，工具调用应有上限" }
+          ]
+        }
+      },
+      "metadata": { "category": "termination", "expects_iteration": false, "difficulty": "medium" }
+    }
+  ]
+}

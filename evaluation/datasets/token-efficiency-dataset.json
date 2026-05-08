@@ -1,0 +1,151 @@
+{
+  "description": "验证 Agent 的 token 使用效率。覆盖输出简洁性、避免重复读取、工具调用冗余、大文件处理策略。使用 efficiencyLedger 指标进行量化约束。",
+  "cases": [
+    {
+      "id": "te-concise-001",
+      "prompt": "什么是 Docker？用一句话回答",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed", "rationale": "应正常回答" },
+            { "type": "max", "path": "runtime.efficiencyLedger.totalTokens", "value": 500, "rationale": "一句话回答不应超过500 token" }
+          ]
+        }
+      },
+      "metadata": { "category": "output_conciseness", "difficulty": "easy" }
+    },
+    {
+      "id": "te-concise-002",
+      "prompt": "列出 TypeScript 中 5 个常用的工具类型（Utility Types），每个用一句话说明用途",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.totalTokens", "value": 800, "rationale": "简洁列举5个类型不应超过800 token" }
+          ]
+        }
+      },
+      "metadata": { "category": "output_conciseness", "difficulty": "easy" }
+    },
+    {
+      "id": "te-concise-003",
+      "prompt": "写一个简短的 Python 脚本来读取 CSV 文件并打印前5行",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.totalTokens", "value": 1500, "rationale": "简短脚本生成不应超过1500 token" }
+          ]
+        }
+      },
+      "metadata": { "category": "output_conciseness", "difficulty": "easy" }
+    },
+    {
+      "id": "te-norepeat-001",
+      "prompt": "读取 evaluation/datasets/auto-router-dataset.json 文件，然后告诉我这个数据集的描述信息和总共有多少个 case",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "读取一个文件只需1-2次Read调用，不应重复读取" },
+            { "type": "max", "path": "runtime.efficiencyLedger.failedToolCallCount", "value": 1, "rationale": "不应有大量失败的工具调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_repeat_read", "difficulty": "medium" }
+    },
+    {
+      "id": "te-norepeat-002",
+      "prompt": "检查 evaluation/datasets/ 目录下所有 JSON 文件是否都是有效的 JSON 格式，报告检查结果",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.toolCallCount", "value": 20, "rationale": "检查多个文件，但不应过度调用工具" },
+            { "type": "max", "path": "runtime.efficiencyLedger.failedToolCallCount", "value": 3, "rationale": "有效文件不应产生大量失败调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "batch_efficiency", "difficulty": "medium" }
+    },
+    {
+      "id": "te-norepeat-003",
+      "prompt": "告诉我 package.json 中项目的名称、版本和依赖数量。不要读取 node_modules",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "只需读取package.json一个文件" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_repeat_read", "difficulty": "easy" }
+    },
+    {
+      "id": "te-noredun-001",
+      "prompt": "运行 git status 和 git log --oneline -5 查看仓库状态",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "两个git命令不应超过3次工具调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_redundant_calls", "difficulty": "easy" }
+    },
+    {
+      "id": "te-noredun-002",
+      "prompt": "搜索项目中所有包含 'TODO' 注释的 TypeScript 文件，然后告诉我有哪些待办事项",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.toolCallCount", "value": 10, "rationale": "搜索任务不需要大量工具调用" },
+            { "type": "max", "path": "runtime.efficiencyLedger.failedToolCallCount", "value": 2, "rationale": "应尽量避免搜索失败的调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_redundant_calls", "difficulty": "medium" }
+    },
+    {
+      "id": "te-noredun-003",
+      "prompt": "查看当前日期和时间，然后将这个信息保存到 /tmp/ora-time-check.txt 文件中",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "trace.toolCallCount", "value": 3, "rationale": "获取日期+写文件最多3次工具调用" }
+          ]
+        }
+      },
+      "metadata": { "category": "no_redundant_calls", "difficulty": "easy" }
+    },
+    {
+      "id": "te-largefile-001",
+      "prompt": "分析 apps/runtime/src/evaluation-store.ts 这个文件的主要功能。不需要读取完整文件内容，只需了解文件结构和主要导出类。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.totalTokens", "value": 5000, "rationale": "大文件分析应使用分段读取，总token应在合理范围" }
+          ]
+        }
+      },
+      "metadata": { "category": "large_file_strategy", "difficulty": "medium" }
+    },
+    {
+      "id": "te-largefile-002",
+      "prompt": "总结 packages/shared/src/ 目录下所有模块的职责。只需要每个文件的一句话概述，不需要深入细节。",
+      "expected": {
+        "structured": {
+          "assertions": [
+            { "type": "not_equals", "path": "run.status", "value": "failed" },
+            { "type": "max", "path": "runtime.efficiencyLedger.toolCallCount", "value": 15, "rationale": "模块概览不应读取每个文件的完整内容" }
+          ]
+        }
+      },
+      "metadata": { "category": "large_file_strategy", "difficulty": "hard" }
+    }
+  ]
+}
