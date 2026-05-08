@@ -10,7 +10,6 @@ import { useState } from "react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { ProviderOnboardingStep } from "./ProviderOnboardingStep";
-import { CapabilitiesShowcaseStep } from "./CapabilitiesShowcaseStep";
 
 interface OnboardingViewProps {
   onComplete: () => void;
@@ -19,7 +18,6 @@ interface OnboardingViewProps {
 
 const steps = [
   { id: "welcome", label: "Welcome" },
-  { id: "capabilities", label: "Capabilities" },
   { id: "provider", label: "Provider" },
 ] as const;
 
@@ -96,10 +94,9 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
               )}
             >
               {step.id === "welcome" && <WelcomeStep />}
-              {step.id === "capabilities" && <CapabilitiesShowcaseStep />}
               {step.id === "provider" && (
                 <ProviderOnboardingStep
-                  onBack={() => setStepIndex(1)}
+                  onBack={() => setStepIndex(0)}
                   onComplete={onComplete}
                   onSkip={onSkip}
                 />
@@ -154,9 +151,9 @@ export function OnboardingView({ onComplete, onSkip }: OnboardingViewProps) {
 
 function WelcomeStep() {
   const notePositions = [
-    "sm:absolute sm:left-0 sm:top-2 sm:w-[53%] sm:-rotate-2",
-    "sm:absolute sm:right-0 sm:top-28 sm:w-[55%] sm:rotate-2",
-    "sm:absolute sm:left-14 sm:bottom-0 sm:w-[56%] sm:-rotate-1",
+    "sm:-rotate-1",
+    "sm:rotate-1",
+    "sm:col-span-2 sm:w-[58%] sm:justify-self-center sm:-rotate-1",
   ];
 
   return (
@@ -172,22 +169,19 @@ function WelcomeStep() {
           className="animate-fade-in mt-5 text-5xl font-semibold leading-[0.95] tracking-[-0.05em] text-bench-900 sm:text-6xl lg:text-7xl"
           style={{ animationDelay: "320ms" }}
         >
-          很高兴
           <span className="block font-serif italic tracking-[-0.04em]">
-            见到你。
+            很高兴
+          </span>
+          <span className="block font-serif italic tracking-[-0.04em]">
+            见到你
           </span>
         </h1>
         <p
           className="animate-fade-in mt-7 max-w-md text-base leading-8 text-bench-700"
           style={{ animationDelay: "520ms" }}
         >
-          下面的信息，可以帮你更好地了解我。
+          右侧的信息，可以帮你更好地了解我。
         </p>
-        <div
-          className="animate-fade-in mt-8 inline-flex items-center gap-3 rounded-full border border-bench-200 bg-white/55 px-4 py-2 text-sm text-bench-700 shadow-sm"
-          style={{ animationDelay: "720ms" }}
-        >
-      </div>
       </div>
 
       <div
@@ -242,7 +236,7 @@ function WelcomeStep() {
               />
             </svg>
 
-            <div className="relative mt-9 grid gap-4 sm:min-h-[330px] sm:block">
+            <div className="relative mt-9 grid gap-5 sm:grid-cols-2">
               {modeFeatures.map((feature, index) => {
                 const Icon = feature.icon;
                 const notePosition = notePositions[index] ?? "";

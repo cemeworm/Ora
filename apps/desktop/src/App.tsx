@@ -225,6 +225,9 @@ function WorkbenchInner() {
   const [onboardingStatus, setOnboardingStatus] = useState<
     OnboardingStatus | undefined
   >(() => readOnboardingStatus());
+  const [onboardingRequired, setOnboardingRequired] = useState<
+    boolean | undefined
+  >();
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [detailPanelWidth, setDetailPanelWidth] = useState(
     DEFAULT_DETAIL_PANEL_WIDTH,
@@ -296,6 +299,26 @@ function WorkbenchInner() {
     writeOnboardingStatus(status);
     setOnboardingStatus(status);
   }
+
+  useEffect(() => {
+    if (onboardingStatus || onboardingRequired !== undefined) {
+      return;
+    }
+    if (!state.providerRegistry) {
+      return;
+    }
+    setOnboardingRequired(
+      !hasVerifiedRealProvider(
+        state.providerRegistry.providers,
+        state.providerStatuses,
+      ),
+    );
+  }, [
+    onboardingRequired,
+    onboardingStatus,
+    state.providerRegistry,
+    state.providerStatuses,
+  ]);
 
   function clampDetailPanelWidth(nextWidth: number) {
     const containerWidth =
@@ -841,12 +864,7 @@ function WorkbenchInner() {
     />
   ) : null;
   const shouldShowOnboarding =
-    !onboardingStatus &&
-    Boolean(state.providerRegistry) &&
-    !hasVerifiedRealProvider(
-      state.providerRegistry?.providers,
-      state.providerStatuses,
-    );
+    !onboardingStatus && onboardingRequired === true;
 
   if (shouldShowOnboarding) {
     return (

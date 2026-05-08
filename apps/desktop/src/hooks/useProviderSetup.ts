@@ -33,7 +33,7 @@ export function useProviderSetup({
   selectSavedProvider = true,
 }: UseProviderSetupOptions = {}) {
   const { state, dispatch } = useWorkbench();
-  const { actions } = useRunActions();
+  const { actions, runtimeClient } = useRunActions();
   const didInitializeRef = useRef(false);
   const providers = state.providerRegistry?.providers ?? [];
   const selectedProvider = providers.find(
@@ -254,6 +254,7 @@ export function useProviderSetup({
     providerCatalog,
     providerDraft,
     providers,
+    runtimeClient,
     saveDisabled,
     selectedCatalogEntry,
     selectedProvider,

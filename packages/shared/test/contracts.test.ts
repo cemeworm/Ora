@@ -3346,4 +3346,16 @@ describe("DEFAULT_PROVIDERS", () => {
     const ids = DEFAULT_PROVIDERS.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it("does not enable keyed cloud providers before a secret is configured", () => {
+    expect(DEFAULT_PROVIDERS.find((provider) => provider.id === "anthropic-claude")).toMatchObject({
+      enabled: false,
+    });
+    expect(DEFAULT_PROVIDERS.find((provider) => provider.id === "openai-gpt")).toMatchObject({
+      enabled: false,
+    });
+    expect(DEFAULT_PROVIDERS.find((provider) => provider.id === "local-smoke")).toMatchObject({
+      enabled: true,
+    });
+  });
 });

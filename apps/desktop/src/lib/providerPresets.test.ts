@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_PROVIDERS } from "@cemeworm/shared";
 import type { OraProviderConfig, OraProviderSecretStatus } from "./runtimeClient";
 import {
   buildProviderCatalog,
@@ -11,6 +12,18 @@ import {
 import { runnableProviderOptions } from "./providerOptions";
 
 describe("provider presets", () => {
+  it("puts DeepSeek first and marks it recommended", () => {
+    const [firstEntry] = buildProviderCatalog([]);
+
+    expect(firstEntry).toMatchObject({
+      label: "DeepSeek",
+      preset: {
+        id: "deepseek",
+        isRecommended: true,
+      },
+    });
+  });
+
   it("creates stable disabled drafts for common provider presets", () => {
     const gemini = createDraftFromPreset(findPresetById("google-gemini"), []);
     const deepseek = createDraftFromPreset(findPresetById("deepseek"), []);
@@ -173,6 +186,25 @@ describe("provider presets", () => {
 
     expect(catalog.some((entry) => entry.providers.some((provider) => provider.id === "local-smoke"))).toBe(false);
     expect(catalog.some((entry) => entry.preset.id === "local-smoke")).toBe(false);
+  });
+
+  it("shows built-in cloud providers as saved but disabled before keys are configured", () => {
+    const catalog = buildProviderCatalog(DEFAULT_PROVIDERS);
+
+    expect(catalog.find((entry) => entry.preset.id === "openai-official")).toMatchObject({
+      saved: true,
+      draft: {
+        id: "openai-gpt",
+        enabled: false,
+      },
+    });
+    expect(catalog.find((entry) => entry.preset.id === "anthropic-official")).toMatchObject({
+      saved: true,
+      draft: {
+        id: "anthropic-claude",
+        enabled: false,
+      },
+    });
   });
 
   it("tolerates legacy provider configs without defaulted arrays", () => {
