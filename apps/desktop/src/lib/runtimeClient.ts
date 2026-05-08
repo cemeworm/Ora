@@ -4298,6 +4298,9 @@ class LocalJsonRpcRuntime {
         tags: parsed.tags ?? [],
         createdAt: now,
         updatedAt: now,
+        benchmarkMaturity: "compatible" as const,
+        fixtureRequirements: [],
+        knownLimitations: [],
       },
       cases,
       metadataKeys: [...new Set(cases.flatMap((item) => Object.keys(item.metadata ?? {})))].sort((a, b) => a.localeCompare(b)),
@@ -4477,6 +4480,7 @@ class LocalJsonRpcRuntime {
             evaluatorResults: (spec.objective?.evaluators ?? []).map((evaluator) => ({
               evaluatorId: evaluator.id,
               evaluatorKind: evaluator.kind,
+              scorerVersion: "1.0.0",
               status: evaluator.kind === "human_annotation" ? "pending" : "scored",
               score: evaluator.kind === "human_annotation" ? undefined : 0.82,
               passed: evaluator.kind === "human_annotation" ? undefined : true,
@@ -4521,6 +4525,7 @@ class LocalJsonRpcRuntime {
       id: evaluationRunId,
       spec,
       status: "succeeded",
+      resumable: false,
       totalAttempts: attempts.length,
       completedAttempts: attempts.length,
       failedAttempts: attempts.filter((attempt) => attempt.status === "failed").length,
@@ -4745,6 +4750,9 @@ class LocalJsonRpcRuntime {
         sourceFormat: "inline",
         schemaVersion: 1,
         caseCount: 0,
+        benchmarkMaturity: "compatible" as const,
+        fixtureRequirements: [],
+        knownLimitations: [],
         tags: ["chat_feedback"],
         createdAt: now,
         updatedAt: now,
@@ -6004,6 +6012,7 @@ function compileMockEvaluationBlueprint(
       blueprint,
       spec: {
         datasetId,
+        timeoutMs: 300000,
         profileId: blueprint.runPlan.profileId,
         objective: {
           kind: "classification",
@@ -6053,6 +6062,7 @@ function compileMockEvaluationBlueprint(
     blueprint,
     spec: {
       datasetId,
+      timeoutMs: 300000,
       profileId: blueprint.runPlan.profileId,
       objective: {
         kind: "outcome",
@@ -6116,6 +6126,7 @@ function draftMockEvaluationBlueprint(params: {
         metadata: {},
       },
       runPlan: {
+        timeoutMs: 300000,
         profileId: "outcome",
         providerId: params.providerId ?? "local-smoke",
         modelRef: params.modelRef ?? "local/smoke-model",
@@ -6162,6 +6173,7 @@ function draftMockEvaluationBlueprint(params: {
       metadata: {},
     },
     runPlan: {
+      timeoutMs: 300000,
       profileId: "outcome",
       providerId: params.providerId ?? "local-smoke",
       modelRef: params.modelRef ?? "local/smoke-model",
