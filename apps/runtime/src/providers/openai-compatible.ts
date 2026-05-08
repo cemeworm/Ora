@@ -11,6 +11,7 @@ import {
   extractOpenAiUsage,
   extractTextFromValue,
   failMissingApiKey,
+  isDeepSeekCompatible,
   normalizeMessages,
   openAiChatTools,
   openAiResponsesTools,
@@ -230,6 +231,7 @@ function createResponsesPayload(config: ProviderConfig, request: Parameters<Mode
 function createChatCompletionsPayload(config: ProviderConfig, request: Parameters<ModelProvider>[0]) {
   const messages = normalizeMessages(request);
   const { instructions, dialog } = splitInstructionMessages(messages);
+  const deepseek = isDeepSeekCompatible(config);
   const chatMessages = [
     ...(request.system?.trim() ? [{ role: "system", content: request.system.trim() }] : []),
     ...(instructions ? [{ role: "system", content: instructions }] : []),
@@ -246,7 +248,9 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
         return {
           role: "assistant",
           content: message.content.trim() ? message.content : null,
-          ...(message.reasoningContent !== undefined ? { reasoning_content: message.reasoningContent } : {}),
+          ...(deepseek
+            ? { reasoning_content: message.reasoningContent ?? "" }
+            : message.reasoningContent !== undefined ? { reasoning_content: message.reasoningContent } : {}),
           tool_calls: message.toolCalls.map((call) => ({
             id: call.id,
             type: "function",
@@ -264,11 +268,16 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
     }).filter(Boolean),
   ];
 
+  const reasoningField = deepseek && request.reasoningEffort
+    ? { thinking: { type: "enabled" as const } }
+    : request.reasoningEffort
+      ? { reasoning_effort: request.reasoningEffort }
+      : {};
   const body = appendIfDefined(
     {
       model: config.modelId,
       messages: chatMessages,
-      ...(request.reasoningEffort ? { reasoning_effort: request.reasoningEffort } : {}),
+      ...reasoningField,
     },
     "max_tokens",
     request.maxTokens ?? config.maxTokens
@@ -374,7 +383,11 @@ export function createOpenAICompatibleProvider(
     const basePayload = protocol === "responses"
       ? createResponsesPayload(config, request)
       : createChatCompletionsPayload(config, request);
-    const payload = { ...basePayload, stream: true };
+    const deepseek = isDeepSeekCompatible(config);
+    const streamOptions = deepseek && protocol === "chat_completions"
+      ? { stream_options: { include_usage: true } }
+      : {};
+    const payload = { ...basePayload, stream: true, ...streamOptions };
 
     const response = await fetchImpl(resolveCompatibleProviderEndpoint({
       providerId: config.id,
@@ -397,6 +410,7 @@ export function createOpenAICompatibleProvider(
 
     let text = "";
     let sawStreamFrame = false;
+    const openTimeoutMs = config.timeoutMs;
     const rawEvents = await readSseMessages(response, async (message) => {
       const data = JSON.parse(message.data) as unknown;
       if (!sawStreamFrame) {
@@ -409,7 +423,7 @@ export function createOpenAICompatibleProvider(
       if (!delta) return;
       text += delta;
       await emitTextDelta(callbacks, { delta, text, raw: data });
-    });
+    }, openTimeoutMs ? { openTimeoutMs, idleTimeoutMs: openTimeoutMs } : {});
     const reasoningContent = protocol === "chat_completions"
       ? extractOpenAiChatStreamReasoningContent(rawEvents)
       : undefined;

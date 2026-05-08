@@ -190,6 +190,15 @@ function usageRecord(raw: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
+export function isDeepSeekCompatible(config: ProviderConfig): boolean {
+  if (!config.baseUrl) return false;
+  try {
+    return new URL(config.baseUrl).hostname === "api.deepseek.com";
+  } catch {
+    return false;
+  }
+}
+
 export function extractOpenAiUsage(raw: unknown): ModelTokenUsage | undefined {
   const usage = usageRecord(raw);
   if (!usage) return undefined;
@@ -204,10 +213,20 @@ export function extractOpenAiUsage(raw: unknown): ModelTokenUsage | undefined {
       : undefined;
   const reasoningTokens = numericToken(outputDetails?.reasoning_tokens);
 
+  const promptCacheHitTokens = numericToken(usage.prompt_cache_hit_tokens);
+  const promptCacheMissTokens = numericToken(usage.prompt_cache_miss_tokens);
+  const inputDetails = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object"
+    ? usage.prompt_tokens_details as Record<string, unknown>
+    : undefined;
+  const cachedInputTokens = numericToken(inputDetails?.cached_tokens);
+
   return {
     inputTokens,
     outputTokens,
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(promptCacheHitTokens !== undefined ? { promptCacheHitTokens } : {}),
+    ...(promptCacheMissTokens !== undefined ? { promptCacheMissTokens } : {}),
+    ...(cachedInputTokens !== undefined && promptCacheHitTokens === undefined ? { promptCacheHitTokens: cachedInputTokens } : {}),
     totalTokens,
     source: "provider",
   };

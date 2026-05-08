@@ -780,6 +780,8 @@ export const ModelTokenUsageSchema = z.object({
   reasoningTokens: z.number().int().nonnegative().optional(),
   cacheCreationInputTokens: z.number().int().nonnegative().optional(),
   cacheReadInputTokens: z.number().int().nonnegative().optional(),
+  promptCacheHitTokens: z.number().int().nonnegative().optional(),
+  promptCacheMissTokens: z.number().int().nonnegative().optional(),
   totalTokens: z.number().int().nonnegative(),
   source: ModelTokenUsageSourceSchema.default("estimate"),
 });

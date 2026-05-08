@@ -7,6 +7,7 @@ type SseMessage = {
 
 export interface ReadSseMessagesOptions {
   idleTimeoutMs?: number;
+  openTimeoutMs?: number;
 }
 
 const DEFAULT_SSE_IDLE_TIMEOUT_MS = 120_000;
@@ -31,10 +32,14 @@ export async function readSseMessages(
   const decoder = new TextDecoder();
   const rawEvents: unknown[] = [];
   const idleTimeoutMs = positiveTimeout(options.idleTimeoutMs, DEFAULT_SSE_IDLE_TIMEOUT_MS);
+  const openTimeoutMs = positiveTimeout(options.openTimeoutMs, idleTimeoutMs);
   let buffer = "";
+  let firstRead = true;
 
   while (true) {
-    const { value, done } = await readWithIdleTimeout(reader, idleTimeoutMs);
+    const timeout = firstRead ? openTimeoutMs : idleTimeoutMs;
+    firstRead = false;
+    const { value, done } = await readWithIdleTimeout(reader, timeout);
     buffer += decoder.decode(value, { stream: !done });
     const frames = buffer.split(/\r?\n\r?\n/);
     buffer = frames.pop() ?? "";
