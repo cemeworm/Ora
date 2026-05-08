@@ -567,60 +567,24 @@ function CandidateKindPill({ kind }: { kind: OraSelfIterationCandidate["targetKi
 
 function SelfIterationScoreEvidence({ candidate }: { candidate: OraSelfIterationCandidate }) {
   const evaluation = selfIterationEvaluation(candidate);
-  const scoreEvidence = evaluation?.scoreEvidence ?? scoreEvidenceFromApplyResult(candidate.applyResult);
-  if (!evaluation && !scoreEvidence) return null;
+  if (!evaluation) return null;
 
-  const before = scoreEvidence?.before;
-  const after = scoreEvidence?.after;
-  const delta = scoreEvidence?.delta;
-  const passed = typeof evaluation?.passed === "boolean" ? evaluation.passed : undefined;
+  const safetyGate = evaluation.safetyGate;
+  const impact = evaluation.impactEvaluation;
+  const passed = typeof evaluation.passed === "boolean" ? evaluation.passed : undefined;
 
-  return (
-    <div className="mt-4 border-t border-border/70 pt-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold text-foreground">Evaluation result</p>
-          {evaluation?.message && (
-            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{evaluation.message}</p>
-          )}
-        </div>
-        {passed !== undefined && (
-          <span className={cn(
-            "rounded-full px-2 py-0.5 text-[11px] font-medium",
-            passed ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800",
-          )}>
-            {passed ? "passed" : "failed"}
-          </span>
-        )}
-      </div>
-      {(before || after || delta) && (
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <ScoreColumn
-            label="Before"
-            score={before?.overallScore}
-            passRate={before?.passRate}
-            regressions={before?.regressionCount}
-          />
-          <ScoreColumn
-            label="After"
-            score={after?.overallScore}
-            passRate={after?.passRate}
-            regressions={after?.regressionCount}
-          />
-          <ScoreColumn
-            label="Delta"
-            score={delta?.overallScore}
-            passRate={delta?.passRate}
-            regressions={delta?.regressionCount}
-            signed
-          />
-        </div>
-      )}
-      {scoreEvidence?.evaluationRunId && !candidate.evaluationRunId && (
-        <p className="mt-2 text-[11px] text-muted-foreground">Evaluation: {scoreEvidence.evaluationRunId}</p>
-      )}
-    </div>
-  );
+  if (impact) {
+    return <ImpactEvaluationView impact={impact} passed={passed} message={evaluation.message} />;
+  }
+
+  if (safetyGate) {
+    return <SafetyGateView safetyGate={safetyGate} message={evaluation.message} />;
+  }
+
+  const scoreEvidence = evaluation.scoreEvidence ?? scoreEvidenceFromApplyResult(candidate.applyResult);
+  if (!scoreEvidence) return null;
+
+  return <LegacyScoreEvidenceView scoreEvidence={scoreEvidence} passed={passed} message={evaluation.message} candidate={candidate} />;
 }
 
 function SelfIterationApplyResult({ candidate }: { candidate: OraSelfIterationCandidate }) {
@@ -678,6 +642,140 @@ function ScoreRow({ label, value, format = "number", signed = false }: { label: 
   );
 }
 
+function SafetyGateView({ safetyGate, message }: { safetyGate: SelfIterationSafetyGateValue; message?: string }) {
+  const passed = safetyGate.passed;
+  return (
+    <div className="mt-4 border-t border-border/70 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-foreground">Safety gate</p>
+          {message && (
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{message}</p>
+          )}
+        </div>
+        {passed !== undefined && (
+          <span className={cn(
+            "rounded-full px-2 py-0.5 text-[11px] font-medium",
+            passed ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800",
+          )}>
+            {passed ? "passed" : "failed"}
+          </span>
+        )}
+      </div>
+      {safetyGate.evaluationRunId && (
+        <p className="mt-2 text-[11px] text-muted-foreground">Evaluation: {safetyGate.evaluationRunId}</p>
+      )}
+    </div>
+  );
+}
+
+function ImpactEvaluationView({ impact, passed, message }: { impact: SelfIterationImpactEvaluationValue; passed?: boolean; message?: string }) {
+  const before = impact.before;
+  const after = impact.after;
+  const delta = impact.delta;
+  return (
+    <div className="mt-4 border-t border-border/70 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-foreground">Impact evaluation</p>
+          {impact.targetKind && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{impact.targetKind}</p>
+          )}
+          {message && (
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{message}</p>
+          )}
+        </div>
+        {passed !== undefined && (
+          <span className={cn(
+            "rounded-full px-2 py-0.5 text-[11px] font-medium",
+            passed ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800",
+          )}>
+            {passed ? "passed" : "failed"}
+          </span>
+        )}
+      </div>
+      {(before || after || delta) && (
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <ScoreColumn
+            label="Before"
+            score={before?.overallScore}
+            passRate={before?.passRate}
+            regressions={before?.regressionCount}
+          />
+          <ScoreColumn
+            label="After"
+            score={after?.overallScore}
+            passRate={after?.passRate}
+            regressions={after?.regressionCount}
+          />
+          <ScoreColumn
+            label="Delta"
+            score={delta?.overallScore}
+            passRate={delta?.passRate}
+            regressions={delta?.regressionCount}
+            signed
+          />
+        </div>
+      )}
+      {impact.evaluationRunId && (
+        <p className="mt-2 text-[11px] text-muted-foreground">Evaluation: {impact.evaluationRunId}</p>
+      )}
+    </div>
+  );
+}
+
+function LegacyScoreEvidenceView({ scoreEvidence, passed, message, candidate }: { scoreEvidence: SelfIterationScoreEvidenceValue; passed?: boolean; message?: string; candidate: OraSelfIterationCandidate }) {
+  const before = scoreEvidence.before;
+  const after = scoreEvidence.after;
+  const delta = scoreEvidence.delta;
+  return (
+    <div className="mt-4 border-t border-border/70 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-foreground">Evaluation result</p>
+          {message && (
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{message}</p>
+          )}
+        </div>
+        {passed !== undefined && (
+          <span className={cn(
+            "rounded-full px-2 py-0.5 text-[11px] font-medium",
+            passed ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800",
+          )}>
+            {passed ? "passed" : "failed"}
+          </span>
+        )}
+      </div>
+      {(before || after || delta) && (
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <ScoreColumn
+            label="Before"
+            score={before?.overallScore}
+            passRate={before?.passRate}
+            regressions={before?.regressionCount}
+          />
+          <ScoreColumn
+            label="After"
+            score={after?.overallScore}
+            passRate={after?.passRate}
+            regressions={after?.regressionCount}
+          />
+          <ScoreColumn
+            label="Delta"
+            score={delta?.overallScore}
+            passRate={delta?.passRate}
+            regressions={delta?.regressionCount}
+            signed
+          />
+        </div>
+      )}
+      {scoreEvidence.evaluationRunId && !candidate.evaluationRunId && (
+        <p className="mt-2 text-[11px] text-muted-foreground">Evaluation: {scoreEvidence.evaluationRunId}</p>
+      )}
+    </div>
+  );
+}
+
 type SelfIterationScoreSnapshot = {
   configId?: string;
   overallScore?: number;
@@ -699,9 +797,26 @@ type SelfIterationScoreEvidenceValue = {
   delta?: SelfIterationScoreDelta;
 };
 
+type SelfIterationSafetyGateValue = {
+  evaluationRunId?: string;
+  passed?: boolean;
+  scoreEvidence?: SelfIterationScoreEvidenceValue;
+};
+
+type SelfIterationImpactEvaluationValue = {
+  evaluationRunId?: string;
+  targetKind?: string;
+  before?: SelfIterationScoreSnapshot;
+  after?: SelfIterationScoreSnapshot;
+  delta?: SelfIterationScoreDelta;
+};
+
 type SelfIterationEvaluationValue = {
   passed?: boolean;
   message?: string;
+  gateKind?: string;
+  safetyGate?: SelfIterationSafetyGateValue;
+  impactEvaluation?: SelfIterationImpactEvaluationValue;
   scoreEvidence?: SelfIterationScoreEvidenceValue;
 };
 
@@ -711,7 +826,32 @@ function selfIterationEvaluation(candidate: OraSelfIterationCandidate): SelfIter
   return {
     passed: typeof raw.passed === "boolean" ? raw.passed : undefined,
     message: typeof raw.message === "string" ? raw.message : undefined,
+    gateKind: typeof raw.gateKind === "string" ? raw.gateKind : undefined,
+    safetyGate: parseSafetyGate(raw.safetyGate),
+    impactEvaluation: parseImpactEvaluation(raw.impactEvaluation),
     scoreEvidence: parseScoreEvidence(raw.scoreEvidence),
+  };
+}
+
+function parseSafetyGate(value: unknown): SelfIterationSafetyGateValue | undefined {
+  const raw = recordValue(value);
+  if (!raw) return undefined;
+  return {
+    evaluationRunId: typeof raw.evaluationRunId === "string" ? raw.evaluationRunId : undefined,
+    passed: typeof raw.passed === "boolean" ? raw.passed : undefined,
+    scoreEvidence: parseScoreEvidence(raw.scoreEvidence),
+  };
+}
+
+function parseImpactEvaluation(value: unknown): SelfIterationImpactEvaluationValue | undefined {
+  const raw = recordValue(value);
+  if (!raw) return undefined;
+  return {
+    evaluationRunId: typeof raw.evaluationRunId === "string" ? raw.evaluationRunId : undefined,
+    targetKind: typeof raw.targetKind === "string" ? raw.targetKind : undefined,
+    before: parseScoreSnapshot(raw.before),
+    after: parseScoreSnapshot(raw.after),
+    delta: parseScoreDelta(raw.delta),
   };
 }
 

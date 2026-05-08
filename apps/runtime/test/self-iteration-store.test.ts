@@ -134,12 +134,16 @@ describe("LocalSelfIterationStore", () => {
     expect(detail.run.totalAttempts).toBe(2);
     expect(evaluated.proposedChange.metadata.selfIterationEvaluation).toMatchObject({
       passed: true,
-      totalAttempts: 2,
-      scoreEvidence: {
+      gateKind: "safety",
+      safetyGate: {
         evaluationRunId,
-        before: { configId: "self-iteration-before" },
-        after: { configId: "self-iteration-after" },
-        delta: { overallScore: 0, passRate: 0, regressionCount: 0 },
+        passed: true,
+        scoreEvidence: {
+          evaluationRunId,
+          before: { configId: "self-iteration-before" },
+          after: { configId: "self-iteration-after" },
+          delta: { overallScore: 0, passRate: 0, regressionCount: 0 },
+        },
       },
     });
 
@@ -322,6 +326,200 @@ describe("LocalSelfIterationStore", () => {
 
     expect(result).toMatchObject({ scanned: false, reason: "disabled", projectId: "local-project" });
     expect(store.listCandidates()).toEqual([]);
+  });
+
+  it("exposes safety gate and impact evaluation metadata for prompt candidates", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 7000);
+    const signal = recoverySignal();
+    store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+    });
+    const candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    const evaluated = await store.evaluateCandidate({ candidateId: candidate.id }, {
+      evaluateCandidate: () => ({
+        evaluationRunId: "eval-impact-1",
+        passed: true,
+        message: "Safety gate passed. Impact evaluation complete.",
+        metadata: {
+          gateKind: "safety",
+          safetyGate: {
+            evaluationRunId: "eval-impact-1",
+            passed: true,
+            scoreEvidence: {
+              evaluationRunId: "eval-impact-1",
+              before: { configId: "self-iteration-before", overallScore: 1, passRate: 1, regressionCount: 0, caseCount: 1 },
+              after: { configId: "self-iteration-after", overallScore: 1, passRate: 1, regressionCount: 0, caseCount: 1 },
+              delta: { overallScore: 0, passRate: 0, regressionCount: 0 },
+            },
+          },
+          impactEvaluation: {
+            evaluationRunId: "eval-impact-1",
+            targetKind: "prompt",
+            before: { configId: "self-iteration-before-impact", overallScore: 0.7, passRate: 0.5, regressionCount: 0, caseCount: 2 },
+            after: { configId: "self-iteration-after-impact", overallScore: 0.9, passRate: 1, regressionCount: 0, caseCount: 2 },
+            delta: { overallScore: 0.2, passRate: 0.5, regressionCount: 0 },
+          },
+        },
+      }),
+    });
+
+    const evalMeta = evaluated.proposedChange.metadata.selfIterationEvaluation as Record<string, unknown>;
+    expect(evalMeta).toMatchObject({
+      passed: true,
+      gateKind: "safety",
+      safetyGate: { passed: true, evaluationRunId: "eval-impact-1" },
+      impactEvaluation: {
+        targetKind: "prompt",
+        evaluationRunId: "eval-impact-1",
+        before: { configId: "self-iteration-before-impact", overallScore: 0.7 },
+        after: { configId: "self-iteration-after-impact", overallScore: 0.9 },
+        delta: { overallScore: 0.2, passRate: 0.5, regressionCount: 0 },
+      },
+    });
+    expect(evaluated.status).toBe("ready");
+  });
+
+  it("produces distinct before/after impact configs for prompt candidates", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 8000);
+    const signal = recoverySignal();
+    store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+    });
+    const candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    const evaluated = await store.evaluateCandidate({ candidateId: candidate.id }, {
+      evaluateCandidate: () => ({
+        evaluationRunId: "eval-regression-1",
+        passed: true,
+        message: "Impact evaluation complete.",
+        metadata: {
+          gateKind: "safety",
+          safetyGate: {
+            evaluationRunId: "eval-regression-1",
+            passed: true,
+            scoreEvidence: {
+              evaluationRunId: "eval-regression-1",
+              before: { configId: "self-iteration-before" },
+              after: { configId: "self-iteration-after" },
+              delta: { overallScore: 0, passRate: 0, regressionCount: 0 },
+            },
+          },
+          impactEvaluation: {
+            evaluationRunId: "eval-regression-1",
+            targetKind: "prompt",
+            before: { configId: "self-iteration-before-impact", overallScore: 0.6, passRate: 0.5, regressionCount: 0, caseCount: 2 },
+            after: { configId: "self-iteration-after-impact", overallScore: 0.9, passRate: 1, regressionCount: 0, caseCount: 2 },
+            delta: { overallScore: 0.3, passRate: 0.5, regressionCount: 0 },
+          },
+        },
+      }),
+    });
+
+    const impact = (evaluated.proposedChange.metadata.selfIterationEvaluation as Record<string, unknown>).impactEvaluation as Record<string, unknown>;
+    expect(impact).toBeDefined();
+    expect(impact.before).not.toEqual(impact.after);
+    expect(impact.delta).not.toMatchObject({ overallScore: 0, passRate: 0, regressionCount: 0 });
+  });
+
+  it("does not persist changes during evaluation", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 9000);
+    const signal = recoverySignal();
+    store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+    });
+    const candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    const evaluated = await store.evaluateCandidate({ candidateId: candidate.id }, {
+      evaluateCandidate: () => ({
+        evaluationRunId: "eval-no-persist-1",
+        passed: true,
+        message: "Evaluation complete without applying changes.",
+        metadata: {
+          gateKind: "safety",
+          safetyGate: {
+            evaluationRunId: "eval-no-persist-1",
+            passed: true,
+            scoreEvidence: {
+              evaluationRunId: "eval-no-persist-1",
+              before: { configId: "self-iteration-before" },
+              after: { configId: "self-iteration-after" },
+              delta: { overallScore: 0, passRate: 0, regressionCount: 0 },
+            },
+          },
+          impactEvaluation: {
+            evaluationRunId: "eval-no-persist-1",
+            targetKind: "prompt",
+            before: { configId: "self-iteration-before-impact", overallScore: 0.8, passRate: 0.8, regressionCount: 0, caseCount: 1 },
+            after: { configId: "self-iteration-after-impact", overallScore: 0.9, passRate: 1, regressionCount: 0, caseCount: 1 },
+            delta: { overallScore: 0.1, passRate: 0.2, regressionCount: 0 },
+          },
+        },
+      }),
+    });
+
+    expect(evaluated.status).toBe("ready");
+    expect(evaluated.applyResult).toBeUndefined();
+    expect(() => store.applyCandidate({ candidateId: candidate.id }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+      applyPromptCandidate: () => ({ applied: true }),
+      applySkillCandidate: () => ({ applied: true }),
+      applyModeCandidate: () => ({ applied: true }),
+    })).toThrow(/require confirmation/);
+  });
+
+  it("rejects duplicate evaluation for a candidate already being evaluated", async () => {
+    const store = new LocalSelfIterationStore(tempDir(), () => 10000);
+    const signal = recoverySignal();
+    store.scan({ autoApplyEvaluation: false }, {
+      signals: [signal],
+      insights: [],
+      runs: [],
+      evaluationRuns: [],
+      feedbackRecords: [],
+    }, {
+      applyEvaluationCandidate: () => ({ applied: true }),
+    });
+    const candidate = store.listCandidates({ targetKind: "prompt" })[0]!;
+
+    // First evaluation starts (status becomes "evaluating")
+    const firstPromise = store.evaluateCandidate({ candidateId: candidate.id }, {
+      evaluateCandidate: () => new Promise((resolve) => {
+        setTimeout(() => resolve({
+          evaluationRunId: "eval-slow-1",
+          passed: true,
+          message: "Slow evaluation complete.",
+        }), 50);
+      }),
+    });
+
+    // Second evaluation should throw immediately because status is "evaluating"
+    await expect(
+      store.evaluateCandidate({ candidateId: candidate.id }, {
+        evaluateCandidate: () => ({ evaluationRunId: "eval-dup", passed: true }),
+      }),
+    ).rejects.toThrow(/already being evaluated/);
+
+    await firstPromise;
+    expect(store.getCandidate({ candidateId: candidate.id }).status).toBe("ready");
   });
 });
 

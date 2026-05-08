@@ -1474,6 +1474,13 @@ function shouldPreserveAcceptedPlanPendingRun(
   );
 }
 
+function preserveComposerMode(
+  state: WorkbenchState,
+  candidateModeId?: string,
+): string {
+  return state.selectedModeId || candidateModeId || "";
+}
+
 export function workbenchReducer(
   state: WorkbenchState,
   action: WorkbenchAction,
@@ -1608,10 +1615,10 @@ export function workbenchReducer(
           normalizedSnapshot?.pattern ??
           latestTurn?.pattern ??
           state.selectedPattern,
-        selectedModeId:
-          normalizedSnapshot?.modeId ??
-          latestTurn?.modeId ??
-          state.selectedModeId,
+        selectedModeId: preserveComposerMode(
+          state,
+          normalizedSnapshot?.modeId ?? latestTurn?.modeId,
+        ),
         selectedModeSelection:
           normalizedSnapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId:
@@ -1955,8 +1962,10 @@ export function workbenchReducer(
         activeSnapshot: snapshot,
         selectedPattern:
           snapshot?.pattern ?? session?.latestPattern ?? state.selectedPattern,
-        selectedModeId:
-          snapshot?.modeId ?? session?.latestModeId ?? state.selectedModeId,
+        selectedModeId: preserveComposerMode(
+          state,
+          snapshot?.modeId ?? session?.latestModeId,
+        ),
         selectedModeSelection:
           snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId:
@@ -1982,7 +1991,7 @@ export function workbenchReducer(
         selectedTurnRunId: action.runId,
         activeSnapshot: snapshot ?? state.activeSnapshot,
         selectedPattern: snapshot?.pattern ?? state.selectedPattern,
-        selectedModeId: snapshot?.modeId ?? state.selectedModeId,
+        selectedModeId: preserveComposerMode(state, snapshot?.modeId),
         selectedModeSelection:
           snapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedNodeId:

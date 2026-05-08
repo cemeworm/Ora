@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
   initialWorkbenchState,
   mergeRunStreamSnapshot,
@@ -336,6 +336,65 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.latestSnapshot).toBeUndefined();
     expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
     expect(next.selectedProviderId).toBe("local-smoke");
+  });
+
+  it("does not let session hydration overwrite the composer mode once selected", () => {
+    const session = {
+      ...sessionSummary("session-summary"),
+      latestRunId: "run-summary",
+      latestModeId: SINGLE_AGENT_MODE_ID,
+      status: "succeeded" as const,
+      turnCount: 1,
+      updatedAt: 1_714_000_000_100,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedModeId: CODE_DEVELOPMENT_MODE_ID,
+    };
+
+    const next = workbenchReducer(state, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [{
+          runId: "run-summary",
+          sessionId: session.sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          providerId: "local-smoke",
+          modelRef: "local/smoke-model",
+          prompt: "Show summary first.",
+          startedAt: 1_714_000_000_000,
+          updatedAt: 1_714_000_000_100,
+          eventCount: 12,
+          checkpointCount: 1,
+          artifactCount: 0,
+        }],
+        transcript: [],
+      },
+    });
+
+    expect(next.selectedModeId).toBe(CODE_DEVELOPMENT_MODE_ID);
+  });
+
+  it("does not let selecting a historical turn overwrite the composer mode", () => {
+    const snapshot = testSnapshot({ runId: "run-history", sessionId: "session-history" });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedModeId: CODE_DEVELOPMENT_MODE_ID,
+    };
+
+    const next = workbenchReducer(state, {
+      type: "SELECT_TURN",
+      runId: "run-history",
+      snapshot,
+    });
+
+    expect(next.selectedModeId).toBe(CODE_DEVELOPMENT_MODE_ID);
   });
 
   it("keeps unsent composer text scoped to the selected session", () => {

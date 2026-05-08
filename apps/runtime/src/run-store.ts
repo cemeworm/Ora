@@ -482,6 +482,7 @@ export class LocalRunStore {
     if (options.autoStartAutomations) {
       this.automationService.start();
     }
+    this.cleanupOrphanedImpactResources();
   }
 
   health() {
@@ -2355,7 +2356,23 @@ export class LocalRunStore {
 
   evaluateSelfIterationCandidate(params: unknown) {
     return this.selfIterationStore.evaluateCandidate(params, {
-      evaluateCandidate: (candidate) => this.runSelfIterationEvaluation(candidate),
+      evaluateCandidate: async (candidate) => {
+        const safetyResult = await this.runSelfIterationEvaluation(candidate);
+        if (candidate.targetKind === "evaluation" || !safetyResult.passed) {
+          return safetyResult;
+        }
+        const impactResult = await this.runSelfIterationImpactEvaluation(candidate);
+        if (!impactResult) return safetyResult;
+        return {
+          ...safetyResult,
+          passed: impactResult.passed,
+          message: impactResult.message,
+          metadata: {
+            ...safetyResult.metadata,
+            ...(impactResult.impactEvaluation ? { impactEvaluation: impactResult.impactEvaluation } : {}),
+          },
+        };
+      },
     });
   }
 
@@ -3783,6 +3800,7 @@ export class LocalRunStore {
           providerId: "local-smoke",
           modelRef: "local/smoke-model",
           metadata: {
+            evaluationKind: "self_iteration_safety",
             evaluationRouterOnly: true,
             selfIterationCandidateId: candidate.id,
             selfIterationTargetKind: candidate.targetKind,
@@ -3812,17 +3830,257 @@ export class LocalRunStore {
         ? `Evaluation Studio run ${detail.run.id} passed for candidate ${candidate.id}.`
         : `Evaluation Studio run ${detail.run.id} did not pass the self-iteration gate.`,
       metadata: {
-        score: scorecard.overallScore,
-        passRate: scorecard.passRate,
-        regressionCount: scorecard.regressionCount,
-        totalAttempts: detail.run.totalAttempts,
-        scoreEvidence,
+        gateKind: "safety",
+        safetyGate: {
+          evaluationRunId: detail.run.id,
+          passed,
+          scoreEvidence,
+        },
       },
       proposedChangeAfter: modeDraft ?? candidate.proposedChange.after,
       proposedChangeMetadata: modeDraft
         ? { modeStudioDraftGenerated: true, modeStudioDraftNeedsInput: modeDraft.needsInput, modeStudioDraftValid: modeDraft.validation.valid }
         : undefined,
     };
+  }
+
+  private async runSelfIterationImpactEvaluation(candidate: SelfIterationCandidate) {
+    if (candidate.targetKind === "evaluation") return undefined;
+    if (candidate.targetKind === "mode") return this.runModeImpactEvaluation(candidate);
+    if (candidate.targetKind === "skill") return this.runSkillImpactEvaluation(candidate);
+    return this.runPromptImpactEvaluation(candidate);
+  }
+
+  private async runPromptImpactEvaluation(candidate: SelfIterationCandidate) {
+    const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+    const originalMode = this.modeStore.get({ modeId });
+    const nodeId = candidate.targetRef.nodeId;
+    const targetNode = originalMode.nodes.find((node) => node.id === nodeId)
+      ?? originalMode.nodes.find((node) => node.enabled)
+      ?? originalMode.nodes[0];
+    if (!targetNode) return undefined;
+
+    const addition = typeof candidate.proposedChange.after === "string"
+      ? candidate.proposedChange.after
+      : candidate.proposedChange.summary;
+    const nextPrompt = [targetNode.prompt ?? targetNode.instructions ?? "", addition]
+      .filter(Boolean)
+      .join("\n\nSelf-Iteration guidance: ");
+    const tempModeId = `self-iteration-impact-${safeSelfIterationId(candidate.id)}-${this.now()}`;
+    const tempMode = this.modeStore.create(modeCreateParamsFromSpec({
+      ...originalMode,
+      id: tempModeId,
+      label: `${originalMode.label} (Impact)`,
+      nodes: originalMode.nodes.map((node) =>
+        node.id === targetNode.id ? { ...node, prompt: nextPrompt } : node),
+    }));
+
+    try {
+      return await this.executeImpactEvaluationRun(candidate, originalMode.id, tempMode.id);
+    } finally {
+      try { this.modeStore.delete({ modeId: tempMode.id }); } catch { /* ignore cleanup failures */ }
+    }
+  }
+
+  private async runSkillImpactEvaluation(candidate: SelfIterationCandidate) {
+    const after = candidate.proposedChange.after;
+    if (!after || typeof after !== "object") return undefined;
+    const draft = after as { name?: unknown; description?: unknown; content?: unknown };
+    const skillContent = typeof draft.content === "string" ? draft.content : undefined;
+    if (!skillContent) return undefined;
+
+    const created = this.skillRegistry.create({
+      name: String(draft.name ?? candidate.targetRef.skillName ?? "learned-workflow"),
+      description: String(draft.description ?? candidate.proposedChange.summary),
+      content: skillContent,
+      enabled: true,
+    });
+
+    try {
+      const modeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+      const skillMode = this.modeStore.get({ modeId });
+      const modelRef = resolveProfileModelRef(skillMode);
+      const datasetId = this.selfIterationEvaluationDatasetId(candidate);
+
+      const spec = EvaluationSpecSchema.parse({
+        datasetId,
+        profileId: "outcome",
+        configs: [
+          {
+            id: "self-iteration-before-impact",
+            label: "Current behavior",
+            description: `Before impact evaluation for skill candidate ${candidate.id}.`,
+            runConfig: {
+              pattern: "orchestrator_subagent",
+              modeId,
+              modeSelection: "manual",
+              ...(modelRef ? { modelRef } : {}),
+              metadata: {
+                evaluationKind: "self_iteration_impact",
+                selfIterationCandidateId: candidate.id,
+                selfIterationTargetKind: candidate.targetKind,
+                selfIterationScorePhase: "before",
+              },
+            },
+          },
+          {
+            id: "self-iteration-after-impact",
+            label: "With proposed skill",
+            description: `After impact evaluation for skill candidate ${candidate.id}.`,
+            runConfig: {
+              pattern: "orchestrator_subagent",
+              modeId,
+              modeSelection: "manual",
+              ...(modelRef ? { modelRef } : {}),
+              metadata: {
+                evaluationKind: "self_iteration_impact",
+                selfIterationCandidateId: candidate.id,
+                selfIterationTargetKind: candidate.targetKind,
+                selfIterationScorePhase: "after",
+                selfIterationSkillOverlay: String(draft.name ?? candidate.targetRef.skillName ?? "learned-workflow"),
+              },
+            },
+          },
+        ],
+        repetitions: 1,
+        concurrency: 1,
+        metadata: {
+          source: "self_iteration",
+          candidateId: candidate.id,
+          targetKind: candidate.targetKind,
+          evaluationKind: "self_iteration_impact",
+        },
+      });
+
+      const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
+        const handle = await this.startRun({ input, config });
+        return this.getRunState({ runId: handle.runId });
+      });
+
+      return this.buildImpactEvaluationResult(detail, candidate);
+    } finally {
+      try { this.skillRegistry.delete({ name: created.name }); } catch { /* ignore cleanup failures */ }
+    }
+  }
+
+  private async runModeImpactEvaluation(candidate: SelfIterationCandidate) {
+    const after = candidate.proposedChange.after;
+    const draftBundle = after && typeof after === "object" && "modeDraft" in after
+      ? after as ModeStudioDraftBundle
+      : undefined;
+    if (!draftBundle?.validation?.valid) return undefined;
+
+    const baseModeId = candidate.targetRef.modeId ?? SINGLE_AGENT_MODE_ID;
+    const baseMode = this.modeStore.get({ modeId: baseModeId });
+    const draftSpec = draftBundle.modeDraft as Record<string, unknown>;
+    const tempModeId = `self-iteration-impact-${safeSelfIterationId(candidate.id)}-${this.now()}`;
+    const tempMode = this.modeStore.create(modeCreateParamsFromSpec({
+      ...baseMode,
+      nodes: (draftSpec.nodes as typeof baseMode.nodes) ?? baseMode.nodes,
+      edges: (draftSpec.edges as typeof baseMode.edges) ?? baseMode.edges,
+      id: tempModeId,
+      label: `${baseMode.label} (Impact)`,
+    }));
+
+    try {
+      return await this.executeImpactEvaluationRun(candidate, baseMode.id, tempMode.id);
+    } finally {
+      try { this.modeStore.delete({ modeId: tempMode.id }); } catch { /* ignore cleanup failures */ }
+    }
+  }
+
+  private async executeImpactEvaluationRun(
+    candidate: SelfIterationCandidate,
+    beforeModeId: string,
+    afterModeId: string,
+  ) {
+    const beforeMode = this.modeStore.get({ modeId: beforeModeId });
+    const modelRef = resolveProfileModelRef(beforeMode);
+    const datasetId = this.selfIterationEvaluationDatasetId(candidate);
+
+    const spec = EvaluationSpecSchema.parse({
+      datasetId,
+      profileId: "outcome",
+      configs: [
+        {
+          id: "self-iteration-before-impact",
+          label: "Current behavior",
+          description: `Before impact evaluation for ${candidate.targetKind} candidate ${candidate.id}.`,
+          runConfig: {
+            pattern: "orchestrator_subagent",
+            modeId: beforeModeId,
+            modeSelection: "manual",
+            ...(modelRef ? { modelRef } : {}),
+            metadata: {
+              evaluationKind: "self_iteration_impact",
+              selfIterationCandidateId: candidate.id,
+              selfIterationTargetKind: candidate.targetKind,
+              selfIterationScorePhase: "before",
+            },
+          },
+        },
+        {
+          id: "self-iteration-after-impact",
+          label: "With proposed change",
+          description: `After impact evaluation for ${candidate.targetKind} candidate ${candidate.id}.`,
+          runConfig: {
+            pattern: "orchestrator_subagent",
+            modeId: afterModeId,
+            modeSelection: "manual",
+            ...(modelRef ? { modelRef } : {}),
+            metadata: {
+              evaluationKind: "self_iteration_impact",
+              selfIterationCandidateId: candidate.id,
+              selfIterationTargetKind: candidate.targetKind,
+              selfIterationScorePhase: "after",
+            },
+          },
+        },
+      ],
+      repetitions: 1,
+      concurrency: 1,
+      metadata: {
+        source: "self_iteration",
+        candidateId: candidate.id,
+        targetKind: candidate.targetKind,
+        evaluationKind: "self_iteration_impact",
+      },
+    });
+
+    const detail = await this.startEvaluationRun(spec, async ({ input, config }) => {
+      const handle = await this.startRun({ input, config });
+      return this.getRunState({ runId: handle.runId });
+    });
+
+    return this.buildImpactEvaluationResult(detail, candidate);
+  }
+
+  private buildImpactEvaluationResult(detail: Awaited<ReturnType<typeof this.startEvaluationRun>>, candidate: SelfIterationCandidate) {
+    const scorecard = detail.run.scorecard;
+    const passed = detail.run.status === "succeeded" && scorecard.passRate >= 1 && scorecard.regressionCount === 0;
+    const scoreEvidence = selfIterationScoreEvidence(detail.run.id, scorecard.configSummaries);
+    return {
+      evaluationRunId: detail.run.id,
+      passed,
+      message: passed
+        ? `Impact evaluation ${detail.run.id} passed for ${candidate.targetKind} candidate ${candidate.id}.`
+        : `Impact evaluation ${detail.run.id} shows regression for ${candidate.targetKind} candidate ${candidate.id}.`,
+      impactEvaluation: {
+        targetKind: candidate.targetKind,
+        ...scoreEvidence,
+      },
+    };
+  }
+
+  private cleanupOrphanedImpactResources() {
+    const prefix = "self-iteration-impact-";
+    try {
+      for (const mode of this.modeStore.list()) {
+        if (mode.id.startsWith(prefix) && !mode.systemPreset) {
+          try { this.modeStore.delete({ modeId: mode.id }); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* mode listing may not be available */ }
   }
 
   private selfIterationEvaluationDatasetId(candidate: SelfIterationCandidate): string {
@@ -4100,9 +4358,18 @@ function selfIterationModeDraftPrompt(candidate: SelfIterationCandidate): string
   ].join("\n");
 }
 
+function resolveProfileModelRef(mode: { profiles: readonly { modelRef?: string | null }[] }): string | undefined {
+  for (const profile of mode.profiles) {
+    if (typeof profile.modelRef === "string" && profile.modelRef.length > 0) {
+      return profile.modelRef;
+    }
+  }
+  return undefined;
+}
+
 function selfIterationScoreEvidence(evaluationRunId: string, summaries: readonly EvaluationConfigSummary[]) {
-  const before = summaries.find((summary) => summary.configId === "self-iteration-before") ?? summaries[0];
-  const after = summaries.find((summary) => summary.configId === "self-iteration-after") ?? before;
+  const before = summaries.find((summary) => summary.configId.startsWith("self-iteration-before")) ?? summaries[0];
+  const after = summaries.find((summary) => summary.configId.startsWith("self-iteration-after")) ?? summaries[summaries.length - 1];
   if (!before || !after) {
     return { evaluationRunId };
   }

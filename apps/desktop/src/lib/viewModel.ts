@@ -1876,8 +1876,7 @@ function currentAgentLabelFromSnapshot(snapshot: OraStateSnapshot): string {
     !isRootHandoffScaffoldingMessage(snapshot, message) &&
     !message.transcript &&
     message.kind !== "status" &&
-    message.content.trim() &&
-    !isInternalAssistantText(message.content)
+    !isInternalAgentMessage(message)
   );
   if (latestAgentMessage) {
     return profiles.get(latestAgentMessage.fromAgentId) ?? latestAgentMessage.fromAgentId;
@@ -1975,7 +1974,7 @@ function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationM
   const profiles = new Map(snapshot.profiles.map((profile) => [profile.id, profile.label]));
   const deltaCursorByAgent = new Map<string, number>();
   const deltasByAgent = agentMessageDeltasByAgent(snapshot);
-  return (snapshot.agentMessages ?? []).map((message) => {
+  return (snapshot.agentMessages ?? []).filter((message) => !isInternalAgentMessage(message)).map((message) => {
     let deltaContent: string | undefined;
     if (message.content.endsWith("...")) {
       const deltaCursor = deltaCursorByAgent.get(message.fromAgentId) ?? 0;
@@ -2004,6 +2003,15 @@ function deriveAgentMessages(snapshot: OraStateSnapshot): TurnAgentConversationM
       timestamp: formatClock(message.createdAt),
     };
   });
+}
+
+function isInternalAgentMessage(message: OraStateSnapshot["agentMessages"][number]): boolean {
+  return (
+    message.kind === "publish" ||
+    message.kind === "route" ||
+    !message.content.trim() ||
+    isInternalAssistantText(message.content)
+  );
 }
 
 function agentMessageDeltasByAgent(snapshot: OraStateSnapshot): Map<string, string[]> {
@@ -2341,8 +2349,7 @@ function deriveTimelineItems(
       message.transcript ||
       message.kind === "status" ||
       (message.kind === "handoff" && message.toAgentIds.length === 0) ||
-      !message.content.trim() ||
-      isInternalAssistantText(message.content)
+      isInternalAgentMessage(message)
     ) {
       continue;
     }

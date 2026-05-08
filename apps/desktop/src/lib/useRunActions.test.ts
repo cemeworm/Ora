@@ -6,6 +6,7 @@ import {
   buildDesktopRunContext,
   isDisposableEmptySession,
   shouldEnableProgressNarration,
+  stableViewModelCacheKey,
 } from "./useRunActions";
 import type { OraSessionSummary } from "./runtimeClient";
 
@@ -21,6 +22,22 @@ describe("desktop run actions", () => {
       prompt: "请按照上述计划开始执行",
       taskIntent: "implement",
     });
+  });
+
+  it("invalidates stable view model cache when the composer mode changes", () => {
+    const base = {
+      activeSessionId: "session-1",
+      selectedPattern: "agent_teams",
+      modeIds: ["message_bus", "code_development"],
+    };
+
+    expect(stableViewModelCacheKey({
+      ...base,
+      selectedModeId: "message_bus",
+    })).not.toBe(stableViewModelCacheKey({
+      ...base,
+      selectedModeId: "code_development",
+    }));
   });
 
   it("includes attached project files in run context", () => {

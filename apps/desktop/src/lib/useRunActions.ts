@@ -128,6 +128,20 @@ export function buildPendingClarificationResumePatch(
   };
 }
 
+export function stableViewModelCacheKey(params: {
+  activeSessionId?: string;
+  selectedModeId: string;
+  selectedPattern: string;
+  modeIds: readonly string[];
+}): string {
+  return [
+    params.activeSessionId ?? "",
+    params.selectedModeId,
+    params.selectedPattern,
+    params.modeIds.join(","),
+  ].join("|");
+}
+
 export function clarificationOptionAnswer(option: { label: string; value?: string }): string {
   return (option.value ?? option.label).trim();
 }
@@ -235,14 +249,20 @@ export function useRunActions() {
   const sessionRequestRef = useRef(0);
   const sessionPrefetchesRef = useRef(new Set<string>());
 
-  // Stable viewModel parts — cached by session identity to skip recomputation during streaming
+  // Stable viewModel parts — cached across streaming frames but invalidated when composer mode changes.
   const stableViewModelRef = useRef<ReturnType<typeof buildStableViewModel>>();
-  const lastStableSessionIdRef = useRef<string>();
+  const lastStableCacheKeyRef = useRef<string>();
 
   const activeSessionId = state.activeSessionDetail?.session.sessionId;
   if (state.patterns.length > 0 && state.activeSessionDetail) {
-    if (lastStableSessionIdRef.current !== activeSessionId || !stableViewModelRef.current) {
-      lastStableSessionIdRef.current = activeSessionId;
+    const cacheKey = stableViewModelCacheKey({
+      activeSessionId,
+      selectedModeId: state.selectedModeId,
+      selectedPattern: state.selectedPattern,
+      modeIds: state.modes.map((mode) => mode.id),
+    });
+    if (lastStableCacheKeyRef.current !== cacheKey || !stableViewModelRef.current) {
+      lastStableCacheKeyRef.current = cacheKey;
       stableViewModelRef.current = buildStableViewModel(
         state.patterns,
         state.modes,
@@ -254,7 +274,7 @@ export function useRunActions() {
     }
   } else {
     stableViewModelRef.current = undefined;
-    lastStableSessionIdRef.current = undefined;
+    lastStableCacheKeyRef.current = undefined;
   }
   const stableViewModel = stableViewModelRef.current;
 

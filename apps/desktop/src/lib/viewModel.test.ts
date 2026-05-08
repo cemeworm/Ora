@@ -2008,6 +2008,117 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.currentAgentLabel).toBe("Team Lead");
   });
 
+  it("hides internal message bus publish and route messages from the assistant timeline", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-message-bus-internal",
+      sessionId: "session-message-bus-internal",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "message_bus",
+      modeId: "message_bus",
+      input: { prompt: "why is mode stuck?", createdAt, context: {} },
+      config: {
+        modeId: "message_bus",
+        pattern: "message_bus",
+        modeSelection: "manual",
+        profileIds: ["router", "responder"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-message-bus-internal-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "router", label: "Router", role: "Route", modelRef: "local/smoke-model", toolPolicyId: "message_bus.default_policy", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+        { id: "responder", label: "Responder", role: "Respond", modelRef: "local/smoke-model", toolPolicyId: "message_bus.default_policy", memoryNamespaces: ["session"], budget: { maxTokens: 1000, maxToolCalls: 0, maxRuntimeMs: 1000 } },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [
+        {
+          id: "run-message-bus-internal:agent-message:0",
+          runId: "run-message-bus-internal",
+          createdAt,
+          fromAgentId: "router",
+          toAgentIds: ["router"],
+          threadId: "bus-1",
+          kind: "publish",
+          status: "done",
+          content: "@router input event published on task.input:\n\nwhy is mode stuck?",
+          artifactIds: [],
+        },
+        {
+          id: "run-message-bus-internal:agent-message:1",
+          runId: "run-message-bus-internal",
+          createdAt: createdAt + 1,
+          fromAgentId: "router",
+          toAgentIds: ["responder"],
+          threadId: "bus-1",
+          kind: "route",
+          status: "done",
+          content: "@responder routed task.findings to you:\n\ninternal route details",
+          artifactIds: [],
+        },
+        {
+          id: "run-message-bus-internal:agent-message:2",
+          runId: "run-message-bus-internal",
+          createdAt: createdAt + 2,
+          fromAgentId: "responder",
+          toAgentIds: ["router"],
+          threadId: "bus-1",
+          kind: "reply",
+          status: "done",
+          content: "Visible answer.",
+          artifactIds: [],
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: true, publishedCount: 1, routedCount: 1, topicCounts: { "task.input": 1 } },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "Visible answer." },
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-message-bus-internal:user",
+        sessionId: "session-message-bus-internal",
+        runId: "run-message-bus-internal",
+        turnIndex: 1,
+        role: "user",
+        content: "why is mode stuck?",
+        pattern: "message_bus",
+        modeId: "message_bus",
+        createdAt,
+      }],
+      { "run-message-bus-internal": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.map((item) => "content" in item ? item.content : "")
+      .join("\n") ?? "";
+
+    expect(timelineText).toContain("Visible answer.");
+    expect(timelineText).not.toContain("@router input event published");
+    expect(timelineText).not.toContain("routed task.findings");
+    expect(assistant?.turn?.agentMessages.map((message) => message.kind)).toEqual(["reply"]);
+    expect(assistant?.turn?.currentAgentLabel).toBe("Responder");
+  });
+
   it("keeps assistant body text in the turn timeline before running work steps", () => {
     const createdAt = 1_714_000_000_000;
     const baseSnapshot = {

@@ -150,6 +150,9 @@ export class LocalSelfIterationStore {
   async evaluateCandidate(params: unknown, deps?: SelfIterationEvaluateDeps) {
     const parsed = SelfIterationCandidateEvaluateParamsSchema.parse(params);
     const candidate = this.getCandidate(parsed);
+    if (candidate.status === "evaluating") {
+      throw new Error(`Candidate ${candidate.id} is already being evaluated.`);
+    }
     const evaluating = SelfIterationCandidateSchema.parse({
       ...candidate,
       status: "evaluating",
@@ -508,15 +511,21 @@ function selfIterationEvaluationMetadata(candidate: SelfIterationCandidate): Rec
   const value = candidate.proposedChange.metadata.selfIterationEvaluation;
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
+  const safetyGate = record.safetyGate && typeof record.safetyGate === "object" ? record.safetyGate as Record<string, unknown> : undefined;
+  const impactEvaluation = record.impactEvaluation && typeof record.impactEvaluation === "object" ? record.impactEvaluation as Record<string, unknown> : undefined;
+  const scoreEvidence = safetyGate?.scoreEvidence ?? impactEvaluation?.scoreEvidence ?? record.scoreEvidence;
   return {
     passed: typeof record.passed === "boolean" ? record.passed : undefined,
     message: typeof record.message === "string" ? record.message : undefined,
     evaluationRunId: candidate.evaluationRunId,
+    gateKind: typeof record.gateKind === "string" ? record.gateKind : undefined,
+    safetyGate: record.safetyGate,
+    impactEvaluation: record.impactEvaluation,
     score: typeof record.score === "number" ? record.score : undefined,
     passRate: typeof record.passRate === "number" ? record.passRate : undefined,
     regressionCount: typeof record.regressionCount === "number" ? record.regressionCount : undefined,
     totalAttempts: typeof record.totalAttempts === "number" ? record.totalAttempts : undefined,
-    scoreEvidence: record.scoreEvidence,
+    scoreEvidence,
   };
 }
 
