@@ -230,6 +230,18 @@ export const ModeMemoryPolicySchema = z.object({
   maxFacts: z.number().int().positive().max(500).default(120),
   injectionMaxFacts: z.number().int().positive().max(100).default(24),
   updaterProviderId: z.string().min(1).optional(),
+  // Hybrid retrieval controls
+  retrievalMode: z.enum(["lexical", "hybrid", "semantic"]).default("lexical"),
+  mmrLambda: z.number().min(0).max(1).default(0.7),
+  decayEnabled: z.boolean().default(true),
+  diversityEnabled: z.boolean().default(false),
+  semanticProviderId: z.string().min(1).optional(),
+  semanticModelId: z.string().min(1).optional(),
+  // Provider-backed admission controls
+  admissionMode: z.enum(["deterministic", "provider", "provider_fallback"]).default("deterministic"),
+  queryMode: z.enum(["message", "recent", "full"]).default("message"),
+  admissionTimeoutMs: z.number().int().positive().max(30_000).default(5_000),
+  admissionMaxSummaryChars: z.number().int().positive().default(2_000),
 });
 export type ModeMemoryPolicy = z.infer<typeof ModeMemoryPolicySchema>;
 

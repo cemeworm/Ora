@@ -128,3 +128,158 @@ export const ActiveMemoryContextSchema = z.object({
   rendered: z.string().default("")
 });
 export type ActiveMemoryContext = z.infer<typeof ActiveMemoryContextSchema>;
+
+// === Phase 1: Memory Corpus and Index Contracts ===
+
+export const MemorySourceKindSchema = z.enum([
+  "durable_fact",
+  "section",
+  "short_term_signal",
+  "session_excerpt",
+  "artifact_excerpt",
+  "wiki_digest",
+]);
+export type MemorySourceKind = z.infer<typeof MemorySourceKindSchema>;
+
+export const MemorySourceSchema = z.object({
+  kind: MemorySourceKindSchema,
+  id: z.string().min(1),
+  scope: z.object({
+    user: z.boolean().default(true),
+    projectId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+    profileId: z.string().min(1).optional(),
+  }).default({}),
+  content: z.string().min(1),
+  category: z.string().min(1).optional(),
+  confidence: z.number().min(0).max(1).default(0.5),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1).optional(),
+  sourceRunId: z.string().min(1).optional(),
+  sourceError: z.string().min(1).optional(),
+  provenance: z.object({
+    sourceKind: MemorySourceKindSchema,
+    sourceId: z.string().min(1),
+    sourceRunIds: z.array(z.string().min(1)).default([]),
+    claimIds: z.array(z.string().min(1)).default([]),
+  }).optional(),
+});
+export type MemorySource = z.infer<typeof MemorySourceSchema>;
+
+export const MemoryChunkSchema = z.object({
+  id: z.string().min(1),
+  sourceId: z.string().min(1),
+  sourceKind: MemorySourceKindSchema,
+  scope: z.object({
+    user: z.boolean().default(true),
+    projectId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+    profileId: z.string().min(1).optional(),
+  }).default({}),
+  content: z.string().min(1),
+  category: z.string().min(1).optional(),
+  confidence: z.number().min(0).max(1).default(0.5),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1).optional(),
+  sourceRunId: z.string().min(1).optional(),
+  embeddingStatus: z.enum(["none", "pending", "ready"]).default("none"),
+  embeddingCacheKey: z.string().min(1).optional(),
+});
+export type MemoryChunk = z.infer<typeof MemoryChunkSchema>;
+
+export const MemorySearchRequestSchema = z.object({
+  query: z.string().min(1),
+  corpora: z.array(z.enum(["raw", "wiki", "all"])).default(["raw"]),
+  scopes: z.object({
+    projectId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+    profileId: z.string().min(1).optional(),
+  }).optional(),
+  maxResults: z.number().int().positive().default(12),
+  decayEnabled: z.boolean().default(true),
+  diversityEnabled: z.boolean().default(false),
+  semanticEnabled: z.boolean().default(false),
+  lexicalEnabled: z.boolean().default(true),
+  mmrLambda: z.number().min(0).max(1).default(0.7),
+});
+export type MemorySearchRequest = z.infer<typeof MemorySearchRequestSchema>;
+
+export const MemorySearchResultSchema = z.object({
+  chunk: MemoryChunkSchema,
+  lexicalScore: z.number().min(0).default(0),
+  semanticScore: z.number().min(0).default(0),
+  freshnessScore: z.number().min(0).default(0),
+  finalScore: z.number().min(0).default(0),
+  scoreReasons: z.array(z.string().min(1)).default([]),
+});
+export type MemorySearchResult = z.infer<typeof MemorySearchResultSchema>;
+
+// === Phase 4: Short-Term Memory Journal ===
+
+export const ShortTermSignalTypeSchema = z.enum([
+  "memory_intent",
+  "correction",
+  "reinforcement",
+  "recall_hit",
+  "selected_card",
+  "decision",
+  "user_visible_decision",
+  "session_excerpt",
+]);
+export type ShortTermSignalType = z.infer<typeof ShortTermSignalTypeSchema>;
+
+export const ShortTermSignalSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  type: ShortTermSignalTypeSchema,
+  content: z.string().min(1),
+  category: z.string().min(1).optional(),
+  confidence: z.number().min(0).max(1).default(0.5),
+  timestamp: z.string().min(1),
+  redacted: z.boolean().default(false),
+  sourcePointers: z.array(z.string().min(1)).default([]),
+  metadata: z.record(z.unknown()).default({}),
+});
+export type ShortTermSignal = z.infer<typeof ShortTermSignalSchema>;
+
+// === Phase 6: Memory Wiki ===
+
+export const WikiClaimSchema = z.object({
+  id: z.string().min(1),
+  statement: z.string().min(1),
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceFactIds: z.array(z.string().min(1)).default([]),
+  sourceRunIds: z.array(z.string().min(1)).default([]),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+});
+export type WikiClaim = z.infer<typeof WikiClaimSchema>;
+
+export const WikiContradictionSchema = z.object({
+  claimAId: z.string().min(1),
+  claimBId: z.string().min(1),
+  description: z.string().min(1),
+});
+export type WikiContradiction = z.infer<typeof WikiContradictionSchema>;
+
+export const WikiOpenQuestionSchema = z.object({
+  id: z.string().min(1),
+  question: z.string().min(1),
+  context: z.string().default(""),
+  createdAt: z.string().min(1),
+});
+export type WikiOpenQuestion = z.infer<typeof WikiOpenQuestionSchema>;
+
+export const WikiPageSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  kind: z.enum(["entity", "project", "user"]),
+  claims: z.array(WikiClaimSchema).default([]),
+  contradictions: z.array(WikiContradictionSchema).default([]),
+  openQuestions: z.array(WikiOpenQuestionSchema).default([]),
+  compiledAt: z.string().min(1),
+  sourceRunIds: z.array(z.string().min(1)).default([]),
+  digest: z.string().default(""),
+});
+export type WikiPage = z.infer<typeof WikiPageSchema>;
