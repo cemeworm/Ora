@@ -129,8 +129,21 @@ impl RuntimeSidecarManager {
         };
         if process_spawn_available {
             manager.ensure_channel_daemon(Some(&app));
+            // Pre-warm the runtime sidecar: spawn it during app init so the
+            // 1GB SQLite load completes before the frontend sends its first RPC.
+            manager.prewarm_request_bridge();
         }
         manager
+    }
+
+    fn prewarm_request_bridge(&self) {
+        if let (Ok(mut child_slot), Some(command)) =
+            (self.request_bridge_child.lock(), self.configured_command.as_ref())
+        {
+            if child_slot.is_none() {
+                *child_slot = PersistentJsonRpcChild::spawn(command).ok();
+            }
+        }
     }
 
     #[cfg(test)]
@@ -224,12 +237,14 @@ impl RuntimeSidecarManager {
 
         self.ensure_channel_daemon(app);
         let command = self.configured_command.clone()?;
-        if request.method == "runs.cancel" {
+        if is_cancel_runtime_method(&request.method) {
             if let Some(run_id) = request_run_id(request) {
                 self.active_streaming_children.kill_run(&run_id);
             }
         }
-        let response = if is_streaming_runtime_method(&request.method) {
+        let response = if is_cancel_runtime_method(&request.method) {
+            run_process_json_rpc_internal(&command, request, None, None)
+        } else if is_streaming_runtime_method(&request.method) {
             run_streaming_process_json_rpc_for_app(
                 &command,
                 request,
@@ -696,7 +711,7 @@ fn request_run_id(request: &RuntimeJsonRpcRequest) -> Option<String> {
     request
         .params
         .as_ref()
-        .and_then(|params| params.get("runId"))
+        .and_then(|params| params.get("runId").or_else(|| params.get("flowRunId")))
         .and_then(Value::as_str)
         .filter(|run_id| !run_id.trim().is_empty())
         .map(str::to_string)
@@ -3328,6 +3343,10 @@ fn is_streaming_runtime_method(method: &str) -> bool {
             | "flows.resumeStreaming"
             | "sessions.branchGroups.createAndRun"
     )
+}
+
+fn is_cancel_runtime_method(method: &str) -> bool {
+    matches!(method, "runs.cancel" | "flows.cancel")
 }
 
 fn run_streaming_process_json_rpc_for_app(
@@ -6068,6 +6087,58 @@ mod tests {
         registry.kill_run("run-0001");
 
         assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn cancel_uses_priority_one_shot_bridge_when_persistent_bridge_is_busy() {
+        let manager = Arc::new(process_bridge_manager(
+            RuntimeCommandSpec::new(
+                "sh -c priority-cancel-json-rpc",
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "read line; if printf '%s' \"$line\" | grep -q 'runs.cancel'; then printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"cancelled\"}}'; else sleep 2; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"bridge\":\"busy-finished\"}}'; fi".to_string(),
+                ],
+                None,
+                Vec::new(),
+            ),
+            true,
+        ));
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .expect("test streaming child should spawn");
+        let child_id = child.id();
+        manager.active_streaming_children.register(
+            child_id,
+            Arc::new(Mutex::new(child)),
+            Some("run-0001".to_string()),
+        );
+
+        let busy_manager = manager.clone();
+        let busy = thread::spawn(move || {
+            busy_manager.try_process_json_rpc(&request("sessions.list", None), None)
+        });
+        thread::sleep(Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let response = manager
+            .try_process_json_rpc(
+                &request("runs.cancel", Some(json!({ "runId": "run-0001", "reason": "stop" }))),
+                None,
+            )
+            .expect("cancel should return through the priority one-shot bridge");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cancel should not wait for the busy persistent bridge"
+        );
+        assert_eq!(response.result.unwrap()["status"], json!("cancelled"));
+        assert_eq!(manager.active_streaming_children.len(), 0);
+
+        let _ = busy.join();
+        manager.cleanup_streaming_children();
     }
 
     #[test]
