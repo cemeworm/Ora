@@ -926,6 +926,52 @@ describe("provider adapters", () => {
     expect(response.providerResponseId).toBe("resp_next");
   });
 
+  it("keeps the stable system prefix at the start of the first OpenAI developer message", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        input: Array<{
+          type: string;
+          role?: string;
+          content?: Array<{ type: string; text: string }>;
+        }>;
+      };
+      expect(body.input[0]?.role).toBe("developer");
+      expect(body.input[0]?.content?.[0]?.text).toBe([
+        "Stable identity block",
+        "Capability contract",
+        "Dynamic stage instruction",
+      ].join("\n\n"));
+      return new Response(JSON.stringify({ id: "resp_prefix", output_text: "OK" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "openai-prefix",
+        type: "openai",
+        label: "OpenAI",
+        modelId: "gpt-test",
+        headers: {},
+      },
+      {
+        env: { OPENAI_API_KEY: "test-openai-key" },
+        fetchImpl,
+      },
+    );
+
+    await provider({
+      system: ["Stable identity block", "Capability contract"].join("\n\n"),
+      messages: [
+        { role: "developer", content: "Dynamic stage instruction" },
+        { role: "user", content: "Say hello." },
+      ],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("maps OpenAI Responses function calls", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
@@ -1081,6 +1127,64 @@ describe("provider adapters", () => {
     expect(response.raw).toMatchObject({
       content: [{ type: "text", text: "Anthropic says hello." }],
     });
+  });
+
+  it("splits the Anthropic cached system prefix from dynamic system tail", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        system?: Array<{ type: string; text: string; cache_control?: unknown }>;
+      };
+      expect(body.system).toEqual([
+        {
+          type: "text",
+          text: "Stable identity block\n\nCapability contract",
+          cache_control: { type: "ephemeral", ttl: "5m" },
+        },
+        {
+          type: "text",
+          text: "Dynamic stage instruction\n\nCurrent temporal context:\n- Current date: 2026-05-09",
+        },
+      ]);
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "Anthropic says hello." }],
+          role: "assistant",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const provider = createModelProvider(
+      {
+        id: "anthropic-claude",
+        type: "anthropic",
+        label: "Claude",
+        modelId: "claude-test",
+        headers: {},
+      },
+      {
+        env: { ANTHROPIC_API_KEY: "test-anthropic-key" },
+        fetchImpl,
+      },
+    );
+
+    await provider({
+      prompt: "What time is it?",
+      system: [
+        "Stable identity block",
+        "Capability contract",
+        "Dynamic stage instruction",
+        "Current temporal context:\n- Current date: 2026-05-09",
+      ].join("\n\n"),
+      providerCache: {
+        stableSystemPrefix: [
+          "Stable identity block",
+          "Capability contract",
+        ].join("\n\n"),
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("normalizes Anthropic token usage", async () => {

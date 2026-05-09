@@ -46,7 +46,7 @@ const profile: AgentProfile = {
 };
 
 describe("buildAgentPromptContext", () => {
-  it("builds deterministic sections around stage instructions", () => {
+  it("builds deterministic sections from stable prefix to dynamic context", () => {
     const context = buildAgentPromptContext({
       agentId: "researcher",
       profile,
@@ -67,15 +67,20 @@ describe("buildAgentPromptContext", () => {
       "system_agent_override",
       "agent_system_prompt",
       "agent_profile",
-      "stage_instructions",
-      "workspace_context",
-      "clarification_context",
-      "memory_context",
-      "available_skills",
       "tool_protocol",
+      "available_skills",
       "skills",
       "mcp_deferred_tools",
+      "workspace_context",
+      "stage_instructions",
+      "clarification_context",
+      "memory_context",
     ]);
+    expect(context.stablePrefix).toContain("Custom Agent Persona: research-pro");
+    expect(context.stablePrefix).toContain("Workspace tool protocol:");
+    expect(context.stablePrefix).toContain("<available_skills>");
+    expect(context.stablePrefix).not.toContain("Ora project workspace context:");
+    expect(context.stablePrefix).not.toContain("Resolved clarification:");
     expect(context.system).toContain("Custom Agent Persona: research-pro");
     expect(context.system).toContain("Act as the configured research system agent.");
     expect(context.system).toContain("Ora agent profile: researcher");
@@ -100,6 +105,7 @@ describe("buildAgentPromptContext", () => {
     });
 
     expect(context.sections.map((section) => section.id)).toEqual(["stage_instructions"]);
+    expect(context.stablePrefix).toBe("");
     expect(context.system).toBe("You are the solo agent.");
   });
 

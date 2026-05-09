@@ -65,7 +65,7 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
-import type { ModelMessage, ModelResponse } from "../providers/index.js";
+import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import { RuntimeCompletionController } from "./runtime-completion.js";
 import {
   coerceNoToolResponse as coerceNoToolResponseWithDeps,
@@ -86,7 +86,7 @@ import {
   requestIntentClarificationQuestion,
   resolveClarificationAnswer,
 } from "./runtime-clarifications.js";
-import { buildAgentPromptContext, userClarificationContextPrompt } from "./prompt-context.js";
+import { buildAgentPromptContext, temporalContextPrompt, userClarificationContextPrompt } from "./prompt-context.js";
 import {
   attachedLocalFilesSystemPrompt,
   attachedProjectFilesSystemPrompt,
@@ -984,6 +984,7 @@ export async function executeRuntimeKernel(
     config: RunConfig;
     messages: ModelMessage[];
     system: string;
+    providerCache?: ModelRequest["providerCache"];
     nativeTools: ReturnType<RuntimeToolExecutor["toolDefinitions"]>;
     streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
     reason: CompletionStopReason;
@@ -1001,6 +1002,7 @@ export async function executeRuntimeKernel(
           {
             messages,
             system: forcedFinalSystemPrompt(params.system, params.reason),
+            providerCache: params.providerCache,
             maxTokens: params.config.budget?.maxTokens,
             tools: params.nativeTools,
             toolChoice: params.nativeTools.length > 0 ? "none" : undefined,
@@ -1198,6 +1200,11 @@ export async function executeRuntimeKernel(
     attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
   ].filter(Boolean).join("\n\n") || undefined;
   const clarificationContext = userClarificationContextPrompt(input.context);
+  const temporalContext = temporalContextPrompt({
+    createdAt: input.createdAt,
+    context: input.context,
+    now,
+  });
   const userLanguageContext = userFacingLanguagePrompt(input.prompt);
   const memoryContext =
     typeof config.metadata.memoryPromptOverlay === "string"
@@ -1271,6 +1278,7 @@ export async function executeRuntimeKernel(
       systemAgentOverride: systemOverlay,
       stageSystem: [userLanguageContext, system].join("\n\n"),
       workspaceContext,
+      temporalContext,
       clarificationContext,
       memoryContext,
       taskIntentContext,
@@ -1278,7 +1286,7 @@ export async function executeRuntimeKernel(
       toolProtocol: toolPrompt,
       skillSnippets: snippets,
       toolIds,
-    }).system;
+    });
   };
 
   kernelRuntimeContext.setNodeLoopDepsFactory(() => ({
@@ -1425,15 +1433,19 @@ export async function executeRuntimeKernel(
       try {
         const effectiveCustomAgentId = customAgentIdForAgent(params.agentId, params.customAgentId);
         const effectiveToolIds = effectiveAgentToolIds(params.agentId, effectiveCustomAgentId);
+        const runtimePromptContext = withAgentRuntimeContext(params.system, {
+          agentId: params.agentId,
+          customAgentId: effectiveCustomAgentId,
+        });
         const response = await runNodeRuntimeLoopForAgent({
           agentId: params.agentId,
           nodeId: params.planItemId ?? params.agentId,
           title: params.title,
           prompt: params.prompt,
-          system: withAgentRuntimeContext(params.system, {
-            agentId: params.agentId,
-            customAgentId: effectiveCustomAgentId,
-          }),
+          system: runtimePromptContext.system,
+          providerCache: runtimePromptContext.stablePrefix
+            ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
+            : undefined,
           toolIds: effectiveToolIds,
         });
 
@@ -1680,6 +1692,14 @@ export async function executeRuntimeKernel(
     kernelRuntimeContext.activateAgent(agentId);
     setTopologyStatus(agentId, "running");
     emit("agent.started", { title, planItemId: frame.planItemId }, { agentId, nodeId });
+    const runtimePromptContext = withAgentRuntimeContext(
+      [
+        "You are resuming a paused Ora runtime frame.",
+        "Continue from the provided conversation and tool results.",
+        "Do not restart earlier mode stages or repeat completed work.",
+      ].join("\n"),
+      { agentId },
+    );
     const response = await runNodeRuntimeLoopForAgent({
       agentId,
       nodeId,
@@ -1689,14 +1709,10 @@ export async function executeRuntimeKernel(
         "Use the conversation follow-up and runtime state to complete only the remaining work.",
         "If the plan list is incomplete, update it with plan.update before finishing.",
       ].join("\n"),
-      system: withAgentRuntimeContext(
-        [
-          "You are resuming a paused Ora runtime frame.",
-          "Continue from the provided conversation and tool results.",
-          "Do not restart earlier mode stages or repeat completed work.",
-        ].join("\n"),
-        { agentId },
-      ),
+      system: runtimePromptContext.system,
+      providerCache: runtimePromptContext.stablePrefix
+        ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
+        : undefined,
       toolIds: effectiveAgentToolIds(agentId),
     });
 

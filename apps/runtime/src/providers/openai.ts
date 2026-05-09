@@ -2,6 +2,7 @@ import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsRes
 import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractOpenAiUsage, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
+import { logLatency } from "../latency-log.js";
 
 function createError(status: number, body: string, providerId: string) {
   return new Error(`OpenAI provider ${providerId} failed with ${status}: ${body}`);
@@ -211,6 +212,10 @@ export function createOpenAIProvider(
       config.temperature ?? request.temperature
     );
 
+    const tNow = Date.now();
+    const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
+    (globalThis as any).__latencyFetchStart = tNow;
+    logLatency("invokeModel→fetch", invokeModelElapsed);
     const response = await fetchImpl(resolveProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
@@ -238,6 +243,8 @@ export function createOpenAIProvider(
       const data = JSON.parse(message.data) as unknown;
       if (!sawStreamFrame) {
         sawStreamFrame = true;
+        const fetchElapsed = Date.now() - (((globalThis as any).__latencyFetchStart as number) ?? 0);
+        logLatency("fetch→firstSSE", fetchElapsed);
         await callbacks?.onStreamEvent?.({ kind: "sse_frame", streamMode: "sse", raw: data });
       }
       const delta = openAiResponsesDelta(data);

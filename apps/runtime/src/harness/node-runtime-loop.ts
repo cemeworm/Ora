@@ -48,6 +48,7 @@ import { registerRuntimeToolAttempt } from "./runtime-tool-attempt.js";
 import { codeDevelopmentToolBoundaryError } from "./runtime-tool-boundary.js";
 import { RuntimeToolCallService } from "./runtime-tool-call-service.js";
 import { RuntimeToolRecoveryService } from "./runtime-tool-recovery-service.js";
+import { logLatency } from "../latency-log.js";
 
 export type NodeRuntimeLoopState =
   | "pending"
@@ -74,6 +75,7 @@ export interface RunNodeRuntimeLoopParams {
   title: string;
   prompt: string;
   system: string;
+  providerCache?: ModelRequest["providerCache"];
   toolIds: string[];
   /** Optional per-node timeout in milliseconds. If set, the node automatically
    *  transitions to `degraded` if execution exceeds this duration. */
@@ -159,6 +161,7 @@ export interface RunNodeRuntimeLoopDeps {
     config: RunConfig;
     messages: ModelMessage[];
     system: string;
+    providerCache?: ModelRequest["providerCache"];
     nativeTools: ReturnType<RuntimeToolExecutor["toolDefinitions"]>;
     streamCallbacks?: Parameters<typeof invokeRunProviderStream>[2];
     reason: CompletionStopReason;
@@ -605,6 +608,7 @@ export async function runNodeRuntimeLoop(
         config,
         messages: [...nextMessages],
         system: params.system,
+        providerCache: params.providerCache,
         nativeTools: [...nextNativeTools],
         streamCallbacks,
         reason,
@@ -728,6 +732,7 @@ export async function runNodeRuntimeLoop(
           params.system,
           completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
         ),
+    providerCache: params.providerCache,
     maxTokens: config.budget?.maxTokens,
     tools: nativeTools,
     toolChoice:
@@ -739,6 +744,10 @@ export async function runNodeRuntimeLoop(
   };
   let response: ModelResponse;
   try {
+    const tNow = Date.now();
+    const kernelElapsed = tNow - (((globalThis as any).__latencyKernelStart as number) ?? tNow);
+    (globalThis as any).__latencyInvokeModelStart = tNow;
+    logLatency("kernel→invokeModel", kernelElapsed);
     response = await invokeModel(initialRequest, {
       emitRetryModelState: initialToolsAllowed,
     });
@@ -787,6 +796,7 @@ export async function runNodeRuntimeLoop(
         config,
         messages,
         system: params.system,
+        providerCache: params.providerCache,
         nativeTools,
         streamCallbacks,
         reason: completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
@@ -855,6 +865,7 @@ export async function runNodeRuntimeLoop(
         config,
         messages,
         system: params.system,
+        providerCache: params.providerCache,
         nativeTools,
         streamCallbacks,
         reason: attemptDecision.reason,
@@ -911,6 +922,7 @@ export async function runNodeRuntimeLoop(
     config,
     messages,
     system: params.system,
+    providerCache: params.providerCache,
     nativeTools,
     streamCallbacks,
     reason: "runtime_tool_loop_limit",

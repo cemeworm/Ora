@@ -7,6 +7,7 @@ export type AgentPromptSectionId =
   | "agent_profile"
   | "stage_instructions"
   | "workspace_context"
+  | "temporal_context"
   | "clarification_context"
   | "memory_context"
   | "task_intent_context"
@@ -29,6 +30,7 @@ export interface AgentPromptContextInput {
   systemAgentOverride?: string;
   stageSystem: string;
   workspaceContext?: string;
+  temporalContext?: string;
   clarificationContext?: string;
   memoryContext?: string;
   taskIntentContext?: string;
@@ -40,28 +42,33 @@ export interface AgentPromptContextInput {
 
 export interface BuiltAgentPromptContext {
   system: string;
+  stablePrefix: string;
   sections: AgentPromptSection[];
 }
 
 export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAgentPromptContext {
+  // Order sections from the most reusable prompt prefix to the highest-churn run-local context.
   const sections = [
     promptSection("custom_persona", "Custom Agent Persona", input.customPersona),
     promptSection("system_agent_override", "System Agent Override", input.systemAgentOverride),
     promptSection("agent_system_prompt", "Agent System Prompt", input.profile?.systemPrompt),
     promptSection("agent_profile", "Agent Profile", profileSection(input.agentId, input.profile, input.customAgentId)),
-    promptSection("stage_instructions", "Stage Instructions", input.stageSystem),
-    promptSection("workspace_context", "Workspace Context", input.workspaceContext),
-    promptSection("clarification_context", "Clarification Context", input.clarificationContext),
-    promptSection("memory_context", "Memory Context", input.memoryContext),
-    promptSection("task_intent_context", "Task Intent", input.taskIntentContext),
-    promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
     promptSection("tool_protocol", "Tool Protocol", input.toolProtocol),
+    promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
     ...skillSections(input.skillSnippets),
     promptSection("mcp_deferred_tools", "MCP / Deferred Tools", mcpDeferredToolsSection(input.toolIds)),
+    promptSection("task_intent_context", "Task Intent", input.taskIntentContext),
+    promptSection("workspace_context", "Workspace Context", input.workspaceContext),
+    promptSection("stage_instructions", "Stage Instructions", input.stageSystem),
+    promptSection("temporal_context", "Temporal Context", input.temporalContext),
+    promptSection("clarification_context", "Clarification Context", input.clarificationContext),
+    promptSection("memory_context", "Memory Context", input.memoryContext),
   ].filter((section): section is AgentPromptSection => Boolean(section));
 
+  const stablePrefix = stablePromptPrefix(sections);
   return {
     sections,
+    stablePrefix,
     system: sections.map((section) => section.content).join("\n\n"),
   };
 }
@@ -83,6 +90,38 @@ export function userClarificationContextPrompt(context: UserTaskInput["context"]
     ...entries,
     "Treat these clarifications as explicit constraints for the current run. Do not ignore them or replace them with assumptions.",
   ].join("\n");
+}
+
+export function temporalContextPrompt(params: {
+  createdAt?: number;
+  context?: UserTaskInput["context"];
+  now?: () => number;
+}): string | undefined {
+  const timestamp = Number.isFinite(params.createdAt)
+    ? params.createdAt
+    : params.now
+      ? params.now()
+      : undefined;
+  if (timestamp === undefined) {
+    return undefined;
+  }
+
+  const timezone = resolvePromptTimezone(params.context);
+  const localDate = formatZonedDate(timestamp, timezone);
+  const localDateTime = formatZonedDateTime(timestamp, timezone);
+  const utcDateTime = new Date(timestamp).toISOString();
+  const locale = resolvePromptLocale(params.context);
+
+  return [
+    "Current temporal context:",
+    `- Current date: ${localDate}`,
+    `- Current local time: ${localDateTime}`,
+    `- Timezone: ${timezone}`,
+    locale ? `- Locale: ${locale}` : undefined,
+    `- Current UTC time: ${utcDateTime}`,
+    "Anchor all time-sensitive reasoning to this temporal context.",
+    "If the user asks for latest, recent, today, this week, this month, or other freshness-sensitive facts, prefer web search and cite exact dates in the answer.",
+  ].filter(Boolean).join("\n");
 }
 
 function promptSection(
@@ -155,6 +194,25 @@ function skillSections(snippets: string[] | undefined): AgentPromptSection[] {
     }));
 }
 
+const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
+  "custom_persona",
+  "system_agent_override",
+  "agent_system_prompt",
+  "agent_profile",
+  "tool_protocol",
+  "available_skills",
+  "skills",
+  "mcp_deferred_tools",
+  "task_intent_context",
+]);
+
+function stablePromptPrefix(sections: readonly AgentPromptSection[]): string {
+  return sections
+    .filter((section) => STABLE_PROMPT_PREFIX_SECTION_IDS.has(section.id))
+    .map((section) => section.content)
+    .join("\n\n");
+}
+
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -172,4 +230,95 @@ function mcpDeferredToolsSection(toolIds: readonly string[] | undefined): string
     "Use mcp.listTools or mcp.readResource to inspect server capabilities before calling unknown MCP tools.",
     "Use mcp.call only when the server, tool name, and arguments are known from the user's request or discovery results.",
   ].join("\n");
+}
+
+function resolvePromptTimezone(context: UserTaskInput["context"] | undefined): string {
+  const candidates = [
+    readNestedString(context, ["userTemporalContext", "timezone"]),
+    readString(context?.timezone),
+    readString(context?.timeZone),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && isValidTimezone(candidate)) {
+      return candidate;
+    }
+  }
+  const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return isValidTimezone(localTimezone) ? localTimezone : "UTC";
+}
+
+function resolvePromptLocale(context: UserTaskInput["context"] | undefined): string | undefined {
+  return (
+    readNestedString(context, ["userTemporalContext", "locale"])
+    ?? readString(context?.locale)
+    ?? readString(context?.language)
+  );
+}
+
+function formatZonedDate(timestamp: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  return `${partValue(parts, "year")}-${partValue(parts, "month")}-${partValue(parts, "day")}`;
+}
+
+function formatZonedDateTime(timestamp: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(timestamp));
+  return [
+    `${partValue(parts, "year")}-${partValue(parts, "month")}-${partValue(parts, "day")}`,
+    `${partValue(parts, "hour")}:${partValue(parts, "minute")}:${partValue(parts, "second")}`,
+  ].join(" ");
+}
+
+function partValue(
+  parts: Intl.DateTimeFormatPart[],
+  type: Intl.DateTimeFormatPartTypes,
+): string {
+  return parts.find((part) => part.type === type)?.value ?? "";
+}
+
+function isValidTimezone(value: string | undefined): value is string {
+  if (!value?.trim()) {
+    return false;
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readNestedString(
+  value: unknown,
+  path: readonly string[],
+): string | undefined {
+  let current: unknown = value;
+  for (const segment of path) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return readString(current);
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }

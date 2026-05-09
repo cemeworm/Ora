@@ -2,6 +2,7 @@ import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsRes
 import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractAnthropicUsage, extractTextFromValue, failMissingApiKey, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelMessage, ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { anthropicTextDelta, emitTextDelta, readSseMessages } from "./streaming.js";
+import { logLatency } from "../latency-log.js";
 
 function parseAnthropicModels(raw: unknown): ProviderModelsResult["models"] {
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
@@ -160,13 +161,19 @@ export function createAnthropicStyleProvider(
   const buildPayload = (request: Parameters<ModelProvider>[0]) => {
     const messages = normalizeMessages(request);
     const { instructions, dialog } = splitInstructionMessages(messages);
-    const system = [request.system?.trim(), instructions].filter(Boolean).join("\n\n");
+    const system = request.system?.trim();
     const conversation: ModelMessage[] = dialog.length > 0 ? dialog : [{ role: "user", content: request.prompt?.trim() || "" }];
     const cacheControl = anthropicCacheControl(config, settings);
     const stablePrefixMessageCount = Math.max(0, request.providerCache?.stablePrefixMessageCount ?? 0);
     const messageCacheBoundary = cacheControl && stablePrefixMessageCount > 0
       ? Math.min(stablePrefixMessageCount, conversation.length) - 1
       : -1;
+    const systemValue = anthropicSystemValue({
+      system,
+      instructions,
+      stablePrefix: request.providerCache?.stableSystemPrefix,
+      cacheControl: cacheControl && messageCacheBoundary < 0 ? cacheControl : undefined,
+    });
 
     const body = appendIfDefined(
       {
@@ -212,10 +219,10 @@ export function createAnthropicStyleProvider(
         }),
       },
       "system",
-      anthropicSystemValue(system, cacheControl && messageCacheBoundary < 0 ? cacheControl : undefined)
+      systemValue
     );
     const rawTools = anthropicTools(request.tools);
-    const tools = cacheControl && !system && messageCacheBoundary < 0
+    const tools = cacheControl && !systemValue && messageCacheBoundary < 0
       ? withAnthropicCacheControl(rawTools, cacheControl)
       : rawTools;
     const withTools = appendIfDefined(body, "tools", tools);
@@ -288,6 +295,10 @@ export function createAnthropicStyleProvider(
       throw failMissingApiKey(config.id, settings.fallbackEnvName);
     }
 
+    const tNow = Date.now();
+    const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
+    (globalThis as any).__latencyFetchStart = tNow;
+    logLatency("invokeModel→fetch", invokeModelElapsed);
     const response = await fetchImpl(endpoint(), {
       method: "POST",
       headers: {
@@ -310,6 +321,8 @@ export function createAnthropicStyleProvider(
       const data = JSON.parse(message.data) as unknown;
       if (!sawStreamFrame) {
         sawStreamFrame = true;
+        const fetchElapsed = Date.now() - (((globalThis as any).__latencyFetchStart as number) ?? 0);
+        logLatency("fetch→firstSSE", fetchElapsed);
         await callbacks?.onStreamEvent?.({ kind: "sse_frame", streamMode: "sse", raw: data });
       }
       const delta = anthropicTextDelta(data);
@@ -358,18 +371,70 @@ function anthropicCacheControl(
   return { type: "ephemeral", ttl: config.promptCache?.ttl ?? "5m" };
 }
 
-function anthropicSystemValue(system: string, cacheControl: AnthropicCacheControl | undefined) {
-  if (!system) {
+type AnthropicSystemBlock = {
+  type: "text";
+  text: string;
+  cache_control?: AnthropicCacheControl;
+};
+
+function anthropicSystemValue(params: {
+  system?: string;
+  instructions?: string;
+  stablePrefix?: string;
+  cacheControl: AnthropicCacheControl | undefined;
+}) {
+  const system = params.system?.trim() ?? "";
+  const instructions = params.instructions?.trim() ?? "";
+  if (!system && !instructions) {
     return undefined;
   }
-  if (!cacheControl) {
-    return system;
+  if (!params.cacheControl) {
+    return [system, instructions].filter(Boolean).join("\n\n");
   }
-  return [{
-    type: "text",
-    text: system,
-    cache_control: cacheControl,
-  }];
+
+  const stablePrefix = stableAnthropicSystemPrefix(system, params.stablePrefix);
+  if (stablePrefix) {
+    return anthropicSystemBlocks([
+      { type: "text", text: stablePrefix, cache_control: params.cacheControl },
+      trimmedAnthropicSystemSuffix(system, stablePrefix),
+      instructions ? { type: "text", text: instructions } : undefined,
+    ]);
+  }
+
+  if (!system) {
+    return instructions;
+  }
+
+  return anthropicSystemBlocks([
+    { type: "text", text: system, cache_control: params.cacheControl },
+    instructions ? { type: "text", text: instructions } : undefined,
+  ]);
+}
+
+function stableAnthropicSystemPrefix(system: string, stablePrefix: string | undefined): string | undefined {
+  const trimmedStablePrefix = stablePrefix?.trim();
+  if (!trimmedStablePrefix || !system.startsWith(trimmedStablePrefix)) {
+    return undefined;
+  }
+  return trimmedStablePrefix;
+}
+
+function trimmedAnthropicSystemSuffix(system: string, stablePrefix: string): AnthropicSystemBlock | undefined {
+  const suffix = system.slice(stablePrefix.length).trim();
+  return suffix ? { type: "text", text: suffix } : undefined;
+}
+
+function anthropicSystemBlocks(
+  blocks: Array<AnthropicSystemBlock | undefined>,
+): AnthropicSystemBlock[] | string | undefined {
+  const defined = blocks.filter((block): block is AnthropicSystemBlock => Boolean(block));
+  if (defined.length === 0) {
+    return undefined;
+  }
+  if (defined.length === 1 && !defined[0].cache_control) {
+    return defined[0].text;
+  }
+  return defined;
 }
 
 function withAnthropicCacheControl<T extends Record<string, unknown>>(

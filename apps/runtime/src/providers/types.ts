@@ -39,6 +39,7 @@ export interface ModelRequest {
   toolChoice?: ModelToolChoice;
   providerCache?: {
     stablePrefixMessageCount?: number;
+    stableSystemPrefix?: string;
     openaiPreviousResponseId?: string;
     openaiDeltaMessages?: readonly ModelMessage[];
   };

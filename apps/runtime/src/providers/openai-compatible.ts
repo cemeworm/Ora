@@ -22,6 +22,7 @@ import {
 } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiChatDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
+import { logLatency } from "../latency-log.js";
 
 function createError(status: number, body: string, providerId: string) {
   return new Error(`OpenAI-compatible provider ${providerId} failed with ${status}: ${body}`);
@@ -389,6 +390,10 @@ export function createOpenAICompatibleProvider(
       : {};
     const payload = { ...basePayload, stream: true, ...streamOptions };
 
+    const tNow = Date.now();
+    const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
+    (globalThis as any).__latencyFetchStart = tNow;
+    logLatency("invokeModel→fetch", invokeModelElapsed);
     const response = await fetchImpl(resolveCompatibleProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
@@ -415,6 +420,8 @@ export function createOpenAICompatibleProvider(
       const data = JSON.parse(message.data) as unknown;
       if (!sawStreamFrame) {
         sawStreamFrame = true;
+        const fetchElapsed = Date.now() - (((globalThis as any).__latencyFetchStart as number) ?? 0);
+        logLatency("fetch→firstSSE", fetchElapsed);
         await callbacks?.onStreamEvent?.({ kind: "sse_frame", streamMode: "sse", raw: data });
       }
       const delta = protocol === "responses"
