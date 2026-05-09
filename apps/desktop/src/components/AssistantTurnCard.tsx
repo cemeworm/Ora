@@ -101,6 +101,9 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   const canShowActions = canCopyContent || canSubmitFeedback;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
   const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
+  const timelineContainsAssistantBody = timelineItems.some((item) =>
+    item.kind === "assistant_text" || item.kind === "final_text",
+  );
   const showThinkingIndicator = shouldShowThinkingIndicator({
     isPlaceholder,
     turn,
@@ -194,7 +197,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
             />
           ) : null}
 
-          {turn?.hasProposedPlan || hasTimeline || !bodyContent.trim() ? null : (
+          {turn?.hasProposedPlan || (hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={bodyContent}

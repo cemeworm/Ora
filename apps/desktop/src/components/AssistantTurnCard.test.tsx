@@ -1500,6 +1500,44 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("正在思考");
   });
 
+  it("keeps the assistant body visible when the timeline only contains progress rows", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [{
+        id: "progress-1",
+        kind: "status_group",
+        summary: "已访问 1 个网页/搜索",
+        timestamp: "00:01",
+        status: "active",
+        steps: [
+          processStep("web-1", "active", "已查看 https://example.com/article。", {
+            label: "浏览网页",
+            contextLabel: "https://example.com/article",
+          }),
+        ],
+      }],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+      activeLoadingTarget: { kind: "timeline", itemId: "progress-1" },
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="好的，以下是我整理出的结论。" turn={turn} />,
+    );
+
+    expect(html).toContain("已访问 1 个网页/搜索");
+    expect(html).toContain("好的，以下是我整理出的结论。");
+  });
+
   it("renders PlanCard for pending plan decisions even when the turn is a placeholder", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
