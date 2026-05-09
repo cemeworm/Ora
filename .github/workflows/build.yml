@@ -31,6 +31,32 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Validate Tauri signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import binascii
+          import os
+          import re
+          import sys
+
+          key = os.environ.get("TAURI_SIGNING_PRIVATE_KEY", "")
+          if not key.strip():
+              sys.exit("TAURI_SIGNING_PRIVATE_KEY is empty.")
+
+          compact_key = "".join(key.split())
+          invalid = re.search(r"[^A-Za-z0-9+/=]", compact_key)
+          if invalid:
+              sys.exit(f"TAURI_SIGNING_PRIVATE_KEY contains an invalid base64 character at offset {invalid.start()}. Recreate the GitHub secret from the raw Tauri private key.")
+
+          try:
+              base64.b64decode(compact_key, validate=True)
+          except binascii.Error as error:
+              sys.exit(f"TAURI_SIGNING_PRIVATE_KEY is not valid base64: {error}")
+          PY
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
