@@ -27,6 +27,14 @@ if needs_pnpm_install; then
   pnpm install --frozen-lockfile
 fi
 
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  echo "❌ TAURI_SIGNING_PRIVATE_KEY is not set." >&2
+  echo "   The tauri.conf.json enables createUpdaterArtifacts which requires a signing key." >&2
+  echo "   Either set TAURI_SIGNING_PRIVATE_KEY in your environment, or" >&2
+  echo "   set bundle.createUpdaterArtifacts to false in tauri.conf.json for unsigned builds." >&2
+  exit 1
+fi
+
 echo "Building Ora desktop app..."
 pnpm --filter @ora/desktop tauri build
 
