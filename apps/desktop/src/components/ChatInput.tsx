@@ -42,6 +42,7 @@ import { ClarificationPanel } from "./ClarificationPanel";
 import { PlanDecisionPanel } from "./PlanDecisionPanel";
 import { PlanStepsTray } from "./PlanStepsTray";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
+import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -49,7 +50,7 @@ interface ChatInputProps {
   sessionId: string;
   composerPrompt: string;
   isLoading: boolean;
-  isRunning: boolean;
+  runInteractionState: DesktopRunInteractionState;
   activeMode?: ModeCard;
   modeOptions: ModeCard[];
   selectedModeSelection: ModeSelection;
@@ -92,14 +93,14 @@ interface ChatInputProps {
 
 export function getComposerInteractivity({
   composerPrompt,
-  isLoading,
+  runInteractionState,
 }: {
   composerPrompt: string;
-  isLoading: boolean;
+  runInteractionState: DesktopRunInteractionState;
 }) {
   return {
     canEditText: true,
-    canSubmit: composerPrompt.trim().length > 0 && !isLoading,
+    canSubmit: composerPrompt.trim().length > 0 && runInteractionState.canSubmit,
   };
 }
 
@@ -171,7 +172,7 @@ export function ChatInput({
   sessionId,
   composerPrompt,
   isLoading,
-  isRunning,
+  runInteractionState,
   activeMode,
   modeOptions,
   selectedModeSelection,
@@ -229,7 +230,7 @@ export function ChatInput({
   >();
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const interactivity = getComposerInteractivity({ composerPrompt, isLoading });
+  const interactivity = getComposerInteractivity({ composerPrompt, runInteractionState });
   const selectedSkillIdSet = useMemo(
     () => new Set(selectedSkillIds),
     [selectedSkillIds],
@@ -364,7 +365,7 @@ export function ChatInput({
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (isRunning) {
+      if (runInteractionState.isProcessing) {
         onStopRun();
         return;
       }
@@ -621,7 +622,7 @@ export function ChatInput({
                 value={composerPrompt}
                 onChange={(e) => updatePrompt(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isRunning ? "" : "Message Ora"}
+                placeholder={runInteractionState.isProcessing ? "" : "Message Ora"}
                 disabled={!interactivity.canEditText}
                 rows={2}
                 className={cn(
@@ -884,11 +885,11 @@ export function ChatInput({
                   size="icon"
                   variant="outline"
                   className="rounded-full"
-                  onClick={isRunning ? onStopRun : onStartRun}
-                  disabled={!isRunning && !interactivity.canSubmit}
-                  title={isRunning ? "Stop run" : "Send message"}
+                  onClick={runInteractionState.isProcessing ? onStopRun : onStartRun}
+                  disabled={!runInteractionState.isProcessing && !interactivity.canSubmit}
+                  title={runInteractionState.isProcessing ? "Stop run" : "Send message"}
                 >
-                  {isRunning ? (
+                  {runInteractionState.isProcessing ? (
                     <Square size={14} />
                   ) : isLoading ? (
                     <LoaderCircle size={16} className="animate-spin" />

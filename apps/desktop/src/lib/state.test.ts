@@ -948,6 +948,48 @@ describe("desktop workbench state", () => {
     }]);
   });
 
+  it("records only first stream latency for an initial running snapshot stream", () => {
+    const sessionId = "session-initial-stream";
+    const runId = "run-initial-stream";
+    const prompt = "Hello.";
+    const runningSnapshot = testSnapshot({ runId, sessionId, updatedAt: 100 });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      pendingRun: { sessionId, prompt, createdAt: 90 },
+      isLoading: true,
+    };
+    const withHandle = workbenchReducer(state, {
+      type: "ATTACH_PENDING_RUN_HANDLE",
+      sessionId,
+      prompt,
+      runId,
+    });
+    const stream = {
+      runId,
+      fromSeq: 0,
+      nextSeq: 0,
+      status: "running",
+      events: [],
+      snapshot: runningSnapshot,
+    } as unknown as OraRunEventStream;
+
+    const afterStream = workbenchReducer(withHandle, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 120,
+    });
+
+    expect(afterStream.activeSnapshot?.runId).toBe(runId);
+    expect(afterStream.pendingRun).toBeUndefined();
+    expect(afterStream.activeSnapshot?.latency?.marks).toEqual([{
+      name: "firstRunStreamReceivedAt",
+      at: 120,
+      source: "desktop",
+      detail: { eventType: undefined, eventCount: 0 },
+    }]);
+  });
+
   it("merges sequential delta streams by appending delta-sized content", () => {
     const snapshot = testSnapshot({
       runId: "run-stream-text",

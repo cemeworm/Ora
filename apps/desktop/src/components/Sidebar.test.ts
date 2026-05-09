@@ -1,9 +1,41 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionStatusBadge, statusFromSession } from "./Sidebar";
+import {
+  SessionStatusBadge,
+  sidebarStatusForSession,
+  statusFromSession,
+} from "./Sidebar";
 import { translateCopy } from "../lib/i18n";
 import { checkOraReleaseUpdate, isReleaseNewer } from "../lib/releaseUpdate";
+import type { OraSessionSummary, OraStateSnapshot } from "../lib/runtimeClient";
+
+function sessionSummary(
+  overrides: Partial<OraSessionSummary> = {},
+): OraSessionSummary {
+  return {
+    sessionId: "session-1",
+    title: "新建对话",
+    turnCount: 1,
+    createdAt: 1000,
+    updatedAt: 2000,
+    latestRunId: "run-1",
+    status: "running",
+    ...overrides,
+  } as OraSessionSummary;
+}
+
+function activeSnapshot(
+  overrides: Partial<OraStateSnapshot> = {},
+): OraStateSnapshot {
+  return {
+    runId: "run-1",
+    sessionId: "session-1",
+    status: "succeeded",
+    updatedAt: 3000,
+    ...overrides,
+  } as OraStateSnapshot;
+}
 
 describe("sidebar session status", () => {
   it("uses durable runtime attention before legacy status fallbacks", () => {
@@ -55,6 +87,33 @@ describe("sidebar session status", () => {
       pendingToolCallIds: [],
       pendingClarificationIds: [],
     })).toBe("failed");
+  });
+
+  it("uses canonical interaction state for the selected session row", () => {
+    expect(
+      sidebarStatusForSession(sessionSummary({ status: "running" }), {
+        selectedSessionId: "session-1",
+        selectedTurnRunId: "run-1",
+        activeSessionDetail: undefined,
+        activeSnapshot: activeSnapshot({ status: "succeeded" }),
+        pendingRun: undefined,
+      }),
+    ).toBe("done");
+  });
+
+  it("keeps non-selected rows on session summary state", () => {
+    expect(
+      sidebarStatusForSession(sessionSummary({
+        sessionId: "session-2",
+        status: "running",
+      }), {
+        selectedSessionId: "session-1",
+        selectedTurnRunId: "run-1",
+        activeSessionDetail: undefined,
+        activeSnapshot: activeSnapshot({ status: "succeeded" }),
+        pendingRun: undefined,
+      }),
+    ).toBe("running");
   });
 });
 

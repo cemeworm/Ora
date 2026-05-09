@@ -601,4 +601,79 @@ describe("deriveRunInteractionState", () => {
       );
     }
   });
+
+  // ---- turnSnapshots authority tests ----
+
+  it("selected turn snapshot wins over activeSessionDetail when activeSnapshot absent", () => {
+    const result = deriveRunInteractionState({
+      selectedSessionId: "session-1",
+      sessionSummary: sessionSummary({ status: "succeeded" }),
+      activeSessionDetail: activeDetail({
+        turns: [turn({ runId: "run-1", status: "succeeded" })],
+      }),
+      turnSnapshots: {
+        "run-1": activeSnapshot({ runId: "run-1", status: "running" }),
+      },
+      selectedTurnRunId: "run-1",
+    });
+
+    expect(result).toMatchObject({
+      sourceRunId: "run-1",
+      status: "running",
+      isProcessing: true,
+      authority: "active_snapshot",
+    });
+  });
+
+  it("activeSnapshot wins over selected turn snapshot", () => {
+    const result = deriveRunInteractionState({
+      selectedSessionId: "session-1",
+      activeSnapshot: activeSnapshot({ runId: "run-2", status: "succeeded" }),
+      turnSnapshots: {
+        "run-1": activeSnapshot({ runId: "run-1", status: "running" }),
+      },
+      selectedTurnRunId: "run-1",
+    });
+
+    expect(result).toMatchObject({
+      sourceRunId: "run-2",
+      status: "done",
+      authority: "active_snapshot",
+    });
+  });
+
+  it("turn snapshot from different session ignored", () => {
+    const result = deriveRunInteractionState({
+      selectedSessionId: "session-1",
+      sessionSummary: sessionSummary({ sessionId: "session-1", status: "succeeded" }),
+      turnSnapshots: {
+        "run-1": activeSnapshot({ runId: "run-1", sessionId: "session-2", status: "running" }),
+      },
+      selectedTurnRunId: "run-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "done",
+      authority: "session_summary",
+    });
+  });
+
+  it("turn snapshot without selectedTurnRunId ignored", () => {
+    const result = deriveRunInteractionState({
+      selectedSessionId: "session-1",
+      sessionSummary: sessionSummary({ status: "succeeded" }),
+      activeSessionDetail: activeDetail({
+        turns: [turn({ runId: "run-1", status: "running" })],
+      }),
+      turnSnapshots: {
+        "run-1": activeSnapshot({ runId: "run-1", status: "succeeded" }),
+      },
+    });
+
+    // Falls through to activeSessionDetail turn (priority 3)
+    expect(result).toMatchObject({
+      status: "running",
+      authority: "active_turn",
+    });
+  });
 });

@@ -6177,6 +6177,37 @@ mod tests {
     }
 
     #[test]
+    fn process_bridge_forwards_immediate_stream_notification_after_start_response() {
+        let command = RuntimeCommandSpec::new(
+            "sh -c immediate-streaming-json-rpc",
+            "sh",
+            vec![
+                "-c".to_string(),
+                "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"runId\":\"run-0001\",\"status\":\"running\"}}'; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"runs.stream\",\"params\":{\"runId\":\"run-0001\",\"fromSeq\":0,\"events\":[],\"nextSeq\":0,\"status\":\"running\",\"snapshot\":{\"runId\":\"run-0001\",\"status\":\"running\"}}}'; sleep 1".to_string(),
+            ],
+            None,
+            Vec::new(),
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let response = run_process_json_rpc_with_notifications(
+            &command,
+            &request("runs.startStreaming", Some(json!({ "input": { "prompt": "hello" } }))),
+            Box::new(move |payload| {
+                let _ = sender.send(payload);
+            }),
+        )
+        .expect("streaming start should return the initial handle response");
+
+        assert_eq!(response.result.unwrap()["runId"], json!("run-0001"));
+        let notification = receiver
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .expect("immediate stream notification should be forwarded promptly");
+        assert_eq!(notification["runId"], json!("run-0001"));
+        assert_eq!(notification["events"], json!([]));
+        assert_eq!(notification["snapshot"]["status"], json!("running"));
+    }
+
+    #[test]
     fn process_bridge_forwards_stream_notifications_after_resume_response() {
         let command = RuntimeCommandSpec::new(
             "sh -c resume-streaming-json-rpc",

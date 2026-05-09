@@ -23,6 +23,7 @@ import { runnableProviderOptions } from "../lib/providerOptions";
 import { useWorkbench, type ComposerLocalFileAttachment } from "../lib/state";
 import { getWelcomeGreeting } from "../lib/welcomeGreeting";
 import { translateCopy, type AppLanguage } from "../lib/i18n";
+import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 
 const LOCAL_FILE_PREVIEW_MAX_BYTES = 256 * 1024;
 
@@ -38,8 +39,7 @@ interface ChatViewProps {
   checkpoints: CheckpointRecord[];
   composerPrompt: string;
   isLoading: boolean;
-  isRunning: boolean;
-  isApprovalRequired: boolean;
+  runInteractionState: DesktopRunInteractionState;
   selectedSession: SessionRun;
   selectedCustomAgentId?: string;
   projectLabel?: string;
@@ -133,8 +133,7 @@ export function ChatView({
   turnSnapshots,
   composerPrompt,
   isLoading,
-  isRunning,
-  isApprovalRequired,
+  runInteractionState,
   selectedSession,
   selectedCustomAgentId,
   projectLabel,
@@ -157,7 +156,7 @@ export function ChatView({
   onSelectModeSelection,
 }: ChatViewProps) {
   const { state, dispatch } = useWorkbench();
-  const showWelcome = chatMessages.length === 0 && !isRunning;
+  const showWelcome = chatMessages.length === 0 && !runInteractionState.isProcessing;
   const allProviders = state.providerRegistry?.providers ?? [];
   const providerOptions = runnableProviderOptions(allProviders, state.providerSecretStatuses);
   const activeProvider = getActiveChatProvider(
@@ -300,7 +299,7 @@ export function ChatView({
             taskIntent={state.taskIntent}
             permissionMode={state.permissionMode}
             language={state.language}
-            disabled={busyCommand !== undefined || isRunning}
+            disabled={busyCommand !== undefined || runInteractionState.isProcessing}
             onCreateAndRunBranchGroup={(params) => {
               onCreateAndRunBranchGroup(params);
               setBranchPanelOpen(false);
@@ -328,7 +327,7 @@ export function ChatView({
           sessionId={selectedSession.id}
           composerPrompt={composerPrompt}
           isLoading={isLoading}
-          isRunning={isRunning}
+          runInteractionState={runInteractionState}
           activeMode={activeMode}
           modeOptions={modeCards}
           selectedModeSelection={state.selectedModeSelection}

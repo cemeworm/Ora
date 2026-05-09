@@ -12,6 +12,7 @@ import type {
   TopologyNode,
 } from "../types";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
+import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import { cn } from "../lib/utils";
 
 interface TrailsDrawerProps {
@@ -25,6 +26,7 @@ interface TrailsDrawerProps {
   checkpoints: CheckpointRecord[];
   commandFeedback: string;
   planItems: PlanItem[];
+  runInteractionState: DesktopRunInteractionState;
   selectedAgent?: AgentProfile;
   selectedBeat?: RunBeat;
   selectedCheckpoint?: CheckpointRecord;
@@ -50,6 +52,7 @@ export function TrailsDrawer({
   selectedBeat,
   selectedCheckpoint,
   selectedNode,
+  runInteractionState,
   selectedSession,
   onForkRun,
   onResumeRun,
@@ -88,6 +91,7 @@ export function TrailsDrawer({
             selectedBeat={selectedBeat}
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
+            runInteractionState={runInteractionState}
             selectedSession={selectedSession}
             onForkRun={onForkRun}
             onResumeRun={onResumeRun}

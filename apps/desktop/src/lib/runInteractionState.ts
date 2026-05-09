@@ -37,6 +37,8 @@ export interface DeriveRunInteractionStateParams {
   sessionSummary?: OraSessionSummary;
   activeSessionDetail?: OraSessionDetail;
   activeSnapshot?: OraStateSnapshot;
+  /** Snapshots keyed by runId — used for selected turn snapshot authority. */
+  turnSnapshots?: Record<string, OraStateSnapshot>;
   selectedTurnRunId?: string;
   pendingRun?: PendingRunState;
 }
@@ -245,6 +247,7 @@ export function deriveRunInteractionState(
     sessionSummary,
     activeSessionDetail,
     activeSnapshot,
+    turnSnapshots,
     selectedTurnRunId,
     pendingRun,
   } = params;
@@ -260,13 +263,27 @@ export function deriveRunInteractionState(
     return deriveFromPendingRun(pendingRun);
   }
 
-  // Priority 2: activeSnapshot when it belongs to the selected session/run.
+  // Priority 2: activeSnapshot or selected turn snapshot when it belongs to the selected session/run.
   if (
     activeSnapshot &&
     sessionId &&
     snapshotBelongsToSession(activeSnapshot, sessionId)
   ) {
     return deriveFromSnapshot(activeSnapshot);
+  }
+
+  if (
+    selectedTurnRunId &&
+    turnSnapshots &&
+    sessionId
+  ) {
+    const selectedTurnSnapshot = turnSnapshots[selectedTurnRunId];
+    if (
+      selectedTurnSnapshot &&
+      snapshotBelongsToSession(selectedTurnSnapshot, sessionId)
+    ) {
+      return deriveFromSnapshot(selectedTurnSnapshot);
+    }
   }
 
   // Priority 3: active session detail — selected turn first, then session.

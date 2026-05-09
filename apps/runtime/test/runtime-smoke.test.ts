@@ -5907,7 +5907,15 @@ describe("Ora runtime smoke path", () => {
     })) as { runId: string; status: string };
 
     expect(run.status).toBe("running");
-    await waitFor(() => streams.some((stream) => stream.status === "succeeded" || stream.snapshot !== undefined));
+    expect(streams[0]).toMatchObject({
+      status: "running",
+      events: [],
+      snapshot: {
+        runId: run.runId,
+        status: "running",
+      },
+    });
+    await waitFor(() => streams.some((stream) => stream.status === "succeeded"));
 
     const deltaEvents = streams.flatMap((stream) => stream.events).filter((event) => event.type === "message.delta");
     expect(deltaEvents.length).toBeGreaterThan(1);

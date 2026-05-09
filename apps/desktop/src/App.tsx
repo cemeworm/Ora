@@ -21,6 +21,7 @@ import { OnboardingView } from "./components/onboarding/OnboardingView";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
+import { deriveRunInteractionState, type DesktopRunInteractionState } from "./lib/runInteractionState";
 import {
   readOnboardingStatus,
   writeOnboardingStatus,
@@ -217,7 +218,6 @@ function WorkbenchInner() {
     runtimeClient,
     viewModel,
     selectedSession,
-    runInteractionState,
     selectedNode,
     selectedBeat,
     selectedAgent,
@@ -723,6 +723,29 @@ function WorkbenchInner() {
     return scopedSnapshots;
   }, [state.activeSessionDetail, turnSnapshots, state.activeSnapshot]);
 
+  const runInteractionState: DesktopRunInteractionState = useMemo(() => {
+    const sessionSummary = state.sessions.find(
+      (s) => s.sessionId === state.selectedSessionId,
+    );
+    return deriveRunInteractionState({
+      selectedSessionId: state.selectedSessionId,
+      sessionSummary,
+      activeSessionDetail: state.activeSessionDetail,
+      activeSnapshot: state.activeSnapshot,
+      turnSnapshots: activeSessionTurnSnapshots,
+      selectedTurnRunId: state.selectedTurnRunId,
+      pendingRun: state.pendingRun,
+    });
+  }, [
+    state.selectedSessionId,
+    state.sessions,
+    state.activeSessionDetail,
+    state.activeSnapshot,
+    activeSessionTurnSnapshots,
+    state.selectedTurnRunId,
+    state.pendingRun,
+  ]);
+
   // Chat messages derived from events
   const pendingRunMessages = useMemo(() => {
     const pendingRun = state.pendingRun;
@@ -975,8 +998,6 @@ function WorkbenchInner() {
     topologyNodes,
     activeMode,
   } = viewModel;
-  const isRunning = runInteractionState.isProcessing;
-  const isApprovalRequired = runInteractionState.gateKind === "approval";
   const selectedProject = selectedSession.projectId
     ? state.projects.find(
         (project) => project.projectId === selectedSession.projectId,
@@ -1005,8 +1026,7 @@ function WorkbenchInner() {
             modeCards={modeCards}
             composerPrompt={state.promptText}
             isLoading={state.isLoading}
-            isRunning={isRunning}
-            isApprovalRequired={isApprovalRequired}
+            runInteractionState={runInteractionState}
             selectedSession={selectedSession}
             streamLines={streamLines}
             topologyEdges={topologyEdges}
@@ -1090,6 +1110,7 @@ function WorkbenchInner() {
                   selectedBeat={selectedBeat}
                   selectedCheckpoint={selectedCheckpoint}
                   selectedNode={selectedNode}
+                  runInteractionState={runInteractionState}
                   selectedSession={selectedSession}
                   onForkRun={actions.forkRun}
                   onResumeRun={actions.resumeRun}

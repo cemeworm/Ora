@@ -1474,6 +1474,7 @@ export class LocalRunStore {
         event,
       ),
     });
+    streamingSession.publish([], liveSnapshot);
 
     const applyLiveEvent = (event: OraEventEnvelope) => {
       liveSnapshot = streamingSession.applyLiveEvent(event) ?? liveSnapshot;

@@ -15,11 +15,16 @@ import {
   Settings,
   Sparkles,
 } from "lucide-react";
-import { useWorkbenchDispatch } from "../lib/state";
+import { useWorkbenchDispatch, type WorkbenchState } from "../lib/state";
 import {
   getSharedRuntimeClient,
   type OraRunAttention,
+  type OraSessionSummary,
 } from "../lib/runtimeClient";
+import {
+  deriveRunInteractionState,
+  type DesktopRunInteractionState,
+} from "../lib/runInteractionState";
 import { checkOraReleaseUpdate, type ReleaseUpdateStatus } from "../lib/releaseUpdate";
 import { buildSessionSearchResults, type SessionSearchResult } from "../lib/sessionSearch";
 import { useRunActions } from "../lib/useRunActions";
@@ -68,6 +73,58 @@ export function statusFromSession(
   if (status === "failed") return "failed";
   if (status === "running" || status === "queued") return "running";
   return "done";
+}
+
+function statusFromRunInteractionState(
+  state: DesktopRunInteractionState,
+): RunStatus {
+  switch (state.status) {
+    case "queued":
+    case "running":
+      return "running";
+    case "approval_required":
+      return "approval_required";
+    case "clarification_required":
+      return "clarification_required";
+    case "decision_needed":
+      return "decision_needed";
+    case "paused":
+      return "paused";
+    case "cancelled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    case "idle":
+    case "done":
+      return "done";
+  }
+}
+
+export function sidebarStatusForSession(
+  session: OraSessionSummary,
+  state: Pick<
+    SidebarState,
+    | "selectedSessionId"
+    | "selectedTurnRunId"
+    | "activeSessionDetail"
+    | "activeSnapshot"
+    | "pendingRun"
+  >,
+): RunStatus {
+  if (session.sessionId !== state.selectedSessionId) {
+    return statusFromSession(session.status, session.attention);
+  }
+
+  return statusFromRunInteractionState(
+    deriveRunInteractionState({
+      selectedSessionId: state.selectedSessionId,
+      sessionSummary: session,
+      activeSessionDetail: state.activeSessionDetail,
+      activeSnapshot: state.activeSnapshot,
+      selectedTurnRunId: state.selectedTurnRunId,
+      pendingRun: state.pendingRun,
+    }),
+  );
 }
 
 function SidebarSectionHeader({
@@ -429,13 +486,17 @@ function SessionSearchDialog({
 }
 
 export interface SidebarState {
-  projects: import("../lib/state").WorkbenchState["projects"];
-  sessions: import("../lib/state").WorkbenchState["sessions"];
-  expandedProjectIds: import("../lib/state").WorkbenchState["expandedProjectIds"];
-  activeView: import("../lib/state").WorkbenchState["activeView"];
-  selectedSessionId: import("../lib/state").WorkbenchState["selectedSessionId"];
-  language: import("../lib/state").WorkbenchState["language"];
-  settingsOpen: import("../lib/state").WorkbenchState["settingsOpen"];
+  projects: WorkbenchState["projects"];
+  sessions: WorkbenchState["sessions"];
+  expandedProjectIds: WorkbenchState["expandedProjectIds"];
+  activeView: WorkbenchState["activeView"];
+  selectedSessionId: WorkbenchState["selectedSessionId"];
+  selectedTurnRunId: WorkbenchState["selectedTurnRunId"];
+  activeSessionDetail: WorkbenchState["activeSessionDetail"];
+  activeSnapshot: WorkbenchState["activeSnapshot"];
+  pendingRun: WorkbenchState["pendingRun"];
+  language: WorkbenchState["language"];
+  settingsOpen: WorkbenchState["settingsOpen"];
 }
 
 export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: SidebarState }) {
@@ -456,9 +517,18 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       .map((session) => ({
         id: session.sessionId,
         title: session.title,
-        status: statusFromSession(session.status, session.attention),
+        status: sidebarStatusForSession(session, sidebarState),
       })),
-  })), [sidebarState.expandedProjectIds, sidebarState.projects, sidebarState.sessions]);
+  })), [
+    sidebarState.expandedProjectIds,
+    sidebarState.projects,
+    sidebarState.sessions,
+    sidebarState.selectedSessionId,
+    sidebarState.selectedTurnRunId,
+    sidebarState.activeSessionDetail,
+    sidebarState.activeSnapshot,
+    sidebarState.pendingRun,
+  ]);
   const sessionSearchResults = useMemo(
     () => buildSessionSearchResults(sidebarState.sessions, sidebarState.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
     [sessionSearchQuery, sidebarState.projects, sidebarState.sessions],
@@ -469,8 +539,15 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
     .map((session) => ({
       id: session.sessionId,
       title: session.title,
-      status: statusFromSession(session.status, session.attention),
-    })), [sidebarState.sessions]);
+      status: sidebarStatusForSession(session, sidebarState),
+    })), [
+      sidebarState.sessions,
+      sidebarState.selectedSessionId,
+      sidebarState.selectedTurnRunId,
+      sidebarState.activeSessionDetail,
+      sidebarState.activeSnapshot,
+      sidebarState.pendingRun,
+    ]);
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = sidebarState.activeView === "chat";
   const visiblePrefetchSessionIds = useMemo(() => {

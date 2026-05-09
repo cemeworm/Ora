@@ -12,9 +12,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     expandedProjectIds: state.expandedProjectIds,
     activeView: state.activeView,
     selectedSessionId: state.selectedSessionId,
+    selectedTurnRunId: state.selectedTurnRunId,
+    activeSessionDetail: state.activeSessionDetail,
+    activeSnapshot: state.activeSnapshot,
+    pendingRun: state.pendingRun,
     language: state.language,
     settingsOpen: state.settingsOpen,
-  }), [state.projects, state.sessions, state.expandedProjectIds, state.activeView, state.selectedSessionId, state.language, state.settingsOpen]);
+  }), [
+    state.projects,
+    state.sessions,
+    state.expandedProjectIds,
+    state.activeView,
+    state.selectedSessionId,
+    state.selectedTurnRunId,
+    state.activeSessionDetail,
+    state.activeSnapshot,
+    state.pendingRun,
+    state.language,
+    state.settingsOpen,
+  ]);
 
   return (
     <SidebarProvider

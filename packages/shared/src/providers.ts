@@ -126,5 +126,6 @@ export type ProviderVerifyParams = z.infer<typeof ProviderVerifyParamsSchema>;
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
   { id: "anthropic-claude", type: "anthropic", label: "Claude", modelId: "claude-sonnet-4-20250514", enabled: false, maxTokens: 8192, contextWindow: 200000, capabilities: ["chat", "tool_use"], dropParams: [], headers: {} },
   { id: "openai-gpt", type: "openai", label: "GPT", modelId: "gpt-4o", enabled: false, maxTokens: 8192, contextWindow: 128000, capabilities: ["chat", "tool_use", "image_input", "json_mode"], dropParams: [], headers: {} },
+  { id: "deepseek", type: "openai_compatible", label: "DeepSeek", modelId: "deepseek-v4-flash", enabled: true, baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", protocol: "chat_completions", maxTokens: 8192, contextWindow: 128000, capabilities: ["chat", "tool_use", "reasoning", "json_mode"], dropParams: [], headers: {} },
   { id: "local-smoke", type: "local_smoke", label: "Smoke Model", modelId: "smoke-model", enabled: true, maxTokens: 1024, contextWindow: 4096, capabilities: ["chat"], dropParams: [], headers: {} },
 ];

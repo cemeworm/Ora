@@ -31,6 +31,7 @@ import type {
   TopologyNode,
 } from "../types";
 import { getSharedRuntimeClient, type OraRunTrail, type OraSessionRunSummary, type OraStateSnapshot } from "../lib/runtimeClient";
+import type { DesktopRunInteractionState } from "../lib/runInteractionState";
 import {
   buildAgentLanes,
   buildActiveMemorySummary,
@@ -87,6 +88,7 @@ interface TrailsTabsProps {
   selectedBeat?: RunBeat;
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
+  runInteractionState: DesktopRunInteractionState;
   selectedSession: SessionRun;
   onForkRun: () => void;
   onResumeRun: () => void;
@@ -106,6 +108,7 @@ export function TrailsTabs({
   selectedBeat,
   selectedCheckpoint,
   selectedNode,
+  runInteractionState,
   selectedSession,
   onForkRun,
   onResumeRun,
@@ -283,6 +286,7 @@ export function TrailsTabs({
             effectiveStrategy={effectiveStrategy}
             selectedCheckpoint={selectedCheckpoint}
             selectedNode={selectedNode}
+            runInteractionState={runInteractionState}
             selectedSession={selectedSession}
             summary={summary}
             timelineItems={timelineItems}
@@ -395,6 +399,7 @@ function TrailOverview({
   planProgress,
   policyDecisions,
   effectiveStrategy,
+  runInteractionState,
   selectedCheckpoint,
   selectedNode,
   selectedSession,
@@ -420,6 +425,7 @@ function TrailOverview({
   planProgress?: PlanProgressSummary;
   policyDecisions?: PolicyDecisionsSummary;
   effectiveStrategy: ReturnType<typeof buildEffectiveStrategySummary>;
+  runInteractionState: DesktopRunInteractionState;
   selectedCheckpoint?: CheckpointRecord;
   selectedNode?: TopologyNode;
   selectedSession: SessionRun;
@@ -434,7 +440,7 @@ function TrailOverview({
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
-        <OverviewMetric label="运行" value={selectedSession.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
+        <OverviewMetric label="运行" value={runInteractionState.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
         <OverviewMetric label="阶段" value={summary.currentStage} detail={summary.blockingGate === "无" ? "暂无人工关卡" : summary.blockingGate} />
         <OverviewMetric label="焦点" value={selectedNode?.label ?? "运行概览"} detail={selectedCheckpoint?.label ?? "未选择检查点"} />
         <OverviewMetric label="证据" value={`${timelineItems.length} 个事件`} detail={`${checkpoints.length} 个检查点 · ${artifacts.length} 个产物`} />
@@ -648,10 +654,10 @@ function TrailOverview({
           <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
             分叉
           </Button>
-          <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined}>
+          <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined || !runInteractionState.canResume}>
             继续
           </Button>
-          <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined}>
+          <Button variant="secondary" size="sm" onClick={onCancelRun} disabled={busyCommand !== undefined || !runInteractionState.canStop}>
             取消
           </Button>
         </div>

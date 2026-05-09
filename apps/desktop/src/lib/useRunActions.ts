@@ -6,7 +6,7 @@ import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
 import { useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
 import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
-import { deriveRunInteractionState } from "./runInteractionState";
+
 import { timeStart, timeEnd } from "./debugTiming";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
@@ -353,27 +353,6 @@ export function useRunActions() {
   }, [stableViewModel, dynamicViewModel]);
 
   const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
-
-  const runInteractionState = useMemo(() => {
-    const sessionSummary = state.sessions.find(
-      (s) => s.sessionId === state.selectedSessionId,
-    );
-    return deriveRunInteractionState({
-      selectedSessionId: state.selectedSessionId,
-      sessionSummary,
-      activeSessionDetail: state.activeSessionDetail,
-      activeSnapshot: state.activeSnapshot,
-      selectedTurnRunId: state.selectedTurnRunId,
-      pendingRun: state.pendingRun,
-    });
-  }, [
-    state.selectedSessionId,
-    state.sessions,
-    state.activeSessionDetail,
-    state.activeSnapshot,
-    state.selectedTurnRunId,
-    state.pendingRun,
-  ]);
 
   const selectedMode = state.modes.find((mode) => mode.id === state.selectedModeId);
   const selectedRunPattern = selectedMode?.family ?? state.selectedPattern;
@@ -1203,7 +1182,6 @@ export function useRunActions() {
     runtimeClient,
     viewModel,
     selectedSession,
-    runInteractionState,
     selectedNode,
     selectedBeat,
     selectedAgent,
