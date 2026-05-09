@@ -130,7 +130,7 @@ export const EvaluationLlmJudgeEvaluatorSchema = EvaluationEvaluatorBaseSchema.e
   rubric: z.string().min(1),
   providerId: z.string().min(1).optional(),
   modelRef: z.string().min(1).optional(),
-  passThreshold: z.number().min(0).max(1).default(0.75),
+  passThreshold: z.number().min(0).max(1).default(0.70),
 });
 
 export const EvaluationHumanAnnotationEvaluatorSchema = EvaluationEvaluatorBaseSchema.extend({

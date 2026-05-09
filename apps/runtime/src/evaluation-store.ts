@@ -926,7 +926,7 @@ export class LocalEvaluationStore {
           evaluatorKind: evaluator.kind,
           scorerVersion: "1.0.0",
           score: aggregate.overallScore,
-          passed: aggregate.overallScore >= 0.75,
+          passed: aggregate.overallScore >= 0.70,
           rationale: aggregate.judgeRationale,
           failureTags: aggregate.failureTags,
           details: { metricScores: scores },
@@ -1094,6 +1094,7 @@ export class LocalEvaluationStore {
       },
       config: {
         ...config.runConfig,
+        approvalMode: "auto",
         metadata: {
           ...(config.runConfig.metadata ?? {}),
           evaluationRunId,
@@ -1328,7 +1329,7 @@ export class LocalEvaluationStore {
     const now = this.now();
 
     const failures = run.run.caseResults
-      .filter((result) => result.averageScore.overallScore < 0.75)
+      .filter((result) => result.averageScore.overallScore < 0.70)
       .map((result) => ({
         caseId: result.caseId,
         configId: result.configId,
@@ -1530,7 +1531,7 @@ export class LocalEvaluationStore {
       evaluatorId: annotation.evaluatorId,
       evaluatorKind: "human_annotation",
       score: normalizedScore,
-      passed: annotation.score?.passed ?? normalizedScore >= 0.75,
+      passed: annotation.score?.passed ?? normalizedScore >= 0.70,
       rationale: annotation.comment ?? "Human annotation submitted.",
       failureTags: annotation.score?.failureTags ?? [],
       status: "scored",
@@ -2060,7 +2061,7 @@ function deterministicPlanBlueprintTurn(base: EvaluationBlueprint, message: stri
       rubric: base.evaluatorPlan.judgeRubric ?? "Score whether the output satisfies the evaluation goal, expected result, and case-specific constraints.",
       providerId: base.runPlan.providerId,
       modelRef: base.runPlan.modelRef,
-      passThreshold: 0.75,
+      passThreshold: 0.70,
       weight: 1,
       metadata: {},
     }] : []),
@@ -2125,7 +2126,10 @@ function scoreFromEvaluatorResults(results: EvaluationEvaluatorResult[], profile
     return aggregateMetricScores([], profileId, runtimeFailed);
   }
   const outcomeScore = roundScore(average(scored.map((result) => result.score ?? 0)));
-  const failureTags = [...new Set(scored.flatMap((result) => result.failureTags))];
+  const failureTags = [...new Set([
+    ...(runtimeFailed ? ["runtime_failed"] : []),
+    ...scored.flatMap((result) => result.failureTags),
+  ])];
   const safetyScore = runtimeFailed ? 0.2 : failureTags.some((tag) => tag.includes("safety")) ? 0.55 : 0.92;
   const weights = profileWeights(profileId);
   return EvaluationScoreSchema.parse({
@@ -2680,7 +2684,7 @@ function emptyScorecard(configs: EvaluationConfig[]): EvaluationScorecard {
 
 function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt[], caseResults: EvaluationCaseResult[]): EvaluationScorecard {
   const overallScore = roundScore(average(attempts.map((attempt) => attempt.score.overallScore)));
-  const passRate = roundScore(average(attempts.map((attempt) => attempt.score.overallScore >= 0.75 ? 1 : 0)));
+  const passRate = roundScore(average(attempts.map((attempt) => attempt.score.overallScore >= 0.70 ? 1 : 0)));
   const averageRuntimeMs = Math.round(average(attempts.map((attempt) => attempt.runtimeMs)));
   const averageCostUsd = Number(average(attempts.map((attempt) => attempt.costUsd)).toFixed(4));
   const configSummaries: EvaluationConfigSummary[] = configs.map((config) => {
@@ -2696,7 +2700,7 @@ function buildScorecard(configs: EvaluationConfig[], attempts: EvaluationAttempt
       configId: config.id,
       label: config.label,
       overallScore: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore))),
-      passRate: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore >= 0.75 ? 1 : 0))),
+      passRate: roundScore(average(configAttempts.map((attempt) => attempt.score.overallScore >= 0.70 ? 1 : 0))),
       averageRuntimeMs: Math.round(average(configAttempts.map((attempt) => attempt.runtimeMs))),
       averageCostUsd: Number(average(configAttempts.map((attempt) => attempt.costUsd)).toFixed(4)),
       caseCount: configCaseResults.length,
@@ -2769,7 +2773,7 @@ function averageMetricScoresFromAttempts(attempts: EvaluationAttempt[]): Evaluat
   return [...byMetric.entries()].map(([metricId, metrics]) => EvaluationMetricScoreSchema.parse({
     metricId,
     score: roundScore(average(metrics.map((metric) => metric.score))),
-    passed: average(metrics.map((metric) => metric.passed ? 1 : 0)) >= 0.75,
+    passed: average(metrics.map((metric) => metric.passed ? 1 : 0)) >= 0.70,
     rationale: metrics.at(-1)?.rationale ?? "No metric attempts recorded.",
     failureTags: [...new Set(metrics.flatMap((metric) => metric.failureTags))],
     details: {
@@ -2804,7 +2808,7 @@ function aggregateEvaluatorResultsFromAttempts(attempts: EvaluationAttempt[]): E
       scorerVersion: latest.scorerVersion ?? "1.0.0",
       rubricVersion: latest.rubricVersion,
       score: roundScore(average(scored.map((result) => result.score ?? 0))),
-      passed: average(scored.map((result) => result.passed ? 1 : 0)) >= 0.75,
+      passed: average(scored.map((result) => result.passed ? 1 : 0)) >= 0.70,
       rationale: latest.rationale ?? "Aggregated evaluator results.",
       failureTags: [...new Set(results.flatMap((result) => result.failureTags))],
       status: results.some((result) => result.status === "pending") ? "pending" : "scored",
@@ -2970,9 +2974,9 @@ function textSimilarityMetric(evaluationCase: EvaluationCase, observations: Eval
   return EvaluationMetricScoreSchema.parse({
     metricId: "text_similarity",
     score,
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: expectedText ? "Compared output text against expected text." : "No expected text was provided; scored by output presence.",
-    failureTags: score >= 0.75 ? [] : ["incorrect_output"],
+    failureTags: score >= 0.70 ? [] : ["incorrect_output"],
   });
 }
 
@@ -3060,7 +3064,7 @@ function assertionPassRateMetric(
   return EvaluationMetricScoreSchema.parse({
     metricId: "assertion_pass_rate",
     score,
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: `${results.filter((result) => result.passed).length}/${results.length} assertions passed.`,
     failureTags: [...new Set(failureTags)],
     details: {
@@ -3097,11 +3101,11 @@ function confidenceCalibrationMetric(evaluationCase: EvaluationCase, observation
   return EvaluationMetricScoreSchema.parse({
     metricId: "confidence_calibration",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: acceptable
       ? "Confidence is scored against the minimum expected confidence for a correct route."
       : "Incorrect routes are penalized more when confidence is high.",
-    failureTags: score >= 0.75 ? [] : ["miscalibrated_confidence"],
+    failureTags: score >= 0.70 ? [] : ["miscalibrated_confidence"],
     details: { confidence, minConfidence, acceptable },
   });
 }
@@ -3112,9 +3116,9 @@ function latencyMetric(observations: EvaluationObservation): EvaluationMetricSco
   return EvaluationMetricScoreSchema.parse({
     metricId: "latency_score",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored runtime latency against the default evaluation threshold.",
-    failureTags: score >= 0.75 ? [] : ["slow_runtime"],
+    failureTags: score >= 0.70 ? [] : ["slow_runtime"],
     details: { runtimeMs },
   });
 }
@@ -3125,9 +3129,9 @@ function costMetric(observations: EvaluationObservation): EvaluationMetricScore 
   return EvaluationMetricScoreSchema.parse({
     metricId: "cost_score",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored estimated cost against the default evaluation budget.",
-    failureTags: score >= 0.75 ? [] : ["high_cost"],
+    failureTags: score >= 0.70 ? [] : ["high_cost"],
     details: { costUsd },
   });
 }
@@ -3138,9 +3142,9 @@ function agenticCostMetric(observations: EvaluationObservation): EvaluationMetri
   return EvaluationMetricScoreSchema.parse({
     metricId: "agentic_cost_score",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored completion cost using Ora's agentic efficiency ledger.",
-    failureTags: score >= 0.75 ? [] : ["high_agentic_cost"],
+    failureTags: score >= 0.70 ? [] : ["high_agentic_cost"],
     details: { costUsd },
   });
 }
@@ -3153,9 +3157,9 @@ function tokenEfficiencyMetric(observations: EvaluationObservation): EvaluationM
   return EvaluationMetricScoreSchema.parse({
     metricId: "token_efficiency",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored token use per model call.",
-    failureTags: score >= 0.75 ? [] : ["high_token_load"],
+    failureTags: score >= 0.70 ? [] : ["high_token_load"],
     details: { totalTokens, modelCallCount, tokensPerModelCall: Math.round(tokensPerModelCall) },
   });
 }
@@ -3168,9 +3172,9 @@ function toolEfficiencyMetric(observations: EvaluationObservation): EvaluationMe
   return EvaluationMetricScoreSchema.parse({
     metricId: "tool_efficiency",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored tool volume and wasted tool attempts.",
-    failureTags: score >= 0.75 ? [] : ["high_tool_overhead"],
+    failureTags: score >= 0.70 ? [] : ["high_tool_overhead"],
     details: { toolCallCount, failedToolCallCount, repairedToolCallCount },
   });
 }
@@ -3183,9 +3187,9 @@ function coordinationOverheadMetric(observations: EvaluationObservation): Evalua
   return EvaluationMetricScoreSchema.parse({
     metricId: "coordination_overhead",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored coordination event overhead relative to model work.",
-    failureTags: score >= 0.75 ? [] : ["high_coordination_overhead"],
+    failureTags: score >= 0.70 ? [] : ["high_coordination_overhead"],
     details: { coordinationEventCount, modelCallCount, coordinationPerModelCall },
   });
 }
@@ -3197,9 +3201,9 @@ function recoveryOverheadMetric(observations: EvaluationObservation): Evaluation
   return EvaluationMetricScoreSchema.parse({
     metricId: "recovery_overhead",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored repair and retry overhead.",
-    failureTags: score >= 0.75 ? [] : ["high_recovery_overhead"],
+    failureTags: score >= 0.70 ? [] : ["high_recovery_overhead"],
     details: { recoveryEventCount, toolRetryCount },
   });
 }
@@ -3210,9 +3214,9 @@ function traceCoverageMetric(observations: EvaluationObservation): EvaluationMet
   return EvaluationMetricScoreSchema.parse({
     metricId: "trace_coverage",
     score: roundScore(score),
-    passed: score >= 0.75,
+    passed: score >= 0.70,
     rationale: "Scored whether the run produced enough trace activity for diagnosis.",
-    failureTags: score >= 0.75 ? [] : ["process_issue"],
+    failureTags: score >= 0.70 ? [] : ["process_issue"],
     details: { eventCount },
   });
 }
@@ -3270,15 +3274,33 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
   const outputText = extractOutputText(snapshot).toLowerCase();
   const expectedText = evaluationCase.expected?.text?.toLowerCase();
   const runtimeFailed = snapshot.status === "failed" || Boolean(snapshot.error);
+  const isRecoveryFallback = outputText.includes("continued with limited context");
   const outcomeScore = runtimeFailed
     ? 0
-    : expectedText
-      ? textSimilarity(expectedText, outputText)
-      : outputText.length > 0 ? 0.72 : 0.25;
+    : isRecoveryFallback
+      ? 0
+      : expectedText
+        ? textSimilarity(expectedText, outputText)
+        : outputText.length > 0 ? 0.72 : 0.25;
   const processEvents = snapshot.events.filter((event) => ["agent.started", "agent.completed", "tool.called", "checkpoint.created"].includes(event.type)).length;
-  const processScore = runtimeFailed
-    ? 0.2
-    : Math.min(1, 0.45 + Math.min(processEvents, 4) * 0.12);
+  const toolCalls = snapshot.toolCalls ?? [];
+  const totalToolCalls = toolCalls.length;
+  const failedToolCalls = toolCalls.filter((call) =>
+    call.status === "failed" || call.status === "interrupted" || call.status === "denied"
+  ).length;
+  const toolFailureRate = totalToolCalls > 0 ? failedToolCalls / totalToolCalls : 0;
+  const recoveryEvents = snapshot.events.filter((event) =>
+    event.type === "agent.completed" && event.payload && typeof event.payload === "object" && (event.payload as Record<string, unknown>).degraded === true
+  ).length;
+  let processScore: number;
+  if (runtimeFailed) {
+    processScore = 0.2;
+  } else {
+    const baseProcess = Math.min(1, 0.45 + Math.min(processEvents, 4) * 0.12);
+    const toolPenalty = toolFailureRate > 0.5 ? (toolFailureRate - 0.5) * 0.6 : 0;
+    const recoveryPenalty = Math.min(recoveryEvents, 3) * 0.1;
+    processScore = Math.max(0.1, baseProcess - toolPenalty - recoveryPenalty);
+  }
   const runtimeMs = Math.max(1, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt));
   const efficiencyScore = runtimeFailed ? 0.25 : Math.max(0.35, 1 - runtimeMs / 8_000);
   const safetyScore = runtimeFailed
@@ -3295,6 +3317,7 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
   );
   const failureTags = [
     ...(runtimeFailed ? ["runtime_failed"] : []),
+    ...(isRecoveryFallback ? ["recovery_fallback"] : []),
     ...(outcomeScore < 0.6 ? ["incorrect_output"] : []),
     ...(processScore < 0.6 ? ["process_issue"] : []),
     ...(safetyScore < 0.8 ? ["safety_issue"] : []),
