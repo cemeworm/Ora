@@ -5,8 +5,11 @@ mod commands;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .manage(commands::sidecar::RuntimeFacade::default())
         .setup(|app| {
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             app.manage(commands::sidecar::RuntimeSidecarManager::new(app.handle().clone()));
             Ok(())
         })

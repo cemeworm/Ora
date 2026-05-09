@@ -95,6 +95,8 @@ function SidebarIconSlot({ children }: { children: ReactNode }) {
 
 function ReleaseUpdatePill() {
   const [status, setStatus] = useState<ReleaseUpdateStatus>({ available: false });
+  const [installState, setInstallState] = useState<"idle" | "checking" | "downloading" | "installing" | "relaunching" | "failed">("idle");
+  const [installError, setInstallError] = useState<string | undefined>();
 
   useEffect(() => {
     let cancelled = false;
@@ -110,17 +112,73 @@ function ReleaseUpdatePill() {
 
   if (!status.available || !status.releaseUrl) return null;
 
+  const installUpdate = async () => {
+    if (installState !== "idle" && installState !== "failed") return;
+
+    setInstallError(undefined);
+    setInstallState("checking");
+    try {
+      const [{ check }, { relaunch }] = await Promise.all([
+        import("@tauri-apps/plugin-updater"),
+        import("@tauri-apps/plugin-process"),
+      ]);
+      const update = await check();
+      if (!update) {
+        setStatus({ available: false, latestVersion: status.latestVersion, releaseUrl: status.releaseUrl });
+        setInstallState("idle");
+        return;
+      }
+
+      setInstallState("downloading");
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Finished") {
+          setInstallState("installing");
+        }
+      });
+      setInstallState("relaunching");
+      await relaunch();
+    } catch (error) {
+      setInstallState("failed");
+      setInstallError(error instanceof Error ? error.message : "Ora update failed.");
+      await getSharedRuntimeClient().openExternalUrl(status.releaseUrl!);
+    }
+  };
+
+  const busy = installState !== "idle" && installState !== "failed";
+  const label = updatePillLabel(installState);
+  const title = installError
+    ? `Ora ${status.latestVersion ?? ""} update failed. Opened GitHub release page. ${installError}`
+    : `Install Ora ${status.latestVersion ?? ""}`;
+
   return (
     <button
       type="button"
-      onClick={() => void getSharedRuntimeClient().openExternalUrl(status.releaseUrl!)}
+      onClick={() => void installUpdate()}
+      disabled={busy}
       className="inline-flex h-5 shrink-0 items-center rounded-full bg-amber-100/75 px-1.5 text-[10px] font-medium text-amber-800 transition hover:bg-amber-100 hover:text-amber-900 active:scale-95"
-      title={`Ora ${status.latestVersion ?? ""} is available`}
-      aria-label={`Ora ${status.latestVersion ?? ""} is available on GitHub`}
+      title={title}
+      aria-label={`Install Ora ${status.latestVersion ?? ""}`}
     >
-      更新
+      {label}
     </button>
   );
+}
+
+function updatePillLabel(state: "idle" | "checking" | "downloading" | "installing" | "relaunching" | "failed") {
+  switch (state) {
+    case "checking":
+      return "检查中";
+    case "downloading":
+      return "下载中";
+    case "installing":
+      return "安装中";
+    case "relaunching":
+      return "重启中";
+    case "failed":
+      return "手动更新";
+    case "idle":
+      return "更新";
+  }
 }
 
 export function SessionStatusBadge({ status }: { status: RunStatus }) {
