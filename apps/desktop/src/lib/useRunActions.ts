@@ -6,6 +6,7 @@ import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
 import { useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
 import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
+import { deriveRunInteractionState } from "./runInteractionState";
 import { timeStart, timeEnd } from "./debugTiming";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
@@ -139,12 +140,44 @@ export function stableViewModelCacheKey(params: {
   selectedModeId: string;
   selectedPattern: string;
   modeIds: readonly string[];
+  sessionRunStateKey?: string;
 }): string {
   return [
     params.activeSessionId ?? "",
     params.selectedModeId,
     params.selectedPattern,
     params.modeIds.join(","),
+    params.sessionRunStateKey ?? "",
+  ].join("|");
+}
+
+function sessionRunStateCacheKey(
+  sessions: readonly OraSessionSummary[],
+  activeDetail: OraSessionDetail | undefined,
+): string {
+  const sessionParts = sessions.map((session) => [
+    session.sessionId,
+    session.status ?? "",
+    session.attention?.kind ?? "",
+    session.latestRunId ?? "",
+  ].join(":"));
+  const activeSession = activeDetail?.session;
+  const activeTurns = activeDetail?.turns.map((turn) => [
+    turn.runId,
+    turn.status,
+    turn.attention?.kind ?? "",
+  ].join(":")) ?? [];
+  return [
+    sessionParts.join(","),
+    activeSession
+      ? [
+          activeSession.sessionId,
+          activeSession.status ?? "",
+          activeSession.attention?.kind ?? "",
+          activeSession.latestRunId ?? "",
+        ].join(":")
+      : "",
+    activeTurns.join(","),
   ].join("|");
 }
 
@@ -268,6 +301,10 @@ export function useRunActions() {
       selectedModeId: state.selectedModeId,
       selectedPattern: state.selectedPattern,
       modeIds: state.modes.map((mode) => mode.id),
+      sessionRunStateKey: sessionRunStateCacheKey(
+        state.sessions,
+        state.activeSessionDetail,
+      ),
     });
     if (lastStableCacheKeyRef.current !== cacheKey || !stableViewModelRef.current) {
       lastStableCacheKeyRef.current = cacheKey;
@@ -316,6 +353,28 @@ export function useRunActions() {
   }, [stableViewModel, dynamicViewModel]);
 
   const selectedSession = viewModel?.sessions.find((session) => session.id === state.selectedSessionId) ?? viewModel?.sessions[0];
+
+  const runInteractionState = useMemo(() => {
+    const sessionSummary = state.sessions.find(
+      (s) => s.sessionId === state.selectedSessionId,
+    );
+    return deriveRunInteractionState({
+      selectedSessionId: state.selectedSessionId,
+      sessionSummary,
+      activeSessionDetail: state.activeSessionDetail,
+      activeSnapshot: state.activeSnapshot,
+      selectedTurnRunId: state.selectedTurnRunId,
+      pendingRun: state.pendingRun,
+    });
+  }, [
+    state.selectedSessionId,
+    state.sessions,
+    state.activeSessionDetail,
+    state.activeSnapshot,
+    state.selectedTurnRunId,
+    state.pendingRun,
+  ]);
+
   const selectedMode = state.modes.find((mode) => mode.id === state.selectedModeId);
   const selectedRunPattern = selectedMode?.family ?? state.selectedPattern;
   const selectedRunModeId = selectedMode?.id ?? state.selectedModeId;
@@ -1144,6 +1203,7 @@ export function useRunActions() {
     runtimeClient,
     viewModel,
     selectedSession,
+    runInteractionState,
     selectedNode,
     selectedBeat,
     selectedAgent,

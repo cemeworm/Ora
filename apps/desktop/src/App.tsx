@@ -39,8 +39,8 @@ import { getRecords, clearRecords } from "./lib/debugTiming";
 import {
   adaptChatMessages,
   adaptPendingRunMessages,
-  isSessionProcessing,
 } from "./lib/viewModel";
+import { buildChatMessagesCacheKey } from "./lib/chatMessageCache";
 import type {
   OraProjectFileEntry,
   OraProjectFileReadResult,
@@ -217,6 +217,7 @@ function WorkbenchInner() {
     runtimeClient,
     viewModel,
     selectedSession,
+    runInteractionState,
     selectedNode,
     selectedBeat,
     selectedAgent,
@@ -743,10 +744,10 @@ function WorkbenchInner() {
 
   const chatMessages = useMemo(() => {
     const transcript = state.activeSessionDetail?.transcript ?? [];
-    const lastMsg = transcript.length > 0 ? transcript[transcript.length - 1] : null;
-    const lastFingerprint = lastMsg ? `${lastMsg.id}:${lastMsg.content.length}` : '';
-    const snapKeys = Object.keys(activeSessionTurnSnapshots).join(',');
-    const cacheKey = `${transcript.length}:${lastFingerprint}:${snapKeys}`;
+    const cacheKey = buildChatMessagesCacheKey({
+      transcript,
+      turnSnapshots: activeSessionTurnSnapshots,
+    });
 
     const cache = chatMessagesCacheRef.current;
     if (cache && cache.key === cacheKey) {
@@ -974,8 +975,8 @@ function WorkbenchInner() {
     topologyNodes,
     activeMode,
   } = viewModel;
-  const isRunning = isSessionProcessing(selectedSession, state.pendingRun);
-  const isApprovalRequired = selectedSession.status === "approval_required";
+  const isRunning = runInteractionState.isProcessing;
+  const isApprovalRequired = runInteractionState.gateKind === "approval";
   const selectedProject = selectedSession.projectId
     ? state.projects.find(
         (project) => project.projectId === selectedSession.projectId,

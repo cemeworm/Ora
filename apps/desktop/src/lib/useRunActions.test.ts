@@ -47,6 +47,23 @@ describe("desktop run actions", () => {
     }));
   });
 
+  it("invalidates stable view model cache when session run state changes", () => {
+    const base = {
+      activeSessionId: "session-1",
+      selectedPattern: "agent_teams",
+      selectedModeId: "message_bus",
+      modeIds: ["message_bus", "code_development"],
+    };
+
+    expect(stableViewModelCacheKey({
+      ...base,
+      sessionRunStateKey: "session-1:succeeded::run-1",
+    })).not.toBe(stableViewModelCacheKey({
+      ...base,
+      sessionRunStateKey: "session-1:running:running:run-1",
+    }));
+  });
+
   it("includes attached project files in run context", () => {
     expect(buildDesktopRunContext([
       {
