@@ -4,6 +4,7 @@ import {
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
   deriveSessionBranchGroupStatus,
+  type RunAttention,
   type ModeSelection,
   type PermissionMode,
   type TaskIntent,
@@ -68,9 +69,11 @@ export interface ComposerLocalFileAttachment {
 
 export interface PendingRunState {
   sessionId: string;
+  runId?: string;
   prompt: string;
   createdAt: number;
   progressText?: string;
+  latency?: OraStateSnapshot["latency"];
 }
 
 export interface PendingPlanDecisionResolution {
@@ -229,6 +232,12 @@ export type WorkbenchAction =
       createdAt: number;
     }
   | {
+      type: "ATTACH_PENDING_RUN_HANDLE";
+      sessionId: string;
+      prompt: string;
+      runId: string;
+    }
+  | {
       type: "SET_PENDING_RUN_PROGRESS";
       sessionId: string;
       progressText: string;
@@ -303,7 +312,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionSkillIds: {},
   permissionMode: "default",
   sessionPermissionModes: {},
-  taskIntent: "implement",
+  taskIntent: "chat",
   sessionTaskIntents: {},
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
@@ -373,6 +382,21 @@ function cacheSessionDetail(
     delete next[key];
   }
   return next;
+}
+
+function compactSessionDetailForCache(detail: OraSessionDetail): OraSessionDetail {
+  if (!detail.latestSnapshot) {
+    return detail;
+  }
+  return {
+    ...detail,
+    latestSnapshot: {
+      ...detail.latestSnapshot,
+      events: [],
+      actions: [],
+      output: undefined,
+    },
+  };
 }
 
 function sessionPromptText(
@@ -931,15 +955,7 @@ function markDesktopLatencyForStream(
   if (!snapshot || receivedAt === undefined) {
     return snapshot;
   }
-  let next = appendFirstDesktopLatencyMark(
-    snapshot,
-    "firstRunStreamReceivedAt",
-    receivedAt,
-    {
-      eventType: stream.events[0]?.type,
-      eventCount: stream.events.length,
-    },
-  );
+  let next = appendFirstDesktopLatencyMark(snapshot, "firstRunStreamReceivedAt", receivedAt, streamLatencyDetail(stream));
   if (
     stream.events.some(
       (event) => event.type === "message.delta" || event.type === "token.delta",
@@ -969,32 +985,81 @@ function markDesktopLatencyForStream(
   return next;
 }
 
+function markPendingRunLatencyForStream(
+  pendingRun: WorkbenchState["pendingRun"],
+  stream: OraRunEventStream,
+  receivedAt: number | undefined,
+): WorkbenchState["pendingRun"] {
+  if (!pendingRun || receivedAt === undefined) {
+    return pendingRun;
+  }
+  let latency = appendFirstDesktopLatencyToDiagnostics(
+    pendingRun.latency,
+    "firstRunStreamReceivedAt",
+    receivedAt,
+    streamLatencyDetail(stream),
+  );
+  if (
+    stream.events.some(
+      (event) => event.type === "message.delta" || event.type === "token.delta",
+    )
+  ) {
+    latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstMessageDeltaAt", receivedAt);
+  }
+  if (
+    stream.events.some(
+      (event) =>
+        event.type === "message.delta" &&
+        isRecord(event.payload) &&
+        typeof event.payload.content === "string" &&
+        event.payload.content.trim(),
+    )
+  ) {
+    latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstNonProgressAssistantTextAt", receivedAt);
+  }
+  return latency === pendingRun.latency ? pendingRun : { ...pendingRun, latency };
+}
+
+function streamLatencyDetail(stream: OraRunEventStream): Record<string, unknown> {
+  return {
+    eventType: stream.events[0]?.type,
+    eventCount: stream.events.length,
+  };
+}
+
+function appendFirstDesktopLatencyToDiagnostics(
+  latency: OraStateSnapshot["latency"] | undefined,
+  name: string,
+  at: number,
+  detail: Record<string, unknown> = {},
+): OraStateSnapshot["latency"] {
+  if (latency?.marks.some((mark) => mark.source === "desktop" && mark.name === name)) {
+    return latency;
+  }
+  return {
+    marks: [
+      ...(latency?.marks ?? []),
+      {
+        name,
+        at,
+        source: "desktop",
+        detail,
+      },
+    ],
+  };
+}
+
 function appendFirstDesktopLatencyMark(
   snapshot: OraStateSnapshot,
   name: string,
   at: number,
   detail: Record<string, unknown> = {},
 ): OraStateSnapshot {
-  if (
-    snapshot.latency?.marks.some(
-      (mark) => mark.source === "desktop" && mark.name === name,
-    )
-  ) {
-    return snapshot;
-  }
+  const latency = appendFirstDesktopLatencyToDiagnostics(snapshot.latency, name, at, detail);
+  if (latency === snapshot.latency) return snapshot;
   return {
     ...snapshot,
-    latency: {
-      marks: [
-        ...(snapshot.latency?.marks ?? []),
-        {
-          name,
-          at,
-          source: "desktop",
-          detail,
-        },
-      ],
-    },
+    latency,
   };
 }
 
@@ -1217,7 +1282,62 @@ function readActionStatus(
 }
 
 function normalizeDesktopSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
-  return snapshot;
+  if (
+    snapshot.status === "queued" ||
+    snapshot.status === "running" ||
+    snapshot.attention?.kind !== "running"
+  ) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    attention: terminalRunAttentionForStatus(snapshot),
+  };
+}
+
+function terminalRunAttentionForStatus(snapshot: OraStateSnapshot): RunAttention {
+  switch (snapshot.status) {
+    case "failed":
+      return {
+        kind: "failed",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: snapshot.error,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      };
+    case "cancelled":
+      return {
+        kind: "cancelled",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: snapshot.error,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      };
+    case "interrupted":
+      return {
+        kind: "paused",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        reason: "manual_interrupt",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      };
+    default:
+      return {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      };
+  }
 }
 
 function streamRunStatus(
@@ -1444,6 +1564,9 @@ function streamMatchesPendingRun(
   if (!pendingRun) {
     return false;
   }
+  if (pendingRun.runId && pendingRun.runId === stream.runId) {
+    return true;
+  }
 
   const snapshot =
     stream.snapshot ??
@@ -1452,6 +1575,13 @@ function streamMatchesPendingRun(
     snapshot?.sessionId === pendingRun.sessionId &&
     snapshot.input.prompt === pendingRun.prompt
   );
+}
+
+function shouldClearPendingRunForStream(
+  matchesPendingRun: boolean,
+  streamSnapshot: OraStateSnapshot | undefined,
+): boolean {
+  return matchesPendingRun && Boolean(streamSnapshot);
 }
 
 function markSnapshotResuming(
@@ -1602,7 +1732,7 @@ export function workbenchReducer(
         sessionPromptTexts: {},
         selectedSkillIds: [],
         sessionSkillIds: {},
-        taskIntent: "implement",
+        taskIntent: "chat",
         sessionTaskIntents: {},
         sessionProjectFileAttachments: {},
         sessionLocalFileAttachments: {},
@@ -1813,7 +1943,7 @@ export function workbenchReducer(
         ...state,
         sessionDetailsById: cacheSessionDetail(
           state.sessionDetailsById,
-          action.detail,
+          compactSessionDetailForCache(action.detail),
         ),
       };
 
@@ -2087,7 +2217,18 @@ export function workbenchReducer(
     }
 
     case "SELECT_TURN": {
-      const snapshot = mergeStateSnapshot(undefined, action.snapshot);
+      const pendingRunLatency = state.pendingRun?.runId === action.runId
+        ? state.pendingRun.latency
+        : undefined;
+      const snapshot = mergeStateSnapshot(
+        undefined,
+        action.snapshot && pendingRunLatency
+          ? {
+              ...action.snapshot,
+              latency: mergeLatencyDiagnostics(pendingRunLatency, action.snapshot.latency),
+            }
+          : action.snapshot,
+      );
       return {
         ...state,
         selectedTurnRunId: action.runId,
@@ -2184,7 +2325,9 @@ export function workbenchReducer(
         : state.activeSnapshot;
       const streamSnapshot = streamBelongsToActiveTurn
         ? activeSnapshot
-        : action.stream.snapshot;
+        : action.stream.snapshot
+          ? normalizeDesktopSnapshot(action.stream.snapshot)
+          : undefined;
       const synced = syncSessionStateForSettledStream(
         state,
         action.stream,
@@ -2204,6 +2347,13 @@ export function workbenchReducer(
       const matchesPendingRun = streamMatchesPendingRun(
         state.pendingRun,
         action.stream,
+        streamSnapshot,
+      );
+      const pendingRun = matchesPendingRun
+        ? markPendingRunLatencyForStream(state.pendingRun, action.stream, action.receivedAt)
+        : state.pendingRun;
+      const shouldClearPendingRun = shouldClearPendingRunForStream(
+        matchesPendingRun,
         streamSnapshot,
       );
       return {
@@ -2240,8 +2390,8 @@ export function workbenchReducer(
         selectedBeatId: streamBelongsToActiveTurn
           ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)
           : state.selectedBeatId,
-        pendingRun: matchesPendingRun ? undefined : state.pendingRun,
-        pendingPlanDecisionResolution: matchesPendingRun
+        pendingRun: shouldClearPendingRun ? undefined : pendingRun,
+        pendingPlanDecisionResolution: shouldClearPendingRun
           ? undefined
           : state.pendingPlanDecisionResolution,
         selectedModeSelection: streamBelongsToActiveTurn
@@ -2389,6 +2539,24 @@ export function workbenchReducer(
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
         lastRunTaskIntent: undefined,
         isLoading: true,
+      };
+    }
+
+    case "ATTACH_PENDING_RUN_HANDLE": {
+      if (
+        !state.pendingRun ||
+        state.pendingRun.sessionId !== action.sessionId ||
+        state.pendingRun.prompt !== action.prompt
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        selectedTurnRunId: action.runId,
+        pendingRun: {
+          ...state.pendingRun,
+          runId: action.runId,
+        },
       };
     }
 

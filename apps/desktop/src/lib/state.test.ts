@@ -10,6 +10,21 @@ import {
 import type { WorkbenchState } from "./state";
 import type { OraProviderConfig, OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
+describe("initial workbench state", () => {
+  it("starts new sessions in chat intent", () => {
+    expect(initialWorkbenchState.taskIntent).toBe("chat");
+  });
+
+  it("resets runtime view back to chat intent", () => {
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      taskIntent: "implement",
+    }, { type: "RESET_RUNTIME_VIEW" });
+
+    expect(next.taskIntent).toBe("chat");
+  });
+});
+
 function sessionSummary(sessionId: string): OraSessionSummary {
   return {
     sessionId,
@@ -874,6 +889,65 @@ describe("desktop workbench state", () => {
     ]);
   });
 
+  it("preserves early stream latency while the run state snapshot is still loading", () => {
+    const sessionId = "session-early-stream";
+    const runId = "run-early-stream";
+    const prompt = "Debate this.";
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      pendingRun: { sessionId, prompt, createdAt: 100 },
+      isLoading: true,
+    };
+    const withHandle = workbenchReducer(state, {
+      type: "ATTACH_PENDING_RUN_HANDLE",
+      sessionId,
+      prompt,
+      runId,
+    });
+    const stream = {
+      runId,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:event:0`,
+        runId,
+        seq: 0,
+        type: "run.started",
+        createdAt: 101,
+        payload: { status: "running" },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterStream = workbenchReducer(withHandle, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 150,
+    });
+    const selected = workbenchReducer(afterStream, {
+      type: "SELECT_TURN",
+      runId,
+      snapshot: testSnapshot({ runId, sessionId }),
+    });
+
+    expect(afterStream.selectedTurnRunId).toBe(runId);
+    expect(afterStream.pendingRun?.latency?.marks).toEqual([{
+      name: "firstRunStreamReceivedAt",
+      at: 150,
+      source: "desktop",
+      detail: { eventType: "run.started", eventCount: 1 },
+    }]);
+    expect(afterStream.activeSnapshot).toBeUndefined();
+    expect(selected.pendingRun).toBeUndefined();
+    expect(selected.activeSnapshot?.latency?.marks).toEqual([{
+      name: "firstRunStreamReceivedAt",
+      at: 150,
+      source: "desktop",
+      detail: { eventType: "run.started", eventCount: 1 },
+    }]);
+  });
+
   it("merges sequential delta streams by appending delta-sized content", () => {
     const snapshot = testSnapshot({
       runId: "run-stream-text",
@@ -1058,6 +1132,56 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.attention).toEqual(snapshot.attention);
     expect(next.sessions[0]?.attention).toEqual(snapshot.attention);
     expect(next.activeSnapshot?.pendingClarifications).toEqual([]);
+  });
+
+  it("normalizes stale running attention away from a terminal hydrated snapshot", () => {
+    const sessionId = "session-terminal-hydrate";
+    const snapshot = testSnapshot({
+      runId: "run-terminal-hydrate",
+      sessionId,
+      status: "succeeded",
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: "run-terminal-hydrate",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const session: OraSessionSummary = {
+      ...sessionSummary(sessionId),
+      latestRunId: snapshot.runId,
+      status: "running",
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: snapshot.runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      turnCount: 1,
+    };
+
+    const next = workbenchReducer(initialWorkbenchState, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [{ runId: snapshot.runId } as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+      snapshot,
+    });
+
+    expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+    expect(next.activeSessionDetail?.session.attention?.kind).toBe("idle");
+    expect(next.sessions[0]?.status).toBe("succeeded");
+    expect(next.sessions[0]?.attention?.kind).toBe("idle");
+    expect(next.activeSnapshot?.attention?.kind).toBe("idle");
   });
 
   it("optimistically marks a running turn cancelled before the runtime responds", () => {

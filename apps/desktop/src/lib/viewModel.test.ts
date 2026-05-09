@@ -1006,6 +1006,125 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("prefers terminal snapshot status over stale running attention", () => {
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      sessionId: "session-terminal-overrunning-attention",
+      title: "Terminal status",
+      status: "running",
+      latestRunId: "run-terminal-overrunning-attention",
+      latestPattern: "orchestrator_subagent",
+      latestModeId: SINGLE_AGENT_MODE_ID,
+      turnCount: 1,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const snapshot = {
+      runId: "run-terminal-overrunning-attention",
+      sessionId: "session-terminal-overrunning-attention",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Done but attention is stale.", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-terminal-overrunning-attention-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: "run-terminal-overrunning-attention",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      output: { text: "Done." },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+    const detail: OraSessionDetail = {
+      session,
+      turns: [{
+        runId: "run-terminal-overrunning-attention",
+        sessionId: "session-terminal-overrunning-attention",
+        turnIndex: 1,
+        status: "succeeded",
+        attention: snapshot.attention,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        modelRef: "local-smoke-model",
+        providerId: "local-smoke",
+        prompt: "Done but attention is stale.",
+        startedAt: createdAt,
+        updatedAt: createdAt,
+        eventCount: 0,
+        checkpointCount: 0,
+        artifactCount: 0,
+      }],
+      transcript: [],
+      latestSnapshot: snapshot,
+    };
+
+    const viewModel = buildWorkbenchViewModel(
+      MVP_PATTERNS,
+      MVP_MODES,
+      [session],
+      detail,
+      snapshot,
+      "orchestrator_subagent",
+      SINGLE_AGENT_MODE_ID,
+    );
+    const assistant = adaptChatMessages(
+      [
+        {
+          id: "run-terminal-overrunning-attention:user",
+          sessionId: "session-terminal-overrunning-attention",
+          runId: "run-terminal-overrunning-attention",
+          turnIndex: 1,
+          role: "user",
+          content: "Done but attention is stale.",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          createdAt,
+        },
+      ],
+      { "run-terminal-overrunning-attention": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(viewModel.sessions[0]?.status).toBe("done");
+    expect(assistant?.turn?.status).toBe("done");
+    expect(assistant?.turn?.activeLoadingTarget).toBeUndefined();
+  });
+
   it("uses tagged delta proposed plans instead of untagged final plan summaries", () => {
     const createdAt = 1_714_000_000_000;
     const untaggedOutput = [

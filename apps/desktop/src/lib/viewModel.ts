@@ -419,7 +419,7 @@ function adaptSession(
     projectId: session.projectId,
     status: snapshot
       ? adaptSnapshotRunStatus(snapshot)
-      : adaptAttentionStatus(attention) ?? adaptRunStatus(status),
+      : adaptStatusWithAttention(status, attention),
     pattern: snapshot?.pattern ?? session.latestPattern ?? fallbackPattern,
     modeId: snapshot?.modeId ?? session.latestModeId,
     updatedAt: formatClock(snapshot?.updatedAt ?? session.updatedAt),
@@ -434,7 +434,7 @@ function adaptTurn(turn: OraSessionDetail["turns"][number]): SessionTurnItem {
     runId: turn.runId,
     sessionId: turn.sessionId,
     turnIndex: turn.turnIndex,
-    status: adaptAttentionStatus(turn.attention) ?? adaptRunStatus(turn.status),
+    status: adaptStatusWithAttention(turn.status, turn.attention),
     pattern: turn.pattern,
     modeId: turn.modeId,
     providerId: turn.providerId,
@@ -449,21 +449,30 @@ function adaptAttentionStatus(attention: OraRunAttention | undefined): RunStatus
 }
 
 function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
-  const attentionStatus = adaptAttentionStatus(snapshot.attention);
-  if (attentionStatus && attentionStatus !== "running") {
-    return attentionStatus;
-  }
   if (snapshotPendingClarifications(snapshot).length > 0) {
     return "clarification_required";
   }
   if (snapshotPendingApprovals(snapshot).length > 0) {
     return "approval_required";
   }
+  const attentionStatus = adaptAttentionStatus(snapshot.attention);
   if (snapshot.status === "queued" || snapshot.status === "running") {
-    return "running";
+    return attentionStatus && attentionStatus !== "running" ? attentionStatus : "running";
   }
-  return attentionStatus ??
-    adaptRunStatus(snapshot.status, { hasPendingClarifications: snapshotPendingClarifications(snapshot).length > 0 });
+  return adaptRunStatus(snapshot.status, { hasPendingClarifications: false });
+}
+
+function adaptStatusWithAttention(
+  status: OraStateSnapshot["status"],
+  attention: OraRunAttention | undefined,
+): RunStatus {
+  const attentionStatus = adaptAttentionStatus(attention);
+  if (status === "queued" || status === "running") {
+    return attentionStatus && attentionStatus !== "running"
+      ? attentionStatus
+      : adaptRunStatus(status);
+  }
+  return adaptRunStatus(status);
 }
 
 function adaptRunStatus(status: OraStateSnapshot["status"], opts?: { hasPendingClarifications?: boolean }): RunStatus {

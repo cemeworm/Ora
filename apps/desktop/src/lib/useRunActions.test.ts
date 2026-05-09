@@ -5,6 +5,7 @@ import {
   buildClarificationSubmissionPrompt,
   buildDesktopRunContext,
   isDisposableEmptySession,
+  shouldEnableClarificationPreflight,
   shouldEnableProgressNarration,
   stableViewModelCacheKey,
 } from "./useRunActions";
@@ -15,6 +16,12 @@ describe("desktop run actions", () => {
     expect(shouldEnableProgressNarration("implement")).toBe(true);
     expect(shouldEnableProgressNarration("chat")).toBe(false);
     expect(shouldEnableProgressNarration("plan")).toBe(false);
+  });
+
+  it("keeps clarification preflight off by default for all task intents", () => {
+    expect(shouldEnableClarificationPreflight("implement")).toBe(false);
+    expect(shouldEnableClarificationPreflight("plan")).toBe(false);
+    expect(shouldEnableClarificationPreflight("chat")).toBe(false);
   });
 
   it("submits accepted plan decisions as implementation runs", () => {

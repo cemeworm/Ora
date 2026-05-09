@@ -35,6 +35,11 @@ export function shouldEnableProgressNarration(taskIntent: WorkbenchState["taskIn
   return taskIntent === "implement";
 }
 
+export function shouldEnableClarificationPreflight(taskIntent: WorkbenchState["taskIntent"]): boolean {
+  void taskIntent;
+  return false;
+}
+
 export function acceptedPlanImplementationSubmission(): {
   prompt: string;
   taskIntent: WorkbenchState["taskIntent"];
@@ -735,7 +740,7 @@ export function useRunActions() {
           searchProvider: searchConfig.searchProvider,
           metadata: {
             providerId: state.selectedProviderId,
-            clarificationPreflight: true,
+            clarificationPreflight: shouldEnableClarificationPreflight(taskIntent),
             progressNarration: shouldEnableProgressNarration(taskIntent),
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             taskIntent,
@@ -748,6 +753,12 @@ export function useRunActions() {
         sessionId,
       );
       desktopLatencyMarks.push(desktopLatencyMark("handleReceivedAt", Date.now(), { runId: handle.runId }));
+      dispatch({
+        type: "ATTACH_PENDING_RUN_HANDLE",
+        sessionId,
+        prompt: submittedPrompt,
+        runId: handle.runId,
+      });
       const snapshot = appendDesktopLatencyMarks(
         await runtimeClient.getRunState(handle.runId),
         [...desktopLatencyMarks, desktopLatencyMark("getRunStateReceivedAt", Date.now(), { runId: handle.runId })],
