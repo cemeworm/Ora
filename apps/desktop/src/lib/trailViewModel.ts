@@ -317,6 +317,114 @@ export function buildAgentLanes(
   });
 }
 
+export interface FirstTextEvidence {
+  observed: boolean;
+  measured: boolean;
+  firstMeasuredTextAt?: number;
+  firstMeasuredReadableTextAt?: number;
+  observedSources: Array<
+    "runtime_mark" | "desktop_mark" | "snapshot_output" | "message_delta"
+  >;
+  status: "missing" | "observed_unmeasured" | "measured";
+}
+
+export function deriveFirstTextEvidence(
+  snapshot: OraStateSnapshot,
+): FirstTextEvidence {
+  const sortedMarks = (snapshot.latency?.marks ?? []).slice().sort(
+    (a, b) => a.at - b.at,
+  );
+  const markByKey = new Map(
+    sortedMarks.map((mark) => [`${mark.source}:${mark.name}`, mark]),
+  );
+
+  const runtimeTextMark = markByKey.get("runtime:firstTextDelta");
+  const desktopTextMark = markByKey.get("desktop:firstMessageDeltaAt");
+  const runtimeReadableMark = markByKey.get(
+    "runtime:firstUserReadableAssistantTextProduced",
+  );
+  const desktopReadableMark = markByKey.get(
+    "desktop:firstNonProgressAssistantTextAt",
+  );
+
+  const measuredSources: FirstTextEvidence["observedSources"][number][] = [];
+  if (runtimeTextMark) measuredSources.push("runtime_mark");
+  if (desktopTextMark) measuredSources.push("desktop_mark");
+
+  const firstMeasuredTextAt = runtimeTextMark?.at ?? desktopTextMark?.at;
+  const firstMeasuredReadableTextAt =
+    runtimeReadableMark?.at ?? desktopReadableMark?.at;
+
+  const measured = Boolean(firstMeasuredTextAt || firstMeasuredReadableTextAt);
+
+  const observedSources: FirstTextEvidence["observedSources"] = [
+    ...measuredSources,
+  ];
+
+  const outputHasText = snapshotOutputHasReadableText(snapshot);
+  const deltaHasText = snapshotEventsHaveReadableDelta(snapshot);
+
+  if (outputHasText) observedSources.push("snapshot_output");
+  if (deltaHasText) observedSources.push("message_delta");
+
+  const observed = outputHasText || deltaHasText;
+
+  let status: FirstTextEvidence["status"];
+  if (measured) {
+    status = "measured";
+  } else if (observed) {
+    status = "observed_unmeasured";
+  } else {
+    status = "missing";
+  }
+
+  return {
+    observed,
+    measured,
+    firstMeasuredTextAt,
+    firstMeasuredReadableTextAt,
+    observedSources,
+    status,
+  };
+}
+
+function snapshotOutputHasReadableText(snapshot: OraStateSnapshot): boolean {
+  if (typeof snapshot.output === "string" && snapshot.output.trim()) {
+    return true;
+  }
+  if (
+    snapshot.output &&
+    typeof snapshot.output === "object" &&
+    typeof (snapshot.output as { text?: unknown }).text === "string" &&
+    (snapshot.output as { text: string }).text.trim()
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function snapshotEventsHaveReadableDelta(
+  snapshot: OraStateSnapshot,
+): boolean {
+  return snapshot.events.some((event) => {
+    if (
+      event.type !== "message.delta" ||
+      !event.payload ||
+      typeof event.payload !== "object"
+    ) {
+      return false;
+    }
+    const payload = event.payload as { content?: unknown; delta?: unknown };
+    const text =
+      typeof payload.content === "string"
+        ? payload.content
+        : typeof payload.delta === "string"
+          ? payload.delta
+          : "";
+    return text.trim().length > 0;
+  });
+}
+
 export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatencyDiagnostics {
   const sortedMarks = [...(snapshot.latency?.marks ?? [])]
     .sort((left, right) => left.at - right.at || left.source.localeCompare(right.source) || left.name.localeCompare(right.name));
@@ -324,18 +432,25 @@ export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatenc
   const markByKey = new Map(sortedMarks.map((mark) => [`${mark.source}:${mark.name}`, mark]));
   const rawSegments = LATENCY_SEGMENT_DEFINITIONS.map((definition) => buildLatencySegment(definition, markByKey));
   const segments = mergeMissingSegments(rawSegments);
+
+  const evidence = deriveFirstTextEvidence(snapshot);
   const firstText = markByKey.get("runtime:firstTextDelta") ?? markByKey.get("desktop:firstMessageDeltaAt");
   const firstReadableText = markByKey.get("runtime:firstUserReadableAssistantTextProduced") ?? markByKey.get("desktop:firstNonProgressAssistantTextAt");
+  const hasReadableOutputWithoutMark = evidence.status === "observed_unmeasured";
+  const firstObservedText = firstText ?? firstReadableText;
   const firstProgressNarration = markByKey.get("runtime:firstProgressNarration");
   const providerFrame = markByKey.get("provider:firstProviderStreamFrame") ?? markByKey.get("provider:providerFallbackStarted");
   const providerMode = typeof providerFrame?.detail.streamMode === "string"
     ? providerFrame.detail.streamMode
     : "未记录";
   const warningSegments = segments.filter((segment) => segment.status === "warning" || segment.status === "slow");
-  const progressBeforeText = Boolean(firstProgressNarration && firstText && firstProgressNarration.at < firstText.at);
-  const missingText = !firstText;
+  const progressBeforeText = Boolean(firstProgressNarration && firstObservedText && firstProgressNarration.at < firstObservedText.at);
+  const missingText = !firstObservedText && !hasReadableOutputWithoutMark;
+  const missingTextMark = hasReadableOutputWithoutMark;
   const statusTone = missingText || progressBeforeText
     ? "error"
+    : missingTextMark
+      ? "warning"
     : warningSegments.length > 0
       ? "warning"
       : sortedMarks.length > 0
@@ -346,6 +461,8 @@ export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatenc
     summary: {
       statusLabel: missingText
         ? "未见首个文本"
+        : missingTextMark
+          ? "文本打点缺失"
         : progressBeforeText
           ? "进度早于回答"
           : warningSegments.length > 0
@@ -354,9 +471,13 @@ export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatenc
               ? "链路正常"
               : "暂无数据",
       statusTone,
-      recommendation: latencyRecommendation({ missingText, progressBeforeText, warningSegments, providerMode, sortedMarks }),
+      recommendation: latencyRecommendation({ missingText, missingTextMark, progressBeforeText, warningSegments, providerMode, sortedMarks }),
       firstText: firstText ? formatDuration(firstText.at - baseAt) : "未记录",
-      firstReadableText: firstReadableText ? formatDuration(firstReadableText.at - baseAt) : "未记录",
+      firstReadableText: firstReadableText
+        ? formatDuration(firstReadableText.at - baseAt)
+        : hasReadableOutputWithoutMark
+          ? "已渲染 / 未打点"
+          : "未记录",
       providerMode,
     },
     marks: sortedMarks.map((mark) => ({
@@ -1215,6 +1336,7 @@ function mergeSegmentGroup(group: TrailLatencySegment[]): TrailLatencySegment | 
 
 function latencyRecommendation(params: {
   missingText: boolean;
+  missingTextMark: boolean;
   progressBeforeText: boolean;
   warningSegments: TrailLatencySegment[];
   providerMode: string;
@@ -1225,6 +1347,9 @@ function latencyRecommendation(params: {
   }
   if (params.missingText) {
     return "尚未记录首个文本 delta。优先检查 provider 首包、工具先行或模型是否只返回 tool call。";
+  }
+  if (params.missingTextMark) {
+    return "界面已有可读回答，但首文本链路没有对应打点。优先检查 runtime/desktop 是否在非 delta 输出路径补充首文本 mark。";
   }
   if (params.progressBeforeText) {
     return "进度叙述早于首个回答。应继续保护 progress narration，避免首屏被进度抢占。";
@@ -1237,6 +1362,10 @@ function latencyRecommendation(params: {
     return "当前 provider 使用 fallback_single，不是真流式；首 token 只能等完整响应。";
   }
   return "当前记录未显示明显慢段。若用户仍感觉慢，下一步抓真实 provider 和工具先行场景。";
+}
+
+function snapshotHasReadableAssistantOutput(snapshot: OraStateSnapshot): boolean {
+  return snapshotOutputHasReadableText(snapshot) || snapshotEventsHaveReadableDelta(snapshot);
 }
 
 function currentBlockingGate(snapshot: OraStateSnapshot) {

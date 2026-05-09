@@ -9,6 +9,7 @@ import {
   buildPendingApprovalItems,
   buildLatencyDiagnostics,
   collectTrailFindings,
+  deriveFirstTextEvidence,
   eventKindLabel,
   severityLabel,
   snapshotPendingClarifications,
@@ -426,6 +427,171 @@ describe("trail debugger view model", () => {
     expect(diagnostics.summary.statusLabel).toBe("进度早于回答");
     expect(diagnostics.summary.statusTone).toBe("error");
     expect(diagnostics.summary.recommendation).toContain("进度叙述早于首个回答");
+  });
+
+  it("separates visible assistant output from missing first-text marks", () => {
+    const snapshot = baseSnapshot({
+      output: { text: "你好！" },
+      latency: {
+        marks: [
+          { source: "runtime", name: "startStreamingRun.enter", at: 100, detail: {} },
+          { source: "runtime", name: "firstApplyLiveEvent", at: 160, detail: { eventType: "run.started" } },
+        ],
+      },
+    });
+
+    const diagnostics = buildLatencyDiagnostics(snapshot);
+
+    expect(diagnostics.summary).toMatchObject({
+      statusLabel: "文本打点缺失",
+      statusTone: "warning",
+      firstText: "未记录",
+      firstReadableText: "已渲染 / 未打点",
+    });
+    expect(diagnostics.summary.recommendation).toContain("界面已有可读回答");
+  });
+
+  // ---- deriveFirstTextEvidence ----
+
+  it("first-text marks present → measured", () => {
+    const snapshot = baseSnapshot({
+      latency: {
+        marks: [
+          { source: "runtime", name: "firstTextDelta", at: 200, detail: {} },
+        ],
+      },
+    });
+
+    expect(deriveFirstTextEvidence(snapshot)).toMatchObject({
+      observed: false,
+      measured: true,
+      firstMeasuredTextAt: 200,
+      status: "measured",
+      observedSources: ["runtime_mark"],
+    });
+  });
+
+  it("progress narration before first observed text → text still measured", () => {
+    const snapshot = baseSnapshot({
+      latency: {
+        marks: [
+          { source: "runtime", name: "firstTextDelta", at: 300, detail: {} },
+          { source: "runtime", name: "firstProgressNarration", at: 250, detail: {} },
+        ],
+      },
+    });
+
+    expect(deriveFirstTextEvidence(snapshot).status).toBe("measured");
+  });
+
+  it("visible snapshot.output.text but no marks → observed_unmeasured", () => {
+    const snapshot = baseSnapshot({
+      output: { text: "你好！这是回复。" },
+    });
+
+    const evidence = deriveFirstTextEvidence(snapshot);
+
+    expect(evidence).toMatchObject({
+      observed: true,
+      measured: false,
+      status: "observed_unmeasured",
+    });
+    expect(evidence.observedSources).toContain("snapshot_output");
+  });
+
+  it("visible message.delta content but no marks → observed_unmeasured", () => {
+    const snapshot = baseSnapshot({
+      events: [{
+        id: "evt-1",
+        runId: "run-test",
+        seq: 1,
+        type: "message.delta",
+        createdAt: 200,
+        payload: { content: "Hello from delta" },
+      }],
+    });
+
+    const evidence = deriveFirstTextEvidence(snapshot);
+
+    expect(evidence).toMatchObject({
+      observed: true,
+      measured: false,
+      status: "observed_unmeasured",
+    });
+    expect(evidence.observedSources).toContain("message_delta");
+  });
+
+  it("no marks and no readable output → missing", () => {
+    const snapshot = baseSnapshot({});
+
+    expect(deriveFirstTextEvidence(snapshot)).toMatchObject({
+      observed: false,
+      measured: false,
+      status: "missing",
+      observedSources: [],
+    });
+  });
+
+  it("desktop mark alone is measured", () => {
+    const snapshot = baseSnapshot({
+      latency: {
+        marks: [
+          { source: "desktop", name: "firstMessageDeltaAt", at: 150, detail: {} },
+        ],
+      },
+    });
+
+    expect(deriveFirstTextEvidence(snapshot)).toMatchObject({
+      measured: true,
+      firstMeasuredTextAt: 150,
+      observedSources: ["desktop_mark"],
+    });
+  });
+
+  it("both marks and visible output → measured with all observed sources", () => {
+    const snapshot = baseSnapshot({
+      output: "Direct output text.",
+      latency: {
+        marks: [
+          { source: "runtime", name: "firstTextDelta", at: 200, detail: {} },
+          { source: "desktop", name: "firstMessageDeltaAt", at: 150, detail: {} },
+        ],
+      },
+    });
+
+    const evidence = deriveFirstTextEvidence(snapshot);
+
+    expect(evidence).toMatchObject({
+      observed: true,
+      measured: true,
+      status: "measured",
+      firstMeasuredTextAt: 200,
+    });
+    expect(evidence.observedSources).toContain("runtime_mark");
+    expect(evidence.observedSources).toContain("snapshot_output");
+  });
+
+  it("readable text from snapshot.output string counts as observed", () => {
+    const snapshot = baseSnapshot({
+      output: "Plain text output.",
+    });
+
+    const evidence = deriveFirstTextEvidence(snapshot);
+    expect(evidence.observed).toBe(true);
+    expect(evidence.observedSources).toContain("snapshot_output");
+  });
+
+  it("prefers runtime mark at for firstMeasuredTextAt", () => {
+    const snapshot = baseSnapshot({
+      latency: {
+        marks: [
+          { source: "desktop", name: "firstMessageDeltaAt", at: 150, detail: {} },
+          { source: "runtime", name: "firstTextDelta", at: 200, detail: {} },
+        ],
+      },
+    });
+
+    expect(deriveFirstTextEvidence(snapshot).firstMeasuredTextAt).toBe(200);
   });
 
   it("summarizes active-memory run metadata", () => {
