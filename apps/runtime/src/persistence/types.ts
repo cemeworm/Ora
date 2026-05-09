@@ -37,12 +37,19 @@ export interface PersistedArtifact {
   payload: unknown;
 }
 
+export interface SessionLedgerCursor {
+  maxSeq: number;
+  leafEntryId?: string;
+}
+
 export interface RuntimePersistenceBackend {
   load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] };
   ledgerRevision?(): string;
   optimizeStorage(): RuntimeStorageOptimizationResult;
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;
+  appendSessionEntriesFast?(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): void;
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined;
+  getSessionLedgerCursor?(sessionId: string): SessionLedgerCursor | undefined;
   listSessionLedgers(): RuntimeSessionLedger[];
   listLedgersExcludingEvents?(): RuntimeSessionLedger[];
   getSessionLedgerExcludingEvents?(sessionId: string): RuntimeSessionLedger | undefined;

@@ -91,6 +91,10 @@ function expectLedgerRoundTrip(backend: RuntimePersistenceBackend) {
 
   const written = backend.appendSessionEntries("session-ledger", entries.slice(0, 3), "e-run");
   expect(written.leafEntryId).toBe("e-run");
+  expect(backend.getSessionLedgerCursor?.("session-ledger")).toMatchObject({
+    maxSeq: 2,
+    leafEntryId: "e-run",
+  });
 
   const completed = backend.appendSessionEntries("session-ledger", [entries[2]!, entries[3]!], "e-assistant");
   expect(completed.entries.map((candidate) => candidate.id)).toEqual([
@@ -125,6 +129,22 @@ function expectLedgerRoundTrip(backend: RuntimePersistenceBackend) {
   });
 }
 
+function expectFastAppend(backend: RuntimePersistenceBackend) {
+  const entries = ledgerEntries();
+  backend.appendSessionEntriesFast?.("session-fast", entries.slice(0, 3), "e-run");
+
+  const ledger = backend.getSessionLedger("session-fast");
+  expect(ledger?.entries.map((candidate) => candidate.id)).toEqual([
+    "e-session",
+    "e-user",
+    "e-run",
+  ]);
+  expect(backend.getSessionLedgerCursor?.("session-fast")).toMatchObject({
+    maxSeq: 2,
+    leafEntryId: "e-run",
+  });
+}
+
 describe("runtime session ledger persistence", () => {
   it("round-trips append-only ledgers in the JSON backend", () => {
     expectLedgerRoundTrip(new JsonFileRuntimePersistenceBackend(freshDir("ora-json-ledger-")));
@@ -133,6 +153,15 @@ describe("runtime session ledger persistence", () => {
   it("round-trips append-only ledgers in the SQLite backend", () => {
     const dir = freshDir("ora-sqlite-ledger-");
     expectLedgerRoundTrip(new SqliteRuntimePersistence(path.join(dir, "runtime.db")));
+  });
+
+  it("supports fast append helpers in the JSON backend", () => {
+    expectFastAppend(new JsonFileRuntimePersistenceBackend(freshDir("ora-json-ledger-fast-")));
+  });
+
+  it("supports fast append helpers in the SQLite backend", () => {
+    const dir = freshDir("ora-sqlite-ledger-fast-");
+    expectFastAppend(new SqliteRuntimePersistence(path.join(dir, "runtime.db")));
   });
 
   it("repairs a missing JSON leaf pointer from the last durable entry", () => {

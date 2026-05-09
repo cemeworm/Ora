@@ -169,6 +169,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtLoadSessionEntriesExcludingEvents: Database.Statement;
   private readonly stmtLoadEventBatchesForRun: Database.Statement;
   private readonly stmtListSessionEntryIds: Database.Statement;
+  private readonly stmtGetSessionLedgerCursor: Database.Statement;
   private readonly stmtSessionLedgerEntryRevision: Database.Statement;
   private readonly stmtSessionLedgerMetaRevision: Database.Statement;
   private readonly stmtSaveSessionLedgerMeta: Database.Statement;
@@ -229,6 +230,14 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.stmtLoadSessionEntriesExcludingEvents = this.db.prepare("SELECT data FROM session_entries WHERE sessionId = ? AND type != 'runtime.event_batch' ORDER BY seq ASC, createdAt ASC, entryId ASC");
     this.stmtLoadEventBatchesForRun = this.db.prepare("SELECT data FROM session_entries WHERE runId = ? AND type = 'runtime.event_batch' AND sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
     this.stmtListSessionEntryIds = this.db.prepare("SELECT DISTINCT sessionId FROM session_entries ORDER BY sessionId ASC");
+    this.stmtGetSessionLedgerCursor = this.db.prepare(`
+      SELECT
+        COUNT(*) AS entryCount,
+        COALESCE(MAX(seq), -1) AS maxSeq,
+        (SELECT leafEntryId FROM session_ledger_meta WHERE sessionId = ? LIMIT 1) AS leafEntryId
+      FROM session_entries
+      WHERE sessionId = ?
+    `);
     this.stmtSessionLedgerEntryRevision = this.db.prepare("SELECT COUNT(*) AS count, COALESCE(MAX(rowid), 0) AS maxRowid FROM session_entries");
     this.stmtSessionLedgerMetaRevision = this.db.prepare("SELECT COALESCE(group_concat(sessionId || ':' || COALESCE(leafEntryId, ''), '|'), '') AS meta FROM (SELECT sessionId, leafEntryId FROM session_ledger_meta ORDER BY sessionId ASC)");
     this.stmtSaveSessionLedgerMeta = this.db.prepare(
@@ -358,6 +367,11 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger {
+    this.appendSessionEntriesFast(sessionId, entries, leafEntryId);
+    return this.getSessionLedger(sessionId) ?? RuntimeSessionLedgerSchema.parse({ sessionId, entries: [] });
+  }
+
+  appendSessionEntriesFast(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): void {
     const parsedEntries = entries.map((entry) => RuntimeSessionEntrySchema.parse({
       ...entry,
       sessionId,
@@ -382,7 +396,6 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       }
     });
     appendTransaction();
-    return this.getSessionLedger(sessionId) ?? RuntimeSessionLedgerSchema.parse({ sessionId, entries: [] });
   }
 
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined {
@@ -404,15 +417,24 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   getSessionLedgerExcludingEvents(sessionId: string): RuntimeSessionLedger | undefined {
-    const rows = this.stmtLoadSessionEntriesExcludingEvents.all(sessionId) as { data: string }[];
-    if (rows.length === 0) return undefined;
-    const entries = rows.map((row) => RuntimeSessionEntrySchema.parse(JSON.parse(row.data)));
-    const meta = this.stmtGetSessionLedgerMeta.get(sessionId) as { leafEntryId: string | null } | undefined;
-    const entryIds = new Set(entries.map((entry) => entry.id));
-    const leafEntryId = meta?.leafEntryId && entryIds.has(meta.leafEntryId)
-      ? meta.leafEntryId
-      : entries.at(-1)?.id;
-    return RuntimeSessionLedgerSchema.parse({ sessionId, leafEntryId, entries });
+    // Durable entries can currently parent through runtime.event_batch, so filtering
+    // those rows severs the leaf path and breaks session/run projections.
+    return this.getSessionLedger(sessionId);
+  }
+
+  getSessionLedgerCursor(sessionId: string) {
+    const row = this.stmtGetSessionLedgerCursor.get(sessionId, sessionId) as {
+      entryCount: number;
+      maxSeq: number;
+      leafEntryId: string | null;
+    } | undefined;
+    if (!row || (row.entryCount === 0 && !row.leafEntryId)) {
+      return undefined;
+    }
+    return {
+      maxSeq: row.entryCount === 0 ? -1 : row.maxSeq,
+      leafEntryId: row.leafEntryId ?? undefined,
+    };
   }
 
   getSessionLedgerLeafEntryId(sessionId: string): string | null {
@@ -427,9 +449,9 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listLedgersExcludingEvents(): RuntimeSessionLedger[] {
-    const allRows = this.stmtLoadAllSessionEntriesExcludingEvents.all() as { sessionId: string; data: string }[];
-    if (allRows.length === 0) return [];
-    return this.buildLedgersFromRows(allRows);
+    // Keep the "excluding events" API shape for callers, but prefer correctness until
+    // the ledger can be filtered without breaking parent chains.
+    return this.listSessionLedgers();
   }
 
   getEventBatchesForRun(sessionId: string, runId: string): RuntimeSessionEntry[] {

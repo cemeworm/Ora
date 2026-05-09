@@ -1494,6 +1494,7 @@ export class LocalRunStore {
       onEvent: applyLiveEvent,
     });
     setTimeout(() => {
+      (globalThis as any).__latencyKernelStart = Date.now();
       void runKernel().then(async (snapshot) => {
       this.runStreamingService.deleteAbortController(runId);
       const cancelled = this.cancelledSnapshot(runId);
@@ -2726,7 +2727,7 @@ export class LocalRunStore {
     const events = snapshot.events.slice(existingEventCount);
     const ledgerSnapshot = compactRuntimeEventBatchSnapshot(snapshot);
     const entry = this.appendRunLedgerEntry(snapshot, {
-      id: `${snapshot.runId}:update-${snapshot.updatedAt}-${ledger?.entries.length ?? 0}`,
+      id: `${snapshot.runId}:update-${snapshot.updatedAt}-${this.ledgerEntryOrdinal(snapshot.sessionId)}`,
       type: "runtime.event_batch",
       runId: snapshot.runId,
       turnIndex: snapshot.turnIndex ?? 1,
@@ -2955,8 +2956,24 @@ export class LocalRunStore {
     return currentLeafId !== cachedLeafId;
   }
 
+  private sessionNeedsLedgerRepair(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session?.latestRunId) {
+      return false;
+    }
+    const cached = this.runs.get(session.latestRunId);
+    if (!cached || cached.status === "queued" || cached.status === "running") {
+      return false;
+    }
+    const projected = this.ledgerProjectedRunSnapshotForCachedRun(cached);
+    if (!projected) {
+      return false;
+    }
+    return JSON.stringify(cached) !== JSON.stringify(projected);
+  }
+
   private refreshSessionIfStale(sessionId: string): void {
-    if (!this.isSessionLedgerStale(sessionId)) return;
+    if (!this.isSessionLedgerStale(sessionId) && !this.sessionNeedsLedgerRepair(sessionId)) return;
     const leafEntryId = this.backend.getSessionLedgerLeafEntryId?.(sessionId) ?? undefined;
     this.refreshSessionFromLedger(sessionId, leafEntryId, { excludeEvents: true });
   }
@@ -3230,9 +3247,18 @@ export class LocalRunStore {
     snapshot = this.normalizeSnapshotForPersistence(snapshot);
     this.runs.set(snapshot.runId, snapshot);
     if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
-      const session = this.isLedgerBackedSession(snapshot.sessionId)
-        ? this.refreshSessionFromLedger(snapshot.sessionId)
-        : this.upsertSessionFromRun(snapshot, options);
+      const useLedgerHotPathBypass = this.isLedgerBackedSession(snapshot.sessionId)
+        && !flush
+        && (snapshot.status === "queued" || snapshot.status === "running");
+      const session = useLedgerHotPathBypass
+        ? this.upsertSessionFromRun(snapshot, options)
+        : this.isLedgerBackedSession(snapshot.sessionId)
+          ? this.refreshSessionFromLedger(snapshot.sessionId)
+          : this.upsertSessionFromRun(snapshot, options);
+      if (useLedgerHotPathBypass) {
+        const currentLeafEntryId = this.backend.getSessionLedgerLeafEntryId?.(snapshot.sessionId) ?? undefined;
+        this.sessionLedgerLeafEntryIds.set(snapshot.sessionId, currentLeafEntryId);
+      }
       this.sessions.set(session.sessionId, session);
       if (flush && session.projectId) {
         this.syncProjectSummary(session.projectId);
@@ -3324,6 +3350,9 @@ export class LocalRunStore {
   private getRunOrThrow(runId: string): StateSnapshot {
     const snapshot = this.runs.get(runId);
     if (snapshot) {
+      if (snapshot.status === "queued" || snapshot.status === "running") {
+        return snapshot;
+      }
       const projected = this.ledgerProjectedRunSnapshotForCachedRun(snapshot);
       if (projected) {
         const rebased = this.rebaseActiveRunSnapshot(projected, snapshot);
@@ -3369,7 +3398,7 @@ export class LocalRunStore {
   private persistSession(session: SessionSummary): void {
     if (this.isLedgerBackedSession(session.sessionId)) {
       this.appendSessionLedgerEntry(session.sessionId, {
-        id: `${session.sessionId}:info-${session.updatedAt}-${this.backend.getSessionLedger(session.sessionId)?.entries.length ?? 0}`,
+        id: `${session.sessionId}:info-${session.updatedAt}-${this.ledgerEntryOrdinal(session.sessionId)}`,
         type: "session.info",
         turnIndex: 0,
         createdAt: session.updatedAt,
@@ -3553,7 +3582,7 @@ export class LocalRunStore {
       };
     }
     const priorMessages = this.buildConversationMessages(sessionId, "", excludeRunId);
-    const contextState = this.contextStateForModelContext(sessionId);
+    const contextState = normalizeContextState(this.contextStateForModelContext(sessionId));
     const currentPromptMessage = currentPrompt.trim()
       ? [{ role: "user" as const, content: currentPrompt.trim() }]
       : [];
@@ -3573,7 +3602,7 @@ export class LocalRunStore {
     const branchCandidate = config.metadata.branchRole === "candidate";
     if (!branchCandidate) {
       this.persistSessionContextState(sessionId, {
-        ...normalizeContextState(contextState),
+        ...contextState,
         activeTokenUsage: check.usage,
         contextWindow: check.contextWindow,
         autoCompactTokenLimit: check.limit,
@@ -3616,24 +3645,26 @@ export class LocalRunStore {
     if (config.metadata.taskIntent !== "implement" || config.metadata.branchRole === "candidate") {
       return undefined;
     }
-    const ledger = this.backend.getSessionLedger(sessionId);
-    if (ledger) {
-      const projection = deriveSessionProjection(ledger);
-      const handoff = [...projection.acceptedPlanHandoffs]
-        .reverse()
-        .find((candidate) =>
-          !candidate.consumedByRunId &&
-          candidate.sourceRunId !== excludeRunId &&
-          candidate.planContent.trim().length > 0
-        );
-      if (!handoff) {
-        return undefined;
+    if (this.isSessionLedgerStale(sessionId)) {
+      const ledger = this.backend.getSessionLedger(sessionId);
+      if (ledger) {
+        const projection = deriveSessionProjection(ledger);
+        const handoff = [...projection.acceptedPlanHandoffs]
+          .reverse()
+          .find((candidate) =>
+            !candidate.consumedByRunId &&
+            candidate.sourceRunId !== excludeRunId &&
+            candidate.planContent.trim().length > 0
+          );
+        if (!handoff) {
+          return undefined;
+        }
+        return {
+          decisionId: handoff.decisionId,
+          sourceRunId: handoff.sourceRunId,
+          planContent: handoff.planContent.trim(),
+        };
       }
-      return {
-        decisionId: handoff.decisionId,
-        sourceRunId: handoff.sourceRunId,
-        planContent: handoff.planContent.trim(),
-      };
     }
     const priorTurns = this.runsForSession(sessionId)
       .filter((turn) => turn.runId !== excludeRunId);
@@ -3656,6 +3687,14 @@ export class LocalRunStore {
       sourceRunId: latestPriorTurn.runId,
       planContent: decision.planContent.trim(),
     };
+  }
+
+  private ledgerEntryOrdinal(sessionId: string): number {
+    const cursor = this.backend.getSessionLedgerCursor?.(sessionId);
+    if (cursor) {
+      return Math.max(0, cursor.maxSeq + 1);
+    }
+    return this.backend.getSessionLedger(sessionId)?.entries.length ?? 0;
   }
 
   private consumeAcceptedPlanHandoffForStartedRun(sessionId: string, config: RunConfig, runId: string): void {
@@ -3697,7 +3736,7 @@ export class LocalRunStore {
     if (this.isLedgerBackedSession(sessionId)) {
       const now = this.now();
       this.appendSessionLedgerEntry(sessionId, {
-        id: `${sessionId}:compaction-${now}-${this.backend.getSessionLedger(sessionId)?.entries.length ?? 0}`,
+        id: `${sessionId}:compaction-${now}-${this.ledgerEntryOrdinal(sessionId)}`,
         type: "compaction.summary",
         turnIndex: 0,
         createdAt: now,
@@ -3750,10 +3789,18 @@ export class LocalRunStore {
   }
 
   private buildConversationMessages(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] {
+    const cachedMessages = this.buildConversationMessagesFromCachedRuns(sessionId, currentPrompt, excludeRunId);
+    if (!this.isLedgerBackedSession(sessionId) || !this.isSessionLedgerStale(sessionId)) {
+      return cachedMessages;
+    }
     const ledgerMessages = this.buildModelContextFromLedger(sessionId, currentPrompt, excludeRunId);
     if (ledgerMessages) {
       return ledgerMessages;
     }
+    return cachedMessages;
+  }
+
+  private buildConversationMessagesFromCachedRuns(sessionId: string, currentPrompt: string, excludeRunId?: string): ModelMessage[] {
     const session = this.sessions.get(sessionId);
     const contextState = normalizeContextState(session?.contextState);
     const priorTurns = this.runsForSession(sessionId);
@@ -3821,6 +3868,9 @@ export class LocalRunStore {
   }
 
   private contextStateForModelContext(sessionId: string): SessionSummary["contextState"] {
+    if (!this.isLedgerBackedSession(sessionId) || !this.isSessionLedgerStale(sessionId)) {
+      return this.sessions.get(sessionId)?.contextState;
+    }
     const ledger = this.backend.getSessionLedger(sessionId);
     if (ledger) {
       return deriveSessionProjection(ledger).contextState;

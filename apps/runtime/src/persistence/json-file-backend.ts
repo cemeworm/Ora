@@ -104,6 +104,11 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   }
 
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger {
+    this.appendSessionEntriesFast(sessionId, entries, leafEntryId);
+    return this.getSessionLedger(sessionId)!;
+  }
+
+  appendSessionEntriesFast(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): void {
     this.ensureDirs();
     const parsedEntries = entries.map((entry) => RuntimeSessionEntrySchema.parse({
       ...entry,
@@ -128,7 +133,6 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
     if (nextLeafEntryId) {
       this.writeJsonFile(this.sessionLedgerMetaPath(sessionId), { sessionId, leafEntryId: nextLeafEntryId });
     }
-    return this.getSessionLedger(sessionId)!;
   }
 
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined {
@@ -152,17 +156,20 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   }
 
   getSessionLedgerExcludingEvents(sessionId: string): RuntimeSessionLedger | undefined {
-    this.ensureDirs();
-    const ledgerPath = this.sessionLedgerPath(sessionId);
-    if (!fs.existsSync(ledgerPath)) return undefined;
-    const entries = parseLedgerJsonl(fs.readFileSync(ledgerPath, "utf8"))
-      .filter((entry) => entry.sessionId === sessionId && entry.type !== "runtime.event_batch");
-    const meta = this.readSessionLedgerMeta(sessionId);
-    const entryIds = new Set(entries.map((entry) => entry.id));
-    const leafEntryId = meta?.leafEntryId && entryIds.has(meta.leafEntryId)
-      ? meta.leafEntryId
-      : entries.sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt || a.id.localeCompare(b.id)).at(-1)?.id;
-    return RuntimeSessionLedgerSchema.parse({ sessionId, leafEntryId, entries });
+    // Durable entries can currently parent through runtime.event_batch, so filtering
+    // those rows severs the leaf path and breaks session/run projections.
+    return this.getSessionLedger(sessionId);
+  }
+
+  getSessionLedgerCursor(sessionId: string) {
+    const ledger = this.getSessionLedger(sessionId);
+    if (!ledger) {
+      return undefined;
+    }
+    return {
+      maxSeq: ledger.entries.reduce((max, entry) => Math.max(max, entry.seq), -1),
+      leafEntryId: ledger.leafEntryId,
+    };
   }
 
   getSessionLedgerLeafEntryId(sessionId: string): string | null {

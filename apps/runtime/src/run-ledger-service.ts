@@ -51,9 +51,14 @@ export class RunLedgerService {
     entries: Array<Omit<RuntimeSessionEntry, "sessionId" | "seq"> & { type: RuntimeSessionEntryType }>,
     options: { updateLeaf?: boolean; parentId?: string } = {},
   ): RuntimeSessionEntry[] {
-    const ledger = this.deps.backend.getSessionLedger(sessionId);
-    const maxSeq = ledger?.entries.reduce((max, entry) => Math.max(max, entry.seq), -1) ?? -1;
-    let parentId = options.parentId ?? ledger?.leafEntryId;
+    const cursor = this.deps.backend.getSessionLedgerCursor?.(sessionId);
+    const fallbackLedger = cursor ? undefined : this.deps.backend.getSessionLedger(sessionId);
+    const maxSeq = cursor?.maxSeq ?? fallbackLedger?.entries.reduce((max, entry) => Math.max(max, entry.seq), -1) ?? -1;
+    const currentLeafEntryId =
+      cursor?.leafEntryId ??
+      this.deps.backend.getSessionLedgerLeafEntryId?.(sessionId) ??
+      fallbackLedger?.leafEntryId;
+    let parentId = options.parentId ?? currentLeafEntryId;
     const parsed = entries.map((entry, index) => {
       const next = RuntimeSessionEntrySchema.parse({
         ...entry,
@@ -64,8 +69,9 @@ export class RunLedgerService {
       parentId = next.id;
       return next;
     });
-    const nextLeafEntryId = options.updateLeaf === false ? ledger?.leafEntryId : parsed.at(-1)?.id;
-    this.deps.backend.appendSessionEntries(sessionId, parsed, nextLeafEntryId);
+    const nextLeafEntryId = options.updateLeaf === false ? currentLeafEntryId : parsed.at(-1)?.id;
+    this.deps.backend.appendSessionEntriesFast?.(sessionId, parsed, nextLeafEntryId)
+      ?? this.deps.backend.appendSessionEntries(sessionId, parsed, nextLeafEntryId);
     return parsed;
   }
 
