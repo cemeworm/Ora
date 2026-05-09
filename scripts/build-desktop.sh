@@ -27,10 +27,10 @@ if needs_pnpm_install; then
   pnpm install --frozen-lockfile
 fi
 
-if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-  echo "❌ TAURI_SIGNING_PRIVATE_KEY is not set." >&2
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]; then
+  echo "❌ Neither TAURI_SIGNING_PRIVATE_KEY nor TAURI_SIGNING_PRIVATE_KEY_PATH is set." >&2
   echo "   The tauri.conf.json enables createUpdaterArtifacts which requires a signing key." >&2
-  echo "   Either set TAURI_SIGNING_PRIVATE_KEY in your environment, or" >&2
+  echo "   Either set TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH in your environment, or" >&2
   echo "   set bundle.createUpdaterArtifacts to false in tauri.conf.json for unsigned builds." >&2
   exit 1
 fi
