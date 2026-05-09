@@ -80,9 +80,9 @@ export function promptTemplate(
     return asText(value);
   });
   if (unresolved.size > 0) {
-    console.warn(
+    console.error(
       `[driver-utils] Unresolved mustache placeholder(s) in prompt for node "${node.id}" (template: ${node.template}): ` +
-      `${[...unresolved].join(", ")}. The generated prompt will contain literal "{{key}}" strings.`,
+      `${[...unresolved].join(", ")}. Replaced with empty strings.`,
     );
   }
   return resolved;

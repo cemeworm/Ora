@@ -162,7 +162,9 @@ export function classifyRecoveryError(error: unknown, context: {
   ) {
     if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
       errorType = "provider_quota";
-    } else if (matchesAny(lowered, ["unknown provider", "api key", "authentication", "unauthorized", "forbidden", "access denied", "permission", "requires a baseurl"])) {
+    } else if (matchesAny(lowered, ["unknown provider"])) {
+      errorType = "provider_config_error";
+    } else if (matchesAny(lowered, ["api key", "authentication", "unauthorized", "forbidden", "access denied", "permission", "requires a baseurl"])) {
       errorType = "provider_auth";
     } else if (matchesAny(lowered, ["invalid_request_error", "reasoning_content", "bad request"])) {
       errorType = "model_output_invalid";

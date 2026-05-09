@@ -165,6 +165,7 @@ export const RecoveryErrorTypeSchema = z.enum([
   "provider_busy",
   "provider_auth",
   "provider_quota",
+  "provider_config_error",
   "boundary_violation",
   "tool_error",
   "tool_policy_denied",
@@ -264,6 +265,12 @@ export const DEFAULT_MODE_RECOVERY_POLICY = ModeRecoveryPolicySchema.parse({
       label: "Provider hard fallback",
       errorTypes: ["provider_auth", "provider_quota"],
       action: "fallback_artifact",
+    },
+    {
+      id: "provider-config-fail",
+      label: "Provider config fail",
+      errorTypes: ["provider_config_error"],
+      action: "fail",
     },
     {
       id: "boundary-violation-degrade",
