@@ -385,6 +385,9 @@ describe("trail debugger view model", () => {
         marks: [
           { source: "runtime", name: "startStreamingRun.enter", at: 100, detail: {} },
           { source: "runtime", name: "modeSelection.done", at: 130, detail: { modeSelection: "auto" } },
+          { source: "runtime", name: "conversationMessages.done", at: 140, detail: { messageCount: 4 } },
+          { source: "runtime", name: "snapshotPersisted", at: 145, detail: {} },
+          { source: "desktop", name: "handleReceivedAt", at: 180, detail: { runId: "run-1" } },
           { source: "runtime", name: "kernelScheduled", at: 150, detail: {} },
           { source: "runtime", name: "firstApplyLiveEvent", at: 200, detail: { eventType: "run.started" } },
           { source: "runtime", name: "providerCallStarted", at: 320, detail: {} },
@@ -404,6 +407,18 @@ describe("trail debugger view model", () => {
       firstText: "460ms",
       firstReadableText: "460ms",
       providerMode: "sse",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "runtime-enter-to-conversation")).toMatchObject({
+      duration: "40ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "conversation-to-snapshot")).toMatchObject({
+      duration: "5ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "snapshot-to-handle")).toMatchObject({
+      duration: "35ms",
+      status: "ok",
     });
     expect(diagnostics.segments.find((segment) => segment.id === "first-text-to-progress")).toMatchObject({
       duration: "140ms",

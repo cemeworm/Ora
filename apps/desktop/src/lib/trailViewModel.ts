@@ -1186,6 +1186,27 @@ const LATENCY_SEGMENT_DEFINITIONS = [
     note: "长期记忆候选筛选与 prompt overlay 构造耗时。",
   },
   {
+    id: "runtime-enter-to-conversation",
+    label: "Runtime 入口 → 上下文拼接",
+    from: "runtime:startStreamingRun.enter",
+    to: "runtime:conversationMessages.done",
+    note: "会话上下文组装、plan handoff 拼接与 compaction 判定耗时。",
+  },
+  {
+    id: "conversation-to-snapshot",
+    label: "上下文拼接 → 快照落盘",
+    from: "runtime:conversationMessages.done",
+    to: "runtime:snapshotPersisted",
+    note: "运行中快照创建与首次持久化耗时。",
+  },
+  {
+    id: "snapshot-to-handle",
+    label: "快照落盘 → Runtime handle",
+    from: "runtime:snapshotPersisted",
+    to: "desktop:handleReceivedAt",
+    note: "落盘完成后到桌面端收到 handle 的间隔。",
+  },
+  {
     id: "kernel-to-first-event",
     label: "Kernel 调度 → 首事件",
     from: "runtime:kernelScheduled",
@@ -1281,6 +1302,10 @@ function latencyMarkLabel(key: string): string {
       return "模式选择完成";
     case "memoryPrompt.done":
       return "记忆注入完成";
+    case "conversationMessages.done":
+      return "上下文拼接完成";
+    case "snapshotPersisted":
+      return "快照落盘";
     case "kernelScheduled":
       return "Kernel 已调度";
     case "firstApplyLiveEvent":
