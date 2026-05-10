@@ -867,6 +867,12 @@ function normalizeStateSnapshot(snapshot: OraStateSnapshot): OraStateSnapshot {
   };
 }
 
+function isFinalRunStatus(
+  status: OraStateSnapshot["status"] | undefined,
+): status is OraStateSnapshot["status"] {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
 export function mergeStateSnapshot(
   existing: OraStateSnapshot | undefined,
   incoming: OraStateSnapshot | undefined,
@@ -891,10 +897,19 @@ export function mergeStateSnapshot(
     normalizedExisting.events,
     normalizedIncoming.events,
   );
+  const preserveFinalStatus =
+    isFinalRunStatus(normalizedExisting.status) &&
+    !isFinalRunStatus(normalizedIncoming.status);
   return {
     ...normalizedExisting,
     ...normalizedIncoming,
     sessionId: normalizedIncoming.sessionId ?? normalizedExisting.sessionId,
+    status: preserveFinalStatus
+      ? normalizedExisting.status
+      : normalizedIncoming.status,
+    attention: preserveFinalStatus
+      ? normalizedExisting.attention
+      : normalizedIncoming.attention,
     coordinationKind:
       normalizedIncoming.coordinationKind ??
       normalizedExisting.coordinationKind,
@@ -1627,6 +1642,9 @@ function streamRunStatus(
   const terminalStatus = terminalStatusFromStreamEvents(stream.events);
   if (terminalStatus) {
     return terminalStatus;
+  }
+  if (isFinalRunStatus(snapshot?.status) && !isFinalRunStatus(stream.status)) {
+    return snapshot.status;
   }
   return stream.status ?? (snapshot?.runId === stream.runId ? snapshot.status : undefined);
 }
