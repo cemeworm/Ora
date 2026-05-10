@@ -1674,6 +1674,120 @@ describe("desktop workbench state", () => {
     expect(merged?.status).toBe("running");
   });
 
+  it("does not regress a final snapshot to running when a stale same-run snapshot arrives", () => {
+    const existing = testSnapshot({
+      runId: "run-final-no-regress",
+      sessionId: "session-final-no-regress",
+      status: "succeeded",
+      updatedAt: 200,
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-final-no-regress",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const incoming = testSnapshot({
+      runId: "run-final-no-regress",
+      sessionId: "session-final-no-regress",
+      status: "running",
+      updatedAt: 220,
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: "run-final-no-regress",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+
+    const merged = mergeStateSnapshot(existing, incoming);
+
+    expect(merged?.status).toBe("succeeded");
+    expect(merged?.attention?.kind).toBe("idle");
+    expect(merged?.updatedAt).toBe(220);
+  });
+
+  it("does not revive a settled active run from a late running stream", () => {
+    const sessionId = "session-late-running-stream";
+    const runId = "run-late-running-stream";
+    const settledSnapshot = testSnapshot({
+      runId,
+      sessionId,
+      status: "succeeded",
+      updatedAt: 200,
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const session: OraSessionSummary = {
+      ...sessionSummary(sessionId),
+      latestRunId: runId,
+      status: "succeeded",
+      attention: settledSnapshot.attention,
+      turnCount: 1,
+      updatedAt: 200,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      sessions: [session],
+      runLifecycle: lifecycleFromSnapshot(settledSnapshot),
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: settledSnapshot.pattern,
+          prompt: settledSnapshot.input.prompt,
+          startedAt: 100,
+          updatedAt: 200,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+          attention: settledSnapshot.attention,
+        }],
+        transcript: [],
+        latestSnapshot: settledSnapshot,
+      },
+      isLoading: false,
+    };
+    const stream = {
+      runId,
+      sessionId,
+      fromSeq: 1,
+      nextSeq: 2,
+      status: "running",
+      events: [{
+        id: `${runId}:event:1`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        createdAt: 230,
+        payload: { role: "assistant", content: "late", delta: "late", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 240 });
+
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
+    expect(next.sessions[0]?.status).toBe("succeeded");
+    expect(next.activeSessionDetail?.session.status).toBe("succeeded");
+    expect(next.isLoading).toBe(false);
+  });
+
   it("projects no-snapshot plan list updates into the active snapshot immediately", () => {
     const snapshot = testSnapshot({
       runId: "run-plan-list-delta",
