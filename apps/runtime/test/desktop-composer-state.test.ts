@@ -146,7 +146,17 @@ describe("desktop composer pending-run behavior", () => {
   });
 
   it("keeps text entry editable while a run request is pending", () => {
-    expect(getComposerInteractivity({ composerPrompt: "next question", isLoading: true })).toEqual({
+    expect(getComposerInteractivity({
+      composerPrompt: "next question",
+      runInteractionState: {
+        status: "running",
+        isProcessing: true,
+        canSubmit: false,
+        canStop: true,
+        canResume: false,
+        authority: "pending_run",
+      },
+    })).toEqual({
       canEditText: true,
       canSubmit: false,
     });

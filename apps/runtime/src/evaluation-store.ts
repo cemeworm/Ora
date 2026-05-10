@@ -918,7 +918,7 @@ export class LocalEvaluationStore {
           weight: 1,
           metadata: {},
         }, spec, config, evaluationCase, base.observations, base.output ?? snapshot.output);
-        const judgeScore = typeof autoJudgeResult.score === "number" ? autoJudgeResult.score : base.score.overallScore;
+        const judgeScore = typeof autoJudgeResult.score === "number" && autoJudgeResult.status !== "failed" ? autoJudgeResult.score : base.score.overallScore;
         const weights = profileWeights(spec.profileId);
         const mergedScore = EvaluationScoreSchema.parse({
           ...base.score,
@@ -1135,7 +1135,7 @@ export class LocalEvaluationStore {
     });
 
     let snapshot: StateSnapshot;
-    if ((spec.timeoutMs ?? 0) > 0) {
+    if (timeoutMs > 0) {
       const timeoutPromise = new Promise<StateSnapshot>((_, reject) =>
         setTimeout(() => reject(new Error(`Attempt timed out after ${timeoutMs}ms`)), timeoutMs)
       );
@@ -3332,7 +3332,8 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
     const baseProcess = Math.min(1, 0.45 + Math.min(processEvents, 4) * 0.12);
     const toolPenalty = toolFailureRate > 0.5 ? (toolFailureRate - 0.5) * 0.6 : 0;
     const recoveryPenalty = Math.min(recoveryEvents, 3) * 0.1;
-    const toolExpected = evaluationCase.metadata?.toolDependent === true || evaluationCase.expected?.structured !== undefined;
+    const toolExpected = evaluationCase.metadata?.toolDependent === true ||
+      (evaluationCase.expected?.structured?.assertions?.some(a => a.path.includes('tool')) ?? false);
     const noToolAttemptPenalty = (totalToolCalls === 0 && toolExpected) ? 0.2 : 0;
     processScore = Math.max(0.1, baseProcess - toolPenalty - recoveryPenalty - noToolAttemptPenalty);
   }

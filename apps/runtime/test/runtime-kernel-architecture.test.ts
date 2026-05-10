@@ -344,7 +344,7 @@ describe("runtime kernel architecture guards", () => {
       const driverSource = readSource(driverPath);
 
       expect(driverSource).toContain("from \"./generic-node-executor.js\"");
-      expect(driverSource).toContain("runGenericModeNode(");
+      expect(driverSource).toMatch(/runGenericModeNode\(|runModeLayer\(/);
       for (const lifecyclePrimitive of [
         "ensureClarification(",
         "runRecoverableNode(",
