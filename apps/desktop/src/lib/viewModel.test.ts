@@ -978,6 +978,91 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("shows missing file.list targets as ordinary tool results", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-missing-file-list",
+      sessionId: "session-missing-file-list",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "列出 src", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-missing-file-list-test",
+        skillIds: [],
+        toolIds: ["file.list"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: "run-missing-file-list:evt-0",
+        runId: "run-missing-file-list",
+        seq: 0,
+        type: "tool.called",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          toolId: "file.list",
+          status: "succeeded",
+          input: { path: "src" },
+          output: { path: "src", entries: [], missing: true },
+        },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: "src 目录不存在。" },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-missing-file-list:user",
+        sessionId: "session-missing-file-list",
+        runId: "run-missing-file-list",
+        turnIndex: 1,
+        role: "user",
+        content: "列出 src",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-missing-file-list": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    const step = assistant?.turn?.processSteps[0];
+    expect(step).toMatchObject({
+      label: "列出文件",
+      status: "complete",
+      detail: "未找到 src，未列出文件。",
+      contextLabel: "src",
+    });
+    expect(step?.detail).not.toContain("工具执行失败");
+  });
+
   it("does not let raw approval actions suppress running turn content without projection attention", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

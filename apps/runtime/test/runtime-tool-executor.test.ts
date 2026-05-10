@@ -244,6 +244,8 @@ describe("RuntimeToolExecutor", () => {
     expect(prompt).toContain("If the user asks what tools you can use");
     expect(prompt).toContain("- file.read:");
     expect(prompt).toContain("- file.list:");
+    expect(prompt).toContain("{\"tool\":\"file.list\",\"args\":{\"path\":\".\"}}");
+    expect(prompt).not.toContain("{\"tool\":\"file.list\",\"args\":{\"path\":\"src\"}}");
     expect(prompt).toContain("- web.fetch:");
     expect(prompt).toContain("- skills.list:");
     expect(prompt).toContain("- skills.get:");
@@ -302,6 +304,23 @@ describe("RuntimeToolExecutor", () => {
       expect.objectContaining({ path: "src/alpha.ts", line: 1 }),
       expect.objectContaining({ path: "src/beta.ts", line: 1 }),
     ]));
+  });
+
+  it("reports missing file.list targets as ordinary empty results", async () => {
+    const { workspace } = createWorkspace();
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const list = await executor.execute({ tool: "file.list", args: { path: "missing-src" } }) as {
+      path: string;
+      entries: unknown[];
+      missing?: boolean;
+    };
+
+    expect(list).toEqual({
+      path: "missing-src",
+      entries: [],
+      missing: true,
+    });
   });
 
   it("keeps broad file search on visible text files while reporting explicit binary targets", async () => {

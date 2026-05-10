@@ -37,7 +37,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
       };
     case "file.list":
       return {
-        promptExample: "{\"tool\":\"file.list\",\"args\":{\"path\":\"src\"}}",
+        promptExample: "{\"tool\":\"file.list\",\"args\":{\"path\":\".\"}}",
         execute: (args, context) => ({ output: listWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
       };
     case "file.glob":
@@ -142,7 +142,19 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limi
 
 function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const absolutePath = resolveWorkspacePath(rootPath, args.path ?? ".");
-  const stat = fs.statSync(absolutePath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(absolutePath);
+  } catch (error) {
+    if (isErrnoCode(error, "ENOENT")) {
+      return {
+        path: relativeWorkspacePath(rootPath, absolutePath),
+        entries: [],
+        missing: true,
+      };
+    }
+    throw error;
+  }
   if (!stat.isDirectory()) {
     throw new Error("file.list target must be a directory.");
   }
@@ -162,6 +174,10 @@ function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
     path: relativeWorkspacePath(rootPath, absolutePath),
     entries,
   };
+}
+
+function isErrnoCode(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
 }
 
 function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {

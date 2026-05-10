@@ -3121,6 +3121,9 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         ? `已读取 ${targetPath}${sizeSuffix(output.sizeBytes ?? output.bytes)}`
         : undefined;
     case "file.list":
+      if (output.missing === true) {
+        return targetPath ? `未找到 ${targetPath}，未列出文件` : "目标目录不存在，未列出文件";
+      }
       return targetPath
         ? `已列出 ${targetPath}${countSuffix(output.entries, "项")}`
         : undefined;
