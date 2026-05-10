@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
+  deriveRenderableTurnSnapshots,
   initialWorkbenchState,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
   workbenchReducer,
 } from "./state";
-import type { WorkbenchState } from "./state";
-import type { OraProviderConfig, OraRunEventStream, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
+import type { WorkbenchAction, WorkbenchState } from "./state";
+import type { OraProviderConfig, OraRunEventStream, OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("initial workbench state", () => {
   it("starts new sessions in chat intent", () => {
@@ -948,6 +949,96 @@ describe("desktop workbench state", () => {
     }]);
   });
 
+  it("shows pending run stream text before the run handle is attached", () => {
+    const sessionId = "session-pre-handle";
+    const prompt = "你能做什么？";
+    const runId = "run-pre-handle";
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: "run-previous",
+      pendingRun: { sessionId, prompt, createdAt: 100 },
+      isLoading: true,
+    };
+    const stream = {
+      runId,
+      sessionId,
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:event:0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        payload: { role: "assistant", content: "我可以", delta: "我可以", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterStream = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 130,
+    });
+    const withHandle = workbenchReducer(afterStream, {
+      type: "ATTACH_PENDING_RUN_HANDLE",
+      sessionId,
+      prompt,
+      runId,
+    });
+
+    expect(afterStream.selectedTurnRunId).toBe(runId);
+    expect(afterStream.activeSnapshot?.runId).toBe(runId);
+    expect(afterStream.activeSnapshot?.sessionId).toBe(sessionId);
+    expect(afterStream.activeSnapshot?.input.prompt).toBe(prompt);
+    expect(afterStream.activeSnapshot?.events.map((event) => event.type)).toEqual(["message.delta"]);
+    expect(afterStream.pendingRun?.latency?.marks.map((mark) => mark.name)).toEqual([
+      "firstRunStreamReceivedAt",
+      "firstMessageDeltaAt",
+      "firstNonProgressAssistantTextAt",
+    ]);
+    expect(withHandle.pendingRun?.runId).toBe(runId);
+    expect(withHandle.activeSnapshot?.events).toHaveLength(1);
+  });
+
+  it("does not match pre-handle streams from another session with the same prompt", () => {
+    const prompt = "same prompt";
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-active",
+      pendingRun: { sessionId: "session-active", prompt, createdAt: 100 },
+      isLoading: true,
+    };
+    const stream = {
+      runId: "run-other-session",
+      sessionId: "session-other",
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: "run-other-session:event:0",
+        runId: "run-other-session",
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        payload: { role: "assistant", content: "Nope", delta: "Nope", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 130,
+    });
+
+    expect(next.activeSnapshot).toBeUndefined();
+    expect(next.selectedTurnRunId).toBeUndefined();
+    expect(next.pendingRun).toBe(state.pendingRun);
+  });
+
   it("records only first stream latency for an initial running snapshot stream", () => {
     const sessionId = "session-initial-stream";
     const runId = "run-initial-stream";
@@ -1040,6 +1131,60 @@ describe("desktop workbench state", () => {
 
     expect(merged?.events.map((event) => event.seq)).toEqual([0, 1, 2]);
     expect(assistantText).toBe("Hello");
+  });
+
+  it("appends no-snapshot stream deltas to an existing snapshot for the same run", () => {
+    const snapshot = testSnapshot({
+      runId: "run-early-delta",
+      events: [{
+        id: "run-early-delta:event:0",
+        runId: "run-early-delta",
+        seq: 0,
+        type: "run.started",
+        createdAt: 1_714_000_000_000,
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+    const stream: OraRunEventStream = {
+      runId: "run-early-delta",
+      fromSeq: 1,
+      nextSeq: 2,
+      status: "running",
+      events: [{
+        id: "run-early-delta:event:1",
+        runId: "run-early-delta",
+        seq: 1,
+        type: "message.delta",
+        createdAt: 1_714_000_000_001,
+        payload: { role: "assistant", content: "Hi!", delta: "Hi!", streaming: true },
+      } as unknown as OraRunEventStream["events"][number]],
+    };
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged).toBeDefined();
+    expect(merged?.events.map((event) => event.seq)).toEqual([0, 1]);
+    expect(merged?.status).toBe("running");
+  });
+
+  it("does not append no-snapshot deltas when no matching snapshot exists", () => {
+    const stream: OraRunEventStream = {
+      runId: "run-no-snapshot",
+      fromSeq: 1,
+      nextSeq: 2,
+      status: "running",
+      events: [{
+        id: "run-no-snapshot:event:1",
+        runId: "run-no-snapshot",
+        seq: 1,
+        type: "message.delta",
+        createdAt: 1_714_000_000_001,
+        payload: { role: "assistant", content: "Hi!", delta: "Hi!", streaming: true },
+      } as unknown as OraRunEventStream["events"][number]],
+    };
+
+    const merged = mergeRunStreamSnapshot(undefined, stream);
+
+    expect(merged).toBeUndefined();
   });
 
   it("recovers debate transcript messages from snapshot agent.message events", () => {
@@ -1907,5 +2052,192 @@ describe("desktop workbench state", () => {
       const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream: settledStream, receivedAt: 200 });
       expect(next.activeSessionDetail?.session.attention?.kind).not.toBe("needs_plan_decision");
     });
+  });
+
+  describe("BOOTSTRAP provider selection", () => {
+    function mockBootstrap(params: {
+      providers: OraProviderConfig[];
+      defaultProviderId: string;
+    }): WorkbenchAction {
+      return {
+        type: "BOOTSTRAP",
+        patterns: [],
+        modes: [],
+        projects: [],
+        providerRegistry: {
+          providers: params.providers,
+          defaultProviderId: params.defaultProviderId,
+        },
+        toolRegistry: { tools: [], categories: [] },
+        packageStore: { packages: [] },
+        skillRegistry: { skills: [] },
+        providerSecretStatuses: [],
+        providerStatuses: [],
+        health: { mode: "desktop", ok: true, service: "OraBridge", detail: "healthy" },
+      } as unknown as WorkbenchAction;
+    }
+
+    it("prefers an enabled non-local provider over the local-smoke default on bootstrap", () => {
+      const externalProvider: OraProviderConfig = {
+        id: "external-api",
+        type: "openai_compatible",
+        label: "External API",
+        modelId: "external-model",
+        enabled: true,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      };
+      const localSmoke: OraProviderConfig = {
+        id: "local-smoke",
+        type: "local_smoke",
+        label: "本地模拟",
+        modelId: "local/smoke-model",
+        enabled: true,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      };
+
+      const next = workbenchReducer(
+        initialWorkbenchState,
+        mockBootstrap({
+          providers: [externalProvider, localSmoke],
+          defaultProviderId: "local-smoke",
+        }),
+      );
+
+      expect(next.selectedProviderId).toBe("external-api");
+    });
+
+    it("falls back to local-smoke when no non-local provider is enabled", () => {
+      const localSmoke: OraProviderConfig = {
+        id: "local-smoke",
+        type: "local_smoke",
+        label: "本地模拟",
+        modelId: "local/smoke-model",
+        enabled: true,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      };
+
+      const next = workbenchReducer(
+        initialWorkbenchState,
+        mockBootstrap({
+          providers: [localSmoke],
+          defaultProviderId: "local-smoke",
+        }),
+      );
+
+      expect(next.selectedProviderId).toBe("local-smoke");
+    });
+
+    it("falls back to local-smoke when non-local providers exist but are disabled", () => {
+      const disabledExternal: OraProviderConfig = {
+        id: "external-api",
+        type: "openai_compatible",
+        label: "External API",
+        modelId: "external-model",
+        enabled: false,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      };
+      const localSmoke: OraProviderConfig = {
+        id: "local-smoke",
+        type: "local_smoke",
+        label: "本地模拟",
+        modelId: "local/smoke-model",
+        enabled: true,
+        capabilities: ["chat"],
+        dropParams: [],
+        headers: {},
+      };
+
+      const next = workbenchReducer(
+        initialWorkbenchState,
+        mockBootstrap({
+          providers: [disabledExternal, localSmoke],
+          defaultProviderId: "local-smoke",
+        }),
+      );
+
+      expect(next.selectedProviderId).toBe("local-smoke");
+    });
+  });
+});
+
+describe("deriveRenderableTurnSnapshots", () => {
+  const sessionId = "session-new";
+  const runId = "run-first";
+
+  function emptyDetail(sessionIdOverride?: string): OraSessionDetail {
+    return {
+      session: {
+        sessionId: sessionIdOverride ?? sessionId,
+        title: "New Chat",
+        turnCount: 0,
+        createdAt: 1000,
+        updatedAt: 1000,
+      },
+      turns: [],
+      transcript: [],
+      latestSnapshot: undefined,
+    };
+  }
+
+  it("includes activeSnapshot even when activeSessionDetail is undefined (new session, no detail yet)", () => {
+    const snapshot = testSnapshot({ runId, sessionId, status: "running" });
+
+    const result = deriveRenderableTurnSnapshots({
+      detail: undefined,
+      activeSnapshot: snapshot,
+      turnSnapshots: {},
+      selectedSessionId: sessionId,
+    });
+
+    expect(result[runId]).toBeDefined();
+    expect(result[runId]?.runId).toBe(runId);
+  });
+
+  it("returns empty when activeSnapshot sessionId does not match selectedSessionId", () => {
+    const snapshot = testSnapshot({ runId, sessionId: "other-session", status: "running" });
+
+    const result = deriveRenderableTurnSnapshots({
+      detail: undefined,
+      activeSnapshot: snapshot,
+      turnSnapshots: {},
+      selectedSessionId: sessionId,
+    });
+
+    expect(result[runId]).toBeUndefined();
+  });
+
+  it("includes activeSnapshot even when detail.turns is empty (new run, stale turns)", () => {
+    const snapshot = testSnapshot({ runId, sessionId, status: "running" });
+
+    const result = deriveRenderableTurnSnapshots({
+      detail: emptyDetail(),
+      activeSnapshot: snapshot,
+      turnSnapshots: {},
+      selectedSessionId: sessionId,
+    });
+
+    expect(result[runId]).toBeDefined();
+    expect(result[runId]?.runId).toBe(runId);
+  });
+
+  it("does not include activeSnapshot when its sessionId differs from detail.session.sessionId", () => {
+    const snapshot = testSnapshot({ runId, sessionId: "other-session", status: "running" });
+
+    const result = deriveRenderableTurnSnapshots({
+      detail: emptyDetail(),
+      activeSnapshot: snapshot,
+      turnSnapshots: {},
+      selectedSessionId: sessionId,
+    });
+
+    expect(result[runId]).toBeUndefined();
   });
 });

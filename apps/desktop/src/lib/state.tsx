@@ -29,7 +29,7 @@ import {
   readStoredLanguage,
   type AppLanguage,
 } from "./i18n";
-import { chooseEnabledProviderId } from "./providerSelection";
+import { chooseBootstrapProviderId, chooseEnabledProviderId } from "./providerSelection";
 import type {
   OraModeSpec,
   OraPackageStoreSnapshot,
@@ -918,6 +918,50 @@ export function pruneTurnSnapshotsForActiveSession(
   return changed ? next : snapshots;
 }
 
+export function deriveRenderableTurnSnapshots(params: {
+  detail: OraSessionDetail | undefined;
+  activeSnapshot: OraStateSnapshot | undefined;
+  turnSnapshots: Record<string, OraStateSnapshot>;
+  selectedSessionId: string | undefined;
+}): Record<string, OraStateSnapshot> {
+  const { detail, activeSnapshot: latestSnapshot, turnSnapshots, selectedSessionId } = params;
+  if (!detail) {
+    if (latestSnapshot && latestSnapshot.sessionId === selectedSessionId) {
+      return { [latestSnapshot.runId]: latestSnapshot };
+    }
+    return {};
+  }
+
+  const activeSessionId = detail.session.sessionId;
+  const activeRunIds = new Set(detail.turns.map((turn) => turn.runId));
+  const scopedSnapshots: Record<string, OraStateSnapshot> = {};
+  for (const [runId, snapshot] of Object.entries(turnSnapshots)) {
+    const snapshotMatchesSession = !snapshot.sessionId || snapshot.sessionId === activeSessionId;
+    if ((activeRunIds.has(runId) && snapshotMatchesSession) || snapshot.sessionId === activeSessionId) {
+      scopedSnapshots[runId] = snapshot;
+    }
+  }
+
+  if (latestSnapshot && latestSnapshot.sessionId === activeSessionId) {
+    if (!scopedSnapshots[latestSnapshot.runId]) {
+      scopedSnapshots[latestSnapshot.runId] = latestSnapshot;
+    }
+    for (const turn of detail.turns) {
+      if (scopedSnapshots[turn.runId]) continue;
+      if (latestSnapshot.runId === turn.runId) {
+        scopedSnapshots[turn.runId] = latestSnapshot;
+      } else {
+        const turnEvents = latestSnapshot.events.filter((e) => e.runId === turn.runId);
+        if (turnEvents.length > 0) {
+          scopedSnapshots[turn.runId] = { ...latestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents };
+        }
+      }
+    }
+  }
+
+  return scopedSnapshots;
+}
+
 function canAppendStreamEvents(
   existingEvents: readonly OraStateSnapshot["events"][number][],
   incomingEvents: readonly OraRunEventStream["events"][number][],
@@ -1571,17 +1615,86 @@ function streamMatchesPendingRun(
   const snapshot =
     stream.snapshot ??
     (activeSnapshot?.runId === stream.runId ? activeSnapshot : undefined);
+  if (!snapshot && !pendingRun.runId) {
+    return stream.sessionId === pendingRun.sessionId && stream.prompt === pendingRun.prompt;
+  }
   return (
     snapshot?.sessionId === pendingRun.sessionId &&
     snapshot.input.prompt === pendingRun.prompt
   );
 }
 
+function createPendingRunSnapshot(
+  pendingRun: WorkbenchState["pendingRun"],
+  stream: OraRunEventStream,
+): OraStateSnapshot | undefined {
+  if (
+    !pendingRun ||
+    pendingRun.runId ||
+    !stream.sessionId ||
+    stream.sessionId !== pendingRun.sessionId ||
+    stream.prompt !== pendingRun.prompt
+  ) {
+    return undefined;
+  }
+  const pattern = stream.snapshot?.pattern ?? "orchestrator_subagent";
+  const createdAt = stream.events[0]?.createdAt ?? pendingRun.createdAt;
+  return {
+    runId: stream.runId,
+    sessionId: pendingRun.sessionId,
+    turnIndex: 1,
+    status: stream.status ?? "running",
+    pattern,
+    input: { prompt: pendingRun.prompt, createdAt, context: {} },
+    config: {
+      pattern,
+      modeId: "",
+      modeSelection: "manual",
+      profileIds: [],
+      providerId: "",
+      modelRef: "local/smoke-model",
+      approvalMode: "high_risk_only",
+      permissionMode: "default",
+      patternOptions: {},
+      metadata: {},
+      deterministicSeed: `${stream.runId}:pending-stream`,
+      skillIds: [],
+      toolIds: [],
+    },
+    topology: { nodes: [], edges: [] },
+    profiles: [],
+    memory: [],
+    plan: [],
+    planList: [],
+    todos: [],
+    actions: [],
+    toolCalls: [],
+    continuation: { frames: [] },
+    conversation: [],
+    toolResults: [],
+    policyDecisions: [],
+    checkpoints: [],
+    events: [],
+    agentMessages: [],
+    artifacts: [],
+    activeAgents: [],
+    queueSummary: { mode: "backlog", pending: 0, inProgress: 1, completed: 0, topics: [] },
+    sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+    busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+    pendingClarifications: [],
+    pendingApprovals: [],
+    planDecisions: [],
+    updatedAt: createdAt,
+  } as OraStateSnapshot;
+}
+
 function shouldClearPendingRunForStream(
   matchesPendingRun: boolean,
+  pendingRun: WorkbenchState["pendingRun"],
   streamSnapshot: OraStateSnapshot | undefined,
+  streamBelongsToActiveTurn: boolean,
 ): boolean {
-  return matchesPendingRun && Boolean(streamSnapshot);
+  return matchesPendingRun && Boolean(pendingRun?.runId) && Boolean(streamSnapshot) && streamBelongsToActiveTurn;
 }
 
 function markSnapshotResuming(
@@ -1759,7 +1872,7 @@ export function workbenchReducer(
         skillRegistry: action.skillRegistry,
         providerSecretStatuses: action.providerSecretStatuses,
         providerStatuses: action.providerStatuses,
-        selectedProviderId: action.providerRegistry.defaultProviderId,
+        selectedProviderId: chooseBootstrapProviderId(action.providerRegistry),
         selectedModeId: selectedMode?.id ?? state.selectedModeId,
         selectedModeSelection: state.selectedModeSelection,
         selectedPattern: selectedMode?.family ?? state.selectedPattern,
@@ -2292,7 +2405,7 @@ export function workbenchReducer(
     }
 
     case "APPLY_RUN_STREAM": {
-      const streamSessionId = action.stream.snapshot?.sessionId;
+      const streamSessionId = action.stream.snapshot?.sessionId ?? action.stream.sessionId;
       const activeSessionId =
         state.activeSessionDetail?.session.sessionId ??
         state.selectedSessionId ??
@@ -2308,8 +2421,14 @@ export function workbenchReducer(
           (turn) => turn.runId === action.stream.runId,
         ) ??
           false);
+      const matchesPendingRunBeforeSnapshot = streamMatchesPendingRun(
+        state.pendingRun,
+        action.stream,
+        action.stream.snapshot,
+      );
       const streamBelongsToActiveTurn =
-        streamMatchesActiveSession && streamReferencesActiveRun;
+        streamMatchesActiveSession &&
+        (streamReferencesActiveRun || matchesPendingRunBeforeSnapshot);
       if (!streamMatchesActiveSession) {
         const streamStatus = streamRunStatus(action.stream, action.stream.snapshot);
         if (!isSettledRunStatus(streamStatus) && !action.stream.snapshot) {
@@ -2318,7 +2437,11 @@ export function workbenchReducer(
       }
       const activeSnapshot = streamBelongsToActiveTurn
         ? markDesktopLatencyForStream(
-            mergeRunStreamSnapshot(state.activeSnapshot, action.stream),
+            mergeRunStreamSnapshot(
+              state.activeSnapshot ??
+                createPendingRunSnapshot(state.pendingRun, action.stream),
+              action.stream,
+            ),
             action.stream,
             action.receivedAt,
           )
@@ -2354,7 +2477,9 @@ export function workbenchReducer(
         : state.pendingRun;
       const shouldClearPendingRun = shouldClearPendingRunForStream(
         matchesPendingRun,
+        pendingRun,
         streamSnapshot,
+        streamBelongsToActiveTurn,
       );
       return {
         ...state,
@@ -2385,7 +2510,9 @@ export function workbenchReducer(
         })(),
         activeSnapshot,
         selectedTurnRunId:
-          state.selectedTurnRunId ??
+          matchesPendingRun
+            ? action.stream.runId
+            : state.selectedTurnRunId ??
           (streamBelongsToActiveTurn ? action.stream.runId : undefined),
         selectedBeatId: streamBelongsToActiveTurn
           ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)

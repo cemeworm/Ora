@@ -28,6 +28,7 @@ import {
   type OnboardingStatus,
 } from "./lib/onboarding";
 import {
+  deriveRenderableTurnSnapshots,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
@@ -514,7 +515,7 @@ function WorkbenchInner() {
       .subscribeRunEvents((stream) => {
         if (cancelled) return;
         const receivedAt = Date.now();
-        const streamSessionId = stream.snapshot?.sessionId;
+        const streamSessionId = stream.snapshot?.sessionId ?? stream.sessionId;
         const isActive =
           !streamSessionId ||
           !activeSessionIdRef.current ||
@@ -691,37 +692,16 @@ function WorkbenchInner() {
     turnSnapshots,
   ]);
 
-  const activeSessionTurnSnapshots = useMemo(() => {
-    const detail = state.activeSessionDetail;
-    if (!detail) return {};
-
-    const activeSessionId = detail.session.sessionId;
-    const activeRunIds = new Set(detail.turns.map((turn) => turn.runId));
-    const scopedSnapshots: Record<string, OraStateSnapshot> = {};
-    for (const [runId, snapshot] of Object.entries(turnSnapshots)) {
-      const snapshotMatchesSession = !snapshot.sessionId || snapshot.sessionId === activeSessionId;
-      if ((activeRunIds.has(runId) && snapshotMatchesSession) || snapshot.sessionId === activeSessionId) {
-        scopedSnapshots[runId] = snapshot;
-      }
-    }
-
-    const latestSnapshot = state.activeSnapshot;
-    if (latestSnapshot && latestSnapshot.sessionId === activeSessionId) {
-      for (const turn of detail.turns) {
-        if (scopedSnapshots[turn.runId]) continue;
-        if (latestSnapshot.runId === turn.runId) {
-          scopedSnapshots[turn.runId] = latestSnapshot;
-        } else {
-          const turnEvents = latestSnapshot.events.filter((e) => e.runId === turn.runId);
-          if (turnEvents.length > 0) {
-            scopedSnapshots[turn.runId] = { ...latestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents };
-          }
-        }
-      }
-    }
-
-    return scopedSnapshots;
-  }, [state.activeSessionDetail, turnSnapshots, state.activeSnapshot]);
+  const activeSessionTurnSnapshots = useMemo(
+    () =>
+      deriveRenderableTurnSnapshots({
+        detail: state.activeSessionDetail,
+        activeSnapshot: state.activeSnapshot,
+        turnSnapshots,
+        selectedSessionId: state.selectedSessionId,
+      }),
+    [state.activeSessionDetail, turnSnapshots, state.activeSnapshot, state.selectedSessionId],
+  );
 
   const runInteractionState: DesktopRunInteractionState = useMemo(() => {
     const sessionSummary = state.sessions.find(

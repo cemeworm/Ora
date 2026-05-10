@@ -45,3 +45,24 @@ export function chooseEnabledProviderId(
 
   return providers.find(isEnabled)?.id ?? registry?.defaultProviderId ?? "local-smoke";
 }
+
+export function chooseBootstrapProviderId(
+  registry: OraProviderRegistry | undefined,
+): string {
+  const providers = registry?.providers ?? [];
+  const byId = new Map(providers.map((provider) => [provider.id, provider]));
+
+  const nonLocal = providers.find(
+    (provider) => provider.type !== "local_smoke" && isEnabled(provider),
+  );
+  if (nonLocal) {
+    return nonLocal.id;
+  }
+
+  const defaultProvider = byId.get(registry?.defaultProviderId ?? "");
+  if (isEnabled(defaultProvider)) {
+    return defaultProvider.id;
+  }
+
+  return providers.find(isEnabled)?.id ?? registry?.defaultProviderId ?? "local-smoke";
+}
