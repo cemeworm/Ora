@@ -29,6 +29,8 @@ import {
 } from "./lib/onboarding";
 import {
   deriveRenderableTurnSnapshots,
+  getActiveSnapshot,
+  getPendingRunState,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
   pruneTurnSnapshotsForActiveSession,
@@ -592,7 +594,7 @@ function WorkbenchInner() {
   }, [runtimeClient, dispatch]);
 
   useEffect(() => {
-    const snapshot = state.activeSnapshot;
+    const snapshot = getActiveSnapshot(state.runLifecycle);
     if (!snapshot) return;
 
     setTurnSnapshots((current) => {
@@ -611,7 +613,7 @@ function WorkbenchInner() {
       }
       return { ...current, [snapshot.runId]: merged };
     });
-  }, [state.activeSnapshot]);
+  }, [getActiveSnapshot(state.runLifecycle)]);
 
   function limitTurnSnapshots(current: Record<string, OraStateSnapshot>): Record<string, OraStateSnapshot> {
     const keys = Object.keys(current);
@@ -639,7 +641,7 @@ function WorkbenchInner() {
 
     const cached = turnSnapshots[state.selectedTurnRunId];
     if (cached) {
-      if (state.activeSnapshot?.runId !== state.selectedTurnRunId) {
+      if (getActiveSnapshot(state.runLifecycle)?.runId !== state.selectedTurnRunId) {
         dispatch({
           type: "SELECT_TURN",
           runId: state.selectedTurnRunId,
@@ -686,7 +688,7 @@ function WorkbenchInner() {
   }, [
     runtimeClient,
     dispatch,
-    state.activeSnapshot?.runId,
+    getActiveSnapshot(state.runLifecycle)?.runId,
     state.detailDrawer,
     state.selectedTurnRunId,
     turnSnapshots,
@@ -696,11 +698,11 @@ function WorkbenchInner() {
     () =>
       deriveRenderableTurnSnapshots({
         detail: state.activeSessionDetail,
-        activeSnapshot: state.activeSnapshot,
+        activeSnapshot: getActiveSnapshot(state.runLifecycle),
         turnSnapshots,
         selectedSessionId: state.selectedSessionId,
       }),
-    [state.activeSessionDetail, turnSnapshots, state.activeSnapshot, state.selectedSessionId],
+    [state.activeSessionDetail, turnSnapshots, getActiveSnapshot(state.runLifecycle), state.selectedSessionId],
   );
 
   const runInteractionState: DesktopRunInteractionState = useMemo(() => {
@@ -711,24 +713,24 @@ function WorkbenchInner() {
       selectedSessionId: state.selectedSessionId,
       sessionSummary,
       activeSessionDetail: state.activeSessionDetail,
-      activeSnapshot: state.activeSnapshot,
+      activeSnapshot: getActiveSnapshot(state.runLifecycle),
       turnSnapshots: activeSessionTurnSnapshots,
       selectedTurnRunId: state.selectedTurnRunId,
-      pendingRun: state.pendingRun,
+      pendingRun: getPendingRunState(state.runLifecycle),
     });
   }, [
     state.selectedSessionId,
     state.sessions,
     state.activeSessionDetail,
-    state.activeSnapshot,
+    getActiveSnapshot(state.runLifecycle),
     activeSessionTurnSnapshots,
     state.selectedTurnRunId,
-    state.pendingRun,
+    getPendingRunState(state.runLifecycle),
   ]);
 
   // Chat messages derived from events
   const pendingRunMessages = useMemo(() => {
-    const pendingRun = state.pendingRun;
+    const pendingRun = getPendingRunState(state.runLifecycle);
     if (!pendingRun || pendingRun.sessionId !== state.selectedSessionId) {
       return [];
     }
@@ -741,7 +743,7 @@ function WorkbenchInner() {
         (snapshot.status === "queued" || snapshot.status === "running"),
     );
     return runAlreadyMaterialized ? [] : adaptPendingRunMessages(pendingRun);
-  }, [activeSessionTurnSnapshots, state.pendingRun, state.selectedSessionId]);
+  }, [activeSessionTurnSnapshots, getPendingRunState(state.runLifecycle), state.selectedSessionId]);
 
   const chatMessagesCacheRef = useRef<{ key: string; result: ReturnType<typeof adaptChatMessages> } | null>(null);
 
@@ -997,7 +999,7 @@ function WorkbenchInner() {
             actionRecords={actionRecords}
             selectedCustomAgentId={state.selectedCustomAgentId}
             projectLabel={selectedProject?.label}
-            activeSnapshot={state.activeSnapshot}
+            activeSnapshot={getActiveSnapshot(state.runLifecycle)}
             agents={agents}
             busyCommand={state.busyCommand}
             chatMessages={chatMessages}
@@ -1081,7 +1083,7 @@ function WorkbenchInner() {
                   actions={actionRecords}
                   agents={agents}
                   artifacts={artifacts}
-                  activeSnapshot={state.activeSnapshot}
+                  activeSnapshot={getActiveSnapshot(state.runLifecycle)}
                   busyCommand={state.busyCommand}
                   checkpoints={checkpoints}
                   commandFeedback={state.commandFeedback}

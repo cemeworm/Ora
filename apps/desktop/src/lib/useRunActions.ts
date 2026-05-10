@@ -4,7 +4,7 @@ import { DEFAULT_WEB_TOOL_IDS } from "@cemeworm/shared";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE, getSharedRuntimeClient, type OraProjectSummary, type OraProviderConfig, type OraSessionBranchGroupCreateParams, type OraSessionDetail, type OraSessionSummary, type OraStateSnapshot } from "./runtimeClient";
 import { buildRunSearchConfig } from "./searchSettings";
 import { loadDesktopToolModelSettings } from "./toolModelSettings";
-import { useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
+import { getActiveSnapshot, getPendingRunState, useWorkbench, emptySessionDetail, type ComposerLocalFileAttachment, type ComposerProjectFileAttachment, type WorkbenchState } from "./state";
 import { buildStableViewModel, buildDynamicViewModel } from "./viewModel";
 
 import { timeStart, timeEnd } from "./debugTiming";
@@ -228,7 +228,7 @@ export function waitForPendingRunPaint(): Promise<void> {
 }
 
 export function isDisposableEmptySession(state: WorkbenchState, sessionId: string | undefined): boolean {
-  if (!sessionId || state.pendingRun?.sessionId === sessionId) {
+  if (!sessionId || (getPendingRunState(state.runLifecycle) ?? state.pendingRun)?.sessionId === sessionId) {
     return false;
   }
 
@@ -333,13 +333,13 @@ export function useRunActions() {
       state.patterns,
       state.modes,
       state.activeSessionDetail,
-      state.activeSnapshot,
+      getActiveSnapshot(state.runLifecycle),
       state.selectedPattern,
       state.selectedModeId,
     );
     timeEnd("dynamicViewModel compute");
     return result;
-  }, [state.patterns, state.modes, state.activeSessionDetail, state.activeSnapshot, state.selectedPattern, state.selectedModeId]);
+  }, [state.patterns, state.modes, state.activeSessionDetail, getActiveSnapshot(state.runLifecycle), state.selectedPattern, state.selectedModeId]);
 
   const viewModel = useMemo(() => {
     timeStart("viewModel compute");
@@ -627,7 +627,7 @@ export function useRunActions() {
 
   async function submitClarificationOption(answer: string) {
     if (!state.selectedSessionId || !state.selectedTurnRunId) return;
-    const clarificationPatch = buildPendingClarificationResumePatch(state.activeSnapshot, answer);
+    const clarificationPatch = buildPendingClarificationResumePatch(getActiveSnapshot(state.runLifecycle), answer);
     if (!clarificationPatch) return;
     flushSync(() => {
       dispatch({
@@ -658,7 +658,7 @@ export function useRunActions() {
     if (!state.selectedSessionId || !state.selectedTurnRunId) return;
     if (Object.keys(answers).length === 0) return;
 
-    const submittedPrompt = buildClarificationSubmissionPrompt(answers, state.activeSnapshot?.pendingClarifications ?? []);
+    const submittedPrompt = buildClarificationSubmissionPrompt(answers, getActiveSnapshot(state.runLifecycle)?.pendingClarifications ?? []);
     flushSync(() => {
       dispatch({
         type: "BEGIN_RUN_REQUEST",
@@ -697,8 +697,8 @@ export function useRunActions() {
     const submittedPrompt = prompt;
     const submittedProjectFileAttachments = state.sessionProjectFileAttachments[sessionId] ?? [];
     const submittedLocalFileAttachments = state.sessionLocalFileAttachments[sessionId] ?? [];
-    const clarificationPatch = state.activeSnapshot?.runId === state.selectedTurnRunId
-      ? buildPendingClarificationResumePatch(state.activeSnapshot, submittedPrompt)
+    const clarificationPatch = getActiveSnapshot(state.runLifecycle)?.runId === state.selectedTurnRunId
+      ? buildPendingClarificationResumePatch(getActiveSnapshot(state.runLifecycle), submittedPrompt)
       : undefined;
     flushSync(() => {
       dispatch({
@@ -834,9 +834,10 @@ export function useRunActions() {
 
   async function resumeRun() {
     if (!state.selectedTurnRunId) return;
+    const activeSnapshot = getActiveSnapshot(state.runLifecycle);
     const pendingApprovalIds = new Set(
-      state.activeSnapshot?.attention?.kind === "needs_approval"
-        ? state.activeSnapshot.attention.pendingActionIds
+      activeSnapshot?.attention?.kind === "needs_approval"
+        ? activeSnapshot.attention.pendingActionIds
         : [],
     );
     const approvedActionIds = viewModel?.actions
@@ -893,8 +894,8 @@ export function useRunActions() {
     const sessionId = state.activeSessionDetail?.session.sessionId ?? state.selectedSessionId;
     const decisionId =
       state.activeSessionDetail?.session.attention?.planDecisionId ??
-      state.activeSnapshot?.attention?.planDecisionId ??
-      state.activeSnapshot?.planDecisions.find((decision) => decision.status === "pending")?.id;
+      getActiveSnapshot(state.runLifecycle)?.attention?.planDecisionId ??
+      getActiveSnapshot(state.runLifecycle)?.planDecisions.find((decision) => decision.status === "pending")?.id;
     if (!sessionId || !decisionId) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "No pending plan decision found." });
       return false;

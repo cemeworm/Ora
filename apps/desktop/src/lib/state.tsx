@@ -75,6 +75,52 @@ export interface PendingRunState {
   progressText?: string;
   latency?: OraStateSnapshot["latency"];
 }
+export type RunLifecycle =
+  | { stage: "idle" }
+  | {
+      stage: "pending";
+      runId?: string;
+      sessionId: string;
+      prompt: string;
+      createdAt: number;
+      progressText?: string;
+      latency?: OraStateSnapshot["latency"];
+    }
+  | {
+      stage: "streaming";
+      runId: string;
+      sessionId: string;
+      prompt: string;
+      createdAt: number;
+      progressText?: string;
+      latency?: OraStateSnapshot["latency"];
+      snapshot: OraStateSnapshot;
+    }
+  | {
+      stage: "settled";
+      runId: string;
+      sessionId: string;
+      prompt: string;
+      createdAt: number;
+      snapshot: OraStateSnapshot;
+    };
+
+export function getActiveSnapshot(lc: RunLifecycle): OraStateSnapshot | undefined {
+  return lc.stage === "streaming" || lc.stage === "settled" ? lc.snapshot : undefined;
+}
+
+export function getPendingRunState(lc: RunLifecycle): PendingRunState | undefined {
+  if (lc.stage !== "pending") return undefined;
+  const result: PendingRunState = {
+    sessionId: lc.sessionId,
+    prompt: lc.prompt,
+    createdAt: lc.createdAt,
+  };
+  if (lc.runId) result.runId = lc.runId;
+  if (lc.progressText) result.progressText = lc.progressText;
+  if (lc.latency) result.latency = lc.latency;
+  return result;
+}
 
 export interface PendingPlanDecisionResolution {
   sessionId: string;
@@ -126,6 +172,7 @@ export interface WorkbenchState {
   >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   pendingRun: PendingRunState | undefined;
+  runLifecycle: RunLifecycle;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   isLoading: boolean;
   busyCommand: string | undefined;
@@ -317,6 +364,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
   pendingRun: undefined,
+  runLifecycle: { stage: "idle" },
   pendingPlanDecisionResolution: undefined,
   isLoading: false,
   busyCommand: undefined,
@@ -1850,6 +1898,7 @@ export function workbenchReducer(
         sessionProjectFileAttachments: {},
         sessionLocalFileAttachments: {},
         pendingRun: undefined,
+        runLifecycle: { stage: "idle" },
         pendingPlanDecisionResolution: undefined,
         isLoading: true,
         busyCommand: undefined,
@@ -2661,6 +2710,12 @@ export function workbenchReducer(
           prompt: action.prompt,
           createdAt: action.createdAt,
         },
+        runLifecycle: {
+          stage: "pending",
+          sessionId: action.sessionId,
+          prompt: action.prompt,
+          createdAt: action.createdAt,
+        },
         pendingPlanDecisionResolution: undefined,
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
@@ -2684,6 +2739,10 @@ export function workbenchReducer(
           ...state.pendingRun,
           runId: action.runId,
         },
+        runLifecycle:
+          state.runLifecycle.stage === "pending"
+            ? { ...state.runLifecycle, runId: action.runId }
+            : state.runLifecycle,
       };
     }
 
@@ -2695,9 +2754,18 @@ export function workbenchReducer(
             createdAt: action.createdAt,
           }
         : state.pendingRun;
+      const runLifecycle = action.status === "accepted" && action.implementationPrompt
+        ? {
+            stage: "pending" as const,
+            sessionId: action.sessionId,
+            prompt: action.implementationPrompt,
+            createdAt: action.createdAt,
+          }
+        : state.runLifecycle;
       return {
         ...state,
         pendingRun,
+        runLifecycle,
         pendingPlanDecisionResolution: {
           sessionId: action.sessionId,
           decisionId: action.decisionId,
@@ -2728,6 +2796,7 @@ export function workbenchReducer(
       return {
         ...state,
         pendingRun: wasAccepted ? undefined : state.pendingRun,
+        runLifecycle: wasAccepted ? { stage: "idle" } : state.runLifecycle,
         pendingPlanDecisionResolution: undefined,
         isLoading: wasAccepted ? false : state.isLoading,
         busyCommand: undefined,
@@ -2748,6 +2817,10 @@ export function workbenchReducer(
           ...state.pendingRun,
           progressText: action.progressText,
         },
+        runLifecycle:
+          state.runLifecycle.stage === "pending"
+            ? { ...state.runLifecycle, progressText: action.progressText }
+            : state.runLifecycle,
       };
 
     case "SET_LOADING":
@@ -2755,6 +2828,7 @@ export function workbenchReducer(
         ...state,
         isLoading: action.loading,
         pendingRun: action.loading ? state.pendingRun : undefined,
+        runLifecycle: action.loading ? state.runLifecycle : { stage: "idle" },
         pendingPlanDecisionResolution: action.loading
           ? state.pendingPlanDecisionResolution
           : undefined,
