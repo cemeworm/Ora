@@ -345,6 +345,83 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.status).toBe("succeeded");
   });
 
+  it("keeps a final local snapshot authoritative over stale collection refreshes", () => {
+    const sessionId = "session-collection-authority";
+    const runId = "run-collection-authority";
+    const snapshot = testSnapshot({
+      runId,
+      sessionId,
+      status: "succeeded",
+      updatedAt: 200,
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+    const finalSession: OraSessionSummary = {
+      ...sessionSummary(sessionId),
+      latestRunId: runId,
+      status: "succeeded",
+      attention: snapshot.attention,
+      updatedAt: 200,
+      turnCount: 1,
+    };
+    const staleSession: OraSessionSummary = {
+      ...finalSession,
+      status: "running",
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      updatedAt: 220,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [finalSession],
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      runLifecycle: lifecycleFromSnapshot(snapshot),
+      activeSessionDetail: {
+        session: finalSession,
+        turns: [{
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: snapshot.pattern,
+          prompt: snapshot.input.prompt,
+          startedAt: 100,
+          updatedAt: 200,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+          attention: snapshot.attention,
+        }],
+        transcript: [],
+        latestSnapshot: snapshot,
+      },
+    };
+
+    const next = workbenchReducer(state, {
+      type: "SET_COLLECTIONS",
+      projects: [],
+      sessions: [staleSession],
+    });
+
+    expect(next.sessions[0]?.status).toBe("succeeded");
+    expect(next.sessions[0]?.attention?.kind).toBe("idle");
+    expect(next.sessions[0]?.updatedAt).toBe(220);
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
+  });
+
   it("hydrates a selected session from turn summaries without loading the latest snapshot", () => {
     const session = {
       ...sessionSummary("session-summary"),

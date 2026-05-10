@@ -472,6 +472,97 @@ function replaceSessionSummary(
   ];
 }
 
+function snapshotMatchesSessionSummary(
+  snapshot: OraStateSnapshot | undefined,
+  session: OraSessionSummary,
+): snapshot is OraStateSnapshot {
+  return Boolean(
+    snapshot &&
+      snapshot.sessionId === session.sessionId &&
+      session.latestRunId === snapshot.runId,
+  );
+}
+
+function applySnapshotAuthorityToSessionSummary(
+  session: OraSessionSummary,
+  snapshot: OraStateSnapshot | undefined,
+): OraSessionSummary {
+  if (!snapshotMatchesSessionSummary(snapshot, session)) {
+    return session;
+  }
+  const normalizedSnapshot = normalizeDesktopSnapshot(snapshot);
+  if (
+    !isFinalRunStatus(normalizedSnapshot.status) &&
+    isFinalRunStatus(session.status)
+  ) {
+    return session;
+  }
+  return {
+    ...session,
+    status: normalizedSnapshot.status,
+    attention: normalizedSnapshot.attention,
+    latestRunId: normalizedSnapshot.runId,
+    latestPattern: normalizedSnapshot.pattern,
+    latestModeId: normalizedSnapshot.modeId ?? session.latestModeId,
+    latestProviderId:
+      normalizedSnapshot.config.providerId ?? session.latestProviderId,
+    latestModelRef:
+      normalizedSnapshot.config.modelRef ?? session.latestModelRef,
+    updatedAt: Math.max(session.updatedAt, normalizedSnapshot.updatedAt),
+  };
+}
+
+function preserveFinalSessionSummary(
+  incoming: OraSessionSummary,
+  existing: OraSessionSummary | undefined,
+): OraSessionSummary {
+  if (
+    !existing ||
+    existing.sessionId !== incoming.sessionId ||
+    existing.latestRunId !== incoming.latestRunId ||
+    !isFinalRunStatus(existing.status) ||
+    isFinalRunStatus(incoming.status)
+  ) {
+    return incoming;
+  }
+  return {
+    ...incoming,
+    status: existing.status,
+    attention: existing.attention,
+    updatedAt: Math.max(incoming.updatedAt, existing.updatedAt),
+  };
+}
+
+function reconcileSessionSummaryWithLocalAuthority(
+  state: WorkbenchState,
+  incoming: OraSessionSummary,
+): OraSessionSummary {
+  const existing = state.sessions.find(
+    (session) => session.sessionId === incoming.sessionId,
+  );
+  let next = preserveFinalSessionSummary(incoming, existing);
+  const activeSnapshot = getActiveSnapshot(state.runLifecycle);
+  next = applySnapshotAuthorityToSessionSummary(next, activeSnapshot);
+  next = applySnapshotAuthorityToSessionSummary(
+    next,
+    state.activeSessionDetail?.latestSnapshot,
+  );
+  next = applySnapshotAuthorityToSessionSummary(
+    next,
+    state.sessionDetailsById[incoming.sessionId]?.latestSnapshot,
+  );
+  return next;
+}
+
+function reconcileSessionSummariesWithLocalAuthority(
+  state: WorkbenchState,
+  sessions: OraSessionSummary[],
+): OraSessionSummary[] {
+  return sessions.map((session) =>
+    reconcileSessionSummaryWithLocalAuthority(state, session),
+  );
+}
+
 function selectedSnapshotFromDetail(
   detail: OraSessionDetail,
   snapshot?: OraStateSnapshot,
@@ -2248,11 +2339,14 @@ export function workbenchReducer(
         },
         latestSnapshot: normalizedSnapshot ?? action.detail.latestSnapshot,
       };
-      const sessions = replaceSessionSummary(
-        action.sessions.filter(
-          (session) => session.sessionId !== action.detail.session.sessionId,
+      const sessions = reconcileSessionSummariesWithLocalAuthority(
+        state,
+        replaceSessionSummary(
+          action.sessions.filter(
+            (session) => session.sessionId !== action.detail.session.sessionId,
+          ),
+          normalizedDetail.session,
         ),
-        normalizedDetail.session,
       );
       if (
         action.preserveSelection &&
@@ -2346,7 +2440,10 @@ export function workbenchReducer(
       return {
         ...state,
         projects: action.projects,
-        sessions: action.sessions,
+        sessions: reconcileSessionSummariesWithLocalAuthority(
+          state,
+          action.sessions,
+        ),
         commandFeedback: action.feedback ?? state.commandFeedback,
         busyCommand: undefined,
       };
