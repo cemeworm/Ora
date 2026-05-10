@@ -3,7 +3,8 @@ import type {
   OraSessionSummary,
   OraStateSnapshot,
 } from "./runtimeClient";
-import type { PendingRunState } from "./state";
+import type { PendingRunState, RunLifecycle } from "./state";
+import { getActiveSnapshot, getPendingRunState } from "./state";
 
 export interface DesktopRunInteractionState {
   sourceRunId?: string;
@@ -36,11 +37,14 @@ export interface DeriveRunInteractionStateParams {
   selectedSessionId?: string;
   sessionSummary?: OraSessionSummary;
   activeSessionDetail?: OraSessionDetail;
+  /** @deprecated Use runLifecycle instead */
   activeSnapshot?: OraStateSnapshot;
   /** Snapshots keyed by runId — used for selected turn snapshot authority. */
   turnSnapshots?: Record<string, OraStateSnapshot>;
   selectedTurnRunId?: string;
+  /** @deprecated Use runLifecycle instead */
   pendingRun?: PendingRunState;
+  runLifecycle?: RunLifecycle;
 }
 
 const PROCESSING_STATUSES: ReadonlySet<string> = new Set([
@@ -246,24 +250,23 @@ export function deriveRunInteractionState(
     selectedSessionId,
     sessionSummary,
     activeSessionDetail,
-    activeSnapshot,
     turnSnapshots,
     selectedTurnRunId,
-    pendingRun,
+    runLifecycle,
+    pendingRun: legacyPendingRun,
+    activeSnapshot: legacyActiveSnapshot,
   } = params;
 
   const sessionId = sessionSummary?.sessionId ?? selectedSessionId;
 
-  // Priority 1: pendingRun for optimistic submit-before-handle state.
-  if (
-    pendingRun &&
-    sessionId &&
-    pendingRun.sessionId === sessionId
-  ) {
+  // Priority 1: pending stage — runLifecycle first, fallback to legacy pendingRun
+  const pendingRun = getPendingRunState(runLifecycle ?? { stage: "idle" }) ?? legacyPendingRun;
+  if (pendingRun && sessionId && pendingRun.sessionId === sessionId) {
     return deriveFromPendingRun(pendingRun);
   }
 
-  // Priority 2: activeSnapshot or selected turn snapshot when it belongs to the selected session/run.
+  // Priority 2: active snapshot — runLifecycle first, fallback to legacy activeSnapshot
+  const activeSnapshot = getActiveSnapshot(runLifecycle ?? { stage: "idle" }) ?? legacyActiveSnapshot;
   if (
     activeSnapshot &&
     sessionId &&

@@ -97,6 +97,7 @@ describe("sidebar session status", () => {
         activeSessionDetail: undefined,
         activeSnapshot: activeSnapshot({ status: "succeeded" }),
         pendingRun: undefined,
+        runLifecycle: { stage: "idle" },
       }),
     ).toBe("done");
   });
@@ -112,6 +113,7 @@ describe("sidebar session status", () => {
         activeSessionDetail: undefined,
         activeSnapshot: activeSnapshot({ status: "succeeded" }),
         pendingRun: undefined,
+        runLifecycle: { stage: "idle" },
       }),
     ).toBe("running");
   });

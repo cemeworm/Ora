@@ -109,6 +109,7 @@ export function sidebarStatusForSession(
     | "activeSessionDetail"
     | "activeSnapshot"
     | "pendingRun"
+    | "runLifecycle"
   >,
 ): RunStatus {
   if (session.sessionId !== state.selectedSessionId) {
@@ -120,8 +121,9 @@ export function sidebarStatusForSession(
       selectedSessionId: state.selectedSessionId,
       sessionSummary: session,
       activeSessionDetail: state.activeSessionDetail,
-      activeSnapshot: state.activeSnapshot,
       selectedTurnRunId: state.selectedTurnRunId,
+      runLifecycle: state.runLifecycle,
+      activeSnapshot: state.activeSnapshot,
       pendingRun: state.pendingRun,
     }),
   );
@@ -495,6 +497,7 @@ export interface SidebarState {
   activeSessionDetail: WorkbenchState["activeSessionDetail"];
   activeSnapshot: WorkbenchState["activeSnapshot"];
   pendingRun: WorkbenchState["pendingRun"];
+  runLifecycle: WorkbenchState["runLifecycle"];
   language: WorkbenchState["language"];
   settingsOpen: WorkbenchState["settingsOpen"];
 }

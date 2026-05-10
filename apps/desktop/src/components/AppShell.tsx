@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Sidebar, type SidebarState } from "./Sidebar";
-import { getActiveSnapshot, getPendingRunState, useWorkbench } from "../lib/state";
+import { useWorkbench } from "../lib/state";
 import { SidebarInset, SidebarProvider } from "./ui/sidebar";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -14,8 +14,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     selectedSessionId: state.selectedSessionId,
     selectedTurnRunId: state.selectedTurnRunId,
     activeSessionDetail: state.activeSessionDetail,
-    activeSnapshot: getActiveSnapshot(state.runLifecycle),
-    pendingRun: getPendingRunState(state.runLifecycle),
+    activeSnapshot: state.activeSnapshot,
+    pendingRun: state.pendingRun,
+    runLifecycle: state.runLifecycle,
     language: state.language,
     settingsOpen: state.settingsOpen,
   }), [
@@ -26,8 +27,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     state.selectedSessionId,
     state.selectedTurnRunId,
     state.activeSessionDetail,
-    getActiveSnapshot(state.runLifecycle),
-    getPendingRunState(state.runLifecycle),
+    state.activeSnapshot,
+    state.pendingRun,
+    state.runLifecycle,
     state.language,
     state.settingsOpen,
   ]);

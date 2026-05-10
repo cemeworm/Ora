@@ -713,19 +713,17 @@ function WorkbenchInner() {
       selectedSessionId: state.selectedSessionId,
       sessionSummary,
       activeSessionDetail: state.activeSessionDetail,
-      activeSnapshot: getActiveSnapshot(state.runLifecycle),
       turnSnapshots: activeSessionTurnSnapshots,
       selectedTurnRunId: state.selectedTurnRunId,
-      pendingRun: getPendingRunState(state.runLifecycle),
+      runLifecycle: state.runLifecycle,
     });
   }, [
     state.selectedSessionId,
     state.sessions,
     state.activeSessionDetail,
-    getActiveSnapshot(state.runLifecycle),
+    state.runLifecycle,
     activeSessionTurnSnapshots,
     state.selectedTurnRunId,
-    getPendingRunState(state.runLifecycle),
   ]);
 
   // Chat messages derived from events
