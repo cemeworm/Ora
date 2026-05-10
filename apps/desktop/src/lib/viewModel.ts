@@ -1375,6 +1375,31 @@ export function adaptPendingRunMessages(
   ];
 }
 
+export function adaptRenderableChatMessages(params: {
+  transcript: OraSessionTranscriptMessage[];
+  turnSnapshots?: Record<string, OraStateSnapshot | undefined>;
+  pendingRun?: PendingRunPreview | undefined;
+  selectedSessionId?: string;
+  baseMessages?: ChatMessage[];
+}): ChatMessage[] {
+  const turnSnapshots = params.turnSnapshots ?? {};
+  const messages = params.baseMessages ?? adaptChatMessages(params.transcript, turnSnapshots);
+  const pendingRun = params.pendingRun;
+  if (!pendingRun || pendingRun.sessionId !== params.selectedSessionId) {
+    return messages;
+  }
+  const runAlreadyMaterialized = Object.values(turnSnapshots).some(
+    (snapshot) =>
+      snapshot?.sessionId === pendingRun.sessionId &&
+      snapshot.input.prompt === pendingRun.prompt &&
+      (snapshot.status === "queued" || snapshot.status === "running"),
+  );
+  if (runAlreadyMaterialized) {
+    return messages;
+  }
+  return [...messages, ...adaptPendingRunMessages(pendingRun)];
+}
+
 export function isSessionProcessing(
   session: Pick<SessionRun, "id" | "status"> | undefined,
   pendingRun: PendingRunPreview | undefined,

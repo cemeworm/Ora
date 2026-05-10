@@ -107,8 +107,6 @@ export function sidebarStatusForSession(
     | "selectedSessionId"
     | "selectedTurnRunId"
     | "activeSessionDetail"
-    | "activeSnapshot"
-    | "pendingRun"
     | "runLifecycle"
   >,
 ): RunStatus {
@@ -123,8 +121,6 @@ export function sidebarStatusForSession(
       activeSessionDetail: state.activeSessionDetail,
       selectedTurnRunId: state.selectedTurnRunId,
       runLifecycle: state.runLifecycle,
-      activeSnapshot: state.activeSnapshot,
-      pendingRun: state.pendingRun,
     }),
   );
 }
@@ -495,8 +491,6 @@ export interface SidebarState {
   selectedSessionId: WorkbenchState["selectedSessionId"];
   selectedTurnRunId: WorkbenchState["selectedTurnRunId"];
   activeSessionDetail: WorkbenchState["activeSessionDetail"];
-  activeSnapshot: WorkbenchState["activeSnapshot"];
-  pendingRun: WorkbenchState["pendingRun"];
   runLifecycle: WorkbenchState["runLifecycle"];
   language: WorkbenchState["language"];
   settingsOpen: WorkbenchState["settingsOpen"];
@@ -529,8 +523,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
     sidebarState.selectedSessionId,
     sidebarState.selectedTurnRunId,
     sidebarState.activeSessionDetail,
-    sidebarState.activeSnapshot,
-    sidebarState.pendingRun,
+    sidebarState.runLifecycle,
   ]);
   const sessionSearchResults = useMemo(
     () => buildSessionSearchResults(sidebarState.sessions, sidebarState.projects, sessionSearchQuery, MAX_SESSION_SEARCH_RESULTS),
@@ -548,8 +541,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       sidebarState.selectedSessionId,
       sidebarState.selectedTurnRunId,
       sidebarState.activeSessionDetail,
-      sidebarState.activeSnapshot,
-      sidebarState.pendingRun,
+      sidebarState.runLifecycle,
     ]);
   const showSectionDivider = projects.length > 0;
   const chatSessionSelected = sidebarState.activeView === "chat";

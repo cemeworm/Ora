@@ -37,14 +37,10 @@ export interface DeriveRunInteractionStateParams {
   selectedSessionId?: string;
   sessionSummary?: OraSessionSummary;
   activeSessionDetail?: OraSessionDetail;
-  /** @deprecated Use runLifecycle instead */
-  activeSnapshot?: OraStateSnapshot;
   /** Snapshots keyed by runId — used for selected turn snapshot authority. */
   turnSnapshots?: Record<string, OraStateSnapshot>;
   selectedTurnRunId?: string;
-  /** @deprecated Use runLifecycle instead */
-  pendingRun?: PendingRunState;
-  runLifecycle?: RunLifecycle;
+  runLifecycle: RunLifecycle;
 }
 
 const PROCESSING_STATUSES: ReadonlySet<string> = new Set([
@@ -253,20 +249,16 @@ export function deriveRunInteractionState(
     turnSnapshots,
     selectedTurnRunId,
     runLifecycle,
-    pendingRun: legacyPendingRun,
-    activeSnapshot: legacyActiveSnapshot,
   } = params;
 
   const sessionId = sessionSummary?.sessionId ?? selectedSessionId;
 
-  // Priority 1: pending stage — runLifecycle first, fallback to legacy pendingRun
-  const pendingRun = getPendingRunState(runLifecycle ?? { stage: "idle" }) ?? legacyPendingRun;
+  const pendingRun = getPendingRunState(runLifecycle);
   if (pendingRun && sessionId && pendingRun.sessionId === sessionId) {
     return deriveFromPendingRun(pendingRun);
   }
 
-  // Priority 2: active snapshot — runLifecycle first, fallback to legacy activeSnapshot
-  const activeSnapshot = getActiveSnapshot(runLifecycle ?? { stage: "idle" }) ?? legacyActiveSnapshot;
+  const activeSnapshot = getActiveSnapshot(runLifecycle);
   if (
     activeSnapshot &&
     sessionId &&

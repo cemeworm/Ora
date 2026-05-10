@@ -123,6 +123,28 @@ export function deriveProjectedGateTrays({
   };
 }
 
+export function deriveCurrentComposerPlanSteps({
+  activeSnapshot,
+  runInteractionState,
+}: {
+  activeSnapshot?: Pick<OraStateSnapshot, "planList">;
+  runInteractionState: Pick<DesktopRunInteractionState, "isProcessing">;
+}): TurnPlanListStep[] {
+  if (!runInteractionState.isProcessing) {
+    return [];
+  }
+
+  const snapshotPlan = activeSnapshot?.planList;
+  if (!snapshotPlan || snapshotPlan.length === 0) {
+    return [];
+  }
+
+  return snapshotPlan.map((item) => ({
+    step: item.step,
+    status: item.status,
+  }));
+}
+
 export function ChatView({
   activeMode,
   activeSnapshot,
@@ -204,20 +226,13 @@ export function ChatView({
     setComposerOverlayHeight((current) => current === height ? current : height);
   }, []);
 
-  const currentPlanSteps = useMemo<TurnPlanListStep[]>(() => {
-    const snapshotPlan = activeSnapshot?.planList;
-    if (snapshotPlan && snapshotPlan.length > 0) {
-      return snapshotPlan.map((item) => ({
-        step: item.step,
-        status: item.status,
-      }));
-    }
-    for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const planList = chatMessages[i]?.turn?.planList;
-    if (planList && planList.length > 0) return planList;
-    }
-    return [];
-  }, [activeSnapshot?.planList, chatMessages]);
+  const currentPlanSteps = useMemo<TurnPlanListStep[]>(
+    () => deriveCurrentComposerPlanSteps({
+      activeSnapshot,
+      runInteractionState,
+    }),
+    [activeSnapshot, runInteractionState],
+  );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);
 

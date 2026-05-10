@@ -228,7 +228,7 @@ export function waitForPendingRunPaint(): Promise<void> {
 }
 
 export function isDisposableEmptySession(state: WorkbenchState, sessionId: string | undefined): boolean {
-  if (!sessionId || (getPendingRunState(state.runLifecycle) ?? state.pendingRun)?.sessionId === sessionId) {
+  if (!sessionId || getPendingRunState(state.runLifecycle)?.sessionId === sessionId) {
     return false;
   }
 

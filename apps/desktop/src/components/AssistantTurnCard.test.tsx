@@ -394,6 +394,83 @@ describe("assistant turn display helpers", () => {
     expect(html).not.toContain("已完成资料收集。");
   });
 
+  it("hides trailing completed progress after a finished assistant reply", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [{
+        id: "progress-done",
+        kind: "status_group",
+        summary: "已完成",
+        timestamp: "00:42",
+        status: "complete",
+        steps: [
+          processStep("done", "complete", "已完成", { label: "已完成" }),
+        ],
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="这是最终回复。" turn={turn} />,
+    );
+
+    expect(html).toContain("这是最终回复。");
+    expect(html).not.toContain("已完成");
+  });
+
+  it("keeps completed progress when it precedes later timeline content", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "done",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [
+        {
+          id: "progress-search",
+          kind: "status_group",
+          summary: "已搜索 2 个文件",
+          timestamp: "00:01",
+          status: "complete",
+          steps: [
+            processStep("search", "complete", "已搜索相关文件。", { label: "搜索文件" }),
+          ],
+        },
+        {
+          id: "artifact-1",
+          kind: "artifact",
+          summary: "已生成变更摘要",
+          timestamp: "00:02",
+        },
+      ],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="这是最终回复。" turn={turn} />,
+    );
+
+    expect(html).toContain("已搜索 2 个文件");
+    expect(html).toContain("已生成变更摘要");
+    expect(html).toContain("这是最终回复。");
+  });
+
   it("hides placeholder live runtime status after assistant text starts", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",

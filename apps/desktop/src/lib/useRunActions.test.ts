@@ -212,7 +212,12 @@ describe("desktop run actions", () => {
     }), "session-empty")).toBe(false);
 
     expect(isDisposableEmptySession(stateWithSession({
-      pendingRun: { sessionId: "session-empty", prompt: "Run this", createdAt: 1_714_000_000_001 },
+      runLifecycle: {
+        stage: "pending",
+        sessionId: "session-empty",
+        prompt: "Run this",
+        createdAt: 1_714_000_000_001,
+      },
     }), "session-empty")).toBe(false);
 
     expect(isDisposableEmptySession(stateWithSession({}, { status: "running" }), "session-empty")).toBe(false);

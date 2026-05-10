@@ -42,7 +42,7 @@ import { cn } from "./lib/utils";
 import { getRecords, clearRecords } from "./lib/debugTiming";
 import {
   adaptChatMessages,
-  adaptPendingRunMessages,
+  adaptRenderableChatMessages,
 } from "./lib/viewModel";
 import { buildChatMessagesCacheKey } from "./lib/chatMessageCache";
 import type {
@@ -726,43 +726,35 @@ function WorkbenchInner() {
     state.selectedTurnRunId,
   ]);
 
-  // Chat messages derived from events
-  const pendingRunMessages = useMemo(() => {
-    const pendingRun = getPendingRunState(state.runLifecycle);
-    if (!pendingRun || pendingRun.sessionId !== state.selectedSessionId) {
-      return [];
-    }
-    const runAlreadyMaterialized = Object.values(
-      activeSessionTurnSnapshots,
-    ).some(
-      (snapshot) =>
-        snapshot?.sessionId === pendingRun.sessionId &&
-        snapshot.input.prompt === pendingRun.prompt &&
-        (snapshot.status === "queued" || snapshot.status === "running"),
-    );
-    return runAlreadyMaterialized ? [] : adaptPendingRunMessages(pendingRun);
-  }, [activeSessionTurnSnapshots, getPendingRunState(state.runLifecycle), state.selectedSessionId]);
-
   const chatMessagesCacheRef = useRef<{ key: string; result: ReturnType<typeof adaptChatMessages> } | null>(null);
 
   const chatMessages = useMemo(() => {
     const transcript = state.activeSessionDetail?.transcript ?? [];
+    const pendingRun = getPendingRunState(state.runLifecycle);
     const cacheKey = buildChatMessagesCacheKey({
       transcript,
       turnSnapshots: activeSessionTurnSnapshots,
     });
 
     const cache = chatMessagesCacheRef.current;
-    if (cache && cache.key === cacheKey) {
-      return [...cache.result, ...pendingRunMessages];
+    const adapted = cache && cache.key === cacheKey
+      ? cache.result
+      : adaptChatMessages(transcript, activeSessionTurnSnapshots);
+    if (!cache || cache.key !== cacheKey) {
+      chatMessagesCacheRef.current = { key: cacheKey, result: adapted };
     }
-    const adapted = adaptChatMessages(transcript, activeSessionTurnSnapshots);
-    chatMessagesCacheRef.current = { key: cacheKey, result: adapted };
-    return [...adapted, ...pendingRunMessages];
+    return adaptRenderableChatMessages({
+      transcript,
+      turnSnapshots: activeSessionTurnSnapshots,
+      pendingRun,
+      selectedSessionId: state.selectedSessionId,
+      baseMessages: adapted,
+    });
   }, [
     activeSessionTurnSnapshots,
-    pendingRunMessages,
     state.activeSessionDetail,
+    state.runLifecycle,
+    state.selectedSessionId,
   ]);
   const selectedArtifact = useMemo(() => {
     if (!state.selectedArtifactId) return undefined;

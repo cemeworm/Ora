@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 import { deriveRunInteractionState } from "./runInteractionState";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
-import type { PendingRunState } from "./state";
+import type { PendingRunState, RunLifecycle } from "./state";
+import type { DeriveRunInteractionStateParams } from "./runInteractionState";
 
 type RunStatus =
   | "running"
@@ -166,6 +167,47 @@ function pendingRun(
   };
 }
 
+function lifecycleFromSnapshot(snapshot: OraStateSnapshot): RunLifecycle {
+  return {
+    stage: snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled"
+      ? "settled"
+      : "streaming",
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId ?? "session-1",
+    prompt: snapshot.input.prompt,
+    createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+    snapshot,
+  };
+}
+
+function lifecycleFromPendingRun(run: PendingRunState): RunLifecycle {
+  return {
+    stage: "pending",
+    sessionId: run.sessionId,
+    runId: run.runId,
+    prompt: run.prompt,
+    createdAt: run.createdAt,
+    progressText: run.progressText,
+    latency: run.latency,
+  };
+}
+
+function derive(params: Omit<DeriveRunInteractionStateParams, "runLifecycle"> & {
+  runLifecycle?: RunLifecycle;
+  activeSnapshot?: OraStateSnapshot;
+  pendingRun?: PendingRunState;
+} = {}) {
+  const { activeSnapshot, pendingRun, runLifecycle, ...rest } = params;
+  return deriveRunInteractionState({
+    ...rest,
+    runLifecycle:
+      runLifecycle ??
+      (pendingRun ? lifecycleFromPendingRun(pendingRun) : undefined) ??
+      (activeSnapshot ? lifecycleFromSnapshot(activeSnapshot) : undefined) ??
+      { stage: "idle" },
+  });
+}
+
 const SURFACE_LABELS = ["sidebar_badge", "chat_loading", "composer_send", "composer_stop", "trails_status"] as const;
 
 describe("runInteractionState cross-surface consistency", () => {
@@ -182,7 +224,7 @@ describe("runInteractionState cross-surface consistency", () => {
   }
 
   it("running: all surfaces agree on processing", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "running" }),
       activeSnapshot: activeSnapshot({ status: "running" }),
@@ -197,7 +239,7 @@ describe("runInteractionState cross-surface consistency", () => {
   });
 
   it("done: all surfaces agree on idle", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
     });
@@ -211,7 +253,7 @@ describe("runInteractionState cross-surface consistency", () => {
   });
 
   it("approval_required: all surfaces agree on gate", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -234,7 +276,7 @@ describe("runInteractionState cross-surface consistency", () => {
   });
 
   it("clarification_required: all surfaces agree on gate", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -257,7 +299,7 @@ describe("runInteractionState cross-surface consistency", () => {
   });
 
   it("paused: all surfaces agree on interrupted", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "interrupted" }),
     });
@@ -271,7 +313,7 @@ describe("runInteractionState cross-surface consistency", () => {
   });
 
   it("failed: all surfaces agree on terminal", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "failed" }),
     });
@@ -287,7 +329,7 @@ describe("runInteractionState cross-surface consistency", () => {
   // ---- Adversarial: stale session summary should not poison surfaces ----
 
   it("stale session summary succeeded, snapshot running → all surfaces show running", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSnapshot: activeSnapshot({ status: "running" }),
@@ -302,7 +344,7 @@ describe("runInteractionState cross-surface consistency", () => {
   });
 
   it("stale session summary running, snapshot succeeded → all surfaces show done", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "running" }),
       activeSnapshot: activeSnapshot({ status: "succeeded" }),
@@ -319,7 +361,7 @@ describe("runInteractionState cross-surface consistency", () => {
   // ---- Poisoned raw-state test ----
 
   it("raw pending approval without attention projection → no gate surfaces", () => {
-    const state = deriveRunInteractionState({
+    const state = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",

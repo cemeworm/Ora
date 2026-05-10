@@ -3,10 +3,23 @@ import { getModePreset, modeSpecToPatternDefinition, SINGLE_AGENT_MODE_ID } from
 import { getComposerInteractivity } from "../../desktop/src/components/ChatInput";
 import { canOpenLangfuseTrace, collectAnomalies } from "../../desktop/src/components/TrailsTabs";
 import { buildRunSearchConfig } from "../../desktop/src/lib/searchSettings";
-import { initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
+import { getActiveSnapshot, getPendingRunState, initialWorkbenchState, workbenchReducer } from "../../desktop/src/lib/state";
 import { buildPendingClarificationResumePatch, clarificationOptionAnswer, waitForPendingRunPaint } from "../../desktop/src/lib/useRunActions";
 import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "../../desktop/src/lib/viewModel";
 import type { OraStateSnapshot } from "../../desktop/src/lib/runtimeClient";
+
+function lifecycleFromSnapshot(snapshot: OraStateSnapshot) {
+  return {
+    stage: snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled"
+      ? "settled" as const
+      : "streaming" as const,
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId ?? "session-1",
+    prompt: snapshot.input.prompt,
+    createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+    snapshot,
+  };
+}
 
 describe("desktop composer pending-run behavior", () => {
   it("keeps thinking depth out of desktop composer state", () => {
@@ -171,7 +184,7 @@ describe("desktop composer pending-run behavior", () => {
     });
 
     expect(next.isLoading).toBe(true);
-    expect(next.pendingRun).toEqual({
+    expect(getPendingRunState(next.runLifecycle)).toEqual({
       sessionId: "session-1",
       prompt: "hello",
       createdAt: 10,
@@ -194,7 +207,7 @@ describe("desktop composer pending-run behavior", () => {
       text: "hello",
     });
 
-    expect(cleared.pendingRun?.prompt).toBe("hello");
+    expect(getPendingRunState(cleared.runLifecycle)?.prompt).toBe("hello");
     expect(cleared.promptText).toBe("");
   });
 
@@ -214,7 +227,7 @@ describe("desktop composer pending-run behavior", () => {
       progressText: "正在选择合适的工作模式",
     });
 
-    expect(updated.pendingRun?.progressText).toBe("正在选择合适的工作模式");
+    expect(getPendingRunState(updated.runLifecycle)?.progressText).toBe("正在选择合适的工作模式");
   });
 
   it("treats a pending submit as visible processing for the active session", () => {
@@ -301,16 +314,16 @@ describe("desktop composer pending-run behavior", () => {
       updatedAt: 1,
     } as unknown as OraStateSnapshot;
 
-    const next = workbenchReducer({ ...initialWorkbenchState, activeSnapshot: snapshot }, {
+    const next = workbenchReducer({ ...initialWorkbenchState, runLifecycle: lifecycleFromSnapshot(snapshot) }, {
       type: "BEGIN_RUN_RESUME",
       runId: "run-approval",
       approvedActionIds: ["action-1"],
       updatedAt: 20,
     });
 
-    expect(next.activeSnapshot?.status).toBe("running");
-    expect(next.activeSnapshot?.pendingApprovals).toEqual([]);
-    expect(next.activeSnapshot?.actions[0]?.status).toBe("approved");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
+    expect(getActiveSnapshot(next.runLifecycle)?.pendingApprovals).toEqual([]);
+    expect(getActiveSnapshot(next.runLifecycle)?.actions[0]?.status).toBe("approved");
     expect(next.isLoading).toBe(true);
   });
 
@@ -586,6 +599,7 @@ describe("desktop composer pending-run behavior", () => {
   it("merges live run stream events into the active snapshot", () => {
     const snapshot = {
       runId: "run-stream",
+      sessionId: "session-1",
       status: "running",
       pattern: "orchestrator_subagent",
       input: { prompt: "hello", createdAt: 1 },
@@ -610,7 +624,12 @@ describe("desktop composer pending-run behavior", () => {
       updatedAt: 1,
     } as unknown as OraStateSnapshot;
 
-    const next = workbenchReducer({ ...initialWorkbenchState, activeSnapshot: snapshot }, {
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: "session-1",
+      selectedTurnRunId: snapshot.runId,
+      runLifecycle: lifecycleFromSnapshot(snapshot),
+    }, {
       type: "APPLY_RUN_STREAM",
       stream: {
         runId: "run-stream",
@@ -629,10 +648,10 @@ describe("desktop composer pending-run behavior", () => {
       },
     });
 
-    expect(next.activeSnapshot?.events).toHaveLength(1);
-    expect(next.activeSnapshot?.events[0]?.type).toBe("message.delta");
+    expect(getActiveSnapshot(next.runLifecycle)?.events).toHaveLength(1);
+    expect(getActiveSnapshot(next.runLifecycle)?.events[0]?.type).toBe("message.delta");
     expect(next.isLoading).toBe(true);
-    expect(next.pendingRun).toBeUndefined();
+    expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
   });
 
   it("syncs settled live stream status into the active session and turn", () => {
@@ -681,7 +700,7 @@ describe("desktop composer pending-run behavior", () => {
       ...initialWorkbenchState,
       selectedSessionId: "session-1",
       selectedTurnRunId: "run-stream",
-      activeSnapshot: runningSnapshot,
+      runLifecycle: lifecycleFromSnapshot(runningSnapshot),
       activeSessionDetail: {
         session: {
           sessionId: "session-1",

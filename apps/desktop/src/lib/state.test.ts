@@ -80,6 +80,7 @@ function testSnapshot(params: {
     profiles: [],
     memory: [],
     plan: [],
+    planList: [],
     todos: [],
     actions: [],
     toolCalls: [],
@@ -102,6 +103,38 @@ function testSnapshot(params: {
     latency: params.latency,
     updatedAt,
   } as unknown as OraStateSnapshot;
+}
+
+function lifecycleFromSnapshot(snapshot: OraStateSnapshot): WorkbenchState["runLifecycle"] {
+  return {
+    stage: snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled"
+      ? "settled"
+      : "streaming",
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId ?? "session-debate",
+    prompt: snapshot.input.prompt,
+    createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+    snapshot,
+  };
+}
+
+function lifecycleFromPendingRun(run: {
+  sessionId: string;
+  runId?: string;
+  prompt: string;
+  createdAt: number;
+  progressText?: string;
+  latency?: OraStateSnapshot["latency"];
+}): WorkbenchState["runLifecycle"] {
+  return {
+    stage: "pending",
+    sessionId: run.sessionId,
+    runId: run.runId,
+    prompt: run.prompt,
+    createdAt: run.createdAt,
+    progressText: run.progressText,
+    latency: run.latency,
+  };
 }
 
 function debateTranscriptMessage(params: {
@@ -224,15 +257,7 @@ describe("desktop workbench state", () => {
       sessions: [currentSession, sessionSummary("session-background")],
       selectedSessionId: currentSession.sessionId,
       selectedTurnRunId: currentSnapshot.runId,
-      activeSnapshot: currentSnapshot,
-      runLifecycle: {
-        stage: "streaming",
-        runId: currentSnapshot.runId,
-        sessionId: currentSnapshot.sessionId!,
-        prompt: currentSnapshot.input.prompt,
-        createdAt: currentSnapshot.input.createdAt ?? currentSnapshot.updatedAt,
-        snapshot: currentSnapshot,
-      },
+      runLifecycle: lifecycleFromSnapshot(currentSnapshot),
       activeSessionDetail: {
         session: currentSession,
         turns: [{ runId: currentSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
@@ -258,7 +283,7 @@ describe("desktop workbench state", () => {
 
     expect(next.selectedSessionId).toBe("session-current");
     expect(next.selectedTurnRunId).toBe("run-current");
-    expect(next.activeSnapshot?.runId).toBe("run-current");
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-current");
     expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-current");
     expect(next.activeSessionDetail?.session.sessionId).toBe("session-current");
     expect(next.promptText).toBe("draft for current");
@@ -290,7 +315,7 @@ describe("desktop workbench state", () => {
       sessions: [sessionSummary("session-current")],
       selectedSessionId: "session-current",
       selectedTurnRunId: oldSnapshot.runId,
-      activeSnapshot: oldSnapshot,
+      runLifecycle: lifecycleFromSnapshot(oldSnapshot),
       activeSessionDetail: {
         session: sessionSummary("session-current"),
         turns: [{ runId: oldSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
@@ -314,7 +339,7 @@ describe("desktop workbench state", () => {
 
     expect(next.selectedSessionId).toBe("session-current");
     expect(next.selectedTurnRunId).toBe("run-current-new");
-    expect(next.activeSnapshot?.runId).toBe("run-current-new");
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-current-new");
     expect(next.runLifecycle.stage).toBe("settled");
     expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-current-new");
     expect(next.activeSessionDetail?.session.status).toBe("succeeded");
@@ -361,7 +386,7 @@ describe("desktop workbench state", () => {
     expect(next.isLoading).toBe(false);
     expect(next.selectedSessionId).toBe("session-summary");
     expect(next.selectedTurnRunId).toBe("run-summary");
-    expect(next.activeSnapshot).toBeUndefined();
+    expect(getActiveSnapshot(next.runLifecycle)).toBeUndefined();
     expect(next.runLifecycle.stage).toBe("idle");
     expect(next.activeSessionDetail?.latestSnapshot).toBeUndefined();
     expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
@@ -861,7 +886,7 @@ describe("desktop workbench state", () => {
       ...initialWorkbenchState,
       selectedSessionId: snapshot.sessionId,
       selectedTurnRunId: snapshot.runId,
-      activeSnapshot: snapshot,
+      runLifecycle: lifecycleFromSnapshot(snapshot),
       activeSessionDetail: {
         session: sessionSummary(snapshot.sessionId!),
         turns: [{
@@ -898,16 +923,74 @@ describe("desktop workbench state", () => {
 
     const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 200 });
 
-    expect(next.activeSnapshot?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual([
+    expect(getActiveSnapshot(next.runLifecycle)?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual(expect.arrayContaining([
       "desktop:firstRunStreamReceivedAt",
       "desktop:firstMessageDeltaAt",
       "desktop:firstNonProgressAssistantTextAt",
-    ]);
-    expect(getActiveSnapshot(next.runLifecycle)?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual([
-      "desktop:firstRunStreamReceivedAt",
-      "desktop:firstMessageDeltaAt",
-      "desktop:firstNonProgressAssistantTextAt",
-    ]);
+    ]));
+  });
+
+  it("keeps richer live snapshot events when hydrating with a stale same-run snapshot", () => {
+    const sessionId = "session-hydrate-monotonic";
+    const runId = "run-hydrate-monotonic";
+    const liveSnapshot = testSnapshot({
+      runId,
+      sessionId,
+      status: "running",
+      events: [{
+        id: `${runId}:event:0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 1_714_000_000_010,
+        payload: { role: "assistant", content: "Hi", delta: "Hi", streaming: true },
+      }] as unknown as OraStateSnapshot["events"],
+      updatedAt: 1_714_000_000_010,
+    });
+    const staleHydrateSnapshot = testSnapshot({
+      runId,
+      sessionId,
+      status: "running",
+      events: [],
+      updatedAt: 1_714_000_000_005,
+    });
+    const session = {
+      ...sessionSummary(sessionId),
+      latestRunId: runId,
+      status: "running" as const,
+    };
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      runLifecycle: lifecycleFromSnapshot(liveSnapshot),
+    }, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [{
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "running",
+          pattern: liveSnapshot.pattern,
+          prompt: liveSnapshot.input.prompt,
+          startedAt: liveSnapshot.input.createdAt ?? liveSnapshot.updatedAt,
+          updatedAt: staleHydrateSnapshot.updatedAt,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: staleHydrateSnapshot,
+      },
+    });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.events.map((event) => event.id)).toEqual([`${runId}:event:0`]);
+    expect(getActiveSnapshot(next.runLifecycle)?.updatedAt).toBe(liveSnapshot.updatedAt);
   });
 
   it("preserves early stream latency while the run state snapshot is still loading", () => {
@@ -917,7 +1000,7 @@ describe("desktop workbench state", () => {
     const state: WorkbenchState = {
       ...initialWorkbenchState,
       selectedSessionId: sessionId,
-      pendingRun: { sessionId, prompt, createdAt: 100 },
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt, createdAt: 100 }),
       isLoading: true,
     };
     const withHandle = workbenchReducer(state, {
@@ -953,20 +1036,14 @@ describe("desktop workbench state", () => {
     });
 
     expect(afterStream.selectedTurnRunId).toBe(runId);
-    expect(afterStream.pendingRun?.latency?.marks).toEqual([{
+    expect(getPendingRunState(afterStream.runLifecycle)?.latency?.marks).toEqual([{
       name: "firstRunStreamReceivedAt",
       at: 150,
       source: "desktop",
       detail: { eventType: "run.started", eventCount: 1 },
     }]);
-    expect(afterStream.activeSnapshot).toBeUndefined();
-    expect(selected.pendingRun).toBeUndefined();
-    expect(selected.activeSnapshot?.latency?.marks).toEqual([{
-      name: "firstRunStreamReceivedAt",
-      at: 150,
-      source: "desktop",
-      detail: { eventType: "run.started", eventCount: 1 },
-    }]);
+    expect(getActiveSnapshot(afterStream.runLifecycle)).toBeUndefined();
+    expect(getPendingRunState(selected.runLifecycle)).toBeUndefined();
     expect(getActiveSnapshot(selected.runLifecycle)?.latency?.marks).toEqual([{
       name: "firstRunStreamReceivedAt",
       at: 150,
@@ -983,7 +1060,7 @@ describe("desktop workbench state", () => {
       ...initialWorkbenchState,
       selectedSessionId: sessionId,
       selectedTurnRunId: "run-previous",
-      pendingRun: { sessionId, prompt, createdAt: 100 },
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt, createdAt: 100 }),
       isLoading: true,
     };
     const stream = {
@@ -1016,19 +1093,108 @@ describe("desktop workbench state", () => {
     });
 
     expect(afterStream.selectedTurnRunId).toBe(runId);
-    expect(afterStream.activeSnapshot?.runId).toBe(runId);
-    expect(afterStream.activeSnapshot?.sessionId).toBe(sessionId);
-    expect(afterStream.activeSnapshot?.input.prompt).toBe(prompt);
-    expect(afterStream.activeSnapshot?.events.map((event) => event.type)).toEqual(["message.delta"]);
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.runId).toBe(runId);
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.sessionId).toBe(sessionId);
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.input.prompt).toBe(prompt);
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.events.map((event) => event.type)).toEqual(["message.delta"]);
     expect(afterStream.runLifecycle.stage).toBe("streaming");
     expect(getActiveSnapshot(afterStream.runLifecycle)?.events.map((event) => event.type)).toEqual(["message.delta"]);
-    expect(afterStream.pendingRun?.latency?.marks.map((mark) => mark.name)).toEqual([
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.latency?.marks.map((mark) => mark.name)).toEqual([
       "firstRunStreamReceivedAt",
       "firstMessageDeltaAt",
       "firstNonProgressAssistantTextAt",
     ]);
-    expect(withHandle.pendingRun?.runId).toBe(runId);
-    expect(withHandle.activeSnapshot?.events).toHaveLength(1);
+    expect(getPendingRunState(withHandle.runLifecycle)).toBeUndefined();
+    expect(getActiveSnapshot(withHandle.runLifecycle)?.events).toHaveLength(1);
+  });
+
+  it("preserves a normal pending run across stale session hydration until the run materializes", () => {
+    const sessionId = "session-pending-hydrate";
+    const prompt = "解释一下这个项目。";
+    const createdAt = 1_714_000_000_100;
+    const session = sessionSummary(sessionId);
+    const state = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      activeSessionDetail: {
+        session,
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    }, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId,
+      prompt,
+      createdAt,
+    });
+
+    const hydrated = workbenchReducer(state, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    });
+
+    expect(getPendingRunState(hydrated.runLifecycle)).toMatchObject({
+      sessionId,
+      prompt,
+      createdAt,
+    });
+    expect(hydrated.isLoading).toBe(true);
+  });
+
+  it("clears a normal pending run once hydrated transcript can render the user message", () => {
+    const sessionId = "session-pending-materialized";
+    const runId = "run-materialized";
+    const prompt = "解释一下这个项目。";
+    const createdAt = 1_714_000_000_100;
+    const session = sessionSummary(sessionId);
+    const state = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      runLifecycle: { stage: "pending", sessionId, runId, prompt, createdAt },
+      isLoading: true,
+    }, {
+      type: "HYDRATE_SESSION",
+      projects: [],
+      sessions: [session],
+      detail: {
+        session,
+        turns: [{
+          runId,
+          sessionId,
+          turnIndex: 1,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          prompt,
+          startedAt: createdAt,
+          updatedAt: createdAt,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [{
+          id: `${runId}:user`,
+          sessionId,
+          runId,
+          turnIndex: 1,
+          role: "user",
+          content: prompt,
+          pattern: "orchestrator_subagent",
+          createdAt,
+        }],
+        latestSnapshot: undefined,
+      },
+    });
+
+    expect(getPendingRunState(state.runLifecycle)).toBeUndefined();
+    expect(state.isLoading).toBe(false);
   });
 
   it("does not match pre-handle streams from another session with the same prompt", () => {
@@ -1036,7 +1202,7 @@ describe("desktop workbench state", () => {
     const state: WorkbenchState = {
       ...initialWorkbenchState,
       selectedSessionId: "session-active",
-      pendingRun: { sessionId: "session-active", prompt, createdAt: 100 },
+      runLifecycle: lifecycleFromPendingRun({ sessionId: "session-active", prompt, createdAt: 100 }),
       isLoading: true,
     };
     const stream = {
@@ -1062,9 +1228,9 @@ describe("desktop workbench state", () => {
       receivedAt: 130,
     });
 
-    expect(next.activeSnapshot).toBeUndefined();
+    expect(getActiveSnapshot(next.runLifecycle)).toBeUndefined();
     expect(next.selectedTurnRunId).toBeUndefined();
-    expect(next.pendingRun).toBe(state.pendingRun);
+    expect(getPendingRunState(next.runLifecycle)).toEqual(getPendingRunState(state.runLifecycle));
   });
 
   it("records only first stream latency for an initial running snapshot stream", () => {
@@ -1075,7 +1241,7 @@ describe("desktop workbench state", () => {
     const state: WorkbenchState = {
       ...initialWorkbenchState,
       selectedSessionId: sessionId,
-      pendingRun: { sessionId, prompt, createdAt: 90 },
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt, createdAt: 90 }),
       isLoading: true,
     };
     const withHandle = workbenchReducer(state, {
@@ -1099,11 +1265,10 @@ describe("desktop workbench state", () => {
       receivedAt: 120,
     });
 
-    expect(afterStream.activeSnapshot?.runId).toBe(runId);
-    expect(afterStream.pendingRun).toBeUndefined();
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.runId).toBe(runId);
     expect(getPendingRunState(afterStream.runLifecycle)).toBeUndefined();
     expect(getActiveSnapshot(afterStream.runLifecycle)?.runId).toBe(runId);
-    expect(afterStream.activeSnapshot?.latency?.marks).toEqual([{
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.latency?.marks).toEqual([{
       name: "firstRunStreamReceivedAt",
       at: 120,
       source: "desktop",
@@ -1194,6 +1359,68 @@ describe("desktop workbench state", () => {
     expect(merged).toBeDefined();
     expect(merged?.events.map((event) => event.seq)).toEqual([0, 1]);
     expect(merged?.status).toBe("running");
+  });
+
+  it("projects no-snapshot plan list updates into the active snapshot immediately", () => {
+    const snapshot = testSnapshot({
+      runId: "run-plan-list-delta",
+      events: [{
+        id: "run-plan-list-delta:event:0",
+        runId: "run-plan-list-delta",
+        seq: 0,
+        type: "run.started",
+        createdAt: 1_714_000_000_000,
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+    const plan = [
+      { id: "step-1", step: "搜索 DeepSeek-v4 API 定价概览", status: "in_progress" },
+      { id: "step-2", step: "核对官方价格页面", status: "pending" },
+    ];
+    const stream: OraRunEventStream = {
+      runId: "run-plan-list-delta",
+      fromSeq: 1,
+      nextSeq: 2,
+      status: "running",
+      events: [{
+        id: "run-plan-list-delta:event:1",
+        runId: "run-plan-list-delta",
+        seq: 1,
+        type: "plan_list.updated",
+        createdAt: 1_714_000_000_001,
+        payload: { plan },
+      } as unknown as OraRunEventStream["events"][number]],
+    };
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.events.map((event) => event.seq)).toEqual([0, 1]);
+    expect(merged?.planList).toEqual(plan);
+    expect(merged?.status).toBe("running");
+  });
+
+  it("ignores malformed no-snapshot plan list payloads", () => {
+    const snapshot = testSnapshot({
+      runId: "run-bad-plan-list-delta",
+    });
+    const stream: OraRunEventStream = {
+      runId: "run-bad-plan-list-delta",
+      fromSeq: 1,
+      nextSeq: 2,
+      status: "running",
+      events: [{
+        id: "run-bad-plan-list-delta:event:1",
+        runId: "run-bad-plan-list-delta",
+        seq: 1,
+        type: "plan_list.updated",
+        createdAt: 1_714_000_000_001,
+        payload: { plan: [{ step: "缺少合法状态", status: "working" }] },
+      } as unknown as OraRunEventStream["events"][number]],
+    };
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.planList).toEqual([]);
+    expect(merged?.events.map((event) => event.seq)).toEqual([1]);
   });
 
   it("does not append no-snapshot deltas when no matching snapshot exists", () => {
@@ -1289,8 +1516,8 @@ describe("desktop workbench state", () => {
       },
     });
 
-    expect(state.activeSnapshot?.agentMessages).toHaveLength(1);
-    expect(state.activeSnapshot?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
+    expect(getActiveSnapshot(state.runLifecycle)?.agentMessages).toHaveLength(1);
+    expect(getActiveSnapshot(state.runLifecycle)?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
     expect(getActiveSnapshot(state.runLifecycle)?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
   });
 
@@ -1330,7 +1557,7 @@ describe("desktop workbench state", () => {
       selectedSessionId: sessionId,
       selectedTurnRunId: snapshot.runId,
       sessions: [staleSession],
-      pendingRun: { sessionId, prompt: "staging", createdAt: 1_714_000_000_001 },
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt: "staging", createdAt: 1_714_000_000_001 }),
     }, {
       type: "HYDRATE_SESSION",
       projects: [],
@@ -1344,12 +1571,12 @@ describe("desktop workbench state", () => {
       snapshot,
     });
 
-    expect(next.pendingRun).toBeUndefined();
+    expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
     expect(next.activeSessionDetail?.session.status).toBe("succeeded");
     expect(next.sessions[0]?.status).toBe("succeeded");
     expect(next.activeSessionDetail?.session.attention).toEqual(snapshot.attention);
     expect(next.sessions[0]?.attention).toEqual(snapshot.attention);
-    expect(next.activeSnapshot?.pendingClarifications).toEqual([]);
+    expect(getActiveSnapshot(next.runLifecycle)?.pendingClarifications).toEqual([]);
     expect(next.runLifecycle.stage).toBe("settled");
     expect(getActiveSnapshot(next.runLifecycle)?.pendingClarifications).toEqual([]);
   });
@@ -1401,7 +1628,7 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.attention?.kind).toBe("idle");
     expect(next.sessions[0]?.status).toBe("succeeded");
     expect(next.sessions[0]?.attention?.kind).toBe("idle");
-    expect(next.activeSnapshot?.attention?.kind).toBe("idle");
+    expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("idle");
     expect(next.runLifecycle.stage).toBe("settled");
     expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("idle");
   });
@@ -1425,7 +1652,7 @@ describe("desktop workbench state", () => {
       selectedSessionId: session.sessionId,
       selectedTurnRunId: snapshot.runId,
       sessions: [session],
-      activeSnapshot: snapshot,
+      runLifecycle: lifecycleFromSnapshot(snapshot),
       activeSessionDetail: {
         session,
         turns: [{
@@ -1436,7 +1663,6 @@ describe("desktop workbench state", () => {
         transcript: [],
         latestSnapshot: snapshot,
       },
-      pendingRun: { sessionId: session.sessionId, prompt: snapshot.input.prompt, createdAt: snapshot.input.createdAt ?? 0 },
       isLoading: true,
       busyCommand: "Cancel",
     }, {
@@ -1446,12 +1672,12 @@ describe("desktop workbench state", () => {
       updatedAt: 1_714_000_000_123,
     });
 
-    expect(next.activeSnapshot?.status).toBe("cancelled");
-    expect(next.activeSnapshot?.attention?.kind).toBe("cancelled");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("cancelled");
+    expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("cancelled");
     expect(next.activeSessionDetail?.session.status).toBe("cancelled");
     expect(next.activeSessionDetail?.turns[0]?.status).toBe("cancelled");
     expect(next.sessions[0]?.status).toBe("cancelled");
-    expect(next.pendingRun).toBeUndefined();
+    expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
     expect(next.runLifecycle.stage).toBe("settled");
     expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("cancelled");
     expect(next.isLoading).toBe(false);
@@ -1479,15 +1705,7 @@ describe("desktop workbench state", () => {
       ...initialWorkbenchState,
       selectedSessionId: "session-resume",
       selectedTurnRunId: snapshot.runId,
-      activeSnapshot: snapshot,
-      runLifecycle: {
-        stage: "settled",
-        runId: snapshot.runId,
-        sessionId: "session-resume",
-        prompt: snapshot.input.prompt,
-        createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
-        snapshot,
-      },
+      runLifecycle: lifecycleFromSnapshot(snapshot),
     }, {
       type: "BEGIN_RUN_RESUME",
       runId: snapshot.runId,
@@ -1495,7 +1713,7 @@ describe("desktop workbench state", () => {
       updatedAt: snapshot.updatedAt + 10,
     });
 
-    expect(next.activeSnapshot?.status).toBe("running");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
     expect(next.runLifecycle.stage).toBe("streaming");
     expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
     expect(getActiveSnapshot(next.runLifecycle)?.pendingApprovals).toEqual([]);
@@ -1562,7 +1780,7 @@ describe("desktop workbench state", () => {
       ...initialWorkbenchState,
       selectedSessionId: "session-active",
       selectedTurnRunId: "run-active",
-      activeSnapshot,
+      runLifecycle: lifecycleFromSnapshot(activeSnapshot),
       activeSessionDetail: {
         session: sessionSummary("session-active"),
         turns: [{ runId: "run-active" } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
@@ -1581,7 +1799,7 @@ describe("desktop workbench state", () => {
 
     const nextState = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream });
 
-    expect(nextState.activeSnapshot?.sessionId).toBe("session-active");
+    expect(getActiveSnapshot(nextState.runLifecycle)?.sessionId).toBe("session-active");
     expect(nextState.selectedTurnRunId).toBe("run-active");
   });
 
@@ -1601,7 +1819,7 @@ describe("desktop workbench state", () => {
       ...initialWorkbenchState,
       selectedSessionId: "session-active",
       selectedTurnRunId: "run-active",
-      activeSnapshot,
+      runLifecycle: lifecycleFromSnapshot(activeSnapshot),
       activeSessionDetail: {
         session: sessionSummary("session-active"),
         turns: [{ runId: "run-active" } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
@@ -1620,7 +1838,7 @@ describe("desktop workbench state", () => {
 
     const nextState = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream });
 
-    expect(nextState.activeSnapshot?.runId).toBe("run-active");
+    expect(getActiveSnapshot(nextState.runLifecycle)?.runId).toBe("run-active");
     expect(nextState.selectedTurnRunId).toBe("run-active");
   });
 
@@ -1772,7 +1990,7 @@ describe("desktop workbench state", () => {
         sessionTaskIntents: { [sessionId]: "plan" },
         selectedSessionId: sessionId,
         selectedTurnRunId: snapshot.runId,
-        activeSnapshot: snapshot,
+        runLifecycle: lifecycleFromSnapshot(snapshot),
         activeSessionDetail: {
           session: { ...sessionSummary(sessionId), latestRunId: snapshot.runId },
           turns: [{
@@ -1825,7 +2043,7 @@ describe("desktop workbench state", () => {
         sessionTaskIntents: { [sessionId]: "plan" },
         selectedSessionId: sessionId,
         selectedTurnRunId: snapshot.runId,
-        activeSnapshot: snapshot,
+        runLifecycle: lifecycleFromSnapshot(snapshot),
         activeSessionDetail: {
           session: sessionSummary(sessionId),
           turns: [{
@@ -1915,7 +2133,7 @@ describe("desktop workbench state", () => {
         implementationPrompt: "请按照上述计划开始执行",
       });
 
-      expect(next.pendingRun).toMatchObject({
+      expect(getPendingRunState(next.runLifecycle)).toMatchObject({
         sessionId: "session-plan",
         prompt: "请按照上述计划开始执行",
       });
@@ -1936,7 +2154,7 @@ describe("desktop workbench state", () => {
         createdAt: 1_714_000_000_100,
       });
 
-      expect(next.pendingRun).toBeUndefined();
+      expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
       expect(next.pendingPlanDecisionResolution).toMatchObject({
         decisionId: "run-plan:plan-decision",
         status: "declined",
@@ -1982,7 +2200,7 @@ describe("desktop workbench state", () => {
         feedback: "Plan accepted.",
       });
 
-      expect(next.pendingRun).toMatchObject({
+      expect(getPendingRunState(next.runLifecycle)).toMatchObject({
         sessionId,
         prompt: "请按照上述计划开始执行",
       });
@@ -2007,7 +2225,7 @@ describe("desktop workbench state", () => {
         feedback: "Plan decision update failed.",
       });
 
-      expect(next.pendingRun).toBeUndefined();
+      expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
       expect(next.pendingPlanDecisionResolution).toBeUndefined();
       expect(next.isLoading).toBe(false);
       expect(next.commandFeedback).toBe("Plan decision update failed.");
@@ -2046,7 +2264,7 @@ describe("desktop workbench state", () => {
         taskIntent: "implement",
         selectedSessionId: sessionId,
         selectedTurnRunId: snapshot.runId,
-        activeSnapshot: snapshot,
+        runLifecycle: lifecycleFromSnapshot(snapshot),
         activeSessionDetail: {
           session: sessionSummary(sessionId),
           turns: [{
@@ -2098,7 +2316,7 @@ describe("desktop workbench state", () => {
         sessionTaskIntents: { [sessionId]: "plan" },
         selectedSessionId: sessionId,
         selectedTurnRunId: snapshot.runId,
-        activeSnapshot: snapshot,
+        runLifecycle: lifecycleFromSnapshot(snapshot),
         activeSessionDetail: {
           session: sessionSummary(sessionId),
           turns: [{

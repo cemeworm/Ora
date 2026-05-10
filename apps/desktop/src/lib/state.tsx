@@ -4,6 +4,7 @@ import {
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
   deriveSessionBranchGroupStatus,
+  PlanListStepSchema,
   type RunAttention,
   type ModeSelection,
   type PermissionMode,
@@ -147,40 +148,46 @@ function runLifecycleFromSnapshot(
   if (!snapshot) {
     return runLifecycleFromPendingRun(params.pendingRun);
   }
-  const sessionId = snapshot.sessionId ?? params.pendingRun?.sessionId ?? params.fallbackSessionId;
+  const previousSnapshot =
+    (params.previous?.stage === "streaming" || params.previous?.stage === "settled") &&
+    params.previous.runId === snapshot.runId
+      ? params.previous.snapshot
+      : undefined;
+  const lifecycleSnapshot = mergeStateSnapshot(previousSnapshot, snapshot) ?? snapshot;
+  const sessionId = lifecycleSnapshot.sessionId ?? params.pendingRun?.sessionId ?? params.fallbackSessionId;
   if (!sessionId) {
     return params.previous ?? { stage: "idle" };
   }
-  const createdAt = snapshot.input.createdAt ?? params.pendingRun?.createdAt ?? snapshot.updatedAt;
+  const createdAt = lifecycleSnapshot.input.createdAt ?? params.pendingRun?.createdAt ?? lifecycleSnapshot.updatedAt;
   const sameRunPrevious =
-    params.previous?.stage === "streaming" && params.previous.runId === snapshot.runId
+    params.previous?.stage === "streaming" && params.previous.runId === lifecycleSnapshot.runId
       ? params.previous
       : undefined;
   const samePendingPrevious =
     params.previous?.stage === "pending" &&
-    (params.previous.runId === snapshot.runId ||
-      (!params.previous.runId && params.previous.sessionId === sessionId && params.previous.prompt === snapshot.input.prompt))
+    (params.previous.runId === lifecycleSnapshot.runId ||
+      (!params.previous.runId && params.previous.sessionId === sessionId && params.previous.prompt === lifecycleSnapshot.input.prompt))
       ? params.previous
       : undefined;
-  if (isSettledRunStatus(snapshot.status)) {
+  if (isSettledRunStatus(lifecycleSnapshot.status)) {
     return {
       stage: "settled",
-      runId: snapshot.runId,
+      runId: lifecycleSnapshot.runId,
       sessionId,
-      prompt: snapshot.input.prompt,
+      prompt: lifecycleSnapshot.input.prompt,
       createdAt,
-      snapshot,
+      snapshot: lifecycleSnapshot,
     };
   }
   return {
     stage: "streaming",
-    runId: snapshot.runId,
+    runId: lifecycleSnapshot.runId,
     sessionId,
-    prompt: snapshot.input.prompt,
+    prompt: lifecycleSnapshot.input.prompt,
     createdAt,
     progressText: params.pendingRun?.progressText ?? sameRunPrevious?.progressText ?? samePendingPrevious?.progressText,
-    latency: snapshot.latency ?? params.pendingRun?.latency ?? sameRunPrevious?.latency ?? samePendingPrevious?.latency,
-    snapshot,
+    latency: lifecycleSnapshot.latency ?? params.pendingRun?.latency ?? sameRunPrevious?.latency ?? samePendingPrevious?.latency,
+    snapshot: lifecycleSnapshot,
   };
 }
 
@@ -207,7 +214,6 @@ export interface WorkbenchState {
   selectedProjectId: string | undefined;
   expandedProjectIds: Record<string, boolean>;
   activeSessionDetail: OraSessionDetail | undefined;
-  activeSnapshot: OraStateSnapshot | undefined;
   patterns: OraPatternDefinition[];
   modes: OraModeSpec[];
   providerRegistry: OraProviderRegistry | undefined;
@@ -233,7 +239,6 @@ export interface WorkbenchState {
     ComposerProjectFileAttachment[]
   >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
-  pendingRun: PendingRunState | undefined;
   runLifecycle: RunLifecycle;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   isLoading: boolean;
@@ -398,7 +403,6 @@ export const initialWorkbenchState: WorkbenchState = {
   selectedProjectId: undefined,
   expandedProjectIds: {},
   activeSessionDetail: undefined,
-  activeSnapshot: undefined,
   patterns: [],
   modes: [],
   providerRegistry: undefined,
@@ -425,7 +429,6 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionTaskIntents: {},
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
-  pendingRun: undefined,
   runLifecycle: { stage: "idle" },
   pendingPlanDecisionResolution: undefined,
   isLoading: false,
@@ -967,6 +970,38 @@ function mergeStreamClarificationUpdates(
   return updated;
 }
 
+function mergeStreamPlanListUpdates(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot["planList"] {
+  let planList = snapshot.planList ?? [];
+
+  for (const event of stream.events) {
+    if (event.type !== "plan_list.updated" || !isRecord(event.payload)) {
+      continue;
+    }
+    const payloadPlan = event.payload.plan;
+    if (!Array.isArray(payloadPlan)) {
+      continue;
+    }
+    const nextPlan: OraStateSnapshot["planList"] = [];
+    let valid = true;
+    for (const item of payloadPlan) {
+      const parsed = PlanListStepSchema.safeParse(item);
+      if (!parsed.success) {
+        valid = false;
+        break;
+      }
+      nextPlan.push(parsed.data);
+    }
+    if (valid) {
+      planList = nextPlan;
+    }
+  }
+
+  return planList;
+}
+
 export function mergeRunStreamSnapshot(
   snapshot: OraStateSnapshot | undefined,
   stream: OraRunEventStream,
@@ -986,10 +1021,12 @@ export function mergeRunStreamSnapshot(
     snapshot,
     stream,
   );
+  const planList = mergeStreamPlanListUpdates(snapshot, stream);
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
   return normalizeDesktopSnapshot({
     ...snapshot,
     status: stream.status ?? snapshot.status,
+    planList,
     actions: merged.actions,
     pendingApprovals: merged.pendingApprovals,
     pendingClarifications,
@@ -1140,10 +1177,10 @@ function markDesktopLatencyForStream(
 }
 
 function markPendingRunLatencyForStream(
-  pendingRun: WorkbenchState["pendingRun"],
+  pendingRun: PendingRunState | undefined,
   stream: OraRunEventStream,
   receivedAt: number | undefined,
-): WorkbenchState["pendingRun"] {
+): PendingRunState | undefined {
   if (!pendingRun || receivedAt === undefined) {
     return pendingRun;
   }
@@ -1711,7 +1748,7 @@ function branchOutputPreview(
 }
 
 function streamMatchesPendingRun(
-  pendingRun: WorkbenchState["pendingRun"],
+  pendingRun: PendingRunState | undefined,
   stream: OraRunEventStream,
   activeSnapshot: OraStateSnapshot | undefined,
 ): boolean {
@@ -1735,7 +1772,7 @@ function streamMatchesPendingRun(
 }
 
 function createPendingRunSnapshot(
-  pendingRun: WorkbenchState["pendingRun"],
+  pendingRun: PendingRunState | undefined,
   stream: OraRunEventStream,
 ): OraStateSnapshot | undefined {
   if (
@@ -1800,7 +1837,7 @@ function createPendingRunSnapshot(
 
 function shouldClearPendingRunForStream(
   matchesPendingRun: boolean,
-  pendingRun: WorkbenchState["pendingRun"],
+  pendingRun: PendingRunState | undefined,
   streamSnapshot: OraStateSnapshot | undefined,
   streamBelongsToActiveTurn: boolean,
 ): boolean {
@@ -1911,7 +1948,7 @@ function applyCancelRequestedToSessionDetail(
 
 function shouldPreserveAcceptedPlanPendingRun(
   pendingResolution: WorkbenchState["pendingPlanDecisionResolution"],
-  pendingRun: WorkbenchState["pendingRun"],
+  pendingRun: PendingRunState | undefined,
   sessionId: string,
 ): boolean {
   return Boolean(
@@ -1921,6 +1958,58 @@ function shouldPreserveAcceptedPlanPendingRun(
       pendingRun?.sessionId === sessionId &&
       pendingRun.prompt === pendingResolution.implementationPrompt,
   );
+}
+
+function pendingRunMatchesSnapshot(
+  pendingRun: PendingRunState | undefined,
+  snapshot: OraStateSnapshot | undefined,
+): boolean {
+  if (!pendingRun || !snapshot) {
+    return false;
+  }
+  if (snapshot.sessionId !== pendingRun.sessionId) {
+    return false;
+  }
+  if (pendingRun.runId && snapshot.runId !== pendingRun.runId) {
+    return false;
+  }
+  return snapshot.input.prompt === pendingRun.prompt;
+}
+
+function pendingRunHasTranscriptUser(
+  pendingRun: PendingRunState | undefined,
+  detail: OraSessionDetail,
+): boolean {
+  if (!pendingRun || detail.session.sessionId !== pendingRun.sessionId) {
+    return false;
+  }
+  return detail.transcript.some((message) =>
+    message.role === "user" &&
+    message.sessionId === pendingRun.sessionId &&
+    (!pendingRun.runId || message.runId === pendingRun.runId) &&
+    message.content === pendingRun.prompt
+  );
+}
+
+function shouldPreserveHydratingPendingRun(params: {
+  pendingRun: PendingRunState | undefined;
+  detail: OraSessionDetail;
+  snapshot: OraStateSnapshot | undefined;
+}): boolean {
+  const { pendingRun, detail, snapshot } = params;
+  if (!pendingRun || pendingRun.sessionId !== detail.session.sessionId) {
+    return false;
+  }
+  if (snapshot && isSettledRunStatus(snapshot.status)) {
+    return false;
+  }
+  if (pendingRunMatchesSnapshot(pendingRun, snapshot)) {
+    return false;
+  }
+  if (pendingRunHasTranscriptUser(pendingRun, detail)) {
+    return false;
+  }
+  return true;
 }
 
 function preserveComposerMode(
@@ -1948,7 +2037,6 @@ export function workbenchReducer(
         sessions: [],
         selectedProjectId: undefined,
         activeSessionDetail: undefined,
-        activeSnapshot: undefined,
         sessionDetailsById: {},
         modes: [],
         promptText: "",
@@ -1959,7 +2047,6 @@ export function workbenchReducer(
         sessionTaskIntents: {},
         sessionProjectFileAttachments: {},
         sessionLocalFileAttachments: {},
-        pendingRun: undefined,
         runLifecycle: { stage: "idle" },
         pendingPlanDecisionResolution: undefined,
         isLoading: true,
@@ -2038,12 +2125,17 @@ export function workbenchReducer(
           ),
         };
       }
+      const currentPendingRun = getPendingRunState(state.runLifecycle);
       const preservePendingRun = shouldPreserveAcceptedPlanPendingRun(
         state.pendingPlanDecisionResolution,
-        state.pendingRun,
+        currentPendingRun,
         action.detail.session.sessionId,
-      );
-      const pendingRun = preservePendingRun ? state.pendingRun : undefined;
+      ) || shouldPreserveHydratingPendingRun({
+        pendingRun: currentPendingRun,
+        detail: normalizedDetail,
+        snapshot: normalizedSnapshot,
+      });
+      const pendingRun = preservePendingRun ? currentPendingRun : undefined;
       const nextState = {
         ...state,
         projects: action.projects,
@@ -2056,7 +2148,6 @@ export function workbenchReducer(
             }
           : state.expandedProjectIds,
         activeSessionDetail: normalizedDetail,
-        activeSnapshot: normalizedSnapshot,
         sessionDetailsById: cacheSessionDetail(
           state.sessionDetailsById,
           normalizedDetail,
@@ -2093,7 +2184,6 @@ export function workbenchReducer(
         ),
         taskIntent: sessionTaskIntent(state, action.detail.session.sessionId),
         commandFeedback: action.feedback ?? state.commandFeedback,
-        pendingRun,
         runLifecycle: preservePendingRun
           ? runLifecycleFromPendingRun(pendingRun)
           : runLifecycleFromSnapshot(normalizedSnapshot, {
@@ -2407,9 +2497,10 @@ export function workbenchReducer(
         ? selectedSnapshotFromDetail(detail, undefined, undefined)
         : undefined;
       const latestTurn = detail?.turns.at(-1);
+      const currentPendingRun = getPendingRunState(state.runLifecycle);
       const pendingRun =
-        state.pendingRun?.sessionId === action.sessionId
-          ? state.pendingRun
+        currentPendingRun?.sessionId === action.sessionId
+          ? currentPendingRun
           : undefined;
       return {
         ...state,
@@ -2423,7 +2514,6 @@ export function workbenchReducer(
           "run",
         selectedProjectId: detail?.session.projectId,
         activeSessionDetail: detail,
-        activeSnapshot: snapshot,
         selectedPattern:
           snapshot?.pattern ?? session?.latestPattern ?? state.selectedPattern,
         selectedModeId: preserveComposerMode(
@@ -2443,7 +2533,6 @@ export function workbenchReducer(
         selectedArtifactId: undefined,
         detailDrawer: undefined,
         artifactPanelOpen: false,
-        pendingRun,
         runLifecycle: snapshot
           ? runLifecycleFromSnapshot(snapshot, {
               previous: state.runLifecycle,
@@ -2456,8 +2545,10 @@ export function workbenchReducer(
     }
 
     case "SELECT_TURN": {
-      const pendingRunLatency = state.pendingRun?.runId === action.runId
-        ? state.pendingRun.latency
+      const currentPendingRun = getPendingRunState(state.runLifecycle);
+      const currentActiveSnapshot = getActiveSnapshot(state.runLifecycle);
+      const pendingRunLatency = currentPendingRun?.runId === action.runId
+        ? currentPendingRun.latency
         : undefined;
       const snapshot = mergeStateSnapshot(
         undefined,
@@ -2471,7 +2562,6 @@ export function workbenchReducer(
       return {
         ...state,
         selectedTurnRunId: action.runId,
-        activeSnapshot: snapshot ?? state.activeSnapshot,
         runLifecycle: snapshot
           ? runLifecycleFromSnapshot(snapshot, {
               previous: state.runLifecycle,
@@ -2488,7 +2578,6 @@ export function workbenchReducer(
           snapshot?.topology.nodes[0]?.id ??
           state.selectedNodeId,
         selectedBeatId: snapshot?.events.at(-1)?.id ?? state.selectedBeatId,
-        pendingRun: snapshot ? undefined : state.pendingRun,
         pendingPlanDecisionResolution: snapshot
           ? undefined
           : state.pendingPlanDecisionResolution,
@@ -2496,8 +2585,10 @@ export function workbenchReducer(
     }
 
     case "REQUEST_RUN_CANCEL": {
+      const currentActiveSnapshot = getActiveSnapshot(state.runLifecycle);
+      const currentPendingRun = getPendingRunState(state.runLifecycle);
       const activeSnapshot = markSnapshotCancelRequested(
-        state.activeSnapshot,
+        currentActiveSnapshot,
         action.runId,
         action.reason,
         action.updatedAt,
@@ -2524,21 +2615,14 @@ export function workbenchReducer(
         sessionDetailsById: activeSessionDetail
           ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
           : state.sessionDetailsById,
-        activeSnapshot,
-        pendingRun:
-          state.pendingRun &&
-          ((activeSnapshot?.sessionId && state.pendingRun.sessionId === activeSnapshot.sessionId) ||
-            (!activeSnapshot?.sessionId && state.pendingRun.sessionId === state.selectedSessionId))
-            ? undefined
-            : state.pendingRun,
         runLifecycle: runLifecycleFromSnapshot(activeSnapshot, {
           previous: state.runLifecycle,
           pendingRun:
-            state.pendingRun &&
-            ((activeSnapshot?.sessionId && state.pendingRun.sessionId === activeSnapshot.sessionId) ||
-              (!activeSnapshot?.sessionId && state.pendingRun.sessionId === state.selectedSessionId))
+            currentPendingRun &&
+            ((activeSnapshot?.sessionId && currentPendingRun.sessionId === activeSnapshot.sessionId) ||
+              (!activeSnapshot?.sessionId && currentPendingRun.sessionId === state.selectedSessionId))
               ? undefined
-              : state.pendingRun,
+              : currentPendingRun,
           fallbackSessionId: state.selectedSessionId,
         }),
         isLoading: false,
@@ -2548,24 +2632,26 @@ export function workbenchReducer(
     }
 
     case "APPLY_RUN_STREAM": {
+      const currentActiveSnapshot = getActiveSnapshot(state.runLifecycle);
+      const currentPendingRun = getPendingRunState(state.runLifecycle);
       const streamSessionId = action.stream.snapshot?.sessionId ?? action.stream.sessionId;
       const activeSessionId =
         state.activeSessionDetail?.session.sessionId ??
         state.selectedSessionId ??
-        state.activeSnapshot?.sessionId;
+        currentActiveSnapshot?.sessionId;
       const streamMatchesActiveSession =
         !streamSessionId ||
         !activeSessionId ||
         streamSessionId === activeSessionId;
       const streamReferencesActiveRun =
-        state.activeSnapshot?.runId === action.stream.runId ||
+        currentActiveSnapshot?.runId === action.stream.runId ||
         state.selectedTurnRunId === action.stream.runId ||
         (state.activeSessionDetail?.turns.some(
           (turn) => turn.runId === action.stream.runId,
         ) ??
           false);
       const matchesPendingRunBeforeSnapshot = streamMatchesPendingRun(
-        state.pendingRun,
+        currentPendingRun,
         action.stream,
         action.stream.snapshot,
       );
@@ -2581,14 +2667,14 @@ export function workbenchReducer(
       const activeSnapshot = streamBelongsToActiveTurn
         ? markDesktopLatencyForStream(
             mergeRunStreamSnapshot(
-              state.activeSnapshot ??
-                createPendingRunSnapshot(state.pendingRun, action.stream),
+              currentActiveSnapshot ??
+                createPendingRunSnapshot(currentPendingRun, action.stream),
               action.stream,
             ),
             action.stream,
             action.receivedAt,
           )
-        : state.activeSnapshot;
+        : currentActiveSnapshot;
       const streamSnapshot = streamBelongsToActiveTurn
         ? activeSnapshot
         : action.stream.snapshot
@@ -2611,13 +2697,13 @@ export function workbenchReducer(
         action.stream.status === "succeeded" ||
         action.stream.status === "failed";
       const matchesPendingRun = streamMatchesPendingRun(
-        state.pendingRun,
+        currentPendingRun,
         action.stream,
         streamSnapshot,
       );
       const pendingRun = matchesPendingRun
-        ? markPendingRunLatencyForStream(state.pendingRun, action.stream, action.receivedAt)
-        : state.pendingRun;
+        ? markPendingRunLatencyForStream(currentPendingRun, action.stream, action.receivedAt)
+        : currentPendingRun;
       const shouldClearPendingRun = shouldClearPendingRunForStream(
         matchesPendingRun,
         pendingRun,
@@ -2659,7 +2745,6 @@ export function workbenchReducer(
           }
           return next;
         })(),
-        activeSnapshot,
         selectedTurnRunId:
           matchesPendingRun
             ? action.stream.runId
@@ -2668,7 +2753,6 @@ export function workbenchReducer(
         selectedBeatId: streamBelongsToActiveTurn
           ? (action.stream.events.at(-1)?.id ?? state.selectedBeatId)
           : state.selectedBeatId,
-        pendingRun: nextPendingRun,
         runLifecycle,
         pendingPlanDecisionResolution: shouldClearPendingRun
           ? undefined
@@ -2697,14 +2781,13 @@ export function workbenchReducer(
 
     case "BEGIN_RUN_RESUME": {
       const activeSnapshot = markSnapshotResuming(
-        state.activeSnapshot,
+        getActiveSnapshot(state.runLifecycle),
         action.runId,
         action.approvedActionIds,
         action.updatedAt,
       );
       return {
         ...state,
-        activeSnapshot,
         runLifecycle: runLifecycleFromSnapshot(activeSnapshot, {
           previous: state.runLifecycle,
           fallbackSessionId: state.selectedSessionId,
@@ -2812,11 +2895,6 @@ export function workbenchReducer(
     case "BEGIN_RUN_REQUEST": {
       return {
         ...state,
-        pendingRun: {
-          sessionId: action.sessionId,
-          prompt: action.prompt,
-          createdAt: action.createdAt,
-        },
         runLifecycle: {
           stage: "pending",
           sessionId: action.sessionId,
@@ -2832,20 +2910,17 @@ export function workbenchReducer(
     }
 
     case "ATTACH_PENDING_RUN_HANDLE": {
+      const pendingRun = getPendingRunState(state.runLifecycle);
       if (
-        !state.pendingRun ||
-        state.pendingRun.sessionId !== action.sessionId ||
-        state.pendingRun.prompt !== action.prompt
+        !pendingRun ||
+        pendingRun.sessionId !== action.sessionId ||
+        pendingRun.prompt !== action.prompt
       ) {
         return state;
       }
       return {
         ...state,
         selectedTurnRunId: action.runId,
-        pendingRun: {
-          ...state.pendingRun,
-          runId: action.runId,
-        },
         runLifecycle:
           state.runLifecycle.stage === "pending"
             ? { ...state.runLifecycle, runId: action.runId }
@@ -2860,7 +2935,7 @@ export function workbenchReducer(
             prompt: action.implementationPrompt,
             createdAt: action.createdAt,
           }
-        : state.pendingRun;
+        : getPendingRunState(state.runLifecycle);
       const runLifecycle = action.status === "accepted" && action.implementationPrompt
         ? {
             stage: "pending" as const,
@@ -2871,7 +2946,6 @@ export function workbenchReducer(
         : state.runLifecycle;
       return {
         ...state,
-        pendingRun,
         runLifecycle,
         pendingPlanDecisionResolution: {
           sessionId: action.sessionId,
@@ -2902,7 +2976,6 @@ export function workbenchReducer(
       const wasAccepted = pendingResolution.status === "accepted";
       return {
         ...state,
-        pendingRun: wasAccepted ? undefined : state.pendingRun,
         runLifecycle: wasAccepted ? { stage: "idle" } : state.runLifecycle,
         pendingPlanDecisionResolution: undefined,
         isLoading: wasAccepted ? false : state.isLoading,
@@ -2912,18 +2985,15 @@ export function workbenchReducer(
     }
 
     case "SET_PENDING_RUN_PROGRESS":
+      const pendingRun = getPendingRunState(state.runLifecycle);
       if (
-        !state.pendingRun ||
-        state.pendingRun.sessionId !== action.sessionId
+        !pendingRun ||
+        pendingRun.sessionId !== action.sessionId
       ) {
         return state;
       }
       return {
         ...state,
-        pendingRun: {
-          ...state.pendingRun,
-          progressText: action.progressText,
-        },
         runLifecycle:
           state.runLifecycle.stage === "pending"
             ? { ...state.runLifecycle, progressText: action.progressText }
@@ -2934,7 +3004,6 @@ export function workbenchReducer(
       return {
         ...state,
         isLoading: action.loading,
-        pendingRun: action.loading ? state.pendingRun : undefined,
         runLifecycle: action.loading ? state.runLifecycle : { stage: "idle" },
         pendingPlanDecisionResolution: action.loading
           ? state.pendingPlanDecisionResolution

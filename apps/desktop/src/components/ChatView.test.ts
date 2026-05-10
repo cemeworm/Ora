@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { deriveProjectedGateTrays, getActiveChatProvider, getChatInputContextState } from "./ChatView";
+import {
+  deriveCurrentComposerPlanSteps,
+  deriveProjectedGateTrays,
+  getActiveChatProvider,
+  getChatInputContextState,
+} from "./ChatView";
 
 describe("chat view provider selection", () => {
   it("uses the selected provider when it is available", () => {
@@ -134,6 +139,50 @@ describe("chat view projected gate trays", () => {
   });
 });
 
+describe("chat view composer plan steps", () => {
+  it("does not reuse a completed historical plan when the active snapshot has none", () => {
+    const historicalPlan = [
+      { step: "搜索 DeepSeek-v4 API 定价概览", status: "completed" },
+      { step: "搜索 DeepSeek-v4 最新价格详情与对比", status: "completed" },
+      { step: "获取官方或权威来源的完整价格信息", status: "completed" },
+      { step: "整合结果并回答用户", status: "completed" },
+    ] as const;
+
+    expect(deriveCurrentComposerPlanSteps({
+      activeSnapshot: { planList: [] } as any,
+      runInteractionState: runInteractionState("running"),
+    })).toEqual([]);
+    expect(historicalPlan).toHaveLength(4);
+  });
+
+  it("uses the active running snapshot plan", () => {
+    const plan = [
+      { id: "step-1", step: "搜索网页", status: "in_progress" },
+      { id: "step-2", step: "整理结果", status: "pending" },
+    ] as const;
+
+    expect(deriveCurrentComposerPlanSteps({
+      activeSnapshot: { planList: plan } as any,
+      runInteractionState: runInteractionState("running"),
+    })).toEqual([
+      { step: "搜索网页", status: "in_progress" },
+      { step: "整理结果", status: "pending" },
+    ]);
+  });
+
+  it("hides completed active snapshot plans after the run is done", () => {
+    const plan = [
+      { id: "step-1", step: "搜索网页", status: "completed" },
+      { id: "step-2", step: "整理结果", status: "completed" },
+    ] as const;
+
+    expect(deriveCurrentComposerPlanSteps({
+      activeSnapshot: { planList: plan } as any,
+      runInteractionState: runInteractionState("done"),
+    })).toEqual([]);
+  });
+});
+
 function contextState(totalTokens: number) {
   return {
     activeTokenUsage: {
@@ -146,5 +195,12 @@ function contextState(totalTokens: number) {
     compactedHistory: [],
     compactedThroughTurnIndex: 0,
     compactionCount: 0,
+  };
+}
+
+function runInteractionState(status: "running" | "done") {
+  return {
+    status,
+    isProcessing: status === "running",
   };
 }

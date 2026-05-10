@@ -95,9 +95,14 @@ describe("sidebar session status", () => {
         selectedSessionId: "session-1",
         selectedTurnRunId: "run-1",
         activeSessionDetail: undefined,
-        activeSnapshot: activeSnapshot({ status: "succeeded" }),
-        pendingRun: undefined,
-        runLifecycle: { stage: "idle" },
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-1",
+          sessionId: "session-1",
+          prompt: "test",
+          createdAt: 1,
+          snapshot: activeSnapshot({ status: "succeeded" }),
+        },
       }),
     ).toBe("done");
   });
@@ -111,9 +116,14 @@ describe("sidebar session status", () => {
         selectedSessionId: "session-1",
         selectedTurnRunId: "run-1",
         activeSessionDetail: undefined,
-        activeSnapshot: activeSnapshot({ status: "succeeded" }),
-        pendingRun: undefined,
-        runLifecycle: { stage: "idle" },
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-1",
+          sessionId: "session-1",
+          prompt: "test",
+          createdAt: 1,
+          snapshot: activeSnapshot({ status: "succeeded" }),
+        },
       }),
     ).toBe("running");
   });

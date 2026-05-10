@@ -67,7 +67,6 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   onSubmitFeedback,
 }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
-  const timelineItems = turn?.timelineItems ?? legacyTimelineItems(processSteps);
   const planList = turn?.planList ?? [];
   const clarificationExchanges = turn?.clarificationExchanges ?? [];
   const agentMessages = turn?.agentMessages ?? [];
@@ -81,11 +80,17 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   );
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const hasTimeline = timelineItems.length > 0;
-  const hasStageTranscript = stageTranscriptMessages.length > 0;
   const bodyContent = shouldSuppressClarificationBody(content, clarificationExchanges)
     ? ""
     : content;
+  const timelineItems = visibleTimelineItems(
+    turn?.timelineItems ?? legacyTimelineItems(processSteps),
+    turn,
+    bodyContent,
+    isPlaceholder,
+  );
+  const hasTimeline = timelineItems.length > 0;
+  const hasStageTranscript = stageTranscriptMessages.length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
   const canCopyContent = Boolean(
@@ -399,6 +404,51 @@ function shouldShowThinkingIndicator({
     return true;
   }
   return false;
+}
+
+function visibleTimelineItems(
+  items: TurnTimelineItem[],
+  turn: AssistantTurnAttachment | undefined,
+  bodyContent: string,
+  isPlaceholder: boolean,
+): TurnTimelineItem[] {
+  if (
+    turn?.status === "running" ||
+    isPlaceholder ||
+    !bodyContent.trim() ||
+    items.some((item) => item.kind === "assistant_text" || item.kind === "final_text")
+  ) {
+    return items;
+  }
+
+  const latestNonStatusIndex = findLatestNonStatusTimelineIndex(items);
+  return items.filter((item, index) => (
+    item.kind !== "status_group" ||
+    item.status !== "complete" ||
+    !isTrivialCompletedStatusGroup(item) ||
+    index < latestNonStatusIndex
+  ));
+}
+
+function findLatestNonStatusTimelineIndex(items: TurnTimelineItem[]): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind !== "status_group") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isTrivialCompletedStatusGroup(
+  item: Extract<TurnTimelineItem, { kind: "status_group" }>,
+): boolean {
+  const normalizedSummary = item.summary.trim();
+  if (normalizedSummary !== "已完成") {
+    return false;
+  }
+  return item.steps.every((step) =>
+    [step.label, step.detail].every((text) => !text.trim() || text.trim() === "已完成"),
+  );
 }
 
 function ThinkingIndicator() {

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useProviderSetup } from "../hooks/useProviderSetup";
-import { useWorkbench } from "../lib/state";
+import { getActiveSnapshot, useWorkbench } from "../lib/state";
 import {
   buildProviderConfigFromDraft,
   canEditBaseUrl,
@@ -568,7 +568,8 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     ? new Date(selectedChannel.createdAt).toLocaleString()
     : "未启动";
 
-  const memoryRecords = state.activeSnapshot?.memory ?? [];
+  const activeSnapshot = getActiveSnapshot(state.runLifecycle);
+  const memoryRecords = activeSnapshot?.memory ?? [];
   const longTermFacts = longTermMemory?.facts ?? [];
   const longTermSections = longTermMemory
     ? [
@@ -594,13 +595,13 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
     for (const record of memoryRecords) {
       namespaces.add(record.namespace.join("/"));
     }
-    for (const profile of state.activeSnapshot?.profiles ?? []) {
+    for (const profile of activeSnapshot?.profiles ?? []) {
       for (const namespace of profile.memoryNamespaces) {
         namespaces.add(`${namespace}/${profile.id}`);
       }
     }
     return [...namespaces].sort((left, right) => left.localeCompare(right));
-  }, [memoryRecords, state.activeSnapshot?.profiles]);
+  }, [memoryRecords, activeSnapshot?.profiles]);
 
   useEffect(() => {
     if (!open || activeSection !== "memory") {
@@ -2097,7 +2098,7 @@ export function SettingsView({ open, onOpenChange }: SettingsViewProps) {
                           Selected run
                         </p>
                         <p className="mt-2 break-all font-mono text-xs text-bench-900">
-                          {state.activeSnapshot?.runId ??
+                          {activeSnapshot?.runId ??
                             "No active run selected"}
                         </p>
                       </div>

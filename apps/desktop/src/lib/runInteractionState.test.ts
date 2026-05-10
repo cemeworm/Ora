@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { deriveRunInteractionState } from "./runInteractionState";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
-import type { PendingRunState } from "./state";
+import type { PendingRunState, RunLifecycle } from "./state";
+import type { DeriveRunInteractionStateParams } from "./runInteractionState";
 
 function sessionSummary(
   overrides: Partial<OraSessionSummary> = {},
@@ -111,11 +112,52 @@ function pendingRun(
   };
 }
 
+function lifecycleFromSnapshot(snapshot: OraStateSnapshot): RunLifecycle {
+  return {
+    stage: snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "cancelled"
+      ? "settled"
+      : "streaming",
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId ?? "session-1",
+    prompt: snapshot.input.prompt,
+    createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+    snapshot,
+  };
+}
+
+function lifecycleFromPendingRun(run: PendingRunState): RunLifecycle {
+  return {
+    stage: "pending",
+    sessionId: run.sessionId,
+    runId: run.runId,
+    prompt: run.prompt,
+    createdAt: run.createdAt,
+    progressText: run.progressText,
+    latency: run.latency,
+  };
+}
+
+function derive(params: Omit<DeriveRunInteractionStateParams, "runLifecycle"> & {
+  runLifecycle?: RunLifecycle;
+  activeSnapshot?: OraStateSnapshot;
+  pendingRun?: PendingRunState;
+} = {}) {
+  const { activeSnapshot, pendingRun, runLifecycle, ...rest } = params;
+  return deriveRunInteractionState({
+    ...rest,
+    runLifecycle:
+      runLifecycle ??
+      (pendingRun ? lifecycleFromPendingRun(pendingRun) : undefined) ??
+      (activeSnapshot ? lifecycleFromSnapshot(activeSnapshot) : undefined) ??
+      { stage: "idle" },
+  });
+}
+
 describe("deriveRunInteractionState", () => {
   // ---- Priority level tests ----
 
   it("pendingRun wins over all other sources", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
@@ -136,7 +178,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("pendingRun only matches its own session", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ sessionId: "session-2", status: "running" }),
       pendingRun: pendingRun({ sessionId: "session-1" }),
@@ -146,7 +188,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("activeSnapshot wins over activeSessionDetail", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
@@ -163,7 +205,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("activeSnapshot with different sessionId does not override session summary", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ sessionId: "session-2", status: "succeeded" }),
       activeSnapshot: activeSnapshot({
@@ -177,7 +219,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("activeSessionDetail turn wins over session summary", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
@@ -192,7 +234,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("selected turn is preferred over latest turn", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary(),
       activeSessionDetail: activeDetail({
@@ -211,7 +253,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("latest turn used when no selectedTurnRunId", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary(),
       activeSessionDetail: activeDetail({
@@ -229,7 +271,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("falls back to session summary when nothing else available", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
     });
@@ -243,7 +285,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("returns idle when no data at all", () => {
-    const result = deriveRunInteractionState({});
+    const result = derive({});
 
     expect(result).toMatchObject({
       status: "idle",
@@ -258,7 +300,7 @@ describe("deriveRunInteractionState", () => {
   // ---- Status mapping tests ----
 
   it("maps snapshot queued to interaction queued", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "queued" }),
     });
@@ -266,7 +308,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("maps snapshot running to interaction running", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "running" }),
     });
@@ -274,7 +316,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("maps snapshot interrupted to interaction paused", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "interrupted" }),
     });
@@ -282,7 +324,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("maps snapshot cancelled to interaction cancelled", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "cancelled" }),
     });
@@ -290,7 +332,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("maps snapshot succeeded to interaction done", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "succeeded" }),
     });
@@ -298,7 +340,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("maps snapshot failed to interaction failed", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ status: "failed" }),
     });
@@ -308,7 +350,7 @@ describe("deriveRunInteractionState", () => {
   // ---- Attention / gate tests ----
 
   it("attention needs_approval produces approval gate", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -333,7 +375,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("attention needs_clarification produces clarification gate", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -354,7 +396,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("attention needs_plan_decision produces decision_needed", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -376,7 +418,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("raw pending approval without projection attention is not actionable", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -408,7 +450,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("raw pending clarification without projection attention is not actionable", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({
         status: "running",
@@ -441,7 +483,7 @@ describe("deriveRunInteractionState", () => {
   // ---- Session detail authority tests ----
 
   it("active detail turn running overrides stale session summary", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
@@ -457,7 +499,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("active detail session status used when no turns exist", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
@@ -473,7 +515,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("selected session differs from active detail, falls back to session summary", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-2",
       sessionSummary: sessionSummary({
         sessionId: "session-2",
@@ -494,7 +536,7 @@ describe("deriveRunInteractionState", () => {
   // ---- Edge cases & adversarial tests ----
 
   it("snapshot running with stale session summary succeeded → processing true", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSnapshot: activeSnapshot({ status: "running" }),
@@ -505,7 +547,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("session summary running with no higher authority → processing true", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "running" }),
     });
@@ -519,7 +561,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("attention paused on turn produces paused status", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSessionDetail: activeDetail({
         turns: [
@@ -588,7 +630,7 @@ describe("deriveRunInteractionState", () => {
                 }
               : undefined;
 
-      const result = deriveRunInteractionState({
+      const result = derive({
         selectedSessionId: "session-1",
         activeSnapshot: activeSnapshot({
           status: snapshotStatus,
@@ -605,7 +647,7 @@ describe("deriveRunInteractionState", () => {
   // ---- turnSnapshots authority tests ----
 
   it("selected turn snapshot wins over activeSessionDetail when activeSnapshot absent", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
@@ -626,7 +668,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("activeSnapshot wins over selected turn snapshot", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       activeSnapshot: activeSnapshot({ runId: "run-2", status: "succeeded" }),
       turnSnapshots: {
@@ -643,7 +685,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("turn snapshot from different session ignored", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ sessionId: "session-1", status: "succeeded" }),
       turnSnapshots: {
@@ -659,7 +701,7 @@ describe("deriveRunInteractionState", () => {
   });
 
   it("turn snapshot without selectedTurnRunId ignored", () => {
-    const result = deriveRunInteractionState({
+    const result = derive({
       selectedSessionId: "session-1",
       sessionSummary: sessionSummary({ status: "succeeded" }),
       activeSessionDetail: activeDetail({
