@@ -117,6 +117,7 @@ export interface LiveMessageDeltaBufferEntry {
   nodeId?: string;
   createdAt: number;
   updatedAt: number;
+  latestSeq: number;
 }
 
 export type LiveMessageDeltaBuffer = Record<string, LiveMessageDeltaBufferEntry>;
@@ -168,7 +169,12 @@ function runLifecycleFromSnapshot(
     params.previous.runId === snapshot.runId
       ? params.previous.snapshot
       : undefined;
-  const lifecycleSnapshot = mergeStateSnapshot(previousSnapshot, snapshot) ?? snapshot;
+  const mergedSnapshot = mergeStateSnapshot(previousSnapshot, snapshot) ?? snapshot;
+  const fallbackSessionId = params.pendingRun?.sessionId ?? params.fallbackSessionId;
+  const lifecycleSnapshot =
+    !mergedSnapshot.sessionId && fallbackSessionId
+      ? { ...mergedSnapshot, sessionId: fallbackSessionId }
+      : mergedSnapshot;
   const sessionId = lifecycleSnapshot.sessionId ?? params.pendingRun?.sessionId ?? params.fallbackSessionId;
   if (!sessionId) {
     return params.previous ?? { stage: "idle" };
@@ -1361,6 +1367,9 @@ function applyStreamToLiveMessageDeltaBuffer(
     }
     const key = liveMessageDeltaBufferKey(stream.runId, messageId);
     const existing = next[key];
+    if (existing && event.seq <= existing.latestSeq) {
+      continue;
+    }
     const projection = mergeAssistantMessageTextProjection(
       existing ? { text: existing.content } : undefined,
       event.payload,
@@ -1381,6 +1390,7 @@ function applyStreamToLiveMessageDeltaBuffer(
       nodeId: event.nodeId ?? existing?.nodeId,
       createdAt: existing?.createdAt ?? event.createdAt,
       updatedAt: event.createdAt,
+      latestSeq: event.seq,
     };
   }
   return pruneLiveMessageDeltaBuffer(next, stream);

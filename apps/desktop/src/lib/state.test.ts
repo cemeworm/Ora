@@ -1362,6 +1362,52 @@ describe("desktop workbench state", () => {
     expect(settled.liveMessageDeltaBuffer).toEqual({});
   });
 
+  it("does not append duplicate live message delta events by seq", () => {
+    const sessionId = "session-live-buffer-duplicate";
+    const prompt = "介绍 Ora";
+    const runId = "run-live-buffer-duplicate";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt, createdAt: 100 }),
+      isLoading: true,
+    };
+    const stream = {
+      runId,
+      sessionId,
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: "Hi", delta: "Hi", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterFirst = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 125,
+    });
+    const afterDuplicate = workbenchReducer(afterFirst, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 126,
+    });
+
+    const entry = Object.values(afterDuplicate.liveMessageDeltaBuffer)[0];
+    expect(entry?.content).toBe("Hi");
+    expect(getActiveSnapshot(afterDuplicate.runLifecycle)?.events).toHaveLength(1);
+  });
+
   it("treats explicit content-only assistant message events as cumulative replacements", () => {
     const sessionId = "session-live-buffer-cumulative";
     const prompt = "介绍 Ora";
@@ -1585,6 +1631,55 @@ describe("desktop workbench state", () => {
 
     expect(getPendingRunState(state.runLifecycle)).toBeUndefined();
     expect(state.isLoading).toBe(false);
+  });
+
+  it("keeps a first-turn snapshot renderable before the new session transcript hydrates", () => {
+    const sessionId = "session-first-turn-snapshot-window";
+    const runId = "run-first-turn-snapshot-window";
+    const prompt = "写一段手稿。";
+    const createdAt = 1_714_000_000_100;
+    const session = sessionSummary(sessionId);
+    const started = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      activeSessionDetail: {
+        session,
+        turns: [],
+        transcript: [],
+        latestSnapshot: undefined,
+      },
+    }, {
+      type: "BEGIN_RUN_REQUEST",
+      sessionId,
+      prompt,
+      createdAt,
+    });
+    const withHandle = workbenchReducer(started, {
+      type: "ATTACH_PENDING_RUN_HANDLE",
+      sessionId,
+      prompt,
+      runId,
+    });
+    const snapshotWithoutSessionId = {
+      ...testSnapshot({ runId, updatedAt: createdAt + 100 }),
+      sessionId: undefined,
+      input: { prompt, createdAt, context: {} },
+    } as unknown as OraStateSnapshot;
+
+    const selected = workbenchReducer(withHandle, {
+      type: "SELECT_TURN",
+      runId,
+      snapshot: snapshotWithoutSessionId,
+    });
+
+    expect(getPendingRunState(selected.runLifecycle)).toBeUndefined();
+    expect(getActiveSnapshot(selected.runLifecycle)?.sessionId).toBe(sessionId);
+    expect(deriveRenderableTurnSnapshots({
+      detail: selected.activeSessionDetail,
+      activeSnapshot: getActiveSnapshot(selected.runLifecycle),
+      turnSnapshots: {},
+      selectedSessionId: sessionId,
+    })[runId]?.input.prompt).toBe(prompt);
   });
 
   it("does not match pre-handle streams from another session with the same prompt", () => {
