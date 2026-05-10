@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import {
   deriveRenderableTurnSnapshots,
+  getActiveSnapshot,
+  getPendingRunState,
   initialWorkbenchState,
   mergeRunStreamSnapshot,
   mergeStateSnapshot,
@@ -223,6 +225,14 @@ describe("desktop workbench state", () => {
       selectedSessionId: currentSession.sessionId,
       selectedTurnRunId: currentSnapshot.runId,
       activeSnapshot: currentSnapshot,
+      runLifecycle: {
+        stage: "streaming",
+        runId: currentSnapshot.runId,
+        sessionId: currentSnapshot.sessionId!,
+        prompt: currentSnapshot.input.prompt,
+        createdAt: currentSnapshot.input.createdAt ?? currentSnapshot.updatedAt,
+        snapshot: currentSnapshot,
+      },
       activeSessionDetail: {
         session: currentSession,
         turns: [{ runId: currentSnapshot.runId } as unknown as NonNullable<WorkbenchState["activeSessionDetail"]>["turns"][number]],
@@ -249,6 +259,7 @@ describe("desktop workbench state", () => {
     expect(next.selectedSessionId).toBe("session-current");
     expect(next.selectedTurnRunId).toBe("run-current");
     expect(next.activeSnapshot?.runId).toBe("run-current");
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-current");
     expect(next.activeSessionDetail?.session.sessionId).toBe("session-current");
     expect(next.promptText).toBe("draft for current");
     expect(next.sessionDetailsById["session-background"]?.latestSnapshot?.runId).toBe("run-background");
@@ -304,6 +315,8 @@ describe("desktop workbench state", () => {
     expect(next.selectedSessionId).toBe("session-current");
     expect(next.selectedTurnRunId).toBe("run-current-new");
     expect(next.activeSnapshot?.runId).toBe("run-current-new");
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-current-new");
     expect(next.activeSessionDetail?.session.status).toBe("succeeded");
   });
 
@@ -349,6 +362,7 @@ describe("desktop workbench state", () => {
     expect(next.selectedSessionId).toBe("session-summary");
     expect(next.selectedTurnRunId).toBe("run-summary");
     expect(next.activeSnapshot).toBeUndefined();
+    expect(next.runLifecycle.stage).toBe("idle");
     expect(next.activeSessionDetail?.latestSnapshot).toBeUndefined();
     expect(next.selectedModeId).toBe(SINGLE_AGENT_MODE_ID);
     expect(next.selectedProviderId).toBe("local-smoke");
@@ -411,6 +425,7 @@ describe("desktop workbench state", () => {
     });
 
     expect(next.selectedModeId).toBe(CODE_DEVELOPMENT_MODE_ID);
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-history");
   });
 
   it("keeps unsent composer text scoped to the selected session", () => {
@@ -888,6 +903,11 @@ describe("desktop workbench state", () => {
       "desktop:firstMessageDeltaAt",
       "desktop:firstNonProgressAssistantTextAt",
     ]);
+    expect(getActiveSnapshot(next.runLifecycle)?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual([
+      "desktop:firstRunStreamReceivedAt",
+      "desktop:firstMessageDeltaAt",
+      "desktop:firstNonProgressAssistantTextAt",
+    ]);
   });
 
   it("preserves early stream latency while the run state snapshot is still loading", () => {
@@ -947,6 +967,12 @@ describe("desktop workbench state", () => {
       source: "desktop",
       detail: { eventType: "run.started", eventCount: 1 },
     }]);
+    expect(getActiveSnapshot(selected.runLifecycle)?.latency?.marks).toEqual([{
+      name: "firstRunStreamReceivedAt",
+      at: 150,
+      source: "desktop",
+      detail: { eventType: "run.started", eventCount: 1 },
+    }]);
   });
 
   it("shows pending run stream text before the run handle is attached", () => {
@@ -994,6 +1020,8 @@ describe("desktop workbench state", () => {
     expect(afterStream.activeSnapshot?.sessionId).toBe(sessionId);
     expect(afterStream.activeSnapshot?.input.prompt).toBe(prompt);
     expect(afterStream.activeSnapshot?.events.map((event) => event.type)).toEqual(["message.delta"]);
+    expect(afterStream.runLifecycle.stage).toBe("streaming");
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.events.map((event) => event.type)).toEqual(["message.delta"]);
     expect(afterStream.pendingRun?.latency?.marks.map((mark) => mark.name)).toEqual([
       "firstRunStreamReceivedAt",
       "firstMessageDeltaAt",
@@ -1073,6 +1101,8 @@ describe("desktop workbench state", () => {
 
     expect(afterStream.activeSnapshot?.runId).toBe(runId);
     expect(afterStream.pendingRun).toBeUndefined();
+    expect(getPendingRunState(afterStream.runLifecycle)).toBeUndefined();
+    expect(getActiveSnapshot(afterStream.runLifecycle)?.runId).toBe(runId);
     expect(afterStream.activeSnapshot?.latency?.marks).toEqual([{
       name: "firstRunStreamReceivedAt",
       at: 120,
@@ -1261,6 +1291,7 @@ describe("desktop workbench state", () => {
 
     expect(state.activeSnapshot?.agentMessages).toHaveLength(1);
     expect(state.activeSnapshot?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
+    expect(getActiveSnapshot(state.runLifecycle)?.agentMessages[0]?.transcript?.speakerLabel).toBe("正方主辩");
   });
 
   it("hydrates resume results over stale interrupted session summaries", () => {
@@ -1319,6 +1350,8 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.session.attention).toEqual(snapshot.attention);
     expect(next.sessions[0]?.attention).toEqual(snapshot.attention);
     expect(next.activeSnapshot?.pendingClarifications).toEqual([]);
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.pendingClarifications).toEqual([]);
   });
 
   it("normalizes stale running attention away from a terminal hydrated snapshot", () => {
@@ -1369,6 +1402,8 @@ describe("desktop workbench state", () => {
     expect(next.sessions[0]?.status).toBe("succeeded");
     expect(next.sessions[0]?.attention?.kind).toBe("idle");
     expect(next.activeSnapshot?.attention?.kind).toBe("idle");
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("idle");
   });
 
   it("optimistically marks a running turn cancelled before the runtime responds", () => {
@@ -1417,9 +1452,53 @@ describe("desktop workbench state", () => {
     expect(next.activeSessionDetail?.turns[0]?.status).toBe("cancelled");
     expect(next.sessions[0]?.status).toBe("cancelled");
     expect(next.pendingRun).toBeUndefined();
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("cancelled");
     expect(next.isLoading).toBe(false);
     expect(next.busyCommand).toBeUndefined();
     expect(next.commandFeedback).toBe("Stop requested.");
+  });
+
+  it("keeps runLifecycle in sync when resuming a paused active run", () => {
+    const snapshot = testSnapshot({
+      runId: "run-resume",
+      sessionId: "session-resume",
+      status: "interrupted",
+      pendingApprovals: ["approval-1"],
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: "run-resume",
+        pendingActionIds: ["approval-1"],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+
+    const next = workbenchReducer({
+      ...initialWorkbenchState,
+      selectedSessionId: "session-resume",
+      selectedTurnRunId: snapshot.runId,
+      activeSnapshot: snapshot,
+      runLifecycle: {
+        stage: "settled",
+        runId: snapshot.runId,
+        sessionId: "session-resume",
+        prompt: snapshot.input.prompt,
+        createdAt: snapshot.input.createdAt ?? snapshot.updatedAt,
+        snapshot,
+      },
+    }, {
+      type: "BEGIN_RUN_RESUME",
+      runId: snapshot.runId,
+      approvedActionIds: ["approval-1"],
+      updatedAt: snapshot.updatedAt + 10,
+    });
+
+    expect(next.activeSnapshot?.status).toBe("running");
+    expect(next.runLifecycle.stage).toBe("streaming");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("running");
+    expect(getActiveSnapshot(next.runLifecycle)?.pendingApprovals).toEqual([]);
   });
 
   it("does not merge same-run snapshots from different sessions", () => {
