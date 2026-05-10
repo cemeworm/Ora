@@ -67,6 +67,7 @@ describe("buildAgentPromptContext", () => {
       "system_agent_override",
       "agent_system_prompt",
       "agent_profile",
+      "operating_protocol",
       "tool_protocol",
       "available_skills",
       "skills",
@@ -77,6 +78,8 @@ describe("buildAgentPromptContext", () => {
       "memory_context",
     ]);
     expect(context.stablePrefix).toContain("Custom Agent Persona: research-pro");
+    expect(context.stablePrefix).toContain("Ora operating protocol:");
+    expect(context.stablePrefix).toContain("Clarify first when missing or ambiguous requirements");
     expect(context.stablePrefix).toContain("Workspace tool protocol:");
     expect(context.stablePrefix).toContain("<available_skills>");
     expect(context.stablePrefix).not.toContain("Ora project workspace context:");
@@ -87,6 +90,8 @@ describe("buildAgentPromptContext", () => {
     expect(context.system).toContain("Role:\nGather focused evidence and return concise findings.");
     expect(context.system).toContain("Preferred model hint: openai/gpt-5.2");
     expect(context.system).toContain("Memory namespaces: session, project");
+    expect(context.system).toContain("Use mode stages or delegation only when the work can be split");
+    expect(context.system).toContain("do not rely on natural-language phrase whitelists");
     expect(context.system).toContain("<available_skills>");
     expect(context.system).toContain("<name>deep-research</name>");
     expect(context.system).toContain("<location>skills/deep-research/SKILL.md</location>");
@@ -104,9 +109,10 @@ describe("buildAgentPromptContext", () => {
       skillSnippets: ["  "],
     });
 
-    expect(context.sections.map((section) => section.id)).toEqual(["stage_instructions"]);
-    expect(context.stablePrefix).toBe("");
-    expect(context.system).toBe("You are the solo agent.");
+    expect(context.sections.map((section) => section.id)).toEqual(["operating_protocol", "stage_instructions"]);
+    expect(context.stablePrefix).toContain("Ora operating protocol:");
+    expect(context.system).toContain("Ora operating protocol:");
+    expect(context.system).toContain("You are the solo agent.");
   });
 
   it("reuses the builder for profile and runtime context", () => {
@@ -125,6 +131,7 @@ describe("buildAgentPromptContext", () => {
 
     expect(system).toContain("System Agent Override: researcher");
     expect(system).toContain("Ora agent profile: researcher");
+    expect(system).toContain("Ora operating protocol:");
     expect(system).toContain("You are the researcher.");
     expect(system).toContain("Root path: /repo");
     expect(system).toContain("- environment: staging");

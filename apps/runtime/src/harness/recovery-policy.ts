@@ -178,11 +178,13 @@ export function classifyRecoveryError(error: unknown, context: {
       errorType = "provider_transient";
     }
   } else if (context.surface === "tool") {
-    errorType = matchesAny(lowered, ["approval", "denied", "not approved", "risky"])
-      ? "tool_policy_denied"
-      : matchesAny(lowered, ["no project folder", "eacces", "eperm", "permission denied", "workspace file and shell tools are unavailable", "a selected project folder is required"])
-        ? "env_unavailable"
-        : "tool_error";
+    if (isToolPolicyDenied(lowered)) {
+      errorType = "tool_policy_denied";
+    } else if (isToolEnvironmentUnavailable(lowered)) {
+      errorType = "env_unavailable";
+    } else {
+      errorType = "tool_error";
+    }
   } else if (context.surface === "model") {
     errorType = "model_output_invalid";
   } else {
@@ -218,6 +220,38 @@ function ruleMatches(rule: RecoveryRule, incident: RecoveryIncident) {
     return false;
   }
   return true;
+}
+
+function isToolPolicyDenied(lowered: string): boolean {
+  return matchesAny(lowered, [
+    "approval",
+    "denied",
+    "not approved",
+    "risky",
+    "not available in plan mode",
+    "not available in the current mode",
+    "requires user approval before execution",
+    "denied by the active permission profile",
+  ]);
+}
+
+function isToolEnvironmentUnavailable(lowered: string): boolean {
+  return matchesAny(lowered, [
+    "no project folder",
+    "eacces",
+    "eperm",
+    "permission denied",
+    "workspace file and shell tools are unavailable",
+    "a selected project folder is required",
+    "registry is required",
+    "package manager is required",
+    "mcp client",
+    "mcp server",
+    "is not configured",
+    "requires searchprovider.mcpserverid",
+    "missing runtime-sidecar assets",
+    "missing frontend assets",
+  ]);
 }
 
 function recoveryAttemptKey(incident: RecoveryIncident) {

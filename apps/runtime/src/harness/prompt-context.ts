@@ -5,6 +5,7 @@ export type AgentPromptSectionId =
   | "system_agent_override"
   | "agent_system_prompt"
   | "agent_profile"
+  | "operating_protocol"
   | "stage_instructions"
   | "workspace_context"
   | "temporal_context"
@@ -53,6 +54,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     promptSection("system_agent_override", "System Agent Override", input.systemAgentOverride),
     promptSection("agent_system_prompt", "Agent System Prompt", input.profile?.systemPrompt),
     promptSection("agent_profile", "Agent Profile", profileSection(input.agentId, input.profile, input.customAgentId)),
+    promptSection("operating_protocol", "Operating Protocol", operatingProtocolSection()),
     promptSection("tool_protocol", "Tool Protocol", input.toolProtocol),
     promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
     ...skillSections(input.skillSnippets),
@@ -180,6 +182,18 @@ function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined):
   ].join("\n");
 }
 
+function operatingProtocolSection(): string {
+  return [
+    "Ora operating protocol:",
+    "- Clarify first when missing or ambiguous requirements materially affect correctness, safety, or scope; discover repo, workspace, and system facts yourself before asking.",
+    "- Handle simple tasks directly. Use mode stages or delegation only when the work can be split into meaningful independent responsibilities.",
+    "- For external, recent, or time-sensitive facts, verify with available tools and cite the source or exact date; separate observed facts, inference, assumptions, uncertainty, and open questions.",
+    "- Apply skills progressively: when a request matches an available skill, inspect the main skill instructions first, then load supporting files only when they are needed.",
+    "- Route high-risk, destructive, or durable local changes through the runtime approval or clarification path; do not rely on natural-language phrase whitelists for safety decisions.",
+    "- Use internal reasoning for planning, then provide a visible user-facing answer or status; never leave the user with only hidden reasoning or tool traces.",
+  ].join("\n");
+}
+
 function skillSections(snippets: string[] | undefined): AgentPromptSection[] {
   if (!snippets || snippets.length === 0) {
     return [];
@@ -199,6 +213,7 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "system_agent_override",
   "agent_system_prompt",
   "agent_profile",
+  "operating_protocol",
   "tool_protocol",
   "available_skills",
   "skills",

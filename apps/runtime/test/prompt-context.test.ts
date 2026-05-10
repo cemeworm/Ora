@@ -32,7 +32,7 @@ describe("prompt temporal context", () => {
     });
 
     expect(prompt.sections.some((section) => section.id === "temporal_context")).toBe(true);
-    expect(prompt.stablePrefix).toBe("");
+    expect(prompt.stablePrefix).toContain("Ora operating protocol:");
     expect(prompt.system).toContain("Current temporal context:");
     expect(prompt.system).toContain("Current date: 2026-05-09");
   });

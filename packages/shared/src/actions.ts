@@ -288,8 +288,14 @@ export const DEFAULT_MODE_RECOVERY_POLICY = ModeRecoveryPolicySchema.parse({
     {
       id: "tool-error-fallback",
       label: "Tool error fallback",
-      errorTypes: ["tool_error", "tool_policy_denied", "tool_output_invalid"],
+      errorTypes: ["tool_error", "tool_output_invalid"],
       action: "fallback_artifact",
+    },
+    {
+      id: "tool-policy-fail",
+      label: "Tool policy fail",
+      errorTypes: ["tool_policy_denied"],
+      action: "fail",
     },
     {
       id: "runtime-node-fail",

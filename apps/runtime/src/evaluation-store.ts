@@ -3333,7 +3333,7 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
     const toolPenalty = toolFailureRate > 0.5 ? (toolFailureRate - 0.5) * 0.6 : 0;
     const recoveryPenalty = Math.min(recoveryEvents, 3) * 0.1;
     const toolExpected = evaluationCase.metadata?.toolDependent === true ||
-      (evaluationCase.expected?.structured?.assertions?.some(a => a.path.includes('tool')) ?? false);
+      (structuredExpected(evaluationCase)?.assertions.some((assertion) => assertion.path.includes("tool")) ?? false);
     const noToolAttemptPenalty = (totalToolCalls === 0 && toolExpected) ? 0.2 : 0;
     processScore = Math.max(0.1, baseProcess - toolPenalty - recoveryPenalty - noToolAttemptPenalty);
   }

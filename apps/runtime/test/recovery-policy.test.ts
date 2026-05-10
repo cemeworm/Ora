@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { classifyRecoveryError } from "../src/harness/recovery-policy.js";
+import { DEFAULT_MODE_RECOVERY_POLICY, getModePreset } from "@cemeworm/shared";
+import { classifyRecoveryError, RecoveryCoordinator } from "../src/harness/recovery-policy.js";
 
 describe("recovery policy classification", () => {
   it("does not retry OpenAI-compatible request-shape errors as transient provider failures", () => {
@@ -12,6 +13,60 @@ describe("recovery policy classification", () => {
       errorType: "model_output_invalid",
       nodeId: "solo_agent",
       agentId: "solo_agent",
+    });
+  });
+
+  it("classifies deterministic tool policy and environment failures without fallback recovery", () => {
+    expect(classifyRecoveryError(
+      new Error("plan.update is not available in plan mode."),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "plan.update" },
+    )).toMatchObject({ errorType: "tool_policy_denied" });
+
+    expect(classifyRecoveryError(
+      new Error("A mode registry is required for modes.list."),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "modes.list" },
+    )).toMatchObject({ errorType: "env_unavailable" });
+
+    expect(classifyRecoveryError(
+      new Error("MCP server 'docs' is not configured."),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "mcp.call" },
+    )).toMatchObject({ errorType: "env_unavailable" });
+
+    expect(classifyRecoveryError(
+      new Error("Remote tool response is missing field 'items'."),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "mcp.call" },
+    )).toMatchObject({ errorType: "tool_error" });
+  });
+
+  it("keeps real tool execution failures eligible for fallback artifacts", () => {
+    const modeSpec = getModePreset("single_agent")!;
+    const coordinator = new RecoveryCoordinator(modeSpec, ["file.read"]);
+
+    expect(coordinator.resolve(classifyRecoveryError(
+      new Error("file.read target must be a file."),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "file.read" },
+    ))).toMatchObject({
+      action: "fallback_artifact",
+      ruleId: "tool-error-fallback",
+    });
+
+    expect(coordinator.resolve(classifyRecoveryError(
+      new Error("plan.update is not available in plan mode."),
+      { surface: "tool", nodeId: "orchestrator", agentId: "orchestrator", toolId: "plan.update" },
+    ))).toMatchObject({
+      action: "fail",
+      ruleId: "tool-policy-fail",
+    });
+  });
+
+  it("keeps the default recovery policy from degrading tool policy denials", () => {
+    const toolPolicyRule = DEFAULT_MODE_RECOVERY_POLICY.rules.find((rule) =>
+      rule.errorTypes.includes("tool_policy_denied"),
+    );
+
+    expect(toolPolicyRule).toMatchObject({
+      id: "tool-policy-fail",
+      action: "fail",
     });
   });
 });

@@ -656,6 +656,22 @@ describe("Ora shared contracts", () => {
     expect(missing.display.story).toContain("No runtime template metadata");
   });
 
+  it("keeps DeerFlow-like harness stage instructions explicit and evidence-oriented", () => {
+    const decompose = getModeNodeRuntimeTemplateDefinition("orchestrator_subagent", "decompose");
+    const research = getModeNodeRuntimeTemplateDefinition("orchestrator_subagent", "research");
+    const review = getModeNodeRuntimeTemplateDefinition("orchestrator_subagent", "review");
+    const synthesize = getModeNodeRuntimeTemplateDefinition("orchestrator_subagent", "synthesize");
+
+    expect(decompose.fallbackInstructions).toContain("Count the meaningful sub-tasks");
+    expect(decompose.fallbackInstructions).toContain("should not be delegated");
+    expect(research.fallbackInstructions).toContain("high-signal supporting context");
+    expect(research.fallbackInstructions).toContain("separate facts from inference");
+    expect(review.fallbackInstructions).toContain("Lead with concrete risks");
+    expect(review.fallbackInstructions).toContain("acceptance gaps");
+    expect(synthesize.fallbackInstructions).toContain("one user-facing answer");
+    expect(synthesize.fallbackInstructions).toContain("without replaying internal process");
+  });
+
   it("rejects incompatible runtime atoms on modes and nodes", () => {
     const validation = validateModeSpec({
       ...MVP_MODES[0]!,
