@@ -906,6 +906,29 @@ export class LocalEvaluationStore {
     const base = scoreEvaluationAttempt(spec, evaluationCase, snapshot, runtimeMs);
     const evaluators = evaluatorsForSpec(spec);
     if (evaluators.length === 0) {
+      const hasExpectedText = Boolean(evaluationCase.expected?.text);
+      const outputText = extractOutputText(snapshot);
+      if (!hasExpectedText && outputText.trim().length > 0) {
+        const autoJudgeResult = await this.runLlmJudgeEvaluator({
+          id: "auto-judge",
+          kind: "llm_judge",
+          label: "Auto LLM Judge",
+          rubric: "Score 0-1 how well the output answers the prompt. Consider correctness (no factual errors), completeness (addresses all parts), clarity (well-structured, easy to follow), and conciseness (no unnecessary verbosity). Pass requires >= 0.70.",
+          passThreshold: 0.70,
+          weight: 1,
+          metadata: {},
+        }, spec, config, evaluationCase, base.observations, base.output ?? snapshot.output);
+        const judgeScore = typeof autoJudgeResult.score === "number" ? autoJudgeResult.score : base.score.overallScore;
+        const weights = profileWeights(spec.profileId);
+        const mergedScore = EvaluationScoreSchema.parse({
+          ...base.score,
+          outcomeScore: roundScore(judgeScore),
+          overallScore: roundScore(judgeScore * weights.outcome + base.score.processScore * weights.process + base.score.efficiencyScore * weights.efficiency + base.score.safetyScore * weights.safety),
+          judgeRationale: autoJudgeResult.rationale ?? base.score.judgeRationale,
+          failureTags: autoJudgeResult.passed ? base.score.failureTags : [...new Set([...base.score.failureTags, "incorrect_output"])],
+        });
+        return { ...base, score: mergedScore, evaluatorResults: [autoJudgeResult], annotationTasks: [] };
+      }
       return { ...base, evaluatorResults: [], annotationTasks: [] };
     }
     const evaluatorResults: EvaluationEvaluatorResult[] = [];
@@ -1076,12 +1099,17 @@ export class LocalEvaluationStore {
     dataset: EvaluationDatasetDetail
   ): Promise<{ attempt: EvaluationAttempt; annotationTasks: Array<Partial<EvaluationAnnotationTask>> }> {
     const attemptStartedAt = this.now();
-    const timeoutMs = spec.timeoutMs ?? 120000;
+    const timeoutMs = spec.timeoutMs ?? resolveDefaultTimeoutMs(dataset);
+
+    const formatConstraint = config.runConfig.metadata?.formatConstraint;
+    const prompt = typeof formatConstraint === "string" && formatConstraint.trim()
+      ? `[Format: ${formatConstraint.trim()}]\n\n${evaluationCase.input.prompt}`
+      : evaluationCase.input.prompt;
 
     const runPromise = executeRun({
       input: {
         taskId: evaluationCase.id,
-        prompt: evaluationCase.input.prompt,
+        prompt,
         context: {
           ...evaluationCase.input.context,
           evaluationCaseId: evaluationCase.id,
@@ -1089,6 +1117,7 @@ export class LocalEvaluationStore {
           evaluationRunId,
           evaluationConfigId: config.id,
           evaluationProfileId: spec.profileId,
+          projectWorkspace: evaluationCase.input.context?.projectWorkspace ?? { rootPath: process.cwd() },
         },
         createdAt: attemptStartedAt,
       },
@@ -3273,15 +3302,19 @@ function aggregateMetricScores(metricScores: EvaluationMetricScore[], profileId:
 function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: EvaluationCase, snapshot: StateSnapshot): EvaluationScore {
   const outputText = extractOutputText(snapshot).toLowerCase();
   const expectedText = evaluationCase.expected?.text?.toLowerCase();
-  const runtimeFailed = snapshot.status === "failed" || Boolean(snapshot.error);
+  const isInterrupted = snapshot.status === "interrupted";
+  const runtimeFailed = snapshot.status === "failed" || (!isInterrupted && Boolean(snapshot.error));
+  const interruptedWithOutput = isInterrupted && outputText.trim().length > 0;
   const isRecoveryFallback = outputText.includes("continued with limited context");
   const outcomeScore = runtimeFailed
     ? 0
-    : isRecoveryFallback
-      ? 0
-      : expectedText
-        ? textSimilarity(expectedText, outputText)
-        : outputText.length > 0 ? 0.72 : 0.25;
+    : interruptedWithOutput
+      ? Math.max(0.3, expectedText ? textSimilarity(expectedText, outputText) - 0.15 : 0.57)
+      : isRecoveryFallback
+        ? 0
+        : expectedText
+          ? textSimilarity(expectedText, outputText)
+          : outputText.length > 0 ? 0.72 : 0.25;
   const processEvents = snapshot.events.filter((event) => ["agent.started", "agent.completed", "tool.called", "checkpoint.created"].includes(event.type)).length;
   const toolCalls = snapshot.toolCalls ?? [];
   const totalToolCalls = toolCalls.length;
@@ -3299,7 +3332,9 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
     const baseProcess = Math.min(1, 0.45 + Math.min(processEvents, 4) * 0.12);
     const toolPenalty = toolFailureRate > 0.5 ? (toolFailureRate - 0.5) * 0.6 : 0;
     const recoveryPenalty = Math.min(recoveryEvents, 3) * 0.1;
-    processScore = Math.max(0.1, baseProcess - toolPenalty - recoveryPenalty);
+    const toolExpected = evaluationCase.metadata?.toolDependent === true || evaluationCase.expected?.structured !== undefined;
+    const noToolAttemptPenalty = (totalToolCalls === 0 && toolExpected) ? 0.2 : 0;
+    processScore = Math.max(0.1, baseProcess - toolPenalty - recoveryPenalty - noToolAttemptPenalty);
   }
   const runtimeMs = Math.max(1, snapshot.updatedAt - (snapshot.events[0]?.createdAt ?? snapshot.updatedAt));
   const efficiencyScore = runtimeFailed ? 0.25 : Math.max(0.35, 1 - runtimeMs / 8_000);
@@ -3315,13 +3350,14 @@ function scoreSnapshot(profileId: EvaluationProfileKind, evaluationCase: Evaluat
     efficiencyScore * weights.efficiency +
     safetyScore * weights.safety
   );
-  const failureTags = [
-    ...(runtimeFailed ? ["runtime_failed"] : []),
-    ...(isRecoveryFallback ? ["recovery_fallback"] : []),
-    ...(outcomeScore < 0.6 ? ["incorrect_output"] : []),
-    ...(processScore < 0.6 ? ["process_issue"] : []),
-    ...(safetyScore < 0.8 ? ["safety_issue"] : []),
-  ];
+  const failureTags = runtimeFailed || interruptedWithOutput
+    ? ["runtime_failed"]
+    : [
+        ...(isRecoveryFallback ? ["recovery_fallback"] : []),
+        ...(outcomeScore < 0.6 ? ["incorrect_output"] : []),
+        ...(processScore < 0.6 ? ["process_issue"] : []),
+        ...(safetyScore < 0.8 ? ["safety_issue"] : []),
+      ];
   return EvaluationScoreSchema.parse({
     outcomeScore: roundScore(outcomeScore),
     processScore: roundScore(processScore),
@@ -3711,13 +3747,36 @@ function inferSeverity(feedbackLower: string) {
   return "medium";
 }
 
+function resolveDefaultTimeoutMs(dataset: EvaluationDatasetDetail): number {
+  const name = dataset.dataset.name.toLowerCase();
+  if (/pattern.correctness|self.iteration|generator.verifier/.test(name)) return 600000;
+  if (/gaia|terminal.bench|e2e|swe.bench/.test(name)) return 300000;
+  return 120000;
+}
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
+    .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
+    .replace(/`{1,3}[^`]*`{1,3}/g, "")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/^>\s+/gm, "")
+    .replace(/\|/g, " ")
+    .replace(/^---+/gm, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+
 function textSimilarity(expectedText: string, outputText: string) {
   if (!outputText.trim()) return 0.1;
-  if (outputText.includes(expectedText) || expectedText.includes(outputText)) {
+  const strippedExpected = stripMarkdown(expectedText);
+  const strippedOutput = stripMarkdown(outputText);
+  if (strippedOutput.includes(strippedExpected) || strippedExpected.includes(strippedOutput)) {
     return 1;
   }
-  const expectedTokens = new Set(tokenize(expectedText));
-  const outputTokens = new Set(tokenize(outputText));
+  const expectedTokens = new Set(tokenize(strippedExpected));
+  const outputTokens = new Set(tokenize(strippedOutput));
   if (expectedTokens.size === 0 || outputTokens.size === 0) return 0.2;
   let intersection = 0;
   for (const token of expectedTokens) {
