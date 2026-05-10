@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
-import type { OraEventEnvelope, StateSnapshot } from "@cemeworm/shared";
+import { describe, expect, it, vi } from "vitest";
+import { StateSnapshotSchema, type OraEventEnvelope, type StateSnapshot } from "@cemeworm/shared";
 import { applyStreamingRunEvent, publishRunStream, shouldFlushStreamingEvent } from "./run-streaming.js";
+import { RunStreamingService } from "./run-streaming-service.js";
+import { readSseMessages } from "./providers/streaming.js";
 
 function event(params: {
   seq: number;
@@ -94,6 +96,32 @@ describe("run streaming", () => {
 
     expect(text).toBe("Hello");
     expect(JSON.stringify(second.events).length).toBeLessThan(500);
+  });
+
+  it("does not validate pure deltas with the full snapshot schema", async () => {
+    const parseSpy = vi.spyOn(StateSnapshotSchema, "parse");
+    const service = new RunStreamingService({
+      cacheRun: vi.fn(),
+      cacheRunDelta: vi.fn(),
+      appendRuntimeEventBatchToLedger: (liveSnapshot) => liveSnapshot,
+    });
+    const session = service.createSession({
+      runId: "run-test",
+      liveSnapshot: snapshot(),
+      ledgeredEventCount: 0,
+    });
+
+    for (let seq = 0; seq < 300; seq += 1) {
+      session.applyLiveEvent(event({
+        seq,
+        type: "message.delta",
+        payload: { role: "assistant", content: "x", delta: "x", streaming: true },
+      }));
+    }
+
+    expect(session.liveSnapshot.events).toHaveLength(300);
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
   });
 
   it("projects structured runtime events into the live snapshot", () => {
@@ -229,5 +257,57 @@ describe("run streaming", () => {
     expect(streams[0]?.snapshot?.attention?.kind).toBe("needs_clarification");
     expect(streams[0]?.snapshot?.pendingClarifications).toEqual([clarification]);
     expect(streams[1]?.snapshot).toBeUndefined();
+  });
+
+  it("includes session prompt correlation fields on stream notifications", () => {
+    const liveSnapshot = {
+      ...snapshot(),
+      sessionId: "session-test",
+      input: { prompt: "你能做什么？", createdAt: 1_714_000_000_000, context: {} },
+    };
+    const streams: Parameters<NonNullable<Parameters<typeof publishRunStream>[0]["onStream"]>>[0][] = [];
+
+    publishRunStream({
+      onStream: (stream) => streams.push(stream),
+      runId: "run-test",
+      events: [event({
+        seq: 0,
+        type: "message.delta",
+        payload: { role: "assistant", content: "hello", delta: "hello", streaming: true },
+      })],
+      liveSnapshot,
+    });
+
+    expect(streams[0]?.sessionId).toBe("session-test");
+    expect(streams[0]?.prompt).toBe("你能做什么？");
+    expect(streams[0]?.snapshot).toBeUndefined();
+  });
+
+  it("drains SSE frames before awaiting slow local callbacks", async () => {
+    let controller: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(nextController) {
+        controller = nextController;
+      },
+    }));
+    const encoder = new TextEncoder();
+    const callbackTimes: number[] = [];
+
+    const reading = readSseMessages(response, async () => {
+      callbackTimes.push(Date.now());
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    const started = Date.now();
+    controller!.enqueue(encoder.encode('data: {"n":1}\n\n'));
+    controller!.enqueue(encoder.encode('data: {"n":2}\n\n'));
+    controller!.enqueue(encoder.encode('data: [DONE]\n\n'));
+    controller!.close();
+    const rawEvents = await reading;
+
+    expect(rawEvents).toHaveLength(2);
+    expect(callbackTimes).toHaveLength(2);
+    expect(callbackTimes[1]! - callbackTimes[0]!).toBeGreaterThanOrEqual(20);
+    expect(Date.now() - started).toBeLessThan(80);
   });
 });

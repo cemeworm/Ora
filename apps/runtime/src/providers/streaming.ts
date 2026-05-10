@@ -19,6 +19,31 @@ export async function emitTextDelta(
   await callbacks?.onTextDelta?.(chunk);
 }
 
+export function createAsyncStreamCallbackQueue() {
+  let tail = Promise.resolve();
+  let firstError: unknown;
+  const enqueue = (callback: () => Promise<void> | void) => {
+    const run = async () => {
+      try {
+        await callback();
+      } catch (error) {
+        firstError ??= error;
+      }
+    };
+    tail = tail.then(run, run);
+    tail.catch(() => undefined);
+  };
+  return {
+    enqueue,
+    drain: async () => {
+      await tail;
+      if (firstError) {
+        throw firstError;
+      }
+    },
+  };
+}
+
 export async function readSseMessages(
   response: Response,
   onMessage: (message: SseMessage) => Promise<void> | void,
@@ -31,6 +56,7 @@ export async function readSseMessages(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const rawEvents: unknown[] = [];
+  const callbackQueue = createAsyncStreamCallbackQueue();
   const idleTimeoutMs = positiveTimeout(options.idleTimeoutMs, DEFAULT_SSE_IDLE_TIMEOUT_MS);
   const openTimeoutMs = positiveTimeout(options.openTimeoutMs, idleTimeoutMs);
   let buffer = "";
@@ -51,10 +77,11 @@ export async function readSseMessages(
       }
       if (message.data === "[DONE]") {
         await reader.cancel().catch(() => undefined);
+        await callbackQueue.drain();
         return rawEvents;
       }
       rawEvents.push(parseJsonOrText(message.data));
-      await onMessage(message);
+      callbackQueue.enqueue(() => onMessage(message));
     }
 
     if (done) {
@@ -68,9 +95,10 @@ export async function readSseMessages(
   }
   if (tail) {
     rawEvents.push(parseJsonOrText(tail.data));
-    await onMessage(tail);
+    callbackQueue.enqueue(() => onMessage(tail));
   }
 
+  await callbackQueue.drain();
   return rawEvents;
 }
 

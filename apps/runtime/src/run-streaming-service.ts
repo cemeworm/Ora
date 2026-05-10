@@ -16,6 +16,7 @@ export interface RunStreamingServiceDeps {
     events: OraEventEnvelope[],
     status?: StateSnapshot["status"],
   ) => StateSnapshot;
+  cacheRunDelta?: (snapshot: StateSnapshot) => void;
 }
 
 export interface RunStreamingSessionParams {
@@ -121,13 +122,22 @@ export class RunStreamingSession {
   }
 
   private publishAndMaybeFlush(event: OraEventEnvelope): void {
-    this.deps.cacheRun(this.liveSnapshotValue, shouldFlushStreamingEvent(event));
+    const shouldFlush = shouldFlushStreamingEvent(event);
+    if (isPureDeltaEvent(event) && !shouldFlush && this.deps.cacheRunDelta) {
+      this.deps.cacheRunDelta(this.liveSnapshotValue);
+    } else {
+      this.deps.cacheRun(this.liveSnapshotValue, shouldFlush);
+    }
     if (
-      shouldFlushStreamingEvent(event) ||
+      shouldFlush ||
       this.liveSnapshotValue.events.length - this.ledgeredEventCount >= 50
     ) {
       this.flushLedgerEvents();
     }
     this.publish([event]);
   }
+}
+
+function isPureDeltaEvent(event: OraEventEnvelope): boolean {
+  return event.type === "message.delta" || event.type === "token.delta";
 }

@@ -3,7 +3,6 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   ArtifactRefSchema,
-  buildVisibleLedger,
   ChannelBindingSchema,
   ChannelConfigSchema,
   ChannelDeliverySchema,
@@ -18,6 +17,7 @@ import { OraRuntimeError } from "../runtime-errors.js";
 import type {
   PersistedArtifact,
   RuntimePersistenceBackend,
+  RuntimePersistenceLoadOptions,
   StoreManifest,
   StoredChannelBinding,
   StoredChannelConfig,
@@ -27,7 +27,10 @@ import type {
   RuntimeRunReadModel,
   RuntimeSessionReadModel,
 } from "./types.js";
-import { deriveRuntimeReadModelsFromLedgers } from "./session-ledger-projections.js";
+import {
+  deriveRuntimeReadModelsFromLedgers,
+  deriveRuntimeSessionReadModelsFromLedgers,
+} from "./session-ledger-projections.js";
 
 const MANIFEST_SCHEMA_VERSION = 3;
 
@@ -170,6 +173,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   private readonly stmtLoadSessionEntriesExcludingEvents: Database.Statement;
   private readonly stmtLoadEventBatchesForRun: Database.Statement;
   private readonly stmtListSessionEntryIds: Database.Statement;
+  private readonly stmtListRunIds: Database.Statement;
   private readonly stmtGetSessionLedgerCursor: Database.Statement;
   private readonly stmtSessionLedgerEntryRevision: Database.Statement;
   private readonly stmtSessionLedgerMetaRevision: Database.Statement;
@@ -227,10 +231,39 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     );
     this.stmtLoadSessionEntries = this.db.prepare("SELECT data FROM session_entries WHERE sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
     this.stmtLoadAllSessionEntries = this.db.prepare("SELECT sessionId, data FROM session_entries ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC");
-    this.stmtLoadAllSessionEntriesExcludingEvents = this.db.prepare("SELECT sessionId, data FROM session_entries WHERE type != 'runtime.event_batch' ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC");
-    this.stmtLoadSessionEntriesExcludingEvents = this.db.prepare("SELECT data FROM session_entries WHERE sessionId = ? AND type != 'runtime.event_batch' ORDER BY seq ASC, createdAt ASC, entryId ASC");
+    this.stmtLoadAllSessionEntriesExcludingEvents = this.db.prepare(`
+      SELECT
+        sessionId,
+        CASE
+          WHEN type = 'runtime.event_batch' AND json_type(data, '$.payload.snapshot') = 'object'
+          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'), '$.payload.snapshot.events', json('[]'))
+          WHEN type = 'runtime.event_batch'
+          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'))
+          WHEN type = 'assistant.message' AND json_type(data, '$.payload.snapshot') = 'object'
+          THEN json_set(data, '$.payload.snapshot.events', json('[]'))
+          ELSE data
+        END AS data
+      FROM session_entries
+      ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC
+    `);
+    this.stmtLoadSessionEntriesExcludingEvents = this.db.prepare(`
+      SELECT
+        CASE
+          WHEN type = 'runtime.event_batch' AND json_type(data, '$.payload.snapshot') = 'object'
+          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'), '$.payload.snapshot.events', json('[]'))
+          WHEN type = 'runtime.event_batch'
+          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'))
+          WHEN type = 'assistant.message' AND json_type(data, '$.payload.snapshot') = 'object'
+          THEN json_set(data, '$.payload.snapshot.events', json('[]'))
+          ELSE data
+        END AS data
+      FROM session_entries
+      WHERE sessionId = ?
+      ORDER BY seq ASC, createdAt ASC, entryId ASC
+    `);
     this.stmtLoadEventBatchesForRun = this.db.prepare("SELECT data FROM session_entries WHERE runId = ? AND type = 'runtime.event_batch' AND sessionId = ? ORDER BY seq ASC, createdAt ASC, entryId ASC");
     this.stmtListSessionEntryIds = this.db.prepare("SELECT DISTINCT sessionId FROM session_entries ORDER BY sessionId ASC");
+    this.stmtListRunIds = this.db.prepare("SELECT DISTINCT runId FROM session_entries WHERE runId IS NOT NULL ORDER BY runId ASC");
     this.stmtGetSessionLedgerCursor = this.db.prepare(`
       SELECT
         COUNT(*) AS entryCount,
@@ -277,7 +310,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.stmtGetChannelDelivery = this.db.prepare("SELECT data FROM channel_deliveries WHERE deliveryId = ?");
   }
 
-  load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] } {
+  load(options: RuntimePersistenceLoadOptions = {}): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] } {
     const manifestRow = this.stmtLoadManifest.get() as
       | { schemaVersion: number; nextRunNumber: number; nextSessionNumber?: number; nextProjectNumber?: number }
       | undefined;
@@ -299,22 +332,30 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
       projects.push(ProjectSummarySchema.parse(JSON.parse(row.data)));
     }
 
-    let ledgerState;
+    let ledgerState: { runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[] };
     try {
-      ledgerState = deriveRuntimeReadModelsFromLedgers(this.listLedgersExcludingEvents());
+      const ledgers = this.listLedgersExcludingEvents();
+      ledgerState = options.includeRuns === false
+        ? { runs: [], sessions: deriveRuntimeSessionReadModelsFromLedgers(ledgers) }
+        : deriveRuntimeReadModelsFromLedgers(ledgers);
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
       try {
         require("node:fs").writeFileSync("/tmp/ora-lite-load-error.txt", message);
       } catch (_) { /* best effort */ }
-      ledgerState = deriveRuntimeReadModelsFromLedgers(this.listSessionLedgers());
+      const ledgers = this.listSessionLedgers();
+      ledgerState = options.includeRuns === false
+        ? { runs: [], sessions: deriveRuntimeSessionReadModelsFromLedgers(ledgers) }
+        : deriveRuntimeReadModelsFromLedgers(ledgers);
     }
 
     // Ensure nextRunNumber is at least greater than any existing run number
-    const maxRunNumber = ledgerState.runs.reduce((max, run) => {
-      const match = /^run-(\d+)$/.exec(run.runId);
-      return match ? Math.max(max, Number(match[1])) : max;
-    }, 0);
+    const maxRunNumber = options.includeRuns === false
+      ? this.maxPersistedRunNumber()
+      : ledgerState.runs.reduce((max, run) => {
+          const match = /^run-(\d+)$/.exec(run.runId);
+          return match ? Math.max(max, Number(match[1])) : max;
+        }, 0);
 
     const maxSessionNumber = ledgerState.sessions.reduce((max, session) => {
       const match = /^session-(\d+)$/.exec(session.sessionId);
@@ -418,13 +459,11 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   getSessionLedgerExcludingEvents(sessionId: string): RuntimeSessionLedger | undefined {
-    const full = this.getSessionLedger(sessionId);
-    if (!full) return undefined;
-    try {
-      return buildVisibleLedger(full);
-    } catch {
-      return full;
+    const rows = this.stmtLoadSessionEntriesExcludingEvents.all(sessionId) as { data: string }[];
+    if (rows.length === 0) {
+      return undefined;
     }
+    return this.buildLedgersFromRows(rows.map((row) => ({ sessionId, data: row.data }))).at(0);
   }
 
   getSessionLedgerCursor(sessionId: string) {
@@ -454,18 +493,22 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listLedgersExcludingEvents(): RuntimeSessionLedger[] {
-    return this.listSessionLedgers().map((ledger) => {
-      try {
-        return buildVisibleLedger(ledger);
-      } catch {
-        return ledger;
-      }
-    });
+    const allRows = this.stmtLoadAllSessionEntriesExcludingEvents.all() as { sessionId: string; data: string }[];
+    if (allRows.length === 0) return [];
+    return this.buildLedgersFromRows(allRows);
   }
 
   getEventBatchesForRun(sessionId: string, runId: string): RuntimeSessionEntry[] {
     const rows = this.stmtLoadEventBatchesForRun.all(runId, sessionId) as { data: string }[];
     return rows.map((row) => RuntimeSessionEntrySchema.parse(JSON.parse(row.data)));
+  }
+
+  private maxPersistedRunNumber(): number {
+    const rows = this.stmtListRunIds.all() as { runId: string | null }[];
+    return rows.reduce((max, row) => {
+      const match = row.runId ? /^run-(\d+)$/.exec(row.runId) : undefined;
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0);
   }
 
   private buildLedgersFromRows(allRows: { sessionId: string; data: string }[]): RuntimeSessionLedger[] {

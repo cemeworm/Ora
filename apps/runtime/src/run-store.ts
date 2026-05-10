@@ -353,6 +353,7 @@ export class LocalRunStore {
   private manifest: StoreManifest;
   private sessionLedgerRevision: string | undefined;
   private sessionLedgerLeafEntryIds = new Map<string, string | undefined>();
+  private sessionRunProjectionModes = new Map<string, "slim" | "full">();
 
   constructor(options: LocalRunStoreOptions = {}) {
     this.clock = options.clock ?? Date.now;
@@ -460,10 +461,11 @@ export class LocalRunStore {
     });
     this.runStreamingService = new RunStreamingService({
       cacheRun: (snapshot, flush) => this.cacheRun(snapshot, flush, { deferInitialTitle: true }),
+      cacheRunDelta: (snapshot) => this.cacheRunDelta(snapshot),
       appendRuntimeEventBatchToLedger: (snapshot, events, status) =>
         this.appendRuntimeEventBatchToLedger(snapshot, events, status),
     });
-    const loaded = this.backend.load();
+    const loaded = this.backend.load(this.persistenceType === "sqlite" ? { includeRuns: false } : undefined);
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
     this.sessions = new Map(loaded.sessions.map((session) => [session.sessionId, session]));
@@ -753,7 +755,7 @@ export class LocalRunStore {
   }
 
   getProject(params: unknown): ProjectDetail {
-    this.refreshAllSessionLedgerProjections();
+    this.refreshSessionSummariesIfStale();
     return getProjectOperation(params, this.projectSessionOperationDeps());
   }
 
@@ -770,7 +772,7 @@ export class LocalRunStore {
   }
 
   listSessions(params: unknown = {}): SessionSummary[] {
-    this.refreshAllSessionLedgerProjections();
+    this.refreshSessionSummariesIfStale();
     return listSessionsOperation(params, this.projectSessionOperationDeps());
   }
 
@@ -782,20 +784,7 @@ export class LocalRunStore {
     const t0 = Date.now();
     const sessionId = (params as Record<string, unknown>)?.sessionId as string;
     this.refreshSessionIfStale(sessionId);
-    // Reload run snapshots from full ledger so session detail timeline has events.
-    // refreshSessionIfStale uses excludeEvents:true and produces slimmed snapshots.
-    if (this.isLedgerBackedSession(sessionId)) {
-      const fullLedger = this.backend.getSessionLedger(sessionId);
-      if (fullLedger) {
-        for (const [runId, snapshot] of this.runs) {
-          if (snapshot.sessionId !== sessionId) continue;
-          const projected = deriveRunSnapshot(fullLedger, runId, fullLedger.leafEntryId);
-          if (projected) {
-            this.runs.set(runId, this.rebaseActiveRunSnapshot(projected, snapshot));
-          }
-        }
-      }
-    }
+    this.ensureSessionRunsLoaded(sessionId, { includeEvents: true });
     const t1 = Date.now();
     const result = getSessionOperation(params, this.projectSessionOperationDeps());
     const t2 = Date.now();
@@ -829,7 +818,7 @@ export class LocalRunStore {
   }
 
   workbenchBootstrap(bootstrap: RuntimeBootstrap): RuntimeWorkbenchBootstrap {
-    this.refreshAllSessionLedgerProjections();
+    this.refreshSessionSummariesIfStale();
     const deps = this.projectSessionOperationDeps();
     const projects = listProjectsOperation({}, deps);
     const sessions = listSessionsOperation({}, deps);
@@ -1151,6 +1140,10 @@ export class LocalRunStore {
   }
 
   listRuns(params: unknown = {}): RunSummary[] {
+    const sessionId = (params as Record<string, unknown> | undefined)?.sessionId;
+    if (typeof sessionId === "string") {
+      this.ensureSessionRunsLoaded(sessionId, { includeEvents: false });
+    }
     return listRunsOperation(params, this.projectSessionOperationDeps());
   }
 
@@ -2972,7 +2965,54 @@ export class LocalRunStore {
     if (!ledger) {
       return this.getSessionOrThrow(sessionId);
     }
-    return this.applyLedgerToStore(sessionId, ledger, leafEntryId ?? ledger.leafEntryId);
+    const session = this.applyLedgerToStore(sessionId, ledger, leafEntryId ?? ledger.leafEntryId);
+    this.sessionRunProjectionModes.set(sessionId, options.excludeEvents ? "slim" : "full");
+    return session;
+  }
+
+  private applyLedgerSessionSummaryToStore(sessionId: string, ledger: RuntimeSessionLedger, leafEntryId?: string): SessionSummary {
+    const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
+    this.sessions.set(sessionId, projection.session);
+    this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
+    this.sessionRunProjectionModes.delete(sessionId);
+    return projection.session;
+  }
+
+  private ensureSessionRunsLoaded(
+    sessionId: string,
+    options: { includeEvents?: boolean } = {},
+  ): void {
+    if (!this.isLedgerBackedSession(sessionId)) {
+      return;
+    }
+    const requestedMode = options.includeEvents ? "full" : "slim";
+    const currentMode = this.sessionRunProjectionModes.get(sessionId);
+    if (
+      !this.isSessionLedgerStale(sessionId)
+      && (currentMode === "full" || currentMode === requestedMode)
+    ) {
+      return;
+    }
+    const ledger = options.includeEvents
+      ? this.backend.getSessionLedger(sessionId)
+      : this.backend.getSessionLedgerExcludingEvents?.(sessionId) ?? this.backend.getSessionLedger(sessionId);
+    if (!ledger) {
+      return;
+    }
+    this.applyLedgerToStore(sessionId, ledger, ledger.leafEntryId);
+    this.sessionRunProjectionModes.set(sessionId, requestedMode);
+  }
+
+  private refreshSessionSummariesIfStale(): void {
+    const revision = this.backend.ledgerRevision?.();
+    if (revision && revision === this.sessionLedgerRevision) {
+      return;
+    }
+    const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
+    for (const ledger of ledgers) {
+      this.applyLedgerSessionSummaryToStore(ledger.sessionId, ledger, ledger.leafEntryId);
+    }
+    this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
   }
 
   private refreshAllSessionLedgerProjections(): void {
@@ -2983,6 +3023,7 @@ export class LocalRunStore {
     const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
     for (const ledger of ledgers) {
       this.applyLedgerToStore(ledger.sessionId, ledger, ledger.leafEntryId);
+      this.sessionRunProjectionModes.set(ledger.sessionId, "slim");
     }
     this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
   }
@@ -3145,7 +3186,11 @@ export class LocalRunStore {
   }
 
   private isLedgerBackedSession(sessionId: string | undefined): boolean {
-    return Boolean(sessionId && this.backend.getSessionLedger(sessionId));
+    if (!sessionId) {
+      return false;
+    }
+    return this.backend.getSessionLedgerCursor?.(sessionId) !== undefined
+      || Boolean(this.backend.getSessionLedger(sessionId));
   }
 
 
@@ -3314,6 +3359,14 @@ export class LocalRunStore {
     }
   }
 
+  private cacheRunDelta(snapshot: StateSnapshot): void {
+    this.runs.set(snapshot.runId, snapshot);
+    if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
+      const session = this.upsertSessionFromRun(snapshot, { deferInitialTitle: true });
+      this.sessions.set(session.sessionId, session);
+    }
+  }
+
   private memoryUpdateDeps(): MemoryUpdateDeps {
     return {
       longTermMemory: this.longTermMemory,
@@ -3474,6 +3527,7 @@ export class LocalRunStore {
   }
 
   private allRunsForSession(sessionId: string): StateSnapshot[] {
+    this.ensureSessionRunsLoaded(sessionId, { includeEvents: false });
     return [...this.runs.values()]
       .filter((run) => run.sessionId === sessionId)
       .sort((a, b) => (a.turnIndex ?? 1) - (b.turnIndex ?? 1) || a.updatedAt - b.updatedAt || a.runId.localeCompare(b.runId));

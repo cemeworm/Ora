@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   RuntimeSessionLedgerSchema,
   deriveSessionProjection,
+  type OraEventEnvelope,
   type RuntimeSessionEntry,
 } from "@cemeworm/shared";
 import { JsonFileRuntimePersistenceBackend } from "../src/persistence/json-file-backend.js";
@@ -84,6 +85,31 @@ function ledgerEntries(): RuntimeSessionEntry[] {
       payload: { content: "Persisted.", status: "succeeded" },
     }),
   ];
+}
+
+function largeEventBatchEntry(): RuntimeSessionEntry {
+  const event = {
+    id: "run-1:event:0",
+    runId: "run-1",
+    seq: 0,
+    type: "message.delta",
+    createdAt: BASE_TIME + 3,
+    pattern: "orchestrator_subagent",
+    payload: { role: "assistant", content: "x".repeat(100_000), delta: "x".repeat(100_000), streaming: true },
+  } as OraEventEnvelope;
+  return entry({
+    id: "e-events",
+    parentId: "e-run",
+    seq: 3,
+    type: "runtime.event_batch",
+    runId: "run-1",
+    turnIndex: 1,
+    payload: {
+      events: [event],
+      eventCount: 1,
+      status: "running",
+    },
+  });
 }
 
 function expectLedgerRoundTrip(backend: RuntimePersistenceBackend) {
@@ -240,5 +266,41 @@ describe("runtime session ledger persistence", () => {
 
     expect(loaded.runs.map((run) => run.runId)).toEqual(["run-1"]);
     expect(loaded.sessions.map((session) => session.sessionId)).toEqual(["session-ledger"]);
+  });
+
+  it("loads SQLite visible ledgers without hydrating runtime event payloads", () => {
+    const dir = freshDir("ora-sqlite-ledger-visible-");
+    const backend = new SqliteRuntimePersistence(path.join(dir, "runtime.db"));
+    const entries = [
+      ...ledgerEntries().slice(0, 3),
+      largeEventBatchEntry(),
+      { ...ledgerEntries()[3]!, parentId: "e-events", seq: 4 },
+    ];
+    backend.appendSessionEntries("session-ledger", entries, "e-assistant");
+
+    const visible = backend.getSessionLedgerExcludingEvents("session-ledger");
+    const eventBatch = visible?.entries.find((candidate) => candidate.type === "runtime.event_batch");
+    const projection = deriveSessionProjection(RuntimeSessionLedgerSchema.parse(visible));
+
+    expect(visible?.leafEntryId).toBe("e-assistant");
+    expect(eventBatch?.parentId).toBe("e-run");
+    expect((eventBatch?.payload as { events?: unknown[] }).events).toEqual([]);
+    expect((eventBatch?.payload as { eventCount?: number }).eventCount).toBe(1);
+    expect(projection.session.latestRunId).toBe("run-1");
+    expect(projection.session.status).toBe("succeeded");
+  });
+
+  it("can load SQLite session summaries without projecting run snapshots", () => {
+    const dir = freshDir("ora-sqlite-ledger-summaries-");
+    const backend = new SqliteRuntimePersistence(path.join(dir, "runtime.db"));
+    backend.appendSessionEntries("session-ledger", ledgerEntries(), "e-assistant");
+
+    const loaded = backend.load({ includeRuns: false });
+
+    expect(loaded.runs).toEqual([]);
+    expect(loaded.sessions.map((session) => session.sessionId)).toEqual(["session-ledger"]);
+    expect(loaded.sessions[0]?.latestRunId).toBe("run-1");
+    expect(loaded.sessions[0]?.turnCount).toBe(1);
+    expect(loaded.manifest.nextRunNumber).toBeGreaterThan(1);
   });
 });

@@ -26,3 +26,9 @@ export function deriveRuntimeReadModelsFromLedgers(ledgers: RuntimeSessionLedger
     sessions: sessions.sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId)),
   };
 }
+
+export function deriveRuntimeSessionReadModelsFromLedgers(ledgers: RuntimeSessionLedger[]): RuntimeSessionReadModel[] {
+  return ledgers
+    .map((ledger) => deriveSessionProjection(ledger).session)
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId));
+}

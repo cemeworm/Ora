@@ -826,6 +826,8 @@ export type RuntimeToolResultLedgerEntry = z.infer<typeof RuntimeToolResultLedge
 
 export const RunEventStreamSchema = z.object({
   runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  prompt: z.string().optional(),
   fromSeq: z.number().int().nonnegative(),
   events: z.array(OraEventEnvelopeSchema),
   nextSeq: z.number().int().nonnegative(),

@@ -21,6 +21,20 @@ export function publishRunStream(params: {
   if (params.events.length === 0 && !params.snapshot) {
     return;
   }
+  if (!params.snapshot && isPureDeltaStream(params.events)) {
+    params.onStream?.(RunEventStreamSchema.parse({
+      runId: params.runId,
+      sessionId: params.liveSnapshot.sessionId,
+      prompt: params.liveSnapshot.input.prompt,
+      fromSeq: params.events[0]?.seq ?? params.liveSnapshot.events.length,
+      events: params.events,
+      nextSeq: params.events.length > 0
+        ? params.events.at(-1)!.seq + 1
+        : params.liveSnapshot.events.length,
+      status: params.liveSnapshot.status,
+    }));
+    return;
+  }
   const snapshot = params.snapshot
     ? normalizeRunAttention(params.snapshot)
     : undefined;
@@ -32,6 +46,8 @@ export function publishRunStream(params: {
   );
   params.onStream?.(RunEventStreamSchema.parse({
     runId: params.runId,
+    sessionId: liveSnapshot.sessionId,
+    prompt: liveSnapshot.input.prompt,
     fromSeq: params.events[0]?.seq ?? liveSnapshot.events.length,
     events: params.events,
     nextSeq: params.events.length > 0
@@ -47,13 +63,17 @@ export function applyStreamingRunEvent(
   event: OraEventEnvelope,
 ): StateSnapshot {
   const projected = projectStreamingEvent(liveSnapshot, event);
-  return normalizeRunAttention(StateSnapshotSchema.parse({
+  const next = {
     ...projected,
     status: statusForRunEvent(event.type, liveSnapshot.status),
     events: [...liveSnapshot.events, event],
     agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
-  }));
+  };
+  if (isPureDeltaEvent(event)) {
+    return next;
+  }
+  return normalizeRunAttention(StateSnapshotSchema.parse(next));
 }
 
 function projectStreamingEvent(
@@ -219,6 +239,14 @@ function agentMessageFromEvent(event: OraEventEnvelope): AgentConversationMessag
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isPureDeltaEvent(event: OraEventEnvelope): boolean {
+  return event.type === "message.delta" || event.type === "token.delta";
+}
+
+function isPureDeltaStream(events: readonly OraEventEnvelope[]): boolean {
+  return events.length > 0 && events.every(isPureDeltaEvent);
 }
 
 export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {

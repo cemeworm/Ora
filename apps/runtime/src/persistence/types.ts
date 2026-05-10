@@ -42,8 +42,12 @@ export interface SessionLedgerCursor {
   leafEntryId?: string;
 }
 
+export interface RuntimePersistenceLoadOptions {
+  includeRuns?: boolean;
+}
+
 export interface RuntimePersistenceBackend {
-  load(): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] };
+  load(options?: RuntimePersistenceLoadOptions): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] };
   ledgerRevision?(): string;
   optimizeStorage(): RuntimeStorageOptimizationResult;
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;

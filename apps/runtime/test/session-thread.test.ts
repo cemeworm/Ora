@@ -1937,6 +1937,48 @@ describe("session thread runtime behavior", () => {
     }));
   });
 
+  it("keeps SQLite startup on session summaries and lazily restores run details", async () => {
+    const dir = freshStoreDir();
+    const dbPath = path.join(dir, "runtime.db");
+    const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dbPath, clock }));
+
+    const run = await handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "runs.start",
+      params: {
+        input: { prompt: "SQLite lazy startup detail" },
+        config: { pattern: "orchestrator_subagent", metadata: { disableDefaultWebTools: true } },
+      },
+    }) as { runId: string; sessionId: string };
+
+    const reloaded = new LocalRunStore({ dataDir: dbPath, clock });
+    const sessions = reloaded.listSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toEqual(expect.objectContaining({
+      sessionId: run.sessionId,
+      latestRunId: run.runId,
+      turnCount: 1,
+    }));
+    expect(reloaded.listRuns()).toEqual([]);
+
+    const reloadedHandle = createRuntimeMethodHandler(reloaded);
+    const bootstrap = RuntimeWorkbenchBootstrapSchema.parse(await reloadedHandle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtime.workbenchBootstrap",
+      params: {},
+    }));
+    expect(bootstrap.sessions.some((session) => session.latestRunId === run.runId)).toBe(true);
+    expect(reloaded.listRuns()).toEqual([]);
+
+    const detail = SessionDetailSchema.parse(reloaded.getSession({ sessionId: run.sessionId }));
+    expect(detail.turns.map((turn) => turn.runId)).toEqual([run.runId]);
+    expect(detail.transcript.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(detail.latestSnapshot?.runId).toBe(run.runId);
+    expect(detail.latestSnapshot?.events.length).toBeGreaterThan(0);
+  });
+
   it("does not persist clean-cutover runs into legacy run files", async () => {
     const dir = freshStoreDir();
     const handle = createRuntimeMethodHandler(new LocalRunStore({ dataDir: dir, clock }));
