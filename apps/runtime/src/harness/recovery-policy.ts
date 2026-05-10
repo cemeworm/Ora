@@ -96,9 +96,7 @@ export class RecoveryCoordinator {
           summary: `Retrying ${incident.errorType} after attempt ${attempt}/${maxAttempts}.`,
         };
       }
-      return fallbackArtifact
-        ? fallbackDecision(incident, attempt, maxAttempts, rule)
-        : failDecision(incident, attempt, maxAttempts, rule.id, "Retry attempts exhausted.");
+      return failDecision(incident, attempt, maxAttempts, rule.id, "Retry attempts exhausted.");
     }
 
     if (rule.action === "alternate_tool") {

@@ -69,4 +69,33 @@ describe("recovery policy classification", () => {
       action: "fail",
     });
   });
+
+  it("fails transient provider errors after retries are exhausted instead of degrading to fallback output", () => {
+    const modeSpec = getModePreset("single_agent")!;
+    const coordinator = new RecoveryCoordinator(modeSpec, []);
+    const incident = classifyRecoveryError(
+      new Error("OpenAI-compatible provider deepseek failed with 503: temporarily unavailable"),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(coordinator.resolve(incident)).toMatchObject({
+      action: "retry",
+      ruleId: "provider-transient-retry",
+      attempt: 1,
+      maxAttempts: 3,
+    });
+    expect(coordinator.resolve(incident)).toMatchObject({
+      action: "retry",
+      ruleId: "provider-transient-retry",
+      attempt: 2,
+      maxAttempts: 3,
+    });
+    expect(coordinator.resolve(incident)).toMatchObject({
+      action: "fail",
+      ruleId: "provider-transient-retry",
+      attempt: 3,
+      maxAttempts: 3,
+      summary: expect.stringContaining("Retry attempts exhausted."),
+    });
+  });
 });
