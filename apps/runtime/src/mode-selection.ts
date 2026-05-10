@@ -303,6 +303,7 @@ async function routeAutoMode(
     return fallback("No modes were available to route.");
   }
 
+  let rawResponseText = "";
   try {
     const toolProviderId = config.metadata?.toolModelProviderId;
     const routerConfig = toolProviderId && toolProviderId !== "auto"
@@ -317,8 +318,8 @@ async function routeAutoMode(
         "Classify taskIntent with plan priority: chat for Q&A, search, summarization, or no local state change; plan for solution design, troubleshooting plans, ambiguous large tasks, or deciding what to do; implement only for explicit requests to modify/create files, fix bugs, run commands, deploy, commit, or perform concrete changes.",
         "confidence must be a number from 0 to 1.",
         "reason must be a short plain string under 120 characters.",
+        "Evaluate each candidate against the task using its own summary, recommendedUse, failureMode, and agenticCostHint fields.",
         "When multiple modes fit equally well, prefer lower agenticCostHint costTier and coordinationTier.",
-        "For chat or planning requests, prefer single_agent unless the task clearly needs verification, delegation, persistent workers, message routing, or shared state.",
         "If the task is underspecified, choose the fallbackModeId with confidence below the threshold.",
         "Do not include markdown or extra text.",
       ].join(" "),
@@ -336,6 +337,7 @@ async function routeAutoMode(
       maxTokens: AUTO_MODE_ROUTER_MAX_TOKENS,
       toolChoice: "none",
     });
+    rawResponseText = response.text;
     const parsed = parseAutoModeRouterResponse(response.text);
     if (!candidateIds.has(parsed.modeId)) {
       return fallback(`Router selected unknown mode '${parsed.modeId}'.`, { raw: response.text });
@@ -362,7 +364,12 @@ async function routeAutoMode(
       },
     };
   } catch (error) {
-    return fallback("Router failed before producing a valid mode.", error instanceof Error ? error.message : String(error));
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return fallback("Router failed before producing a valid mode.", {
+      error: errorMessage,
+      rawResponsePreview: rawResponseText.slice(0, 300),
+      candidates: candidates.map((c) => c.id),
+    });
   }
 }
 
@@ -408,7 +415,34 @@ function readContextRecentMessages(context: Record<string, unknown> | undefined)
 function parseAutoModeRouterResponse(text: string): z.infer<typeof AutoModeRouterResponseSchema> {
   const trimmed = text.trim();
   const jsonText = extractFirstJsonObject(trimmed) ?? trimmed;
-  return AutoModeRouterResponseSchema.parse(JSON.parse(jsonText));
+  try {
+    return AutoModeRouterResponseSchema.parse(JSON.parse(jsonText));
+  } catch (firstError) {
+    // Retry with repaired JSON: fix common LLM JSON issues
+    const repaired = repairRouterJson(jsonText);
+    if (repaired) {
+      try {
+        return AutoModeRouterResponseSchema.parse(JSON.parse(repaired));
+      } catch {
+        // fall through
+      }
+    }
+    throw firstError;
+  }
+}
+
+function repairRouterJson(text: string): string | undefined {
+  // Fix trailing commas before } or ]
+  let repaired = text.replace(/,(?=\s*[}\]])/g, "");
+  // Fix unquoted keys (simple case: word:)
+  if (!repaired.includes("\"")) {
+    repaired = repaired.replace(/(\w+)\s*:/g, "\"$1\":");
+  }
+  // Fix single-quoted strings
+  if (repaired.includes("'") && !repaired.includes("\"")) {
+    repaired = repaired.replace(/'/g, "\"");
+  }
+  return repaired !== text ? repaired : undefined;
 }
 
 function extractFirstJsonObject(text: string): string | undefined {

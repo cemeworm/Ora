@@ -22,6 +22,7 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
     retryCount: 0,
     verdict: "fail",
   };
+  let previousMissingRequirements: string[] = [];
   const metadataProviderId = typeof config.metadata.providerId === "string" ? config.metadata.providerId : undefined;
   const selectedProviderId = config.providerConfig?.id ?? config.providerId ?? metadataProviderId ?? "local-smoke";
   const generatorId = ownerForTemplate(nodes, "draft", "generator");
@@ -30,6 +31,7 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
   for (let attempt = 1; attempt <= maxIterations; attempt += 1) {
     bag.retryCount = attempt;
     let completedNodes = 0;
+    let converged = false;
     for (const node of nodes) {
       completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "draft") {
@@ -92,6 +94,14 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
           });
           bag.verifierAssessment = assessment;
           bag.verdict = assessment.verdict;
+          const currentMissing = assessment.missingRequirements ?? [];
+          converged = previousMissingRequirements.length > 0 &&
+            currentMissing.length === previousMissingRequirements.length &&
+            currentMissing.every((req, idx) => req === previousMissingRequirements[idx]);
+          previousMissingRequirements = currentMissing;
+          if (converged && assessment.verdict !== "pass") {
+            assessment.rationale = `${assessment.rationale} (Verification converged: same missing requirements as previous attempt.)`;
+          }
           context.emitAgentMessage({
             fromAgentId: currentVerifierId,
             toAgentIds: [generatorId],
@@ -129,6 +139,9 @@ export async function executeGeneratorVerifier(input: ModeExecutionInput): Promi
     }
 
     if (bag.verdict === "pass") {
+      break;
+    }
+    if (converged) {
       break;
     }
   }

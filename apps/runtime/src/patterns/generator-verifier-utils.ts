@@ -110,7 +110,7 @@ function hasFailureMarker(text: string): boolean {
   return normalized.includes("[tool-error-boundary]")
     || normalized.includes("provider failure")
     || normalized.includes("failed with ")
-    || normalized.includes("missing ")
+    || /runtime\s+(error|exception|failure)/i.test(normalized)
     || normalized.includes("unavailable");
 }
 
