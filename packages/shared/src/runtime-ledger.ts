@@ -116,6 +116,7 @@ export const RuntimeRunProjectionSchema = z.object({
   pattern: CoordinationPatternSchema,
   modeId: z.string().min(1).optional(),
   events: z.array(OraEventEnvelopeSchema).default([]),
+  eventCount: z.number().int().nonnegative().default(0),
   checkpoints: z.array(CheckpointMetaSchema).default([]),
   toolResults: z.array(RuntimeToolResultLedgerEntrySchema).default([]),
   gates: z.array(RuntimeGateProjectionSchema).default([]),
@@ -166,6 +167,7 @@ const RunStartedPayloadSchema = z.object({
 
 const RuntimeEventBatchPayloadSchema = z.object({
   events: z.array(OraEventEnvelopeSchema).default([]),
+  eventCount: z.number().int().nonnegative().optional(),
   status: RunStatusSchema.optional(),
   output: z.unknown().optional(),
   error: z.string().optional(),
@@ -212,6 +214,9 @@ const CompactionSummaryPayloadSchema = z.object({
 
 const BranchGroupPayloadSchema = SessionBranchGroupSchema.partial().extend({
   branchGroupId: z.string().min(1),
+  supersededRunId: z.string().min(1).optional(),
+  notifiedCandidateRunIds: z.array(z.string().min(1)).optional(),
+  dismissedRunIds: z.array(z.string().min(1)).optional(),
 });
 
 interface ProjectionState {
@@ -302,6 +307,42 @@ export function runtimeSessionEntryPath(
     cursor = entry.parentId;
   }
   return path.reverse().map((entry) => RuntimeSessionEntrySchema.parse(entry));
+}
+
+/**
+ * Build a ledger with reduced payload: keep all entries but strip the heavy
+ * `events` array from runtime.event_batch payloads, preserving structural
+ * fields (status, output, error, snapshot) and parent chains as-is.
+ */
+export function buildVisibleLedger(ledger: RuntimeSessionLedger): RuntimeSessionLedger {
+  const parsed = RuntimeSessionLedgerSchema.parse(ledger);
+  if (parsed.entries.length === 0) {
+    return parsed;
+  }
+
+  const slimmed = parsed.entries.map((entry) => {
+    if (entry.type !== "runtime.event_batch") {
+      return entry;
+    }
+    const payload = entry.payload as Record<string, unknown>;
+    return {
+      ...entry,
+      payload: {
+        events: [],
+        eventCount: payload.eventCount,
+        status: payload.status,
+        output: payload.output,
+        error: payload.error,
+        snapshot: payload.snapshot,
+      },
+    };
+  });
+
+  return RuntimeSessionLedgerSchema.parse({
+    sessionId: parsed.sessionId,
+    leafEntryId: parsed.leafEntryId,
+    entries: slimmed,
+  });
 }
 
 export function deriveSessionProjection(
@@ -474,6 +515,12 @@ function hasIncompleteResolvedHumanGateResume(
   if (latestResolvedGateAt === 0) {
     return false;
   }
+  if (run.events.length === 0) {
+    // Events unavailable (e.g. slimmed ledger). Conservative: treat as
+    // paused rather than failed, since we can't distinguish a manual
+    // interrupt from an incomplete resume without event data.
+    return false;
+  }
   const manualInterruptAfterResume = run.events.some((event) =>
     event.type === "run.interrupted" &&
     event.createdAt >= latestResolvedGateAt &&
@@ -544,9 +591,11 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
     }
     case "runtime.event_batch": {
       const payload = RuntimeEventBatchPayloadSchema.parse(entry.payload);
+      const batchEventCount = payload.eventCount ?? payload.events.length;
       updateRun(state, entry, (run) => ({
         ...run,
         events: [...run.events, ...payload.events],
+        eventCount: run.eventCount + batchEventCount,
         status: payload.status ?? run.status,
         output: payload.output ?? run.output,
         error: payload.error ?? run.error,
@@ -679,6 +728,60 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
         createdAt: payload.createdAt ?? existing?.createdAt ?? entry.createdAt,
         updatedAt: Math.max(payload.updatedAt ?? 0, existing?.updatedAt ?? 0, entry.createdAt),
       }));
+      // Restore branch metadata to affected runs for ledger replay consistency.
+      if (entry.type === "branch.adopted") {
+        if (payload.supersededRunId) {
+          const superseded = state.runs.get(payload.supersededRunId);
+          if (superseded) {
+            state.runs.set(payload.supersededRunId, RuntimeRunProjectionSchema.parse({
+              ...superseded,
+              config: {
+                ...superseded.config,
+                metadata: {
+                  ...superseded.config.metadata,
+                  supersededByRunId: payload.adoptedRunId,
+                  supersededAt: entry.createdAt,
+                },
+              },
+            }));
+          }
+        }
+        if (payload.notifiedCandidateRunIds) {
+          for (const runId of payload.notifiedCandidateRunIds) {
+            const run = state.runs.get(runId);
+            if (run) {
+              state.runs.set(runId, RuntimeRunProjectionSchema.parse({
+                ...run,
+                config: {
+                  ...run.config,
+                  metadata: {
+                    ...run.config.metadata,
+                    branchGroupAdoptedRunId: payload.adoptedRunId,
+                  },
+                },
+              }));
+            }
+          }
+        }
+      }
+      if (entry.type === "branch.dismissed" && payload.dismissedRunIds) {
+        for (const runId of payload.dismissedRunIds) {
+          const run = state.runs.get(runId);
+          if (run) {
+            state.runs.set(runId, RuntimeRunProjectionSchema.parse({
+              ...run,
+              config: {
+                ...run.config,
+                metadata: {
+                  ...run.config.metadata,
+                  branchDismissed: true,
+                  branchDismissedAt: entry.createdAt,
+                },
+              },
+            }));
+          }
+        }
+      }
       break;
     }
   }
@@ -731,7 +834,7 @@ function toLedgerSessionTurn(run: RuntimeRunProjection): SessionTurn {
     prompt: run.input.prompt,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
-    eventCount: run.events.length,
+    eventCount: run.eventCount,
     checkpointCount: run.checkpoints.length,
     artifactCount: 0,
   });
@@ -1135,5 +1238,6 @@ export function runtimeSessionProjectionToDetail(projection: RuntimeSessionProje
     transcript: projection.transcript,
     branchGroups: projection.branchGroups,
     latestSnapshot: projection.latestSnapshot,
+    snapshotSource: "ledger",
   });
 }

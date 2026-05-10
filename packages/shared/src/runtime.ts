@@ -1711,5 +1711,6 @@ export const SessionDetailSchema = z.object({
   transcript: z.array(SessionTranscriptMessageSchema).default([]),
   branchGroups: z.array(SessionBranchGroupSchema).default([]).optional(),
   latestSnapshot: StateSnapshotSchema.optional(),
+  snapshotSource: z.enum(["ledger", "live"]).optional(),
 });
 export type SessionDetail = z.infer<typeof SessionDetailSchema>;
