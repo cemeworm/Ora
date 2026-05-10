@@ -1336,6 +1336,16 @@ export async function executeRuntimeKernel(
 
   const runNodeRuntimeLoopForAgent = async (params: RunNodeRuntimeLoopParams): Promise<ModelResponse> =>
     runNodeRuntimeLoop(params, kernelRuntimeContext.nodeLoopDeps);
+  const assistantMessageId = (params: {
+    agentId: string;
+    nodeId: string;
+    actionId?: string;
+    suffix?: string;
+  }) => {
+    const actionSegment = params.actionId ? `:${params.actionId}` : "";
+    const suffixSegment = params.suffix ? `:${params.suffix}` : "";
+    return `${runId}:assistant:${params.agentId}:${params.nodeId}${actionSegment}${suffixSegment}`;
+  };
 
   const callAgent = async (params: {
     agentId: string;
@@ -1438,6 +1448,7 @@ export async function executeRuntimeKernel(
           customAgentId: effectiveCustomAgentId,
         });
         const response = await runNodeRuntimeLoopForAgent({
+          runId,
           agentId: params.agentId,
           nodeId: params.planItemId ?? params.agentId,
           title: params.title,
@@ -1464,6 +1475,11 @@ export async function executeRuntimeKernel(
           "message.delta",
           {
             role: "assistant",
+            messageId: assistantMessageId({
+              agentId: params.agentId,
+              nodeId: params.planItemId ?? params.agentId,
+              actionId: action.id,
+            }),
             content: response.text,
             ...(isInternalProviderAssistantText(response.text)
               ? { visibility: "internal" }
@@ -1611,6 +1627,12 @@ export async function executeRuntimeKernel(
           "message.delta",
           {
             role: "assistant",
+            messageId: assistantMessageId({
+              agentId: params.agentId,
+              nodeId: params.agentId,
+              actionId: action.id,
+              suffix: "recovery",
+            }),
             content: fallback,
             visibility: "internal",
             boundary: modeSpec.runtimeAtoms.includes("recovery_policy")
@@ -1701,6 +1723,7 @@ export async function executeRuntimeKernel(
       { agentId },
     );
     const response = await runNodeRuntimeLoopForAgent({
+      runId,
       agentId,
       nodeId,
       title,
@@ -1716,7 +1739,15 @@ export async function executeRuntimeKernel(
       toolIds: effectiveAgentToolIds(agentId),
     });
 
-    emit("message.delta", { role: "assistant", content: response.text }, { agentId, nodeId });
+    emit(
+      "message.delta",
+      {
+        role: "assistant",
+        messageId: assistantMessageId({ agentId, nodeId, suffix: "continuation" }),
+        content: response.text,
+      },
+      { agentId, nodeId },
+    );
     emit("agent.completed", { title }, { agentId, nodeId });
     kernelRuntimeContext.deactivateAgent(agentId);
     setTopologyStatus(agentId, "done");

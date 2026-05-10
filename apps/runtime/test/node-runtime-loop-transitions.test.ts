@@ -1356,10 +1356,15 @@ describe("node runtime loop transition contract", () => {
     process.env.NODE_LOOP_RECOVERY_KEY = "test";
     const providerBodies: string[] = [];
     let providerCalls = 0;
+    let recoveredFetchCalls = 0;
 
     globalThis.fetch = (async (input, init) => {
       if (String(input) === "https://example.com/node-loop-degraded") {
         throw new Error("fetch failed for transition test");
+      }
+      if (String(input) === "https://example.com/node-loop-recovered") {
+        recoveredFetchCalls += 1;
+        return new Response("Recovered fetch content", { status: 200, headers: { "content-type": "text/plain" } });
       }
 
       providerCalls += 1;
@@ -1383,8 +1388,26 @@ describe("node runtime loop transition contract", () => {
           }],
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
+      if (providerCalls === 2) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-recovered",
+                type: "function",
+                function: {
+                  name: "web__fetch",
+                  arguments: "{\"url\":\"https://example.com/node-loop-recovered\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({
-        choices: [{ message: { content: "Recovered from degraded fetch." } }],
+        choices: [{ message: { content: "Recovered from degraded fetch and then fetched follow-up content." } }],
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
@@ -1430,6 +1453,11 @@ describe("node runtime loop transition contract", () => {
         "tool_running",
         "degraded",
         "repairing",
+        "running_model",
+        "tool_requested",
+        "tool_running",
+        "tool_result_observed",
+        "running_model",
         "completed",
       ]), states.join(" -> ")).toBe(true);
       expectCoreTransitions(states);
@@ -1449,6 +1477,7 @@ describe("node runtime loop transition contract", () => {
         }),
       );
       expect(state.events.map((event) => event.type)).not.toContain("run.failed");
+      expect(recoveredFetchCalls).toBe(1);
       expect(state.toolCalls).toEqual([
         expect.objectContaining({
           providerCallId: "call-degraded",
@@ -1457,8 +1486,15 @@ describe("node runtime loop transition contract", () => {
           status: "failed",
           error: "fetch failed for transition test",
         }),
+        expect.objectContaining({
+          providerCallId: "call-recovered",
+          toolId: "web.fetch",
+          source: "provider_native",
+          status: "succeeded",
+        }),
       ]);
       expect(providerBodies.some((body) => body.includes("Workspace tool degraded for web.fetch"))).toBe(true);
+      expect(state.output?.text).toContain("Recovered from degraded fetch and then fetched follow-up content.");
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {

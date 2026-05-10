@@ -70,6 +70,7 @@ type RuntimeLoopEmit = (
 ) => OraEventEnvelope;
 
 export interface RunNodeRuntimeLoopParams {
+  runId: string;
   agentId: string;
   nodeId: string;
   title: string;
@@ -314,6 +315,13 @@ export async function runNodeRuntimeLoop(
     ? invokeRunProviderStream
     : invokeRunProvider;
   let lastProviderRequestMessages: ModelMessage[] = [];
+  let modelInvocationIndex = 0;
+  let activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:0`;
+  const nextAssistantMessageId = () => {
+    activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:${modelInvocationIndex}`;
+    modelInvocationIndex += 1;
+    return activeAssistantMessageId;
+  };
   const streamCallbacks = options.streamProvider
     ? {
         onTextDelta: (chunk: {
@@ -328,6 +336,7 @@ export async function runNodeRuntimeLoop(
             "message.delta",
             {
               role: "assistant",
+              messageId: activeAssistantMessageId,
               content: chunk.delta,
               delta: chunk.delta,
               streaming: true,
@@ -381,6 +390,7 @@ export async function runNodeRuntimeLoop(
     request: ModelRequest,
     options: { emitRetryModelState: boolean },
   ): Promise<ModelResponse> => {
+    nextAssistantMessageId();
     while (true) {
       try {
         const response = await invokeProvider(config, request, streamCallbacks);
@@ -776,6 +786,7 @@ export async function runNodeRuntimeLoop(
     1,
     Math.min(RUNTIME_TOOL_LOOP_SAFETY_LIMIT, remainingToolBudget),
   );
+  let ignoredUnavailableToolCallFollowUps = 0;
   for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
     if (!completion.toolsAllowed(completionScope)) {
       return runForcedFinalProviderCall({
@@ -796,10 +807,43 @@ export async function runNodeRuntimeLoop(
 
     const toolCall = selectRuntimeToolAttempt({
       response,
-      toolIds: params.toolIds,
+      toolIds: enabledTools,
       extractFallbackToolCall: (text, toolIds) => runtimeToolExecutor.extractToolCall(text, toolIds),
     });
     if (!toolCall) {
+      const ignoredNativeToolCalls = (response.toolCalls?.length ?? 0) > 0 &&
+        nativeRuntimeToolAttempts(response, enabledTools).length === 0;
+      if (ignoredNativeToolCalls && ignoredUnavailableToolCallFollowUps < 3) {
+        ignoredUnavailableToolCallFollowUps += 1;
+        emit("completion.updated", {
+          state: "tool_calls_ignored",
+          reason: "unavailable_tool_in_mode",
+          ignoredToolCalls: response.toolCalls,
+        });
+        nodeLoopController.emitTransitionResult("model_request", "running_model", {
+          agentId: params.agentId,
+          title: params.title,
+          reason: "unavailable_tool_in_mode",
+          detail: "The model requested a tool that is not available in the current mode.",
+          iteration: iteration + 1,
+        });
+        messages = [
+          ...messages,
+          { role: "assistant", content: response.text },
+          {
+            role: "user",
+            content: "The previous response requested a tool that is not available in the current mode. Continue without that tool and produce the required user-facing response.",
+          },
+        ];
+        response = await invokeFollowUpModel({
+          messages,
+          system: params.system,
+          maxTokens: config.budget?.maxTokens,
+          tools: nativeTools,
+          toolChoice: nativeTools.length > 0 ? "auto" : undefined,
+        }, response, "unavailable_tool_follow_up");
+        continue;
+      }
       const completionResult = await continueOrCompleteNaturally(response, iteration);
       if (completionResult.kind === "continue") {
         response = completionResult.response;
@@ -808,7 +852,7 @@ export async function runNodeRuntimeLoop(
       return completionResult.response;
     }
 
-    const allNativeToolCalls = nativeRuntimeToolAttempts(response);
+    const allNativeToolCalls = nativeRuntimeToolAttempts(response, enabledTools);
 
     const responseResult = await invokeModelResponse({
       response,

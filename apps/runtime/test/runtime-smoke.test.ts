@@ -375,6 +375,105 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("ignores plan.update tool calls in plan mode without entering tool recovery", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.PLAN_MODE_TOOL_PROVIDER_KEY;
+    process.env.PLAN_MODE_TOOL_PROVIDER_KEY = "test";
+    let providerCalls = 0;
+
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      expect(String(init?.body ?? "")).not.toContain("plan__update");
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-plan-update",
+                type: "function",
+                function: {
+                  name: "plan__update",
+                  arguments: "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"in_progress\"}]}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: "<proposed_plan>\n# Safe plan\n## 实施步骤\n1. Inspect only.\n## 验证方式\n- Review the plan.\n</proposed_plan>" },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "请先输出任务计划，不要实施。" },
+          config: {
+            modeId: CODE_DEVELOPMENT_MODE_ID,
+            providerId: "plan-mode-tool-provider",
+            modelRef: "plan-mode-tool-model",
+            providerConfig: {
+              id: "plan-mode-tool-provider",
+              label: "Plan Mode Tool Provider",
+              type: "openai_compatible",
+              modelId: "plan-mode-tool-model",
+              baseUrl: "https://plan-mode-tool-provider.test/v1",
+              apiKeyEnv: "PLAN_MODE_TOOL_PROVIDER_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            metadata: { taskIntent: "plan" },
+            toolIds: ["file.read", "plan.update"],
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(2);
+      expect(state.toolCalls).toEqual([]);
+      expect(state.events.map((event) => event.type)).not.toContain("recovery.detected");
+      expect(state.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "completion.updated",
+          payload: expect.objectContaining({
+            state: "tool_calls_ignored",
+            reason: "unavailable_tool_in_mode",
+          }),
+        }),
+      ]));
+      expectNoNodeLoopTransitionDiagnostics(state);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("<proposed_plan>"),
+        stoppedAfterProposedPlan: true,
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.PLAN_MODE_TOOL_PROVIDER_KEY;
+      } else {
+        process.env.PLAN_MODE_TOOL_PROVIDER_KEY = previousKey;
+      }
+    }
+  });
+
   it("injects an accepted proposed plan into the next implementation run after compaction", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
@@ -5897,6 +5996,14 @@ describe("Ora runtime smoke path", () => {
     const deltaEvents = streams.flatMap((stream) => stream.events).filter((event) => event.type === "message.delta");
     expect(deltaEvents.length).toBeGreaterThan(1);
     expect(deltaEvents.some((event) => typeof (event.payload as { delta?: unknown }).delta === "string")).toBe(true);
+    const messageIds = deltaEvents.map((event) => (event.payload as { messageId?: unknown }).messageId);
+    expect(messageIds.every((messageId) => typeof messageId === "string")).toBe(true);
+    expect(messageIds[0]).toMatch(new RegExp(`^${run.runId}:assistant:orchestrator:[^:]+:0$`));
+    const chunksByMessageId = new Map<unknown, number>();
+    for (const messageId of messageIds) {
+      chunksByMessageId.set(messageId, (chunksByMessageId.get(messageId) ?? 0) + 1);
+    }
+    expect([...chunksByMessageId.values()].some((count) => count > 1)).toBe(true);
 
     const state = StateSnapshotSchema.parse(await handle({
       jsonrpc: "2.0",

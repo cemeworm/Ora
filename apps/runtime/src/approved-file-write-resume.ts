@@ -495,7 +495,11 @@ export async function completeApprovedToolContinuation(
   }
 
   const finalText = await finalTextForApprovedToolContinuation(snapshot, toolResults, deps);
-  append("message.delta", { role: "assistant", content: finalText });
+  append("message.delta", {
+    role: "assistant",
+    messageId: `${snapshot.runId}:assistant:approved-file-write-resume`,
+    content: finalText,
+  });
   const output = { text: finalText };
   append("run.done", { status: "succeeded", output });
   updateContinuationStatus("completed");

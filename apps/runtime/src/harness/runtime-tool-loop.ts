@@ -37,8 +37,10 @@ export function selectRuntimeToolAttempt(params: {
   toolIds: string[];
   extractFallbackToolCall: (text: string, toolIds: string[]) => RuntimeToolCall | undefined;
 }): RuntimeToolAttempt | undefined {
+  const enabledToolIds = new Set(params.toolIds);
   const nativeToolCall = params.response.toolCalls
     ?.map(providerToolCallToAttempt)
+    .filter((attempt) => attempt && enabledToolIds.has(attempt.tool))
     .find(Boolean);
   if (nativeToolCall) {
     return nativeToolCall;
@@ -49,9 +51,14 @@ export function selectRuntimeToolAttempt(params: {
     : undefined;
 }
 
-export function nativeRuntimeToolAttempts(response: Pick<ModelResponse, "toolCalls">): RuntimeToolAttempt[] {
+export function nativeRuntimeToolAttempts(
+  response: Pick<ModelResponse, "toolCalls">,
+  toolIds?: readonly string[],
+): RuntimeToolAttempt[] {
+  const enabledToolIds = toolIds ? new Set(toolIds) : undefined;
   return (response.toolCalls
     ?.map(providerToolCallToAttempt)
+    .filter((attempt) => !enabledToolIds || (attempt && enabledToolIds.has(attempt.tool)))
     .filter(Boolean) as RuntimeToolAttempt[]) ?? [];
 }
 

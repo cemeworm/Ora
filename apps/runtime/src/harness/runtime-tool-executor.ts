@@ -410,7 +410,15 @@ export class RuntimeToolExecutor {
   private readonly workspace: unknown;
 
   enabledToolIds(toolIds: readonly string[] = []): RuntimeToolId[] {
-    return toolIds.filter((toolId): toolId is RuntimeToolId => this.definitions.has(toolId) && isRuntimeToolImplemented(toolId));
+    return toolIds.filter((toolId): toolId is RuntimeToolId =>
+      this.definitions.has(toolId) &&
+      isRuntimeToolImplemented(toolId) &&
+      this.toolAvailableForTaskIntent(toolId)
+    );
+  }
+
+  private toolAvailableForTaskIntent(toolId: RuntimeToolId): boolean {
+    return !(this.taskIntent === "plan" && toolId === "plan.update");
   }
 
   toolDefinitions(toolIds: readonly string[] = []): ModelToolDefinition[] {

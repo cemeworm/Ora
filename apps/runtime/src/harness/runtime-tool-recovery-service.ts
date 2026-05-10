@@ -452,6 +452,12 @@ export class RuntimeToolRecoveryService {
     if (/boundary violation/i.test(detail)) {
       return { kind: "throw", error };
     }
+    this.deps.nodeLoopController.emitModelRequest({
+      agentId: this.deps.agentId,
+      title: this.deps.title,
+      toolId: toolCall.tool,
+      detail: incident.detail,
+    });
     return {
       kind: "continue",
       response: await this.deps.invokeFollowUpModel({
