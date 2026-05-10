@@ -100,10 +100,11 @@ describe("run streaming", () => {
 
   it("does not validate pure deltas with the full snapshot schema", async () => {
     const parseSpy = vi.spyOn(StateSnapshotSchema, "parse");
+    const appendRuntimeEventBatchToLedger = vi.fn((liveSnapshot: StateSnapshot) => liveSnapshot);
     const service = new RunStreamingService({
       cacheRun: vi.fn(),
       cacheRunDelta: vi.fn(),
-      appendRuntimeEventBatchToLedger: (liveSnapshot) => liveSnapshot,
+      appendRuntimeEventBatchToLedger,
     });
     const session = service.createSession({
       runId: "run-test",
@@ -121,7 +122,33 @@ describe("run streaming", () => {
 
     expect(session.liveSnapshot.events).toHaveLength(300);
     expect(parseSpy).not.toHaveBeenCalled();
+    expect(appendRuntimeEventBatchToLedger).toHaveBeenCalledTimes(3);
     parseSpy.mockRestore();
+  });
+
+  it("keeps short pure-delta bursts off the ledger hot path", () => {
+    const appendRuntimeEventBatchToLedger = vi.fn((liveSnapshot: StateSnapshot) => liveSnapshot);
+    const service = new RunStreamingService({
+      cacheRun: vi.fn(),
+      cacheRunDelta: vi.fn(),
+      appendRuntimeEventBatchToLedger,
+    });
+    const session = service.createSession({
+      runId: "run-test",
+      liveSnapshot: snapshot(),
+      ledgeredEventCount: 0,
+    });
+
+    for (let seq = 1; seq <= 50; seq += 1) {
+      session.applyLiveEvent(event({
+        seq,
+        type: "message.delta",
+        payload: { role: "assistant", content: "x", delta: "x", streaming: true },
+      }));
+    }
+
+    expect(session.liveSnapshot.events).toHaveLength(50);
+    expect(appendRuntimeEventBatchToLedger).not.toHaveBeenCalled();
   });
 
   it("projects structured runtime events into the live snapshot", () => {

@@ -335,19 +335,6 @@ export async function runNodeRuntimeLoop(
             },
             { agentId: params.agentId, nodeId: params.agentId },
           );
-          emit(
-            "token.delta",
-            {
-              text: chunk.delta,
-              tokenCount: Math.max(
-                1,
-                chunk.delta.split(/\s+/).filter(Boolean).length,
-              ),
-              budget: config.budget,
-              streaming: true,
-            },
-            { agentId: params.agentId, nodeId: params.agentId },
-          );
         },
         onStreamEvent: (event: {
           kind: string;

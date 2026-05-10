@@ -9,6 +9,8 @@ import {
   shouldFlushStreamingEvent,
 } from "./run-streaming.js";
 
+const MAX_UNLEDGERED_DELTA_EVENTS = 256;
+
 export interface RunStreamingServiceDeps {
   cacheRun: (snapshot: StateSnapshot, flush: boolean) => void;
   appendRuntimeEventBatchToLedger: (
@@ -130,7 +132,7 @@ export class RunStreamingSession {
     }
     if (
       shouldFlush ||
-      this.liveSnapshotValue.events.length - this.ledgeredEventCount >= 50
+      this.liveSnapshotValue.events.length - this.ledgeredEventCount >= MAX_UNLEDGERED_DELTA_EVENTS
     ) {
       this.flushLedgerEvents();
     }
