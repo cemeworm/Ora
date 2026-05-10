@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   ArtifactRef,
   ArtifactRefSchema,
+  buildVisibleLedger,
   ChannelBindingSchema,
   ChannelConfigSchema,
   ChannelDeliverySchema,
@@ -156,9 +157,13 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
   }
 
   getSessionLedgerExcludingEvents(sessionId: string): RuntimeSessionLedger | undefined {
-    // Durable entries can currently parent through runtime.event_batch, so filtering
-    // those rows severs the leaf path and breaks session/run projections.
-    return this.getSessionLedger(sessionId);
+    const full = this.getSessionLedger(sessionId);
+    if (!full) return undefined;
+    try {
+      return buildVisibleLedger(full);
+    } catch {
+      return full;
+    }
   }
 
   getSessionLedgerCursor(sessionId: string) {
@@ -185,6 +190,16 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
       .map((sessionId) => this.getSessionLedger(sessionId))
       .filter((ledger): ledger is RuntimeSessionLedger => ledger !== undefined)
       .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  }
+
+  listLedgersExcludingEvents(): RuntimeSessionLedger[] {
+    return this.listSessionLedgers().map((ledger) => {
+      try {
+        return buildVisibleLedger(ledger);
+      } catch {
+        return ledger;
+      }
+    });
   }
 
   private directoryBytes(dir: string): number {

@@ -154,12 +154,14 @@ export function getSession(params: unknown, deps: ProjectSessionOperationDeps): 
     : turns.length > 0
     ? attachTraceMetadata(deps.getRunOrThrow(turns.at(-1)!.runId))
     : undefined;
+  const isTerminal = latestSnapshot?.status && latestSnapshot.status !== "queued" && latestSnapshot.status !== "running";
   return SessionDetailSchema.parse({
     session,
     turns,
     transcript: deps.sessionTranscript(parsed.sessionId),
     branchGroups: deps.branchGroupsForSession?.(parsed.sessionId) ?? branchGroupsForSession(parsed.sessionId, sessionRuns),
     latestSnapshot,
+    snapshotSource: latestSnapshot ? (isTerminal ? "ledger" : "live") : undefined,
   });
 }
 

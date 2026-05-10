@@ -106,7 +106,8 @@ import {
   deriveRunSnapshot,
   deriveSessionProjection,
   type RuntimeSessionEntry,
-  type RuntimeSessionEntryType
+  type RuntimeSessionEntryType,
+  type RuntimeSessionLedger,
 } from "@cemeworm/shared";
 import { AutomationService } from "./automation-service.js";
 import { TodoService } from "./capabilities.js";
@@ -781,6 +782,20 @@ export class LocalRunStore {
     const t0 = Date.now();
     const sessionId = (params as Record<string, unknown>)?.sessionId as string;
     this.refreshSessionIfStale(sessionId);
+    // Reload run snapshots from full ledger so session detail timeline has events.
+    // refreshSessionIfStale uses excludeEvents:true and produces slimmed snapshots.
+    if (this.isLedgerBackedSession(sessionId)) {
+      const fullLedger = this.backend.getSessionLedger(sessionId);
+      if (fullLedger) {
+        for (const [runId, snapshot] of this.runs) {
+          if (snapshot.sessionId !== sessionId) continue;
+          const projected = deriveRunSnapshot(fullLedger, runId, fullLedger.leafEntryId);
+          if (projected) {
+            this.runs.set(runId, this.rebaseActiveRunSnapshot(projected, snapshot));
+          }
+        }
+      }
+    }
     const t1 = Date.now();
     const result = getSessionOperation(params, this.projectSessionOperationDeps());
     const t2 = Date.now();
@@ -1071,6 +1086,8 @@ export class LocalRunStore {
           ...group,
           status: "adopted",
           adoptedRunId: adopted.runId,
+          supersededRunId: group.target === "replace_latest" ? group.replaceRunId : undefined,
+          notifiedCandidateRunIds: group.candidateRunIds.filter((runId) => runId !== candidate.runId),
           updatedAt: now,
         },
       });
@@ -1103,9 +1120,11 @@ export class LocalRunStore {
     const parsed = SessionBranchGroupDismissParamsSchema.parse(params);
     const group = this.getSessionBranchGroup(parsed);
     const now = this.now();
+    const dismissedRunIds: string[] = [];
     for (const runId of group.candidateRunIds) {
       const run = this.getRunOrThrow(runId);
       if (run.config.metadata.branchRole === "adopted") continue;
+      dismissedRunIds.push(runId);
       this.cacheRun(StateSnapshotSchema.parse({
         ...run,
         config: {
@@ -1120,7 +1139,10 @@ export class LocalRunStore {
       }), true);
     }
     const dismissed = this.getSessionBranchGroup(parsed);
-    this.appendBranchLifecycleEntry(parsed.sessionId, "branch.dismissed", dismissed, now);
+    this.appendBranchLifecycleEntry(parsed.sessionId, "branch.dismissed", {
+      ...dismissed,
+      dismissedRunIds,
+    } as SessionBranchGroup, now);
     return dismissed;
   }
 
@@ -2698,6 +2720,7 @@ export class LocalRunStore {
       createdAt: events.at(-1)?.createdAt ?? snapshot.updatedAt,
       payload: {
         events,
+        eventCount: events.length,
         status,
         output: snapshot.output,
         error: snapshot.error,
@@ -2734,6 +2757,7 @@ export class LocalRunStore {
       createdAt: snapshot.updatedAt,
       payload: {
         events,
+        eventCount: events.length,
         status: snapshot.status,
         output: snapshot.output,
         error: snapshot.error,
@@ -2909,17 +2933,7 @@ export class LocalRunStore {
     return this.runLedgerService.appendSessionLedgerEntries(sessionId, entries, options);
   }
 
-  private refreshSessionFromLedger(
-    sessionId: string,
-    leafEntryId?: string,
-    options: { excludeEvents?: boolean } = {},
-  ): SessionSummary {
-    const ledger = options.excludeEvents
-      ? this.backend.getSessionLedgerExcludingEvents?.(sessionId)
-      : this.backend.getSessionLedger(sessionId);
-    if (!ledger) {
-      return this.getSessionOrThrow(sessionId);
-    }
+  private applyLedgerToStore(sessionId: string, ledger: RuntimeSessionLedger, leafEntryId?: string): SessionSummary {
     const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
     this.sessions.set(sessionId, projection.session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
@@ -2932,10 +2946,33 @@ export class LocalRunStore {
     for (const run of projection.runs) {
       const snapshot = deriveRunSnapshot(ledger, run.runId, projection.leafEntryId);
       if (snapshot) {
+        const cached = this.runs.get(snapshot.runId);
+        // When the ledger excludes event batches, the derived snapshot has
+        // empty events. Preserve streaming fields from the in-memory cache
+        // so consumers don't observe truncated run histories.
+        if (cached && cached.events.length > 0 && snapshot.events.length === 0) {
+          snapshot.events = cached.events;
+          snapshot.checkpoints = cached.checkpoints;
+          snapshot.toolResults = cached.toolResults;
+        }
         this.runs.set(snapshot.runId, snapshot);
       }
     }
     return projection.session;
+  }
+
+  private refreshSessionFromLedger(
+    sessionId: string,
+    leafEntryId?: string,
+    options: { excludeEvents?: boolean } = {},
+  ): SessionSummary {
+    const ledger = options.excludeEvents
+      ? this.backend.getSessionLedgerExcludingEvents?.(sessionId)
+      : this.backend.getSessionLedger(sessionId);
+    if (!ledger) {
+      return this.getSessionOrThrow(sessionId);
+    }
+    return this.applyLedgerToStore(sessionId, ledger, leafEntryId ?? ledger.leafEntryId);
   }
 
   private refreshAllSessionLedgerProjections(): void {
@@ -2945,7 +2982,7 @@ export class LocalRunStore {
     }
     const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
     for (const ledger of ledgers) {
-      this.refreshSessionFromLedger(ledger.sessionId, ledger.leafEntryId, { excludeEvents: true });
+      this.applyLedgerToStore(ledger.sessionId, ledger, ledger.leafEntryId);
     }
     this.sessionLedgerRevision = revision ?? this.backend.ledgerRevision?.();
   }
@@ -2962,14 +2999,22 @@ export class LocalRunStore {
       return false;
     }
     const cached = this.runs.get(session.latestRunId);
-    if (!cached || cached.status === "queued" || cached.status === "running") {
+    if (!cached) {
       return false;
     }
     const projected = this.ledgerProjectedRunSnapshotForCachedRun(cached);
     if (!projected) {
       return false;
     }
-    return JSON.stringify(cached) !== JSON.stringify(projected);
+    // Exclude streaming-only fields that are expected to differ between
+    // the in-memory cache and the ledger projection for active runs.
+    const stripStreamingFields = (s: StateSnapshot) => ({
+      ...s,
+      events: [],
+      checkpoints: [],
+      toolResults: [],
+    });
+    return JSON.stringify(stripStreamingFields(cached)) !== JSON.stringify(stripStreamingFields(projected));
   }
 
   private refreshSessionIfStale(sessionId: string): void {
@@ -3496,12 +3541,24 @@ export class LocalRunStore {
         : snapshot.status === "queued" || snapshot.status === "running" || options.deferInitialTitle
           ? existing?.title ?? DEFAULT_SESSION_TITLE
           : defaultSessionTitle(snapshot.input.prompt));
+    const snapshotAttention = deriveRunAttention(snapshot);
+    // Hot-path guard: preserve a blocking attention from the cache only when
+    // the snapshot may not yet reflect a gate that was written to the ledger.
+    // Conditions: same run, snapshot not updated since last session write.
+    // When the snapshot is from a different run or fresher than the session
+    // (user just resolved a gate), trust the snapshot's own pending arrays.
+    const attention = existing?.attention?.blocking
+      && !snapshotAttention.blocking
+      && existing.latestRunId === snapshot.runId
+      && snapshot.updatedAt <= (existing.updatedAt ?? 0)
+      ? existing.attention
+      : snapshotAttention;
     return SessionSummarySchema.parse({
       sessionId,
       title,
       projectId: snapshot.input.projectId ?? existing?.projectId,
       status: snapshot.status,
-      attention: deriveRunAttention(snapshot),
+      attention,
       latestRunId: snapshot.runId,
       latestPattern: snapshot.pattern,
       latestModeId: snapshot.modeId ?? existing?.latestModeId,

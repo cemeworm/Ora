@@ -155,6 +155,7 @@ export function runRuntimeMaintenance(
           createdAt: now,
           payload: {
             events: [event],
+            eventCount: 1,
             status: "failed",
             error,
           },

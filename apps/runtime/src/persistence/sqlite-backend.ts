@@ -3,6 +3,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   ArtifactRefSchema,
+  buildVisibleLedger,
   ChannelBindingSchema,
   ChannelConfigSchema,
   ChannelDeliverySchema,
@@ -417,9 +418,13 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   getSessionLedgerExcludingEvents(sessionId: string): RuntimeSessionLedger | undefined {
-    // Durable entries can currently parent through runtime.event_batch, so filtering
-    // those rows severs the leaf path and breaks session/run projections.
-    return this.getSessionLedger(sessionId);
+    const full = this.getSessionLedger(sessionId);
+    if (!full) return undefined;
+    try {
+      return buildVisibleLedger(full);
+    } catch {
+      return full;
+    }
   }
 
   getSessionLedgerCursor(sessionId: string) {
@@ -449,9 +454,13 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
   }
 
   listLedgersExcludingEvents(): RuntimeSessionLedger[] {
-    // Keep the "excluding events" API shape for callers, but prefer correctness until
-    // the ledger can be filtered without breaking parent chains.
-    return this.listSessionLedgers();
+    return this.listSessionLedgers().map((ledger) => {
+      try {
+        return buildVisibleLedger(ledger);
+      } catch {
+        return ledger;
+      }
+    });
   }
 
   getEventBatchesForRun(sessionId: string, runId: string): RuntimeSessionEntry[] {
