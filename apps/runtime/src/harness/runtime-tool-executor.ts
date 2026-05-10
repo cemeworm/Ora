@@ -273,6 +273,7 @@ export function extractRuntimeToolCallFromText(text: string, toolIds: readonly s
     trimmed,
     ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi), (match) => match[1]?.trim() ?? ""),
     ...Array.from(trimmed.matchAll(/<tool_call(?:\s[^>]*)?>([\s\S]*?)<\/tool_call>/gi), (match) => match[1]?.trim() ?? ""),
+    ...extractInlineJsonCandidates(trimmed),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
@@ -283,6 +284,29 @@ export function extractRuntimeToolCallFromText(text: string, toolIds: readonly s
   }
 
   return extractTaggedToolCall(trimmed, enabled);
+}
+
+function extractInlineJsonCandidates(text: string): string[] {
+  const results: string[] = [];
+  const enabledPattern = /\{[^{}]*"tool"\s*:\s*"[^"]+"\s*[,}][^{}]*\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = enabledPattern.exec(text)) !== null) {
+    // Try to expand to balanced braces
+    const start = match.index;
+    let depth = 0;
+    let end = start;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") {
+        depth--;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    if (end > start) {
+      results.push(text.slice(start, end));
+    }
+  }
+  return results;
 }
 
 function extractJsonToolCall(candidate: string, enabled: Set<RuntimeToolId>): RuntimeToolCall | undefined {
@@ -434,8 +458,10 @@ export class RuntimeToolExecutor {
       .filter((snippet): snippet is string => typeof snippet === "string" && snippet.trim().length > 0))];
     return [
       "Workspace tool protocol:",
-      "When a tool is needed, respond with exactly one JSON object and no prose.",
-      "Tool call shape: {\"tool\":\"tool.id\",\"args\":{...}}",
+      "When a tool is needed, respond with EXACTLY a JSON code block containing the tool call — no markdown, no prose before or after.",
+      "Correct format:\n```json\n{\"tool\":\"tool.id\",\"args\":{...}}\n```",
+      "Incorrect: wrapping the JSON in explanations, greetings, or markdown outside the code block.",
+      "Use the function calling / tool use protocol provided by the platform. Do not describe tool calls in prose — actually invoke them.",
       rootPath ? "Workspace file and shell tools are rooted inside the selected project folder." : "Workspace file and shell tools are unavailable unless a project folder is selected.",
       "If the user asks what tools you can use, answer from this available-tools list and the selected workspace context; do not claim you have no local tools when tools are listed here.",
       enabledDefinitions.some((definition) => definition.requiresApprovalCopy)

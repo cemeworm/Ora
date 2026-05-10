@@ -167,6 +167,7 @@ export const RecoveryErrorTypeSchema = z.enum([
   "provider_quota",
   "provider_config_error",
   "boundary_violation",
+  "env_unavailable",
   "tool_error",
   "tool_policy_denied",
   "tool_output_invalid",
@@ -270,6 +271,12 @@ export const DEFAULT_MODE_RECOVERY_POLICY = ModeRecoveryPolicySchema.parse({
       id: "provider-config-fail",
       label: "Provider config fail",
       errorTypes: ["provider_config_error"],
+      action: "fail",
+    },
+    {
+      id: "env-unavailable-fail",
+      label: "Environment unavailable fail",
+      errorTypes: ["env_unavailable"],
       action: "fail",
     },
     {

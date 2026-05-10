@@ -160,7 +160,9 @@ export function classifyRecoveryError(error: unknown, context: {
     context.surface === "transport" ||
     context.surface === "sidecar"
   ) {
-    if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
+    if (matchesAny(lowered, ["no project folder", "eacces", "eperm", "permission denied"])) {
+      errorType = "env_unavailable";
+    } else if (matchesAny(lowered, ["quota", "billing", "credit", "payment"])) {
       errorType = "provider_quota";
     } else if (matchesAny(lowered, ["unknown provider"])) {
       errorType = "provider_config_error";
@@ -178,7 +180,9 @@ export function classifyRecoveryError(error: unknown, context: {
   } else if (context.surface === "tool") {
     errorType = matchesAny(lowered, ["approval", "denied", "not approved", "risky"])
       ? "tool_policy_denied"
-      : "tool_error";
+      : matchesAny(lowered, ["no project folder", "eacces", "eperm", "permission denied", "workspace file and shell tools are unavailable", "a selected project folder is required"])
+        ? "env_unavailable"
+        : "tool_error";
   } else if (context.surface === "model") {
     errorType = "model_output_invalid";
   } else {
