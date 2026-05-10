@@ -54,6 +54,7 @@ import type {
 } from "./runtimeClient";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
 import { parseProposedPlan } from "./proposedPlanParser";
+import { mergeAssistantMessageTextProjection } from "./assistantMessageProjection";
 
 const APPROVAL_INTERRUPT_MESSAGE = "需要你确认后，我才能继续。";
 const APPROVAL_INTERRUPT_MESSAGE_EN = "Waiting for your approval before continuing.";
@@ -83,9 +84,22 @@ export interface WorkbenchViewModel {
 
 export interface PendingRunPreview {
   sessionId: string;
+  runId?: string;
   prompt: string;
   createdAt: number;
   progressText?: string;
+}
+
+export interface LiveMessageDeltaPreview {
+  runId: string;
+  messageId: string;
+  sessionId?: string;
+  role: "assistant";
+  content: string;
+  agentId?: string;
+  nodeId?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export function buildWorkbenchViewModel(
@@ -1218,6 +1232,7 @@ function extractAttachmentsFromSnapshot(
 export function adaptChatMessages(
   transcript: OraSessionTranscriptMessage[],
   turnSnapshots: Record<string, OraStateSnapshot | undefined> = {},
+  liveMessageDeltas: Record<string, LiveMessageDeltaPreview> = {},
 ): ChatMessage[] {
   const grouped = new Map<
     string,
@@ -1302,7 +1317,8 @@ export function adaptChatMessages(
         ? buildAssistantTurnAttachment(turn.snapshot)
         : undefined;
       const rawAssistantText = turn.snapshot
-        ? assistantTextFromSnapshot(turn.snapshot)
+        ? liveAssistantTextForSnapshot(turn.snapshot, liveMessageDeltas) ??
+          assistantTextFromSnapshot(turn.snapshot)
         : undefined;
       const snapshotProposedPlan = turn.snapshot
         ? proposedPlanFromSnapshot(turn.snapshot)
@@ -1379,25 +1395,74 @@ export function adaptRenderableChatMessages(params: {
   transcript: OraSessionTranscriptMessage[];
   turnSnapshots?: Record<string, OraStateSnapshot | undefined>;
   pendingRun?: PendingRunPreview | undefined;
+  liveMessageDeltas?: Record<string, LiveMessageDeltaPreview>;
   selectedSessionId?: string;
   baseMessages?: ChatMessage[];
 }): ChatMessage[] {
   const turnSnapshots = params.turnSnapshots ?? {};
-  const messages = params.baseMessages ?? adaptChatMessages(params.transcript, turnSnapshots);
+  const baseMessages = params.baseMessages ?? adaptChatMessages(
+    params.transcript,
+    turnSnapshots,
+  );
+  const messages = overlayLiveMessageDeltas(
+    baseMessages,
+    turnSnapshots,
+    params.liveMessageDeltas ?? {},
+  );
   const pendingRun = params.pendingRun;
   if (!pendingRun || pendingRun.sessionId !== params.selectedSessionId) {
     return messages;
   }
-  const runAlreadyMaterialized = Object.values(turnSnapshots).some(
-    (snapshot) =>
-      snapshot?.sessionId === pendingRun.sessionId &&
-      snapshot.input.prompt === pendingRun.prompt &&
-      (snapshot.status === "queued" || snapshot.status === "running"),
+  const runAlreadyMaterialized = pendingRunAlreadyMaterialized(
+    pendingRun,
+    turnSnapshots,
   );
   if (runAlreadyMaterialized) {
     return messages;
   }
   return [...messages, ...adaptPendingRunMessages(pendingRun)];
+}
+
+function pendingRunAlreadyMaterialized(
+  pendingRun: PendingRunPreview,
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+): boolean {
+  if (!pendingRun.runId) {
+    return false;
+  }
+  const snapshot = turnSnapshots[pendingRun.runId];
+  return Boolean(
+    snapshot?.sessionId === pendingRun.sessionId &&
+      (snapshot.status === "queued" || snapshot.status === "running"),
+  );
+}
+
+function overlayLiveMessageDeltas(
+  messages: ChatMessage[],
+  turnSnapshots: Record<string, OraStateSnapshot | undefined>,
+  liveMessageDeltas: Record<string, LiveMessageDeltaPreview>,
+): ChatMessage[] {
+  if (Object.keys(liveMessageDeltas).length === 0) {
+    return messages;
+  }
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.role !== "assistant") {
+      return message;
+    }
+    const runId = message.metadata?.runId ?? message.turn?.runId;
+    const snapshot = runId ? turnSnapshots[runId] : undefined;
+    if (!snapshot) {
+      return message;
+    }
+    const liveText = liveAssistantTextForSnapshot(snapshot, liveMessageDeltas);
+    if (!liveText || message.content === liveText) {
+      return message;
+    }
+    changed = true;
+    return { ...message, content: liveText };
+  });
+  return changed ? next : messages;
 }
 
 export function isSessionProcessing(
@@ -1487,30 +1552,37 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
   return undefined;
 }
 
+function liveAssistantTextForSnapshot(
+  snapshot: OraStateSnapshot,
+  liveMessageDeltas: Record<string, LiveMessageDeltaPreview>,
+): string | undefined {
+  if (snapshot.status !== "queued" && snapshot.status !== "running") {
+    return undefined;
+  }
+  const entries = Object.values(liveMessageDeltas)
+    .filter((entry) =>
+      entry.runId === snapshot.runId &&
+      entry.role === "assistant" &&
+      entry.content.trim() &&
+      (!entry.sessionId || !snapshot.sessionId || entry.sessionId === snapshot.sessionId)
+    )
+    .sort((left, right) =>
+      left.updatedAt - right.updatedAt ||
+      left.createdAt - right.createdAt ||
+      left.messageId.localeCompare(right.messageId)
+    );
+  return entries.at(-1)?.content;
+}
+
 function mergeAssistantTextParts(parts: string[], event: OraEventEnvelope & { payload: Record<string, unknown> }): void {
-  const delta = typeof event.payload.delta === "string" ? event.payload.delta : undefined;
-  if (delta) {
-    parts.push(delta);
-    return;
+  const projection = mergeAssistantMessageTextProjection(
+    parts.length > 0 ? { text: parts.join("") } : undefined,
+    event.payload,
+  );
+  parts.length = 0;
+  if (projection?.text) {
+    parts.push(projection.text);
   }
-  const content = typeof event.payload.content === "string" ? event.payload.content : undefined;
-  if (!content) {
-    return;
-  }
-  const current = parts.join("");
-  if (!current) {
-    parts.push(content);
-    return;
-  }
-  if (content === current || current.endsWith(content)) {
-    return;
-  }
-  if (content.startsWith(current)) {
-    parts.length = 0;
-    parts.push(content);
-    return;
-  }
-  parts.push(content);
 }
 
 function extractClarificationQuestions(
@@ -2462,6 +2534,9 @@ function shouldCollectAssistantDeltaForTimeline(
   }
   if (!finalText) {
     return true;
+  }
+  if (event.payload.streaming === true) {
+    return false;
   }
   if (!hasVisibleProcessSeparators) {
     return false;

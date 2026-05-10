@@ -739,7 +739,10 @@ function WorkbenchInner() {
     const cache = chatMessagesCacheRef.current;
     const adapted = cache && cache.key === cacheKey
       ? cache.result
-      : adaptChatMessages(transcript, activeSessionTurnSnapshots);
+      : adaptChatMessages(
+          transcript,
+          activeSessionTurnSnapshots,
+        );
     if (!cache || cache.key !== cacheKey) {
       chatMessagesCacheRef.current = { key: cacheKey, result: adapted };
     }
@@ -747,12 +750,14 @@ function WorkbenchInner() {
       transcript,
       turnSnapshots: activeSessionTurnSnapshots,
       pendingRun,
+      liveMessageDeltas: state.liveMessageDeltaBuffer,
       selectedSessionId: state.selectedSessionId,
       baseMessages: adapted,
     });
   }, [
     activeSessionTurnSnapshots,
     state.activeSessionDetail,
+    state.liveMessageDeltaBuffer,
     state.runLifecycle,
     state.selectedSessionId,
   ]);

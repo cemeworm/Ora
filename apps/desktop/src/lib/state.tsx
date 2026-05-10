@@ -31,6 +31,7 @@ import {
   type AppLanguage,
 } from "./i18n";
 import { chooseBootstrapProviderId, chooseEnabledProviderId } from "./providerSelection";
+import { mergeAssistantMessageTextProjection } from "./assistantMessageProjection";
 import type {
   OraModeSpec,
   OraPackageStoreSnapshot,
@@ -105,6 +106,20 @@ export type RunLifecycle =
       createdAt: number;
       snapshot: OraStateSnapshot;
     };
+
+export interface LiveMessageDeltaBufferEntry {
+  runId: string;
+  messageId: string;
+  sessionId?: string;
+  role: "assistant";
+  content: string;
+  agentId?: string;
+  nodeId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type LiveMessageDeltaBuffer = Record<string, LiveMessageDeltaBufferEntry>;
 
 export function getActiveSnapshot(lc: RunLifecycle): OraStateSnapshot | undefined {
   return lc.stage === "streaming" || lc.stage === "settled" ? lc.snapshot : undefined;
@@ -240,6 +255,7 @@ export interface WorkbenchState {
   >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   runLifecycle: RunLifecycle;
+  liveMessageDeltaBuffer: LiveMessageDeltaBuffer;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   isLoading: boolean;
   busyCommand: string | undefined;
@@ -430,6 +446,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
   runLifecycle: { stage: "idle" },
+  liveMessageDeltaBuffer: {},
   pendingPlanDecisionResolution: undefined,
   isLoading: false,
   busyCommand: undefined,
@@ -1025,7 +1042,7 @@ export function mergeRunStreamSnapshot(
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
   return normalizeDesktopSnapshot({
     ...snapshot,
-    status: stream.status ?? snapshot.status,
+    status: streamRunStatus(stream, snapshot) ?? snapshot.status,
     planList,
     actions: merged.actions,
     pendingApprovals: merged.pendingApprovals,
@@ -1209,6 +1226,78 @@ function markPendingRunLatencyForStream(
     latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstNonProgressAssistantTextAt", receivedAt);
   }
   return latency === pendingRun.latency ? pendingRun : { ...pendingRun, latency };
+}
+
+function liveMessageDeltaBufferKey(runId: string, messageId: string): string {
+  return `${runId}:${messageId}`;
+}
+
+function applyStreamToLiveMessageDeltaBuffer(
+  buffer: LiveMessageDeltaBuffer,
+  stream: OraRunEventStream,
+): LiveMessageDeltaBuffer {
+  let next = buffer;
+  for (const event of stream.events) {
+    if (event.type !== "message.delta" || !isRecord(event.payload)) {
+      continue;
+    }
+    if (
+      event.payload.visibility === "internal" ||
+      event.payload.audience === "internal" ||
+      event.payload.public === false
+    ) {
+      continue;
+    }
+    const role = event.payload.role;
+    const messageId = event.payload.messageId;
+    if (role !== "assistant" || typeof messageId !== "string" || !messageId.trim()) {
+      continue;
+    }
+    const key = liveMessageDeltaBufferKey(stream.runId, messageId);
+    const existing = next[key];
+    const projection = mergeAssistantMessageTextProjection(
+      existing ? { text: existing.content } : undefined,
+      event.payload,
+    );
+    if (!projection?.text) {
+      continue;
+    }
+    if (next === buffer) {
+      next = { ...buffer };
+    }
+    next[key] = {
+      runId: stream.runId,
+      messageId,
+      sessionId: stream.sessionId ?? existing?.sessionId,
+      role: "assistant",
+      content: projection.text,
+      agentId: event.agentId ?? existing?.agentId,
+      nodeId: event.nodeId ?? existing?.nodeId,
+      createdAt: existing?.createdAt ?? event.createdAt,
+      updatedAt: event.createdAt,
+    };
+  }
+  return pruneLiveMessageDeltaBuffer(next, stream);
+}
+
+function pruneLiveMessageDeltaBuffer(
+  buffer: LiveMessageDeltaBuffer,
+  stream: OraRunEventStream,
+): LiveMessageDeltaBuffer {
+  const status = streamRunStatus(stream, stream.snapshot);
+  if (!isSettledRunStatus(status)) {
+    return buffer;
+  }
+  let changed = false;
+  const next: LiveMessageDeltaBuffer = {};
+  for (const [key, entry] of Object.entries(buffer)) {
+    if (entry.runId === stream.runId) {
+      changed = true;
+      continue;
+    }
+    next[key] = entry;
+  }
+  return changed ? next : buffer;
 }
 
 function streamLatencyDetail(stream: OraRunEventStream): Record<string, unknown> {
@@ -1535,10 +1624,31 @@ function streamRunStatus(
   stream: OraRunEventStream,
   snapshot: OraStateSnapshot | undefined,
 ): OraStateSnapshot["status"] | undefined {
-  if (snapshot?.runId === stream.runId) {
-    return snapshot.status;
+  const terminalStatus = terminalStatusFromStreamEvents(stream.events);
+  if (terminalStatus) {
+    return terminalStatus;
   }
-  return stream.status;
+  return stream.status ?? (snapshot?.runId === stream.runId ? snapshot.status : undefined);
+}
+
+function terminalStatusFromStreamEvents(
+  events: readonly OraRunEventStream["events"][number][],
+): OraStateSnapshot["status"] | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    switch (events[index]?.type) {
+      case "run.done":
+        return "succeeded";
+      case "run.failed":
+        return "failed";
+      case "run.cancelled":
+        return "cancelled";
+      case "run.interrupted":
+        return "interrupted";
+      default:
+        break;
+    }
+  }
+  return undefined;
 }
 
 function isSettledRunStatus(
@@ -1774,10 +1884,11 @@ function streamMatchesPendingRun(
 function createPendingRunSnapshot(
   pendingRun: PendingRunState | undefined,
   stream: OraRunEventStream,
+  turnIndex = 1,
 ): OraStateSnapshot | undefined {
   if (
     !pendingRun ||
-    pendingRun.runId ||
+    (pendingRun.runId && pendingRun.runId !== stream.runId) ||
     !stream.sessionId ||
     stream.sessionId !== pendingRun.sessionId ||
     stream.prompt !== pendingRun.prompt
@@ -1789,7 +1900,7 @@ function createPendingRunSnapshot(
   return {
     runId: stream.runId,
     sessionId: pendingRun.sessionId,
-    turnIndex: 1,
+    turnIndex,
     status: stream.status ?? "running",
     pattern,
     input: { prompt: pendingRun.prompt, createdAt, context: {} },
@@ -1833,6 +1944,20 @@ function createPendingRunSnapshot(
     planDecisions: [],
     updatedAt: createdAt,
   } as OraStateSnapshot;
+}
+
+function pendingRunTurnIndex(
+  detail: OraSessionDetail | undefined,
+  pendingRun: PendingRunState | undefined,
+): number {
+  if (!detail || !pendingRun || detail.session.sessionId !== pendingRun.sessionId) {
+    return 1;
+  }
+  const latestTurnIndex = detail.turns.reduce(
+    (max, turn) => Math.max(max, turn.turnIndex),
+    0,
+  );
+  return latestTurnIndex + 1;
 }
 
 function shouldClearPendingRunForStream(
@@ -2048,6 +2173,7 @@ export function workbenchReducer(
         sessionProjectFileAttachments: {},
         sessionLocalFileAttachments: {},
         runLifecycle: { stage: "idle" },
+        liveMessageDeltaBuffer: {},
         pendingPlanDecisionResolution: undefined,
         isLoading: true,
         busyCommand: undefined,
@@ -2661,14 +2787,24 @@ export function workbenchReducer(
       if (!streamMatchesActiveSession) {
         const streamStatus = streamRunStatus(action.stream, action.stream.snapshot);
         if (!isSettledRunStatus(streamStatus) && !action.stream.snapshot) {
-          return state;
+          const liveMessageDeltaBuffer = applyStreamToLiveMessageDeltaBuffer(
+            state.liveMessageDeltaBuffer,
+            action.stream,
+          );
+          return liveMessageDeltaBuffer === state.liveMessageDeltaBuffer
+            ? state
+            : { ...state, liveMessageDeltaBuffer };
         }
       }
       const activeSnapshot = streamBelongsToActiveTurn
         ? markDesktopLatencyForStream(
             mergeRunStreamSnapshot(
               currentActiveSnapshot ??
-                createPendingRunSnapshot(currentPendingRun, action.stream),
+                createPendingRunSnapshot(
+                  currentPendingRun,
+                  action.stream,
+                  pendingRunTurnIndex(state.activeSessionDetail, currentPendingRun),
+                ),
               action.stream,
             ),
             action.stream,
@@ -2693,9 +2829,8 @@ export function workbenchReducer(
             streamSnapshot,
           )
         : synced.activeSessionDetail;
-      const isSettled =
-        action.stream.status === "succeeded" ||
-        action.stream.status === "failed";
+      const derivedStreamStatus = streamRunStatus(action.stream, streamSnapshot);
+      const isSettled = isSettledRunStatus(derivedStreamStatus);
       const matchesPendingRun = streamMatchesPendingRun(
         currentPendingRun,
         action.stream,
@@ -2761,19 +2896,23 @@ export function workbenchReducer(
           ? (activeSnapshot?.config.modeSelection ??
             state.selectedModeSelection)
           : state.selectedModeSelection,
+        liveMessageDeltaBuffer: applyStreamToLiveMessageDeltaBuffer(
+          state.liveMessageDeltaBuffer,
+          action.stream,
+        ),
         lastRunTaskIntent:
           isSettled &&
           matchesPendingRun
             ? state.taskIntent
             : state.lastRunTaskIntent,
         isLoading: streamBelongsToActiveTurn
-          ? action.stream.status === "running" ||
-            action.stream.status === "queued"
+          ? derivedStreamStatus === "running" ||
+            derivedStreamStatus === "queued"
           : state.isLoading,
         commandFeedback:
-          streamBelongsToActiveTurn && action.stream.status === "succeeded"
+          streamBelongsToActiveTurn && derivedStreamStatus === "succeeded"
             ? "Run completed."
-            : streamBelongsToActiveTurn && action.stream.status === "failed"
+            : streamBelongsToActiveTurn && derivedStreamStatus === "failed"
               ? "Run failed."
               : state.commandFeedback,
       };
@@ -2901,6 +3040,7 @@ export function workbenchReducer(
           prompt: action.prompt,
           createdAt: action.createdAt,
         },
+        liveMessageDeltaBuffer: {},
         pendingPlanDecisionResolution: undefined,
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
@@ -2977,6 +3117,7 @@ export function workbenchReducer(
       return {
         ...state,
         runLifecycle: wasAccepted ? { stage: "idle" } : state.runLifecycle,
+        liveMessageDeltaBuffer: wasAccepted ? {} : state.liveMessageDeltaBuffer,
         pendingPlanDecisionResolution: undefined,
         isLoading: wasAccepted ? false : state.isLoading,
         busyCommand: undefined,
@@ -3005,6 +3146,7 @@ export function workbenchReducer(
         ...state,
         isLoading: action.loading,
         runLifecycle: action.loading ? state.runLifecycle : { stage: "idle" },
+        liveMessageDeltaBuffer: action.loading ? state.liveMessageDeltaBuffer : {},
         pendingPlanDecisionResolution: action.loading
           ? state.pendingPlanDecisionResolution
           : undefined,

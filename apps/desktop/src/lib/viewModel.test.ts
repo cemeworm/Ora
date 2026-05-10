@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { CODE_DEVELOPMENT_MODE_ID, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, MVP_MODES, MVP_PATTERNS, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, SINGLE_AGENT_MODE_ID } from "@cemeworm/shared";
 import { mergeStateSnapshot } from "./state";
-import { adaptChatMessages, adaptPendingRunMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
+import { adaptChatMessages, adaptPendingRunMessages, adaptRenderableChatMessages, buildWorkbenchViewModel, isSessionProcessing } from "./viewModel";
 import type { OraSessionDetail, OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop session view model", () => {
@@ -41,6 +41,82 @@ describe("desktop session view model", () => {
       isPlaceholder: true,
     });
     expect(messages[1]?.content).not.toContain("正在准备");
+  });
+
+  it("keeps a new pending user message visible when an old running turn has the same prompt", () => {
+    const createdAt = 1_714_000_000_000;
+    const sessionId = "session-second-turn-pending";
+    const prompt = "继续";
+    const oldRunId = "run-old-same-prompt";
+    const messages = adaptRenderableChatMessages({
+      transcript: [{
+        id: `${oldRunId}:user`,
+        sessionId,
+        runId: oldRunId,
+        turnIndex: 1,
+        role: "user",
+        content: prompt,
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      turnSnapshots: {
+        [oldRunId]: {
+          runId: oldRunId,
+          sessionId,
+          turnIndex: 1,
+          status: "running",
+          pattern: "orchestrator_subagent",
+          modeId: SINGLE_AGENT_MODE_ID,
+          input: { prompt, createdAt, context: {} },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            pattern: "orchestrator_subagent",
+            modeSelection: "manual",
+            profileIds: ["solo_agent"],
+            providerId: "deepseek",
+            modelRef: "deepseek-chat",
+            approvalMode: "high_risk_only",
+            patternOptions: {},
+            metadata: {},
+            deterministicSeed: "view-model-pending-same-prompt-test",
+            skillIds: [],
+            toolIds: [],
+          },
+          topology: { nodes: [], edges: [] },
+          profiles: [],
+          memory: [],
+          plan: [],
+          todos: [],
+          actions: [],
+          toolCalls: [],
+          policyDecisions: [],
+          checkpoints: [],
+          events: [],
+          artifacts: [],
+          activeAgents: [],
+          queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+          sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+          busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+          pendingClarifications: [],
+          pendingApprovals: [],
+          updatedAt: createdAt,
+        } as unknown as OraStateSnapshot,
+      },
+      pendingRun: {
+        sessionId,
+        prompt,
+        createdAt: createdAt + 1_000,
+      },
+      selectedSessionId: sessionId,
+    });
+
+    expect(messages.map((message) => message.id)).toContain(`${sessionId}:pending:user`);
+    expect(messages.at(-2)).toMatchObject({
+      id: `${sessionId}:pending:user`,
+      role: "user",
+      content: prompt,
+    });
   });
 
   it("does not treat a newly-created empty session preview as running", () => {
@@ -3557,6 +3633,204 @@ describe("desktop session view model", () => {
     expect(internalStatusMessage?.turn?.timelineItems).toEqual([]);
   });
 
+  it("renders explicit live message delta buffer text for running turns", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-buffer-view";
+    const sessionId = "session-live-buffer-view";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "介绍 Ora", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-buffer-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: `${runId}:assistant:solo:solo:0`,
+          content: "Hi!",
+          delta: "Hi!",
+          streaming: true,
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "介绍 Ora",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+    const assistant = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${runId}:assistant:solo:solo:0`]: {
+          runId,
+          messageId: `${runId}:assistant:solo:solo:0`,
+          sessionId,
+          role: "assistant",
+          content: "Hi! I'm Ora.",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          updatedAt: createdAt + 100,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+
+    expect(baseMessages.find((message) => message.role === "assistant")?.content).toBe("Hi!");
+    expect(assistant?.content).toBe("Hi! I'm Ora.");
+    expect(assistant?.isPlaceholder).toBe(true);
+  });
+
+  it("does not mutate cached base messages while overlaying live message delta text", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-buffer-cache";
+    const sessionId = "session-live-buffer-cache";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "介绍 Ora", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-buffer-cache-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: {
+          role: "assistant",
+          messageId: `${runId}:assistant:solo:solo:0`,
+          content: "Hi!",
+          delta: "Hi!",
+          streaming: true,
+        },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "介绍 Ora",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+    const rendered = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${runId}:assistant:solo:solo:0`]: {
+          runId,
+          messageId: `${runId}:assistant:solo:solo:0`,
+          sessionId,
+          role: "assistant",
+          content: "Hi! I'm Ora.",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          updatedAt: createdAt + 100,
+        },
+      },
+    });
+
+    expect(rendered).not.toBe(baseMessages);
+    expect(baseMessages.find((message) => message.role === "assistant")?.content).toBe("Hi!");
+    expect(rendered.find((message) => message.role === "assistant")?.content).toBe("Hi! I'm Ora.");
+  });
+
   it("segments live assistant deltas by agent and ignores final cumulative content events", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
@@ -3693,6 +3967,102 @@ describe("desktop session view model", () => {
     expect(timelineText).toEqual(["草稿。", "研究结论。", "最终回答。"]);
   });
 
+  it("does not duplicate streaming body when a running snapshot receives cumulative content-only events", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-running-cumulative-content";
+    const sessionId = "session-running-cumulative-content";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "介绍 Ora", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-running-cumulative-content-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "solo",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId, content: "Hi", delta: "Hi", streaming: true },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "message.delta",
+          agentId: "solo",
+          createdAt: createdAt + 100,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId, content: " there", delta: " there", streaming: true },
+        },
+        {
+          id: `${runId}:evt-2`,
+          runId,
+          seq: 2,
+          type: "message.delta",
+          agentId: "solo",
+          createdAt: createdAt + 200,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId, content: "Hi there", streaming: false },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 200,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "介绍 Ora",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("Hi there");
+  });
+
   it("shows only the final output text for completed model delta timelines", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
@@ -3777,6 +4147,108 @@ describe("desktop session view model", () => {
     expect(assistant?.content).toBe("最终回答。");
     expect(assistant?.turn?.timelineItems?.map((item) => item.kind)).toEqual(["final_text"]);
     expect(assistant?.turn?.timelineItems?.[0]).toMatchObject({ content: "最终回答。" });
+  });
+
+  it("prefers final markdown over streamed delta timeline text after completion", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalMarkdown = [
+      "## 模型概况",
+      "",
+      "| 特性 | deepseek-v4-flash | deepseek-v4-pro |",
+      "|---|---|---|",
+      "| 上下文长度 | 1M tokens | 1M tokens |",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-final-markdown-stream",
+      sessionId: "session-final-markdown-stream",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "帮我查价格", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-v4-flash",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-final-markdown-stream-test",
+        skillIds: [],
+        toolIds: ["web.fetch"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-final-markdown-stream:evt-status",
+          runId: "run-final-markdown-stream",
+          seq: 0,
+          type: "tool.called",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "web.fetch",
+            status: "succeeded",
+            input: { url: "https://api-docs.deepseek.com/quick_start/pricing" },
+            output: { url: "https://api-docs.deepseek.com/quick_start/pricing" },
+          },
+        },
+        ...["##", " ", "模型", "概况", "\n\n", "| 特性 | deepseek-v4-flash | deepseek-v4-pro |\n", "|---|---|---|\n", "| 上下文长度 | 1M tokens | 1M tokens |"].map((delta, index) => ({
+          id: `run-final-markdown-stream:evt-${index + 1}`,
+          runId: "run-final-markdown-stream",
+          seq: index + 1,
+          type: "message.delta",
+          createdAt: createdAt + index + 1,
+          pattern: "orchestrator_subagent",
+          payload: {
+            role: "assistant",
+            messageId: "run-final-markdown-stream:assistant:solo:solo:0",
+            content: delta,
+            delta,
+            streaming: true,
+          },
+        })),
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalMarkdown },
+      updatedAt: createdAt + 10_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-final-markdown-stream:user",
+        sessionId: "session-final-markdown-stream",
+        runId: "run-final-markdown-stream",
+        turnIndex: 1,
+        role: "user",
+        content: "帮我查价格",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-final-markdown-stream": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe(finalMarkdown);
+    expect(assistant?.turn?.timelineItems?.filter((item) => item.kind === "assistant_text")).toHaveLength(0);
+    expect(assistant?.turn?.timelineItems?.at(-1)).toMatchObject({ kind: "final_text", content: finalMarkdown });
   });
 
   it("keeps internal agent tool-policy output out of the assistant body", () => {

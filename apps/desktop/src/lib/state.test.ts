@@ -1108,6 +1108,319 @@ describe("desktop workbench state", () => {
     expect(getActiveSnapshot(withHandle.runLifecycle)?.events).toHaveLength(1);
   });
 
+  it("keeps second-turn pre-handle streams materialized as the next turn", () => {
+    const sessionId = "session-second-turn-pre-handle";
+    const firstRunId = "run-first-turn";
+    const secondRunId = "run-second-turn";
+    const prompt = "继续分析";
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      ...sessionSummary(sessionId),
+      turnCount: 1,
+      latestRunId: firstRunId,
+      status: "succeeded",
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: firstRunId,
+      activeSessionDetail: {
+        session,
+        turns: [{
+          runId: firstRunId,
+          sessionId,
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: "orchestrator_subagent",
+          prompt: "第一轮",
+          startedAt: createdAt,
+          updatedAt: createdAt,
+          eventCount: 2,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [{
+          id: `${firstRunId}:user`,
+          sessionId,
+          runId: firstRunId,
+          turnIndex: 1,
+          role: "user",
+          content: "第一轮",
+          pattern: "orchestrator_subagent",
+          createdAt,
+        }],
+        latestSnapshot: testSnapshot({
+          runId: firstRunId,
+          sessionId,
+          status: "succeeded",
+          updatedAt: createdAt,
+        }),
+      },
+      runLifecycle: lifecycleFromPendingRun({
+        sessionId,
+        prompt,
+        createdAt: createdAt + 1_000,
+      }),
+      isLoading: true,
+    };
+    const stream = {
+      runId: secondRunId,
+      sessionId,
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${secondRunId}:event:0`,
+        runId: secondRunId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: createdAt + 1_100,
+        payload: { role: "assistant", content: "好的", delta: "好的", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: createdAt + 1_200,
+    });
+    const activeSnapshot = getActiveSnapshot(next.runLifecycle);
+
+    expect(activeSnapshot?.runId).toBe(secondRunId);
+    expect(activeSnapshot?.turnIndex).toBe(2);
+    expect(activeSnapshot?.input.prompt).toBe(prompt);
+    expect(next.selectedTurnRunId).toBe(secondRunId);
+    expect(getPendingRunState(next.runLifecycle)).toBeUndefined();
+  });
+
+  it("accumulates explicit assistant message deltas by run and message id", () => {
+    const sessionId = "session-live-buffer";
+    const prompt = "介绍 Ora";
+    const runId = "run-live-buffer";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt, createdAt: 100 }),
+      isLoading: true,
+    };
+    const firstStream = {
+      runId,
+      sessionId,
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: "Hi", delta: "Hi", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+    const secondStream = {
+      ...firstStream,
+      fromSeq: 1,
+      nextSeq: 2,
+      events: [{
+        id: `${runId}:evt-1`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        createdAt: 130,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: " there", delta: " there", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterFirst = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream: firstStream,
+      receivedAt: 125,
+    });
+    const afterSecond = workbenchReducer(afterFirst, {
+      type: "APPLY_RUN_STREAM",
+      stream: secondStream,
+      receivedAt: 135,
+    });
+
+    const entry = Object.values(afterSecond.liveMessageDeltaBuffer)[0];
+    expect(entry).toMatchObject({
+      runId,
+      messageId,
+      sessionId,
+      role: "assistant",
+      content: "Hi there",
+      agentId: "solo",
+      nodeId: "solo",
+      createdAt: 120,
+      updatedAt: 130,
+    });
+
+    const settled = workbenchReducer(afterSecond, {
+      type: "APPLY_RUN_STREAM",
+      stream: {
+        ...secondStream,
+        fromSeq: 2,
+        nextSeq: 3,
+        status: "succeeded",
+        events: [{
+          id: `${runId}:evt-2`,
+          runId,
+          seq: 2,
+          type: "run.done",
+          createdAt: 140,
+          payload: { status: "succeeded", output: { text: "Hi there" } },
+        }],
+        snapshot: testSnapshot({ runId, sessionId, status: "succeeded", updatedAt: 140 }),
+      } as unknown as OraRunEventStream,
+      receivedAt: 145,
+    });
+    expect(settled.liveMessageDeltaBuffer).toEqual({});
+  });
+
+  it("treats explicit content-only assistant message events as cumulative replacements", () => {
+    const sessionId = "session-live-buffer-cumulative";
+    const prompt = "介绍 Ora";
+    const runId = "run-live-buffer-cumulative";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      runLifecycle: lifecycleFromPendingRun({ sessionId, prompt, createdAt: 100 }),
+      isLoading: true,
+    };
+    const firstStream = {
+      runId,
+      sessionId,
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: "Hi", delta: "Hi", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+    const secondStream = {
+      ...firstStream,
+      fromSeq: 1,
+      nextSeq: 2,
+      events: [{
+        id: `${runId}:evt-1`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        createdAt: 130,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: "Hi there", streaming: false },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterFirst = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream: firstStream,
+      receivedAt: 125,
+    });
+    const afterSecond = workbenchReducer(afterFirst, {
+      type: "APPLY_RUN_STREAM",
+      stream: secondStream,
+      receivedAt: 135,
+    });
+
+    const entry = Object.values(afterSecond.liveMessageDeltaBuffer)[0];
+    expect(entry?.content).toBe("Hi there");
+  });
+
+  it("settles an active run from a terminal event-only stream", () => {
+    const sessionId = "session-event-only-terminal";
+    const runId = "run-event-only-terminal";
+    const runningSnapshot = testSnapshot({ runId, sessionId, status: "running", updatedAt: 100 });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      runLifecycle: lifecycleFromSnapshot(runningSnapshot),
+      isLoading: true,
+    };
+    const stream = {
+      runId,
+      sessionId,
+      fromSeq: 0,
+      nextSeq: 1,
+      events: [{
+        id: `${runId}:evt-done`,
+        runId,
+        seq: 0,
+        type: "run.done",
+        createdAt: 150,
+        payload: { status: "succeeded" },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 160,
+    });
+
+    expect(next.runLifecycle.stage).toBe("settled");
+    expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
+    expect(next.isLoading).toBe(false);
+    expect(next.commandFeedback).toBe("Run completed.");
+  });
+
+  it("ignores legacy message deltas without explicit message ids", () => {
+    const sessionId = "session-legacy-buffer";
+    const prompt = "介绍 Ora";
+    const runId = "run-legacy-buffer";
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      runLifecycle: lifecycleFromPendingRun({ sessionId, runId, prompt, createdAt: 100 }),
+      isLoading: true,
+    };
+    const stream = {
+      runId,
+      sessionId,
+      prompt,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        payload: { role: "assistant", content: "legacy", delta: "legacy", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const next = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream,
+      receivedAt: 125,
+    });
+
+    expect(next.liveMessageDeltaBuffer).toEqual({});
+    expect(getActiveSnapshot(next.runLifecycle)?.events).toHaveLength(1);
+  });
+
   it("preserves a normal pending run across stale session hydration until the run materializes", () => {
     const sessionId = "session-pending-hydrate";
     const prompt = "解释一下这个项目。";

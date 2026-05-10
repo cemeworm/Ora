@@ -231,7 +231,7 @@ export function ChatView({
       activeSnapshot,
       runInteractionState,
     }),
-    [activeSnapshot, runInteractionState],
+    [activeSnapshot?.planList, runInteractionState.isProcessing],
   );
   const branchGroups = state.activeSessionDetail?.branchGroups ?? [];
   const [branchPanelOpen, setBranchPanelOpen] = useState(false);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
@@ -22,21 +22,27 @@ interface PlanStepsTrayProps {
 
 export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
   const [open, setOpen] = useState(true);
+  const planIdentity = useMemo(() => planStepsIdentity(planSteps), [planSteps]);
+  const previousPlanIdentity = useRef<string>("");
+  const previousAllCompleted = useRef(false);
 
   useEffect(() => {
-    if (planSteps.length > 0) {
-      setOpen(true);
-    }
-  }, [planSteps.length]);
+    const nextAllCompleted = planStepsAreAllCompleted(planSteps);
+    const nextOpen = nextPlanTrayOpenState({
+      currentOpen: open,
+      planSteps,
+      previousPlanIdentity: previousPlanIdentity.current,
+      nextPlanIdentity: planIdentity,
+      previousAllCompleted: previousAllCompleted.current,
+    });
 
-  useEffect(() => {
-    if (
-      planSteps.length > 0 &&
-      planSteps.every((s) => s.status === "completed")
-    ) {
-      setOpen(false);
+    previousPlanIdentity.current = planIdentity;
+    previousAllCompleted.current = nextAllCompleted;
+
+    if (nextOpen !== open) {
+      setOpen(nextOpen);
     }
-  }, [planSteps]);
+  }, [open, planIdentity, planSteps]);
 
   if (planSteps.length === 0) return null;
 
@@ -75,6 +81,45 @@ export function PlanStepsTray({ planSteps }: PlanStepsTrayProps) {
       </TaskList>
     </div>
   );
+}
+
+export function nextPlanTrayOpenState({
+  currentOpen,
+  planSteps,
+  previousPlanIdentity,
+  nextPlanIdentity,
+  previousAllCompleted,
+}: {
+  currentOpen: boolean;
+  planSteps: TurnPlanListStep[];
+  previousPlanIdentity: string;
+  nextPlanIdentity: string;
+  previousAllCompleted: boolean;
+}) {
+  if (planSteps.length === 0) {
+    return currentOpen;
+  }
+
+  if (nextPlanIdentity !== previousPlanIdentity) {
+    return true;
+  }
+
+  if (!previousAllCompleted && planStepsAreAllCompleted(planSteps)) {
+    return false;
+  }
+
+  return currentOpen;
+}
+
+function planStepsAreAllCompleted(planSteps: TurnPlanListStep[]) {
+  return (
+    planSteps.length > 0 &&
+    planSteps.every((s) => s.status === "completed")
+  );
+}
+
+function planStepsIdentity(planSteps: TurnPlanListStep[]) {
+  return planSteps.map((item) => item.step).join("\n");
 }
 
 function PlanListStepItem({ item }: { item: TurnPlanListStep }) {
