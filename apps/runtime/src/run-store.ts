@@ -293,6 +293,13 @@ const StartRunParamsSchema = z.object({
   sessionId: z.string().min(1).optional(),
 });
 
+const ForkResumeParamsSchema = RunForkParamsSchema.extend({
+  resume: z.object({
+    reason: z.string().min(1).optional(),
+    patch: z.record(z.unknown()).optional(),
+  }).optional(),
+});
+
 type AcceptedPlanHandoff = {
   decisionId: string;
   sourceRunId: string;
@@ -2198,9 +2205,6 @@ export class LocalRunStore {
           ...frame,
           id: `${forkSnapshot.runId}:forked-continuation:${index}`,
           runId: forkSnapshot.runId,
-          pendingActionIds: [],
-          pendingToolCallIds: [],
-          pendingClarificationIds: [],
           resumedFromFrameId: frame.id,
         })),
       },
@@ -2209,6 +2213,36 @@ export class LocalRunStore {
     const projected = this.appendRunSnapshotUpdateToLedger(updated);
     this.persistRun(projected);
     return toRunHandle(projected);
+  }
+
+  async forkAndResumeRun(params: unknown, options: StreamingRunOptions = {}): Promise<RunHandle> {
+    const parsed = ForkResumeParamsSchema.parse(params);
+    const fork = await this.forkRun(parsed);
+    const forked = this.getRunState({ runId: fork.runId });
+    const pendingApprovalIds = new Set(
+      forked.attention?.kind === "needs_approval"
+        ? forked.attention.pendingActionIds
+        : [],
+    );
+    const activeFrame = forked.continuation.frames.find((frame) => frame.id === forked.continuation.activeFrameId)
+      ?? forked.continuation.frames.find((frame) => frame.status === "paused");
+    for (const actionId of activeFrame?.pendingActionIds ?? []) {
+      pendingApprovalIds.add(actionId);
+    }
+    const approvedActionIdsFromActions = forked.actions
+      .filter((action) => action.status === "approval_required" && pendingApprovalIds.has(action.id))
+      .map((action) => action.id);
+    const approvedActionIds = approvedActionIdsFromActions.length > 0
+      ? approvedActionIdsFromActions
+      : [...pendingApprovalIds];
+    return this.resumeStreamingRun({
+      runId: fork.runId,
+      reason: parsed.resume?.reason ?? "Forked from checkpoint and resumed.",
+      patch: {
+        approvedActionIds,
+        ...(parsed.resume?.patch ?? {}),
+      },
+    }, options);
   }
 
   async forkFlow(params: unknown) {

@@ -992,6 +992,7 @@ export async function executeRuntimeKernel(
     nodeId?: string;
     title?: string;
     emitNodeRuntimeState?: typeof emitNodeRuntimeState;
+    onProviderExhausted?: (error: unknown) => ModelResponse | undefined;
   }): Promise<ModelResponse> => {
     completion.markForcedFinalConsumed({ agentId: params.agentId, nodeId: params.nodeId });
     const forcedFinalStateEmitter = params.emitNodeRuntimeState ?? emitNodeRuntimeState;
@@ -1018,6 +1019,10 @@ export async function executeRuntimeKernel(
             reason: params.reason,
             detail: caught instanceof Error ? caught.message : String(caught),
           });
+        }
+        const exhaustedFallback = params.onProviderExhausted?.(caught);
+        if (exhaustedFallback) {
+          return exhaustedFallback;
         }
         throw caught;
       }
@@ -1458,6 +1463,40 @@ export async function executeRuntimeKernel(
             ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
             : undefined,
           toolIds: effectiveToolIds,
+          onForcedFinalProviderExhausted: (error) => {
+            const detail = error instanceof Error ? error.message : String(error);
+            const incident = classifyRecoveryError(error, {
+              surface: "provider",
+              nodeId: params.agentId,
+              agentId: params.agentId,
+              actionId: action.id,
+            });
+            const finalizationIncident: RecoveryIncident = {
+              ...incident,
+              errorType: "provider_finalization_unavailable",
+            };
+            const recoveryDecision = recoveryCoordinator.resolve(finalizationIncident);
+            emitRecoveryDecision(finalizationIncident, recoveryDecision);
+            if (recoveryDecision.action !== "fallback_artifact") {
+              return undefined;
+            }
+            const recoveryArtifact = publishRecoveryArtifact(
+              finalizationIncident,
+              recoveryDecision,
+            );
+            return {
+              providerId: configuredProviderId(config) ?? "unknown",
+              providerType: config.providerConfig?.type ?? "local_smoke",
+              modelId: config.modelRef ?? config.providerConfig?.modelId ?? "unknown",
+              text: `${params.title} continued with limited context after forced-final provider recovery.`,
+              raw: {
+                recoveryArtifactId: recoveryArtifact.id,
+                recoveredFrom: "forced_final_provider",
+                error: detail,
+              },
+              finishReason: "recovery_fallback",
+            };
+          },
         });
 
         emit(

@@ -89,6 +89,7 @@ const MIN_DETAIL_PANEL_WIDTH = 360;
 const MIN_ARTIFACT_PANEL_WIDTH = 320;
 const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora";
+const DEBUGGER_VIEW_TITLE = "Run Debugger";
 const MAX_TURN_SNAPSHOTS = 40;
 
 interface BatchedStream {
@@ -132,10 +133,10 @@ function windowTitleForView(
     case "modes":
       return `${base} · ${translateCopy(language, "Modes")}`;
     case "evaluation":
-      return `${base} · ${translateCopy(language, "Evaluation")}`;
+      return `${base} · Compare / Evals`;
     case "chat":
     default:
-      return `${base} · ${translateCopy(language, "Chat")}`;
+      return `${base} · ${DEBUGGER_VIEW_TITLE}`;
   }
 }
 
@@ -962,7 +963,7 @@ function WorkbenchInner() {
     );
   }
 
-  // Chat view (default)
+  // Run Debugger view (default)
   const {
     actions: actionRecords,
     agents,
@@ -1090,6 +1091,8 @@ function WorkbenchInner() {
                   runInteractionState={runInteractionState}
                   selectedSession={selectedSession}
                   onForkRun={actions.forkRun}
+                  onForkAndResumeRun={actions.forkAndResumeRun}
+                  onReplaySelection={actions.replaySelection}
                   onResumeRun={actions.resumeRun}
                   onCancelRun={actions.cancelRun}
                 />

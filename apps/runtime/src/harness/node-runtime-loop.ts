@@ -81,6 +81,7 @@ export interface RunNodeRuntimeLoopParams {
   /** Optional per-node timeout in milliseconds. If set, the node automatically
    *  transitions to `degraded` if execution exceeds this duration. */
   timeoutMs?: number;
+  onForcedFinalProviderExhausted?: (error: unknown) => ModelResponse | undefined;
 }
 
 export interface RunNodeRuntimeLoopDeps {
@@ -170,6 +171,7 @@ export interface RunNodeRuntimeLoopDeps {
     nodeId?: string;
     title?: string;
     emitNodeRuntimeState?: RunNodeRuntimeLoopDeps["emitNodeRuntimeState"];
+    onProviderExhausted?: (error: unknown) => ModelResponse | undefined;
   }) => Promise<ModelResponse>;
   publishRecoveryArtifact: (
     incident: RecoveryIncident,
@@ -613,6 +615,7 @@ export async function runNodeRuntimeLoop(
         nodeId: params.nodeId,
         title: params.title,
         emitNodeRuntimeState: emitForcedFinalProviderState,
+        onProviderExhausted: params.onForcedFinalProviderExhausted,
       }),
     invokeFollowUpModel,
   };
@@ -756,6 +759,10 @@ export async function runNodeRuntimeLoop(
         reason: completion.stopReasonForScope(completionScope) ?? "tool_budget_exhausted",
         detail: error instanceof Error ? error.message : String(error),
       });
+      const exhaustedFallback = params.onForcedFinalProviderExhausted?.(error);
+      if (exhaustedFallback) {
+        return exhaustedFallback;
+      }
     }
     throw error;
   }
@@ -802,6 +809,7 @@ export async function runNodeRuntimeLoop(
         nodeId: params.nodeId,
         title: params.title,
         emitNodeRuntimeState: emitForcedFinalProviderState,
+        onProviderExhausted: params.onForcedFinalProviderExhausted,
       });
     }
 
@@ -904,6 +912,7 @@ export async function runNodeRuntimeLoop(
         nodeId: params.nodeId,
         title: params.title,
         emitNodeRuntimeState: emitForcedFinalProviderState,
+        onProviderExhausted: params.onForcedFinalProviderExhausted,
       });
     }
 
@@ -960,6 +969,7 @@ export async function runNodeRuntimeLoop(
     agentId: params.agentId,
     title: params.title,
     emitNodeRuntimeState: emitForcedFinalProviderState,
+    onProviderExhausted: params.onForcedFinalProviderExhausted,
   });
 }
 

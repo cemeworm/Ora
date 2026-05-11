@@ -286,6 +286,8 @@ export function createRuntimeMethodHandler(
         return store.replayRun(request.params);
       case "runs.fork":
         return store.forkRun(request.params);
+      case "runs.forkAndResume":
+        return store.forkAndResumeRun(request.params, { onStream: options.onRunStream });
       case "runs.exportReport":
         return store.exportReport(request.params);
       case "evaluation.datasets.import":

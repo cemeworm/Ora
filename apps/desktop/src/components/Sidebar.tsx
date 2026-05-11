@@ -5,6 +5,7 @@ import {
   ChartNoAxesColumn,
   ChevronDown,
   Clock,
+  Crosshair,
   Folder,
   FolderOpen,
   GitBranchPlus,
@@ -358,7 +359,7 @@ const SessionRow = memo(function SessionRow({
           "opacity-0 hover:bg-background/85 hover:text-foreground focus-visible:opacity-100 group-hover/session:opacity-100",
           confirmOpen && "opacity-100",
         )}
-        title="Archive chat"
+        title="Archive run"
         aria-label={`Archive ${title}`}
       >
         <Archive size={13} />
@@ -368,7 +369,7 @@ const SessionRow = memo(function SessionRow({
           className="absolute right-0 top-[calc(100%+4px)] z-30 w-48 rounded-lg border border-border bg-popover p-2 text-popover-foreground shadow-lift"
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="px-2 pb-2 pt-1 text-[12px] font-medium text-foreground">Archive this chat?</div>
+          <div className="px-2 pb-2 pt-1 text-[12px] font-medium text-foreground">Archive this run?</div>
           <div className="flex justify-end gap-1">
             <button
               type="button"
@@ -439,15 +440,15 @@ function SessionSearchDialog({
                   onSelect(results[0].id);
                 }
               }}
-              placeholder="搜索对话"
-              aria-label="搜索对话"
+              placeholder="搜索运行"
+              aria-label="搜索运行"
               className="h-8 w-full bg-transparent pl-6 pr-2 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           <div className="px-1.5 pb-2 text-[12px] text-muted-foreground">
-            {hasQuery ? "匹配结果" : "近期对话"}
+            {hasQuery ? "匹配结果" : "近期运行"}
           </div>
           <div className="flex flex-col gap-0.5">
             {results.map((session, index) => (
@@ -473,7 +474,7 @@ function SessionSearchDialog({
             ))}
             {results.length === 0 && (
               <div className="px-2 py-8 text-center text-sm text-muted-foreground">
-                没有找到匹配的对话
+                没有找到匹配的运行
               </div>
             )}
           </div>
@@ -544,7 +545,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       sidebarState.runLifecycle,
     ]);
   const showSectionDivider = projects.length > 0;
-  const chatSessionSelected = sidebarState.activeView === "chat";
+  const debuggerSessionSelected = sidebarState.activeView === "chat";
   const visiblePrefetchSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const project of projects) {
@@ -582,12 +583,30 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
 
   const navigationItems = [
     {
+      key: "debugger",
+      label: "Run Debugger",
+      title: "Run Debugger",
+      icon: <Crosshair size={16} />,
+      active: sidebarState.activeView === "chat",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "chat" }),
+    },
+    {
       key: "search",
       label: "Search",
       title: "Search",
       icon: <Search size={14} />,
       active: false,
       onClick: openSessionSearch,
+      gapClass: "mt-1",
+    },
+    {
+      key: "evaluation",
+      label: "Compare / Evals",
+      title: "Compare / Evals",
+      icon: <ChartNoAxesColumn size={16} />,
+      active: sidebarState.activeView === "evaluation",
+      onClick: () => dispatch({ type: "SET_VIEW", view: "evaluation" }),
+      gapClass: "mt-2",
     },
     {
       key: "agents",
@@ -596,7 +615,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       icon: <Bot size={16} />,
       active: sidebarState.activeView === "agents",
       onClick: () => dispatch({ type: "SET_VIEW", view: "agents" }),
-      gapClass: "mt-2",
+      gapClass: "mt-3",
     },
     {
       key: "modes",
@@ -614,15 +633,6 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
       icon: <Sparkles size={16} />,
       active: sidebarState.activeView === "skills",
       onClick: () => dispatch({ type: "SET_VIEW", view: "skills" }),
-      gapClass: "mt-1",
-    },
-    {
-      key: "evaluation",
-      label: "Evaluation",
-      title: "Evaluation",
-      icon: <ChartNoAxesColumn size={16} />,
-      active: sidebarState.activeView === "evaluation",
-      onClick: () => dispatch({ type: "SET_VIEW", view: "evaluation" }),
       gapClass: "mt-1",
     },
     {
@@ -680,9 +690,9 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
           title="New chat"
         >
           <SidebarIconSlot>
-            <MessageSquarePlus size={16} />
+            <Crosshair size={16} />
           </SidebarIconSlot>
-          {open && <span>New Chat</span>}
+          {open && <span>New Debug Run</span>}
         </button>
       </div>
 
@@ -789,11 +799,11 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                         {project.expanded && (
                           <div className={cn(SESSION_COLUMN_INDENT, "pt-0")}>
                             {project.sessions.length === 0 ? (
-                              <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                              <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No runs yet</div>
                             ) : (
                               <div className="flex flex-col gap-0">
                                 {visibleSessions.map((session) => {
-                                  const selected = chatSessionSelected && session.id === sidebarState.selectedSessionId;
+                                  const selected = debuggerSessionSelected && session.id === sidebarState.selectedSessionId;
                                   return (
                                     <SessionRow
                                       key={session.id}
@@ -852,7 +862,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
 
               <section className={cn("mt-4", showSectionDivider && "border-t border-sidebar-border/70 pt-4")}>
                 <SidebarSectionHeader
-                  title="Chats"
+                  title="Runs"
                   action={(
                     <button
                       type="button"
@@ -861,7 +871,7 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                         void actions.createSession();
                       }}
                       className={SIDEBAR_ACTION_BUTTON_CLASS}
-                      title="New chat"
+                    title="New debug run"
                     >
                       <Plus size={14} />
                     </button>
@@ -869,10 +879,10 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                 />
                 <div className={cn("flex flex-col gap-0", SESSION_COLUMN_INDENT)}>
                   {recentChats.length === 0 ? (
-                    <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No chats yet</div>
+                    <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground/75">No runs yet</div>
                   ) : (
                     recentChats.map((session) => {
-                      const selected = chatSessionSelected && session.id === sidebarState.selectedSessionId;
+                      const selected = debuggerSessionSelected && session.id === sidebarState.selectedSessionId;
                       return (
                         <SessionRow
                           key={session.id}

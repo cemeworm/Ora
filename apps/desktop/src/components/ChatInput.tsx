@@ -43,6 +43,12 @@ import { PlanDecisionPanel } from "./PlanDecisionPanel";
 import { PlanStepsTray } from "./PlanStepsTray";
 import type { OraStateSnapshot } from "../lib/runtimeClient";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+import {
+  debuggerModeLabel,
+  debuggerModeReason,
+  isShortlistedDebuggerMode,
+  modeShortlistCards,
+} from "../lib/debuggerSurface";
 
 type SkillDescriptor = OraSkillRegistry["skills"][number];
 
@@ -418,10 +424,18 @@ export function ChatInput({
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
+  const primaryModeOptions = useMemo(
+    () => modeShortlistCards(modeOptions),
+    [modeOptions],
+  );
+  const advancedModeOptions = useMemo(
+    () => modeOptions.filter((mode) => !isShortlistedDebuggerMode(mode.id)),
+    [modeOptions],
+  );
   const modeTriggerLabel =
     selectedModeSelection === "auto"
       ? "Auto"
-      : (activeMode?.label ?? "Default");
+      : (activeMode ? debuggerModeLabel(activeMode) : "Default");
 
   const taskIntentOptions = [
     {
@@ -622,7 +636,7 @@ export function ChatInput({
                 value={composerPrompt}
                 onChange={(e) => updatePrompt(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={runInteractionState.isProcessing ? "" : "Message Ora"}
+                placeholder={runInteractionState.isProcessing ? "" : "Describe the run you want to debug, recover, or compare"}
                 disabled={!interactivity.canEditText}
                 rows={2}
                 className={cn(
@@ -761,7 +775,7 @@ export function ChatInput({
                         ) : (
                           <Rocket size={13} />
                         )}
-                        <span className="hidden xl:inline">模式</span>
+                        <span className="hidden xl:inline">调试模式</span>
                         <span className="max-w-[150px] truncate text-foreground">
                           {modeTriggerLabel}
                         </span>
@@ -787,11 +801,42 @@ export function ChatInput({
                         </span>
                       </div>
                       <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                        Let Ora choose the best mode from the current mode list
-                        for this turn.
+                        让 Ora 为本轮自动选择合适的调试执行模式。
                       </div>
                     </button>
-                    {modeOptions.map((mode) => (
+                    {primaryModeOptions.map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => {
+                          onModeChange(mode.id);
+                          onModeSelectionChange("manual");
+                          setOpenPicker(undefined);
+                        }}
+                        className={cn(
+                          "w-full rounded-md px-3 py-2 text-left transition hover:bg-accent",
+                          selectedModeSelection === "manual" &&
+                            activeMode?.id === mode.id &&
+                            "bg-accent text-accent-foreground",
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-xs font-medium">
+                          <span>{debuggerModeLabel(mode)}</span>
+                          <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            debugger
+                          </span>
+                        </div>
+                        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                          {debuggerModeReason(mode)}
+                        </div>
+                      </button>
+                    ))}
+                    {advancedModeOptions.length > 0 && (
+                      <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                        Advanced
+                      </div>
+                    )}
+                    {advancedModeOptions.map((mode) => (
                       <button
                         key={mode.id}
                         type="button"
@@ -902,7 +947,7 @@ export function ChatInput({
           </div>
         )}
         <p className="pb-3 pt-2 text-center text-[11px] text-muted-foreground">
-          Ora may be wrong, check the results before adoption.
+          Diagnose runs from snapshots, checkpoints, traces, and before/after evidence.
         </p>
       </div>
     </div>
