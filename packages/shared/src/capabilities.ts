@@ -570,13 +570,201 @@ export type AgentCatalogResult = z.infer<typeof AgentCatalogResultSchema>;
 // Default Definitions
 // ---------------------------------------------------------------------------
 
+const workspacePathParameter = {
+  type: "string",
+  description: "Path inside the selected project folder. Absolute paths and parent-directory escapes are rejected.",
+};
+
+const positiveLimitParameter = (description: string) => ({
+  type: "number",
+  minimum: 1,
+  description,
+});
+
+const fileReadParameters = {
+  type: "object",
+  properties: {
+    path: workspacePathParameter,
+  },
+  required: ["path"],
+  additionalProperties: false,
+};
+
+const fileListParameters = {
+  type: "object",
+  properties: {
+    path: {
+      ...workspacePathParameter,
+      description: "Directory path inside the selected project folder. Defaults to the workspace root.",
+    },
+    limit: positiveLimitParameter("Maximum number of directory entries to return."),
+  },
+  additionalProperties: false,
+};
+
+const fileGlobParameters = {
+  type: "object",
+  properties: {
+    pattern: {
+      type: "string",
+      description: "Glob pattern matched against workspace-relative file paths, for example **/*.ts.",
+    },
+    path: {
+      ...workspacePathParameter,
+      description: "Directory path to search from. Defaults to the workspace root.",
+    },
+    limit: positiveLimitParameter("Maximum number of matching file paths to return."),
+  },
+  required: ["pattern"],
+  additionalProperties: false,
+};
+
+const fileGrepParameters = {
+  type: "object",
+  properties: {
+    pattern: {
+      type: "string",
+      description: "Literal text to search for in workspace files.",
+    },
+    include: {
+      type: "string",
+      description: "Optional glob pattern limiting searched files, for example **/*.ts.",
+    },
+    path: {
+      ...workspacePathParameter,
+      description: "Directory path to search from. Defaults to the workspace root.",
+    },
+    caseSensitive: {
+      type: "boolean",
+      description: "Whether matching is case sensitive. Defaults to true.",
+    },
+    limit: positiveLimitParameter("Maximum number of matching lines to return."),
+  },
+  required: ["pattern"],
+  additionalProperties: false,
+};
+
+const fileWriteParameters = {
+  type: "object",
+  properties: {
+    path: workspacePathParameter,
+    content: {
+      type: "string",
+      description: "Full file content to write. Existing content is overwritten.",
+    },
+  },
+  required: ["path", "content"],
+  additionalProperties: false,
+};
+
+const filePatchEditParameters = {
+  type: "object",
+  properties: {
+    oldText: {
+      type: "string",
+      description: "Exact text to replace. It must appear exactly once in the original file.",
+    },
+    newText: {
+      type: "string",
+      description: "Replacement text.",
+    },
+  },
+  required: ["oldText", "newText"],
+  additionalProperties: false,
+};
+
+const filePatchParameters = {
+  type: "object",
+  properties: {
+    path: workspacePathParameter,
+    edits: {
+      type: "array",
+      minItems: 1,
+      items: filePatchEditParameters,
+      description: "One or more exact replacements. All oldText matches are resolved against the original file before writing.",
+    },
+    search: {
+      type: "string",
+      description: "Legacy single replacement search text. Prefer edits[].oldText for new calls.",
+    },
+    replace: {
+      type: "string",
+      description: "Legacy single replacement text. Prefer edits[].newText for new calls.",
+    },
+  },
+  required: ["path"],
+  anyOf: [
+    { required: ["edits"] },
+    { required: ["search", "replace"] },
+  ],
+  additionalProperties: false,
+};
+
+const webFetchParameters = {
+  type: "object",
+  properties: {
+    url: {
+      type: "string",
+      format: "uri",
+      description: "HTTP or HTTPS URL to fetch.",
+    },
+    maxBytes: positiveLimitParameter("Maximum response text bytes to return."),
+  },
+  required: ["url"],
+  additionalProperties: false,
+};
+
+const webSearchParameters = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description: "Search query.",
+    },
+    limit: {
+      type: "number",
+      minimum: 1,
+      maximum: 10,
+      description: "Maximum number of search results to return.",
+    },
+  },
+  required: ["query"],
+  additionalProperties: false,
+};
+
+const documentExtractParameters = {
+  type: "object",
+  properties: {
+    path: {
+      ...workspacePathParameter,
+      description: "PDF path inside the selected project folder. Provide exactly one of path or url.",
+    },
+    url: {
+      type: "string",
+      format: "uri",
+      description: "HTTP or HTTPS PDF URL. Provide exactly one of path or url.",
+    },
+    format: {
+      type: "string",
+      enum: ["text", "markdown"],
+      description: "Output text format. Defaults to text.",
+    },
+    maxBytes: positiveLimitParameter("Maximum extracted text bytes to return."),
+  },
+  oneOf: [
+    { required: ["path"] },
+    { required: ["url"] },
+  ],
+  additionalProperties: false,
+};
+
 export const MVP_TOOLS: ToolDescriptor[] = [
-  { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.glob", label: "Glob Files", description: "Find project files by glob pattern.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.grep", label: "Search Files", description: "Search project file contents for a literal pattern.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "file.write", label: "Write File", description: "Write content to a local project file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "file.patch", label: "Patch File", description: "Replace one exact string in a local project file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.glob", label: "Glob Files", description: "Find project files by glob pattern.", category: "file", riskLevel: "safe", parameters: fileGlobParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.grep", label: "Search Files", description: "Search project file contents for a literal pattern.", category: "file", riskLevel: "safe", parameters: fileGrepParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "file.write", label: "Write File", description: "Write content to a local project file.", category: "file", riskLevel: "requires_approval", parameters: fileWriteParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.patch", label: "Patch File", description: "Replace exact strings in a local project file.", category: "file", riskLevel: "requires_approval", parameters: filePatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.delete", label: "Delete File", description: "Delete a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },
   {
     id: "shell.execute",
@@ -608,9 +796,9 @@ export const MVP_TOOLS: ToolDescriptor[] = [
     implemented: true,
     allowedForProfiles: [],
   },
-  { id: "web.fetch", label: "Fetch URL", description: "Fetch content from an HTTP or HTTPS URL.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "web.search", label: "Search Web", description: "Search the web for lightweight research results.", category: "network", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "document.extract", label: "Extract Document Text", description: "Extract readable text from supported documents such as PDF files or PDF URLs.", category: "file", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "web.fetch", label: "Fetch URL", description: "Fetch content from an HTTP or HTTPS URL.", category: "network", riskLevel: "low_risk", parameters: webFetchParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "web.search", label: "Search Web", description: "Search the web for lightweight research results.", category: "network", riskLevel: "low_risk", parameters: webSearchParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "document.extract", label: "Extract Document Text", description: "Extract readable text from supported documents such as PDF files or PDF URLs.", category: "file", riskLevel: "safe", parameters: documentExtractParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   {
     id: "user.clarify",
     label: "Ask User Clarification",
