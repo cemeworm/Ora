@@ -1,120 +1,123 @@
 # Ora 图框架：智能体建模为有向图
 
-本文描述 Ora 如何将智能体和工作流统一建模为有向图，覆盖数据模型、模式蓝图、运行时投影和执行管线。
+这份文档描述 Ora 当前如何把工作模式、智能体、运行阶段和运行时能力统一建模为有向图。重点看四层：共享契约里的拓扑原语、`ModeSpec` 的可编辑图、`PatternDefinition` 的运行时投影，以及 runtime kernel 如何消费这张图。
 
 ## 1. 概述
 
-Ora 的核心架构决策之一是：**每个工作模式都是一张有向图，运行时是一个图执行引擎**。无论是 Generator-Verifier 的验证循环、Orchestrator-Subagent 的层级委派，还是 Message Bus 的事件路由，最终都映射为同一套图原语 —— 节点和边。
+Ora 的核心设计仍然是：**工作模式是一张有向图，运行时围绕这张图执行、记录状态和生成观测事件。** Generator-Verifier 的验证循环、Orchestrator-Subagent 的层级委派、Agent Teams 的队列协作、Message Bus 的事件路由、Shared State 的共享黑板，都会落到同一组拓扑原语：节点和边。
 
-这套框架完全自研，不依赖 LangGraph、Dagre、React Flow 等外部图库。所有类型用 Zod schema 定义、TypeScript 类型推导，运行时在 Node.js 进程中直接执行。
+需要区分两件事：
+
+- **核心契约和运行时图执行** 在 `@cemeworm/shared` 与 `apps/runtime` 中实现，不依赖 LangGraph、Dagre 这类运行时图框架。
+- **桌面端 Mode Studio 画布** 使用 React Flow 渲染和编辑模式图。React Flow 是 UI 层依赖，不参与 runtime 执行语义。
+
+所有共享类型由 Zod schema 定义，再推导 TypeScript 类型。runtime 在 Node.js 进程中执行，desktop 通过快照和事件流消费拓扑状态。
 
 ### 阅读地图
 
 | 概念 | 定义位置 | 角色 |
 | --- | --- | --- |
-| TopologyNode / TopologyEdge | `packages/shared/src/topology.ts` | 运行时图原语 |
-| PatternDefinition | `packages/shared/src/modes.ts:9-41` | 内置协调模式蓝图 |
-| ModeSpec / ModeNodeSpec / ModeEdgeSpec | `packages/shared/src/modes.ts:79-314` | 用户可编辑的模式图定义 |
-| AgentProfile | `packages/shared/src/primitives.ts:128-141` | 智能体配置，绑定到图节点 |
-| projectModeRuntimeTopology | `packages/shared/src/modes.ts:1135` | ModeSpec → 运行时拓扑投影 |
-| KernelRuntimeContext | `apps/runtime/src/harness/runtime-kernel.ts:160` | 运行时拓扑持有者 |
-| injectRootAgentTopology | `apps/runtime/src/harness/runtime-root-agent.ts:34` | 注入根智能体到拓扑 |
+| `TopologyNode` / `TopologyEdge` | `packages/shared/src/topology.ts` | 运行时拓扑原语 |
+| `PatternDefinition` | `packages/shared/src/modes.ts` | 协调模式蓝图和运行时 definition |
+| `ModeSpec` / `ModeNodeSpec` / `ModeEdgeSpec` | `packages/shared/src/modes.ts` | 用户可编辑的模式图定义 |
+| `ModeRuntimeAtomDefinition` | `packages/shared/src/modes.ts` | 可插拔运行时能力声明 |
+| `modeSpecToPatternDefinition` | `packages/shared/src/modes.ts` | `ModeSpec` 到 runtime definition 的桥接 |
+| `projectModeRuntimeTopology` | `packages/shared/src/modes.ts` | `ModeSpec` 到 runtime topology 的投影 |
+| `KernelRuntimeContext` | `apps/runtime/src/harness/runtime-kernel.ts` | runtime 中的拓扑状态持有者 |
+| `injectRootAgentTopology` | `apps/runtime/src/harness/runtime-root-agent.ts` | 注入 Ora 根智能体和 handoff 边 |
+| `ModeDriverRegistry` | `apps/runtime/src/patterns/mode-driver-registry.ts` | 按 family 选择 mode driver |
+| Mode Studio | `apps/desktop/src/components/ModesView.tsx`、`apps/desktop/src/lib/modeCanvas.ts` | 桌面端模式图编辑器 |
+| Trails 拓扑视图 | `apps/desktop/src/components/TrailsTabs.tsx` | 运行后拓扑观测视图 |
 
-## 2. 图数据模型：TopologyNode 和 TopologyEdge
+## 2. 拓扑数据模型
 
-### 2.1 TopologyNode（拓扑节点）
+### 2.1 `TopologyNode`
 
-节点是图的执行单元。每个节点在运行时拥有独立的状态机。
+节点是运行时拓扑里的执行或能力单元。每个节点都有稳定 `id`、展示 `label`、节点类型 `kind` 和运行状态 `status`。
 
 ```typescript
 // packages/shared/src/topology.ts
-const TopologyNodeSchema = z.object({
+export const BuiltInTopologyNodeKindSchema = z.enum([
+  "run",
+  "agent",
+  "capability",
+  "checkpoint",
+  "artifact",
+]);
+export const TopologyNodeKindSchema = BuiltInTopologyNodeKindSchema.or(z.string());
+
+export const TopologyNodeSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
-  kind: z.enum(["run", "agent", "capability", "checkpoint", "artifact"]),
+  kind: TopologyNodeKindSchema,
   agentId: z.string().min(1).optional(),
   status: z.enum(["idle", "running", "blocked", "done", "failed"]).default("idle"),
   metadata: z.record(z.unknown()).default({}),
 });
 ```
 
-#### 节点类型（kind）
+内置 `kind` 有五种，但 schema 允许自定义字符串，方便后续扩展自定义拓扑节点。
 
 | kind | 含义 | 示例 |
 | --- | --- | --- |
-| `run` | 运行入口，每个拓扑有且仅有一个 | `{ id: "run", label: "Run" }` |
-| `agent` | 智能体节点，通过 `agentId` 绑定 AgentProfile | `{ id: "orchestrator", kind: "agent", agentId: "orchestrator" }` |
-| `capability` | 运行时能力节点，由 Runtime Atom 注入 | `{ id: "shared_board", kind: "capability", metadata: { role: "blackboard" } }` |
-| `checkpoint` | 快照检查点 | 运行中断时插入的恢复点 |
-| `artifact` | 产物节点 | 文件、报告等输出 |
+| `run` | 运行入口 | `run` |
+| `agent` | 智能体节点，通过 `agentId` 绑定 `AgentProfile` | `orchestrator`、`reviewer` |
+| `capability` | 运行时能力或 topic，例如 runtime atom、共享黑板、消息主题 | `shared_board`、`capability:memory_capture` |
+| `checkpoint` | 检查点节点，预留给恢复和可视化 | 运行中断后的恢复点 |
+| `artifact` | 产物节点，预留给报告、文件等输出 | 报告、日志、导出文件 |
 
-#### 节点状态机
+节点状态机仍是这组状态：
 
+```text
+idle -> running -> done
+              -> blocked
+              -> failed
 ```
-idle → running → done
-              → blocked  (等待审批/澄清)
-              → failed   (不可恢复的错误)
-```
 
-`blocked` 状态的节点在审批通过或澄清回答后会恢复为 `running`，最终走向 `done`。
+`blocked` 通常对应审批、澄清或其他人工关卡。恢复后，节点可以重新进入运行路径，最终变为 `done` 或 `failed`。
 
-### 2.2 TopologyEdge（拓扑边）
+### 2.2 `TopologyEdge`
 
-边定义节点间的关系和数据流向。
+边描述拓扑节点之间的关系。当前运行时主要使用 `source` 和 `target` 确定图结构；`kind` 和 `label` 更多用于可视化、观测和人类可读上下文。
 
 ```typescript
 // packages/shared/src/topology.ts
-const TopologyEdgeSchema = z.object({
+export const BuiltInTopologyEdgeKindSchema = z.enum([
+  "control",
+  "delegation",
+  "verification",
+  "memory",
+  "artifact",
+]);
+export const TopologyEdgeKindSchema = BuiltInTopologyEdgeKindSchema.or(z.string());
+
+export const TopologyEdgeSchema = z.object({
   id: z.string().min(1),
   source: z.string().min(1),
   target: z.string().min(1),
   label: z.string().min(1).optional(),
-  kind: z.enum(["control", "delegation", "verification", "memory", "artifact"]),
+  kind: TopologyEdgeKindSchema,
   metadata: z.record(z.unknown()).default({}),
 });
 ```
 
-#### 边类型（kind）
+当前源码里的边语义有一个重要边界：`kind` **不直接驱动 runtime 分支**。mode drivers 和拓扑排序主要读取 `source`、`target`；`kind` 目前用于观测、UI 和上下文说明。需要条件执行时，用的是 `ModeEdgeSpec.condition`，不是 `TopologyEdge.kind`。
 
-| kind | 语义 | 典型用法 |
+| kind | 当前语义 | 典型用法 |
 | --- | --- | --- |
-| `control` | 控制流，定义执行顺序 | `run → orchestrator` |
-| `delegation` | 委派，任务分发 | `orchestrator → researcher` |
-| `verification` | 验证，检查/评审 | `generator → verifier`，`builder → reviewer` |
-| `memory` | 记忆读写 | `researcher → shared_board` |
-| `artifact` | 产物传递 | `router → triage_topic` |
+| `control` | 控制流或阶段顺序的可视化标记 | `run -> orchestrator` |
+| `delegation` | 委派关系的可视化标记 | `orchestrator -> researcher` |
+| `verification` | 验证或评审关系的可视化标记 | `generator -> verifier` |
+| `memory` | 记忆或共享状态读写关系 | `researcher -> shared_board` |
+| `artifact` | 产物、事件或 topic 传递关系 | `router -> triage_topic` |
 
-### 2.3 图解：orchestrator_subagent 的拓扑
+## 3. `PatternDefinition`：协调模式蓝图
 
-以最常用的编排-子智能体模式为例，其 PatternDefinition 中的拓扑结构为：
-
-```
-nodes:
-  run (kind: run)
-  orchestrator (kind: agent, agentId: orchestrator)
-  researcher (kind: agent, agentId: researcher)
-  reviewer (kind: agent, agentId: reviewer)
-
-edges:
-  run → orchestrator        (control)
-  orchestrator → researcher (delegation, label: "research")
-  orchestrator → reviewer   (delegation, label: "review")
-```
-
-运行时内核注入根智能体 Ora 后，拓扑变为：
-
-```
-  run → Ora (root agent) → orchestrator → researcher
-                                        → reviewer
-```
-
-## 3. PatternDefinition：内置蓝图
-
-`PatternDefinition` 是协调模式的不可变蓝图。每个模式定义包含完整的拓扑、智能体配置、执行模板和约束。
+`PatternDefinition` 是每个 family 的运行时蓝图。它包含默认拓扑、智能体 roster、停止策略、资源预算和能力 flags。
 
 ```typescript
-// packages/shared/src/modes.ts:9-41
-const PatternDefinitionSchema = z.object({
+// packages/shared/src/modes.ts
+export const PatternDefinitionSchema = z.object({
   id: CoordinationPatternSchema,
   label: z.string().min(1),
   summary: z.string().min(1),
@@ -122,289 +125,242 @@ const PatternDefinitionSchema = z.object({
   failureMode: z.string().min(1),
   coordinationKind: z.enum(["loop", "hierarchical", "team", "bus", "shared_state"]),
   stateModel: z.enum(["ephemeral", "persistent_workers", "event_routed", "shared_blackboard"]),
+  supportsPersistentWorkers: z.boolean().default(false),
+  supportsSharedState: z.boolean().default(false),
+  supportsEventRouting: z.boolean().default(false),
+  defaultStopPolicy: z.object({
+    type: z.enum(["max_iterations", "queue_drained", "converged", "manual"]),
+    maxIterations: z.number().int().positive().optional(),
+    idleCycles: z.number().int().positive().optional(),
+    detail: z.string().min(1),
+  }),
+  defaultConstraints: z.array(z.string().min(1)),
+  defaultBudget: ResourceBudgetSchema,
+  profiles: z.array(AgentProfileSchema).min(1),
   topology: z.object({
     nodes: z.array(TopologyNodeSchema),
     edges: z.array(TopologyEdgeSchema),
   }),
   planTemplate: z.array(z.object({
-    id: z.string(),
-    title: z.string(),
-    ownerAgentId: z.string().optional(),
-    dependencies: z.array(z.string()),
+    id: z.string().min(1),
+    title: z.string().min(1),
+    ownerAgentId: z.string().min(1).optional(),
+    dependencies: z.array(z.string().min(1)).default([]),
   })),
-  profiles: z.array(AgentProfileSchema).min(1),
-  defaultStopPolicy: z.object({ type, maxIterations, idleCycles, detail }),
-  defaultConstraints: z.array(z.string()),
-  defaultBudget: ResourceBudgetSchema,
 });
 ```
 
-### 3.1 五种协调模式详解
+内置 family 仍是五类，定义在 `MVP_PATTERN_DEFINITIONS`：
 
-所有定义在 `MVP_PATTERN_DEFINITIONS`（`modes.ts:1222`）。
+| family | coordinationKind | stateModel | 默认拓扑 | 说明 |
+| --- | --- | --- | --- | --- |
+| `generator_verifier` | `loop` | `ephemeral` | `run -> generator -> verifier` | 生成候选，再按 rubric 验证；最多默认 3 轮。 |
+| `orchestrator_subagent` | `hierarchical` | `ephemeral` | `run -> orchestrator -> researcher/reviewer` | 默认编排模式，先分解，再研究和审查，最后综合。 |
+| `agent_teams` | `team` | `persistent_workers` | `team_lead -> builder -> reviewer -> team_lead` | 持久 worker 围绕 backlog 协作。 |
+| `message_bus` | `bus` | `event_routed` | `run -> router -> triage_topic -> researcher -> responder` | 通过 topic 和 correlation id 表达事件路由。 |
+| `shared_state` | `shared_state` | `shared_blackboard` | `orchestrator/researcher/reviewer -> shared_board` | 多个 agent 通过共享黑板协作并判断收敛。 |
 
-#### Generator-Verifier
+这些蓝图既能直接生成系统预设 mode，也能作为用户自定义 mode 的 family 基础。
 
-```
-coordinationKind: "loop"     stateModel: "ephemeral"
-```
+## 4. `ModeSpec`：可编辑的模式图
 
-| 属性 | 值 |
-| --- | --- |
-| 拓扑 | `run → generator → verifier` |
-| 智能体 | generator（生成候选）、verifier（按 rubric 验收） |
-| Plan 模板 | draft → verify |
-| 停止策略 | max_iterations（最多 3 轮） |
-| 推荐场景 | 有明确验收标准的任务 |
-| 失败模式 | 弱 rubric 导致虚假信心或无效重试循环 |
-
-Verifier 节点以结构化 JSON `{ verdict, rationale, missingRequirements }` 返回验收结果，verdict 为 "pass" 时循环终止。
-
-#### Orchestrator-Subagent
-
-```
-coordinationKind: "hierarchical"     stateModel: "ephemeral"
-```
-
-| 属性 | 值 |
-| --- | --- |
-| 拓扑 | `run → orchestrator → researcher, reviewer` |
-| 智能体 | orchestrator（分解+综合）、researcher（收集证据）、reviewer（审查风险） |
-| Plan 模板 | decompose → research → review → synthesize |
-| 停止策略 | queue_drained（队列耗尽） |
-| 推荐场景 | 可分解任务，需要可审查的委派链路 |
-| 失败模式 | 过度分解消耗预算在协调而非进展上 |
-
-这是 Ora 的默认模式。Orchestrator 先分解任务，将 research 和 review 委派给子智能体，最后综合所有结果。
-
-#### Agent Teams
-
-```
-coordinationKind: "team"     stateModel: "persistent_workers"
-```
-
-| 属性 | 值 |
-| --- | --- |
-| 拓扑 | `team_lead → builder → reviewer → team_lead`（闭环） |
-| 智能体 | team_lead（优先级+协调）、builder（执行）、reviewer（验收） |
-| Plan 模板 | triage → build → check → handoff |
-| 停止策略 | queue_drained |
-| 推荐场景 | Worker 需要跨任务保持身份和记忆 |
-| 失败模式 | 所有权不清导致重复工作或过时的 worker 记忆 |
-
-Agent Teams 的独特之处在于 Worker 是持久化的（`persistent_workers`），有自己的 memory namespace（`worker`），可以在多次运行间积累上下文。
-
-#### Message Bus
-
-```
-coordinationKind: "bus"     stateModel: "event_routed"
-```
-
-| 属性 | 值 |
-| --- | --- |
-| 拓扑 | `run → router → triage_topic (capability) → researcher → responder` |
-| 智能体 | router（分类+路由）、researcher（处理路由项）、responder（发布最终响应） |
-| Plan 模板 | publish → route → handle → respond |
-| 停止策略 | queue_drained |
-| 推荐场景 | 事件驱动的可扩展管线 |
-| 失败模式 | 丢弃或错误路由的事件可能无声地停滞系统 |
-
-Message Bus 引入了 `capability` 节点（`triage_topic`），事件通过 `artifact` 边路由到 topic，再通过 `delegation` 边投递给订阅者。
-
-#### Shared State
-
-```
-coordinationKind: "shared_state"     stateModel: "shared_blackboard"
-```
-
-| 属性 | 值 |
-| --- | --- |
-| 拓扑 | `orchestrator → shared_board (capability) ← researcher, reviewer` |
-| 智能体 | orchestrator（播种+框架）、researcher（贡献发现）、reviewer（判断收敛） |
-| Plan 模板 | seed → research → converge |
-| 停止策略 | converged（收敛检测，默认 idleCycles=2） |
-| 推荐场景 | 智能体需要近实时基于彼此发现协作 |
-| 失败模式 | 无显式终止规则时智能体可能循环写入或重复工作 |
-
-Shared State 以 `shared_board` capability 节点为中心，所有智能体通过 `memory` 边读写共享黑板。停止条件不是固定轮次，而是"连续 N 个周期无新发现"的收敛检测。
-
-### 3.2 createModeSpecFromPattern
+`ModeSpec` 是 Mode Studio 和 runtime 共同使用的模式定义。它包含可编辑节点、边、智能体配置、运行策略、完成策略、恢复策略、记忆策略和权限配置。
 
 ```typescript
-// packages/shared/src/modes.ts:1707
-function createModeSpecFromPattern(pattern: CoordinationPattern): ModeSpec
+export const ModeSpecSchema = z.object({
+  id: ModeIdSchema,
+  family: CoordinationPatternSchema,
+  label: z.string().min(1),
+  summary: z.string().min(1),
+  description: z.string().min(1).optional(),
+  recommendedUse: z.string().min(1).optional(),
+  failureMode: z.string().min(1).optional(),
+  systemPreset: z.boolean().default(false),
+  visibility: z.enum(["user", "internal"]).default("user"),
+  nodes: z.array(ModeNodeSpecSchema).min(1),
+  edges: z.array(ModeEdgeSpecSchema).default([]),
+  stopPolicy: ModeStopPolicySchema,
+  capabilityFlags: ModeCapabilityFlagsSchema,
+  editorConstraints: ModeEditorConstraintsSchema,
+  defaultBudget: ResourceBudgetSchema,
+  profiles: z.array(AgentProfileSchema).min(1),
+  runtimeAtoms: z.array(ModeRuntimeAtomIdSchema).default([]),
+  complexitySkipRules: ComplexitySkipRulesSchema.optional(),
+  stages: z.array(ModeStageSpecSchema).optional(),
+  transcriptLayout: ModeTranscriptLayoutSchema.optional(),
+  completionPolicy: ModeCompletionPolicySchema.default(COMPLETION_POLICY_PRESETS.balanced),
+  runtimePolicy: ModeRuntimePolicySchema.default(DEFAULT_MODE_RUNTIME_POLICY),
+  recoveryPolicy: ModeRecoveryPolicySchema.default(DEFAULT_MODE_RECOVERY_POLICY),
+  memoryPolicy: ModeMemoryPolicySchema.default({}),
+  toolLimits: ModeToolLimitsSchema.default({}),
+  permissionProfileId: z.string().min(1).optional(),
+  langfusePromptRef: z.object({
+    name: z.string().min(1),
+    version: z.number().int().positive().optional(),
+    label: z.string().min(1).optional(),
+  }).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
 ```
 
-该函数将 PatternDefinition 转换为一个完整的 ModeSpec：
-- 用 `planTemplate` 生成 ModeNodeSpec 数组（含默认 instructions）
-- 根据模板依赖关系自动生成边
-- 应用 family 对应的默认 runtime atoms
-- 设置 editorConstraints（限制可用的节点模板和编辑权限）
+### 4.1 `ModeNodeSpec`
 
-## 4. ModeSpec：可编辑的有向图
-
-`ModeSpec` 是用户可见、可在 Mode Studio 中编辑的模式定义。它本质上是一个包含执行策略、智能体配置和编辑器约束的图。
-
-### 4.1 ModeNodeSpec
+`ModeNodeSpec` 是可编辑图里的阶段节点，不等同于运行时 `TopologyNode`。一个 `ModeNodeSpec` 通常代表计划阶段或说话阶段；投影到 runtime topology 时，会被绑定到 owner agent 或 runtime capability。
 
 ```typescript
-// packages/shared/src/modes.ts:79-92
-const ModeNodeSpecSchema = z.object({
+export const ModeNodeSpecSchema = z.object({
   id: z.string().min(1),
-  template: ModeNodeTemplateSchema,  // 17 种模板之一
+  template: ModeNodeTemplateSchema,
   label: z.string().min(1),
   title: z.string().min(1).optional(),
-  ownerAgentId: z.string().min(1).optional(),  // 绑定到 AgentProfile
-  position: ModeNodePositionSchema.optional(),   // 可视化布局
+  ownerAgentId: z.string().min(1).optional(),
+  position: ModeNodePositionSchema.optional(),
   enabled: z.boolean().default(true),
   instructions: z.string().min(1).optional(),
   prompt: z.string().min(1).optional(),
   riskLevel: ActionRiskLevelSchema.optional(),
-  config: z.record(z.unknown()).default({}),
+  config: z.object({
+    atoms: z.array(z.string()).optional(),
+    customAgentId: z.string().optional(),
+    clarificationQuestion: z.string().optional(),
+    clarificationKey: z.string().optional(),
+    story: z.unknown().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  }).passthrough().default({}),
 });
 ```
 
-#### 17 种节点模板及按 family 的分配
+内置节点模板仍是 17 种：`draft`、`verify`、`decide`、`decompose`、`research`、`review`、`synthesize`、`triage`、`build`、`check`、`handoff`、`publish`、`route`、`handle`、`respond`、`seed`、`converge`。schema 同样允许自定义模板字符串。
 
-| 模板 | 语义 | generator_verifier | orchestrator_subagent | agent_teams | message_bus | shared_state |
-| --- | --- | :-: | :-: | :-: | :-: | :-: |
-| draft | 生成候选输出 | ✓ 必选 | | | | |
-| verify | 按 rubric 验收 | ✓ 必选 | | | | |
-| decide | 接受/重试/停止决策 | ✓ | | | | |
-| decompose | 分解任务 | | ✓ 必选 | | | |
-| research | 收集证据和上下文 | | ✓ | | | ✓ |
-| review | 审查风险和完整性 | | ✓ | | | |
-| synthesize | 综合最终输出 | | ✓ 必选 | | | |
-| triage | 分流为团队 backlog | | | ✓ 必选 | | |
-| build | 完成分配的工作项 | | | ✓ | | |
-| check | 验收已完成工作 | | | ✓ | | |
-| handoff | 记录移交和下一步 | | | ✓ 必选 | | |
-| publish | 发布事件 | | | | ✓ 必选 | |
-| route | 路由事件到订阅者 | | | | ✓ 必选 | |
-| handle | 处理订阅的工作 | | | | ✓ | |
-| respond | 发布最终响应 | | | | ✓ 必选 | |
-| seed | 播种共享黑板 | | | | | ✓ 必选 |
-| converge | 判断收敛并终结 | | | | | ✓ 必选 |
+每个模板的运行时默认说明、展示 story 和 fallback prompt 定义在 `MODE_NODE_RUNTIME_TEMPLATE_LIBRARY`。Mode Studio 读取这些定义来生成节点文案和预览；runtime drivers 也会用它们补齐未显式配置的 prompt 和 instructions。
 
-每个模板在 `MODE_NODE_RUNTIME_TEMPLATE_LIBRARY`（`modes.ts:491`）中有对应的运行时定义，包括 description、display story、fallbackInstructions 和 fallbackPrompt。
+### 4.2 `ModeEdgeSpec`
 
-### 4.2 ModeEdgeSpec
+`ModeEdgeSpec` 是 Mode Studio 中用户可编辑的边。
 
 ```typescript
-// packages/shared/src/modes.ts:94-102
-const ModeEdgeSpecSchema = z.object({
+export const ModeEdgeSpecSchema = z.object({
   id: z.string().min(1),
   source: z.string().min(1),
   target: z.string().min(1),
   label: z.string().min(1).optional(),
   kind: TopologyEdgeSchema.shape.kind.default("control"),
   enabled: z.boolean().default(true),
+  condition: z.string().min(1).optional(),
 });
 ```
 
-边的 `kind` 默认是 `control`。Mode Studio 中用户可以拖拽连线来创建和编辑边。
+`condition` 是当前需要特别注意的字段。它属于 `ModeEdgeSpec`，不是 `TopologyEdge`。`apps/runtime/src/patterns/driver-utils.ts` 里有 `evaluateEdgeCondition` 和 `resolveConditionalSkips`，用于根据前序节点输出跳过目标节点。目前这条能力只在部分 driver 路径中消费，不应该把它理解成所有拓扑边天然具备的通用路由规则。
 
-### 4.3 Runtime Atoms：可插拔的运行时能力
+### 4.3 Runtime Atoms
 
-Ora 定义了 15 种运行时原子（`modes.ts:104-120`），它们是可插拔的运行时能力，按需注入拓扑：
+runtime atom 是可插拔运行时能力，定义在 `MVP_MODE_RUNTIME_ATOMS`。atom 有两种 scope：
 
-| Atom | scope | 说明 |
-| --- | --- | --- |
-| `thread_workspace` | mode | 线程工作区 |
-| `recovery_policy` | mode | 工具恢复策略 |
-| `tool_error_boundary` | mode | 工具错误边界 |
-| `loop_guard` | mode | 循环守卫 |
-| `clarification_interrupt` | mode | 澄清中断 |
-| `memory_capture` | mode | 记忆捕获 |
-| `long_term_memory` | mode | 长期记忆 |
-| `deferred_tool_discovery` | mode | 延迟工具发现 |
-| `subagent_delegate` | node | 子智能体委派 |
-| `persistent_worker_memory` | mode | 持久 Worker 记忆 |
-| `event_routing` | mode | 事件路由 |
-| `shared_blackboard` | mode | 共享黑板 |
-| `artifact_publish` | mode | 产物发布 |
-| `token_usage_trace` | mode | Token 用量追踪 |
-| `dynamic_stage_skipping` | node | 动态阶段跳过 |
+- `mode`：挂在整个模式上，通过 `mode.runtimeAtoms` 启用。
+- `node`：挂在单个 `ModeNodeSpec.config.atoms` 上。
 
-Atom 有三种拓扑呈现方式：
-- **`family_capability`**：直接注释已有的 family 内置节点（不新增节点）
-- **`mode_capability`**：新增 mode 级别的 capability 节点
-- **`stage_attachment`**：为特定 stage/node 新增 capability 节点
+| Atom | scope | 默认启用 | 兼容 family | 拓扑呈现 |
+| --- | --- | --- | --- | --- |
+| `thread_workspace` | mode | 是 | `orchestrator_subagent`、`agent_teams` | `mode_capability` |
+| `recovery_policy` | mode | 是 | 全部内置 family | `mode_capability` |
+| `tool_error_boundary` | mode | 是 | 全部内置 family | `mode_capability` |
+| `loop_guard` | mode | 是 | 全部内置 family | `mode_capability` |
+| `clarification_interrupt` | mode | 是 | 全部内置 family | `mode_capability` |
+| `memory_capture` | mode | 是 | 全部内置 family | `mode_capability` |
+| `long_term_memory` | mode | 是 | 全部内置 family | `mode_capability` |
+| `deferred_tool_discovery` | node | 否 | `orchestrator_subagent` | `stage_attachment` |
+| `subagent_delegate` | node | 否 | `orchestrator_subagent`、`agent_teams` | `stage_attachment` |
+| `persistent_worker_memory` | mode | 是 | `agent_teams` | `mode_capability` |
+| `event_routing` | mode | 是 | `message_bus` | `family_capability` |
+| `shared_blackboard` | mode | 是 | `shared_state` | `family_capability` |
+| `artifact_publish` | node | 否 | `agent_teams`、`message_bus`、`shared_state` | `stage_attachment` |
+| `token_usage_trace` | mode | 否 | 全部内置 family | `mode_capability` |
+| `dynamic_stage_skipping` | mode | 否 | `agent_teams` | `mode_capability` |
 
-Atom 的兼容性由 `compatibleFamilies` 控制。例如 `shared_blackboard` 只在 `shared_state` 模式下可用，`event_routing` 只在 `message_bus` 模式下可用。
+三种拓扑呈现方式的含义：
 
-### 4.4 ModeSpec 的完整结构
+- `family_capability`：复用 family 内置 capability 节点，例如 `message_bus` 的 `triage_topic`、`shared_state` 的 `shared_board`。
+- `mode_capability`：投影时新增 `capability:<atomId>` 节点，并从 `run` 连过去。
+- `stage_attachment`：投影时新增 `capability:<nodeId>:<atomId>` 节点，并挂到对应 stage 的 owner agent 或 node anchor 上。
 
-```
+## 5. 从 `ModeSpec` 到运行时拓扑
+
+当前链路不是 kernel 直接拿 `ModeSpec` 临时投影，而是先通过 `modeSpecToPatternDefinition(mode)` 得到 runtime definition：
+
+```text
 ModeSpec
-├── id, family, label, summary, description
-├── nodes: ModeNodeSpec[]          ← 图的节点
-├── edges: ModeEdgeSpec[]          ← 图的边
-├── profiles: AgentProfile[]       ← 绑定到节点的智能体
-├── runtimeAtoms: RuntimeAtomId[]  ← 启用的运行时能力
-├── stages: ModeStageSpec[]        ← 多说话人 transcript 阶段（可选）
-├── stopPolicy                     ← 停止策略
-├── completionPolicy               ← 完成策略
-├── runtimePolicy                  ← 运行时策略（thinking、planning、delegation）
-├── recoveryPolicy                 ← 恢复策略
-├── memoryPolicy                   ← 记忆策略
-├── toolLimits                     ← 工具限制
-├── capabilityFlags                ← 能力标志
-├── editorConstraints              ← 编辑器约束
-├── transcriptLayout               ← 对话布局
-└── defaultBudget                  ← 默认资源预算
+  -> modeSpecToPatternDefinition(mode)
+    -> orderedEnabledModeNodes(mode)
+    -> projectModeRuntimeTopology(mode)
+    -> PatternDefinition.topology
+  -> executeRuntimeKernel(..., { definition, modeSpec })
+  -> injectRootAgentTopology(definition.topology, modeSpec)
 ```
 
-## 5. 从 ModeSpec 到运行时拓扑
+`projectModeRuntimeTopology(mode)` 内部做几件事：
 
-`projectModeRuntimeTopology`（`modes.ts:1135`）是将 ModeSpec 投影为运行时拓扑的核心管线：
+1. 读取 family 蓝图：`getPatternDefinition(mode.family)`。
+2. 对 mode nodes 做启用过滤和拓扑排序：`orderedEnabledModeNodes(mode)`。
+3. 构造基础 runtime topology：`runtimeBaseTopology(mode, family, orderedNodes)`。
+4. 应用 mode scope atoms。
+5. 应用 node scope atoms。
+6. 给节点和边写入 `modeId`、`enabledNodeIds`、`atomId`、`atomScope`、`atomPresentation` 等 metadata。
 
-```
-ModeSpec
-  │
-  ├─→ getPatternDefinition(family)    // 获取 family 蓝图
-  ├─→ orderedEnabledModeNodes(mode)   // 拓扑排序 mode nodes
-  ├─→ runtimeBaseTopology(...)        // 克隆 family 拓扑 + 应用 mode 元数据
-  │
-  ├─→ Mode-scoped atoms:
-  │     • family_capability → 注释已有节点
-  │     • mode_capability  → 新增 capability 节点 + 边
-  │
-  └─→ Node-scoped atoms:
-        • stage_attachment  → 为每个 node 新增 capability 节点 + 边
+`runtimeBaseTopology` 有一个 single-owner 优化：如果所有启用节点都属于同一个 owner，且没有节点使用 `subagent_delegate`，投影结果会压缩成：
+
+```text
+run -> primary agent
 ```
 
-投影结果是一个 `{ nodes: TopologyNode[], edges: TopologyEdge[] }` 结构，移除了所有 ModeSpec 层的编辑器元数据（position 等），只保留运行时需要的字段。
+这种情况下不会完整克隆 family 默认拓扑。多 owner 或显式 subagent delegate 的模式，才会使用 family topology 作为基础。
 
-## 6. Runtime 执行：Kernel 如何消费拓扑
+## 6. Runtime 如何消费拓扑
 
-### 6.1 初始化
+### 6.1 初始化链路
 
-运行时内核在 `executeRuntimeKernel`（`runtime-kernel.ts:678`）中初始化拓扑：
-
-1. **投影**：调用 `projectModeRuntimeTopology(modeSpec)` 得到运行时拓扑
-2. **注入根智能体**：调用 `injectRootAgentTopology(topology, modeSpec)` 注入 Ora 根智能体
-   - 添加 `ora` agent 节点（标记 `rootAgent: true`）
-   - 添加 `run → ora` control 边
-   - 确定 handoff 目标（mode 的第一个 agent 节点）
-   - 添加 `ora → handoffTarget` delegation 边
-3. **创建上下文**：将最终拓扑传入 `KernelRuntimeContext` 构造函数
+runtime 启动时，`RunKernelExecutionService` 会把解析后的 `modeSpec` 转成 `definition`：
 
 ```typescript
-// runtime-root-agent.ts:34
-function injectRootAgentTopology(
-  topology: { nodes: TopologyNode[]; edges: TopologyEdge[] },
-  modeSpec: ModeSpec,
-): { nodes: TopologyNode[]; edges: TopologyEdge[]; handoffTargetId?: string }
+modeSpecToPatternDefinition(modeSpec)
 ```
 
-### 6.2 状态追踪与事件
-
-`KernelRuntimeContext` 持有运行时拓扑，并通过 `setTopologyStatus` 追踪节点状态变化：
+随后 `executeRuntimeKernel` 接收这两个对象。非 resume 场景下，它从 `definition.topology` 克隆节点和边，再调用 `injectRootAgentTopology` 注入 Ora 根智能体：
 
 ```typescript
-// runtime-kernel.ts:268
-setTopologyStatus(agentId: string, status: "idle" | "running" | "done" | "blocked" | "failed") {
+const rootTopology = resumeTopology
+  ? { nodes: resumeTopology.nodes.map((n) => ({ ...n })), edges: resumeTopology.edges }
+  : injectRootAgentTopology({
+      nodes: definition.topology.nodes.map((node) => ({ ...node })),
+      edges: definition.topology.edges,
+    }, modeSpec);
+```
+
+`injectRootAgentTopology` 会：
+
+- 添加或覆盖 `ora` agent 节点，metadata 标记 `rootAgent: true` 和 `modeId`。
+- 确保存在 `run` 节点。
+- 删除原本从 `run` 指向非 Ora 节点的边。
+- 添加 `run -> ora` control 边。
+- 根据 mode family 选择 handoff target，再添加 `ora -> handoffTarget` delegation 边。
+
+handoff target 的优先规则在 `rootAgentHandoffTarget` 中：
+
+| family / mode | handoff target |
+| --- | --- |
+| `single_agent` | 无 handoff target |
+| `agent_teams` | `team_lead` |
+| `message_bus` | `router` |
+| `orchestrator_subagent` | `orchestrator` |
+| `shared_state` | `orchestrator` |
+| 其他自定义情况 | 第一个非 Ora owner 或第一个非 Ora profile |
+
+### 6.2 状态追踪和事件
+
+`KernelRuntimeContext` 持有当前拓扑快照。节点状态通过 `setTopologyStatus` 更新：
+
+```typescript
+setTopologyStatus(agentId, status) {
   for (const node of this.topologyValue.nodes) {
     if (node.agentId === agentId || node.id === agentId) {
       node.status = status;
@@ -414,118 +370,150 @@ setTopologyStatus(agentId: string, status: "idle" | "running" | "done" | "blocke
 }
 ```
 
-每次状态变更都会：
-1. 更新拓扑中对应节点的 `status` 字段
-2. 发出 `topology.updated` 事件，携带完整拓扑快照
-3. `StateSnapshot.topology` 始终反映当前图状态
+每次状态变化都会发出 `topology.updated` 事件。`StateSnapshot.topology` 保存最新节点和边，desktop 订阅快照后更新 Trails 视图。
 
-### 6.3 执行流
+### 6.3 KernelRunner 与 mode drivers
 
-`KernelRunner`（`runtime-kernel-runner.ts`）编排整个执行：
+`KernelRunner` 执行主流程：
 
-1. `emitStartEvents()` — 发出 `topology.updated` 初始事件（所有节点为 idle）
-2. Mode driver 按 `orderedEnabledModeNodes` 顺序迭代节点
-3. 对每个节点调用 `runNodeRuntimeLoop`（`node-runtime-loop.ts`）
-4. 节点状态变更通过 `setTopologyStatus` 追踪
-5. `flushMemory()` — 刷新记忆捕获队列
-6. 组装最终 StateSnapshot（含 `topology` 字段）返回
+1. `emitStartEvents()` 发出 `run.started`、初始 `topology.updated`、`profile.updated`、`plan.updated`、`todo.updated`。
+2. `preflight()` 把 Ora 根智能体置为 `running`，必要时触发澄清 preflight。
+3. `executeModeSpec()` 通过 `ModeDriverRegistry` 按 `modeSpec.family` 调用对应 driver。
+4. driver 逐节点或逐层执行，节点执行统一经过 `runGenericModeNode` 或 `runModeLayer`。
+5. 完成后 `finalizeAsOra()` 生成最终用户响应。
+6. `flushMemory()` 刷新记忆捕获队列。
+7. `checkpoint()` 返回最终 `StateSnapshot`。
 
-每个节点的执行状态机详见 `docs/ora-runtime-loop.md` 第三节。
+当前内置 driver 文件：
 
-## 7. AgentProfile：智能体与拓扑节点的绑定
+| family | driver |
+| --- | --- |
+| `generator_verifier` | `apps/runtime/src/patterns/generator-verifier-driver.ts` |
+| `orchestrator_subagent` | `apps/runtime/src/patterns/orchestrator-subagent-driver.ts` |
+| `agent_teams` | `apps/runtime/src/patterns/agent-teams-driver.ts` |
+| `message_bus` | `apps/runtime/src/patterns/message-bus-driver.ts` |
+| `shared_state` | `apps/runtime/src/patterns/shared-state-driver.ts` |
 
-`AgentProfile` 定义了智能体的身份和能力，通过 `agentId` 绑定到拓扑中的 agent 节点。
+大多数 driver 用 `orderedEnabledModeNodes(modeSpec)` 顺序执行。`shared_state` 使用 `orderedEnabledModeLayers(modeSpec)`，同一层没有依赖的节点可以通过 `runModeLayer` 并发执行。条件边跳过目前也主要出现在这一类分层执行路径中。
+
+## 7. `AgentProfile` 与节点绑定
+
+`AgentProfile` 定义智能体身份、工具、技能、记忆命名空间和预算。
 
 ```typescript
-// packages/shared/src/primitives.ts:128-141
-const AgentProfileSchema = z.object({
+export const AgentProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   role: z.string().min(1),
   systemPrompt: z.string().min(1).optional(),
-  customAgentId: z.string().min(1).optional(),  // 引用自定义智能体
-  modelRef: z.string().min(1).optional(),        // 模型引用
-  toolPolicyId: z.string().min(1),               // 工具策略
-  toolIds: z.array(z.string()),                   // 工具列表
-  skillIds: z.array(z.string()),                  // 技能列表
-  memoryNamespaces: z.array(z.string()),          // 记忆命名空间
-  budget: ResourceBudgetSchema,                   // 资源预算
+  customAgentId: z.string().min(1).optional(),
+  modelRef: z.string().min(1).optional(),
+  toolPolicyId: z.string().min(1),
+  toolIds: z.array(z.string().min(1)).default([]),
+  skillIds: z.array(z.string().min(1)).default([]),
+  memoryNamespaces: z.array(z.string().min(1)),
+  budget: ResourceBudgetSchema,
 });
 ```
 
-### 绑定关系
+绑定关系有三条：
 
+```text
+TopologyNode.agentId      -> AgentProfile.id
+ModeNodeSpec.ownerAgentId -> AgentProfile.id
+PatternDefinition.profiles -> AgentProfile[]
 ```
-TopologyNode.agentId ──────→ AgentProfile.id
-ModeNodeSpec.ownerAgentId ──→ AgentProfile.id
-PatternDefinition.profiles ─→ AgentProfile[]
+
+Mode Studio 还允许在 `ModeNodeSpec.config.customAgentId` 上引用用户自定义智能体。运行时调用 agent 时，会把 `customAgentId` 传入 `context.callAgent`，用自定义智能体覆盖具体模型、技能或工具配置，同时保留 mode 节点自身的阶段语义。
+
+所有模式都会注入根智能体 Ora：
+
+```typescript
+export const ORA_ROOT_AGENT_ID = "ora";
 ```
 
-在 `orchestrator_subagent` 中：
-- `{ agentId: "orchestrator" }` 的节点绑定到 `id: "orchestrator"` 的 profile
-- profile 的 `toolPolicyId: "orchestrator_subagent"` 决定其工具权限
-- `memoryNamespaces: ["session", "project"]` 决定其记忆范围
+Ora 的角色是接收用户消息、处理自动模式选择和澄清、决定是否 handoff 给模式内 agent，并最终写出面向用户的回答。
 
-### Ora 根智能体
+## 8. 图框架与 Runtime Loop 的关系
 
-所有模式都会注入一个根智能体 Ora（`ORA_ROOT_AGENT_ID = "ora"`），定义在 `runtime-root-agent.ts`：
-
-- 接收用户消息的第一入口
-- 根据 mode selection 决定是否委派给模式智能体
-- 编写最终面向用户的响应
-- 不暴露内部链式思维或元数据
-
-## 8. 与 Runtime Loop 的关系
-
-图框架和 Runtime Loop 是 Ora 的两个正交维度：
+图框架回答“运行什么”，Runtime Loop 回答“怎么运行”。
 
 | 维度 | 图框架 | Runtime Loop |
 | --- | --- | --- |
-| 关注点 | **定义什么运行**：拓扑结构、智能体、关系 | **描述怎么运行**：状态机、事件、生命周期 |
-| 文档 | 本文档 | `docs/ora-runtime-loop.md` |
-| 关键类型 | TopologyNode, TopologyEdge, ModeSpec, PatternDefinition | RunStatus, StateSnapshot, OraEventEnvelope |
-| 执行入口 | `projectModeRuntimeTopology` + `injectRootAgentTopology` | `executeRuntimeKernel` → `executeModeSpec` → `runNodeRuntimeLoop` |
+| 关注点 | 模式拓扑、节点、边、智能体、能力 | run 生命周期、node loop、工具调用、审批、恢复、事件 |
+| 核心文件 | `topology.ts`、`modes.ts`、mode drivers | `runtime-kernel.ts`、`runtime-kernel-runner.ts`、`node-runtime-loop.ts` |
+| 关键类型 | `TopologyNode`、`TopologyEdge`、`ModeSpec`、`PatternDefinition` | `StateSnapshot`、`OraEventEnvelope`、`RunStatus` |
+| 执行入口 | `modeSpecToPatternDefinition`、`projectModeRuntimeTopology`、`injectRootAgentTopology` | `executeRuntimeKernel`、`executeModeSpec`、`runNodeRuntimeLoop` |
 
-在三层 Runtime Loop 中的对应关系：
-- **外层 Run 生命周期**：在 kernel 初始化阶段调用 `projectModeRuntimeTopology` 和 `injectRootAgentTopology`，构建初始拓扑
-- **中层 Mode 编排**：驱动按 `orderedEnabledModeNodes` 拓扑排序后的节点依次执行，每完成一个节点就更新 topology 状态
-- **内层 Node Loop**：单个节点的 model-tool loop，状态变更通过 `setTopologyStatus` 发出 `topology.updated` 事件
+运行时的三层对应关系：
 
-Mode 驱动器的选择基于 `ModeSpec.family`：`ModeDriverRegistry` 根据协调模式 family 选择对应的 driver（orchestrator-subagent driver、generator-verifier driver 等）。
+- **Run 层**：构建 `definition.topology`，注入 Ora 根智能体，创建 `KernelRuntimeContext`。
+- **Mode 层**：`ModeDriverRegistry` 根据 family 选择 driver，driver 按 mode nodes 或 mode layers 执行。
+- **Node 层**：`runGenericModeNode` 和 `runNodeRuntimeLoop` 驱动单节点 model-tool loop，并通过 `setTopologyStatus` 更新拓扑状态。
 
-## 9. 扩展与自定义
+## 9. Mode Studio 和桌面端展示
 
-### 9.1 Mode Studio
+### 9.1 Mode Studio 编辑器
 
-用户可以在 Mode Studio 中可视化编辑模式图：
-- 拖拽节点（从允许的模板中选择）
-- 连线定义执行顺序
-- 为每个节点选择 owner agent 和 instructions
-- 启用/禁用 runtime atoms
+Mode Studio 的主入口是 `apps/desktop/src/components/ModesView.tsx`。它使用 React Flow 渲染模式画布，核心转换逻辑在 `apps/desktop/src/lib/modeCanvas.ts`：
 
-编辑器约束由 `ModeEditorConstraints` 控制：
-- `allowedNodeTemplates`：可用的节点模板（受 family 限制）
-- `requiredNodeTemplates`：必须存在的节点模板
-- `readOnly`：是否只读
-- `allowReorder / allowCreate / allowDelete / allowDisable`：编辑权限
+- `buildModeFlowNodes(mode, atoms)`：把 `ModeSpec.nodes`、runtime atoms 和 synthetic capability nodes 转成 React Flow nodes。
+- `buildModeFlowEdges(mode, atoms)`：把 `ModeSpec.edges` 和 runtime atom attachment 转成 React Flow edges。
+- `addModeNode` / `addModeEdge` / `removeModeEdges`：处理节点和边编辑。
+- `validateCanvasConnection`：阻止自环、重复边、连接 disabled node，以及会造成 cycle 的边。
+- `autoLayoutDraft` / `ensureModeNodePositions`：补齐或重算节点位置。
 
-### 9.2 克隆模式
+Mode Studio 画布里有一类 UI-only 节点：`__runtime_anchor__`。它代表 runtime harness，不是 `ModeSpec.nodes` 的真实节点。mode scope atoms 和 node scope atoms 在画布中也会渲染为 synthetic nodes，用于帮助用户理解当前 mode 开启了哪些运行时能力。
 
-系统预设模式（`systemPreset: true`）的 `readOnly: true`，但用户可以克隆后自由编辑。克隆通过 `ModeCloneParams` 创建新 ModeSpec，继承原模式的结构但 `systemPreset: false`。
+### 9.2 克隆和自定义 mode
 
-### 9.3 添加新模式
+系统预设 mode 的 `systemPreset: true`，编辑时会先复制成自定义 mode：
 
-理论上，添加新的协调模式需要：
-1. 在 `CoordinationPatternSchema` 中新增枚举值
-2. 在 `MODE_FAMILY_RULES` 中定义允许的模板和停止策略
-3. 在 `MVP_PATTERN_DEFINITIONS` 中添加 PatternDefinition
-4. 在 `MODE_NODE_RUNTIME_TEMPLATE_LIBRARY` 中添加模板的运行时定义
-5. 可选：实现新的 ModeDriver
+```typescript
+const seed = forceCreate || base.systemPreset
+  ? { ...base, id: `${base.id}-custom`, systemPreset: false }
+  : base;
+```
 
-### 9.4 自定义智能体
+保存时，desktop 调用 runtime client 的 create/update mode 接口。runtime 侧会通过 `validateModeSpec` 校验 family 规则、节点合法性、runtime atom 兼容性和必选模板。
 
-每个模式的 `profiles` 数组定义了智能体 roster。用户可以通过 `customAgentId` 引用自定义智能体（CustomAgentDetail），覆盖模型、技能和工具配置，同时保留模式定义的 role 和 budget。
+### 9.3 Stage Transcript 与拓扑视图
 
-### 9.5 Transcript 布局
+`ModeTranscriptLayoutSchema` 里保留了 15 种布局风格，其中包括 `graph_topology`。不过截至当前代码，`apps/desktop/src/components/StageTranscript.tsx` 并没有实现 `graph_topology` renderer；它实际支持的 renderer 主要是：
 
-模式可以配置 `transcriptLayout`，其中 `style: "graph_topology"` 是 15 种布局风格之一，直接在对话界面中以图的形式渲染智能体拓扑和执行状态。
+- `stage_list`
+- `two_sided_duel`
+- `rubric_matrix`
+- `judge_panel`
+- `evidence_board`
+- `comparison_table`
+- `artifact_gallery`
+- `kanban_pipeline`
+
+运行时拓扑目前主要在 Trails Drawer 里展示，入口在 `apps/desktop/src/components/TrailsTabs.tsx`。它读取 `activeSnapshot.topology.nodes` 和 `activeSnapshot.topology.edges`，展示执行拓扑、智能体泳道、通信关系和事件证据。
+
+`apps/desktop/src/components/TopologyPanel.tsx` 仍存在，但当前没有主路径引用。需要做拓扑图 UI 时，优先以 Trails 当前实现和 Mode Studio canvas 为准。
+
+## 10. 添加新模式时要改哪里
+
+新增内置 family 通常要改这几处：
+
+1. `packages/shared/src/primitives.ts`：在 `BuiltInCoordinationPatternSchema` 中添加 family。
+2. `packages/shared/src/modes.ts`：更新 `MODE_FAMILY_RULES`。
+3. `packages/shared/src/modes.ts`：添加或复用 `MODE_NODE_RUNTIME_TEMPLATE_LIBRARY` 模板定义。
+4. `packages/shared/src/modes.ts`：在 `MVP_PATTERN_DEFINITIONS` 中添加 `PatternDefinition`。
+5. `packages/shared/src/modes.ts`：必要时添加 runtime atom 兼容性。
+6. `apps/runtime/src/patterns/`：实现新的 mode driver。
+7. `apps/runtime/src/patterns/driver-registry.ts`：注册 driver。
+8. `apps/desktop/src/lib/modeCanvas.ts` 和 `ModesView.tsx`：确认 Mode Studio 是否需要新的编辑行为或展示文案。
+
+如果只是新增一个系统预设 mode，而不是新增 family，可以复用已有 family。例如当前 `single_agent`、`debate`、`mode_studio_builder`、`code_development`、`ora_self_builder` 都是基于已有 family 构造的 mode spec，而不是新的 coordination pattern。
+
+## 11. 当前边界和容易误解的点
+
+- `TopologyEdge.kind` 当前不决定执行分支。它主要是观测和可视化语义。
+- `ModeEdgeSpec.condition` 才是条件边能力，但当前只有部分 driver 路径消费。
+- `ModeSpec.nodes` 是用户可编辑阶段，不一定一对一对应 runtime `TopologyNode`。single-owner 模式会压缩 topology。
+- runtime atoms 既影响运行时行为，也影响 topology 投影；但 UI 中的 synthetic atom nodes 不等于 ModeSpec 真实节点。
+- `graph_topology` 目前是 schema 预留，不是已经接入的 transcript renderer。
+- runtime 使用的是 `@cemeworm/shared` 包导出的共享契约，旧的 `@ora/shared` 包名已经不再是当前结构。

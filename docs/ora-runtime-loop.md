@@ -8,27 +8,37 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 
 1. **Task Flow 兼容层**：`flows.*` 是 `runs.*` 上的 orchestration alias，`flowRunId` 当前等于 `runId`，不引入第二套持久状态。
 2. **Run 生命周期层**：`LocalRunStore` 保持 public API facade，生命周期、resume、streaming、gate、ledger、projection 等服务负责具体边界。
-3. **Continuation 层**：`RunContinuationDispatcher` 根据 ledger-backed continuation frame 决定恢复 suspended node、replay approved tool、whole-mode fallback，或给出 missing-owner diagnostic。
+3. **Resume / Continuation 层**：`RunResumeService` 先解析 resume patch、gate resolution 和 resume strategy；`RunContinuationDispatcher` 只负责根据 ledger-backed continuation frame 判断恢复 suspended node、whole-mode fallback，或给出 missing-owner diagnostic。approved tool continuation 的 replay 是 resume strategy 的一条路径，不是 dispatcher 自己执行。
 4. **Mode 编排层**：`executeModeSpec` 按 mode nodes/stages 推进 agent 调用，并同步 plan、todo、queue、topology。
 5. **Node 执行层**：`runNodeRuntimeLoop` 在单个 agent/node 内做模型调用、工具调用、审批、澄清、plan-list lifecycle、恢复和强制 finalization。
 
 主要源码入口：
 
-- `/apps/runtime/src/run-store.ts`
-- `/apps/runtime/src/mode-selection.ts`
-- `/apps/runtime/src/run-projections.ts`
-- `/apps/runtime/src/run-continuation-dispatcher.ts`
-- `/apps/runtime/src/run-kernel-execution-service.ts`
-- `/apps/runtime/src/run-resume-finalization-service.ts`
+- `/apps/runtime/src/json-rpc.ts`：`flows.*` / `runs.*` RPC 入口。
+- `/apps/runtime/src/run-store.ts`：兼容 facade，串起 start、resume、streaming、ledger、projection、session 更新。
+- `/apps/runtime/src/run-start-service.ts`：run start 前置准备，包括 session、mode selection、memory prompt、runId、turnIndex。
+- `/apps/runtime/src/run-resume-service.ts`：resume patch 解析、gate resolution、resume strategy 分类。
+- `/apps/runtime/src/run-streaming-service.ts`：streaming live snapshot、event flush、AbortController 管理。
+- `/apps/runtime/src/run-projections.ts`：Run / Flow projection，当前 `flowRunId = runId`。
+- `/apps/runtime/src/run-continuation-dispatcher.ts`：基于 continuation frame 判断 suspended-node resume、whole-mode fallback 或 diagnostic failure。
+- `/apps/runtime/src/run-kernel-execution-service.ts`：start / resume 进入 kernel 的服务边界，包含 suspended-node resume snapshot 准备。
+- `/apps/runtime/src/run-resume-finalization-service.ts`：resume 后 terminal / interrupted / streaming failure 的 snapshot、ledger、persistence 收敛。
+- `/apps/runtime/src/runtime-gate-service.ts`
 - `/apps/runtime/src/runtime-gate-ledger-service.ts`
 - `/apps/runtime/src/run-kernel-lifecycle.ts`
 - `/apps/runtime/src/harness/runtime-kernel.ts`
+- `/apps/runtime/src/harness/runtime-kernel-runner.ts`
+- `/apps/runtime/src/harness/runtime-root-agent.ts`
 - `/apps/runtime/src/harness/node-runtime-loop.ts`
+- `/apps/runtime/src/harness/node-loop-transitions.ts`
 - `/apps/runtime/src/harness/runtime-tool-call-service.ts`
 - `/apps/runtime/src/harness/runtime-tool-recovery-service.ts`
 - `/apps/runtime/src/harness/runtime-clarifications.ts`
 - `/apps/runtime/src/harness/runtime-interrupts.ts`
+- `/apps/runtime/src/patterns/driver-registry.ts`
 - `/apps/runtime/src/patterns/mode-driver-registry.ts`
+- `/apps/runtime/src/patterns/generic-node-executor.ts`
+- `/packages/shared/src/actions.ts`
 - `/packages/shared/src/runtime.ts`
 - `/packages/shared/src/runtime-ledger.ts`
 - `/packages/shared/src/runtime-timeline.ts`
@@ -82,13 +92,19 @@ flowchart TD
   I --> J["run.interrupted + continuation frame"]
   J --> K["User answers clarification / approves action"]
   K --> L["flows.resume / runs.resume with patch"]
-  L --> L1["RunContinuationDispatcher"]
+  L --> L0["RunResumeService parses patch + classifies strategy"]
+  L0 -->|approved tool continuation| L3["replay approved action/tool"]
+  L0 -->|kernel resume| L1["RunContinuationDispatcher"]
+  L0 -->|non-kernel resume| L7["non-kernel mutation resume"]
   L1 -->|owner-backed frame| L2["resume suspended node"]
-  L1 -->|approved deterministic tool| L3["replay tool, then resume owner"]
   L1 -->|legacy fallback| L4["resume whole mode"]
   L1 -->|missing owner| L5["diagnostic failure"]
-  L2 --> L6["gate.resolved + resume finalization"]
-  L3 --> L6
+  L3 --> L8{"completion guard needs model work?"}
+  L8 -->|yes| L2
+  L8 -->|no| L6["resume finalization / projection"]
+  L2 --> L6
+  L5 --> L6
+  L7 --> L6
   L4 --> B1
 
   H -->|no / already answered| M["executeModeSpec"]
@@ -114,39 +130,48 @@ flowchart TD
 - `LocalRunStore` 现在更像兼容 facade。kernel 执行、resume finalization、gate lifecycle、ledger append、persistence 和 projection 已经拆到更窄的服务边界。
 - `resolveModeSelection` 先把输入解析成确定的 `ModeSpec`、`PatternDefinition` 和完整 `RunConfig`。
 - `modeSelection: "auto"` 会调用 auto mode router，选择 `modeId`，并在 `taskIntentMode: "auto"` 时推断 `taskIntent`。
-- 普通 start 和 resume 都会通过 kernel execution 边界进入 `executeRuntimeKernel`，resume 额外带入 clarification patch、approved action ids 和上一轮 resume state。
+- 普通 start 由 `RunStartService` 准备 session、mode、memory prompt、runId 和 turnIndex，再通过 `RunKernelExecutionService` 进入 `executeRuntimeKernel`。
+- resume 先由 `RunResumeService` 解析 patch、clarification、approved actions 和 gate resolution，并分类为 kernel resume、approved tool continuation 或 non-kernel resume。
+- kernel resume 会通过 kernel execution 边界进入 `executeRuntimeKernel`，额外带入 clarification patch、approved action ids、approved actions 和上一轮 resume state。
 - kernel 捕获 `ClarificationInterruptError` 和 `ApprovalInterruptError` 后，把 run 标记为 `interrupted`，写入 `continuation` frame，并通过 gate ledger 写入 durable gate facts。
-- resume 不再默认等同于 broad mode restart。`RunContinuationDispatcher` 会先读取 active continuation frame，owner-backed frame 优先恢复记录的 agent/node，缺少 owner metadata 的危险 frame 会进入 diagnostic failure。
+- resume 不再默认等同于 broad mode restart。`RunContinuationDispatcher` 只处理 continuation ownership：owner-backed frame 优先恢复记录的 agent/node；legacy approval/clarification frame 可以 whole-mode fallback；缺少 owner metadata 的危险 frame 会进入 diagnostic failure。
+- approved tool continuation 不由 dispatcher 执行。当前路径是 `RunResumeService.classifyRunResumeStrategy` 识别 approved continuation action，`executeApprovedToolContinuationStrategy` replay action/tool，必要时再由 `RunKernelExecutionService.continueAfterApprovedTool` 继续恢复 owner node。
 - plan 模式输出完整 `<proposed_plan>` 后，run 本身可以是 `succeeded`，但 session attention 会变成 `needs_plan_decision`，等待用户接受或拒绝计划。
 
-## 1.1 Continuation dispatcher
+## 1.1 Resume strategy 和 continuation dispatcher
 
 ```mermaid
 flowchart TD
   A["flows.resume / runs.resume"] --> B["Load ledger-backed latest snapshot"]
-  B --> C["Read continuation.activeFrameId"]
-  C --> D{"RunContinuationDispatcher decision"}
+  B --> C["RunResumeService.prepare"]
+  C --> C1["parse patch: clarifications + approvedActionIds"]
+  C1 --> C2["derive gate resolutions"]
+  C2 --> D{"classifyRunResumeStrategy"}
 
-  D -->|approved deterministic tool| E["Replay approved tool/action"]
-  E --> F{"completion guard needs model work?"}
-  F -->|yes| G["resume_suspended_node using frame owner"]
+  D -->|approved_tool_continuation| E["executeApprovedToolContinuationStrategy"]
+  E --> F{"continueKernelAfterTool?"}
+  F -->|yes| G["RunKernelExecutionService.continueAfterApprovedTool"]
   F -->|no| H["resume finalization"]
 
-  D -->|manual/tool interrupted with owner| G
-  D -->|clarification/approval legacy frame| I["whole-mode resume fallback"]
-  D -->|missing required owner| J["diagnostic failure"]
-  D -->|unsupported safe fallback| I
+  D -->|kernel| I["RunContinuationDispatcher"]
+  I -->|owner-backed frame| J["resume_suspended_node"]
+  I -->|legacy / unsupported safe fallback| K["resume whole mode"]
+  I -->|missing required owner| L["diagnostic failure"]
 
-  G --> K["RunKernelExecutionService suspended-node resume"]
-  K --> L["record node checkpoint / complete frame"]
-  I --> M["RunKernelExecutionService whole-mode resume"]
-  H --> N["terminal/interrupted projection"]
-  J --> N
-  L --> N
-  M --> N
+  D -->|non_kernel| M["non-kernel resume mutation"]
+
+  J --> N["RunKernelExecutionService suspended-node resume"]
+  K --> O["RunKernelExecutionService whole-mode resume"]
+  G --> H
+  N --> H
+  O --> H
+  M --> H
+  L --> H
 ```
 
-Continuation frame 是 resume ownership 的 source of truth。Frame 记录 `agentId`、`nodeId`、`planItemId`、pending action/tool/clarification ids、conversation cursor，以及 node checkpoint metadata。Owner-backed frame 能恢复到暂停的 agent/node；ownerless legacy approval/clarification frame 可以走 whole-mode fallback；ownerless manual/tool-interrupted frame 不能安全恢复，会以可见 diagnostic failure 结束。
+Resume 分两层看更准确。`RunResumeService` 是 strategy 边界，负责解析 patch、找出 gate resolution，并判断这次 resume 是 kernel work、approved tool continuation，还是 non-kernel mutation。`RunContinuationDispatcher` 只处理 kernel resume 里的 continuation ownership：它读取 `continuation.activeFrameId`，根据 frame 的 `agentId`、`nodeId`、`planItemId`、pending action/tool/clarification ids、conversation cursor 和 node checkpoint metadata，决定恢复暂停的 agent/node、退回 whole-mode resume，或给出 missing-owner diagnostic。
+
+Owner-backed frame 能恢复到暂停的 agent/node；ownerless legacy approval/clarification frame 可以走 whole-mode fallback；ownerless manual/tool-interrupted frame 不能安全恢复，会以可见 diagnostic failure 结束。Approved tool continuation 是另一条 strategy：先 replay 已批准的 action/tool，如果 completion guard 仍然需要模型工作，再回到 owner node。
 
 ## 2. Mode 编排层
 
@@ -190,8 +215,8 @@ flowchart TD
 Mode 编排影响 loop 的方式：
 
 - mode 决定 `nodes`、`profiles`、`stages`、`runtimeAtoms`、tool/skill scope、默认 budget、completion policy 和 recovery policy。
-- `ModeDriverRegistry` 里的不同 driver 会把 mode 转成不同执行形态，例如 single owner、orchestrator/subagent、generator/verifier、agent teams、staged transcript。
-- 每个 node 进入 `runNode` 时会更新 plan/todo/queue 状态，运行结束后再同步 topology 和 queue。
+- `ModeDriverRegistry` 当前注册的 built-in family 包括 `generator_verifier`、`orchestrator_subagent`、`agent_teams`、`message_bus`、`shared_state`。staged transcript 是 `orchestrator_subagent` driver 内部的一条执行形态，不是独立 family。
+- 每个 node 进入 `runGenericModeNode` 时会更新 plan/todo/queue 状态，运行结束后再同步 topology 和 queue。
 - built-in pattern drivers 通过 `runGenericModeNode` 记录 node-level bag checkpoint。Continuation resume 可以用这些 checkpoint 判断如何恢复 owner-backed suspended node，而不是从 mode 入口重新跑旧节点。
 - 带 `clarification_interrupt` atom 的 mode/node 可以在执行前或执行中主动挂起，等待用户补充信息。
 - 带 `subagent_delegate` atom 的 node 会通过 delegated task 事件显式标记任务委派。
@@ -252,7 +277,7 @@ stateDiagram-v2
 - `interrupted`
 - `failed`
 
-图里的 `plan_lifecycle` 是 completion guard 前的概念性 hook，不是 `NodeRuntimeLoopState` 的持久状态值。源码里的状态转换仍然从 `running_model` 进入 `completed`、`running_model` follow-up 或 `failed`。
+状态转换不只是散落在 emit 里。`node-loop-transitions.ts` 里的 `NodeLoopController` / reducer 会校验核心转换路径，非法转换会发 `node_loop_transition` runtime diagnostic，默认在关键路径上抛错。图里的 `plan_lifecycle` 是 completion guard 前的概念性 hook，不是 `NodeRuntimeLoopState` 的持久状态值。源码里的状态转换仍然从 `running_model` 进入 `completed`、`running_model` follow-up 或 `failed`。
 
 内层循环的关键点：
 
@@ -312,7 +337,7 @@ Important distinction:
 | --- | --- |
 | `modeSelection` | manual 直接使用请求模式；auto 先用 router 选择 mode 和 task intent。 |
 | `taskIntent` | chat/plan/implement 会改变系统提示、是否允许修改、是否生成 plan decision、是否消费 accepted plan。 |
-| `runtimeAtoms` | 开启 clarification interrupt、recovery policy、memory capture、artifact publish、delegation、shared state 等能力。 |
+| `runtimeAtoms` | 开启 clarification interrupt、recovery policy、memory capture、artifact publish、delegation、message bus、shared state 等能力。 |
 | `profiles` | 决定 agent 身份、工具集合、skill 集合和 system overlay。 |
 | `nodes/stages` | 决定 mode 的执行顺序、handoff、stage transcript 和 plan/todo 进度。 |
 | `capabilityFlags.toolIds` | 决定 agent 可用工具；部分 mode 会禁用默认 web tools 或启用特定工具。 |
@@ -344,7 +369,7 @@ flowchart TD
   O -->|yes| Q["diagnostic failure"]
 ```
 
-`plan.update` 的 wire shape 仍然是 `{ explanation?, plan: [{ step, status }] }`，但 runtime 会在事件进入 ledger 前验证和 canonicalize。未完成的 plan list 必须有且只有一个 `in_progress` step，全部完成时才允许没有 active step。
+`plan.update` 的 wire shape 仍然是 `{ explanation?, plan: [{ id?, step, status }] }`。`id` 可选；缺失时 runtime 会按 step 和 index 生成稳定 id。事件进入 ledger 前会先验证和 canonicalize。未完成的 plan list 必须有且只有一个 `in_progress` step，全部完成时才允许没有 active step。
 
 Runtime 也会给 plan step 生成稳定 id，并把新的 action/tool call 绑定到当前 active `planStepId`。Node loop 在 completion guard 前检查当前 agent/node 的 successful non-plan tool evidence；如果证据绑定到 plan step，就优先推进这个 step，否则只在存在单一 active step 时推进。这个 hook 不根据自然语言猜测任务完成，只处理已有工具生命周期证据。
 
@@ -353,6 +378,12 @@ Runtime 也会给 plan step 生成稳定 id，并把新的 action/tool call 绑�
 Agent/tool context 里发出的 runtime event 应该带上执行上下文。`RuntimeToolCallService` 这类已知 `{ agentId, nodeId }` 的边界会用 scoped emitter 给缺失的 event metadata 补默认 attribution，同时保留调用方显式传入的 `agentId` / `nodeId`。
 
 这条规则尤其影响 `plan.update`。模型调用 `plan.update` 后产生的 `plan_list.updated` 是执行 agent 的事件，不是 root/system 事件；desktop timeline 和 trail projection 应该消费 runtime 给出的 attribution，而不是靠前端推断上一条 agent。
+
+## Root agent topology 和 Ora finalizer
+
+多 agent mode 会显式注入 root agent topology：`runtime-root-agent.ts` 会把拓扑改成 `run -> ora -> handoffTarget`。Root agent 不是普通 worker，它承担入口、auto router、clarification owner、handoff parent、observer 和最终用户回复的职责。
+
+当 selected mode 返回结果后，`runtime-kernel.ts` 里的 Ora finalizer 会把 mode output 改写成最终面向用户的回答。两个场景会跳过这一步：`single_agent` mode 直接返回 node output；`taskIntent = "plan"` 且 mode output 已包含完整 `<proposed_plan>` 时，直接保留计划输出，避免 finalizer 破坏计划协议。
 
 ## Ledger 和 streaming finalization
 
@@ -374,7 +405,7 @@ flowchart TD
   M --> N["append terminal run.failed"]
 ```
 
-新的 streaming event batch 不再存累计的 `snapshot.events`，完整事件历史由 ledger `payload.events` 重建。旧的 full snapshot row 仍然兼容。Provider stream 会把 SSE `[DONE]` 当作 terminal signal，即使 transport 没有关闭也会结束；idle/no-progress stream 会失败，不再无限等待。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
+新的 streaming event batch 不再存累计的 `snapshot.events`，完整事件历史由 ledger `payload.events` 重建。旧的 full snapshot row 仍然兼容。Provider stream 会把 SSE `[DONE]` 当作 terminal signal，即使 transport 没有关闭也会结束；idle/no-progress stream 会失败，不再无限等待。`RunStreamingService` 还维护 per-run `AbortController`，`runs.interrupt` / `runs.cancel` 会 abort active controller，并把 signal 传给 kernel、node loop 和 provider request。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
 
 ## 特殊路径
 
@@ -409,10 +440,11 @@ plan run 输出 `<proposed_plan>` 后：
 
 1. kernel 创建 `continuation.activeFrameId`。
 2. frame 记录 pending action/tool/clarification ids、agent、node、plan item、conversation cursor 和可用的 node checkpoint。
-3. resume 时，`flows.resume` / `runs.resume` 把 clarification patch、approved actions 或 manual/tool continuation intent 交给 resume service 边界。
-4. `RunContinuationDispatcher` 先基于 frame reason、owner metadata、pending ids 和 checkpoint 判断 resume 策略。
-5. owner-backed frame 通过 suspended-node resume 回到记录的 agent/node；approved deterministic tool 会先 replay action，再根据 completion guard 决定是否回到 owner node。
-6. gate ledger 记录 `gate.resolved`，resume finalization 负责最终 snapshot、ledger、persistence 和 session projection 收敛。
+3. resume 时，`flows.resume` / `runs.resume` 把 clarification patch、approved actions 或 manual/tool continuation intent 交给 `RunResumeService`。
+4. `RunResumeService` 先解析 patch、计算 gate resolutions，并分类为 kernel resume、approved tool continuation 或 non-kernel resume。
+5. kernel resume 才进入 `RunContinuationDispatcher`，由它基于 frame reason、owner metadata、pending ids 和 checkpoint 判断 suspended-node resume、whole-mode fallback 或 diagnostic failure。
+6. approved tool continuation 会先 replay action/tool；如果 replay 后仍需要模型继续工作，再通过 `RunKernelExecutionService.continueAfterApprovedTool` 回到 owner node。
+7. gate ledger 记录 `gate.resolved`，resume finalization 负责最终 snapshot、ledger、persistence 和 session projection 收敛。
 
 ## 建议的文档呈现方式
 
