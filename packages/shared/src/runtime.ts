@@ -1259,6 +1259,7 @@ export const FlowRunDetailSchema = z.object({
   latestSnapshot: z.lazy(() => StateSnapshotSchema).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  snapshotSource: z.enum(["live", "ledger"]).optional(),
 });
 export type FlowRunDetail = z.infer<typeof FlowRunDetailSchema>;
 
@@ -1366,7 +1367,8 @@ export const StateSnapshotSchema = z.object({
   modeSpec: z.lazy(() => ModeSpecSchema).optional(),
   output: z.unknown().optional(),
   error: z.string().optional(),
-  updatedAt: z.number().int().nonnegative()
+  updatedAt: z.number().int().nonnegative(),
+  snapshotSource: z.enum(["live", "ledger"]).optional(),
 });
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 

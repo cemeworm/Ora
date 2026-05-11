@@ -166,6 +166,7 @@ export const RecoveryErrorTypeSchema = z.enum([
   "provider_auth",
   "provider_quota",
   "provider_config_error",
+  "provider_finalization_unavailable",
   "boundary_violation",
   "env_unavailable",
   "tool_error",
@@ -265,6 +266,12 @@ export const DEFAULT_MODE_RECOVERY_POLICY = ModeRecoveryPolicySchema.parse({
       id: "provider-hard-fallback",
       label: "Provider hard fallback",
       errorTypes: ["provider_auth", "provider_quota"],
+      action: "fallback_artifact",
+    },
+    {
+      id: "provider-finalization-fallback",
+      label: "Provider finalization fallback",
+      errorTypes: ["provider_finalization_unavailable"],
       action: "fallback_artifact",
     },
     {

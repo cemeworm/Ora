@@ -41,6 +41,28 @@ export const ModeStudioGuidanceSchema = z.object({
 });
 export type ModeStudioGuidance = z.infer<typeof ModeStudioGuidanceSchema>;
 
+export const ModeStudioFamilyConfidenceSchema = z.object({
+  /** The family chosen by the builder. */
+  family: z.string().min(1),
+  /** Why the builder chose this family (brief explanation). */
+  reason: z.string().min(1),
+  /** Builder's confidence: 'high' | 'medium' | 'low'. */
+  confidence: z.enum(["high", "medium", "low"]),
+});
+export type ModeStudioFamilyConfidence = z.infer<typeof ModeStudioFamilyConfidenceSchema>;
+
+export const ModeStudioRepairSuggestionSchema = z.object({
+  /** Human-readable description of the mismatch. */
+  issue: z.string().min(1),
+  /** Suggested action. */
+  action: z.enum(["switch_family", "remove_condition", "convert_edge", "rebuild_layers", "remove_atom", "remove_layout"]),
+  /** Optional target — e.g. edge id, atom id, family name. */
+  target: z.string().min(1).optional(),
+  /** Brief label for the repair button/option. */
+  label: z.string().min(1),
+});
+export type ModeStudioRepairSuggestion = z.infer<typeof ModeStudioRepairSuggestionSchema>;
+
 export const ModeStudioDraftBundleSchema = z.object({
   modeDraft: ModeSpecSchema,
   agentDrafts: z.array(CustomAgentGeneratedDraftSchema).default([]),
@@ -48,6 +70,10 @@ export const ModeStudioDraftBundleSchema = z.object({
   changeSummary: z.array(z.string().min(1)).default([]),
   validation: ModeValidationResultSchema,
   needsInput: z.boolean().default(false),
+  /** Builder's family selection metadata. */
+  familyConfidence: ModeStudioFamilyConfidenceSchema.optional(),
+  /** Repair suggestions when the generated draft mismatches the driver manifest. */
+  repairSuggestions: z.array(ModeStudioRepairSuggestionSchema).default([]),
 });
 export type ModeStudioDraftBundle = z.infer<typeof ModeStudioDraftBundleSchema>;
 

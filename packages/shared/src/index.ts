@@ -16,3 +16,5 @@ export * from "./self-iteration.js";
 export * from "./rpc.js";
 export * from "./config.js";
 export * from "./bootstrap.js";
+export * from "./driver-manifest.js";
+export * from "./mode-execution-preview.js";

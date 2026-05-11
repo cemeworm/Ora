@@ -493,6 +493,7 @@ describe("Ora shared contracts", () => {
     expect(parsed.recoveryPolicy.version).toBe(1);
     expect(ModeRecoveryPolicySchema.parse(parsed.recoveryPolicy).rules.length).toBeGreaterThan(0);
     expect(RecoveryErrorTypeSchema.parse("provider_transient")).toBe("provider_transient");
+    expect(RecoveryErrorTypeSchema.parse("provider_finalization_unavailable")).toBe("provider_finalization_unavailable");
     expect(RecoveryActionSchema.parse("fallback_artifact")).toBe("fallback_artifact");
   });
 

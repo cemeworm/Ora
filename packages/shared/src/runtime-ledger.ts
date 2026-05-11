@@ -856,6 +856,7 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
       checkpoints: run.checkpoints.length > 0 ? run.checkpoints : run.finalSnapshot.checkpoints,
       toolResults: run.toolResults.length > 0 ? run.toolResults : run.finalSnapshot.toolResults,
       updatedAt: run.updatedAt,
+      snapshotSource: "ledger" as const,
     }), run.gates);
   }
   return StateSnapshotSchema.parse({
@@ -896,6 +897,7 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
     output: run.output,
     error: run.error,
     updatedAt: run.updatedAt,
+    snapshotSource: "ledger" as const,
   });
 }
 

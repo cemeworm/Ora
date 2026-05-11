@@ -758,6 +758,251 @@ const documentExtractParameters = {
   additionalProperties: false,
 };
 
+const skillNameParameter = {
+  type: "string",
+  description: "Lowercase hyphen-case skill name, for example my-custom-skill.",
+  pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+};
+
+const skillsListParameters = {
+  type: "object",
+  properties: {
+    category: { type: "string", enum: ["public", "private"], description: "Optional skill category filter." },
+    enabledOnly: { type: "boolean", description: "When true, return only enabled skills." },
+    query: { type: "string", description: "Optional search query for name or description." },
+  },
+  additionalProperties: false,
+};
+
+const skillsGetParameters = {
+  type: "object",
+  properties: {
+    name: { ...skillNameParameter, description: "Exact name of the skill to read." },
+  },
+  required: ["name"],
+  additionalProperties: false,
+};
+
+const skillsCheckNameParameters = {
+  type: "object",
+  properties: {
+    name: { ...skillNameParameter, description: "Skill name to check for availability." },
+  },
+  required: ["name"],
+  additionalProperties: false,
+};
+
+const skillsCreateParameters = {
+  type: "object",
+  properties: {
+    name: skillNameParameter,
+    description: { type: "string", description: "Short description of what the skill provides." },
+    content: { type: "string", description: "Full SKILL.md markdown content." },
+    files: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path relative to the skill package root." },
+          content: { type: "string", description: "File content." },
+          executable: { type: "boolean", description: "Whether the file should be executable." },
+        },
+        required: ["path", "content"],
+        additionalProperties: false,
+      },
+      description: "Optional supporting files to include in the skill package.",
+    },
+    enabled: { type: "boolean", description: "Whether the skill is enabled after creation. Defaults to true." },
+  },
+  required: ["name"],
+  additionalProperties: false,
+};
+
+const skillsUpdateParameters = {
+  type: "object",
+  properties: {
+    name: { ...skillNameParameter, description: "Name of the skill to update." },
+    nextName: { ...skillNameParameter, description: "New name if renaming the skill." },
+    description: { type: "string", description: "Updated skill description." },
+    content: { type: "string", description: "Updated SKILL.md content." },
+    files: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path relative to the skill package root." },
+          content: { type: "string", description: "File content." },
+          executable: { type: "boolean" },
+        },
+        required: ["path", "content"],
+        additionalProperties: false,
+      },
+      description: "Replacement file list (omitting a file deletes it).",
+    },
+  },
+  required: ["name"],
+  additionalProperties: false,
+};
+
+const skillsSetEnabledParameters = {
+  type: "object",
+  properties: {
+    name: { ...skillNameParameter, description: "Skill name to enable or disable." },
+    enabled: { type: "boolean", description: "true to enable, false to disable." },
+  },
+  required: ["name", "enabled"],
+  additionalProperties: false,
+};
+
+const mcpServerParameter = {
+  type: "string",
+  description: "MCP server id as configured in .ora/mcp.json.",
+};
+
+const mcpListToolsParameters = {
+  type: "object",
+  properties: {
+    server: { ...mcpServerParameter, description: "Optional server id. Lists tools from all servers when omitted." },
+  },
+  additionalProperties: false,
+};
+
+const mcpReadResourceParameters = {
+  type: "object",
+  properties: {
+    server: { ...mcpServerParameter, description: "MCP server id." },
+    uri: { type: "string", description: "Resource URI, for example docs://intro." },
+  },
+  required: ["server", "uri"],
+  additionalProperties: false,
+};
+
+const mcpCallParameters = {
+  type: "object",
+  properties: {
+    server: mcpServerParameter,
+    name: { type: "string", description: "Tool name as returned by mcp.listTools." },
+    arguments: { type: "object", description: "Tool arguments as a JSON object.", additionalProperties: true },
+  },
+  required: ["server", "name"],
+  additionalProperties: false,
+};
+
+const packageIdParameter = {
+  type: "string",
+  description: "Package ID or slot identifier.",
+};
+
+const packageListParameters = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+};
+
+const packageSlotParameters = {
+  type: "object",
+  properties: {
+    id: { ...packageIdParameter, description: "Package slot id." },
+  },
+  required: ["id"],
+  additionalProperties: false,
+};
+
+const modesListParameters = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+};
+
+const modesDraftParameters = {
+  type: "object",
+  properties: {
+    description: { type: "string", description: "Description of the desired mode coordination pattern." },
+    messages: { type: "array", items: { type: "object" }, description: "Conversation messages to derive the mode from." },
+  },
+  additionalProperties: false,
+};
+
+const modesRefineParameters = {
+  type: "object",
+  properties: {
+    draftId: { type: "string", description: "ID of the existing mode draft to refine." },
+    feedback: { type: "string", description: "User feedback or additional requirements." },
+  },
+  required: ["draftId"],
+  additionalProperties: false,
+};
+
+const modesValidateParameters = {
+  type: "object",
+  properties: {
+    draftId: { type: "string", description: "ID of the draft to validate." },
+  },
+  required: ["draftId"],
+  additionalProperties: false,
+};
+
+const modesApplyDraftParameters = {
+  type: "object",
+  properties: {
+    draftId: { type: "string", description: "ID of the validated draft to apply." },
+  },
+  required: ["draftId"],
+  additionalProperties: false,
+};
+
+const selfIterationCandidateIdParameter = {
+  type: "string",
+  description: "Self-Iteration candidate id.",
+};
+
+const selfIterationListParameters = {
+  type: "object",
+  properties: {
+    projectId: { type: "string", description: "Optional project filter." },
+    kind: { type: "string", description: "Optional candidate kind filter." },
+    status: { type: "string", enum: ["reviewed", "applied", "rejected"], description: "Optional status filter." },
+    limit: positiveLimitParameter("Maximum number of candidates to return."),
+  },
+  additionalProperties: false,
+};
+
+const selfIterationGetParameters = {
+  type: "object",
+  properties: {
+    id: selfIterationCandidateIdParameter,
+  },
+  required: ["id"],
+  additionalProperties: false,
+};
+
+const selfIterationScanParameters = {
+  type: "object",
+  properties: {
+    projectId: { type: "string", description: "Optional project filter." },
+    kinds: { type: "array", items: { type: "string" }, description: "Optional candidate kinds to scan for." },
+  },
+  additionalProperties: false,
+};
+
+const selfIterationEvaluateParameters = {
+  type: "object",
+  properties: {
+    id: selfIterationCandidateIdParameter,
+  },
+  required: ["id"],
+  additionalProperties: false,
+};
+
+const selfIterationApplyParameters = {
+  type: "object",
+  properties: {
+    id: selfIterationCandidateIdParameter,
+  },
+  required: ["id"],
+  additionalProperties: false,
+};
+
 export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "file.read", label: "Read File", description: "Read file contents inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileReadParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.list", label: "List Files", description: "List files and directories inside the selected project folder.", category: "file", riskLevel: "safe", parameters: fileListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
@@ -840,31 +1085,31 @@ export const MVP_TOOLS: ToolDescriptor[] = [
     implemented: true,
     allowedForProfiles: [],
   },
-  { id: "skills.list", label: "List Skills", description: "List installed Ora skill packages by name, description, category, enabled state, and supporting file metadata so an agent can discover relevant skills before answering.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.get", label: "Read Skill", description: "Read the full SKILL.md instructions and package file metadata for one installed Ora skill before applying that skill to the conversation.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.checkName", label: "Check Skill Name", description: "Check whether an Ora skill name is available before installing or creating it.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "skills.create", label: "Create Skill", description: "Create or install a private Ora skill package from validated SKILL.md content plus optional supporting files.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "skills.update", label: "Update Skill", description: "Update an editable Ora skill package with validated SKILL.md content while preserving or replacing supporting files.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "skills.setEnabled", label: "Enable Skill", description: "Enable or disable an installed Ora skill.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "mcp.listTools", label: "List MCP Tools", description: "List tools exposed by configured MCP servers.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "mcp.readResource", label: "Read MCP Resource", description: "Read a resource from a configured MCP server.", category: "mcp", riskLevel: "low_risk", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "mcp.call", label: "MCP Tool Call", description: "Invoke a tool on a configured MCP server.", category: "mcp", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "package.list", label: "List Packages", description: "List local Ora version slots and the active package pointer.", category: "package", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "package.buildCandidate", label: "Build Candidate Package", description: "Build and verify a candidate Ora package slot from the local source tree.", category: "package", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "package.verify", label: "Verify Package", description: "Verify an existing Ora package slot before promotion.", category: "package", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "package.promote", label: "Promote Package", description: "Promote a verified candidate package slot to active.", category: "package", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "package.switch", label: "Switch Package", description: "Switch the active Ora package slot.", category: "package", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "package.rollback", label: "Rollback Package", description: "Rollback to the previously active Ora package slot.", category: "package", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "modes.list", label: "List Modes", description: "List all installed coordination modes (Mode specs) visible to the user.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "modes.generateDraft", label: "Generate Mode Draft", description: "Generate a mode draft from conversation messages describing the desired coordination pattern, agents, and capabilities.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "modes.refineDraft", label: "Refine Mode Draft", description: "Refine an existing mode draft based on user feedback or additional requirements.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "modes.validate", label: "Validate Mode Draft", description: "Validate a mode draft for correctness and completeness before applying.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "modes.applyDraft", label: "Apply Mode Draft", description: "Apply a validated mode draft, creating the mode spec and optional agent drafts.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
-  { id: "selfIteration.list", label: "List Self-Iteration Candidates", description: "List reviewed Self-Iteration candidates by project, kind, status, or limit so an agent can inspect pending improvements.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "selfIteration.get", label: "Get Self-Iteration Candidate", description: "Read one Self-Iteration candidate, including evidence, risk, evaluation metadata, and proposed change details.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "selfIteration.scan", label: "Scan for Self-Iteration Candidates", description: "Run a bounded Self-Iteration scan over existing feedback, evaluations, runs, and insights without applying prompt, mode, or skill changes.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "selfIteration.evaluate", label: "Evaluate Self-Iteration Candidate", description: "Evaluate one Self-Iteration candidate through Evaluation Studio and attach pass/fail plus before/after score evidence for review.", category: "internal", riskLevel: "safe", parameters: {}, requiresApproval: false, implemented: true, allowedForProfiles: [] },
-  { id: "selfIteration.apply", label: "Apply Self-Iteration Candidate", description: "Apply a reviewed Self-Iteration candidate only after explicit user approval; prompt, mode, and skill changes remain approval-gated.", category: "internal", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "skills.list", label: "List Skills", description: "List installed Ora skill packages by name, description, category, enabled state, and supporting file metadata so an agent can discover relevant skills before answering.", category: "internal", riskLevel: "safe", parameters: skillsListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.get", label: "Read Skill", description: "Read the full SKILL.md instructions and package file metadata for one installed Ora skill before applying that skill to the conversation.", category: "internal", riskLevel: "safe", parameters: skillsGetParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.checkName", label: "Check Skill Name", description: "Check whether an Ora skill name is available before installing or creating it.", category: "internal", riskLevel: "safe", parameters: skillsCheckNameParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "skills.create", label: "Create Skill", description: "Create or install a private Ora skill package from validated SKILL.md content plus optional supporting files.", category: "internal", riskLevel: "requires_approval", parameters: skillsCreateParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "skills.update", label: "Update Skill", description: "Update an editable Ora skill package with validated SKILL.md content while preserving or replacing supporting files.", category: "internal", riskLevel: "requires_approval", parameters: skillsUpdateParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "skills.setEnabled", label: "Enable Skill", description: "Enable or disable an installed Ora skill.", category: "internal", riskLevel: "requires_approval", parameters: skillsSetEnabledParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "mcp.listTools", label: "List MCP Tools", description: "List tools exposed by configured MCP servers.", category: "mcp", riskLevel: "low_risk", parameters: mcpListToolsParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "mcp.readResource", label: "Read MCP Resource", description: "Read a resource from a configured MCP server.", category: "mcp", riskLevel: "low_risk", parameters: mcpReadResourceParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "mcp.call", label: "MCP Tool Call", description: "Invoke a tool on a configured MCP server.", category: "mcp", riskLevel: "requires_approval", parameters: mcpCallParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "package.list", label: "List Packages", description: "List local Ora version slots and the active package pointer.", category: "package", riskLevel: "safe", parameters: packageListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "package.buildCandidate", label: "Build Candidate Package", description: "Build and verify a candidate Ora package slot from the local source tree.", category: "package", riskLevel: "requires_approval", parameters: packageSlotParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "package.verify", label: "Verify Package", description: "Verify an existing Ora package slot before promotion.", category: "package", riskLevel: "requires_approval", parameters: packageSlotParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "package.promote", label: "Promote Package", description: "Promote a verified candidate package slot to active.", category: "package", riskLevel: "requires_approval", parameters: packageSlotParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "package.switch", label: "Switch Package", description: "Switch the active Ora package slot.", category: "package", riskLevel: "requires_approval", parameters: packageSlotParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "package.rollback", label: "Rollback Package", description: "Rollback to the previously active Ora package slot.", category: "package", riskLevel: "requires_approval", parameters: packageSlotParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "modes.list", label: "List Modes", description: "List all installed coordination modes (Mode specs) visible to the user.", category: "internal", riskLevel: "safe", parameters: modesListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "modes.generateDraft", label: "Generate Mode Draft", description: "Generate a mode draft from conversation messages describing the desired coordination pattern, agents, and capabilities.", category: "internal", riskLevel: "safe", parameters: modesDraftParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "modes.refineDraft", label: "Refine Mode Draft", description: "Refine an existing mode draft based on user feedback or additional requirements.", category: "internal", riskLevel: "safe", parameters: modesRefineParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "modes.validate", label: "Validate Mode Draft", description: "Validate a mode draft for correctness and completeness before applying.", category: "internal", riskLevel: "safe", parameters: modesValidateParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "modes.applyDraft", label: "Apply Mode Draft", description: "Apply a validated mode draft, creating the mode spec and optional agent drafts.", category: "internal", riskLevel: "requires_approval", parameters: modesApplyDraftParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "selfIteration.list", label: "List Self-Iteration Candidates", description: "List reviewed Self-Iteration candidates by project, kind, status, or limit so an agent can inspect pending improvements.", category: "internal", riskLevel: "safe", parameters: selfIterationListParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "selfIteration.get", label: "Get Self-Iteration Candidate", description: "Read one Self-Iteration candidate, including evidence, risk, evaluation metadata, and proposed change details.", category: "internal", riskLevel: "safe", parameters: selfIterationGetParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "selfIteration.scan", label: "Scan for Self-Iteration Candidates", description: "Run a bounded Self-Iteration scan over existing feedback, evaluations, runs, and insights without applying prompt, mode, or skill changes.", category: "internal", riskLevel: "safe", parameters: selfIterationScanParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "selfIteration.evaluate", label: "Evaluate Self-Iteration Candidate", description: "Evaluate one Self-Iteration candidate through Evaluation Studio and attach pass/fail plus before/after score evidence for review.", category: "internal", riskLevel: "safe", parameters: selfIterationEvaluateParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
+  { id: "selfIteration.apply", label: "Apply Self-Iteration Candidate", description: "Apply a reviewed Self-Iteration candidate only after explicit user approval; prompt, mode, and skill changes remain approval-gated.", category: "internal", riskLevel: "requires_approval", parameters: selfIterationApplyParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "automations.list", label: "List Scheduled Tasks", description: "List Ora scheduled tasks, including active and optionally paused entries, so an agent can inspect existing automation before changing it.", category: "internal", riskLevel: "safe", parameters: { type: "object", properties: { includePaused: { type: "boolean", description: "Whether paused scheduled tasks should be included. Defaults to true." } }, additionalProperties: false }, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "automations.get", label: "Get Scheduled Task", description: "Read one Ora scheduled task by id, including schedule, target run config, status, and recent run history.", category: "internal", riskLevel: "safe", parameters: { type: "object", properties: { id: { type: "string", description: "Scheduled task id." } }, required: ["id"], additionalProperties: false }, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "automations.previewSchedule", label: "Preview Scheduled Task", description: "Preview future occurrences for an Ora scheduled task schedule before creating or updating it.", category: "internal", riskLevel: "safe", parameters: { type: "object", properties: { schedule: { type: "object", description: "AutomationSchedule object, using once or RRULE shape." }, from: { type: "number", description: "Optional millisecond timestamp to preview from." }, limit: { type: "number", description: "Maximum occurrences to return, up to 20." } }, required: ["schedule"], additionalProperties: false }, requiresApproval: false, implemented: true, allowedForProfiles: [] },

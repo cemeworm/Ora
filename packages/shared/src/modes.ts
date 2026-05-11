@@ -5,6 +5,7 @@ import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_
 import type { AgentProfile, BuiltInCoordinationPattern, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
+import { getDriverManifest, driverManifestWarnings, generateRepairSuggestions } from "./driver-manifest.js";
 
 export const PatternDefinitionSchema = z.object({
   id: CoordinationPatternSchema,
@@ -335,6 +336,12 @@ export const ModeValidationResultSchema = z.object({
   valid: z.boolean(),
   errors: z.array(z.string().min(1)).default([]),
   warnings: z.array(z.string().min(1)).default([]),
+  repairSuggestions: z.array(z.object({
+    issue: z.string().min(1),
+    action: z.enum(["switch_family", "remove_condition", "convert_edge", "rebuild_layers", "remove_atom", "remove_layout"]),
+    target: z.string().min(1).optional(),
+    label: z.string().min(1),
+  })).default([]),
 });
 export type ModeValidationResult = z.infer<typeof ModeValidationResultSchema>;
 
@@ -2963,9 +2970,32 @@ export function validateModeSpec(spec: ModeSpec): ModeValidationResult {
     warnings.push("Single-node modes are supported, but may not provide much orchestration value.");
   }
 
+  // ── driver capability manifest checks ──────────────────────────
+  const manifest = getDriverManifest(spec.family);
+  if (manifest) {
+    const hasConditions = spec.edges.some(
+      (e) => e.enabled && typeof e.condition === "string" && e.condition.length > 0,
+    );
+    const manifestWarnings = driverManifestWarnings(manifest, {
+      hasConditions,
+      nodeCount: orderedNodes.length,
+      activeAtomIds: spec.runtimeAtoms,
+    });
+    warnings.push(...manifestWarnings);
+
+    if (spec.transcriptLayout && !manifest.supportsStaging) {
+      warnings.push(
+        `Transcript layout is configured, but the "${manifest.label}" driver does not support staged transcripts. The layout will be ignored at runtime.`,
+      );
+    }
+  } else {
+    warnings.push(`No driver capability manifest registered for family "${spec.family}". Execution semantics are unknown.`);
+  }
+
   return ModeValidationResultSchema.parse({
     valid: errors.length === 0,
     errors,
     warnings,
+    repairSuggestions: generateRepairSuggestions(spec),
   });
 }
