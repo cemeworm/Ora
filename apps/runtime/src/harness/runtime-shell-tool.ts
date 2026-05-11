@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 import type { ResolvedToolLimits } from "./runtime-tool-executor.js";
+import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
 import { readPositiveInt, requireWorkspaceRoot, truncateText } from "./runtime-tool-utils.js";
 import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
 
@@ -17,7 +18,8 @@ export function shellToolRuntimeFields(toolId: string): Partial<RuntimeToolDefin
     requiresApprovalCopy: true,
     actionRiskLevel: () => "high",
     approvalRequest: shellApprovalRequest,
-    execute: async (args, context) => ({ output: await executeWorkspaceShell(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+    execute: async (args, context) => ({ output: await executeWorkspaceShell(requireWorkspaceRoot(context.workspace), args, context.limits, context.signal) }),
+    resultPreview: (result) => shellResultPreview(result as ShellExecuteResult),
   };
 }
 
@@ -43,7 +45,47 @@ function shellApprovalRequest(args: Record<string, unknown>, context: { userProm
       };
 }
 
-export async function executeWorkspaceShell(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+export interface ShellExecuteResult {
+  command: string;
+  cwd: string;
+  shell: string;
+  exitCode: number;
+  signal?: string;
+  stdout: string;
+  stderr: string;
+  output: string;
+  truncated: boolean;
+  fullOutputPath?: string;
+  durationMs: number;
+  interrupted?: boolean;
+}
+
+function shellResultPreview(result: ShellExecuteResult): RuntimeToolResultPreview {
+  return {
+    kind: "shell.execute",
+    summary: `exit ${result.exitCode}${result.interrupted ? " (interrupted)" : ""} — ${result.durationMs}ms`,
+    detail: {
+      command: result.command,
+      cwd: result.cwd,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      truncated: result.truncated,
+      durationMs: result.durationMs,
+      interrupted: result.interrupted,
+    },
+    preview: {
+      stdout: result.stdout.slice(0, 2000),
+      stderr: result.stderr.slice(0, 2000),
+    },
+  };
+}
+
+export async function executeWorkspaceShell(
+  rootPath: string,
+  args: Record<string, unknown>,
+  limits: ResolvedToolLimits,
+  signal?: AbortSignal,
+): Promise<ShellExecuteResult> {
   const command = typeof args.command === "string" ? args.command.trim() : "";
   if (!command) {
     throw new Error("shell.execute requires a non-empty command.");
@@ -58,17 +100,33 @@ export async function executeWorkspaceShell(rootPath: string, args: Record<strin
   let fullOutput = "";
   let truncated = false;
   let timedOut = false;
+  let interrupted = false;
 
   return await new Promise((resolve, reject) => {
     const child = spawn(shell, shellArgs, {
       cwd: rootPath,
       env: sanitizeShellEnvironment(process.env),
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
     }, timeoutMs);
+
+    const onAbort = () => {
+      interrupted = true;
+      killProcessTree(child);
+    };
+    if (signal) {
+      if (signal.aborted) {
+        interrupted = true;
+        killProcessTree(child);
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
       const text = chunk.toString("utf8");
       fullOutput += text;
@@ -91,26 +149,51 @@ export async function executeWorkspaceShell(rootPath: string, args: Record<strin
     child.stderr.on("data", (chunk: Buffer) => appendOutput("stderr", chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
       reject(error);
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code, signalVal) => {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      const effectiveCode = timedOut ? 124 : interrupted ? 130 : code ?? 1;
       const fullOutputPath = truncated ? writeFullShellOutput(command, fullOutput) : undefined;
       resolve({
         command,
         cwd: rootPath,
         shell,
-        exitCode: timedOut ? 124 : code ?? 1,
-        signal: signal ?? undefined,
+        exitCode: effectiveCode,
+        signal: signalVal ?? (interrupted ? "SIGTERM" : undefined),
         stdout,
-        stderr: timedOut ? [stderr, `Command timed out after ${timeoutMs}ms.`].filter(Boolean).join("\n") : stderr,
+        stderr: timedOut
+          ? [stderr, `Command timed out after ${timeoutMs}ms.`].filter(Boolean).join("\n")
+          : interrupted
+            ? [stderr, "Command interrupted by run cancellation."].filter(Boolean).join("\n")
+            : stderr,
         output: stdout || stderr,
         truncated,
         fullOutputPath,
         durationMs: Date.now() - startedAt,
+        interrupted,
       });
     });
   });
+}
+
+function killProcessTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) {
+    child.kill("SIGTERM");
+    return;
+  }
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(pid), "/f", "/t"], { stdio: "ignore" });
+    } else {
+      process.kill(-pid, "SIGTERM");
+    }
+  } catch {
+    child.kill("SIGTERM");
+  }
 }
 
 function sanitizeShellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

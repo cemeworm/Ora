@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { ResolvedToolLimits, RuntimeFileChangeMetadata, RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
+import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
 import {
   readPositiveInt,
   relativeWorkspacePath,
@@ -35,21 +36,25 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
       return {
         promptExample: "{\"tool\":\"file.read\",\"args\":{\"path\":\"relative/path.ts\"}}",
         execute: (args, context) => ({ output: readWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        resultPreview: (result) => fileReadResultPreview((result as { output: unknown }).output),
       };
     case "file.list":
       return {
         promptExample: "{\"tool\":\"file.list\",\"args\":{\"path\":\".\"}}",
         execute: (args, context) => ({ output: listWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        resultPreview: (result) => fileListResultPreview((result as { output: unknown }).output),
       };
     case "file.glob":
       return {
         promptExample: "{\"tool\":\"file.glob\",\"args\":{\"pattern\":\"**/*.ts\"}}",
         execute: (args, context) => ({ output: globWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        resultPreview: (result) => fileGlobResultPreview((result as { output: unknown }).output),
       };
     case "file.grep":
       return {
         promptExample: "{\"tool\":\"file.grep\",\"args\":{\"pattern\":\"functionName\",\"include\":\"**/*.ts\"}}",
         execute: (args, context) => ({ output: grepWorkspaceFiles(requireWorkspaceRoot(context.workspace), args, context.limits) }),
+        resultPreview: (result) => fileGrepResultPreview((result as { output: unknown }).output),
       };
     case "file.write":
       return {
@@ -58,6 +63,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
         actionRiskLevel: () => "high",
         approvalRequest: fileWriteApprovalRequest,
         execute: (args, context) => writeWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits),
+        resultPreview: (result, args) => fileWriteResultPreview((result as { output: unknown; fileChange?: RuntimeFileChangeMetadata }).fileChange, args),
       };
     case "file.patch":
       return {
@@ -66,6 +72,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
         actionRiskLevel: () => "high",
         approvalRequest: filePatchApprovalRequest,
         execute: (args, context) => patchWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits),
+        resultPreview: (result, args) => filePatchResultPreview((result as { output: unknown; fileChange?: RuntimeFileChangeMetadata }).fileChange, args),
       };
     default:
       return {};
@@ -637,4 +644,129 @@ function globToRegExp(pattern: string): RegExp {
     }
   }
   return new RegExp(`^${source}$`);
+}
+
+// ---- result preview helpers ----
+
+interface FileReadOutput {
+  path: string;
+  sizeBytes: number;
+  content?: string;
+  binary?: boolean;
+  skippedReason?: string;
+}
+
+function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
+  const o = output as FileReadOutput | undefined;
+  if (!o) {
+    return { kind: "file.read", summary: "Read file." };
+  }
+  if (o.binary) {
+    return { kind: "file.read", summary: `Binary file: ${o.path} (${o.sizeBytes} bytes)`, detail: { path: o.path, sizeBytes: o.sizeBytes, binary: true } };
+  }
+  const lines = (o.content ?? "").split(/\r?\n/).length;
+  return {
+    kind: "file.read",
+    summary: `${o.path} — ${lines} lines, ${o.sizeBytes} bytes`,
+    detail: { path: o.path, sizeBytes: o.sizeBytes, lines, binary: false },
+    preview: (o.content ?? "").slice(0, 2000),
+  };
+}
+
+interface FileListOutput {
+  path: string;
+  entries?: Array<{ name: string; path: string; kind: string; sizeBytes?: number }>;
+  missing?: boolean;
+}
+
+function fileListResultPreview(output: unknown): RuntimeToolResultPreview {
+  const o = output as FileListOutput | undefined;
+  if (o?.missing) {
+    return { kind: "file.list", summary: `Path not found: ${o.path}`, detail: { path: o.path, missing: true } };
+  }
+  const entries = o?.entries ?? [];
+  return {
+    kind: "file.list",
+    summary: `${o?.path ?? "?"} — ${entries.length} entries`,
+    detail: { path: o?.path, entryCount: entries.length },
+    preview: entries.slice(0, 20),
+  };
+}
+
+interface FileGlobOutput {
+  pattern: string;
+  matches?: string[];
+  skipped?: unknown[];
+}
+
+function fileGlobResultPreview(output: unknown): RuntimeToolResultPreview {
+  const o = output as FileGlobOutput | undefined;
+  const matches = o?.matches ?? [];
+  const skipped = (o?.skipped ?? []).length;
+  return {
+    kind: "file.glob",
+    summary: `${o?.pattern ?? "?"} — ${matches.length} matches${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+    detail: { pattern: o?.pattern, matchCount: matches.length, skippedCount: skipped },
+    preview: matches.slice(0, 20),
+  };
+}
+
+interface FileGrepOutput {
+  pattern: string;
+  matches?: Array<{ path: string; line: number; text: string }>;
+  truncated?: boolean;
+  skipped?: unknown[];
+}
+
+function fileGrepResultPreview(output: unknown): RuntimeToolResultPreview {
+  const o = output as FileGrepOutput | undefined;
+  const matches = o?.matches ?? [];
+  const skipped = (o?.skipped ?? []).length;
+  return {
+    kind: "file.grep",
+    summary: `"${o?.pattern ?? "?"}" — ${matches.length} matches${o?.truncated ? " (truncated)" : ""}${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+    detail: { pattern: o?.pattern, matchCount: matches.length, truncated: o?.truncated, skippedCount: skipped },
+    preview: matches.slice(0, 20),
+  };
+}
+
+function fileWriteResultPreview(fileChange: RuntimeFileChangeMetadata | undefined, args: Record<string, unknown>): RuntimeToolResultPreview {
+  const path = typeof args.path === "string" ? args.path : "file";
+  if (!fileChange) {
+    return { kind: "file.write", summary: `Wrote ${path}`, detail: { path } };
+  }
+  return {
+    kind: "file.write",
+    summary: `${fileChange.metadata.created ? "Created" : "Overwrote"} ${path} — ${fileChange.additions} additions, ${fileChange.deletions} deletions`,
+    detail: {
+      path: fileChange.path,
+      operation: fileChange.operation,
+      additions: fileChange.additions,
+      deletions: fileChange.deletions,
+      sizeBytes: fileChange.metadata.sizeBytes,
+      created: fileChange.metadata.created,
+    },
+    preview: { diff: fileChange.metadata.diff },
+  };
+}
+
+function filePatchResultPreview(fileChange: RuntimeFileChangeMetadata | undefined, args: Record<string, unknown>): RuntimeToolResultPreview {
+  const path = typeof args.path === "string" ? args.path : "file";
+  if (!fileChange) {
+    return { kind: "file.patch", summary: `Patched ${path}`, detail: { path } };
+  }
+  return {
+    kind: "file.patch",
+    summary: `Patched ${path} — ${fileChange.additions} additions, ${fileChange.deletions} deletions`,
+    detail: {
+      path: fileChange.path,
+      operation: fileChange.operation,
+      additions: fileChange.additions,
+      deletions: fileChange.deletions,
+      sizeBytes: fileChange.metadata.sizeBytes,
+      replacements: fileChange.metadata.replacements,
+      firstChangedLine: fileChange.metadata.firstChangedLine,
+    },
+    preview: { diff: fileChange.metadata.diff },
+  };
 }

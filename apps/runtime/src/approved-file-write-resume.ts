@@ -1,7 +1,9 @@
 import { OraEventEnvelope, StateSnapshot, StateSnapshotSchema } from "@cemeworm/shared";
 import type { ActionRecord } from "@cemeworm/shared";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
-import { fileChangeArtifact } from "./harness/file-change-artifact.js";
+import { continuationHandlerRegistry } from "./harness/approved-tool-continuation-handler.js";
+import { registerFileContinuationHandler } from "./harness/file-continuation-handler.js";
+import { registerGenericContinuationHandlers } from "./harness/generic-continuation-handler.js";
 import { isRuntimeToolImplemented, RuntimeToolExecutor, type RuntimeToolId } from "./harness/runtime-tool-executor.js";
 import { PackageManager } from "./package-manager.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
@@ -17,6 +19,9 @@ import {
 import { activePlanStepId, planListUpdatedPayload } from "./harness/runtime-plan-list-state.js";
 
 const USER_RESUMED_MESSAGE = "Confirmed. Continuing.";
+
+registerFileContinuationHandler();
+registerGenericContinuationHandlers();
 
 export interface ApprovedFileWriteResumeDeps {
   skillRegistry: RuntimeSkillRegistry;
@@ -37,19 +42,6 @@ export type ApprovedToolContinuationResult =
   | { kind: "completed"; snapshot: StateSnapshot }
   | { kind: "continue"; snapshot: StateSnapshot; guardResult: ContinueGuardResult };
 
-const DETERMINISTIC_APPROVED_TOOL_IDS = new Set<string>([
-  "file.write",
-  "file.patch",
-  "shell.execute",
-  "skills.create",
-  "skills.update",
-  "skills.setEnabled",
-  "mcp.call",
-  "package.promote",
-  "package.switch",
-  "package.rollback",
-]);
-
 export function approvedToolContinuationActions(
   snapshot: StateSnapshot,
   approvedActionIds: string[],
@@ -63,7 +55,7 @@ export function approvedToolContinuationActions(
   const approvedTools = pendingActions.filter((action) =>
     approvedIds.has(action.id) &&
     pendingToolActionIds.has(action.id) &&
-    DETERMINISTIC_APPROVED_TOOL_IDS.has(action.type)
+    continuationHandlerRegistry.get(action.type) !== undefined
   );
   return approvedTools.length > 0 && approvedTools.length === pendingActions.length
     ? approvedTools
@@ -208,7 +200,8 @@ export async function completeApprovedToolContinuation(
 
   for (const originalAction of approvedTools) {
     const action = working.actions.find((item) => item.id === originalAction.id) ?? originalAction;
-    if (!isRuntimeToolImplemented(action.type) || !DETERMINISTIC_APPROVED_TOOL_IDS.has(action.type)) {
+    const handler = continuationHandlerRegistry.get(action.type);
+    if (!isRuntimeToolImplemented(action.type) || !handler) {
       return undefined;
     }
     append("approval.resolved", {
@@ -235,20 +228,20 @@ export async function completeApprovedToolContinuation(
       const toolId = action.type as RuntimeToolId;
       const execution = await executor.executeWithMetadata({ tool: toolId, args }, { allowRisky: true });
       const output = execution.output;
-      const artifact = execution.fileChange
-        ? fileChangeArtifact({
+      const artifact = handler.buildArtifact
+        ? handler.buildArtifact(execution, {
             runId: working.runId,
             artifactIndex: working.artifacts.length,
-            fileChange: execution.fileChange,
             createdAt: deps.now(),
           })
         : undefined;
-      if (artifact) {
+      const artifactRecord = artifact as { id?: string } | undefined;
+      if (artifactRecord) {
         working = StateSnapshotSchema.parse({
           ...working,
-          artifacts: [...working.artifacts, artifact],
+          artifacts: [...working.artifacts, artifactRecord],
         });
-        append("artifact.exported", { artifact, actionId: action.id });
+        append("artifact.exported", { artifact: artifactRecord, actionId: action.id });
       }
       toolResults.push({
         toolId,
@@ -262,7 +255,7 @@ export async function completeApprovedToolContinuation(
         ...running,
         status: "succeeded" as const,
         output,
-        artifactIds: artifact ? [artifact.id] : running.artifactIds,
+        artifactIds: artifactRecord?.id ? [artifactRecord.id] : running.artifactIds,
       };
       replaceAction(succeeded);
       replaceToolCall(action.id, "succeeded", { output, content: resultText });

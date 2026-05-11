@@ -10,6 +10,7 @@ export interface RecoveryIncident {
   surface?: RecoveryFailureSurface;
   errorType: RecoveryErrorType;
   detail: string;
+  attemptScope?: string;
   nodeId?: string;
   nodeTemplate?: string;
   agentId?: string;
@@ -138,6 +139,7 @@ export class RecoveryCoordinator {
 
 export function classifyRecoveryError(error: unknown, context: {
   surface: RecoveryFailureSurface;
+  attemptScope?: string;
   nodeId?: string;
   nodeTemplate?: string;
   agentId?: string;
@@ -193,6 +195,7 @@ export function classifyRecoveryError(error: unknown, context: {
     surface: context.surface,
     errorType,
     detail,
+    attemptScope: context.attemptScope,
     nodeId: context.nodeId,
     nodeTemplate: context.nodeTemplate,
     agentId: context.agentId,
@@ -254,10 +257,25 @@ function isToolEnvironmentUnavailable(lowered: string): boolean {
 
 function recoveryAttemptKey(incident: RecoveryIncident) {
   return [
+    incident.attemptScope ?? "run",
     incident.nodeId ?? "run",
     incident.errorType,
     incident.toolId ?? "none",
   ].join(":");
+}
+
+export class RecoveryExhaustedError extends Error {
+  constructor(
+    public readonly incident: RecoveryIncident,
+    public readonly decision: RecoveryDecision,
+  ) {
+    super(decision.summary);
+    this.name = "RecoveryExhaustedError";
+  }
+}
+
+export function isRecoveryExhaustedError(error: unknown): error is RecoveryExhaustedError {
+  return error instanceof RecoveryExhaustedError;
 }
 
 function fallbackDecision(

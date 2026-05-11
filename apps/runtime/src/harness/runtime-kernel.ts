@@ -61,6 +61,7 @@ import {
 import {
   classifyRecoveryError,
   RecoveryCoordinator,
+  isRecoveryExhaustedError,
   type RecoveryDecision,
   type RecoveryIncident,
 } from "./recovery-policy.js";
@@ -662,6 +663,7 @@ export async function executeRuntimeKernel(
     taskIntent,
     permissionProfile,
     toolDefinitions: toolRegistry.listDefinitions(),
+    signal: options.signal,
   });
   const skills = skillRegistry.snapshot(modeSpec.family);
   const modeProfiles = new AgentProfileRegistry(definition).list(config.profileIds);
@@ -1523,6 +1525,11 @@ export async function executeRuntimeKernel(
         setTopologyStatus(params.agentId, "done");
         return response.text;
       } catch (error) {
+        if (isRecoveryExhaustedError(error)) {
+          kernelRuntimeContext.deactivateAgent(params.agentId);
+          setTopologyStatus(params.agentId, "failed");
+          throw error;
+        }
         if (
           error instanceof ApprovalInterruptError ||
           error instanceof ClarificationInterruptError

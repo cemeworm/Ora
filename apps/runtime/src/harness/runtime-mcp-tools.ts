@@ -26,13 +26,19 @@ export function mcpToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
       return {
         promptExample: "{\"tool\":\"mcp.listTools\",\"args\":{\"server\":\"local-docs\"}}",
         promptGuidelines: [UNTRUSTED_REFERENCE_GUIDELINE],
-        execute: async (args, context) => ({ output: await listMcpTools(context.workspace, args, context.mcpConfigPaths, context.fetchImpl) }),
+        execute: async (args, context) => {
+          checkMcpAborted(context.signal);
+          return { output: await listMcpTools(context.workspace, args, context.mcpConfigPaths, context.fetchImpl, context.signal) };
+        },
       };
     case "mcp.readResource":
       return {
         promptExample: "{\"tool\":\"mcp.readResource\",\"args\":{\"server\":\"local-docs\",\"uri\":\"docs://intro\"}}",
         promptGuidelines: [UNTRUSTED_REFERENCE_GUIDELINE],
-        execute: async (args, context) => ({ output: await readMcpResource(context.workspace, args, context.mcpConfigPaths, context.fetchImpl) }),
+        execute: async (args, context) => {
+          checkMcpAborted(context.signal);
+          return { output: await readMcpResource(context.workspace, args, context.mcpConfigPaths, context.fetchImpl, context.signal) };
+        },
       };
     case "mcp.call":
       return {
@@ -41,7 +47,10 @@ export function mcpToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
         requiresApprovalCopy: true,
         actionRiskLevel: () => "high",
         approvalRequest: mcpCallApprovalRequest,
-        execute: async (args, context) => ({ output: await callMcpTool(context.workspace, args, context.mcpConfigPaths, context.fetchImpl) }),
+        execute: async (args, context) => {
+          checkMcpAborted(context.signal);
+          return { output: await callMcpTool(context.workspace, args, context.mcpConfigPaths, context.fetchImpl, context.signal) };
+        },
       };
     default:
       return {};
@@ -69,7 +78,13 @@ function mcpCallApprovalRequest(_args: Record<string, unknown>, context: { userP
       };
 }
 
-export async function callMcpTool(workspace: unknown, args: Record<string, unknown>, configPaths: string[] | undefined, fetchImpl: typeof fetch) {
+function checkMcpAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("MCP tool execution cancelled: run was aborted.");
+  }
+}
+
+export async function callMcpTool(workspace: unknown, args: Record<string, unknown>, configPaths: string[] | undefined, fetchImpl: typeof fetch, signal?: AbortSignal) {
   const server = resolveMcpServer(workspace, args.server, configPaths);
   const name = typeof args.name === "string" && args.name.trim() ? args.name : undefined;
   if (!name) {
@@ -83,31 +98,32 @@ export async function callMcpTool(workspace: unknown, args: Record<string, unkno
         ? args.arguments
         : {},
     },
-  }, fetchImpl);
+  }, fetchImpl, signal);
 }
 
-async function listMcpTools(workspace: unknown, args: Record<string, unknown>, configPaths: string[] | undefined, fetchImpl: typeof fetch) {
+async function listMcpTools(workspace: unknown, args: Record<string, unknown>, configPaths: string[] | undefined, fetchImpl: typeof fetch, signal?: AbortSignal) {
   if (args.server) {
     const server = resolveMcpServer(workspace, args.server, configPaths);
-    return requestMcp(server, { method: "tools/list" }, fetchImpl);
+    return requestMcp(server, { method: "tools/list" }, fetchImpl, signal);
   }
   const servers = loadMcpServers(workspace, configPaths);
   const results: Record<string, unknown> = {};
   for (const [serverId, config] of Object.entries(servers)) {
     if (!config.disabled) {
-      results[serverId] = await requestMcp(config, { method: "tools/list" }, fetchImpl);
+      if (signal?.aborted) break;
+      results[serverId] = await requestMcp(config, { method: "tools/list" }, fetchImpl, signal);
     }
   }
   return { servers: results };
 }
 
-async function readMcpResource(workspace: unknown, args: Record<string, unknown>, configPaths: string[] | undefined, fetchImpl: typeof fetch) {
+async function readMcpResource(workspace: unknown, args: Record<string, unknown>, configPaths: string[] | undefined, fetchImpl: typeof fetch, signal?: AbortSignal) {
   const server = resolveMcpServer(workspace, args.server, configPaths);
   const uri = typeof args.uri === "string" && args.uri.trim() ? args.uri : undefined;
   if (!uri) {
     throw new Error("mcp.readResource requires a resource uri.");
   }
-  return requestMcp(server, { method: "resources/read", params: { uri } }, fetchImpl);
+  return requestMcp(server, { method: "resources/read", params: { uri } }, fetchImpl, signal);
 }
 
 function resolveMcpServer(workspace: unknown, server: unknown, configPaths?: string[]): McpServerConfig {
@@ -174,19 +190,20 @@ function normalizeMcpConfig(config: Record<string, unknown>): McpServerConfig {
   };
 }
 
-async function requestMcp(config: McpServerConfig, request: { method: string; params?: unknown }, fetchImpl: typeof fetch): Promise<unknown> {
+async function requestMcp(config: McpServerConfig, request: { method: string; params?: unknown }, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<unknown> {
   if (config.type === "http") {
-    return requestHttpMcp(config, request, fetchImpl);
+    return requestHttpMcp(config, request, fetchImpl, signal);
   }
-  return requestStdioMcp(config, request);
+  return requestStdioMcp(config, request, signal);
 }
 
-async function requestHttpMcp(config: McpServerConfig, request: { method: string; params?: unknown }, fetchImpl: typeof fetch): Promise<unknown> {
+async function requestHttpMcp(config: McpServerConfig, request: { method: string; params?: unknown }, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<unknown> {
   if (!config.url) {
     throw new Error("HTTP MCP server requires a url.");
   }
   const response = await fetchImpl(config.url, {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       ...(config.headers ?? {}),
@@ -205,7 +222,7 @@ async function requestHttpMcp(config: McpServerConfig, request: { method: string
   return payload.result;
 }
 
-async function requestStdioMcp(config: McpServerConfig, request: { method: string; params?: unknown }): Promise<unknown> {
+async function requestStdioMcp(config: McpServerConfig, request: { method: string; params?: unknown }, signal?: AbortSignal): Promise<unknown> {
   if (!config.command) {
     throw new Error("stdio MCP server requires a command.");
   }
@@ -216,6 +233,21 @@ async function requestStdioMcp(config: McpServerConfig, request: { method: strin
   const timeoutMs = config.timeoutMs ?? 10_000;
   let nextId = 1;
   const pending = new Map<number, (value: unknown) => void>();
+
+  if (signal?.aborted) {
+    child.kill("SIGTERM");
+    throw new Error("MCP stdio request cancelled: run was aborted.");
+  }
+  const onAbort = () => {
+    child.kill("SIGTERM");
+    for (const resolve of pending.values()) {
+      resolve({ error: { message: "MCP stdio request cancelled: run was aborted." } });
+    }
+    pending.clear();
+  };
+  if (signal) {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
   let stdout = "";
   let stderr = "";
   let responseBuffer = "";
@@ -278,6 +310,7 @@ async function requestStdioMcp(config: McpServerConfig, request: { method: strin
     return response.result;
   } finally {
     clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", onAbort);
     child.stdin.end();
     child.kill();
     if (pending.size > 0) {

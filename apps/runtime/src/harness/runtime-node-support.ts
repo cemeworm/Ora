@@ -1,6 +1,7 @@
 import type { OraEventEnvelope } from "@cemeworm/shared";
 import {
   classifyRecoveryError,
+  isRecoveryExhaustedError,
   type RecoveryCoordinator,
   type RecoveryDecision,
   type RecoveryIncident,
@@ -49,6 +50,9 @@ export async function runRecoverableRuntimeNode<T>(
         error instanceof ApprovalInterruptError ||
         error instanceof ClarificationInterruptError
       ) {
+        throw error;
+      }
+      if (isRecoveryExhaustedError(error)) {
         throw error;
       }
       const incident = classifyRecoveryError(error, {

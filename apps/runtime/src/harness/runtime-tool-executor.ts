@@ -19,6 +19,7 @@ import { skillToolRuntimeFields } from "./runtime-skill-tools.js";
 import { genericApprovalRequest } from "./runtime-tool-approval.js";
 import { isRecord, workspaceRootPath } from "./runtime-tool-utils.js";
 import { webDocumentToolRuntimeFields } from "./runtime-web-document-tools.js";
+import { type WorkspaceOperations, localWorkspaceOperations } from "./workspace-operations.js";
 
 export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "file.read",
@@ -112,6 +113,10 @@ export interface RuntimeToolExecutionContext {
   taskIntent?: TaskIntent;
   permissionProfile?: PermissionProfile;
   allowRisky?: boolean;
+  /** AbortSignal from the run-level AbortController. Tools should observe this and stop execution when aborted. */
+  signal?: AbortSignal;
+  /** Workspace operations adapter — pluggable backend for file/shell operations. */
+  operations: WorkspaceOperations;
 }
 
 export interface RuntimePreToolPolicyRequest {
@@ -170,6 +175,8 @@ export interface RuntimeToolExecutorOptions {
   toolDefinitions?: RuntimeToolDefinition<RuntimeToolExecutionContext>[];
   preToolPolicyHooks?: RuntimePreToolPolicyHook[];
   postToolPolicyHooks?: RuntimePostToolPolicyHook[];
+  signal?: AbortSignal;
+  workspaceOperations?: WorkspaceOperations;
 }
 
 export interface SkillRegistryTools {
@@ -377,6 +384,8 @@ export class RuntimeToolExecutor {
   private readonly definitions: Map<string, RuntimeToolDefinition<RuntimeToolExecutionContext>>;
   private readonly preToolPolicyHooks: RuntimePreToolPolicyHook[];
   private readonly postToolPolicyHooks: RuntimePostToolPolicyHook[];
+  private readonly signal?: AbortSignal;
+  private readonly workspaceOperations: WorkspaceOperations;
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -391,6 +400,8 @@ export class RuntimeToolExecutor {
     this.limits = resolveToolLimits(options.toolLimits);
     this.taskIntent = options.taskIntent;
     this.permissionProfile = options.permissionProfile;
+    this.signal = options.signal;
+    this.workspaceOperations = options.workspaceOperations ?? localWorkspaceOperations;
     this.searchProvider = options.searchProvider ?? createSearchProvider({
       fetchImpl: this.fetchImpl,
       env: options.searchEnv,
@@ -514,6 +525,9 @@ export class RuntimeToolExecutor {
   }
 
   async executeWithMetadata(call: RuntimeToolCall, options: { allowRisky?: boolean } = {}): Promise<RuntimeToolExecutionResult> {
+    if (this.signal?.aborted) {
+      throw new Error(`Tool '${call.tool}' execution cancelled: run was aborted.`);
+    }
     const preflight = await this.runPreToolPolicy(call, options);
     if (preflight.permission === "deny") {
       throw new Error(preflight.reason ?? `Tool '${call.tool}' is denied by the active permission profile.`);
@@ -623,6 +637,8 @@ export class RuntimeToolExecutor {
       taskIntent: this.taskIntent,
       permissionProfile: this.permissionProfile,
       allowRisky: options.allowRisky,
+      signal: this.signal,
+      operations: this.workspaceOperations,
     };
   }
 }

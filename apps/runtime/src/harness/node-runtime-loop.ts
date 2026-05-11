@@ -12,6 +12,7 @@ import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.j
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import {
   classifyRecoveryError,
+  RecoveryExhaustedError,
   type RecoveryCoordinator,
   type RecoveryDecision,
   type RecoveryIncident,
@@ -390,7 +391,7 @@ export async function runNodeRuntimeLoop(
     request: ModelRequest,
     options: { emitRetryModelState: boolean },
   ): Promise<ModelResponse> => {
-    nextAssistantMessageId();
+    const attemptScope = nextAssistantMessageId();
     while (true) {
       try {
         const response = await invokeProvider(config, request, streamCallbacks);
@@ -400,12 +401,24 @@ export async function runNodeRuntimeLoop(
         const detail = error instanceof Error ? error.message : String(error);
         const incident = classifyRecoveryError(error, {
           surface: "provider",
+          attemptScope,
           nodeId: params.agentId,
           agentId: params.agentId,
         });
         const recoveryDecision = recoveryCoordinator.resolve(incident);
         if (recoveryDecision.action !== "retry") {
-          throw error;
+          if (recoveryDecision.action !== "fail") {
+            throw error;
+          }
+          emitRecoveryDecision(incident, recoveryDecision);
+          await emitProgressNarration({
+            trigger: "recovery.updated",
+            agentId: params.agentId,
+            nodeId: params.agentId,
+            title: params.title,
+            detail: recoveryDecision.summary,
+          });
+          throw new RecoveryExhaustedError(incident, recoveryDecision);
         }
         emitRecoveryDecision(incident, recoveryDecision);
         await emitProgressNarration({

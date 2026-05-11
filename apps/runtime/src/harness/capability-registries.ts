@@ -27,6 +27,20 @@ import {
 } from "@cemeworm/shared";
 import { SkillFileStore, type SkillFileStoreOptions } from "../skills.js";
 
+export interface RuntimeToolResultPreview {
+  kind: string;
+  summary: string;
+  detail?: Record<string, unknown>;
+  preview?: unknown;
+}
+
+export interface RuntimeToolContinuationHandler<
+  TArgs extends Record<string, unknown> = Record<string, unknown>,
+> {
+  canReplay(toolId: string, args: TArgs): boolean;
+  shouldContinueKernelAfterTool(result: unknown): boolean;
+}
+
 export interface RuntimeToolDefinition<
   TContext = unknown,
   TArgs extends Record<string, unknown> = Record<string, unknown>,
@@ -41,6 +55,9 @@ export interface RuntimeToolDefinition<
   approvalRequest?: (args: TArgs, context: { toolId: string; userPrompt?: string }) => ActionApprovalRequestCopy;
   riskLevel?: (args: TArgs, context: TContext) => ToolDescriptor["riskLevel"];
   execute?: (args: TArgs, context: TContext) => TResult | Promise<TResult>;
+  resultPreview?: (result: TResult, args: TArgs) => RuntimeToolResultPreview;
+  prepareArguments?: (input: TArgs, context: TContext) => TArgs;
+  continuationHandler?: RuntimeToolContinuationHandler<TArgs>;
 }
 
 function repoRoot(): string {

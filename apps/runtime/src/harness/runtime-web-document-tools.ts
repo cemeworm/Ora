@@ -21,28 +21,43 @@ export function webDocumentToolRuntimeFields(toolId: string): Partial<RuntimeToo
       return {
         promptExample: "{\"tool\":\"web.fetch\",\"args\":{\"url\":\"https://example.com\"}}",
         promptGuidelines: [UNTRUSTED_REFERENCE_GUIDELINE],
-        execute: async (args, context) => ({ output: await fetchUrl(context.fetchImpl, args, context.limits) }),
+        execute: async (args, context) => {
+          checkAborted(context.signal, "web.fetch");
+          return { output: await fetchUrl(context.fetchImpl, args, context.limits, context.signal) };
+        },
       };
     case "web.search":
       return {
         promptExample: "{\"tool\":\"web.search\",\"args\":{\"query\":\"Model Context Protocol docs\"}}",
         promptGuidelines: [UNTRUSTED_REFERENCE_GUIDELINE],
         actionRiskLevel: (_args, context) => context.searchProvider.id === "mcp" ? "high" : "low",
-        execute: async (args, context) => ({ output: await searchWithProvider(context.searchProvider, args) }),
+        execute: async (args, context) => {
+          checkAborted(context.signal, "web.search");
+          return { output: await searchWithProvider(context.searchProvider, args) };
+        },
       };
     case "document.extract":
       return {
         promptExample: "{\"tool\":\"document.extract\",\"args\":{\"path\":\"docs/paper.pdf\",\"format\":\"text\"}}",
-        execute: async (args, context) => ({ output: await extractDocument(workspaceRootPath(context.workspace), context.fetchImpl, args, context.limits) }),
+        execute: async (args, context) => {
+          checkAborted(context.signal, "document.extract");
+          return { output: await extractDocument(workspaceRootPath(context.workspace), context.fetchImpl, args, context.limits, context.signal) };
+        },
       };
     default:
       return {};
   }
 }
 
-async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+function checkAborted(signal: AbortSignal | undefined, toolId: string): void {
+  if (signal?.aborted) {
+    throw new Error(`Tool '${toolId}' execution cancelled: run was aborted.`);
+  }
+}
+
+async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>, limits: ResolvedToolLimits, signal?: AbortSignal) {
   const url = parseHttpUrl(args.url, "web.fetch");
-  const response = await fetchImpl(url);
+  const response = await fetchImpl(url, { signal });
   const contentType = response.headers.get("content-type") ?? undefined;
   if (isPdfContentType(contentType) || isPdfUrl(url)) {
     return {
@@ -65,7 +80,7 @@ async function fetchUrl(fetchImpl: typeof fetch, args: Record<string, unknown>, 
   };
 }
 
-async function extractDocument(rootPath: string | undefined, fetchImpl: typeof fetch, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+async function extractDocument(rootPath: string | undefined, fetchImpl: typeof fetch, args: Record<string, unknown>, limits: ResolvedToolLimits, signal?: AbortSignal) {
   const pathArg = typeof args.path === "string" && args.path.trim() ? args.path.trim() : undefined;
   const urlArg = typeof args.url === "string" && args.url.trim() ? args.url.trim() : undefined;
   if ((pathArg ? 1 : 0) + (urlArg ? 1 : 0) !== 1) {
@@ -98,7 +113,7 @@ async function extractDocument(rootPath: string | undefined, fetchImpl: typeof f
     data = fs.readFileSync(absolutePath);
   } else {
     const url = parseHttpUrl(urlArg, "document.extract");
-    const response = await fetchImpl(url);
+    const response = await fetchImpl(url, { signal });
     contentType = response.headers.get("content-type") ?? undefined;
     if (!response.ok) {
       throw new Error(`document.extract failed to fetch URL (${response.status}).`);
