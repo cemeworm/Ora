@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VITE_PATTERN='vite --host 127.0.0.1 --port 1420'
+VITE_NODE_PATTERN='node .*/vite/bin/vite.js --host 127.0.0.1 --port 1420'
 TAURI_PATTERN='@tauri-apps/cli/tauri.js dev'
 DESKTOP_PATTERN='target/debug/ora-desktop'
 DESKTOP_BUNDLE_PATTERN='target/release/bundle/macos/Ora.app/Contents/MacOS/ora-desktop'
@@ -33,6 +34,7 @@ cleanup_stale_dev_processes() {
   pkill -f "$INSTALLED_RUNTIME_SIDECAR_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$DEV_RUNTIME_SIDECAR_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$VITE_PATTERN" >/dev/null 2>&1 || true
+  pkill -f "$VITE_NODE_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$TAURI_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$DESKTOP_PATTERN" >/dev/null 2>&1 || true
   pkill -f "$DESKTOP_BUNDLE_PATTERN" >/dev/null 2>&1 || true
@@ -48,6 +50,36 @@ needs_pnpm_install() {
 }
 
 cleanup_stale_dev_processes
+
+export_system_http_proxy() {
+  if [ -n "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}" ]; then
+    return 0
+  fi
+  command -v scutil >/dev/null 2>&1 || return 0
+
+  local https_enabled https_host https_port http_enabled http_host http_port
+  https_enabled="$(scutil --proxy | awk '/HTTPSEnable/ { print $3; exit }')"
+  https_host="$(scutil --proxy | awk '/HTTPSProxy/ { print $3; exit }')"
+  https_port="$(scutil --proxy | awk '/HTTPSPort/ { print $3; exit }')"
+  http_enabled="$(scutil --proxy | awk '/HTTPEnable/ { print $3; exit }')"
+  http_host="$(scutil --proxy | awk '/HTTPProxy/ { print $3; exit }')"
+  http_port="$(scutil --proxy | awk '/HTTPPort/ { print $3; exit }')"
+
+  if [ "$https_enabled" = "1" ] && [ -n "$https_host" ] && [ -n "$https_port" ]; then
+    export HTTPS_PROXY="http://$https_host:$https_port"
+    export https_proxy="$HTTPS_PROXY"
+  fi
+  if [ "$http_enabled" = "1" ] && [ -n "$http_host" ] && [ -n "$http_port" ]; then
+    export HTTP_PROXY="http://$http_host:$http_port"
+    export http_proxy="$HTTP_PROXY"
+  fi
+  if [ -n "${HTTPS_PROXY:-}" ] || [ -n "${HTTP_PROXY:-}" ]; then
+    export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost,*.local}"
+    export no_proxy="${no_proxy:-$NO_PROXY}"
+  fi
+}
+
+export_system_http_proxy
 
 for _ in 1 2 3 4 5; do
   if ! lsof -nP -iTCP:1420 -sTCP:LISTEN >/dev/null 2>&1; then
