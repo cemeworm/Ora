@@ -9,6 +9,7 @@ import {
   resolveWorkspacePath,
 } from "./runtime-tool-utils.js";
 import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { withWorkspaceFileMutationQueue } from "./runtime-file-mutation-queue.js";
 
 const SKIPPED_DIRS = new Set([".git", ".next", ".turbo", ".ora", "build", "coverage", "dist", "node_modules", "target"]);
 const SKIPPED_FILE_SUFFIXES = [
@@ -60,7 +61,7 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
       };
     case "file.patch":
       return {
-        promptExample: "{\"tool\":\"file.patch\",\"args\":{\"path\":\"src/file.ts\",\"search\":\"old\",\"replace\":\"new\"}}",
+        promptExample: "{\"tool\":\"file.patch\",\"args\":{\"path\":\"src/file.ts\",\"edits\":[{\"oldText\":\"old\",\"newText\":\"new\"}]}}",
         requiresApprovalCopy: true,
         actionRiskLevel: () => "high",
         approvalRequest: filePatchApprovalRequest,
@@ -254,74 +255,154 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
   return { pattern, matches, truncated: false, skipped };
 }
 
-function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+async function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   if (typeof args.content !== "string") {
     throw new Error("file.write requires string content.");
   }
-  const sizeBytes = Buffer.byteLength(args.content);
+  const content = args.content;
+  const sizeBytes = Buffer.byteLength(content);
   if (sizeBytes > limits.fileWriteMaxBytes) {
     throw new Error(`file.write content is too large (${sizeBytes} bytes).`);
   }
   const absolutePath = resolveWorkspacePath(rootPath, args.path);
-  const existed = fs.existsSync(absolutePath);
-  const beforeContent = existed ? fs.readFileSync(absolutePath, "utf8") : "";
-  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-  fs.writeFileSync(absolutePath, args.content, "utf8");
-  const output = {
-    path: relativeWorkspacePath(rootPath, absolutePath),
-    sizeBytes,
-  };
-  return {
-    output,
-    fileChange: buildFileChangeMetadata({
-      path: output.path,
-      operation: "write",
-      beforeContent,
-      afterContent: args.content,
+  return withWorkspaceFileMutationQueue(absolutePath, () => {
+    const existed = fs.existsSync(absolutePath);
+    const beforeContent = existed ? fs.readFileSync(absolutePath, "utf8") : "";
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, content, "utf8");
+    const output = {
+      path: relativeWorkspacePath(rootPath, absolutePath),
       sizeBytes,
-      created: !existed,
-    }),
-  };
+    };
+    return {
+      output,
+      fileChange: buildFileChangeMetadata({
+        path: output.path,
+        operation: "write",
+        beforeContent,
+        afterContent: content,
+        sizeBytes,
+        created: !existed,
+      }),
+    };
+  });
 }
 
-function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+async function patchWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
+  const edits = parsePatchEdits(args);
+  const absolutePath = resolveWorkspacePath(rootPath, args.path);
+  return withWorkspaceFileMutationQueue(absolutePath, () => {
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) {
+      throw new Error("file.patch target must be a file.");
+    }
+    if (stat.size > limits.fileWriteMaxBytes) {
+      throw new Error(`file.patch target is too large (${stat.size} bytes).`);
+    }
+    const current = fs.readFileSync(absolutePath, "utf8");
+    const replacements = findPatchReplacements(current, edits);
+    const next = applyPatchReplacements(current, replacements);
+    fs.writeFileSync(absolutePath, next, "utf8");
+    const relativePath = relativeWorkspacePath(rootPath, absolutePath);
+    const output = {
+      path: relativePath,
+      replacements: replacements.length,
+      sizeBytes: Buffer.byteLength(next),
+      firstChangedLine: firstChangedLine(current, next),
+      diff: unifiedDiff(relativePath, current, next),
+    };
+    return {
+      output,
+      fileChange: buildFileChangeMetadata({
+        path: output.path,
+        operation: "patch",
+        beforeContent: current,
+        afterContent: next,
+        sizeBytes: output.sizeBytes,
+        replacements: output.replacements,
+        firstChangedLine: output.firstChangedLine,
+        diff: output.diff,
+        created: false,
+      }),
+    };
+  });
+}
+
+type PatchEdit = {
+  oldText: string;
+  newText: string;
+};
+
+type PatchReplacement = PatchEdit & {
+  start: number;
+  end: number;
+};
+
+function parsePatchEdits(args: Record<string, unknown>): PatchEdit[] {
+  if (Array.isArray(args.edits)) {
+    const edits = args.edits.map((edit, index) => {
+      if (!edit || typeof edit !== "object" || Array.isArray(edit)) {
+        throw new Error(`file.patch edits[${index}] must be an object.`);
+      }
+      const record = edit as Record<string, unknown>;
+      if (typeof record.oldText !== "string" || record.oldText.length === 0) {
+        throw new Error(`file.patch edits[${index}].oldText must be a non-empty string.`);
+      }
+      if (typeof record.newText !== "string") {
+        throw new Error(`file.patch edits[${index}].newText must be a string.`);
+      }
+      return { oldText: record.oldText, newText: record.newText };
+    });
+    if (edits.length === 0) {
+      throw new Error("file.patch requires at least one edit.");
+    }
+    return edits;
+  }
   if (typeof args.search !== "string" || args.search.length === 0) {
-    throw new Error("file.patch requires a non-empty search string.");
+    throw new Error("file.patch requires edits[] or a non-empty search string.");
   }
   if (typeof args.replace !== "string") {
-    throw new Error("file.patch requires a replacement string.");
+    throw new Error("file.patch requires edits[] or a replacement string.");
   }
-  const absolutePath = resolveWorkspacePath(rootPath, args.path);
-  const stat = fs.statSync(absolutePath);
-  if (!stat.isFile()) {
-    throw new Error("file.patch target must be a file.");
+  return [{ oldText: args.search, newText: args.replace }];
+}
+
+function findPatchReplacements(content: string, edits: PatchEdit[]): PatchReplacement[] {
+  const replacements = edits.map((edit, index) => {
+    const first = content.indexOf(edit.oldText);
+    if (first === -1) {
+      throw new Error(`file.patch edit ${index + 1} oldText was not found.`);
+    }
+    const second = content.indexOf(edit.oldText, first + edit.oldText.length);
+    if (second !== -1) {
+      throw new Error(`file.patch edit ${index + 1} oldText matched more than once.`);
+    }
+    return {
+      ...edit,
+      start: first,
+      end: first + edit.oldText.length,
+    };
+  }).sort((left, right) => left.start - right.start);
+
+  for (let index = 1; index < replacements.length; index += 1) {
+    const previous = replacements[index - 1]!;
+    const current = replacements[index]!;
+    if (current.start < previous.end) {
+      throw new Error("file.patch edits must not overlap.");
+    }
   }
-  if (stat.size > limits.fileWriteMaxBytes) {
-    throw new Error(`file.patch target is too large (${stat.size} bytes).`);
+  return replacements;
+}
+
+function applyPatchReplacements(content: string, replacements: PatchReplacement[]): string {
+  let next = "";
+  let cursor = 0;
+  for (const replacement of replacements) {
+    next += content.slice(cursor, replacement.start);
+    next += replacement.newText;
+    cursor = replacement.end;
   }
-  const current = fs.readFileSync(absolutePath, "utf8");
-  if (!current.includes(args.search)) {
-    throw new Error("file.patch search string was not found.");
-  }
-  const next = current.replace(args.search, args.replace);
-  fs.writeFileSync(absolutePath, next, "utf8");
-  const output = {
-    path: relativeWorkspacePath(rootPath, absolutePath),
-    replacements: 1,
-    sizeBytes: Buffer.byteLength(next),
-  };
-  return {
-    output,
-    fileChange: buildFileChangeMetadata({
-      path: output.path,
-      operation: "patch",
-      beforeContent: current,
-      afterContent: next,
-      sizeBytes: output.sizeBytes,
-      replacements: output.replacements,
-      created: false,
-    }),
-  };
+  return next + content.slice(cursor);
 }
 
 function buildFileChangeMetadata(params: {
@@ -331,6 +412,8 @@ function buildFileChangeMetadata(params: {
   afterContent: string;
   sizeBytes: number;
   replacements?: number;
+  firstChangedLine?: number;
+  diff?: string;
   created: boolean;
 }): RuntimeFileChangeMetadata {
   const { additions, deletions } = countLineChanges(params.beforeContent, params.afterContent);
@@ -345,9 +428,76 @@ function buildFileChangeMetadata(params: {
     metadata: {
       sizeBytes: params.sizeBytes,
       replacements: params.replacements,
+      firstChangedLine: params.firstChangedLine,
+      diff: params.diff,
       created: params.created,
     },
   };
+}
+
+function firstChangedLine(beforeContent: string, afterContent: string): number | undefined {
+  if (beforeContent === afterContent) {
+    return undefined;
+  }
+  const beforeLines = beforeContent.split(/\r?\n/);
+  const afterLines = afterContent.split(/\r?\n/);
+  const length = Math.max(beforeLines.length, afterLines.length);
+  for (let index = 0; index < length; index += 1) {
+    if (beforeLines[index] !== afterLines[index]) {
+      return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function unifiedDiff(filePath: string, beforeContent: string, afterContent: string): string {
+  const beforeLines = beforeContent.split(/\r?\n/);
+  const afterLines = afterContent.split(/\r?\n/);
+  const lineEnding = beforeContent.includes("\r\n") ? "\r\n" : "\n";
+  const lines = [`--- a/${filePath}`, `+++ b/${filePath}`, "@@"];
+  for (const part of lineDiff(beforeLines, afterLines)) {
+    lines.push(`${part.kind}${part.text}`);
+  }
+  return lines.join(lineEnding);
+}
+
+function lineDiff(beforeLines: string[], afterLines: string[]): Array<{ kind: " " | "-" | "+"; text: string }> {
+  const table = new Array(beforeLines.length + 1)
+    .fill(undefined)
+    .map(() => new Array(afterLines.length + 1).fill(0));
+  for (let left = beforeLines.length - 1; left >= 0; left -= 1) {
+    for (let right = afterLines.length - 1; right >= 0; right -= 1) {
+      table[left]![right] = beforeLines[left] === afterLines[right]
+        ? table[left + 1]![right + 1]! + 1
+        : Math.max(table[left + 1]![right]!, table[left]![right + 1]!);
+    }
+  }
+
+  const diff: Array<{ kind: " " | "-" | "+"; text: string }> = [];
+  let left = 0;
+  let right = 0;
+  while (left < beforeLines.length && right < afterLines.length) {
+    if (beforeLines[left] === afterLines[right]) {
+      diff.push({ kind: " ", text: beforeLines[left]! });
+      left += 1;
+      right += 1;
+    } else if (table[left + 1]![right]! >= table[left]![right + 1]!) {
+      diff.push({ kind: "-", text: beforeLines[left]! });
+      left += 1;
+    } else {
+      diff.push({ kind: "+", text: afterLines[right]! });
+      right += 1;
+    }
+  }
+  while (left < beforeLines.length) {
+    diff.push({ kind: "-", text: beforeLines[left]! });
+    left += 1;
+  }
+  while (right < afterLines.length) {
+    diff.push({ kind: "+", text: afterLines[right]! });
+    right += 1;
+  }
+  return diff;
 }
 
 function countLineChanges(beforeContent: string, afterContent: string): { additions: number; deletions: number } {

@@ -87,6 +87,8 @@ export interface RuntimeFileChangeMetadata {
   metadata: {
     sizeBytes: number;
     replacements?: number;
+    firstChangedLine?: number;
+    diff?: string;
     created: boolean;
   };
 }
