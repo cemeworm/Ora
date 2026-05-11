@@ -2972,10 +2972,45 @@ export class LocalRunStore {
 
   private applyLedgerSessionSummaryToStore(sessionId: string, ledger: RuntimeSessionLedger, leafEntryId?: string): SessionSummary {
     const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
-    this.sessions.set(sessionId, projection.session);
+    const session = this.mergeActiveCachedSessionSummary(projection.session);
+    this.sessions.set(sessionId, session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
     this.sessionRunProjectionModes.delete(sessionId);
-    return projection.session;
+    return session;
+  }
+
+  private mergeActiveCachedSessionSummary(projected: SessionSummary): SessionSummary {
+    const cached = this.sessions.get(projected.sessionId);
+    if (
+      !cached?.latestRunId ||
+      cached.latestRunId !== projected.latestRunId ||
+      cached.updatedAt < projected.updatedAt ||
+      (cached.status !== "queued" && cached.status !== "running")
+    ) {
+      return projected;
+    }
+
+    const cachedRun = this.runs.get(cached.latestRunId);
+    if (
+      !cachedRun ||
+      cachedRun.sessionId !== projected.sessionId ||
+      (cachedRun.status !== "queued" && cachedRun.status !== "running")
+    ) {
+      return projected;
+    }
+
+    return SessionSummarySchema.parse({
+      ...projected,
+      status: cached.status,
+      attention: cached.attention,
+      latestRunId: cached.latestRunId,
+      latestPattern: cached.latestPattern ?? projected.latestPattern,
+      latestModeId: cached.latestModeId ?? projected.latestModeId,
+      latestProviderId: cached.latestProviderId ?? projected.latestProviderId,
+      latestModelRef: cached.latestModelRef ?? projected.latestModelRef,
+      turnCount: Math.max(projected.turnCount, cached.turnCount),
+      updatedAt: cached.updatedAt,
+    });
   }
 
   private ensureSessionRunsLoaded(

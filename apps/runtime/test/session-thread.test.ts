@@ -1237,6 +1237,33 @@ describe("session thread runtime behavior", () => {
     expect(detail.latestSnapshot?.status).toBe("succeeded");
   });
 
+  it("keeps active streaming sessions in list summaries after ledger refresh", async () => {
+    const store = new LocalRunStore({ dataDir: freshStoreDir(), clock });
+    const history = store.createSession();
+    const streaming = store.createSession();
+
+    const handle = await store.startStreamingRun({
+      sessionId: streaming.sessionId,
+      input: { prompt: "Streaming list summary prompt" },
+      config: { pattern: "generator_verifier" },
+    });
+
+    expect(handle.status).toBe("running");
+    store.getSession({ sessionId: history.sessionId, includeLatestSnapshot: false });
+
+    const summaries = store.listSessions();
+    const activeSummary = summaries.find((item) => item.sessionId === streaming.sessionId);
+
+    expect(activeSummary).toBeDefined();
+    expect(activeSummary?.status).toBe("running");
+    expect(activeSummary?.latestRunId).toBe(handle.runId);
+
+    await waitFor(
+      () => SessionDetailSchema.parse(store.getSession({ sessionId: streaming.sessionId })),
+      (current) => current.latestSnapshot?.status === "succeeded"
+    );
+  });
+
   it("injects project workspace context for project-scoped session runs", async () => {
     const dataDir = freshStoreDir();
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-workspace-"));
