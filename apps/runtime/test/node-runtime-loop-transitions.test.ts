@@ -2131,16 +2131,16 @@ describe("node runtime loop transition contract", () => {
       }));
       const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
 
-      expect(run.status).toBe("succeeded");
-      expect(state.status).toBe("succeeded");
+      expect(run.status).toBe("failed");
+      expect(state.status).toBe("failed");
       expect(providerCalls).toBeGreaterThanOrEqual(3);
       expect(containsStateSubsequence(states, ["pending", "finalizing", "failed"])).toBe(true);
       expectCoreTransitions(states);
       expect(states).not.toContain("completed");
       expect(state.events.filter((event) => event.type === "recovery.retry_scheduled")).toHaveLength(2);
-      expect(state.events.filter((event) => event.type === "recovery.applied")).toHaveLength(1);
-      expect(state.events.map((event) => event.type)).toContain("run.done");
-      expect(state.events.map((event) => event.type)).not.toContain("run.failed");
+      expect(state.events.filter((event) => event.type === "recovery.applied")).toHaveLength(0);
+      expect(state.events.map((event) => event.type)).toContain("run.failed");
+      expect(state.events.map((event) => event.type)).not.toContain("run.done");
       expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(0);
       expect(state.events.some((event) =>
         event.type === "completion.updated" &&

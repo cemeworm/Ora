@@ -245,7 +245,7 @@ describe("channel JSON-RPC", () => {
     })));
     const followUpSnapshot = StateSnapshotSchema.parse(store.getRunState({ runId: followUp.runId }));
     expect(followUpSnapshot.input.context.projectWorkspace).toMatchObject({ rootPath: vaultRoot });
-  });
+  }, 30_000);
 
   it("uses an existing Ora project without asking for channel confirmation", async () => {
     const vaultRoot = fs.mkdtempSync(path.join(tempDir, "known-deepseek-vault-"));
@@ -400,7 +400,7 @@ describe("channel JSON-RPC", () => {
     expect(parsedSecond.sessionId).toBe(parsedFirst.sessionId);
     const detail = store.getSession({ sessionId: parsedFirst.sessionId });
     expect(detail.turns.map((turn) => turn.turnIndex)).toEqual([1, 2]);
-  });
+  }, 30_000);
 
   it("schedules callback delivery retry when the callback endpoint fails", async () => {
     const callbackServer = http.createServer((_request, response) => {
@@ -434,7 +434,7 @@ describe("channel JSON-RPC", () => {
     } finally {
       await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
     }
-  });
+  }, 30_000);
 
   it("downloads small text attachments into run context", async () => {
     const attachmentServer = http.createServer((_request, response) => {

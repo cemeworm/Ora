@@ -318,23 +318,34 @@ describe("run streaming", () => {
       },
     }));
     const encoder = new TextEncoder();
-    const callbackTimes: number[] = [];
+    const callbacksStarted: string[] = [];
+    let resolveFirstCallback: (() => void) | undefined;
+    let readingSettled = false;
 
-    const reading = readSseMessages(response, async () => {
-      callbackTimes.push(Date.now());
-      await new Promise((resolve) => setTimeout(resolve, 25));
+    const reading = readSseMessages(response, async (message) => {
+      callbacksStarted.push(message.data);
+      if (message.data.includes("\"n\":1")) {
+        await new Promise<void>((resolve) => {
+          resolveFirstCallback = resolve;
+        });
+      }
+    }).finally(() => {
+      readingSettled = true;
     });
 
-    const started = Date.now();
     controller!.enqueue(encoder.encode('data: {"n":1}\n\n'));
     controller!.enqueue(encoder.encode('data: {"n":2}\n\n'));
     controller!.enqueue(encoder.encode('data: [DONE]\n\n'));
     controller!.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(callbacksStarted).toEqual(['{"n":1}']);
+    expect(readingSettled).toBe(false);
+    resolveFirstCallback?.();
+
     const rawEvents = await reading;
 
     expect(rawEvents).toHaveLength(2);
-    expect(callbackTimes).toHaveLength(2);
-    expect(callbackTimes[1]! - callbackTimes[0]!).toBeGreaterThanOrEqual(20);
-    expect(Date.now() - started).toBeLessThan(80);
+    expect(callbacksStarted).toEqual(['{"n":1}', '{"n":2}']);
   });
 });
