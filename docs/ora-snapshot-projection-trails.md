@@ -190,6 +190,7 @@ session detail 的 `turns` 数组由这个函数逐个产生。
 toFlowRunDetail(snapshot) → FlowRunDetail {
   flowRunId, runId, sessionId,
   status, attention,
+  snapshotSource,              // "live" | "ledger"，默认 live
   definition: FlowDefinitionRef,  // modeId → flow definition 引用
   checkpoints: CheckpointMeta[],  // 直接从 snapshot.checkpoints
   gates: FlowGate[],              // 从 snapshot 的 pendingClarifications/Approvals/planDecisions 构建
@@ -358,12 +359,13 @@ StateSnapshot + OraRunTrail
 
 ### 5.5 buildToolLedger
 
-消费 `snapshot.toolCalls` + `snapshot.topology` + `snapshot.profiles`，构建工具调用记录列表：
+消费 `snapshot.toolCalls` + `snapshot.toolResults` + `snapshot.topology` + `snapshot.profiles`，构建工具调用记录列表：
 
 - `toolId`、`status`、`source`、`latency` 来自 `OraToolCallEnvelope`
 - `agentLabel` 从 profiles 查找
 - `nodeLabel` 从 topology nodes 查找
 - `argsPreview` / `resultPreview` 从 `call.args` / `call.result` 截断
+- 如果 ledger-backed `snapshot.toolResults` 中存在没有对应 `toolCalls` envelope 的结果，Tools 标签页会补充一条 `source: "ledger"` 的记录。这样 slim/compaction 或 reload 后，最终工具结果仍以 durable `tool.result` entry 为准。
 
 ### 5.6 buildLatencyDiagnostics
 
@@ -496,7 +498,7 @@ desktop UI 如果从自己的本地状态推断 runtime 状态（比如"上一�
 
 ### 7.3 snapshotSource 标记
 
-`SessionDetail.snapshotSource` 字段标记了当前 snapshot 的来源：
+`StateSnapshot`、`FlowRunDetail` 和 `SessionDetail.snapshotSource` 字段标记当前 snapshot 的来源：
 
 ```typescript
 snapshotSource: "ledger" | "live"
@@ -505,7 +507,7 @@ snapshotSource: "ledger" | "live"
 - `"live"`：来自流式 push，attention 等字段可能不完整
 - `"ledger"`：来自 ledger projection，已经过 reconciliation
 
-desktop 在 run 完成后应确保切换到 `"ledger"` 来源的 snapshot。
+desktop 在 run 完成后应确保切换到 `"ledger"` 来源的 snapshot。`createStandaloneRunSnapshot` / `createRunningRunSnapshot` 会产出 `"live"`；`runtimeRunProjectionToSnapshot` 会产出 `"ledger"`；`deriveRunInteractionState` 会把该来源继续传到交互状态，`shouldSwitchToLedgerSnapshot` 用它避免终态 UI 长时间停留在 live view。
 
 ### 7.4 事件归属不应被前端推断
 
@@ -523,7 +525,7 @@ Trails 首先是 Ora 本地的可观测性层。`synthesizeLocalTrail` 从 snaps
 
 ### 8.3 "toFlowRunDetail 的 gates 和 ledger gates 是一回事"
 
-`toFlowRunDetail` 直接从 live snapshot 构建 gates（不经过 ledger）。这意味着流式过程中的 gate 状态可能不包含 gate.resolved 的幂等保护。桌面端以 ledger-backed 的 session detail 为最终权威。
+`toFlowRunDetail` 从传入的 `StateSnapshot` 构建 gates；如果传入的是 live snapshot，gate 状态仍可能不包含 gate.resolved 的幂等保护。如果传入的是 ledger-backed snapshot，`FlowRunDetail.snapshotSource` 会标记为 `"ledger"`。桌面端以 ledger-backed 的 session detail / run detail 为最终权威。
 
 ### 8.4 "trailViewModel 可以随意添加新的 snapshot 字段消费"
 
@@ -546,16 +548,16 @@ trailViewModel 中的 builder 函数是纯函数，不产生副作用。但新�
 
 | 方面 | 当前状态 | 保守边界 |
 | --- | --- | --- |
-| 投影来源 | `toFlowRunDetail` 等直接消费 live snapshot | 未来可能需要统一从 ledger-backed projection 生成 |
+| 投影来源 | `toFlowRunDetail` 传播 `snapshotSource`，终态/hydrate 可消费 ledger-backed snapshot | streaming 期间仍允许 live snapshot；新增终态字段消费必须检查来源 |
 | 本地 Trails | 本地合成覆盖全部观测类型 | 观测粒度和 Langfuse 不完全对齐 |
-| trailViewModel | 纯函数，全部从 snapshot + trail 派生 | 未来可能需要支持增量更新而非全量重建 |
+| trailViewModel | 纯函数，全部从 snapshot + trail 派生；Tools tab 会合并 durable `toolResults` | 未来可能需要支持增量更新而非全量重建 |
 | compare 标签页 | 仅对比指标数值 | 未实现事件级 diff |
 | Latency marks | 依赖 runtime/desktop 打点 | marks 缺失时部分分段无法计算 |
 | 事件归属 | 依赖事件的 agentId/nodeId | 旧事件可能缺少这些字段 |
 
 ### 可演进方向
 
-1. **统一投影入口**：让 `toFlowRunDetail` 等函数也从 ledger-backed projection 生成，消除 live/ledger 双重路径。
+1. **更强的投影入口约束**：继续收敛 terminal/hydrate/read model 到 ledger-backed projection，同时保留 streaming live path 的低延迟。
 2. **增量 view model**：当前 trailViewModel 每次全量重建。对于大 snapshot（数千事件），可缓存中间结果。
 3. **事件级 diff**：compare 标签页可以对比两次运行的 event sequence 差异。
 4. **Trails 导出**：将 trail observations 导出为 OpenTelemetry 兼容格式。

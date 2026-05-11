@@ -422,3 +422,9 @@ PatternDefinition
 - **Builder 的 family 推导是启发式的**。`inferModeStudioFamily` 基于关键词匹配，可能不准确。用户可以在画布上通过 `resetModeDraftFamily` 切换 family，但切换会重置 nodes/edges/profiles 为 family 默认值。
 
 - **Mode 的 ID 必须全局唯一**。`ModeSpecSchema.id` 使用 `ModeIdSchema` 校验。builder 生成的 mode ID 通过 `slugifyModeStudio` 处理，中文会被替换为 "guided"。
+
+- **Driver Capability Manifest 是语义契约**。每个 family 在 `packages/shared/src/driver-manifest.ts` 中有 manifest 声明。Mode Studio 保存前会通过 `validateModeSpec` 自动检查 manifest，生成关于条件边、runtime atom、节点数、transcript layout 的警告和修复建议。用户可以通过工具栏的 "Validate" 按钮提前看到这些警告。
+
+- **Execution Preview 可在保存前查看**。`generateModeExecutionPreview`（共享包）和 `getExecutionPreview`（桌面端）提供 mode 的执行预览，包括：执行顺序、并行层、被忽略的条件边、synthetic node 映射和投影拓扑摘要。不启动真实 model/tool loop。
+
+- **Builder 的修复建议**。当 Builder 生成的 draft 与 driver manifest 不匹配时，`generateRepairSuggestions` 会生成可操作的修复选项（切 family、删除条件、移除 atom 等）。这些建议通过 `ModeValidationResult.repairSuggestions` 返回。

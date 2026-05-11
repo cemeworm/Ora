@@ -175,8 +175,11 @@ runtime 执行字段由 `RuntimeToolDefinition` 承载，位于 `apps/runtime/sr
 - `approvalRequest`
 - `riskLevel`
 - `execute`
+- `resultPreview`
+- `prepareArguments`
+- `continuationHandler`
 
-工具具体执行再分散在 `runtime-file-tools.ts`、`runtime-shell-tool.ts`、`runtime-mcp-tools.ts`、`runtime-skill-tools.ts` 等文件中。
+工具具体执行再分散在 `runtime-file-tools.ts`、`runtime-shell-tool.ts`、`runtime-mcp-tools.ts`、`runtime-skill-tools.ts` 等文件中。`apps/runtime/src/harness/runtime-tool-definition-v2.ts` 现在提供 runtime 内部的 V2 upcast 层：不改变 shared `ToolDescriptor`，先把 preview、参数准备和 continuation hook 纳入同一个 runtime definition 形状。
 
 ### 5.2 RuntimeToolExecutor
 
@@ -235,7 +238,7 @@ Desktop 再通过：
 
 ### P0：补齐 tool 参数 schema
 
-当前 `MVP_TOOLS` 中不少工具仍然是 `parameters: {}`，例如：
+当前 implemented `MVP_TOOLS` 的参数 schema 已基本补齐，覆盖：
 
 - `file.read`
 - `file.list`
@@ -246,8 +249,14 @@ Desktop 再通过：
 - `web.fetch`
 - `web.search`
 - `document.extract`
+- `skills.*`
+- `mcp.*`
+- `package.*`
+- `modes.*`
+- `selfIteration.*`
+- `automations.*`
 
-建议优先补齐 JSON schema，并在 runtime definition 构造时统一校验。
+仍为 `{}` 的主要是未实现预留工具，如 `file.delete`、`model.handoff`、`message.publish`、`shared_state.write`、`export.report`。这些工具在真正实现时必须同步补 schema，并在 runtime definition 构造时继续做 schema 组合/回归测试。
 
 预期收益：
 
@@ -258,7 +267,7 @@ Desktop 再通过：
 
 ### P1：引入更内聚的 RuntimeToolDefinitionV2
 
-建议在 runtime 内部引入更完整的定义结构，把 descriptor、prompt、risk、approval、execute、preview metadata 收到同一层。例如：
+runtime 内部已引入 V2 形状，把 descriptor、prompt、risk、approval、execute、preview metadata 收到同一层。例如：
 
 ```ts
 interface RuntimeToolDefinitionV2<TContext, TArgs, TResult> {
@@ -276,11 +285,11 @@ interface RuntimeToolDefinitionV2<TContext, TArgs, TResult> {
 }
 ```
 
-这不要求立刻改 shared public contract，可以先作为 runtime 内部抽象。
+这没有改变 shared public contract。当前落地方式是 `RuntimeToolDefinition` 增加 V2 字段，`RuntimeToolDefinitionV2` 作为内部别名/upcast 层；file tools 和 shell tool 已开始提供 `resultPreview`。
 
 ### P1：为文件变更加 per-file mutation queue
 
-建议新增：
+已新增：
 
 ```ts
 withWorkspaceFileMutationQueue(absolutePath, fn)
@@ -290,13 +299,13 @@ withWorkspaceFileMutationQueue(absolutePath, fn)
 
 - `file.write`
 - `file.patch`
-- 未来 `file.delete`
+- 未来 `file.delete` 实现时也应接入
 
 如果后续 Ora 支持多 agent 并行工具执行，这个机制会避免同一文件被同时读改写导致 patch 丢失。
 
 ### P1：统一 AbortSignal 进入 tool execution context
 
-当前 provider request 已有 `signal`，但 runtime tool executor 的 execution context 没有统一传入 `AbortSignal`。建议：
+当前 provider request 和 runtime tool executor context 都已有统一 `AbortSignal`：
 
 ```ts
 interface RuntimeToolExecutionContext {
@@ -305,7 +314,7 @@ interface RuntimeToolExecutionContext {
 }
 ```
 
-优先改造：
+已改造：
 
 - `shell.execute`
 - `web.fetch`
@@ -313,11 +322,11 @@ interface RuntimeToolExecutionContext {
 - `mcp.call`
 - `document.extract`
 
-`shell.execute` 还应支持 abort 时 kill process tree，而不只是 kill 直接 child。
+`shell.execute` abort 时会尝试 kill process tree，并返回 `interrupted` metadata。后续仍需按平台继续验证长链子进程场景。
 
 ### P1：升级 `file.patch`
 
-建议把 `file.patch` 从单替换升级为多 edit：
+`file.patch` 已从单替换升级为多 edit：
 
 ```json
 {
@@ -335,11 +344,11 @@ interface RuntimeToolExecutionContext {
 - 多个 edit 都基于原始文件匹配。
 - 保留 BOM 和 line ending。
 - 执行结果返回 unified diff、firstChangedLine、additions/deletions。
-- approval card 和 Trails 展示 diff preview。
+- result metadata 返回 diff preview；approval card 和 Trails 的真实富渲染仍需要接上 desktop renderer registry。
 
 ### P2：Desktop Trails 增加 tool-specific renderer
 
-Ora 不必把 renderer 放进 shared，但 desktop 可以加一层 renderer registry：
+Ora 不把 renderer 放进 shared；desktop 已加 renderer registry：
 
 ```ts
 const toolRenderers = {
@@ -353,9 +362,11 @@ const toolRenderers = {
 
 这样 Trails 不只是展示 JSON preview，而是针对工具类型展示更可读的结果。
 
+当前 `toolRendererRegistry` 已注册 `file.patch`、`file.write`、`file.read`、`shell.execute`、`web.fetch` 的 renderer 描述符；下一步是让 `TrailsTabs` / approval card 消费这些 descriptor 和 runtime `resultPreview`。
+
 ### P2：引入 workspace operations adapter
 
-参考 Pi 的 operations 设计，Ora 可在 `RuntimeToolExecutionContext` 中加入：
+参考 Pi 的 operations 设计，Ora 已在 `RuntimeToolExecutionContext` 中加入：
 
 ```ts
 interface WorkspaceOperations {
@@ -408,46 +419,47 @@ Pi 的工具集偏 coding：read/bash/edit/write/grep/find/ls。Ora 的差异点
 
 这些应继续保留，并以统一 tool definition 方式治理。
 
-## 8. 建议实施顺序
+## 8. 实施状态与后续顺序
 
-### Phase 1：低风险质量补齐
+### 已完成切片
 
-1. 补齐 `MVP_TOOLS` 中 file/web/document 工具的 JSON schema。
-2. 给 `RuntimeToolExecutor.toolDefinitions()` 增加 schema 测试。
-3. 给 `file.patch` 和 `file.write` 的 approval copy 增加目标路径、影响范围、是否创建/覆盖等字段。
+1. `MVP_TOOLS` 中 implemented 工具的 JSON schema 已补齐，覆盖 file/web/document、skills、mcp、package、modes、selfIteration、automations。
+2. `file.patch` 已支持 `edits[]`，并保留旧 `search/replace` 兼容。
+3. `runtime-file-mutation-queue.ts` 已串行化 `file.write` / `file.patch` 的同文件修改。
+4. file write/patch result 已返回 fileChange metadata、unified diff、firstChangedLine、additions/deletions。
+5. `RuntimeToolExecutionContext.signal` 已贯通 shell/web/MCP/document，shell abort 会尝试 kill process tree。
+6. `WorkspaceOperations` 和 `localWorkspaceOperations` 已进入 executor context。
+7. approved tool continuation 已拆成 handler registry，file handler 和 generic handler 已注册。
+8. Desktop 已有 tool renderer registry 描述符。
 
-### Phase 2：工具定义内聚
+### Phase 1：工具定义内聚继续推进
 
-1. 引入 `RuntimeToolDefinitionV2` 内部类型。
-2. 先迁移 file tools 和 shell tool。
-3. 保持 `ToolDescriptor` shared contract 不破坏。
-4. 新增 definition-level `prepareArguments`，兼容模型偶发 JSON string 参数等情况。
+1. 让更多工具族产出 `resultPreview`，并将 preview 写入 tool result / artifact metadata。
+2. 开始实际消费 `prepareArguments`，兼容模型偶发 JSON string 参数等情况。
+3. 保持 `ToolDescriptor` shared contract 不破坏；runtime V2 字段继续留在 runtime 内部。
 
-### Phase 3：执行可靠性
+### Phase 2：执行可靠性继续推进
 
-1. 加 `RuntimeToolExecutionContext.signal`。
-2. shell/web/MCP/document 消费 signal。
-3. 增加 per-file mutation queue。
-4. shell abort 改为 kill process tree。
+1. 按工具族审查 signal 语义，确认长时间运行的 skills/package/automation 操作是否需要可中断边界。
+2. 将 file/shell 操作逐步迁移到 `WorkspaceOperations`，减少直接 fs/path 耦合。
+3. 增加 remote/container workspace fake adapter 测试。
 
-### Phase 4：可观察性和交互体验
+### Phase 3：可观察性和交互体验
 
-1. `file.patch` 输出 diff metadata。
-2. 文件变更 artifact 带 unified diff。
-3. Desktop Trails 增加 tool renderer registry。
-4. approval card 展示 diff preview 和 shell command structured preview。
+1. `TrailsTabs` 消费 `toolRendererRegistry` 和 runtime `resultPreview`。
+2. approval card 展示 diff preview 和 shell command structured preview。
+3. tool result ledger、artifact preview、desktop renderer 共用同一套结构化 preview metadata。
 
 ## 9. 最小可行 PR 切片
 
 如果要用最小 PR 推进，建议先做这个切片：
 
-1. 在 `packages/shared/src/capabilities.ts` 补齐 `file.read/list/glob/grep/write/patch` 参数 schema。
-2. 在 `runtime-file-tools.ts` 为 `file.patch` 增加 `edits[]` 入参兼容，但保留旧 `search/replace`。
-3. 新增 `runtime-file-mutation-queue.ts`，只包住 `writeWorkspaceFile` 和 `patchWorkspaceFile`。
-4. 给 `file.patch` result 增加 diff 字段，不先改 desktop。
-5. 补测试覆盖：唯一匹配、重复匹配报错、同文件串行、旧参数兼容。
+1. 将 `RuntimeToolResultPreview` 写入工具执行结果的 durable metadata，先覆盖 `file.patch` / `file.write` / `shell.execute`。
+2. 让 `TrailsTabs` 对这三个工具使用 tool renderer registry，仍保留 JSON fallback。
+3. 给 approved continuation handler 增加 result preview / artifact preview 回归测试。
+4. 给 `WorkspaceOperations` 增加 fake adapter 覆盖 file read/write/patch/grep 的后续迁移。
 
-这个切片风险低，但能明显提升 tool 稳定性。
+这个切片风险低，但能把已完成的 runtime preview 能力真正带到 desktop 审计体验里。
 
 ## 10. 最终判断
 

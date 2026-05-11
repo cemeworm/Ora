@@ -689,7 +689,7 @@ Desktop 不直接读取 gate projection。它消费 `deriveSessionProjection` �
 | Continuation frame | 单 frame 模型（`activeFrameId`） | 不支持嵌套 frame。如果 resume 后又 interrupt，之前的 frame 会 resolve 并创建新 frame |
 | Gate 去重 | `existingEntryIds` 按 entry id 去重 | 依赖 entry id 稳定不变，不支持同一个 gate 在不同时间点重新打开 |
 | Owner 提取 | fallback 链从 frame 直接字段到 nodeCheckpoint | nodeCheckpoint 的内容由 mode driver 决定，缺少标准化 schema |
-| Approved tool continuation | 需要 `RuntimeFileChangeMetadata` 等依赖 | 当前与文件操作耦合较紧，扩展到其他工具类型需要抽象 |
+| Approved tool continuation | 通过 `ApprovedToolContinuationHandler` registry 查找可 replay 工具 | file.write/file.patch 有 artifact handler；shell/skills/mcp/package 有通用 replay handler；新工具类型仍需注册 handler 才能走 approved continuation |
 | Whole-mode fallback | 安全的降级策略 | 会重新执行已完成的 node，依赖 node 实现的幂等性 |
 | Diagnostic failure | 可见的错误状态 | 用户无法自我修复，需要手动介入 |
 | Plan handoff | 单次消费，`consumedByRunId` 标记 | 不支持 revise plan（重新生成计划后再次交接） |
@@ -699,7 +699,7 @@ Desktop 不直接读取 gate projection。它消费 `deriveSessionProjection` �
 
 1. **嵌套/链式 Gate**：当 resume 后再次触发 gate 时，当前模型只创建新 frame。未来可以支持 gate 的链式追踪，保留 gate 历史。
 2. **Owner metadata schema 标准化**：`nodeCheckpoint.bag` 当前是 `Record<string, unknown>`。标准化关键字段（agentId、nodeId、planItemId）的写入规范，让 dispatcher 的提取更可靠。
-3. **Approved tool continuation 抽象化**：当前与文件操作耦合。抽象出通用的 `ApprovedToolContinuationHandler` 接口，让各工具类型注册自己的 replay 逻辑。
+3. **Approved tool continuation handler 扩展**：当前已抽象出 `ApprovedToolContinuationHandler` registry。后续重点是为更多工具族补专用 artifact/result preview/continue 策略，而不是回退到文件专用逻辑。
 4. **Gate 重开**：当前 gate resolved 后不可重开。如果用户修改了答案或撤销了审批，需要支持 gate 的 re-open 语义。
 5. **Plan handoff 修订**：支持 revise plan → 重新 handoff，保留 handoff 的版本链。
 6. **Multi-gate attention**：当前 attention 严格互斥。支持同时展示多种 blocking 状态（如同时需要回答 clarification 和审批 tool）。

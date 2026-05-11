@@ -517,3 +517,57 @@ const seed = forceCreate || base.systemPreset
 - runtime atoms 既影响运行时行为，也影响 topology 投影；但 UI 中的 synthetic atom nodes 不等于 ModeSpec 真实节点。
 - `graph_topology` 目前是 schema 预留，不是已经接入的 transcript renderer。
 - runtime 使用的是 `@cemeworm/shared` 包导出的共享契约，旧的 `@ora/shared` 包名已经不再是当前结构。
+
+## 12. Driver Capability Manifest（驱动能力声明）
+
+### 12.1 问题
+
+Mode Studio 画布、ModeSpec 持久图、runtime topology 投影和 mode driver 执行计划共享视觉词汇，但缺少显式的语义契约。用户可能在画布上画一条条件边，但当前 driver 不消费条件；或者配置了一个 runtime atom，但在当前 family 下无效。
+
+### 12.2 解决方案
+
+`DriverCapabilityManifest` 声明每个 family driver 的能力边界。定义在 `packages/shared/src/driver-manifest.ts`。
+
+```typescript
+export interface DriverCapabilityManifest {
+  family: CoordinationPattern;
+  label: string;
+  execution: "sequential" | "layered_parallel" | "loop_retry";
+  consumesConditions: boolean;
+  supportsParallelLayers: boolean;
+  singleOwnerTopology: "compressed" | "full";
+  executedEdgeKinds: string[];
+  unsupportedAtoms: ModeRuntimeAtomId[];
+  maxNodes: number;          // 0 = unlimited
+  supportsStaging: boolean;
+  nodeCheckpoints: boolean;
+  constraints: string[];
+}
+```
+
+每个 built-in family 在 `BUILT_IN_DRIVER_MANIFESTS` 中有对应条目。Mode Studio、`validateModeSpec` 和 execution preview 都读取这个 manifest 来生成警告和修复建议。
+
+### 12.3 Manifest 如何消费
+
+- **validateModeSpec**：自动利用 manifest 检查条件边、runtime atom 兼容性、节点数上限和 transcript layout 支持。警告和修复建议会包含在 `ModeValidationResult` 中。
+- **generateModeExecutionPreview**：纯函数，接收 `ModeSpec`，返回 `ModeExecutionPreview`，包含执行顺序、并行层、被忽略的边、条件边消费状态、synthetic node 映射和投影拓扑。
+- **generateRepairSuggestions**：根据 manifest warnings 生成可操作的修复建议（切 family、删除条件、移除 atom 等）。
+- **Mode Studio 画布**：`getExecutionPreview` 在 desktop 端扩展了共享 preview，添加 disabled nodes 信息。
+
+### 12.4 五层语义区分
+
+| 层 | 定义位置 | 语义 |
+| --- | --- | --- |
+| Mode Studio 视觉图 | `modeCanvas.ts` (React Flow nodes) | UI 编辑体验，包含 synthetic nodes |
+| ModeSpec 持久图 | `modes.ts` (ModeSpec.nodes/edges) | 用户编辑的持久化阶段和边 |
+| Runtime Topology | `projectModeRuntimeTopology` 输出 | 运行时执行的拓扑投影（含压缩、capability 节点） |
+| Driver Execution Plan | 各 mode driver 实现 | 真实执行顺序和并行策略 |
+| Driver Capability Manifest | `driver-manifest.ts` | 以上几层之间的语义契约 |
+
+## 13. 添加新 family 的完整 checklist
+
+在 10 节基础上，新增 family 时还需：
+
+9. `packages/shared/src/driver-manifest.ts`：在 `BUILT_IN_DRIVER_MANIFESTS` 中添加 manifest 条目。
+10. `packages/shared/test/driver-manifest.test.ts`：确认 manifest snapshot 测试覆盖新 family（测试自动验证所有 built-in family 都有 manifest）。
+11. `packages/shared/test/mode-execution-preview.test.ts`：为新 family 添加 preview fixture。

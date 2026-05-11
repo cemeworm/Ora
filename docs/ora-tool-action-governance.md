@@ -9,7 +9,7 @@
 | 类型 | 文件 | 角色 |
 | --- | --- | --- |
 | `ToolDescriptor` | `packages/shared/src/capabilities.ts` | 共享层工具描述：id、category、riskLevel、parameters schema、prompt snippet |
-| `RuntimeToolDefinition` | `apps/runtime/src/harness/capability-registries.ts` | 运行层工具定义：executor、动态 riskLevel、approvalRequest 模板、promptExample |
+| `RuntimeToolDefinition` / `RuntimeToolDefinitionV2` | `apps/runtime/src/harness/capability-registries.ts` / `runtime-tool-definition-v2.ts` | 运行层工具定义：executor、动态 riskLevel、approvalRequest 模板、promptExample、resultPreview、argument preparation、continuation handler |
 | `ActionRecord` | `packages/shared/src/actions.ts` | 一次工具调用的耐久 action 记录：状态机从 proposed 到 succeeded/failed |
 | `OraToolCallEnvelope` | `packages/shared/src/actions.ts` | 单次 tool call 的完整包裹：source、status、result、error、repairReason |
 | `PolicyDecision` | `packages/shared/src/actions.ts` | 策略引擎关于是否需要审批的决定 |
@@ -18,6 +18,8 @@
 | `PermissionProfile` | `packages/shared/src/capabilities.ts` | 按 category × riskLevel 的三态权限矩阵：allow / deny / ask |
 | `ActionRiskLevel` | `packages/shared/src/actions.ts` | 运行时三级风险：low / medium / high |
 | `OraToolCallSource` | `packages/shared/src/actions.ts` | 工具调用的四种来源：provider_native、json_fallback、manual_repair、replay |
+| `WorkspaceOperations` | `apps/runtime/src/harness/workspace-operations.ts` | 工作区文件/搜索/shell 操作后端抽象，默认本地实现 |
+| `ApprovedToolContinuationHandler` | `apps/runtime/src/harness/approved-tool-continuation-handler.ts` | approved tool continuation 的 per-tool replay / artifact / continue 策略 |
 
 ### 核心服务
 
@@ -171,6 +173,9 @@ interface RuntimeToolDefinition<TContext> {
   riskLevel?: (args, context) => ToolRiskLevel;   // 动态风险覆盖
   actionRiskLevel?: (args, context) => ActionRiskLevel; // 三级风险 (low/medium/high)
   approvalRequest?: (args, context) => ActionApprovalRequestCopy; // 审批文案
+  resultPreview?: (result, args) => RuntimeToolResultPreview; // 结构化结果预览
+  prepareArguments?: (input, context) => args; // 参数预处理
+  continuationHandler?: RuntimeToolContinuationHandler; // approved continuation 策略
   promptSnippet?: string;
   promptGuidelines?: string[];
   promptExample?: string;
@@ -178,7 +183,7 @@ interface RuntimeToolDefinition<TContext> {
 }
 ```
 
-工具的实现体散落在 `runtime-file-tools.ts`、`runtime-shell-tool.ts`、`runtime-mcp-tools.ts` 等文件中，通过 `builtInToolRuntimeFields(toolId)` 按 toolId 聚合到 `buildRuntimeToolDefinitions()`。
+工具的实现体仍按工具族分布在 `runtime-file-tools.ts`、`runtime-shell-tool.ts`、`runtime-mcp-tools.ts` 等文件中，通过 `builtInToolRuntimeFields(toolId)` 按 toolId 聚合到 `buildRuntimeToolDefinitions()`。`RuntimeToolDefinitionV2` 当前是 runtime 内部的演进别名/上转层：先把 preview、argument preparation、continuation hook 纳入同一个 definition 形状，但不破坏 shared `ToolDescriptor` public contract。
 
 ### 1.3 RuntimeToolExecutor（执行中枢）
 
@@ -198,7 +203,7 @@ interface RuntimeToolDefinition<TContext> {
 
 - `ToolDescriptor.riskLevel` 是**静态分类**（safe/low_risk/requires_approval），用于 PermissionProfile 矩阵匹配；`RuntimeToolDefinition.riskLevel()` 是**动态评估**，可以基于实际参数调整风险。
 - `ActionRiskLevel`（low/medium/high）是行动级的三级风险，目前在代码中 level 为 `high` 才会触发 approval gate——这是与 `ToolRiskLevel` 的不同粒度概念。
-- ToolDescriptor 和 RuntimeToolDefinition 目前分散定义（共享层 + 多个运行时文件），尚未按 roadmap 建议内聚为单一 `RuntimeToolDefinitionV2`。
+- ToolDescriptor 和 RuntimeToolDefinition 仍是两层合约：shared descriptor 保持稳定，runtime definition 已吸收 V2 字段。后续内聚重点是让更多工具真正消费 `resultPreview` / `prepareArguments` / continuation hooks，而不是把 UI renderer 放进 shared。
 
 ## 2. Tool Call 到 Action Proposal
 
@@ -407,7 +412,7 @@ Snapshot 中的 `actions` 和 `toolCalls` 随后通过 `RuntimeSessionLedger` �
 ### 容易误解的点
 
 - Snapshot 是**内存 live 视图**，Ledger 是**耐久事实**。恢复时应该信 Ledger projection，而不是直接信快照。`continuation.frame` 中的 `pendingActionIds` 和 `approvedActionIds` 是 resume 的关键锚点。
-- Tool result 不直接写入 `StateSnapshot.toolResults`（那是另一个 `RuntimeToolResultLedgerEntry` 列表），而是通过 `tool.called` 事件和 `OraToolCallEnvelope.result` 间接可达。
+- Tool result 有两条可见路径：运行中通过 `OraToolCallEnvelope.result` / `tool.called` 事件进入 live snapshot；终态和 reload 后以 `RuntimeToolResultLedgerEntry` / `snapshot.toolResults` 为 durable 结果来源。Tools tab 会合并两者，ledger-backed result 不应被 live envelope 覆盖。
 
 ## 6. Tool Recovery 与 Provider Recovery
 
@@ -537,13 +542,13 @@ Boundary check 在 `RuntimeToolCallService.runToolTurn()` 中**先于** action p
 
 | 优先级 | 改进项 | 说明 |
 | --- | --- | --- |
-| P0 | 补齐剩余 tool 的参数 schema | `skills.*`、`mcp.*`、`package.*`、`modes.*`、`selfIteration.*`、`automations.*` 多数仍为 `parameters: {}` |
-| P1 | 引入 `RuntimeToolDefinitionV2` | 内聚 descriptor + prompt + risk + approval + execute + preview |
-| P1 | Per-file mutation queue | 防止同文件并发写入导致 patch 丢失 |
-| P1 | 统一 AbortSignal | shell/web/MCP/document 工具缺乏取消信号 |
-| P1 | `file.patch` 多 edit 升级 | 当前已有 `edits[]` 参数兼容（capabilities.ts 中已定义），但 approval card 和 Trails 未展示 diff preview |
-| P2 | Desktop Trails tool renderer | shell 输出、patch diff、file read 代码预览 |
-| P2 | Workspace operations adapter | 为 remote workspace 预留后端抽象 |
+| 已完成 | 补齐 implemented tool 参数 schema | file/web/document 以及 skills/mcp/package/modes/selfIteration/automations 已有 JSON Schema；未实现的预留工具仍可保持 `{}` |
+| 已完成 | `RuntimeToolDefinitionV2` 内部形状 | runtime definition 已增加 `resultPreview`、`prepareArguments`、`continuationHandler`，V2 作为内部 upcast 层 |
+| 已完成 | Per-file mutation queue | `file.write` / `file.patch` 经 `withWorkspaceFileMutationQueue(path, fn)` 串行化同文件写入 |
+| 已完成 | AbortSignal 贯通核心工具 | `RuntimeToolExecutionContext.signal` 传入 shell/web/MCP/document；shell abort 会尝试 kill process tree |
+| 已完成 | `file.patch` 多 edit 升级 | `edits[]` 参数、唯一匹配、diff metadata、firstChangedLine、additions/deletions 已落地 |
+| 已完成 | Workspace operations adapter | `WorkspaceOperations` + `localWorkspaceOperations` 已接入 executor context，为 remote/container backend 预留 |
+| 部分完成 | result preview / renderer | file 和 shell definition 产出结构化 result preview；desktop 有 `toolRendererRegistry` 描述符，但 Trails/approval card 真实 React 渲染仍需继续接线 |
 
 ## 9. 状态机速查
 
@@ -604,6 +609,12 @@ error
 | `apps/runtime/src/harness/runtime-tool-boundary.ts` | codeDevelopmentToolBoundaryError（Code Dev orchestrator 守卫） |
 | `apps/runtime/src/harness/runtime-interrupts.ts` | ApprovalInterruptError、ClarificationInterruptError、ResumeApprovalMatcher |
 | `apps/runtime/src/harness/capability-registries.ts` | RuntimeToolDefinition 类型 |
+| `apps/runtime/src/harness/runtime-tool-definition-v2.ts` | RuntimeToolDefinitionV2 内部演进类型和 V1 upcast |
+| `apps/runtime/src/harness/workspace-operations.ts` | WorkspaceOperations 本地适配器 |
+| `apps/runtime/src/harness/runtime-file-mutation-queue.ts` | 同文件 mutation queue |
+| `apps/runtime/src/harness/approved-tool-continuation-handler.ts` | approved tool continuation handler registry |
+| `apps/runtime/src/harness/file-continuation-handler.ts` | file.write / file.patch continuation + artifact 生成 |
+| `apps/runtime/src/harness/generic-continuation-handler.ts` | shell/skills/mcp/package continuation 通用 replay |
 | `apps/runtime/src/harness/runtime-file-tools.ts` | 文件工具实现体 |
 | `apps/runtime/src/harness/runtime-shell-tool.ts` | Shell 工具实现体 + 破坏性命令检测 |
 | `apps/runtime/src/harness/runtime-mcp-tools.ts` | MCP 工具实现体 |
@@ -611,6 +622,7 @@ error
 | `apps/runtime/src/harness/runtime-tool-loop.ts` | Tool attempt 选择、重复调用检测、循环边界 |
 | `apps/runtime/src/harness/runtime-middleware.ts` | RuntimeToolExecutionRequest / RuntimeToolExecutionResult 类型 |
 | `apps/runtime/src/run-projections.ts` | toFlowRunDetail、toSessionTurn、deriveRunAttention |
+| `apps/desktop/src/lib/toolRendererRegistry.ts` | Desktop 工具 renderer / approval preview registry |
 | `apps/desktop/src/components/ApprovalRequestCard.tsx` | 审批卡片 UI |
 | `apps/desktop/src/components/TrailsTabs.tsx` | Trails 工具时间线 UI |
 | `docs/ora-pi-tool-design-analysis.md` | Ora 与 Pi tool 设计对比及迭代建议 |
@@ -619,18 +631,18 @@ error
 
 ### 当前实现的保守边界
 
-1. **参数 schema 不完整**：`skills.*`、`mcp.*`、`package.*`、`modes.*`、`selfIteration.*`、`automations.*` 等工具的 `parameters` 仍为 `{}`，依赖模型自行理解如何填充参数。
+1. **预留工具仍可能没有 schema**：implemented tools 的 JSON Schema 已补齐；`file.delete`、`model.handoff`、`message.publish`、`shared_state.write`、`export.report` 等未实现预留工具仍为 `{}`。
 2. **RiskLevel 二值化**：当前 ActionRiskLevel 实际只有 low/high 两值在使用，medium 未启用。
 3. **Approval copy 从参数注入**：模型需要在 `args.approvalRequest` 中提供审批文案，这依赖模型理解——若模型不提供，回退到通用模板。
-4. **无取消信号**：shell、web fetch/search、document extract 等工具执行时无 AbortSignal，用户取消 run 后工具可能仍在后台运行。
-5. **无同文件 mutation queue**：如果模型在同一个 turn 内连续调用 `file.patch` 修改同一文件，存在竞态风险。
-6. **Recovery policy 仅基于 mode 的 runtime atom**：`recovery_policy` 和 `tool_error_boundary` 是两个独立的 atom，不在 mode 配置中显式可见。
+4. **取消语义不是所有工具等价**：shell/web/MCP/document 已消费 AbortSignal；registry、skills、package、automation 这类同步或内部操作仍需按工具族判断是否有可中断边界。
+5. **WorkspaceOperations 尚未全面替换旧实现**：executor context 已携带 adapter，默认本地实现可用；部分 file tool 仍直接使用本地 fs/path helper，后续迁移应按工具族小步推进。
+6. **Renderer registry 只是描述层**：desktop 已有 tool renderer registry 和 approval preview shape，但具体 Trails/ApprovalCard 的富 UI 渲染仍需接线。
+7. **Recovery policy 仅基于 mode 的 runtime atom**：`recovery_policy` 和 `tool_error_boundary` 是两个独立的 atom，不在 mode 配置中显式可见。
 
 ### 建议演进方向
 
-1. **补齐所有 tool 的 JSON Schema** → 提升 provider native tool call 成功率，减少 fallback 和 repair
-2. **RuntimeToolDefinitionV2** → 把 descriptor + execute + risk + approval + preview 收到一个定义体中
-3. **Per-file mutation queue** → `withWorkspaceFileMutationQueue(path, fn)`
-4. **AbortSignal 贯通** → `RuntimeToolExecutionContext.signal`，shell kill process tree
-5. **`file.patch` 多 edit** → 已有 schema 支持，需补齐 diff preview 和 Trails 展示
-6. **Recovery policy Mode Studio 可视化** → 在 Mode Studio 中可视化编辑恢复规则
+1. **把 renderer registry 接到真实 UI** → Trails / ApprovalCard 使用 file diff、shell output、file read、web fetch 等 tool-specific renderer
+2. **扩大 resultPreview 消费面** → action ledger、tool result ledger、artifact preview 使用同一份结构化 preview metadata
+3. **继续迁移 WorkspaceOperations** → file/shell 工具逐步通过 adapter 执行，便于 remote/container workspace
+4. **补齐未实现预留工具 schema** → 当 `file.delete`、model/message/shared_state/export 工具实现时同步补 schema 和 policy 测试
+5. **Recovery policy Mode Studio 可视化** → 在 Mode Studio 中可视化编辑恢复规则

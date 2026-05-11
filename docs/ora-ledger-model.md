@@ -457,6 +457,8 @@ function deriveLedgerRunAttention(run):
 
 - `status`、`attention`、`planDecisions` 等运行时字段以 projection 为准，覆盖 finalSnapshot
 - `pendingClarifications` / `pendingApprovals` 从 gates 中提取
+- `toolResults` 优先使用 ledger projection 中的 `tool.result` entries，避免只依赖 live `toolCalls` envelope
+- 返回的 `StateSnapshot.snapshotSource` 标记为 `"ledger"`，供 runtime/desktop 明确区分权威 read model 与 streaming live view
 - 如果没有 finalSnapshot，从 run projection 构建最小 snapshot
 
 `reconcileSnapshotRuntimeFields` 做更细粒度的修复：
@@ -668,12 +670,14 @@ sequenceDiagram
 | **存储** | 不持久（内存或临时存储） | 耐久存储（ledger entries） |
 | **完整性** | 包含所有运行时字段 | 可能因 slim 丢失部分事件细节 |
 | **用途** | 流式 UI 更新、kernel 内部状态 | session detail、session list、desktop sidebar、Trails |
+| **标记** | `snapshotSource: "live"` | `snapshotSource: "ledger"` |
 
 **关键原则**：
 
 1. **Desktop UI 应该消费 ledger projection，而不是 live snapshot。** `deriveSessionProjection` / `deriveRunSnapshot` 是 read model 的唯一权威来源。
 2. **Live snapshot 是 viewing 用途，不是 source of truth。** streaming 期间的 UI 可以消费 live snapshot，但最终状态（session detail、Trails、attention）必须来自 ledger projection。
 3. **Attention 推导不依赖 UI 猜测。** `deriveLedgerRunAttention` 完全从 ledger-backed gate projection 计算，不参考 UI 本地缓存的「上一个状态」。
+4. **Handoff 必须显式。** live snapshot 工厂会标记 `"live"`；ledger projection 会标记 `"ledger"`；desktop 的 interaction state 通过 `shouldSwitchToLedgerSnapshot` 在终态/ hydrate 后优先切到 ledger-backed state。
 
 ### 9.1 哪些状态来自 live snapshot
 
@@ -763,6 +767,7 @@ sequenceDiagram
 | Branch 投影 | 通过 `hiddenRunIds` 过滤被替换的 run | 被替换的 run 仍在 `entries` 中，只是不在投影中。长期运行可能导致 ledger 膨胀 |
 | Gate 幂等 | `gate.opened` 在 resolved 后忽略 | 依赖 gateId 不变，不支持 gate 重开 |
 | Event 反向投影 | `reconcileSnapshotRuntimeFields` 从 gate 决议生成事件 | 反向投影的事件标记为 `ledger-projected` 来源，但不回到 ledger 存储 |
+| Live/Ledger handoff | `StateSnapshot` / `FlowRunDetail` / desktop interaction state 携带 `snapshotSource` | 仍保留 streaming live path；不能把每个 per-token delta 都改成 ledger replay |
 | 跨 session 能力 | 不支持 | Ledger 是 session-scoped。如果需要跨 session 的 run 关系（如 fork/replay 溯源），需要额外机制 |
 
 ### 12.2 可演进方向
