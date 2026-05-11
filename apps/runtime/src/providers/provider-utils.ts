@@ -1,6 +1,168 @@
 import { execFileSync } from "node:child_process";
 import type { ModelTokenUsage, ProviderConfig } from "@cemeworm/shared";
 import type { ModelMessage, ModelRequest, ModelToolCall, ModelToolDefinition } from "./types.js";
+import { ProxyAgent } from "undici";
+
+export interface ProviderFetchContext {
+  providerId: string;
+  providerType: string;
+  modelId?: string;
+  operation: string;
+  endpoint: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  proxyEnv?: NodeJS.ProcessEnv;
+}
+
+export class ProviderFetchError extends Error {
+  constructor(
+    public readonly context: ProviderFetchContext,
+    cause: unknown,
+  ) {
+    super(providerFetchErrorMessage(context, cause), { cause });
+    this.name = "ProviderFetchError";
+  }
+}
+
+export async function fetchProviderEndpoint(
+  fetchImpl: typeof fetch,
+  context: ProviderFetchContext,
+  init: RequestInit,
+): Promise<Response> {
+  const controller = context.timeoutMs ? new AbortController() : undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const signal = mergeAbortSignals(init.signal, context.signal, controller?.signal);
+  if (controller && context.timeoutMs) {
+    timeout = setTimeout(() => {
+      controller.abort(new Error(`Provider request timed out after ${context.timeoutMs}ms.`));
+    }, context.timeoutMs);
+  }
+  try {
+    return await fetchImpl(context.endpoint, {
+      ...init,
+      signal,
+      ...providerFetchProxyInit(context.endpoint, context.proxyEnv),
+    });
+  } catch (error) {
+    throw new ProviderFetchError(context, error);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+let cachedProxy:
+  | { key: string; dispatcher: InstanceType<typeof ProxyAgent> }
+  | undefined;
+
+function providerFetchProxyInit(endpoint: string, env: NodeJS.ProcessEnv | undefined): RequestInit {
+  if (!env) {
+    return {};
+  }
+  const proxyUrl = providerProxyUrl(endpoint, env);
+  if (!proxyUrl) {
+    return {};
+  }
+  if (cachedProxy?.key !== proxyUrl) {
+    cachedProxy = { key: proxyUrl, dispatcher: new ProxyAgent(proxyUrl) };
+  }
+  return {
+    dispatcher: cachedProxy.dispatcher,
+  } as RequestInit;
+}
+
+function providerProxyUrl(endpoint: string, env: NodeJS.ProcessEnv): string | undefined {
+  const url = new URL(endpoint);
+  if (proxyBypassMatches(url.hostname, env.NO_PROXY ?? env.no_proxy)) {
+    return undefined;
+  }
+  const raw = url.protocol === "https:"
+    ? env.HTTPS_PROXY ?? env.https_proxy ?? env.ALL_PROXY ?? env.all_proxy
+    : env.HTTP_PROXY ?? env.http_proxy ?? env.ALL_PROXY ?? env.all_proxy;
+  return normalizeHttpProxyUrl(raw);
+}
+
+function normalizeHttpProxyUrl(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function proxyBypassMatches(hostname: string, rawNoProxy: string | undefined): boolean {
+  const host = hostname.toLowerCase();
+  return (rawNoProxy ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+    .some((entry) => {
+      if (entry === "*") {
+        return true;
+      }
+      const normalized = entry.startsWith(".") ? entry.slice(1) : entry;
+      return host === normalized || host.endsWith(`.${normalized}`);
+    });
+}
+
+function mergeAbortSignals(...signals: Array<AbortSignal | null | undefined>): AbortSignal | undefined {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (activeSignals.length === 0) {
+    return undefined;
+  }
+  if (activeSignals.length === 1) {
+    return activeSignals[0];
+  }
+
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort(signal);
+      break;
+    }
+    signal.addEventListener("abort", () => abort(signal), { once: true });
+  }
+  return controller.signal;
+}
+
+function providerFetchErrorMessage(context: ProviderFetchContext, cause: unknown): string {
+  const causeMessage = cause instanceof Error && cause.message.trim()
+    ? cause.message.trim()
+    : String(cause || "unknown fetch error");
+  const causeCode = providerFetchCauseCode(cause);
+  const causeSuffix = causeCode ? ` (${causeCode})` : "";
+  const timeoutSuffix = context.timeoutMs ? ` timeoutMs=${context.timeoutMs}` : "";
+  return `Provider ${context.providerId} ${context.operation} fetch failed for ${context.endpoint}${timeoutSuffix}: ${causeMessage}${causeSuffix}`;
+}
+
+function providerFetchCauseCode(cause: unknown): string | undefined {
+  if (!cause || typeof cause !== "object") {
+    return undefined;
+  }
+  const direct = (cause as { code?: unknown }).code;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const nested = (cause as { cause?: unknown }).cause;
+  if (nested && typeof nested === "object") {
+    const code = (nested as { code?: unknown }).code;
+    if (typeof code === "string" && code.trim()) {
+      return code.trim();
+    }
+  }
+  return undefined;
+}
 
 export function normalizeMessages(request: ModelRequest): ModelMessage[] {
   if (request.messages && request.messages.length > 0) {

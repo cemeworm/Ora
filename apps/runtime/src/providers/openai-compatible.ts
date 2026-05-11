@@ -11,6 +11,7 @@ import {
   extractOpenAiUsage,
   extractTextFromValue,
   failMissingApiKey,
+  fetchProviderEndpoint,
   isDeepSeekCompatible,
   normalizeMessages,
   openAiChatTools,
@@ -129,6 +130,7 @@ export async function listOpenAICompatibleModels(
     });
   }
 
+  const usesDefaultFetch = !options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
   const envName = compatibleEnvName(config);
@@ -144,7 +146,16 @@ export async function listOpenAICompatibleModels(
   }
 
   try {
-    const response = await fetchImpl(resolveOpenAICompatibleModelsEndpoint(config), {
+    const modelsEndpoint = resolveOpenAICompatibleModelsEndpoint(config);
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "models",
+      endpoint: modelsEndpoint,
+      timeoutMs: config.timeoutMs,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -298,6 +309,7 @@ export function createOpenAICompatibleProvider(
   config: ProviderConfig,
   options: ProviderRuntimeOptions = {}
 ): ModelProvider {
+  const usesDefaultFetch = !options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
 
@@ -316,11 +328,21 @@ export function createOpenAICompatibleProvider(
     const payload = protocol === "responses"
       ? createResponsesPayload(config, request)
       : createChatCompletionsPayload(config, request);
-    const response = await fetchImpl(resolveCompatibleProviderEndpoint({
+    const endpoint = resolveCompatibleProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
       path: protocol === "responses" ? "/responses" : "/chat/completions",
-    }), {
+    });
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: `${protocol}.completion`,
+      endpoint,
+      timeoutMs: config.timeoutMs,
+      signal: request.signal,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -328,7 +350,6 @@ export function createOpenAICompatibleProvider(
         ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
-      signal: request.signal,
     });
 
     const rawText = await response.text();
@@ -394,11 +415,21 @@ export function createOpenAICompatibleProvider(
     const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
     (globalThis as any).__latencyFetchStart = tNow;
     logLatency("invokeModel→fetch", invokeModelElapsed);
-    const response = await fetchImpl(resolveCompatibleProviderEndpoint({
+    const endpoint = resolveCompatibleProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
       path: protocol === "responses" ? "/responses" : "/chat/completions",
-    }), {
+    });
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: `${protocol}.stream`,
+      endpoint,
+      timeoutMs: config.timeoutMs,
+      signal: request.signal,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -406,7 +437,6 @@ export function createOpenAICompatibleProvider(
         ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
-      signal: request.signal,
     });
 
     if (!response.ok) {

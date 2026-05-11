@@ -1,5 +1,5 @@
 import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@cemeworm/shared";
-import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractOpenAiUsage, extractTextFromValue, failMissingApiKey, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
+import { appendIfDefined, buildResponsesInput, extractOpenAiResponsesStreamToolCalls, extractOpenAiResponsesToolCalls, extractOpenAiUsage, extractTextFromValue, failMissingApiKey, fetchProviderEndpoint, openAiResponsesTools, readProviderApiKey, resolveProviderEndpoint } from "./provider-utils.js";
 import type { ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { emitTextDelta, openAiResponsesDelta, readSseMessages } from "./streaming.js";
 import { logLatency } from "../latency-log.js";
@@ -37,6 +37,7 @@ export async function listOpenAIModels(
   config: ProviderConfig,
   options: ProviderRuntimeOptions = {}
 ): Promise<ProviderModelsResult> {
+  const usesDefaultFetch = !options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
   const apiKey = readProviderApiKey(config, "OPENAI_API_KEY", env);
@@ -51,13 +52,22 @@ export async function listOpenAIModels(
   }
 
   try {
-    const response = await fetchImpl(resolveProviderEndpoint({
+    const endpoint = resolveProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
       defaultOrigin: "https://api.openai.com",
       path: "/v1/models",
       env,
-    }), {
+    });
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "models",
+      endpoint,
+      timeoutMs: config.timeoutMs,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -97,6 +107,7 @@ export function createOpenAIProvider(
   config: ProviderConfig,
   options: ProviderRuntimeOptions = {}
 ): ModelProvider {
+  const usesDefaultFetch = !options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
 
@@ -134,13 +145,23 @@ export function createOpenAIProvider(
       config.temperature ?? request.temperature
     );
 
-    const response = await fetchImpl(resolveProviderEndpoint({
+    const endpoint = resolveProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
       defaultOrigin: "https://api.openai.com",
       path: "/v1/responses",
       env,
-    }), {
+    });
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "responses.completion",
+      endpoint,
+      timeoutMs: config.timeoutMs,
+      signal: request.signal,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -148,7 +169,6 @@ export function createOpenAIProvider(
         ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
-      signal: request.signal,
     });
 
     const rawText = await response.text();
@@ -216,13 +236,23 @@ export function createOpenAIProvider(
     const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
     (globalThis as any).__latencyFetchStart = tNow;
     logLatency("invokeModel→fetch", invokeModelElapsed);
-    const response = await fetchImpl(resolveProviderEndpoint({
+    const endpoint = resolveProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
       defaultOrigin: "https://api.openai.com",
       path: "/v1/responses",
       env,
-    }), {
+    });
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "responses.stream",
+      endpoint,
+      timeoutMs: config.timeoutMs,
+      signal: request.signal,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -230,7 +260,6 @@ export function createOpenAIProvider(
         ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
-      signal: request.signal,
     });
 
     if (!response.ok) {

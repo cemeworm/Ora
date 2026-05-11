@@ -1,5 +1,5 @@
 import { ProviderModelsResultSchema, type ProviderConfig, type ProviderModelsResult } from "@cemeworm/shared";
-import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractAnthropicUsage, extractTextFromValue, failMissingApiKey, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
+import { anthropicTools, appendIfDefined, extractAnthropicToolCalls, extractAnthropicUsage, extractTextFromValue, failMissingApiKey, fetchProviderEndpoint, normalizeMessages, providerToolName, readProviderApiKey, resolveProviderEndpoint, splitInstructionMessages } from "./provider-utils.js";
 import type { ModelMessage, ModelProvider, ModelResponse, ProviderRuntimeOptions } from "./types.js";
 import { anthropicTextDelta, emitTextDelta, readSseMessages } from "./streaming.js";
 import { logLatency } from "../latency-log.js";
@@ -69,6 +69,7 @@ export async function listAnthropicStyleModels(
     unsupportedOnNotImplemented?: boolean;
   }
 ): Promise<ProviderModelsResult> {
+  const usesDefaultFetch = !options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
   const apiKey = readProviderApiKey(config, settings.fallbackEnvName, env);
@@ -83,14 +84,23 @@ export async function listAnthropicStyleModels(
   }
 
   try {
-    const response = await fetchImpl(resolveProviderEndpoint({
+    const endpoint = resolveProviderEndpoint({
       providerId: config.id,
       baseUrl: config.baseUrl,
       defaultOrigin: settings.defaultOrigin ?? "https://api.anthropic.com",
       path: "/v1/models",
       env,
       allowCustomBaseUrl: settings.allowCustomBaseUrl,
-    }), {
+    });
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "models",
+      endpoint,
+      timeoutMs: config.timeoutMs,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "GET",
       headers: {
         "x-api-key": apiKey,
@@ -155,6 +165,7 @@ export function createAnthropicStyleProvider(
     promptCacheDefaultEnabled?: boolean;
   }
 ): ModelProvider {
+  const usesDefaultFetch = !options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const env = options.env ?? process.env;
 
@@ -254,7 +265,17 @@ export function createAnthropicStyleProvider(
 
     const payload = buildPayload(request);
 
-    const response = await fetchImpl(endpoint(), {
+    const resolvedEndpoint = endpoint();
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "messages.completion",
+      endpoint: resolvedEndpoint,
+      timeoutMs: config.timeoutMs,
+      signal: request.signal,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "POST",
       headers: {
         "x-api-key": apiKey,
@@ -263,7 +284,6 @@ export function createAnthropicStyleProvider(
         ...(config.headers ?? {}),
       },
       body: JSON.stringify(payload),
-      signal: request.signal,
     });
 
     const rawText = await response.text();
@@ -299,7 +319,17 @@ export function createAnthropicStyleProvider(
     const invokeModelElapsed = tNow - (((globalThis as any).__latencyInvokeModelStart as number) ?? tNow);
     (globalThis as any).__latencyFetchStart = tNow;
     logLatency("invokeModel→fetch", invokeModelElapsed);
-    const response = await fetchImpl(endpoint(), {
+    const resolvedEndpoint = endpoint();
+    const response = await fetchProviderEndpoint(fetchImpl, {
+      providerId: config.id,
+      providerType: config.type,
+      modelId: config.modelId,
+      operation: "messages.stream",
+      endpoint: resolvedEndpoint,
+      timeoutMs: config.timeoutMs,
+      signal: request.signal,
+      proxyEnv: usesDefaultFetch ? env : undefined,
+    }, {
       method: "POST",
       headers: {
         "x-api-key": apiKey,
@@ -308,7 +338,6 @@ export function createAnthropicStyleProvider(
         ...(config.headers ?? {}),
       },
       body: JSON.stringify({ ...buildPayload(request), stream: true }),
-      signal: request.signal,
     });
 
     if (!response.ok) {
