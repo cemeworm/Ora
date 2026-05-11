@@ -394,4 +394,48 @@ describe("runtime ledger authority guards", () => {
     expect(getRunOrThrow).toContain("rebaseActiveRunSnapshot");
     expect(cancelledSnapshot).toContain("ledgerRebasedRunSnapshot");
   });
+
+  it("derives ledger run attention from gate projection, not from continuation frames", () => {
+    const ledgerSource = readSource("../../packages/shared/src/runtime-ledger.ts");
+    const fn = sourceSlice(ledgerSource, "export function deriveLedgerRunAttention", "function hasIncompleteResolvedHumanGateResume");
+
+    // Must read gate status from ledger gate projection
+    expect(fn).toContain("run.gates.filter");
+    expect(fn).toContain('gate.kind === "clarification"');
+    expect(fn).toContain('gate.kind === "approval"');
+    expect(fn).toContain('gate.kind === "plan_decision"');
+
+    // Must NOT read from continuation frames for gate decisions
+    expect(fn).not.toContain("continuation");
+    expect(fn).not.toContain("frame");
+  });
+
+  it("marks ledger-derived snapshots with snapshotSource ledger for terminal/hydrate consumers", () => {
+    const ledgerSource = readSource("../../packages/shared/src/runtime-ledger.ts");
+    const fn = sourceSlice(ledgerSource, "function runtimeRunProjectionToSnapshot", "function reconcileSnapshotRuntimeFields");
+
+    // Both paths (with and without finalSnapshot) must mark snapshotSource as "ledger"
+    const occurrences = [...fn.matchAll(/snapshotSource:\s*"ledger"/g)];
+    expect(occurrences.length, "runtimeRunProjectionToSnapshot should mark both paths with snapshotSource: ledger").toBeGreaterThanOrEqual(2);
+  });
+
+  it("marks live snapshot factories with snapshotSource live", () => {
+    const snapshotsSource = readSource("src/run-snapshots.ts");
+
+    expect(snapshotsSource).toContain('snapshotSource: "live"');
+  });
+
+  it("propagates snapshotSource through toFlowRunDetail", () => {
+    const projectionsSource = readSource("src/run-projections.ts");
+    const toFlowRunDetail = sourceSlice(projectionsSource, "export function toFlowRunDetail", "export function toRunSummary");
+
+    expect(toFlowRunDetail).toContain("snapshotSource:");
+  });
+
+  it("keeps desktop tool ledger reading from both toolCalls and ledger-backed toolResults", () => {
+    const trailVmSource = readSource("../../apps/desktop/src/lib/trailViewModel.ts");
+    expect(trailVmSource).toContain("fromToolCalls");
+    expect(trailVmSource).toContain("fromToolResults");
+    expect(trailVmSource).toContain("snapshot.toolResults");
+  });
 });

@@ -98,4 +98,21 @@ describe("recovery policy classification", () => {
       summary: expect.stringContaining("Retry attempts exhausted."),
     });
   });
+
+  it("scopes provider retry attempts to a single model request", () => {
+    const modeSpec = getModePreset("single_agent")!;
+    const coordinator = new RecoveryCoordinator(modeSpec, []);
+    const firstRequestIncident = classifyRecoveryError(
+      new Error("fetch failed"),
+      { surface: "provider", attemptScope: "request-1", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+    const secondRequestIncident = classifyRecoveryError(
+      new Error("fetch failed"),
+      { surface: "provider", attemptScope: "request-2", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(coordinator.resolve(firstRequestIncident)).toMatchObject({ action: "retry", attempt: 1 });
+    expect(coordinator.resolve(firstRequestIncident)).toMatchObject({ action: "retry", attempt: 2 });
+    expect(coordinator.resolve(secondRequestIncident)).toMatchObject({ action: "retry", attempt: 1 });
+  });
 });

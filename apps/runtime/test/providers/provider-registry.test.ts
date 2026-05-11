@@ -128,6 +128,116 @@ describe("provider adapters", () => {
     ]);
   });
 
+  it("wraps provider fetch failures with endpoint and underlying cause details", async () => {
+    const cause = Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("fetch failed", { cause });
+    });
+    const provider = createModelProvider({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await expect(provider({ prompt: "hello" })).rejects.toThrow(
+      "Provider deepseek chat_completions.completion fetch failed for https://api.deepseek.com/v1/chat/completions: fetch failed (ECONNRESET)",
+    );
+  });
+
+  it("adds proxy dispatcher only for the default provider fetch", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init).toHaveProperty("dispatcher");
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    globalThis.fetch = fetchImpl as typeof fetch;
+    try {
+      const provider = createModelProvider({
+        id: "deepseek",
+        type: "openai_compatible",
+        label: "DeepSeek",
+        modelId: "deepseek-chat",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        protocol: "chat_completions",
+        headers: {},
+      }, {
+        env: { DEEPSEEK_API_KEY: "test-key", HTTPS_PROXY: "http://127.0.0.1:7897" },
+      });
+
+      await expect(provider({ prompt: "hello" })).resolves.toMatchObject({ text: "OK" });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("does not add proxy dispatcher to injected provider fetch implementations", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init).not.toHaveProperty("dispatcher");
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const provider = createModelProvider({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      headers: {},
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key", HTTPS_PROXY: "http://127.0.0.1:7897" },
+      fetchImpl,
+    });
+
+    await expect(provider({ prompt: "hello" })).resolves.toMatchObject({ text: "OK" });
+  });
+
+  it("applies provider timeoutMs to the HTTP request", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      await new Promise((resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        setTimeout(resolve, 100);
+      });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "late" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const provider = createModelProvider({
+      id: "deepseek",
+      type: "openai_compatible",
+      label: "DeepSeek",
+      modelId: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      protocol: "chat_completions",
+      timeoutMs: 5,
+      headers: {},
+    }, {
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      fetchImpl,
+    });
+
+    await expect(provider({ prompt: "hello" })).rejects.toThrow(
+      "Provider deepseek chat_completions.completion fetch failed for https://api.deepseek.com/v1/chat/completions timeoutMs=5: Provider request timed out after 5ms.",
+    );
+  });
+
   it("continues verify smoke call when compatible model discovery is unsupported", async () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {

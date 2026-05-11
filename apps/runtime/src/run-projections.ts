@@ -137,6 +137,7 @@ export function toFlowRunDetail(snapshot: StateSnapshot): FlowRunDetail {
     latestSnapshot: snapshot,
     createdAt: startedAt,
     updatedAt: snapshot.updatedAt,
+    snapshotSource: snapshot.snapshotSource ?? "live",
   });
 }
 

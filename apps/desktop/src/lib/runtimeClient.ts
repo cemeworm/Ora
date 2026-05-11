@@ -3570,6 +3570,7 @@ class LocalJsonRpcRuntime {
       : this.listModes().find((mode) => mode.family === family) ?? this.getMode(SINGLE_AGENT_MODE_ID);
     if (userText.length < 10) {
       const modeDraft = { ...base, systemPreset: false, updatedAt: Date.now() };
+      const validation = this.validateMode({ spec: modeDraft });
       return {
         modeDraft,
         agentDrafts: [],
@@ -3582,7 +3583,8 @@ class LocalJsonRpcRuntime {
           ],
         },
         changeSummary: ["Started a safe preview draft."],
-        validation: this.validateMode({ spec: modeDraft }),
+        validation,
+        repairSuggestions: validation.repairSuggestions,
         needsInput: true,
       };
     }
@@ -3627,6 +3629,7 @@ class LocalJsonRpcRuntime {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
+    const validation = this.validateMode({ spec: modeDraft });
     return {
       modeDraft,
       agentDrafts,
@@ -3639,7 +3642,8 @@ class LocalJsonRpcRuntime {
         ],
       },
       changeSummary: [`Selected ${family.replace(/_/g, " ")} topology.`, "Reused Ora's canonical system agents."],
-      validation: this.validateMode({ spec: modeDraft }),
+      validation,
+      repairSuggestions: validation.repairSuggestions,
       needsInput: false,
     };
   }

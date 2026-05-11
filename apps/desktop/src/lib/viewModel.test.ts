@@ -1482,6 +1482,92 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("<proposed_plan>");
   });
 
+  it("derives a streaming proposed plan from long deltas", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-long-streaming-plan";
+    const sessionId = "session-long-streaming-plan";
+    const messageId = `${runId}:assistant:planner:planner:0`;
+    const intro = "我会先给出任务计划。\n\n";
+    const planBody = Array.from({ length: 240 }, (_, index) =>
+      `${index + 1}. 核对第 ${index + 1} 个流式输出细节，确认计划卡片仍然稳定更新。`,
+    ).join("\n");
+    const fullText = `${intro}<proposed_plan>\n${planBody}`;
+    const chunks = fullText.match(/.{1,40}/gs) ?? [];
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "排查任务计划流式卡顿", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["planner"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-long-streaming-plan-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "planner", label: "Planner" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: chunks.map((delta, index) => ({
+        id: `${runId}:evt-${index}`,
+        runId,
+        seq: index,
+        type: "message.delta" as const,
+        agentId: "planner",
+        createdAt: createdAt + index,
+        pattern: "orchestrator_subagent" as const,
+        payload: { role: "assistant", messageId, content: delta, delta, streaming: true },
+      })),
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + chunks.length,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "排查任务计划流式卡顿",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.turn?.proposedPlanStatus).toBe("streaming");
+    expect(assistant?.turn?.activeLoadingTarget).toEqual({ kind: "proposed_plan" });
+    expect(assistant?.content).toContain("核对第 240 个流式输出细节");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+  });
+
   it("keeps internal agent message content out of the assistant timeline", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

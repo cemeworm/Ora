@@ -2044,27 +2044,47 @@ function latestPublicAssistantDeltaAgentId(snapshot: OraStateSnapshot): string |
   return undefined;
 }
 
+const proposedPlanCache = new WeakMap<OraStateSnapshot, ReturnType<typeof parseProposedPlan> | null>();
+
 function proposedPlanFromSnapshot(snapshot: OraStateSnapshot): ReturnType<typeof parseProposedPlan> | undefined {
+  const cached = proposedPlanCache.get(snapshot);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
   const outputText = outputTextFromSnapshot(snapshot);
   const outputPlan = outputText ? parseProposedPlan(outputText) : undefined;
   if (outputPlan && (outputPlan.status === "streaming" || outputPlan.hasCompletePlan)) {
+    proposedPlanCache.set(snapshot, outputPlan);
     return outputPlan;
   }
-  return proposedPlanFromAssistantDeltas(snapshot);
+  const deltaPlan = proposedPlanFromAssistantDeltas(snapshot);
+  proposedPlanCache.set(snapshot, deltaPlan ?? null);
+  return deltaPlan;
 }
 
 function proposedPlanFromAssistantDeltas(snapshot: OraStateSnapshot): ReturnType<typeof parseProposedPlan> | undefined {
-  const partsByAgent = new Map<string, string[]>();
+  const textByAgent = new Map<string, { text: string; latestSeq: number }>();
   let latestStartedPlan: ReturnType<typeof parseProposedPlan> | undefined;
   for (const event of snapshot.events) {
     if (!isPublicAssistantDelta(snapshot, event)) {
       continue;
     }
     const agentId = event.agentId ?? "__default__";
-    const parts = partsByAgent.get(agentId) ?? [];
-    mergeAssistantTextParts(parts, event);
-    partsByAgent.set(agentId, parts);
-    const parsed = parseProposedPlan(parts.join(""));
+    const current = textByAgent.get(agentId);
+    const projection = mergeAssistantMessageTextProjection(
+      current ? { text: current.text } : undefined,
+      event.payload,
+    );
+    if (projection?.text) {
+      textByAgent.set(agentId, { text: projection.text, latestSeq: event.seq });
+    }
+  }
+
+  for (const { text } of [...textByAgent.values()].sort((left, right) => left.latestSeq - right.latestSeq)) {
+    if (!text.includes("<proposed_plan")) {
+      continue;
+    }
+    const parsed = parseProposedPlan(text);
     if (parsed.hasCompletePlan) {
       latestStartedPlan = parsed;
     } else if (!latestStartedPlan && parsed.status === "streaming") {

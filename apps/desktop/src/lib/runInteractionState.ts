@@ -31,6 +31,8 @@ export interface DesktopRunInteractionState {
     | "active_turn"
     | "session_detail"
     | "session_summary";
+  /** Indicates whether the snapshot backing this state is live (streaming) or ledger-backed (terminal/authoritative). */
+  snapshotSource?: "live" | "ledger";
 }
 
 export interface DeriveRunInteractionStateParams {
@@ -132,6 +134,7 @@ function deriveFromPendingRun(
     canStop: true,
     canResume: false,
     authority: "pending_run",
+    snapshotSource: "live",
   };
 }
 
@@ -155,11 +158,13 @@ function deriveFromSnapshot(
     canStop: STOPPABLE_STATUSES.has(status),
     canResume: RESUMABLE_STATUSES.has(status),
     authority: "active_snapshot",
+    snapshotSource: snapshot.snapshotSource,
   };
 }
 
 function deriveFromTurn(
   turn: NonNullable<OraSessionDetail["turns"]>[number],
+  snapshotSource?: DesktopRunInteractionState["snapshotSource"],
 ): DesktopRunInteractionState {
   const attention = turn.attention;
   const gateKind = attentionGateKind(attention);
@@ -178,6 +183,7 @@ function deriveFromTurn(
     canStop: STOPPABLE_STATUSES.has(status),
     canResume: RESUMABLE_STATUSES.has(status),
     authority: "active_turn",
+    snapshotSource,
   };
 }
 
@@ -185,6 +191,7 @@ function deriveFromSession(
   session: { status?: string; attention?: { kind?: string } },
   sessionId: string,
   authority: DesktopRunInteractionState["authority"],
+  snapshotSource?: DesktopRunInteractionState["snapshotSource"],
 ): DesktopRunInteractionState {
   let status: DesktopRunInteractionState["status"] = "idle";
   let gateKind: DesktopRunInteractionState["gateKind"] | undefined;
@@ -216,6 +223,7 @@ function deriveFromSession(
     canStop: STOPPABLE_STATUSES.has(status),
     canResume: RESUMABLE_STATUSES.has(status),
     authority,
+    snapshotSource,
   };
 }
 
@@ -295,11 +303,11 @@ export function deriveRunInteractionState(
         : activeSessionDetail.turns.at(-1);
 
       if (turn) {
-        return deriveFromTurn(turn);
+        return deriveFromTurn(turn, activeSessionDetail.snapshotSource);
       }
 
       // Fall through to session-level.
-      return deriveFromSession(activeSessionDetail.session, detailSessionId, "session_detail");
+      return deriveFromSession(activeSessionDetail.session, detailSessionId, "session_detail", activeSessionDetail.snapshotSource);
     }
   }
 
@@ -309,4 +317,24 @@ export function deriveRunInteractionState(
   }
 
   return idleState(sessionId);
+}
+
+/**
+ * Returns true when a live snapshot should be replaced by a ledger-backed one.
+ * This happens when the run has reached a terminal state and the ledger
+ * projection is available as the authoritative read model.
+ */
+export function shouldSwitchToLedgerSnapshot(
+  current: DesktopRunInteractionState,
+  candidate: DesktopRunInteractionState,
+): boolean {
+  if (current.snapshotSource !== "ledger" && candidate.snapshotSource === "ledger") {
+    // Always prefer ledger-backed state for terminal/authoritative reads.
+    return true;
+  }
+  // Do not downgrade from ledger to live unless the live snapshot is from an active streaming run.
+  if (current.snapshotSource === "ledger" && candidate.snapshotSource === "live") {
+    return candidate.authority === "pending_run" || candidate.authority === "active_snapshot";
+  }
+  return false;
 }

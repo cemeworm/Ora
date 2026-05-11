@@ -502,4 +502,54 @@ describe("runtime projection parity guards", () => {
     expect(state.events.at(-1)?.type).toBe("run.replayed");
     expect(stream.snapshot?.output).toEqual(state.output);
   });
+
+  it("marks ledger-derived snapshot with snapshotSource ledger", async () => {
+    const dataDir = tempDir();
+    const store = createStore(dataDir);
+    const handle = await store.startRun({
+      input: { prompt: "Verify snapshotSource propagation." },
+      config: runConfig(),
+    });
+    const state = StateSnapshotSchema.parse(store.getRunState({ runId: handle.runId }));
+    const ledger = RuntimeSessionLedgerSchema.parse(
+      (store as unknown as { backend: { getSessionLedger(sessionId: string): unknown } }).backend.getSessionLedger(state.sessionId!),
+    );
+    const projected = deriveRunSnapshot(ledger, handle.runId);
+
+    // After startRun completes, getRunState returns ledger-rebased snapshot
+    expect(state.snapshotSource).toBe("ledger");
+    expect(projected).toBeDefined();
+    expect(projected!.snapshotSource).toBe("ledger");
+  });
+
+  it("preserves snapshotSource ledger through cold reload", async () => {
+    const dataDir = tempDir();
+    const store = createStore(dataDir);
+    const handle = await store.startRun({
+      input: { prompt: "Verify cold reload preserves snapshotSource." },
+      config: runConfig(),
+    });
+
+    const reloaded = createStore(dataDir);
+    const coldLive = StateSnapshotSchema.parse(reloaded.getRunState({ runId: handle.runId }));
+    const ledger = RuntimeSessionLedgerSchema.parse(
+      (reloaded as unknown as { backend: { getSessionLedger(sessionId: string): unknown } }).backend.getSessionLedger(coldLive.sessionId!),
+    );
+    const projected = deriveRunSnapshot(ledger, handle.runId);
+
+    expect(coldLive.snapshotSource).toBe("ledger");
+    expect(projected!.snapshotSource).toBe("ledger");
+  });
+
+  it("propagates snapshotSource through toFlowRunDetail", async () => {
+    const { toFlowRunDetail } = await import("../src/run-projections.js");
+    const liveSnap = snapshot({ runId: "source-test-live", sessionId: "source-test-session" });
+    const ledgerSnap = StateSnapshotSchema.parse({ ...liveSnap, snapshotSource: "ledger" as const });
+
+    const liveDetail = toFlowRunDetail(liveSnap);
+    const ledgerDetail = toFlowRunDetail(ledgerSnap);
+
+    expect(liveDetail.snapshotSource).toBe("live");
+    expect(ledgerDetail.snapshotSource).toBe("ledger");
+  });
 });

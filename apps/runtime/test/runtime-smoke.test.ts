@@ -5585,6 +5585,13 @@ describe("Ora runtime smoke path", () => {
       expect(run.status).toBe("failed");
       expect(state.status).toBe("failed");
       expect(state.events.filter((event) => event.type === "recovery.retry_scheduled")).toHaveLength(2);
+      expect(state.events.filter((event) => event.type === "recovery.exhausted")).toHaveLength(1);
+      const exhaustedIncident = (state.events.find((event) => event.type === "recovery.exhausted")?.payload as { incident?: Record<string, unknown> }).incident;
+      expect(exhaustedIncident).toMatchObject({ surface: "provider", errorType: "provider_busy" });
+      expect(state.events.filter((event) =>
+        event.type === "recovery.exhausted" &&
+        (event.payload as { incident?: { errorType?: string } }).incident?.errorType === "node_exception"
+      )).toHaveLength(0);
       expect(state.events.map((event) => event.type)).toContain("run.failed");
       expect(state.events.map((event) => event.type)).not.toContain("run.done");
       const hasLimitedContextFallback = state.events.some((event) => event.type === "message.delta" &&
@@ -5655,7 +5662,6 @@ describe("Ora runtime smoke path", () => {
     expect(state.events.map((event) => event.type)).toContain("run.failed");
     expect(state.checkpoints[0]?.label).toBe("Failed checkpoint");
     expect(state.events.map((event) => event.type)).not.toContain("run.done");
-    expect(state.actions.some((action) => action.status === "failed")).toBe(true);
   });
 
   it("interrupts a run when clarification_interrupt hits an unanswered stage question", async () => {

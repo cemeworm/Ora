@@ -2,11 +2,13 @@ import {
   autoLayoutModeSpec,
   createModeSpecFromPattern,
   ensureModeNodePositions,
+  generateModeExecutionPreview,
   getModeFamilyRule,
   orderedEnabledModeNodes,
   type BuiltInCoordinationPattern,
   type CoordinationPattern,
   type ModeEdgeSpec,
+  type ModeExecutionPreview,
   type ModeNodeTemplate,
 } from "@cemeworm/shared";
 import { MarkerType, type Connection, type Edge, type Node } from "reactflow";
@@ -421,10 +423,16 @@ export function getVisibleModeEdges(mode: OraModeSpec): OraModeSpec["edges"] {
 }
 
 export function getExecutionPreview(mode: OraModeSpec) {
+  const sharedPreview = generateModeExecutionPreview(mode);
   return {
+    /** Backward-compat: ordered enabled nodes (ModeNodeSpec shape). */
     nodes: orderedEnabledModeNodes(mode),
+    /** Backward-compat: visible enabled edges (ModeEdgeSpec shape). */
     edges: getVisibleModeEdges(mode),
+    /** Backward-compat: disabled nodes. */
     disabledNodes: mode.nodes.filter((node) => !node.enabled),
+    /** New: full execution preview from shared driver manifest. */
+    preview: sharedPreview,
   };
 }
 

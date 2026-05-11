@@ -74,6 +74,7 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
     pendingApprovals: [],
     modeSpec: params.modeSpec,
     updatedAt: startedAt,
+    snapshotSource: "live" as const,
   }));
 }
 
@@ -145,6 +146,7 @@ export function createRunningRunSnapshot(params: BaseSnapshotParams & {
     pendingApprovals: [],
     modeSpec: params.modeSpec,
     updatedAt: startedAt,
+    snapshotSource: "live" as const,
   }));
 }
 

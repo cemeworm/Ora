@@ -495,7 +495,7 @@ export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatenc
 export function buildToolLedger(snapshot: OraStateSnapshot): ToolLedgerItem[] {
   const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   const agentLabels = buildAgentLabelMap(snapshot);
-  return snapshot.toolCalls.map((call) => ({
+  const fromToolCalls = snapshot.toolCalls.map((call) => ({
     id: call.id,
     toolId: call.toolId,
     status: call.status,
@@ -513,6 +513,30 @@ export function buildToolLedger(snapshot: OraStateSnapshot): ToolLedgerItem[] {
     repairReason: call.repairReason,
     error: call.error ?? call.result?.error,
   }));
+
+  const existingIds = new Set(fromToolCalls.map((item) => item.id));
+  const fromToolResults = snapshot.toolResults
+    .filter((entry) => !existingIds.has(entry.resultToolCallId))
+    .map((entry) => ({
+      id: entry.resultToolCallId,
+      toolId: entry.toolId,
+      status: entry.status,
+      statusTone: toolStatusTone(entry.status),
+      source: "ledger",
+      agentId: undefined,
+      agentLabel: undefined,
+      nodeId: undefined,
+      nodeLabel: undefined,
+      latency: formatDuration(Math.max(0, entry.updatedAt - entry.createdAt)),
+      argsPreview: entry.argsDigest,
+      resultPreview: previewValue(entry.output ?? entry.error) ?? "暂无结果记录",
+      rawArgs: undefined,
+      rawResult: entry.output ?? entry.error,
+      repairReason: undefined,
+      error: entry.error,
+    }));
+
+  return [...fromToolCalls, ...fromToolResults];
 }
 
 type FindingCheck = (ctx: {
