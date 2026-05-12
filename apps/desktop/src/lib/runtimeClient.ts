@@ -951,6 +951,16 @@ export function createRuntimeClient() {
       const handle = await call<OraRunHandle>("runs.fork", { runId, checkpointId, config, input });
       return call<OraStateSnapshot>("runs.state", { runId: handle.runId });
     },
+    async forkAndResumeRun(
+      runId: string,
+      checkpointId: string,
+      config: Partial<OraRunConfig> = {},
+      input: Partial<OraUserTaskInput> = {},
+      resume: { reason?: string; patch?: Record<string, unknown> } = {},
+    ): Promise<OraStateSnapshot> {
+      const handle = await call<OraRunHandle>("runs.forkAndResume", { runId, checkpointId, config, input, resume });
+      return call<OraStateSnapshot>("runs.state", { runId: handle.runId });
+    },
     async forkFlow(
       flowRunId: string,
       checkpointId: string,
@@ -2064,6 +2074,13 @@ class LocalJsonRpcRuntime {
           modeId: mode.id,
           startedAt: snapshot.events[0]?.createdAt ?? snapshot.updatedAt,
         };
+      }
+      case "runs.forkAndResume": {
+        const handle = this.dispatch("runs.fork", params) as OraRunHandle;
+        return this.dispatch("runs.resumeStreaming", {
+          runId: handle.runId,
+          reason: "Forked from checkpoint and resumed.",
+        }) as OraRunHandle;
       }
       default:
         throw new Error(`Method not found: ${method}`);

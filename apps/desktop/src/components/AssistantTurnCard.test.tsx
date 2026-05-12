@@ -96,6 +96,39 @@ describe("assistant turn display helpers", () => {
     expect(html.indexOf("Team Lead")).toBeLessThan(html.indexOf("正文内容"));
   });
 
+  it("renders progress narration as an inline running hint", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-progress-narration",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      timelineItems: [{
+        id: "run-progress-narration:evt-1:progress-narration",
+        kind: "progress_narration",
+        content: "正在查找相关说明，整理为什么会有这句特殊描述的原因。",
+        source: "progress_narrator",
+        label: "运行中",
+        timestamp: "00:05",
+      }],
+      agentMessages: [],
+      artifacts: [],
+      todos: [],
+      planList: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: false,
+    };
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content="" turn={turn} />,
+    );
+
+    expect(html).toContain("运行中");
+    expect(html).toContain("正在查找相关说明，整理为什么会有这句特殊描述的原因。");
+    expect(html).toContain("bg-muted/30");
+  });
+
   it("does not render the legacy runtime todos panel", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-todos",

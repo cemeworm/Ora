@@ -17,6 +17,14 @@ import {
   SlidersHorizontal,
   Wrench,
 } from "lucide-react";
+import {
+  compareRuns,
+  deriveRunDiagnostics,
+  type DimensionDiff,
+  type RunComparison,
+  type RunComparisonVerdict,
+  type RunDiagnosticSummary,
+} from "@cemeworm/shared";
 import { DockCard } from "./DockCard";
 import { JsonTree } from "./JsonTree";
 import { Button } from "./ui/button";
@@ -39,6 +47,7 @@ import {
   buildCommunicationGraph,
   buildContextWindowSummary,
   buildConversationView,
+  debuggerTabForTrailTab,
   buildEffectiveStrategySummary,
   buildMemoryDetailSummary,
   buildPlanProgressSummary,
@@ -56,7 +65,6 @@ import {
   formatUsd,
   severityLabel,
   snapshotPendingClarifications,
-  tabLabel,
   toolSourceLabel,
   toolStatusLabel,
   type CommunicationEdge,
@@ -67,14 +75,18 @@ import {
   type PolicyDecisionsSummary,
   type SemanticTimelineItem,
   type TodoProgressSummary,
-  type TrailDebuggerTab,
   type TrailFinding,
   type TrailFindingSeverity,
   type ToolLedgerItem,
   type TrailLatencyDiagnostics,
 } from "../lib/trailViewModel";
+import {
+  debuggerTrailTabDescription,
+  debuggerTrailTabLabel,
+  type DebuggerTrailTab,
+} from "../lib/debuggerSurface";
 
-const trailsTabs: TrailDebuggerTab[] = ["overview", "flow", "agents", "tools", "latency", "evidence", "compare"];
+const trailsTabs: DebuggerTrailTab[] = ["diagnosis", "timeline", "compare", "raw"];
 const severityOptions: Array<TrailFindingSeverity | "all"> = ["all", "error", "warning", "info"];
 
 interface TrailsTabsProps {
@@ -93,6 +105,8 @@ interface TrailsTabsProps {
   runInteractionState: DesktopRunInteractionState;
   selectedSession: SessionRun;
   onForkRun: () => void;
+  onForkAndResumeRun: () => void;
+  onReplaySelection: () => void;
   onResumeRun: () => void;
   onCancelRun: () => void;
 }
@@ -113,11 +127,13 @@ export function TrailsTabs({
   runInteractionState,
   selectedSession,
   onForkRun,
+  onForkAndResumeRun,
+  onReplaySelection,
   onResumeRun,
   onCancelRun,
 }: TrailsTabsProps) {
   const runtimeClient = getSharedRuntimeClient();
-  const [selectedTab, setSelectedTab] = useState<TrailDebuggerTab>("overview");
+  const [selectedTab, setSelectedTab] = useState<DebuggerTrailTab>("diagnosis");
   const [trail, setTrail] = useState<OraRunTrail | undefined>(undefined);
   const [trailLoading, setTrailLoading] = useState(false);
   const [trailError, setTrailError] = useState<string | undefined>(undefined);
@@ -164,6 +180,7 @@ export function TrailsTabs({
     () => collectTrailFindings(activeSnapshot, trailError, trace, actions),
     [activeSnapshot, trailError, trace, actions],
   );
+  const diagnosticSummary = useMemo(() => deriveRunDiagnostics(activeSnapshot), [activeSnapshot]);
   const summary = useMemo(
     () => buildTrailDebugSummary(activeSnapshot, trail, actions, findings),
     [activeSnapshot, trail, actions, findings],
@@ -227,7 +244,7 @@ export function TrailsTabs({
   }
 
   function jumpToFinding(finding: TrailFinding) {
-    setSelectedTab(finding.suggestedTab);
+    setSelectedTab(debuggerTabForTrailTab(finding.suggestedTab));
     if (finding.targetType === "event" && finding.targetId) {
       setExpandedTimelineId(finding.targetId);
     }
@@ -258,15 +275,16 @@ export function TrailsTabs({
               className={`shrink-0 rounded px-2.5 py-1.5 text-[11px] font-semibold transition active:scale-95 ${
                 selectedTab === tab ? "bg-bench-900 text-white" : "text-bench-700 hover:bg-white"
               }`}
+              title={debuggerTrailTabDescription(tab)}
             >
-              {tabLabel(tab)}
+              {debuggerTrailTabLabel(tab)}
             </button>
           ))}
         </div>
       </div>
 
       <div className="space-y-3 p-4">
-        {selectedTab === "overview" && (
+        {selectedTab === "diagnosis" && (
           <TrailOverview
             activeSnapshot={activeSnapshot}
             activeMemorySummary={activeMemorySummary}
@@ -275,11 +293,14 @@ export function TrailsTabs({
             checkpoints={checkpoints}
             commandFeedback={commandFeedback}
             contextWindow={contextWindow}
+            diagnosticSummary={diagnosticSummary}
             findings={visibleFindings}
             memoryDetail={memoryDetail}
             onCancelRun={onCancelRun}
             onFindingClick={jumpToFinding}
+            onForkAndResumeRun={onForkAndResumeRun}
             onForkRun={onForkRun}
+            onReplaySelection={onReplaySelection}
             onResumeRun={onResumeRun}
             pendingApprovals={pendingApprovals}
             pendingClarifications={pendingClarifications}
@@ -296,7 +317,8 @@ export function TrailsTabs({
           />
         )}
 
-        {selectedTab === "flow" && (
+        {selectedTab === "timeline" && (
+          <>
           <TrailFlow
             agentFilter={agentFilter}
             allAgentLabels={allAgentLabels}
@@ -316,9 +338,6 @@ export function TrailsTabs({
             selectedBeat={selectedBeat}
             showInternalEvents={showInternalEvents}
           />
-        )}
-
-        {selectedTab === "agents" && (
           <TrailAgents
             communicationEdges={communicationEdges}
             lanes={agentLanes}
@@ -326,20 +345,15 @@ export function TrailsTabs({
             topologyEdges={activeSnapshot.topology.edges}
             topologyNodes={activeSnapshot.topology.nodes}
           />
-        )}
-
-        {selectedTab === "tools" && (
           <TrailTools
             commandFeedback={commandFeedback}
             items={toolLedger}
           />
-        )}
-
-        {selectedTab === "latency" && (
           <TrailLatency diagnostics={latencyDiagnostics} />
+          </>
         )}
 
-        {selectedTab === "evidence" && (
+        {selectedTab === "raw" && (
           <TrailEvidence
             activeSnapshot={activeSnapshot}
             artifacts={artifacts}
@@ -364,7 +378,7 @@ export function TrailsTabs({
           />
         )}
 
-        {(selectedTab === "overview" || selectedTab === "flow") && findings.length > 0 && (
+        {(selectedTab === "diagnosis" || selectedTab === "timeline") && findings.length > 0 && (
           <DockCard title="发现筛选" icon={<ListFilter size={16} />}>
             <div className="flex flex-wrap gap-2">
               {severityOptions.map((severity) => (
@@ -394,6 +408,7 @@ function TrailOverview({
   checkpoints,
   commandFeedback,
   contextWindow,
+  diagnosticSummary,
   findings,
   memoryDetail,
   pendingApprovals,
@@ -410,7 +425,9 @@ function TrailOverview({
   todoProgress,
   onCancelRun,
   onFindingClick,
+  onForkAndResumeRun,
   onForkRun,
+  onReplaySelection,
   onResumeRun,
 }: {
   activeSnapshot: OraStateSnapshot;
@@ -420,6 +437,7 @@ function TrailOverview({
   checkpoints: CheckpointRecord[];
   commandFeedback: string;
   contextWindow?: ContextWindowSummary;
+  diagnosticSummary: RunDiagnosticSummary;
   findings: TrailFinding[];
   memoryDetail?: MemoryDetailSummary;
   pendingApprovals: ReturnType<typeof buildPendingApprovalItems>;
@@ -436,11 +454,15 @@ function TrailOverview({
   todoProgress?: TodoProgressSummary;
   onCancelRun: () => void;
   onFindingClick: (finding: TrailFinding) => void;
+  onForkAndResumeRun: () => void;
   onForkRun: () => void;
+  onReplaySelection: () => void;
   onResumeRun: () => void;
 }) {
   return (
     <>
+      <DiagnosticBanner diagnosticSummary={diagnosticSummary} onResumeRun={onResumeRun} />
+
       <div className="grid gap-3 sm:grid-cols-2">
         <OverviewMetric label="运行" value={runInteractionState.status.replace(/_/g, " ")} detail={activeSnapshot.runId} />
         <OverviewMetric label="阶段" value={summary.currentStage} detail={summary.blockingGate === "无" ? "暂无人工关卡" : summary.blockingGate} />
@@ -653,8 +675,14 @@ function TrailOverview({
       <DockCard title="操作" icon={<Activity size={16} />}>
         <p className="mb-3 text-xs leading-5 text-bench-700">{commandFeedback}</p>
         <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={onForkAndResumeRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
+            从检查点恢复
+          </Button>
           <Button variant="secondary" size="sm" onClick={onForkRun} disabled={busyCommand !== undefined || !selectedCheckpoint}>
-            分叉
+            仅分叉
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onReplaySelection} disabled={busyCommand !== undefined || !selectedCheckpoint}>
+            回放
           </Button>
           <Button variant="secondary" size="sm" onClick={onResumeRun} disabled={busyCommand !== undefined || !runInteractionState.canResume}>
             继续
@@ -666,6 +694,85 @@ function TrailOverview({
       </DockCard>
     </>
   );
+}
+
+function DiagnosticBanner({
+  diagnosticSummary,
+  onResumeRun,
+}: {
+  diagnosticSummary: RunDiagnosticSummary;
+  onResumeRun: () => void;
+}) {
+  const primary = diagnosticSummary.primaryFinding;
+  const tone = primary?.severity === "error"
+    ? "border-rose-200 bg-rose-50 text-rose-950"
+    : primary?.severity === "warning"
+      ? "border-amber-200 bg-amber-50 text-amber-950"
+      : "border-bench-200 bg-bench-50 text-bench-900";
+  return (
+    <div className={`rounded-md border px-3 py-3 ${tone}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase opacity-75">Run diagnostic</p>
+          <h3 className="mt-1 text-sm font-semibold">{primary ? primary.title : "No major diagnostic signals"}</h3>
+          <p className="mt-1 text-xs leading-5 opacity-85">
+            {primary ? primary.summary : "当前 run 没有失败、阻塞关卡、重复工具调用、成本膨胀或模式不匹配信号。"}
+          </p>
+        </div>
+        <div className="shrink-0 text-right text-[11px] leading-5 opacity-80">
+          <p>{diagnosticSummary.signals.length} 个信号</p>
+          <p>{diagnosticSummary.traceRefs.length} 条证据引用</p>
+        </div>
+      </div>
+      {diagnosticSummary.signals.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {diagnosticSummary.signals.slice(0, 4).map((signal) => (
+            <span key={signal.id} className="rounded bg-white/70 px-2 py-1 text-[11px] font-semibold shadow-sm ring-1 ring-inset ring-black/5">
+              {diagnosticSignalLabel(signal.kind)}{signal.count ? ` · ${signal.count}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+      {diagnosticSummary.suggestedActions.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {diagnosticSummary.suggestedActions.slice(0, 3).map((item) => {
+            const disabled = Boolean(item.disabledReason);
+            const canResume = item.kind === "resume" && !disabled;
+            return (
+              <button
+                key={`${item.kind}:${item.label}`}
+                onClick={canResume ? onResumeRun : undefined}
+                disabled={disabled || !canResume}
+                title={item.disabledReason}
+                className={`rounded px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                  canResume
+                    ? "bg-bench-900 text-white hover:bg-bench-800 active:scale-95"
+                    : "bg-white/60 text-bench-700 ring-1 ring-inset ring-black/5"
+                } ${disabled || !canResume ? "cursor-default opacity-75" : ""}`}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function diagnosticSignalLabel(kind: RunDiagnosticSummary["signals"][number]["kind"]): string {
+  switch (kind) {
+    case "provider_or_tool_failure":
+      return "失败";
+    case "repeated_tool_call":
+      return "重复工具";
+    case "cost_or_event_blowup":
+      return "成本/事件膨胀";
+    case "blocking_gate":
+      return "阻塞关卡";
+    case "mode_mismatch":
+      return "模式不匹配";
+  }
 }
 
 function TrailFlow({
@@ -913,6 +1020,7 @@ function TrailCompare({
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [compareRunId, setCompareRunId] = useState<string | undefined>(undefined);
   const [compareTrail, setCompareTrail] = useState<OraRunTrail | undefined>(undefined);
+  const [compareSnapshot, setCompareSnapshot] = useState<OraStateSnapshot | undefined>(undefined);
   const [loadingTrail, setLoadingTrail] = useState(false);
 
   useEffect(() => {
@@ -927,12 +1035,25 @@ function TrailCompare({
   }, [sessionId, runtimeClient]);
 
   useEffect(() => {
-    if (!compareRunId) { setCompareTrail(undefined); return; }
+    if (!compareRunId) { setCompareTrail(undefined); setCompareSnapshot(undefined); return; }
     let cancelled = false;
     setLoadingTrail(true);
-    runtimeClient.getRunTrail(compareRunId)
-      .then((trail) => { if (!cancelled) setCompareTrail(trail); })
-      .catch(() => { if (!cancelled) setCompareTrail(undefined); })
+    Promise.all([
+      runtimeClient.getRunTrail(compareRunId),
+      runtimeClient.getRunState(compareRunId),
+    ])
+      .then(([trail, snapshot]) => {
+        if (!cancelled) {
+          setCompareTrail(trail);
+          setCompareSnapshot(snapshot);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCompareTrail(undefined);
+          setCompareSnapshot(undefined);
+        }
+      })
       .finally(() => { if (!cancelled) setLoadingTrail(false); });
     return () => { cancelled = true; };
   }, [compareRunId, runtimeClient]);
@@ -944,6 +1065,10 @@ function TrailCompare({
   const currentAgentCount = activeSnapshot.activeAgents.length;
   const currentCheckpointCount = activeSnapshot.checkpoints.length;
   const otherRuns = sessionRuns.filter((r) => r.runId !== activeSnapshot.runId);
+  const comparison = useMemo(
+    () => compareSnapshot ? compareRuns(compareSnapshot, activeSnapshot) : undefined,
+    [activeSnapshot, compareSnapshot],
+  );
 
   return (
     <>
@@ -975,28 +1100,30 @@ function TrailCompare({
         </DockCard>
       )}
 
-      {compareTrail && (
+      {compareTrail && comparison && (
         <DockCard title="运行对比" icon={<BarChart3 size={16} />}>
+          <ComparisonVerdictCard comparison={comparison} />
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-bench-200">
                   <th className="py-2 pr-3 text-left font-semibold text-bench-700">指标</th>
+                  <th className="py-2 pr-3 text-left font-semibold text-bench-700">对比运行</th>
                   <th className="py-2 pr-3 text-left font-semibold text-bench-700">当前运行</th>
-                  <th className="py-2 text-left font-semibold text-bench-700">对比运行</th>
+                  <th className="py-2 text-left font-semibold text-bench-700">差异</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-bench-100">
+                <ComparisonRow diff={comparison.dimensions.outcome} base={comparison.dimensions.outcome.base} target={comparison.dimensions.outcome.target} />
+                <ComparisonRow diff={comparison.dimensions.costOrEvents} base={comparison.dimensions.costOrEvents.base} target={comparison.dimensions.costOrEvents.target} />
+                <ComparisonRow diff={comparison.dimensions.toolUsage} base={comparison.dimensions.toolUsage.base} target={comparison.dimensions.toolUsage.target} />
+                <ComparisonRow diff={comparison.dimensions.gateEfficiency} base={comparison.dimensions.gateEfficiency.base} target={comparison.dimensions.gateEfficiency.target} />
+                <ComparisonRow diff={comparison.dimensions.recovery} base={comparison.dimensions.recovery.base} target={comparison.dimensions.recovery.target} />
                 <CompareRow label="运行时长" current={formatDurationMs(currentRuntimeMs)} other={formatDurationMs(compareTrail.liveMetrics.runtimeMs)} />
-                <CompareRow label="事件数" current={String(currentEventCount)} other={String(compareTrail.liveMetrics.eventCount)} />
                 <CompareRow label="消息数" current={String(currentMessageCount)} other={String(compareTrail.liveMetrics.messageCount)} />
-                <CompareRow label="工具调用" current={String(currentToolCount)} other={String(compareTrail.observations.filter((o) => o.type === "tool").length)} />
                 <CompareRow label="活跃智能体" current={String(currentAgentCount)} other={String(compareTrail.liveMetrics.activeAgentCount)} />
                 <CompareRow label="检查点数" current={String(currentCheckpointCount)} other={String(compareTrail.liveMetrics.checkpointCount)} />
-                <CompareRow label="拓扑变更" current={String(activeSnapshot.events.filter((e) => e.type === "topology.updated").length)} other={String(compareTrail.liveMetrics.topologyChangeCount)} />
                 <CompareRow label="成本" current="—" other={compareTrail.liveMetrics.costAvailable ? formatUsd(compareTrail.liveMetrics.estimatedCostUsd) : "不可用"} />
-                <CompareRow label="告警" current="—" other={String(compareTrail.liveMetrics.warningCount)} />
-                <CompareRow label="错误" current="—" other={String(compareTrail.liveMetrics.errorCount)} />
               </tbody>
             </table>
           </div>
@@ -1064,14 +1191,99 @@ function formatDurationMs(ms: number) {
   return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 }
 
+function ComparisonVerdictCard({ comparison }: { comparison: RunComparison }) {
+  return (
+    <div className={`mb-3 rounded-md px-3 py-2 ring-1 ring-inset ${verdictClassName(comparison.verdict)}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold">{verdictLabel(comparison.verdict)}</span>
+        <span className="font-mono text-[11px] opacity-75">{comparison.baseRunId} → {comparison.targetRunId}</span>
+      </div>
+      <p className="mt-1 text-xs leading-5 opacity-85">{comparison.verdictReason}</p>
+    </div>
+  );
+}
+
+function ComparisonRow<T extends string | number>({ diff, base, target }: {
+  diff: DimensionDiff<T>;
+  base: T;
+  target: T;
+}) {
+  return (
+    <tr>
+      <td className="py-2 pr-3 text-bench-700">
+        <div className="flex items-center gap-2">
+          <span>{directionGlyph(diff.direction)}</span>
+          <span>{diff.label}</span>
+        </div>
+        {diff.detail && <p className="mt-0.5 text-[11px] text-bench-500">{diff.detail}</p>}
+      </td>
+      <td className="py-2 pr-3 font-semibold text-bench-900">{String(base)}</td>
+      <td className="py-2 pr-3 font-semibold text-bench-900">{String(target)}</td>
+      <td className={`py-2 font-semibold ${directionTextClassName(diff.direction)}`}>{diff.delta}</td>
+    </tr>
+  );
+}
+
 function CompareRow({ label, current, other }: { label: string; current: string; other: string }) {
   return (
     <tr>
       <td className="py-2 pr-3 text-bench-700">{label}</td>
+      <td className="py-2 pr-3 font-semibold text-bench-900">{other}</td>
       <td className="py-2 pr-3 font-semibold text-bench-900">{current}</td>
-      <td className="py-2 font-semibold text-bench-900">{other}</td>
+      <td className="py-2 font-semibold text-bench-500">—</td>
     </tr>
   );
+}
+
+function verdictLabel(verdict: RunComparisonVerdict): string {
+  switch (verdict) {
+    case "better":
+      return "Better";
+    case "worse":
+      return "Worse";
+    case "mixed":
+      return "Mixed";
+    case "inconclusive":
+      return "Inconclusive";
+  }
+}
+
+function verdictClassName(verdict: RunComparisonVerdict): string {
+  switch (verdict) {
+    case "better":
+      return "bg-emerald-50 text-emerald-950 ring-emerald-200";
+    case "worse":
+      return "bg-rose-50 text-rose-950 ring-rose-200";
+    case "mixed":
+      return "bg-amber-50 text-amber-950 ring-amber-200";
+    case "inconclusive":
+      return "bg-bench-50 text-bench-900 ring-bench-200";
+  }
+}
+
+function directionGlyph(direction: DimensionDiff<unknown>["direction"]): string {
+  switch (direction) {
+    case "improved":
+      return "✓";
+    case "degraded":
+      return "!";
+    case "unchanged":
+      return "·";
+    case "not_applicable":
+      return "—";
+  }
+}
+
+function directionTextClassName(direction: DimensionDiff<unknown>["direction"]): string {
+  switch (direction) {
+    case "improved":
+      return "text-emerald-700";
+    case "degraded":
+      return "text-rose-700";
+    case "unchanged":
+    case "not_applicable":
+      return "text-bench-500";
+  }
 }
 
 function TrailAgents({

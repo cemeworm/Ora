@@ -21,7 +21,10 @@ import { OnboardingView } from "./components/onboarding/OnboardingView";
 import { SettingsView } from "./components/SettingsView";
 import { TrailsDrawer } from "./components/TrailsDrawer";
 import { useRunActions } from "./lib/useRunActions";
-import { deriveRunInteractionState, type DesktopRunInteractionState } from "./lib/runInteractionState";
+import {
+  deriveRunInteractionState,
+  type DesktopRunInteractionState,
+} from "./lib/runInteractionState";
 import {
   readOnboardingStatus,
   writeOnboardingStatus,
@@ -257,8 +260,7 @@ function WorkbenchInner() {
   }, [state.projects]);
 
   useEffect(() => {
-    activeSessionIdRef.current =
-      state.activeSessionDetail?.session.sessionId;
+    activeSessionIdRef.current = state.activeSessionDetail?.session.sessionId;
   }, [state.activeSessionDetail?.session.sessionId]);
 
   const streamBatchRef = useRef<BatchedStream[]>([]);
@@ -626,7 +628,9 @@ function WorkbenchInner() {
     });
   }, [getActiveSnapshot(state.runLifecycle)]);
 
-  function limitTurnSnapshots(current: Record<string, OraStateSnapshot>): Record<string, OraStateSnapshot> {
+  function limitTurnSnapshots(
+    current: Record<string, OraStateSnapshot>,
+  ): Record<string, OraStateSnapshot> {
     const keys = Object.keys(current);
     if (keys.length <= MAX_TURN_SNAPSHOTS) return current;
     const evict = keys.slice(0, keys.length - MAX_TURN_SNAPSHOTS);
@@ -652,7 +656,9 @@ function WorkbenchInner() {
 
     const cached = turnSnapshots[state.selectedTurnRunId];
     if (cached) {
-      if (getActiveSnapshot(state.runLifecycle)?.runId !== state.selectedTurnRunId) {
+      if (
+        getActiveSnapshot(state.runLifecycle)?.runId !== state.selectedTurnRunId
+      ) {
         dispatch({
           type: "SELECT_TURN",
           runId: state.selectedTurnRunId,
@@ -665,7 +671,9 @@ function WorkbenchInner() {
     let cancelled = false;
     void (async () => {
       try {
-        const snapshot = await runtimeClient.getRunState(state.selectedTurnRunId!);
+        const snapshot = await runtimeClient.getRunState(
+          state.selectedTurnRunId!,
+        );
         if (cancelled) return;
         setTurnSnapshots((current) => {
           const existing = current[snapshot.runId];
@@ -713,7 +721,12 @@ function WorkbenchInner() {
         turnSnapshots,
         selectedSessionId: state.selectedSessionId,
       }),
-    [state.activeSessionDetail, turnSnapshots, getActiveSnapshot(state.runLifecycle), state.selectedSessionId],
+    [
+      state.activeSessionDetail,
+      turnSnapshots,
+      getActiveSnapshot(state.runLifecycle),
+      state.selectedSessionId,
+    ],
   );
 
   const runInteractionState: DesktopRunInteractionState = useMemo(() => {
@@ -737,7 +750,10 @@ function WorkbenchInner() {
     state.selectedTurnRunId,
   ]);
 
-  const chatMessagesCacheRef = useRef<{ key: string; result: ReturnType<typeof adaptChatMessages> } | null>(null);
+  const chatMessagesCacheRef = useRef<{
+    key: string;
+    result: ReturnType<typeof adaptChatMessages>;
+  } | null>(null);
 
   const chatMessages = useMemo(() => {
     const transcript = state.activeSessionDetail?.transcript ?? [];
@@ -748,12 +764,10 @@ function WorkbenchInner() {
     });
 
     const cache = chatMessagesCacheRef.current;
-    const adapted = cache && cache.key === cacheKey
-      ? cache.result
-      : adaptChatMessages(
-          transcript,
-          activeSessionTurnSnapshots,
-        );
+    const adapted =
+      cache && cache.key === cacheKey
+        ? cache.result
+        : adaptChatMessages(transcript, activeSessionTurnSnapshots);
     if (!cache || cache.key !== cacheKey) {
       chatMessagesCacheRef.current = { key: cacheKey, result: adapted };
     }
@@ -821,15 +835,15 @@ function WorkbenchInner() {
     } catch (error) {
       dispatch({
         type: "SET_COMMAND_FEEDBACK",
-        feedback:
-          error instanceof Error
-            ? error.message
-            : "Copy path failed.",
+        feedback: error instanceof Error ? error.message : "Copy path failed.",
       });
     }
   }
 
-  function handleAddProjectFileToChat(projectId: string, file: OraProjectFileEntry) {
+  function handleAddProjectFileToChat(
+    projectId: string,
+    file: OraProjectFileEntry,
+  ) {
     const sessionId = state.selectedSessionId;
     if (!sessionId) {
       dispatch({
@@ -876,8 +890,7 @@ function WorkbenchInner() {
       onOpenChange={(open) => dispatch({ type: "SET_SETTINGS_OPEN", open })}
     />
   ) : null;
-  const shouldShowOnboarding =
-    !onboardingStatus && onboardingRequired === true;
+  const shouldShowOnboarding = !onboardingStatus && onboardingRequired === true;
 
   if (shouldShowOnboarding) {
     return (
@@ -1024,19 +1037,29 @@ function WorkbenchInner() {
             }
             onClearSelectedCustomAgent={actions.clearSelectedCustomAgent}
             onForkRun={actions.forkRun}
-            onCreateAndRunBranchGroup={(params) => void actions.createAndRunBranchGroup(params)}
-            onAdoptBranchGroup={(branchGroupId: string, runId: string) => void actions.adoptBranchGroup(branchGroupId, runId)}
+            onCreateAndRunBranchGroup={(params) =>
+              void actions.createAndRunBranchGroup(params)
+            }
+            onAdoptBranchGroup={(branchGroupId: string, runId: string) =>
+              void actions.adoptBranchGroup(branchGroupId, runId)
+            }
             onInterruptRun={actions.interruptRun}
             onReplaySelection={actions.replaySelection}
             onResumeRun={actions.resumeRun}
-            onAcceptPlanDecisionAndStartImplementation={() => void actions.acceptPlanDecisionAndStartImplementation()}
-            onResolvePlanDecision={(status) => void actions.resolvePlanDecision(status)}
+            onAcceptPlanDecisionAndStartImplementation={() =>
+              void actions.acceptPlanDecisionAndStartImplementation()
+            }
+            onResolvePlanDecision={(status) =>
+              void actions.resolvePlanDecision(status)
+            }
             onCancelRun={actions.cancelRun}
             onOpenArtifact={(artifactId) =>
               dispatch({ type: "OPEN_ARTIFACT_PANEL", artifactId })
             }
             onSubmitFeedback={handleSubmitFeedback}
-            onSubmitAllClarifications={(answers) => void actions.submitAllClarifications(answers)}
+            onSubmitAllClarifications={(answers) =>
+              void actions.submitAllClarifications(answers)
+            }
             onSelectMode={(modeId) => dispatch({ type: "SET_MODE", modeId })}
             onSelectModeSelection={(selection) =>
               dispatch({ type: "SET_MODE_SELECTION", selection })
@@ -1101,6 +1124,8 @@ function WorkbenchInner() {
                   runInteractionState={runInteractionState}
                   selectedSession={selectedSession}
                   onForkRun={actions.forkRun}
+                  onForkAndResumeRun={actions.forkAndResumeRun}
+                  onReplaySelection={actions.replaySelection}
                   onResumeRun={actions.resumeRun}
                   onCancelRun={actions.cancelRun}
                 />
@@ -1162,7 +1187,9 @@ function DebugTimingOverlay() {
       clickCountRef.current = 0;
       setVisible(true);
     } else {
-      clickTimerRef.current = setTimeout(() => { clickCountRef.current = 0; }, 600);
+      clickTimerRef.current = setTimeout(() => {
+        clickCountRef.current = 0;
+      }, 600);
     }
   };
 
@@ -1181,7 +1208,10 @@ function DebugTimingOverlay() {
         <span>⏱ 性能计时</span>
         <div className="flex gap-1">
           <button
-            onClick={() => { clearRecords(); setRecords([]); }}
+            onClick={() => {
+              clearRecords();
+              setRecords([]);
+            }}
             className="rounded px-1 text-gray-500 hover:bg-gray-700 hover:text-gray-300"
           >
             清除
@@ -1195,7 +1225,9 @@ function DebugTimingOverlay() {
         </div>
       </div>
       {records.length === 0 ? (
-        <div className="py-2 text-center text-gray-600">点击 session 查看耗时</div>
+        <div className="py-2 text-center text-gray-600">
+          点击 session 查看耗时
+        </div>
       ) : (
         records.map((r, i) => (
           <div
@@ -1203,10 +1235,16 @@ function DebugTimingOverlay() {
             className="flex justify-between border-b border-gray-800 py-0.5"
           >
             <span className="text-gray-400">{r.label}</span>
-            <span className={cn(
-              "tabular-nums",
-              r.elapsed > 100 ? "text-red-400 font-semibold" : r.elapsed > 30 ? "text-yellow-400" : "text-green-400",
-            )}>
+            <span
+              className={cn(
+                "tabular-nums",
+                r.elapsed > 100
+                  ? "text-red-400 font-semibold"
+                  : r.elapsed > 30
+                    ? "text-yellow-400"
+                    : "text-green-400",
+              )}
+            >
               {r.elapsed.toFixed(1)}ms
             </span>
           </div>

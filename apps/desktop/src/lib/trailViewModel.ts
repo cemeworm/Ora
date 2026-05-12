@@ -6,6 +6,7 @@
  */
 import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
+import type { DebuggerTrailTab } from "./debuggerSurface";
 
 export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
 export type TrailFindingSeverity = "error" | "warning" | "info";
@@ -69,6 +70,22 @@ export interface TrailDebugSummary {
     messages: string;
     costAvailable?: boolean;
   };
+}
+
+export function debuggerTabForTrailTab(tab: TrailDebuggerTab): DebuggerTrailTab {
+  switch (tab) {
+    case "overview":
+      return "diagnosis";
+    case "flow":
+    case "agents":
+    case "tools":
+    case "latency":
+      return "timeline";
+    case "compare":
+      return "compare";
+    case "evidence":
+      return "raw";
+  }
 }
 
 export interface SemanticTimelineItem {

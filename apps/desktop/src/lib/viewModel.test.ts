@@ -3783,9 +3783,18 @@ describe("desktop session view model", () => {
     );
     const assistant = messages.find((message) => message.role === "assistant");
 
-    expect(assistant?.content).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
+    expect(assistant?.content).toBe("");
     expect(assistant?.turn?.liveProgressText).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
     expect(assistant?.turn?.processSteps).toEqual([]);
+    expect(assistant?.turn?.timelineItems).toEqual([
+      expect.objectContaining({
+        kind: "progress_narration",
+        source: "progress_narrator",
+        label: "运行中",
+        content: "研究已完成，审核子代理正在运行，下一步将进行综合。",
+      }),
+    ]);
+    expect(assistant?.turn?.timelineItems?.some((item) => item.kind === "assistant_text")).toBe(false);
   });
 
   it("keeps progress-only status distinct and prefers streamed assistant answer", () => {
@@ -3914,8 +3923,16 @@ describe("desktop session view model", () => {
       } as unknown as OraStateSnapshot,
     }).find((message) => message.role === "assistant");
 
-    expect(statusMessage?.content).toBe("已选择单智能体模式，我准备好了");
+    expect(statusMessage?.content).toBe("");
     expect(statusMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
+    expect(statusMessage?.turn?.timelineItems).toEqual([
+      expect.objectContaining({
+        kind: "progress_narration",
+        source: "runtime_status",
+        label: "运行中",
+        content: "已选择单智能体模式，我准备好了",
+      }),
+    ]);
     expect(deltaMessage?.content).toBe("我会先读取这些 skill。");
     expect(deltaMessage?.content).not.toBe(deltaMessage?.turn?.liveProgressText);
     expect(deltaMessage?.content).not.toContain("已选择单智能体模式");
@@ -4215,6 +4232,103 @@ describe("desktop session view model", () => {
     expect(firstTimelineText).toEqual(["Hi"]);
     expect(secondTimelineText).toEqual(["Hi there"]);
     expect(second?.content).toBe("Hi there");
+  });
+
+  it("upgrades snapshot partial text instead of appending duplicated live same-message text", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-timeline-prefix-upgrade";
+    const sessionId = "session-live-timeline-prefix-upgrade";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "介绍 Ora", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-prefix-upgrade-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        agentId: "solo",
+        nodeId: "solo",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", messageId, content: "这是我", delta: "这是我", streaming: true, phase: "stream" },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 100,
+    } as unknown as OraStateSnapshot;
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "介绍 Ora",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${messageId}`]: {
+          runId,
+          messageId,
+          sessionId,
+          role: "assistant",
+          content: "这是我根据之前与用户的互动经验整理出的说明。",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          updatedAt: createdAt + 200,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(assistant?.content).toBe("这是我根据之前与用户的互动经验整理出的说明。");
+    expect(timelineText).toEqual(["这是我根据之前与用户的互动经验整理出的说明。"]);
   });
 
   it("does not mutate cached base messages while overlaying live message delta text", () => {
@@ -5048,7 +5162,12 @@ describe("desktop session view model", () => {
       ?.flatMap((item) => "content" in item && item.kind === "assistant_text" ? [item.content] : [])
       .join("\n") ?? "";
 
-    expect(assistant?.content).toBe("正在检查决策 UI。");
+    expect(assistant?.content).toBe("");
+    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "progress_narration",
+      source: "runtime_status",
+      content: "正在检查决策 UI。",
+    }));
     expect(assistant?.content).not.toContain("tool_plan_mode_reminder");
     expect(assistant?.content).not.toContain("file_grep_policy");
     expect(assistant?.content).not.toContain("\"tool\":\"file.grep\"");
@@ -5208,13 +5327,16 @@ describe("desktop session view model", () => {
     const timeline = assistant?.turn?.timelineItems ?? [];
 
     expect(timeline.map((item) => item.kind)).toEqual([
-      "assistant_text",
+      "progress_narration",
       "status_group",
-      "assistant_text",
+      "progress_narration",
       "plan_update",
       "final_text",
     ]);
-    expect(timeline[0]).toMatchObject({ content: "我会先追踪本地运行记录，确认问题链路。" });
+    expect(timeline[0]).toMatchObject({
+      content: "我会先追踪本地运行记录，确认问题链路。",
+      source: "progress_narrator",
+    });
     expect(timeline[1]).toMatchObject({
       summary: "已探索 1 个文件，1 个列表，已运行 1 条命令",
       steps: expect.arrayContaining([
@@ -5342,7 +5464,7 @@ describe("desktop session view model", () => {
     const assistant = messages.find((message) => message.role === "assistant");
     const timeline = assistant?.turn?.timelineItems ?? [];
 
-    expect(timeline.map((item) => item.kind)).toEqual(["assistant_text", "assistant_text"]);
+    expect(timeline.map((item) => item.kind)).toEqual(["progress_narration", "progress_narration", "assistant_text"]);
     expect(timeline.filter((item) => "content" in item && item.content === introOne)).toHaveLength(1);
     expect(timeline.filter((item) => "content" in item && item.content === introTwo)).toHaveLength(1);
     expect(assistant?.content).toBe(planContent);
@@ -5887,8 +6009,13 @@ describe("desktop session view model", () => {
     const assistant = messages.find((message) => message.role === "assistant");
     const processSteps = assistant?.turn?.processSteps ?? [];
 
-    expect(assistant?.content).toBe("团队已读取项目文档，正在规划后续调研任务。");
+    expect(assistant?.content).toBe("");
     expect(assistant?.turn?.liveProgressText).toBe("团队已读取项目文档，正在规划后续调研任务。");
+    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
+      kind: "progress_narration",
+      source: "progress_narrator",
+      content: "团队已读取项目文档，正在规划后续调研任务。",
+    }));
     expect(processSteps.map((step) => step.status)).toEqual([
       "complete",
     ]);

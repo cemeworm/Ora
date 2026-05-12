@@ -11,6 +11,14 @@ import { timeStart, timeEnd } from "./debugTiming";
 
 const PROJECT_CHAT_SAFE_TOOL_IDS = ["file.read", "file.list", "file.glob", "file.grep"];
 
+const PROJECT_REQUIRED_TOOL_IDS = [
+  ...PROJECT_CHAT_SAFE_TOOL_IDS,
+  "file.write",
+  "file.patch",
+  "file.delete",
+  "shell.execute",
+];
+
 const FILE_MODIFICATION_TOOL_IDS = [
   "file.write",
   "file.patch",
@@ -51,10 +59,10 @@ export function acceptedPlanImplementationSubmission(): {
   };
 }
 
-function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
+export function toolIdsForRun(modeToolIds: readonly string[] | undefined, projectId: string | undefined): string[] {
   const toolIds = [...new Set(modeToolIds ?? [])];
   if (!projectId) {
-    return toolIds;
+    return toolIds.filter((id) => !(PROJECT_REQUIRED_TOOL_IDS as readonly string[]).includes(id));
   }
   return [...new Set([...toolIds, ...PROJECT_CHAT_SAFE_TOOL_IDS])];
 }
@@ -953,26 +961,47 @@ export function useRunActions() {
   }
 
   async function forkRun() {
+    await forkRunInternal({ resumeAfterFork: false });
+  }
+
+  async function forkAndResumeRun() {
+    await forkRunInternal({ resumeAfterFork: true });
+  }
+
+  async function forkRunInternal({ resumeAfterFork }: { resumeAfterFork: boolean }) {
     if (!state.selectedTurnRunId || !selectedCheckpoint) {
       dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: "Select a checkpoint before forking." });
       return;
     }
-    dispatch({ type: "SET_BUSY_COMMAND", command: "Fork" });
+    dispatch({ type: "SET_BUSY_COMMAND", command: resumeAfterFork ? "Fork + resume" : "Fork" });
     try {
+      const forkConfig = {
+        pattern: selectedRunPattern,
+        modeId: selectedRunModeId,
+        modeSelection: selectedRunModeSelection,
+        metadata: { source: "desktop-workbench" },
+      };
+      const forkInput = { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } };
+      if (resumeAfterFork) {
+        const resumedSnapshot = await runtimeClient.forkAndResumeRun(
+          state.selectedTurnRunId,
+          selectedCheckpoint.id,
+          forkConfig,
+          forkInput,
+          { reason: USER_RESUMED_MESSAGE },
+        );
+        await refreshCurrentSession(resumedSnapshot, `Fork resumed from ${selectedCheckpoint.label}.`);
+        return;
+      }
       const snapshot = await runtimeClient.forkRun(
         state.selectedTurnRunId,
         selectedCheckpoint.id,
-        {
-          pattern: selectedRunPattern,
-          modeId: selectedRunModeId,
-          modeSelection: selectedRunModeSelection,
-          metadata: { source: "desktop-workbench" },
-        },
-        { context: { selectedEventId: selectedBeat?.id, selectedEventSeq: selectedBeat?.eventSeq } },
+        forkConfig,
+        forkInput,
       );
       await refreshCurrentSession(snapshot, `Fork completed against ${snapshot.runId}.`);
     } catch (error) {
-      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : "Fork failed." });
+      dispatch({ type: "SET_COMMAND_FEEDBACK", feedback: error instanceof Error ? error.message : resumeAfterFork ? "Fork + resume failed." : "Fork failed." });
       dispatch({ type: "SET_BUSY_COMMAND", command: undefined });
     }
   }
@@ -1206,6 +1235,7 @@ export function useRunActions() {
       resolvePlanDecision,
       acceptPlanDecisionAndStartImplementation,
       forkRun,
+      forkAndResumeRun,
       createAndRunBranchGroup,
       adoptBranchGroup,
       dismissBranchGroup,

@@ -8,6 +8,7 @@ import {
   shouldEnableClarificationPreflight,
   shouldEnableProgressNarration,
   stableViewModelCacheKey,
+  toolIdsForRun,
 } from "./useRunActions";
 import type { OraSessionSummary } from "./runtimeClient";
 
@@ -29,6 +30,41 @@ describe("desktop run actions", () => {
       prompt: "请按照上述计划开始执行",
       taskIntent: "implement",
     });
+  });
+
+  it("removes project-required workspace tools when no project is selected", () => {
+    expect(toolIdsForRun([
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+      "file.write",
+      "file.patch",
+      "file.delete",
+      "shell.execute",
+      "web.fetch",
+      "web.search",
+      "document.extract",
+      "skills.list",
+      "user.clarify",
+    ], undefined)).toEqual([
+      "web.fetch",
+      "web.search",
+      "document.extract",
+      "skills.list",
+      "user.clarify",
+    ]);
+  });
+
+  it("keeps project workspace tools and adds safe chat file tools when a project is selected", () => {
+    expect(toolIdsForRun(["web.fetch", "file.write"], "project-1")).toEqual([
+      "web.fetch",
+      "file.write",
+      "file.read",
+      "file.list",
+      "file.glob",
+      "file.grep",
+    ]);
   });
 
   it("invalidates stable view model cache when the composer mode changes", () => {

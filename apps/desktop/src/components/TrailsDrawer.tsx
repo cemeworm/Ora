@@ -1,4 +1,4 @@
-import { GitBranch, X } from "lucide-react";
+import { Crosshair, X } from "lucide-react";
 import { TrailsTabs } from "./TrailsTabs";
 import { Button } from "./ui/button";
 import type {
@@ -33,6 +33,8 @@ interface TrailsDrawerProps {
   selectedNode?: TopologyNode;
   selectedSession: SessionRun;
   onForkRun: () => void;
+  onForkAndResumeRun: () => void;
+  onReplaySelection: () => void;
   onResumeRun: () => void;
   onCancelRun: () => void;
 }
@@ -55,23 +57,43 @@ export function TrailsDrawer({
   runInteractionState,
   selectedSession,
   onForkRun,
+  onForkAndResumeRun,
+  onReplaySelection,
   onResumeRun,
   onCancelRun,
 }: TrailsDrawerProps) {
-  const nodeLabel = selectedNode?.label ?? activeSnapshot?.pattern.replace(/_/g, " ") ?? "No active run selected";
+  const nodeLabel =
+    selectedNode?.label ??
+    activeSnapshot?.pattern.replace(/_/g, " ") ??
+    "No active run selected";
   const subtitle = nodeLabel.trim().toLowerCase() === "run" ? "" : nodeLabel;
 
   return (
-    <aside className={cn("flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent", !open && "hidden")} aria-hidden={!open}>
+    <aside
+      className={cn(
+        "flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent",
+        !open && "hidden",
+      )}
+      aria-hidden={!open}
+    >
       <header className="flex h-12 shrink-0 items-center justify-between bg-card/74 px-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-2">
-          <GitBranch size={16} className="text-muted-foreground" />
+          <Crosshair size={16} className="text-muted-foreground" />
           <div className="min-w-0">
             <h2 className="truncate text-sm font-medium">Trails</h2>
-            {subtitle ? <p className="truncate text-[11px] text-muted-foreground">{subtitle}</p> : null}
+            {subtitle ? (
+              <p className="truncate text-[11px] text-muted-foreground">
+                {subtitle}
+              </p>
+            ) : null}
           </div>
         </div>
-        <Button onClick={onClose} variant="ghost" size="icon-sm" title="Close trails">
+        <Button
+          onClick={onClose}
+          variant="ghost"
+          size="icon-sm"
+          title="Close trails"
+        >
           <X size={16} />
         </Button>
       </header>
@@ -94,12 +116,16 @@ export function TrailsDrawer({
             runInteractionState={runInteractionState}
             selectedSession={selectedSession}
             onForkRun={onForkRun}
+            onForkAndResumeRun={onForkAndResumeRun}
+            onReplaySelection={onReplaySelection}
             onResumeRun={onResumeRun}
             onCancelRun={onCancelRun}
           />
         ) : (
           <div className="rounded-2xl border border-border bg-card/70 p-4 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">Trails will appear here.</p>
+            <p className="font-medium text-foreground">
+              Run diagnostics will appear here.
+            </p>
             <p className="mt-2 leading-6">{commandFeedback}</p>
           </div>
         )}

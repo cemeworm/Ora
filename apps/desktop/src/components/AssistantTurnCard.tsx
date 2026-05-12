@@ -543,6 +543,8 @@ function TurnTimelineRow({
       );
     case "agent_message":
       return <AgentMessageTimelineItem item={item} />;
+    case "progress_narration":
+      return <ProgressNarrationTimelineItem item={item} />;
     case "status_group":
       return <TimelineStatusGroup item={item} showProgressLoading={showProgressLoading} />;
     case "artifact": {
@@ -579,6 +581,24 @@ function AgentMessageTimelineItem({
       <MessageContent className="w-full">
         <MarkdownContent content={item.content} />
       </MessageContent>
+    </div>
+  );
+}
+
+function ProgressNarrationTimelineItem({
+  item,
+}: {
+  item: Extract<TurnTimelineItem, { kind: "progress_narration" }>;
+}) {
+  return (
+    <div className="flex min-w-0 items-start gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+      <span className="mt-2 inline-flex h-2 w-2 shrink-0 items-center justify-center rounded-full text-bench-700">
+        <Circle size={7} fill="currentColor" strokeWidth={0} />
+      </span>
+      <div className="min-w-0 flex-1 leading-6">
+        <span className="mr-1 font-medium text-muted-foreground">{item.label ?? "运行中"} ·</span>
+        <span className="break-words">{item.content}</span>
+      </div>
     </div>
   );
 }

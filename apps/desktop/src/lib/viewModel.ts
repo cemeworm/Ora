@@ -1528,7 +1528,7 @@ export function assistantTextFromSnapshot(
     ) {
       return undefined;
     }
-    return progressTextFromSnapshot(snapshot);
+    return undefined;
   }
   if (snapshot.status === "interrupted") {
     return undefined;
@@ -1613,7 +1613,32 @@ function overlayLiveTimelineItems(
 
   for (const entry of liveEntries) {
     const content = timelineTextExcludingProposedPlan(entry.content);
-    if (!content || isInternalAssistantText(content) || isTimelineTextAlreadyRepresented(content, nextItems)) {
+    if (!content || isInternalAssistantText(content)) {
+      continue;
+    }
+    const snapshotItemIndex = findSnapshotAssistantTimelineItemIndexForLiveEntry(
+      snapshot,
+      projection.events,
+      nextItems,
+      entry,
+    );
+    if (snapshotItemIndex >= 0) {
+      const existing = nextItems[snapshotItemIndex];
+      if (existing?.kind !== "assistant_text" || existing.content === content) {
+        continue;
+      }
+      if (nextItems === existingItems) {
+        nextItems = [...existingItems];
+      }
+      nextItems[snapshotItemIndex] = {
+        ...existing,
+        content,
+        agentId: existing.agentId ?? entry.agentId,
+        agentLabel: existing.agentLabel ?? agentLabelForTimeline(projection.agentLabels, entry.agentId),
+      };
+      continue;
+    }
+    if (isTimelineTextAlreadyRepresented(content, nextItems)) {
       continue;
     }
     if (nextItems === existingItems) {
@@ -1630,6 +1655,43 @@ function overlayLiveTimelineItems(
   }
 
   return nextItems === existingItems ? turn : { ...turn, timelineItems: nextItems };
+}
+
+function findSnapshotAssistantTimelineItemIndexForLiveEntry(
+  snapshot: OraStateSnapshot,
+  events: readonly OraEventEnvelope[],
+  items: readonly TurnTimelineItem[],
+  entry: LiveMessageDeltaPreview,
+): number {
+  const firstSnapshotEventSeq = firstSnapshotAssistantEventSeqForLiveEntry(snapshot, events, entry);
+  if (firstSnapshotEventSeq === undefined) {
+    return -1;
+  }
+  const expectedItemId = assistantTimelineItemId(snapshot.runId, firstSnapshotEventSeq);
+  return items.findIndex((item) =>
+    item.kind === "assistant_text" &&
+    (item.eventSeq === firstSnapshotEventSeq || item.id === expectedItemId)
+  );
+}
+
+function firstSnapshotAssistantEventSeqForLiveEntry(
+  snapshot: OraStateSnapshot,
+  events: readonly OraEventEnvelope[],
+  entry: LiveMessageDeltaPreview,
+): number | undefined {
+  for (const event of events) {
+    if (!isPublicAssistantDelta(snapshot, event)) {
+      continue;
+    }
+    if (assistantDeltaMessageKey(event) === entry.messageId) {
+      return event.seq;
+    }
+  }
+  return undefined;
+}
+
+function assistantTimelineItemId(runId: string, eventSeq: number): string {
+  return `${runId}:timeline:assistant:${eventSeq}`;
 }
 
 function mergeAssistantTextParts(parts: string[], event: OraEventEnvelope & { payload: Record<string, unknown> }): void {
@@ -2391,7 +2453,7 @@ function deriveTimelineItems(
       rawTime: pendingTextStartedAt,
       eventSeq: pendingTextSeq,
       item: {
-        id: `${snapshot.runId}:timeline:assistant:${pendingTextSeq}`,
+        id: assistantTimelineItemId(snapshot.runId, pendingTextSeq),
         kind: "assistant_text",
         content,
         timestamp: formatElapsed(baseTime, pendingTextStartedAt),
@@ -2476,9 +2538,11 @@ function deriveTimelineItems(
           rawTime: event.createdAt,
           eventSeq: event.seq,
           item: {
-            id: `${event.id}:text`,
-            kind: "assistant_text",
+            id: `${event.id}:progress-narration`,
+            kind: "progress_narration",
             content: summary,
+            source: chatProgressSource(event.payload),
+            label: "运行中",
             timestamp: formatElapsed(baseTime, event.createdAt),
             agentId: eventAgentId,
             agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
@@ -2693,7 +2757,7 @@ function isTimelineTextAlreadyRepresented(text: string, items: TurnTimelineItem[
     return true;
   }
   const contentItems = items
-    .flatMap((item) => "content" in item ? [item.content] : [])
+    .flatMap((item) => item.kind !== "progress_narration" && "content" in item ? [item.content] : [])
     .map(normalizeTimelineText)
     .filter(Boolean);
   if (contentItems.some((content) => content === normalizedText)) {
@@ -2945,6 +3009,10 @@ function isInternalProgressPayload(payload: Record<string, unknown>): boolean {
 
 function isVisibleChatProgressSource(source: unknown): boolean {
   return source === "progress_narrator" || source === "runtime_status";
+}
+
+function chatProgressSource(payload: Record<string, unknown>): "progress_narrator" | "runtime_status" {
+  return payload.source === "runtime_status" ? "runtime_status" : "progress_narrator";
 }
 
 function isPlaceholderProgressText(text: string): boolean {
@@ -3642,7 +3710,7 @@ function placeholderAssistantCopy(snapshot?: OraStateSnapshot): string {
   switch (snapshot.status) {
     case "running":
     case "queued":
-      return progressTextFromSnapshot(snapshot) ?? "";
+      return "";
     case "cancelled":
       return cancelledTextFromSnapshot(snapshot);
     case "failed":

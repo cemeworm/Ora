@@ -214,6 +214,17 @@ export type TurnTimelineItem =
     }
   | {
       id: string;
+      kind: "progress_narration";
+      content: string;
+      source: "progress_narrator" | "runtime_status";
+      label?: string;
+      timestamp: string;
+      agentId?: string;
+      agentLabel?: string;
+      eventSeq?: number;
+    }
+  | {
+      id: string;
       kind: "status_group";
       summary: string;
       steps: TurnProcessStep[];
