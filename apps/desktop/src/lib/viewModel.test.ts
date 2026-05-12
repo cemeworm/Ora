@@ -4026,6 +4026,104 @@ describe("desktop session view model", () => {
     expect(assistant?.isPlaceholder).toBe(true);
   });
 
+  it("appends live assistant text to timeline when snapshot timeline has previous assistant text", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-timeline-overlay";
+    const sessionId = "session-live-timeline-overlay";
+    const firstMessageId = `${runId}:assistant:solo:solo:0`;
+    const secondMessageId = `${runId}:assistant:solo:solo:1`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "继续输出", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-timeline-overlay-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        agentId: "solo",
+        nodeId: "solo",
+        createdAt,
+        pattern: "orchestrator_subagent",
+        payload: { role: "assistant", messageId: firstMessageId, content: "前一段。", delta: "前一段。", streaming: true, phase: "stream" },
+      }],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 100,
+    } as unknown as OraStateSnapshot;
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "继续输出",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${secondMessageId}`]: {
+          runId,
+          messageId: secondMessageId,
+          sessionId,
+          role: "assistant",
+          content: "后一段。",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt: createdAt + 200,
+          updatedAt: createdAt + 200,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(assistant?.content).toBe("后一段。");
+    expect(timelineText).toEqual(["前一段。", "后一段。"]);
+  });
+
   it("does not mutate cached base messages while overlaying live message delta text", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-live-buffer-cache";
@@ -4355,6 +4453,199 @@ describe("desktop session view model", () => {
     ).find((message) => message.role === "assistant");
 
     expect(assistant?.content).toBe("Hi there");
+  });
+
+  it("uses the latest messageId instead of concatenating same-agent streaming invocations", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-same-agent-messageid-reset";
+    const sessionId = "session-same-agent-messageid-reset";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "记录 task", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-same-agent-messageid-reset-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: `${runId}:assistant:orchestrator:decompose:1`, content: "已有 task。", delta: "已有 task。", streaming: true, phase: "stream" },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 100,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: `${runId}:assistant:orchestrator:decompose:2`, content: "任务文件已生成。", delta: "任务文件已生成。", streaming: true, phase: "stream" },
+        },
+        {
+          id: `${runId}:evt-2`,
+          runId,
+          seq: 2,
+          type: "message.delta",
+          agentId: "orchestrator",
+          createdAt: createdAt + 200,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: `${runId}:assistant:orchestrator:decompose:action-1`, content: "任务文件已生成。", streaming: false, phase: "final" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 200,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "记录 task",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.content).toBe("任务文件已生成。");
+    expect(assistant?.content).not.toContain("已有 task");
+  });
+
+  it("does not duplicate final action text after equivalent streaming timeline text", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-final-action-dedupes-timeline";
+    const sessionId = "session-final-action-dedupes-timeline";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "汇总结论", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["researcher"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-final-action-dedupes-timeline-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "researcher",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: `${runId}:assistant:researcher:research:4`, content: "文件已就绪。", delta: "文件已就绪。", streaming: true, phase: "stream" },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "tool.called",
+          agentId: "researcher",
+          createdAt: createdAt + 100,
+          pattern: "orchestrator_subagent",
+          payload: { toolId: "file.read", status: "succeeded", title: "读取任务文件" },
+        },
+        {
+          id: `${runId}:evt-2`,
+          runId,
+          seq: 2,
+          type: "message.delta",
+          agentId: "researcher",
+          createdAt: createdAt + 200,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: `${runId}:assistant:researcher:research:action-1`, content: "文件已就绪。", streaming: false, phase: "final" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 200,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "汇总结论",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    ).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(timelineText.filter((content) => content === "文件已就绪。")).toHaveLength(1);
   });
 
   it("shows only the final output text for completed model delta timelines", () => {

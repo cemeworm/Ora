@@ -1467,12 +1467,22 @@ function overlayLiveMessageDeltas(
     if (!snapshot) {
       return message;
     }
-    const liveText = liveAssistantTextForSnapshot(snapshot, liveMessageDeltas);
-    if (!liveText || message.content === liveText) {
+    const liveEntries = liveAssistantEntriesForSnapshot(snapshot, liveMessageDeltas);
+    const liveText = liveEntries.at(-1)?.content;
+    const nextTurn = message.turn && liveEntries.length > 0
+      ? overlayLiveTimelineItems(message.turn, snapshot, liveEntries)
+      : message.turn;
+    const contentChanged = Boolean(liveText && message.content !== liveText);
+    const turnChanged = nextTurn !== message.turn;
+    if (!contentChanged && !turnChanged) {
       return message;
     }
     changed = true;
-    return { ...message, content: liveText };
+    return {
+      ...message,
+      content: contentChanged ? liveText! : message.content,
+      turn: nextTurn,
+    };
   });
   return changed ? next : messages;
 }
@@ -1545,16 +1555,16 @@ function streamingAssistantTextFromSnapshot(snapshot: OraStateSnapshot): string 
     return undefined;
   }
   const parts: string[] = [];
-  let activeAgentId: string | undefined;
+  let activeMessageKey: string | undefined;
   for (const event of snapshot.events) {
     if (!isPublicAssistantDelta(snapshot, event)) {
       continue;
     }
-    const agentId = event.agentId ?? "__default__";
-    if (activeAgentId !== undefined && agentId !== activeAgentId) {
+    const messageKey = assistantDeltaMessageKey(event);
+    if (activeMessageKey !== undefined && messageKey !== activeMessageKey) {
       parts.length = 0;
     }
-    activeAgentId = agentId;
+    activeMessageKey = messageKey;
     mergeAssistantTextParts(parts, event);
   }
   const text = parts.join("");
@@ -1568,10 +1578,17 @@ function liveAssistantTextForSnapshot(
   snapshot: OraStateSnapshot,
   liveMessageDeltas: Record<string, LiveMessageDeltaPreview>,
 ): string | undefined {
+  return liveAssistantEntriesForSnapshot(snapshot, liveMessageDeltas).at(-1)?.content;
+}
+
+function liveAssistantEntriesForSnapshot(
+  snapshot: OraStateSnapshot,
+  liveMessageDeltas: Record<string, LiveMessageDeltaPreview>,
+): LiveMessageDeltaPreview[] {
   if (snapshot.status !== "queued" && snapshot.status !== "running") {
-    return undefined;
+    return [];
   }
-  const entries = Object.values(liveMessageDeltas)
+  return Object.values(liveMessageDeltas)
     .filter((entry) =>
       entry.runId === snapshot.runId &&
       entry.role === "assistant" &&
@@ -1583,7 +1600,36 @@ function liveAssistantTextForSnapshot(
       left.createdAt - right.createdAt ||
       left.messageId.localeCompare(right.messageId)
     );
-  return entries.at(-1)?.content;
+}
+
+function overlayLiveTimelineItems(
+  turn: AssistantTurnAttachment,
+  snapshot: OraStateSnapshot,
+  liveEntries: LiveMessageDeltaPreview[],
+): AssistantTurnAttachment {
+  const existingItems = turn.timelineItems ?? [];
+  let nextItems = existingItems;
+  const projection = deriveRuntimeTimelineProjection(snapshot);
+
+  for (const entry of liveEntries) {
+    const content = timelineTextExcludingProposedPlan(entry.content);
+    if (!content || isInternalAssistantText(content) || isTimelineTextAlreadyRepresented(content, nextItems)) {
+      continue;
+    }
+    if (nextItems === existingItems) {
+      nextItems = [...existingItems];
+    }
+    nextItems.push({
+      id: `${snapshot.runId}:timeline:live:${entry.messageId}`,
+      kind: "assistant_text",
+      content,
+      timestamp: formatElapsed(projection.baseTime, entry.createdAt),
+      agentId: entry.agentId,
+      agentLabel: agentLabelForTimeline(projection.agentLabels, entry.agentId),
+    });
+  }
+
+  return nextItems === existingItems ? turn : { ...turn, timelineItems: nextItems };
 }
 
 function mergeAssistantTextParts(parts: string[], event: OraEventEnvelope & { payload: Record<string, unknown> }): void {
@@ -1595,6 +1641,21 @@ function mergeAssistantTextParts(parts: string[], event: OraEventEnvelope & { pa
   if (projection?.text) {
     parts.push(projection.text);
   }
+}
+
+function assistantDeltaMessageKey(event: OraEventEnvelope & { payload: Record<string, unknown> }): string {
+  const messageId = typeof event.payload.messageId === "string" && event.payload.messageId.trim()
+    ? event.payload.messageId.trim()
+    : undefined;
+  return messageId ?? `${event.agentId ?? "__default__"}:${event.nodeId ?? "__default__"}`;
+}
+
+function isFinalAssistantDelta(event: OraEventEnvelope & { payload: Record<string, unknown> }): boolean {
+  return event.payload.phase === "final" || event.payload.streaming === false;
+}
+
+function isExplicitStreamingAssistantDelta(event: OraEventEnvelope & { payload: Record<string, unknown> }): boolean {
+  return event.payload.phase === "stream" || event.payload.streaming === true;
 }
 
 function extractClarificationQuestions(
@@ -2313,6 +2374,7 @@ function deriveTimelineItems(
   let pendingTextStartedAt = baseTime;
   let pendingTextSeq = 0;
   let pendingTextAgentId: string | undefined;
+  let pendingTextKey: string | undefined;
 
   function flushPendingText() {
     const content = timelineTextExcludingProposedPlan(pendingTextParts.join(""));
@@ -2322,6 +2384,7 @@ function deriveTimelineItems(
     if (!content || isInternalAssistantText(content)) {
       pendingTextParts = [];
       pendingTextAgentId = undefined;
+      pendingTextKey = undefined;
       return;
     }
     items.push({
@@ -2339,6 +2402,7 @@ function deriveTimelineItems(
     });
     pendingTextParts = [];
     pendingTextAgentId = undefined;
+    pendingTextKey = undefined;
   }
 
   function flushPendingSteps() {
@@ -2372,11 +2436,23 @@ function deriveTimelineItems(
       const shouldCollectText = shouldCollectAssistantDeltaForTimeline(event, finalText, hasVisibleProcessSeparators);
       if (shouldCollectText) {
         const agentId = event.agentId ?? "__default__";
-        if (text && pendingTextParts.length > 0 && pendingTextAgentId !== undefined && agentId !== pendingTextAgentId) {
-          flushPendingText();
-        }
-        if (text) {
+        const textKey = assistantDeltaMessageKey(event);
+        const pendingText = pendingTextParts.join("");
+        const contentItems = items.map(({ item }) => item);
+        const finalDuplicate = isFinalAssistantDelta(event) && (
+          (pendingText && isTimelineTextDuplicate(text, pendingText)) ||
+          isTimelineTextAlreadyRepresented(text, contentItems)
+        );
+        if (!finalDuplicate && text) {
+          if (
+            pendingTextParts.length > 0 &&
+            pendingTextKey !== undefined &&
+            textKey !== pendingTextKey
+          ) {
+            flushPendingText();
+          }
           pendingTextAgentId = agentId;
+          pendingTextKey = textKey;
           if (pendingTextParts.length === 0) {
             pendingTextStartedAt = event.createdAt;
             pendingTextSeq = event.seq;
@@ -2573,7 +2649,7 @@ function shouldCollectAssistantDeltaForTimeline(
   if (!finalText) {
     return true;
   }
-  if (event.payload.streaming === true) {
+  if (isExplicitStreamingAssistantDelta(event)) {
     return false;
   }
   if (!hasVisibleProcessSeparators) {
