@@ -185,6 +185,7 @@ import {
   deriveSessionBranchGroupsForSession,
   ensureModeNodePositions,
   getModeNodeRuntimeTemplateDefinition,
+  modeSpecToPatternDefinition,
   projectModeRuntimeTopology,
   validateModeSpec,
   ToolDescriptorSchema,
@@ -719,6 +720,31 @@ describe("Ora shared contracts", () => {
       atomActive: true,
     });
     expect(messageBusProjected.nodes.some((node) => node.id === "capability:event_routing")).toBe(false);
+  });
+
+  it("keeps modeSpecToPatternDefinition and projectModeRuntimeTopology node/edge sets consistent for all MVP modes", () => {
+    for (const mode of MVP_MODES) {
+      const pattern = modeSpecToPatternDefinition(mode);
+      const topology = projectModeRuntimeTopology(mode);
+
+      // Pattern topology nodes must be a subset of projected topology nodes
+      const projectedNodeIds = new Set(topology.nodes.map((node) => node.id));
+      for (const patternNode of pattern.topology.nodes) {
+        expect(projectedNodeIds, `${mode.id}: pattern node '${patternNode.id}' not found in projected topology`)
+          .toContain(patternNode.id);
+      }
+
+      // Every pattern topology edge must have a corresponding projected topology edge
+      for (const patternEdge of pattern.topology.edges) {
+        const match = topology.edges.some(
+          (projectedEdge) =>
+            projectedEdge.source === patternEdge.source &&
+            projectedEdge.target === patternEdge.target,
+        );
+        expect(match, `${mode.id}: pattern edge ${patternEdge.source} -> ${patternEdge.target} not in projected topology`)
+          .toBe(true);
+      }
+    }
   });
 
   it("accepts a run-scoped custom provider config", () => {

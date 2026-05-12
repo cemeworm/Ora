@@ -285,6 +285,30 @@ runtime atom 是可插拔运行时能力，定义在 `MVP_MODE_RUNTIME_ATOMS`。
 - `mode_capability`：投影时新增 `capability:<atomId>` 节点，并从 `run` 连过去。
 - `stage_attachment`：投影时新增 `capability:<nodeId>:<atomId>` 节点，并挂到对应 stage 的 owner agent 或 node anchor 上。
 
+### 4.4 ModeSpec 到运行时的两条投影路径
+
+`ModeSpec` 到运行时结构有两条投影路径，分别服务于不同消费方：
+
+| 函数 | 输出 | 消费方 | 职责 |
+| --- | --- | --- | --- |
+| `modeSpecToPatternDefinition(mode)` | `PatternDefinition` | Runtime kernel、mode driver | 生成包含完整 topology、profiles、stopPolicy 的运行时蓝图 |
+| `projectModeRuntimeTopology(mode)` | `RuntimeTopology`（`{nodes, edges}`） | `modeSpecToPatternDefinition` 内部调用、UI 预览 | 将 ModeSpec 的节点和边投影为标准 runtime topology |
+
+**调用关系**：`modeSpecToPatternDefinition` 内部调用 `projectModeRuntimeTopology`，将其输出写入 `PatternDefinition.topology`。换言之，`projectModeRuntimeTopology` 是 `modeSpecToPatternDefinition` 的子步骤，不是两条完全独立的路径。
+
+**职责边界**：
+- `projectModeRuntimeTopology` 仅关注拓扑投影：节点过滤、排序、atom 注入、single-owner 压缩等。
+- `modeSpecToPatternDefinition` 在拓扑之上叠加完整的运行时蓝图：profiles、stopPolicy、planTemplate、constraints 等。
+
+**一致性保证**：
+- 两者消费同一份 `ModeSpec`，不存在"谁覆盖谁"的问题。
+- 未来修改 `ModeSpec` 结构时，只需确保 `projectModeRuntimeTopology` 的投影逻辑更新，因为 `PatternDefinition.topology` 由它派生。
+- 建议在 shared 包的测试中编写 fixture 测试：对同一 `ModeSpec` 调用 `modeSpecToPatternDefinition`，断言其 `topology` 字段与 `projectModeRuntimeTopology` 输出一致。
+
+**使用场景**：
+- Runtime 启动时只需要 `modeSpecToPatternDefinition`，一次性获取 blueprint。
+- Mode Studio 预览、`generateModeExecutionPreview` 等 UI 路径可以只调用 `projectModeRuntimeTopology` 做轻量投影。
+
 ## 5. 从 `ModeSpec` 到运行时拓扑
 
 当前链路不是 kernel 直接拿 `ModeSpec` 临时投影，而是先通过 `modeSpecToPatternDefinition(mode)` 得到 runtime definition：

@@ -200,7 +200,9 @@ sequenceDiagram
 
 ### 2.2 Gate 去重：existingEntryIds
 
-`RuntimeGateService.openedEntries` 接受可选的 `existingEntryIds` 参数。如果某个 gate 的 entry id 已存在于 ledger 中（例如 replay 或多次 flush），则跳过生成。这保证了 gate entry 的幂等性。
+`RuntimeGateService.openedEntries` 接受 `existingEntryIds` 参数。**该参数由内部自动维护**——`openSnapshotGateLifecycle` 和 `resolveResumeGateLifecycle` 等调用点在生成 entry 前会从 ledger 提取已有 entry id 集合。如果某个 gate 的 entry id 已存在（例如 replay 或多次 flush），则跳过生成。
+
+这一机制保证了 gate entry 的幂等性，且不依赖调用方手动传入。未来建议在 ledger 写入层增加基于 `gateId + kind + runId` 的唯一索引作为额外防线，覆盖内部提取遗漏的边界场景（如 crash recovery 后首次 reopen）。
 
 ### 2.3 Gate 在 ledger 投影中的生命周期
 
@@ -267,13 +269,30 @@ Frame 的 `agentId` 和 `nodeId` 合称 owner metadata。Owner 决定了 resume 
 - **有 owner（owner-backed）**：frame 记录了明确的 `agentId`，resume 时可以精确恢复到暂停的 node。
 - **无 owner（ownerless）**：frame 缺失 `agentId`。如果 reason 是 `approval_required` 或 `clarification_required`（legacy frame），退回 whole-mode resume。如果 reason 是 `manual_interrupt` 或 `tool_interrupted`（危险 frame），进入 diagnostic failure。
 
-### 3.3 Frame 的状态变迁
+### 3.3 Frame 的状态变迁与链语义
+
+**单层状态变迁**：
 
 ```
 paused → (resume 准备) → awaiting_model → (kernel 执行完成) → resolved
 ```
 
 `continuationFrameAwaitingModel` 函数在 resume 进入 kernel 前将 frame 状态从 `paused` 切换为 `awaiting_model`，标记该 frame 已进入恢复流程。
+
+**多层嵌套 resume 的 Frame 链**：
+
+当 run 经历多次中断-恢复（如 resume → 再次 interrupt → 再次 resume）时，会形成 frame 链。`resumedFromFrameId` 的语义如下：
+
+- Frame A（首次中断）：`resumedFromFrameId = null`
+- Frame B（从 A 恢复后再中断）：`resumedFromFrameId = A.id` — 指向直接前驱
+- Frame C（从 B 恢复后再中断）：`resumedFromFrameId = B.id` — 始终指向最近恢复的来源 frame
+
+即 `resumedFromFrameId` 记录的是 **直接父 frame**，不是根 frame。完整祖先链需要通过回溯 `resumedFromFrameId` 逐级重建。
+
+**Frame 链的清理策略**：
+- 当前实现为单 frame 模型（`activeFrameId`），不支持嵌套 frame。每次 resume 后，前一个 frame resolve，新中断创建新 frame。
+- 长时间运行的 run 可能产生上百个 frame。建议在 ledger 投影中维护 frame 历史的最大长度（如保留最近 50 个），超出部分仅保留摘要。
+- Frame 链的完整性依赖 ledger 持久化：如果中间 frame 的 entry 被清理，`resumedFromFrameId` 指向的 frame 可能不在 frame 列表中。UI 层应优雅处理这种"断链"场景，显示为 `(orphaned)`。
 
 ## 4. Resume 入口：RunResumeService
 
@@ -392,6 +411,14 @@ flowchart TD
 3. 如果需要模型继续，通过 `RunKernelExecutionService.continueAfterApprovedTool` 回到 owner node
 
 这意味着 approved tool continuation 是 **action execution** 路径，dispatcher 是 **model continuation** 路径，两者职责不同。
+
+#### 5.1.1 复合 patch 处理
+
+当用户在一次 resume 中同时提交 `approvedActionIds` 和 `clarifications`（即复合 patch）时，`classifyRunResumeStrategy` 的策略优先级使系统优先走 `approved_tool_continuation` 路径。此时需要注意：
+
+1. **clarification patch 的传递**：如果 `continueKernelAfterTool = true`（工具 replay 后还有 pending clarification），模型恢复时会携带 clarification patch。`RunKernelExecutionService.continueAfterApprovedTool` 内部会通过 `resumedInputWithClarifications` 将澄清答案合并进 conversation。
+2. **`continueKernelAfterTool = false` 时的风险**：如果工具 replay 后 `hasKernelResumeWork` 判断为 false（例如 clarification 在 replay 过程中被意外清理），剩余的澄清答案会被静默丢弃。建议在 `executeApprovedToolContinuationStrategy` 中增加校验：工具 replay 结束后重新检查 snapshot 中是否有 pending clarification，若有则强制转入 kernel resume。
+3. **因果追踪**：当前 ledger 中的 `gate.resolved` entry 不区分是单独 resolve 还是复合 resolve 的一部分。建议在复合场景下，`gate.resolved` 的 metadata 中记录 `resolvedInComposite: true` 及关联的其他 gate id，便于审计。
 
 ### 5.2 Kernel Resume
 
@@ -704,6 +731,32 @@ Desktop 不直接读取 gate projection。它消费 `deriveSessionProjection` �
 5. **Plan handoff 修订**：支持 revise plan → 重新 handoff，保留 handoff 的版本链。
 6. **Multi-gate attention**：当前 attention 严格互斥。支持同时展示多种 blocking 状态（如同时需要回答 clarification 和审批 tool）。
 7. **Frame 持久化审计**：frame 的创建、状态变更、resolve 可以进入专门的 audit log，用于调试复杂的 resume 流程。
+
+### 12.3 diagnostic_failure 恢复流程
+
+当 `RunContinuationDispatcher` 返回 `diagnostic_failure` 时（frame 缺失 `agentId` 且 reason 为 `manual_interrupt` 或 `tool_interrupted`），系统进入不可自动恢复的错误状态。
+
+**用户可见行为**：
+- Run 状态标记为 `failed`，attention 显示为 `failed`
+- Desktop UI 应展示以下信息：
+  - 错误原因："检测到不完整的中断恢复——工具可能已部分执行，无法安全回退。"
+  - Run 的完整对话历史（只读，允许用户复制/导出上下文）
+  - **一键重建**按钮：使用原始 run 的 input 和 mode 创建一个全新的 run（保留会话上下文但不继承 snapshot）
+  - **导出 snapshot**按钮：将当前 snapshot（含 conversation、topology、events）导出为 JSON 文件供离线排查
+
+**恢复选项**：
+
+| 选项 | 操作 | 是否保留上下文 |
+| --- | --- | --- |
+| 一键重建 | 使用相同 input + mode 创建新 run | 保留原始用户意图和 mode 配置，丢弃中间产物 |
+| 导出 snapshot | 将 snapshot 导出为 JSON | 完全保留，但需要手动处理 |
+| 手动检查 | 查看 failed run 的完整历史 | 保留，只读 |
+
+**代码层面的改进建议**：
+1. **自动 checkpoint**：在 `suspendedFrameResumeSnapshot` 检测到 `diagnostic_failure` 前，自动保存一份 recovery checkpoint snapshot 到 ledger，确保上下文不丢失。
+2. **细粒度区分**：对 `tool_interrupted` 且无 `agentId` 的情况，检查工具 action 的状态。如果 action 的 `status` 为 `pending`（工具实际未执行），可以安全回退到 `resume_whole_mode`；仅当 action 状态为 `running` 或 `completed` 时才进入 diagnostic failure。
+3. **用户主动中断**：如果中断来自用户主动操作（`manual_interrupt`），可以允许用户在 resume 时选择"强制 whole-mode 回退"（提供明确的风险提示），而非直接进入 diagnostic failure。
+4. **UI 恢复入口**：Desktop 应在 RunInteraction 中为 `diagnostic_failure` 状态提供专门的恢复卡片，包含上述操作按钮，而非仅显示通用错误信息。
 
 ---
 
