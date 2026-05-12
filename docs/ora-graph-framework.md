@@ -277,6 +277,7 @@ runtime atom 是可插拔运行时能力，定义在 `MVP_MODE_RUNTIME_ATOMS`。
 | `artifact_publish` | node | 否 | `agent_teams`、`message_bus`、`shared_state` | `stage_attachment` |
 | `token_usage_trace` | mode | 否 | 全部内置 family | `mode_capability` |
 | `dynamic_stage_skipping` | mode | 否 | `agent_teams` | `mode_capability` |
+| `dynamic_delegation` | mode | 否 | `orchestrator_subagent` | `mode_capability` |
 
 三种拓扑呈现方式的含义：
 
@@ -314,6 +315,8 @@ run -> primary agent
 ```
 
 这种情况下不会完整克隆 family 默认拓扑。多 owner 或显式 subagent delegate 的模式，才会使用 family topology 作为基础。
+
+`dynamic_delegation` 是一个 mode-scope capability node：它会出现在 runtime topology / Mode Studio synthetic capability 中，但真正的“跳过 research/review、注入 focus”由 `orchestrator_subagent` driver 消费 `mode.runtimeAtoms` 后执行。不要把这理解成 `TopologyEdge.kind = delegation` 自动具备条件路由能力。
 
 ## 6. Runtime 如何消费拓扑
 
@@ -507,7 +510,9 @@ const seed = forceCreate || base.systemPreset
 7. `apps/runtime/src/patterns/driver-registry.ts`：注册 driver。
 8. `apps/desktop/src/lib/modeCanvas.ts` 和 `ModesView.tsx`：确认 Mode Studio 是否需要新的编辑行为或展示文案。
 
-如果只是新增一个系统预设 mode，而不是新增 family，可以复用已有 family。例如当前 `single_agent`、`debate`、`mode_studio_builder`、`code_development`、`ora_self_builder` 都是基于已有 family 构造的 mode spec，而不是新的 coordination pattern。
+如果只是新增一个系统预设 mode，而不是新增 family，可以复用已有 family。例如当前 `single_agent`、`debate`、`mode_studio_builder`、`code_development`、`ora_self_builder`、`dynamic_orchestrator` 都是基于已有 family 构造的 mode spec，而不是新的 coordination pattern。
+
+`dynamic_orchestrator` 的特殊点是：它复用 `orchestrator_subagent` 的固定节点边界，但默认启用 `dynamic_delegation` atom，让 decompose 阶段的结构化 delegation plan 决定后续 subagent 是否执行。
 
 ## 11. 当前边界和容易误解的点
 
@@ -517,6 +522,7 @@ const seed = forceCreate || base.systemPreset
 - runtime atoms 既影响运行时行为，也影响 topology 投影；但 UI 中的 synthetic atom nodes 不等于 ModeSpec 真实节点。
 - `graph_topology` 目前是 schema 预留，不是已经接入的 transcript renderer。
 - runtime 使用的是 `@cemeworm/shared` 包导出的共享契约，旧的 `@ora/shared` 包名已经不再是当前结构。
+- `dynamic_delegation` 不是通用条件边系统。它当前只兼容 `orchestrator_subagent`，并由对应 driver 解析 `<delegation_plan>` 后决定节点跳过与 focus 注入。
 
 ## 12. Driver Capability Manifest（驱动能力声明）
 

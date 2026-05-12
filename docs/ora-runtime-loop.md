@@ -38,8 +38,10 @@ Ora 的 runtime loop 不是单一循环，而是几层边界叠在一起：
 - `/apps/runtime/src/patterns/driver-registry.ts`
 - `/apps/runtime/src/patterns/mode-driver-registry.ts`
 - `/apps/runtime/src/patterns/generic-node-executor.ts`
+- `/apps/runtime/src/patterns/mode-driver-helpers.ts`
 - `/packages/shared/src/actions.ts`
 - `/packages/shared/src/runtime.ts`
+- `/packages/shared/src/assistantTextProjection.ts`
 - `/packages/shared/src/runtime-ledger.ts`
 - `/packages/shared/src/runtime-timeline.ts`
 
@@ -220,6 +222,8 @@ Mode 编排影响 loop 的方式：
 - built-in pattern drivers 通过 `runGenericModeNode` 记录 node-level bag checkpoint。Continuation resume 可以用这些 checkpoint 判断如何恢复 owner-backed suspended node，而不是从 mode 入口重新跑旧节点。
 - 带 `clarification_interrupt` atom 的 mode/node 可以在执行前或执行中主动挂起，等待用户补充信息。
 - 带 `subagent_delegate` atom 的 node 会通过 delegated task 事件显式标记任务委派。
+- 带 `dynamic_delegation` atom 的 `orchestrator_subagent` mode 会让 decompose 节点输出 `<delegation_plan>`，driver 解析后用 `skipNodeIds` 跳过不需要的 research/review 节点，并把 `research_focus` / `review_focus` 注入对应 subagent 的 system prompt。解析失败时安全回退为所有节点正常执行。
+- `dynamic_orchestrator` 是基于 `orchestrator_subagent` family 的系统预设 mode，不是新 family。它保留固定节点的 owner/risk/approval 边界，只把“是否执行该 subagent、执行时聚焦什么”交给 runtime delegation plan。
 - plan 模式中一旦产出完整 `<proposed_plan>`，后续 node 可以被跳过，避免计划已经完备后继续跑无关阶段。
 
 ## 3. 单个 node 的 model-tool loop
@@ -337,7 +341,7 @@ Important distinction:
 | --- | --- |
 | `modeSelection` | manual 直接使用请求模式；auto 先用 router 选择 mode 和 task intent。 |
 | `taskIntent` | chat/plan/implement 会改变系统提示、是否允许修改、是否生成 plan decision、是否消费 accepted plan。 |
-| `runtimeAtoms` | 开启 clarification interrupt、recovery policy、memory capture、artifact publish、delegation、message bus、shared state 等能力。 |
+| `runtimeAtoms` | 开启 clarification interrupt、recovery policy、memory capture、artifact publish、delegation、dynamic delegation、message bus、shared state 等能力。 |
 | `profiles` | 决定 agent 身份、工具集合、skill 集合和 system overlay。 |
 | `nodes/stages` | 决定 mode 的执行顺序、handoff、stage transcript 和 plan/todo 进度。 |
 | `capabilityFlags.toolIds` | 决定 agent 可用工具；部分 mode 会禁用默认 web tools 或启用特定工具。 |
@@ -407,6 +411,8 @@ flowchart TD
 
 新的 streaming event batch 不再存累计的 `snapshot.events`，完整事件历史由 ledger `payload.events` 重建。旧的 full snapshot row 仍然兼容。Provider stream 会把 SSE `[DONE]` 当作 terminal signal，即使 transport 没有关闭也会结束；idle/no-progress stream 会失败，不再无限等待。`RunStreamingService` 还维护 per-run `AbortController`，`runs.interrupt` / `runs.cancel` 会 abort active controller，并把 signal 传给 kernel、node loop 和 provider request。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
 
+最终 assistant text 的读取边界也在这一层收敛：终态 snapshot 的 `output.text` / string output 是权威最终文本；缺失时才通过 `packages/shared/src/assistantTextProjection.ts` 从 public `message.delta` 投影。投影 helper 同时处理 delta-sized chunk、cumulative content、重复片段和 internal/tool-protocol 文本过滤。runtime 的 session transcript/title/memory/feedback/channel outbound、shared 的 branch preview / proposed plan 提取、desktop fallback 都应复用这条规则，而不是各自扫描 `snapshot.events`。
+
 ## 特殊路径
 
 ### Code Development boundary
@@ -424,6 +430,19 @@ flowchart TD
 - 高风险 `shell.execute`
 
 orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶段。
+
+### Dynamic orchestrator delegation
+
+`dynamic_orchestrator` 预设复用 `orchestrator_subagent` family，并通过 mode-scope atom `dynamic_delegation` 改变 driver 执行策略：
+
+1. decompose 节点 prompt 追加 `DELEGATION_PLAN_INSTRUCTION`，要求输出 `<delegation_plan>`。
+2. `parseDelegationPlan` 解析 `research: enabled|disabled`、`review: enabled|disabled` 以及可选 focus。
+3. driver 用 `skipNodeIds` 让 `runGenericModeNode` 跳过 disabled 的 subagent 节点。
+4. enabled 的 research/review 节点会收到 `<orchestrator_focus>` system prompt overlay。
+5. 如果 research 和 review 都被跳过，synthesize 节点直接基于原任务和 decompose 结果产出最终回答。
+6. 解析失败或输出不完整时不跳过任何节点，保持原 orchestrator_subagent 的安全回退行为。
+
+这条机制只影响 mode driver 的节点执行选择，不改变 node 的 `ownerAgentId`、`riskLevel`、`approvalMode`，也不新增 ledger entry 类型。跳过结果仍通过已有 plan/todo/queue/topology/snapshot 事实对外呈现。
 
 ### Accepted plan handoff
 

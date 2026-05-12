@@ -6,11 +6,16 @@
 
 | 文档 | 已覆盖问题 | 仍未覆盖的问题 |
 | --- | --- | --- |
-| `ora-runtime-loop.md` | runtime loop 分层、run lifecycle、resume、mode 编排、node model-tool loop、streaming finalization | 耐久事实层、projection 衍生、tool/action 治理链、UI 消费链的系统性解释 |
-| `ora-graph-framework.md` | ModeSpec、PatternDefinition、Topology、Mode Studio、runtime graph consumption | 运行事实如何沉淀、gate 如何耐久化、snapshot/Trails 如何消费执行状态 |
-| `ora-pi-tool-design-analysis.md` | Ora 与 Pi tool 设计对比、可借鉴方向 | Ora 自身 tool/action/policy/approval 的结构化说明 |
+| `ora-runtime-loop.md` | runtime loop 分层、run lifecycle、resume、mode 编排、dynamic delegation、node model-tool loop、assistant text projection 边界、streaming finalization | 更细粒度的 ledger entry replay 与 projection 内部算法应留给 ledger 文档 |
+| `ora-graph-framework.md` | ModeSpec、PatternDefinition、Topology、runtime atoms、`dynamic_delegation`、Mode Studio、runtime graph consumption | 运行事实如何沉淀、gate 如何耐久化、snapshot/Trails 如何消费执行状态 |
+| `ora-ledger-model.md` | Ledger 事实层、session/run projection、gate/tool/result durable facts | 具体 UI 消费细节仍应看 snapshot/projection/Trails 文档 |
+| `ora-gates-and-resume.md` | Gate、Continuation、Resume、attention 收敛 | 不展开普通 tool/action 治理链 |
+| `ora-tool-action-governance.md` | Tool / Action / Approval / Recovery / Ledger / Trails 治理链 | 不替代 Pi 对比文档的外部设计借鉴 |
+| `ora-snapshot-projection-trails.md` | StateSnapshot、projection、Trails、assistant text projection、desktop streaming UI 消费边界 | 不展开 mode graph authoring 细节 |
+| `ora-mode-authoring-and-studio.md` | System preset / custom mode、Mode Studio、runtime atom 双重语义、`dynamic_orchestrator` | 不描述 runtime node loop 内部状态机 |
+| `ora-pi-tool-design-analysis.md` | Ora 与 Pi tool 设计对比、可借鉴方向 | Ora 自身 tool/action/policy/approval 的结构化说明见 `ora-tool-action-governance.md` |
 
-结论：现有文档已经回答了「Ora 怎么跑」和「Ora 的模式图怎么建模」，下一阶段应该补足「事实如何沉淀、如何衍生状态、如何被桌面端和恢复机制消费」。
+结论：文档体系已经从「Ora 怎么跑」和「Ora 的模式图怎么建模」扩展到「事实如何沉淀、如何衍生状态、如何被桌面端和恢复机制消费」。后续维护重点应从“新增文档”转为“关键机制改动后同步相关结构说明”。
 
 ## 推荐文档清单
 

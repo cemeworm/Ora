@@ -20,6 +20,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `packages/shared/src/runtime.ts` | `StateSnapshot` schema、`deriveRunInteraction`、`deriveRunAttention`、`RunAttention` 类型 |
+| `packages/shared/src/assistantTextProjection.ts` | 统一 assistant 文本投影：`output.text` 优先、`message.delta` 合并、internal delta 过滤 |
 | `packages/shared/src/runtime-timeline.ts` | `deriveRuntimeTimelineProjection`：从 snapshot 提取事件时间线 |
 | `apps/runtime/src/run-projections.ts` | `toRunHandle`、`toFlowRunDetail`、`toSessionTurn`、`toRunSummary`、`buildRunTrailMetrics` |
 | `apps/runtime/src/telemetry/trails.ts` | `synthesizeLocalTrail`：从 snapshot 合成 TrailObservation 数组 |
@@ -266,6 +267,32 @@ deriveRuntimeTimelineProjection(snapshot) → RuntimeTimelineProjection {
 }
 ```
 
+### 3.8 Assistant Text Projection
+
+assistant 可见文本不再由各个消费面自行扫描 `snapshot.events` 拼接。共享入口是 `packages/shared/src/assistantTextProjection.ts`：
+
+```text
+projectAssistantTextFromSnapshot(snapshot)
+  -> if snapshot.output.text / string output exists: use it as final authority
+  -> otherwise projectAssistantTextFromEvents(snapshot.events)
+     -> read public message.delta only
+     -> merge delta-sized chunks and cumulative content
+     -> filter internal/tool-protocol/recovery fallback text
+```
+
+这条规则解决的是同一份 assistant 输出在多个 read model 中不一致的问题。当前主要消费者包括：
+
+| 消费面 | 入口 | 语义 |
+| --- | --- | --- |
+| Runtime final assistant text | `apps/runtime/src/session-title.ts` | session transcript、title、memory、feedback、channel outbound 的最终文本来源 |
+| Branch / plan preview | `packages/shared/src/runtime.ts` | `branchOutputPreviewForRun`、`extractCompleteProposedPlanContent` |
+| Desktop runtime fallback / mock | `apps/desktop/src/lib/runtimeClient.ts` | 本地 fallback 与 mock snapshot 的 assistant 文本保持同一语义 |
+| Desktop assistant projection wrapper | `apps/desktop/src/lib/assistantMessageProjection.ts` | 兼容旧调用点，实际 re-export shared helper |
+
+权威顺序很重要：**terminal snapshot 的 `output.text` 是最终 assistant text；只有缺失时才从 `message.delta` 投影。** `message.delta.payload.delta` 表示增量片段时直接追加；只有 `content` 时按累计文本/重复片段/新增片段判断合并，避免 cumulative content 被重复拼接，也避免 chunk-sized content 只留下最后一片。
+
+这不是 ledger 的替代层。ledger 负责保存和重建 `output`、event batch、tool/gate facts；assistant text projection 只负责在读取时解释这些事实。
+
 ## 4. Trails 层：snapshot → 观测记录
 
 Trails 是 Ora 的可观测性层。它从 snapshot 合成结构化观测记录，并可选地合并 Langfuse 远程追踪数据。
@@ -304,6 +331,8 @@ synthesizeLocalTrail(snapshot, base?) → {
 ## 5. Desktop View Model：snapshot → 七个标签页
 
 Desktop 的 Trails 抽屉不直接读 `StateSnapshot` 的原始字段。它通过 `trailViewModel.ts` 中的 builder 函数把 snapshot 转成 UI 专用的 view model。
+
+对主聊天正文和任务计划卡片还要区分 live streaming 热路径：正文继续使用 `liveMessageDeltaBuffer` 按 `runId/messageId` 增量合并，避免每个 token 都重扫完整 snapshot；proposed plan 在 running 状态下优先从最新 live message buffer 解析，并按 `messageId` 作为主要 stream 边界。`PlanCard` streaming 时渲染完整 plain text，完成后再交给 `MarkdownContent` 渲染 markdown，避免 ReactMarkdown 在每个 delta 上重解析整段增长文本。
 
 ### 5.1 数据流
 
@@ -451,7 +480,7 @@ StateSnapshot + OraRunTrail
 | 消费内容 | snapshot 字段 |
 | --- | --- |
 | 延迟 marks | `latency.marks` (name, source, at, detail) |
-| 首文本证据 | `latency.marks` + `output` + `events` (message.delta) |
+| 首文本证据 | `latency.marks` + `output` + shared assistant text projection + `events` (message.delta fallback) |
 | 分段诊断 | marks 匹配 14 个预定义段定义 |
 
 ### 6.6 Evidence（证据）
@@ -533,6 +562,7 @@ trailViewModel 中的 builder 函数是纯函数，不产生副作用。但新�
 - 该字段在 live snapshot 和 ledger-backed snapshot 中是否一致
 - 该字段在 slim 后是否仍然可用
 - 该字段在流式过程中的中间态是否有意义
+- 如果字段代表 assistant 可见文本，应优先复用 shared assistant text projection，不要重新从 `snapshot.events` 手写拼接规则
 
 ### 8.5 "buildSemanticTimeline 显示所有事件"
 
@@ -550,6 +580,7 @@ trailViewModel 中的 builder 函数是纯函数，不产生副作用。但新�
 | --- | --- | --- |
 | 投影来源 | `toFlowRunDetail` 传播 `snapshotSource`，终态/hydrate 可消费 ledger-backed snapshot | streaming 期间仍允许 live snapshot；新增终态字段消费必须检查来源 |
 | 本地 Trails | 本地合成覆盖全部观测类型 | 观测粒度和 Langfuse 不完全对齐 |
+| Assistant text projection | `output.text` 优先，缺失时统一从 public `message.delta` 投影；runtime/shared/desktop fallback 复用同一 helper | 不在 per-token hot path 做全量重建；live UI 仍需要增量 buffer |
 | trailViewModel | 纯函数，全部从 snapshot + trail 派生；Tools tab 会合并 durable `toolResults` | 未来可能需要支持增量更新而非全量重建 |
 | compare 标签页 | 仅对比指标数值 | 未实现事件级 diff |
 | Latency marks | 依赖 runtime/desktop 打点 | marks 缺失时部分分段无法计算 |

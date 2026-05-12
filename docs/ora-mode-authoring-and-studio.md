@@ -35,6 +35,7 @@ Ora 中的 mode 分两类：
 | `single_agent` | `orchestrator_subagent` | 单 agent 直接回答，不委派 |
 | `generator_verifier` | `generator_verifier` | 生成候选 + 验证循环 |
 | `orchestrator_subagent` | `orchestrator_subagent` | 默认编排：分解 → 研究 → 审查 → 综合 |
+| `dynamic_orchestrator` | `orchestrator_subagent` | 动态编排：orchestrator 先判断是否需要 research/review，再综合 |
 | `agent_teams` | `agent_teams` | 持久 worker 团队协作 |
 | `message_bus` | `message_bus` | 事件路由 |
 | `shared_state` | `shared_state` | 共享黑板协作 |
@@ -250,7 +251,7 @@ runtime atom 在编辑态和运行态扮演不同角色：
 - `family_capability`：复用 family 内置的 capability 节点（如 `message_bus` 的 `triage_topic`）
 - `mode_capability`：投影时新增 `capability:<atomId>` 节点，从 `run` 连过去
 - `stage_attachment`：投影时新增 `capability:<nodeId>:<atomId>` 节点，挂到对应 stage 的 owner agent
-- atom 也影响 runtime 行为（如 `loop_guard` 控制最大迭代次数、`clarification_interrupt` 启用澄清中断）
+- atom 也影响 runtime 行为（如 `loop_guard` 控制最大迭代次数、`clarification_interrupt` 启用澄清中断、`dynamic_delegation` 让 orchestrator_subagent driver 按 delegation plan 跳过或聚焦 subagent）
 
 ### 6.3 校验边界
 
@@ -302,7 +303,7 @@ validateModeSpec(spec) 检查：
 5. 在 MVP presets 数组中注册。
 6. 如果 mode 有特殊的 Stage Transcript 布局，设置 `transcriptLayout` 和 `stages`。
 
-示例：`debate` mode 基于 `orchestrator_subagent` family，但配置了 `two_sided_duel` 的 transcript layout 和 dual-speaker stages。
+示例：`debate` mode 基于 `orchestrator_subagent` family，但配置了 `two_sided_duel` 的 transcript layout 和 dual-speaker stages。`dynamic_orchestrator` 也基于 `orchestrator_subagent` family，但默认启用 `dynamic_delegation` runtime atom：固定节点、owner、risk 和 approval 边界保持不变，运行时由 decompose 输出的 `<delegation_plan>` 决定是否跳过 research/review，并把 focus 注入对应 subagent。
 
 ### 8.2 新增 Family（新的 coordination pattern）
 
@@ -424,6 +425,8 @@ PatternDefinition
 - **Mode 的 ID 必须全局唯一**。`ModeSpecSchema.id` 使用 `ModeIdSchema` 校验。builder 生成的 mode ID 通过 `slugifyModeStudio` 处理，中文会被替换为 "guided"。
 
 - **Driver Capability Manifest 是语义契约**。每个 family 在 `packages/shared/src/driver-manifest.ts` 中有 manifest 声明。Mode Studio 保存前会通过 `validateModeSpec` 自动检查 manifest，生成关于条件边、runtime atom、节点数、transcript layout 的警告和修复建议。用户可以通过工具栏的 "Validate" 按钮提前看到这些警告。
+
+- **动态 delegation 不是新增 family**。`dynamic_orchestrator` 只是 `orchestrator_subagent` 的系统预设；`dynamic_delegation` 是 compatibleFamilies 包含 `orchestrator_subagent` 的 mode-scope atom。Mode Studio 可以把它展示成 synthetic capability，但真实执行语义在 runtime driver 中。
 
 - **Execution Preview 可在保存前查看**。`generateModeExecutionPreview`（共享包）和 `getExecutionPreview`（桌面端）提供 mode 的执行预览，包括：执行顺序、并行层、被忽略的条件边、synthetic node 映射和投影拓扑摘要。不启动真实 model/tool loop。
 
