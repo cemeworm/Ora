@@ -1315,23 +1315,33 @@ export function adaptChatMessages(
         });
       }
 
+      const liveAssistantText = turn.snapshot
+        ? liveAssistantTextForSnapshot(turn.snapshot, liveMessageDeltas)
+        : undefined;
+      const liveAssistantPlan = liveAssistantText
+        ? parseProposedPlan(liveAssistantText)
+        : undefined;
+      const canDisplayLivePlanBody = liveAssistantPlan
+        ? liveAssistantPlan.status === "streaming" || liveAssistantPlan.hasCompletePlan
+        : false;
       const assistantTurn = turn.snapshot
-        ? buildAssistantTurnAttachment(turn.snapshot)
+        ? buildAssistantTurnAttachment(turn.snapshot, canDisplayLivePlanBody ? liveAssistantPlan : undefined)
         : undefined;
       const rawAssistantText = turn.snapshot
-        ? liveAssistantTextForSnapshot(turn.snapshot, liveMessageDeltas) ??
-          assistantTextFromSnapshot(turn.snapshot)
+        ? liveAssistantText ?? assistantTextFromSnapshot(turn.snapshot)
         : undefined;
-      const snapshotProposedPlan = turn.snapshot
+      const snapshotProposedPlan = !canDisplayLivePlanBody && turn.snapshot
         ? proposedPlanFromSnapshot(turn.snapshot)
         : undefined;
-      const parsedAssistantPlan = !snapshotProposedPlan && rawAssistantText
+      const parsedAssistantPlan = !snapshotProposedPlan && !canDisplayLivePlanBody && rawAssistantText
         ? parseProposedPlan(rawAssistantText)
         : undefined;
       const canDisplayPlanBody = parsedAssistantPlan
         ? parsedAssistantPlan.status === "streaming" || parsedAssistantPlan.hasCompletePlan
         : false;
-      const snapshotAssistant = snapshotProposedPlan
+      const snapshotAssistant = canDisplayLivePlanBody
+        ? liveAssistantPlan?.planContent
+        : snapshotProposedPlan
         ? snapshotProposedPlan.planContent
         : parsedAssistantPlan && canDisplayPlanBody
           ? parsedAssistantPlan.planContent
@@ -1885,15 +1895,18 @@ const turnAttachmentCache = new WeakMap<OraStateSnapshot, AssistantTurnAttachmen
 
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
+  liveProposedPlan?: ReturnType<typeof parseProposedPlan>,
 ): AssistantTurnAttachment {
-  const cached = turnAttachmentCache.get(snapshot);
-  if (cached) return cached;
+  if (!liveProposedPlan) {
+    const cached = turnAttachmentCache.get(snapshot);
+    if (cached) return cached;
+  }
 
   const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
   const processSteps = deriveProcessSteps(snapshot, timelineProjection);
-  const proposedPlan = proposedPlanFromSnapshot(snapshot);
+  const proposedPlan = liveProposedPlan ?? proposedPlanFromSnapshot(snapshot);
   const status = adaptSnapshotRunStatus(snapshot);
-  const timelineItems = deriveTimelineItems(snapshot, processSteps, timelineProjection);
+  const timelineItems = deriveTimelineItems(snapshot, processSteps, timelineProjection, proposedPlan);
   const result: AssistantTurnAttachment = {
     runId: snapshot.runId,
     turnIndex: snapshot.turnIndex ?? 1,
@@ -1918,7 +1931,9 @@ function buildAssistantTurnAttachment(
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
     activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, proposedPlan, timelineItems),
   };
-  turnAttachmentCache.set(snapshot, result);
+  if (!liveProposedPlan) {
+    turnAttachmentCache.set(snapshot, result);
+  }
   return result;
 }
 
@@ -2065,33 +2080,33 @@ function proposedPlanFromSnapshot(snapshot: OraStateSnapshot): ReturnType<typeof
 }
 
 function proposedPlanFromAssistantDeltas(snapshot: OraStateSnapshot): ReturnType<typeof parseProposedPlan> | undefined {
-  const textByAgent = new Map<string, { text: string; latestSeq: number }>();
+  const textByMessage = new Map<string, { text: string; latestSeq: number }>();
   let latestStartedPlan: ReturnType<typeof parseProposedPlan> | undefined;
   for (const event of snapshot.events) {
     if (!isPublicAssistantDelta(snapshot, event)) {
       continue;
     }
-    const agentId = event.agentId ?? "__default__";
-    const current = textByAgent.get(agentId);
+    const messageId = typeof event.payload.messageId === "string" && event.payload.messageId.trim()
+      ? event.payload.messageId
+      : event.agentId ?? "__default__";
+    const current = textByMessage.get(messageId);
     const projection = mergeAssistantMessageTextProjection(
       current ? { text: current.text } : undefined,
       event.payload,
     );
     if (projection?.text) {
-      textByAgent.set(agentId, { text: projection.text, latestSeq: event.seq });
+      textByMessage.set(messageId, { text: projection.text, latestSeq: event.seq });
     }
   }
 
-  for (const { text } of [...textByAgent.values()].sort((left, right) => left.latestSeq - right.latestSeq)) {
+  for (const { text } of [...textByMessage.values()].sort((left, right) => right.latestSeq - left.latestSeq)) {
     if (!text.includes("<proposed_plan")) {
       continue;
     }
     const parsed = parseProposedPlan(text);
     if (parsed.hasCompletePlan) {
-      latestStartedPlan = parsed;
+      return parsed;
     } else if (!latestStartedPlan && parsed.status === "streaming") {
-      latestStartedPlan = parsed;
-    } else if (latestStartedPlan?.status === "streaming" && parsed.status === "streaming") {
       latestStartedPlan = parsed;
     }
   }
@@ -2278,13 +2293,14 @@ function deriveTimelineItems(
   snapshot: OraStateSnapshot,
   processSteps: TurnProcessStep[],
   timelineProjection?: ReturnType<typeof deriveRuntimeTimelineProjection>,
+  proposedPlanOverride?: ReturnType<typeof parseProposedPlan>,
 ): TurnTimelineItem[] {
   const projection = timelineProjection ?? deriveRuntimeTimelineProjection(snapshot);
   const { events, visibleEvents } = visibleProcessEvents(snapshot, projection);
   const baseTime = projection.baseTime;
   const finalText = outputTextFromSnapshot(snapshot);
   const hasVisibleProcessSeparators = visibleEvents.some((event) => isWorkProcessEvent(event));
-  const proposedPlan = proposedPlanFromSnapshot(snapshot);
+  const proposedPlan = proposedPlanOverride ?? proposedPlanFromSnapshot(snapshot);
   const hasStartedProposedPlan = Boolean(proposedPlan);
   const hasCompleteFinalProposedPlan = proposedPlan?.hasCompletePlan === true;
   const agentLabels = projection.agentLabels;

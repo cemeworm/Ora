@@ -1568,6 +1568,129 @@ describe("desktop session view model", () => {
     expect(assistant?.content).not.toContain("<proposed_plan>");
   });
 
+  it("uses the latest live proposed plan message after a streaming recovery starts a new message", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-plan-recovery-new-message";
+    const sessionId = "session-plan-recovery-new-message";
+    const firstMessageId = `${runId}:assistant:planner:planner:0`;
+    const secondMessageId = `${runId}:assistant:planner:planner:1`;
+    const firstPlan = "<proposed_plan>\n旧计划开头不应在恢复后的计划卡片里重播。";
+    const secondPlan = "<proposed_plan>\n新计划步骤应该继续显示，而且只来自最新的恢复消息。";
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "排查任务计划恢复卡顿", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["planner"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-plan-recovery-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "planner", label: "Planner" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta" as const,
+        agentId: "planner",
+        createdAt,
+        pattern: "orchestrator_subagent" as const,
+        payload: { role: "assistant", messageId: firstMessageId, content: firstPlan, delta: firstPlan, streaming: true },
+      }, {
+        id: `${runId}:evt-1`,
+        runId,
+        seq: 1,
+        type: "completion.updated" as const,
+        agentId: "planner",
+        createdAt: createdAt + 1,
+        pattern: "orchestrator_subagent" as const,
+        payload: { status: "recovering", summary: "恢复计划流式输出" },
+      }, {
+        id: `${runId}:evt-2`,
+        runId,
+        seq: 2,
+        type: "message.delta" as const,
+        agentId: "planner",
+        createdAt: createdAt + 2,
+        pattern: "orchestrator_subagent" as const,
+        payload: { role: "assistant", messageId: secondMessageId, content: secondPlan, delta: secondPlan, streaming: true },
+      }],
+      agentMessages: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "排查任务计划恢复卡顿",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+      {
+        [`${runId}:${firstMessageId}`]: {
+          runId,
+          messageId: firstMessageId,
+          sessionId,
+          role: "assistant",
+          content: firstPlan,
+          agentId: "planner",
+          createdAt,
+          updatedAt: createdAt,
+        },
+        [`${runId}:${secondMessageId}`]: {
+          runId,
+          messageId: secondMessageId,
+          sessionId,
+          role: "assistant",
+          content: secondPlan,
+          agentId: "planner",
+          createdAt: createdAt + 2,
+          updatedAt: createdAt + 2,
+        },
+      },
+    ).find((message) => message.role === "assistant");
+
+    expect(assistant?.turn?.hasProposedPlan).toBe(true);
+    expect(assistant?.turn?.proposedPlanStatus).toBe("streaming");
+    expect(assistant?.content).toContain("新计划步骤应该继续显示");
+    expect(assistant?.content).not.toContain("旧计划开头不应");
+    expect(assistant?.content).not.toContain("<proposed_plan>");
+  });
+
   it("keeps internal agent message content out of the assistant timeline", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
