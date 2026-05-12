@@ -115,4 +115,21 @@ describe("recovery policy classification", () => {
     expect(coordinator.resolve(firstRequestIncident)).toMatchObject({ action: "retry", attempt: 2 });
     expect(coordinator.resolve(secondRequestIncident)).toMatchObject({ action: "retry", attempt: 1 });
   });
+
+  it("keeps forced-final provider exhaustion eligible for fallback artifacts", () => {
+    const modeSpec = getModePreset("single_agent")!;
+    const coordinator = new RecoveryCoordinator(modeSpec, []);
+    const incident = classifyRecoveryError(
+      new Error("forced final provider unavailable"),
+      { surface: "provider", nodeId: "solo_agent", agentId: "solo_agent" },
+    );
+
+    expect(coordinator.resolve({
+      ...incident,
+      errorType: "provider_finalization_unavailable",
+    })).toMatchObject({
+      action: "fallback_artifact",
+      ruleId: "provider-finalization-fallback",
+    });
+  });
 });
