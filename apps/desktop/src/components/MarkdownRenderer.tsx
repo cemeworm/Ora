@@ -8,6 +8,48 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
+export function normalizeMarkdownContent(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const normalized: string[] = [];
+  let inFencedCode = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFencedCode = !inFencedCode;
+      normalized.push(line);
+      continue;
+    }
+    if (inFencedCode) {
+      normalized.push(line);
+      continue;
+    }
+
+    const nextLine = lines[index + 1] ?? "";
+    const headingWithTableHeader = line.match(/^(\s{0,3})(#{1,6})(?!#)\s*([^|]+?)\s+(\|.+\|)\s*$/);
+    if (headingWithTableHeader && isMarkdownTableDelimiter(nextLine)) {
+      const [, indent, hashes, heading, tableHeader] = headingWithTableHeader;
+      normalized.push(`${indent}${hashes} ${heading.trim()}`, "", `${indent}${tableHeader.trim()}`);
+      continue;
+    }
+
+    const compactHeading = line.match(/^(\s{0,3})(#{1,6})(?!#)(\S.*)$/);
+    if (compactHeading) {
+      const [, indent, hashes, heading] = compactHeading;
+      normalized.push(`${indent}${hashes} ${heading.trimStart()}`);
+      continue;
+    }
+
+    normalized.push(line);
+  }
+
+  return normalized.join("\n");
+}
+
+function isMarkdownTableDelimiter(line: string): boolean {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+}
+
 const markdownComponents: Components = {
   p: ({ className, ...props }) => (
     <p className={cn("my-2 whitespace-pre-wrap break-words first:mt-0 last:mb-0", className)} {...props} />
@@ -79,7 +121,7 @@ export default function MarkdownRenderer({ content, className }: MarkdownRendere
   return (
     <div className={cn("max-w-full break-words", className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
-        {content}
+        {normalizeMarkdownContent(content)}
       </ReactMarkdown>
     </div>
   );
