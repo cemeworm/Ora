@@ -756,6 +756,8 @@ function adaptActionRecord(action: OraActionRecord, userPrompt?: string): Action
     state: adaptActionStatus(action.status),
     consequence: actionConsequence(action),
     risk: action.riskLevel,
+    toolId: action.type,
+    input: action.input,
     approvalRequest: action.approvalRequest ?? fallbackApprovalRequest(action, userPrompt),
     agentId: action.agentId,
     planItemId: action.planItemId,

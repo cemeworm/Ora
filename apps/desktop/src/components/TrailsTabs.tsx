@@ -32,6 +32,7 @@ import type {
 } from "../types";
 import { getSharedRuntimeClient, type OraRunTrail, type OraSessionRunSummary, type OraStateSnapshot } from "../lib/runtimeClient";
 import type { DesktopRunInteractionState } from "../lib/runInteractionState";
+import { toolRendererRegistry } from "../lib/toolRendererRegistry";
 import {
   buildAgentLanes,
   buildActiveMemorySummary,
@@ -69,6 +70,7 @@ import {
   type TrailDebuggerTab,
   type TrailFinding,
   type TrailFindingSeverity,
+  type ToolLedgerItem,
   type TrailLatencyDiagnostics,
 } from "../lib/trailViewModel";
 
@@ -1265,11 +1267,20 @@ function TrailTools({ commandFeedback, items }: { commandFeedback: string; items
             const isExpanded = expandedIds.has(item.id);
             const resultFull = item.resultPreview && item.resultPreview.length > 180;
             const argsFull = item.argsPreview && item.argsPreview.length > 180;
+            const renderer = toolRendererRegistry.get(item.toolId);
+            const hasStructuredPreview = item.previewKind && item.previewPreview;
             return (
             <div key={item.id} className="rounded-md bg-bench-50 px-3 py-3 ring-1 ring-inset ring-bench-200">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-bench-900">{item.toolId}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-semibold text-bench-900">{item.toolId}</p>
+                    {renderer && (
+                      <span className="shrink-0 rounded-full bg-bench-100 px-1.5 py-0.5 text-[10px] font-semibold text-bench-600">
+                        {renderer.label}
+                      </span>
+                    )}
+                  </div>
                   <p className="mt-1 text-[11px] text-bench-700">
                     {[toolSourceLabel(item.source), item.agentLabel, item.nodeLabel, item.latency].filter(Boolean).join(" · ")}
                   </p>
@@ -1279,11 +1290,17 @@ function TrailTools({ commandFeedback, items }: { commandFeedback: string; items
               {item.repairReason || item.error ? (
                 <p className="mt-2 text-xs leading-5 text-amber-800">{(item.repairReason ?? item.error)?.replace(/_/g, " ")}</p>
               ) : null}
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <EvidenceSnippet label="参数" value={isExpanded && item.rawArgs !== undefined ? formatRawValue(item.rawArgs) : item.argsPreview} />
-                <EvidenceSnippet label="结果" value={isExpanded && item.rawResult !== undefined ? formatRawValue(item.rawResult) : (item.resultPreview || "暂无结果记录")} />
-              </div>
-              {(resultFull || argsFull) && (
+              {hasStructuredPreview && renderer ? (
+                <div className="mt-2">
+                  <StructuredToolPreview item={item} expanded={isExpanded} onToggle={() => toggleExpand(item.id)} />
+                </div>
+              ) : (
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <EvidenceSnippet label="参数" value={isExpanded && item.rawArgs !== undefined ? formatRawValue(item.rawArgs) : item.argsPreview} />
+                  <EvidenceSnippet label="结果" value={isExpanded && item.rawResult !== undefined ? formatRawValue(item.rawResult) : (item.resultPreview || "暂无结果记录")} />
+                </div>
+              )}
+              {(resultFull || argsFull) && !hasStructuredPreview && (
                 <button
                   onClick={() => toggleExpand(item.id)}
                   className="mt-2 text-[11px] font-semibold text-bench-600 hover:text-bench-900 transition"
@@ -1296,6 +1313,85 @@ function TrailTools({ commandFeedback, items }: { commandFeedback: string; items
         </div>
       )}
     </DockCard>
+  );
+}
+
+function StructuredToolPreview({ item, expanded, onToggle }: { item: ToolLedgerItem; expanded: boolean; onToggle: () => void }) {
+  const kind = item.previewKind;
+  const preview = item.previewPreview as Record<string, unknown> | undefined;
+
+  if (kind === "file.patch" || kind === "file.write") {
+    const diff = typeof preview?.diff === "string" ? preview.diff : undefined;
+    const detail = item.previewDetail ?? {};
+    return (
+      <div>
+        <p className="text-xs leading-5 text-bench-700">
+          {(item.previewDetail as { summary?: string })?.summary ?? item.resultPreview}
+        </p>
+        {diff && (
+          <div className="mt-2 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-bench-600 mb-1">Diff</p>
+            <pre className={`text-[11px] leading-5 text-bench-800 overflow-x-auto whitespace-pre-wrap font-mono ${expanded ? "" : "max-h-32 overflow-hidden"}`}>
+              {diff}
+            </pre>
+          </div>
+        )}
+        {(diff && diff.length > 500) && (
+          <button onClick={onToggle} className="mt-1 text-[11px] font-semibold text-bench-600 hover:text-bench-900 transition">
+            {expanded ? "收起完整 diff" : "展开完整 diff"}
+          </button>
+        )}
+        {detail && Object.keys(detail).length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {typeof detail.path === "string" && <span className="rounded bg-bench-100 px-1.5 py-0.5 text-[10px] text-bench-700 font-mono">{detail.path}</span>}
+            {typeof detail.additions === "number" && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800">+{detail.additions}</span>}
+            {typeof detail.deletions === "number" && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] text-rose-800">-{detail.deletions}</span>}
+            {typeof detail.sizeBytes === "number" && <span className="rounded bg-bench-100 px-1.5 py-0.5 text-[10px] text-bench-600">{detail.sizeBytes} bytes</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (kind === "shell.execute") {
+    const stdout = typeof preview?.stdout === "string" ? preview.stdout : "";
+    const stderr = typeof preview?.stderr === "string" ? preview.stderr : "";
+    const detail = item.previewDetail ?? {};
+    return (
+      <div>
+        <p className="text-xs leading-5 text-bench-700">
+          退出码 {(detail.exitCode as number) ?? "?"} · 耗时 {(detail.durationMs as number) ?? "?"}ms
+        </p>
+        {stdout && (
+          <div className="mt-2 rounded-md bg-white/70 p-2 ring-1 ring-inset ring-bench-200">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-bench-600 mb-1">stdout</p>
+            <pre className={`text-[11px] leading-5 text-bench-800 overflow-x-auto whitespace-pre-wrap font-mono ${expanded ? "" : "max-h-32 overflow-hidden"}`}>
+              {stdout}
+            </pre>
+          </div>
+        )}
+        {stderr && (
+          <div className="mt-1 rounded-md bg-rose-50/70 p-2 ring-1 ring-inset ring-bench-200">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-rose-600 mb-1">stderr</p>
+            <pre className={`text-[11px] leading-5 text-rose-800 overflow-x-auto whitespace-pre-wrap font-mono ${expanded ? "" : "max-h-32 overflow-hidden"}`}>
+              {stderr}
+            </pre>
+          </div>
+        )}
+        {((stdout && stdout.length > 500) || (stderr && stderr.length > 200)) && (
+          <button onClick={onToggle} className="mt-1 text-[11px] font-semibold text-bench-600 hover:text-bench-900 transition">
+            {expanded ? "收起完整输出" : "展开完整输出"}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      <EvidenceSnippet label="参数" value={item.argsPreview} />
+      <EvidenceSnippet label="结果" value={item.resultPreview} />
+    </div>
   );
 }
 

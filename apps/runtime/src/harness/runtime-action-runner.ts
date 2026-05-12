@@ -4,6 +4,7 @@ import type {
   OraToolCallEnvelope,
   PolicyDecision,
   RunConfig,
+  RuntimeToolResultPreview,
 } from "@cemeworm/shared";
 import type { ActionLedger, PolicyService } from "../capabilities.js";
 import { ApprovalInterruptError } from "./runtime-interrupts.js";
@@ -204,6 +205,7 @@ export function recordRuntimeToolActionSucceeded(params: {
   };
   output: unknown;
   fileChange?: RuntimeFileChangeMetadata;
+  resultPreview?: RuntimeToolResultPreview;
   artifactIds?: string[];
   cacheHit?: boolean;
   recoveredFrom?: string;
@@ -227,6 +229,7 @@ export function recordRuntimeToolActionSucceeded(params: {
         status: "succeeded",
         output: params.output,
         content: resultText,
+        resultPreview: params.resultPreview,
         createdAt: params.now(),
         updatedAt: params.now(),
       },
@@ -246,6 +249,7 @@ export function recordRuntimeToolActionSucceeded(params: {
       input: params.toolCall.args,
       output: params.output,
       ...(params.fileChange ? { fileChange: params.fileChange } : {}),
+      ...(params.resultPreview ? { resultPreview: params.resultPreview } : {}),
       ...(params.cacheHit !== undefined ? { cacheHit: params.cacheHit } : {}),
       ...(params.recoveredFrom ? { recoveredFrom: params.recoveredFrom } : {}),
     },

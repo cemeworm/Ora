@@ -330,6 +330,7 @@ export class RuntimeToolRecoveryService {
         toolCall: alternateCall,
         output: alternateExecution.output,
         fileChange: alternateExecution.fileChange,
+        resultPreview: alternateExecution.resultPreview,
         artifactIds: alternateArtifact ? [alternateArtifact.id] : undefined,
         recoveredFrom: toolCall.tool,
         now: this.deps.now,

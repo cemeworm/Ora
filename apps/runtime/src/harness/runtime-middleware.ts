@@ -6,6 +6,7 @@ import type {
   OraToolCallEnvelope,
   PendingClarificationOption,
   RunConfig,
+  RuntimeToolResultPreview,
 } from "@cemeworm/shared";
 import {
   resolveAutoCompactTokenLimit,
@@ -75,6 +76,7 @@ export interface RuntimeNodeStateEmitParams {
 export interface RuntimeToolExecutionResult {
   output: unknown;
   fileChange?: RuntimeFileChangeMetadata;
+  resultPreview?: RuntimeToolResultPreview;
   artifact?: ArtifactRef;
   cacheKey?: string;
   cacheHit?: boolean;

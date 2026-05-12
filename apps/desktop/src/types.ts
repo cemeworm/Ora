@@ -151,6 +151,8 @@ export interface ActionRecord {
   state: "proposed" | "approval_required" | "running" | "succeeded" | "failed";
   consequence: string;
   risk: "low" | "medium" | "high";
+  toolId?: string;
+  input?: unknown;
   approvalRequest?: ApprovalRequestCopy;
   agentId?: string;
   planItemId?: string;

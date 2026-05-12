@@ -98,7 +98,7 @@ describe("RuntimeToolExecutor", () => {
     const executeWithMetadata = source.match(/async executeWithMetadata[\s\S]*?\n  private resolveDescriptorRiskLevel/);
 
     expect(executeWithMetadata?.[0]).toContain("const definition = this.definitions.get(effectiveCall.tool)");
-    expect(executeWithMetadata?.[0]).toContain("await definition.execute(effectiveCall.args, this.executionContext(options))");
+    expect(executeWithMetadata?.[0]).toMatch(/await definition\.execute\(preparedArgs, this\.executionContext\(options\)\)/);
     expect(executeWithMetadata?.[0]).not.toMatch(/\bswitch\s*\(/);
     expect(executeWithMetadata?.[0]).not.toMatch(/\bcase\s+['\"`][a-zA-Z0-9_.-]+['\"`]\s*:/);
   });

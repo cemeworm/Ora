@@ -214,6 +214,7 @@ export class RuntimeToolCallService {
       toolCall,
       output: execution.output,
       fileChange: execution.fileChange,
+      resultPreview: execution.resultPreview,
       artifactIds: execution.artifact ? [execution.artifact.id] : undefined,
       cacheHit: execution.cacheHit,
       toolCallRecord,

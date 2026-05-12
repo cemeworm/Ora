@@ -19,7 +19,7 @@ export function shellToolRuntimeFields(toolId: string): Partial<RuntimeToolDefin
     actionRiskLevel: () => "high",
     approvalRequest: shellApprovalRequest,
     execute: async (args, context) => ({ output: await executeWorkspaceShell(requireWorkspaceRoot(context.workspace), args, context.limits, context.signal) }),
-    resultPreview: (result) => shellResultPreview(result as ShellExecuteResult),
+    resultPreview: (result) => shellResultPreview((result as { output: ShellExecuteResult }).output),
   };
 }
 

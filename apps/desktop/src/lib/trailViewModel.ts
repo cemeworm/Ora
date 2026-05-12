@@ -127,6 +127,9 @@ export interface ToolLedgerItem {
   latency: string;
   argsPreview: string;
   resultPreview: string;
+  previewKind?: string;
+  previewDetail?: Record<string, unknown>;
+  previewPreview?: unknown;
   rawArgs?: unknown;
   rawResult?: unknown;
   repairReason?: string;
@@ -495,46 +498,58 @@ export function buildLatencyDiagnostics(snapshot: OraStateSnapshot): TrailLatenc
 export function buildToolLedger(snapshot: OraStateSnapshot): ToolLedgerItem[] {
   const nodeLabels = new Map(snapshot.topology.nodes.map((node) => [node.id, node.label]));
   const agentLabels = buildAgentLabelMap(snapshot);
-  const fromToolCalls = snapshot.toolCalls.map((call) => ({
-    id: call.id,
-    toolId: call.toolId,
-    status: call.status,
-    statusTone: toolStatusTone(call.status),
-    source: call.source.replace(/_/g, " "),
-    agentId: call.agentId,
-    agentLabel: call.agentId ? agentLabels.get(call.agentId) ?? call.agentId : undefined,
-    nodeId: call.nodeId,
-    nodeLabel: call.nodeId ? nodeLabels.get(call.nodeId) ?? call.nodeId : undefined,
-    latency: formatDuration(Math.max(0, (call.result?.updatedAt ?? call.updatedAt) - call.requestedAt)),
-    argsPreview: previewValue(call.args) ?? "{}",
-    resultPreview: previewValue(call.result?.output ?? call.result?.content ?? call.result?.error) ?? "暂无结果记录",
-    rawArgs: call.args,
-    rawResult: call.result?.output ?? call.result?.content ?? call.result?.error,
-    repairReason: call.repairReason,
-    error: call.error ?? call.result?.error,
-  }));
+  const fromToolCalls = snapshot.toolCalls.map((call) => {
+    const rp = call.result?.resultPreview;
+    return {
+      id: call.id,
+      toolId: call.toolId,
+      status: call.status,
+      statusTone: toolStatusTone(call.status),
+      source: call.source.replace(/_/g, " "),
+      agentId: call.agentId,
+      agentLabel: call.agentId ? agentLabels.get(call.agentId) ?? call.agentId : undefined,
+      nodeId: call.nodeId,
+      nodeLabel: call.nodeId ? nodeLabels.get(call.nodeId) ?? call.nodeId : undefined,
+      latency: formatDuration(Math.max(0, (call.result?.updatedAt ?? call.updatedAt) - call.requestedAt)),
+      argsPreview: previewValue(call.args) ?? "{}",
+      resultPreview: previewValue(call.result?.output ?? call.result?.content ?? call.result?.error) ?? "暂无结果记录",
+      previewKind: rp?.kind,
+      previewDetail: rp?.detail,
+      previewPreview: rp?.preview,
+      rawArgs: call.args,
+      rawResult: call.result?.output ?? call.result?.content ?? call.result?.error,
+      repairReason: call.repairReason,
+      error: call.error ?? call.result?.error,
+    };
+  });
 
   const existingIds = new Set(fromToolCalls.map((item) => item.id));
   const fromToolResults = snapshot.toolResults
     .filter((entry) => !existingIds.has(entry.resultToolCallId))
-    .map((entry) => ({
-      id: entry.resultToolCallId,
-      toolId: entry.toolId,
-      status: entry.status,
-      statusTone: toolStatusTone(entry.status),
-      source: "ledger",
-      agentId: undefined,
-      agentLabel: undefined,
-      nodeId: undefined,
-      nodeLabel: undefined,
-      latency: formatDuration(Math.max(0, entry.updatedAt - entry.createdAt)),
-      argsPreview: entry.argsDigest,
-      resultPreview: previewValue(entry.output ?? entry.error) ?? "暂无结果记录",
-      rawArgs: undefined,
-      rawResult: entry.output ?? entry.error,
-      repairReason: undefined,
-      error: entry.error,
-    }));
+    .map((entry) => {
+      const rp = entry.resultPreview;
+      return {
+        id: entry.resultToolCallId,
+        toolId: entry.toolId,
+        status: entry.status,
+        statusTone: toolStatusTone(entry.status),
+        source: "ledger",
+        agentId: undefined,
+        agentLabel: undefined,
+        nodeId: undefined,
+        nodeLabel: undefined,
+        latency: formatDuration(Math.max(0, entry.updatedAt - entry.createdAt)),
+        argsPreview: entry.argsDigest,
+        resultPreview: previewValue(entry.output ?? entry.error) ?? "暂无结果记录",
+        previewKind: rp?.kind,
+        previewDetail: rp?.detail,
+        previewPreview: rp?.preview,
+        rawArgs: undefined,
+        rawResult: entry.output ?? entry.error,
+        repairReason: undefined,
+        error: entry.error,
+      };
+    });
 
   return [...fromToolCalls, ...fromToolResults];
 }

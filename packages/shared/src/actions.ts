@@ -119,11 +119,20 @@ export const OraToolCallStatusSchema = z.enum([
 ]);
 export type OraToolCallStatus = z.infer<typeof OraToolCallStatusSchema>;
 
+export const RuntimeToolResultPreviewSchema = z.object({
+  kind: z.string().min(1),
+  summary: z.string(),
+  detail: z.record(z.unknown()).optional(),
+  preview: z.unknown().optional(),
+});
+export type RuntimeToolResultPreview = z.infer<typeof RuntimeToolResultPreviewSchema>;
+
 export const OraToolCallResultSchema = z.object({
   status: OraToolCallStatusSchema,
   output: z.unknown().optional(),
   error: z.string().optional(),
   content: z.string().optional(),
+  resultPreview: RuntimeToolResultPreviewSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });

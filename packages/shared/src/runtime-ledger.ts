@@ -12,6 +12,7 @@ import {
   RunAttentionSchema,
   RunConfigSchema,
   RuntimeToolResultLedgerEntrySchema,
+  RuntimeToolResultPreviewSchema,
   SessionBranchGroupSchema,
   SessionContextStateSchema,
   SessionDetailSchema,
@@ -945,6 +946,9 @@ function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly
       if (!toolCallId || (status !== "succeeded" && status !== "failed")) {
         continue;
       }
+      const resultPreview = payload.resultPreview && typeof payload.resultPreview === "object"
+        ? RuntimeToolResultPreviewSchema.safeParse(payload.resultPreview).data
+        : undefined;
       toolCalls = toolCalls.map((call) =>
         call.id === toolCallId
           ? {
@@ -955,6 +959,7 @@ function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly
                 output: payload.output,
                 error: typeof payload.error === "string" ? payload.error : undefined,
                 content: payload.output === undefined ? undefined : JSON.stringify(payload.output),
+                resultPreview,
                 createdAt: event.createdAt,
                 updatedAt: event.createdAt,
               },
@@ -1082,6 +1087,7 @@ function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly
         input: call.args,
         output: call.result?.output,
         error: call.result?.error,
+        resultPreview: call.result?.resultPreview,
         cacheHit: false,
       }, call.updatedAt);
     }
@@ -1122,6 +1128,7 @@ function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly
           status: action.status,
           output: action.output,
           error: action.error,
+          resultPreview: call.result?.resultPreview,
           createdAt: call.updatedAt,
           updatedAt: call.updatedAt,
         },

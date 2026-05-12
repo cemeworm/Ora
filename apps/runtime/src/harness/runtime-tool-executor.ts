@@ -1,6 +1,6 @@
 import { ActionApprovalRequestCopySchema } from "@cemeworm/shared";
 import { resolveToolPermission } from "@cemeworm/shared";
-import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, PermissionProfile, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
+import type { ActionApprovalRequestCopy, ActionRiskLevel, ModeToolLimits, PermissionProfile, RuntimeToolResultPreview, SearchProviderConfig, SkillDescriptor, SkillDetail, SkillListParams, TaskIntent, ToolDescriptor, ToolPermission } from "@cemeworm/shared";
 import type { PackageManager } from "../package-manager.js";
 import type { ModelToolDefinition } from "../providers/index.js";
 import type { RuntimeToolDefinition } from "./capability-registries.js";
@@ -97,6 +97,7 @@ export interface RuntimeFileChangeMetadata {
 export interface RuntimeToolExecutionResult {
   output: unknown;
   fileChange?: RuntimeFileChangeMetadata;
+  resultPreview?: RuntimeToolResultPreview;
 }
 
 export interface RuntimeToolExecutionContext {
@@ -541,7 +542,13 @@ export class RuntimeToolExecutor {
       if (!definition?.execute) {
         throw new Error(`Unsupported runtime tool: ${effectiveCall.tool}`);
       }
-      const result = toRuntimeToolExecutionResult(await definition.execute(effectiveCall.args, this.executionContext(options)));
+      const preparedArgs = definition.prepareArguments
+        ? definition.prepareArguments(effectiveCall.args, this.executionContext(options))
+        : effectiveCall.args;
+      let result = toRuntimeToolExecutionResult(await definition.execute(preparedArgs, this.executionContext(options)));
+      if (definition.resultPreview) {
+        result = { ...result, resultPreview: definition.resultPreview(result, preparedArgs) };
+      }
       return await this.runPostToolPolicy(effectiveCall, result, false, options);
     } catch (error) {
       await this.runPostToolPolicy(effectiveCall, undefined, true, options, error);
