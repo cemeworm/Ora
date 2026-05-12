@@ -52,6 +52,7 @@ jobs:
           PY
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -60,3 +61,85 @@ jobs:
           projectPath: apps/desktop
           releaseId: ${{ github.event.release.id }}
           tagName: ${{ github.event.release.tag_name }}
+
+      - name: Re-sign DMG contents with ad-hoc identity and inject fix-quarantine helper
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          BUNDLE_ROOT="apps/desktop/src-tauri/target"
+          FIX_SCRIPT="apps/desktop/resources/fix-quarantine.command"
+
+          if [ ! -f "$FIX_SCRIPT" ]; then
+            echo "::error::fix-quarantine.command 缺失：$FIX_SCRIPT"
+            exit 1
+          fi
+
+          DMG_COUNT="$(find "$BUNDLE_ROOT" -type f -name "*.dmg" | wc -l | tr -d " ")"
+          if [ "$DMG_COUNT" -eq 0 ]; then
+            echo "::warning::No DMG found under $BUNDLE_ROOT, skipping post-processing."
+            exit 0
+          fi
+
+          WORK_DIR="$(mktemp -d)"
+          echo "Working dir: $WORK_DIR"
+
+          find "$BUNDLE_ROOT" -type f -name "*.dmg" -print0 | while IFS= read -r -d '' DMG; do
+            echo "::group::Post-processing $DMG"
+            BASENAME="$(basename "$DMG")"
+            MOUNT_DIR="$WORK_DIR/mnt-${BASENAME%.dmg}"
+            STAGE_DIR="$WORK_DIR/stage-${BASENAME%.dmg}"
+            REBUILT="$WORK_DIR/$BASENAME"
+            mkdir -p "$MOUNT_DIR" "$STAGE_DIR"
+
+            # 1. 挂载原 dmg（只读）
+            hdiutil attach "$DMG" -readonly -nobrowse -mountpoint "$MOUNT_DIR"
+
+            # 2. 拷贝内容到 stage 目录
+            cp -R "$MOUNT_DIR"/* "$STAGE_DIR"/ || true
+            # 保留隐藏文件（如 .VolumeIcon.icns、.background）
+            find "$MOUNT_DIR" -maxdepth 1 -name ".*" ! -name "." ! -name ".." \
+              -exec cp -R {} "$STAGE_DIR"/ \; || true
+
+            hdiutil detach "$MOUNT_DIR" -quiet
+
+            # 3. 对 .app 执行 ad-hoc 深度签名（deep + force），保证 Apple Silicon 上能运行
+            APP_INSIDE="$(find "$STAGE_DIR" -maxdepth 2 -name "*.app" -type d | head -n1)"
+            if [ -n "$APP_INSIDE" ]; then
+              echo "Re-signing $APP_INSIDE with ad-hoc identity"
+              codesign --force --deep --sign - "$APP_INSIDE"
+              codesign --verify --deep --strict --verbose=2 "$APP_INSIDE" || true
+            fi
+
+            # 4. 注入一键修复脚本
+            cp "$FIX_SCRIPT" "$STAGE_DIR/修复「已损坏」.command"
+            chmod +x "$STAGE_DIR/修复「已损坏」.command"
+
+            # 5. 推断卷标
+            VOLNAME="$(basename "$DMG" .dmg)"
+
+            # 6. 重新打包为压缩 dmg
+            hdiutil create \
+              -volname "$VOLNAME" \
+              -srcfolder "$STAGE_DIR" \
+              -ov -format UDZO \
+              "$REBUILT"
+
+            # 7. 覆盖原文件（tauri-action 已上传旧版，下一步会重新上传）
+            mv "$REBUILT" "$DMG"
+
+            # 8. 重新上传替换 Release 中的 dmg 资产
+            ASSET_NAME="$(basename "$DMG")"
+            echo "Replacing release asset: $ASSET_NAME"
+            OLD_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+              --jq ".[] | select(.name==\"${ASSET_NAME}\") | .id" | head -n1)"
+            if [ -n "$OLD_ID" ]; then
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${OLD_ID}" || true
+            fi
+            gh release upload "$TAG" "$DMG" --clobber
+            echo "::endgroup::"
+          done
