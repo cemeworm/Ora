@@ -96,6 +96,16 @@ interface BatchedStream {
   receivedAt: number;
 }
 
+function isLiveDeltaOnlyStream(stream: OraRunEventStream): boolean {
+  return (
+    !stream.snapshot &&
+    stream.events.length > 0 &&
+    stream.events.every(
+      (event) => event.type === "message.delta" || event.type === "token.delta",
+    )
+  );
+}
+
 function hasVerifiedRealProvider(
   providers: readonly { id: string; type: string }[] | undefined,
   statuses: readonly { providerId: string; state: string }[],
@@ -267,6 +277,7 @@ function WorkbenchInner() {
     setTurnSnapshots((current) => {
       let next = current;
       for (const { stream } of entries) {
+        if (isLiveDeltaOnlyStream(stream)) continue;
         const merged = mergeRunStreamSnapshot(next[stream.runId], stream);
         if (!merged) continue;
         if (

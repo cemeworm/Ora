@@ -1468,6 +1468,69 @@ describe("desktop workbench state", () => {
     expect(entry?.content).toBe("Hi there");
   });
 
+  it("keeps materialized active snapshots stable for live delta-only streams", () => {
+    const sessionId = "session-live-overlay-stable";
+    const runId = "run-live-overlay-stable";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const runningSnapshot = testSnapshot({ runId, sessionId, status: "running", updatedAt: 100 });
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: sessionId,
+      selectedTurnRunId: runId,
+      runLifecycle: lifecycleFromSnapshot(runningSnapshot),
+      isLoading: true,
+    };
+    const firstStream = {
+      runId,
+      sessionId,
+      fromSeq: 0,
+      nextSeq: 1,
+      status: "running",
+      events: [{
+        id: `${runId}:evt-0`,
+        runId,
+        seq: 0,
+        type: "message.delta",
+        createdAt: 120,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: "Hi", delta: "Hi", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+    const secondStream = {
+      ...firstStream,
+      fromSeq: 1,
+      nextSeq: 2,
+      events: [{
+        id: `${runId}:evt-1`,
+        runId,
+        seq: 1,
+        type: "message.delta",
+        createdAt: 130,
+        agentId: "solo",
+        nodeId: "solo",
+        payload: { role: "assistant", messageId, content: " there", delta: " there", streaming: true },
+      }],
+    } as unknown as OraRunEventStream;
+
+    const afterFirst = workbenchReducer(state, {
+      type: "APPLY_RUN_STREAM",
+      stream: firstStream,
+      receivedAt: 125,
+    });
+    const afterSecond = workbenchReducer(afterFirst, {
+      type: "APPLY_RUN_STREAM",
+      stream: secondStream,
+      receivedAt: 135,
+    });
+
+    expect(afterFirst.runLifecycle).not.toBe(state.runLifecycle);
+    expect(afterSecond.runLifecycle).toBe(afterFirst.runLifecycle);
+    expect(getActiveSnapshot(afterSecond.runLifecycle)).toBe(getActiveSnapshot(afterFirst.runLifecycle));
+    expect(getActiveSnapshot(afterSecond.runLifecycle)?.events).toHaveLength(1);
+    expect(Object.values(afterSecond.liveMessageDeltaBuffer)[0]?.content).toBe("Hi there");
+  });
+
   it("settles an active run from a terminal event-only stream", () => {
     const sessionId = "session-event-only-terminal";
     const runId = "run-event-only-terminal";

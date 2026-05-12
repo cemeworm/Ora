@@ -1776,6 +1776,44 @@ function isSettledRunStatus(
   return status !== undefined && status !== "queued" && status !== "running";
 }
 
+function isLiveDeltaOnlyStream(stream: OraRunEventStream): boolean {
+  return (
+    !stream.snapshot &&
+    stream.events.length > 0 &&
+    stream.events.every(
+      (event) => event.type === "message.delta" || event.type === "token.delta",
+    )
+  );
+}
+
+function streamCanUseLiveDeltaOverlay(
+  stream: OraRunEventStream,
+  currentActiveSnapshot: OraStateSnapshot | undefined,
+  streamSnapshot: OraStateSnapshot | undefined,
+): boolean {
+  if (!currentActiveSnapshot || currentActiveSnapshot.runId !== stream.runId) {
+    return false;
+  }
+  if (isSettledRunStatus(currentActiveSnapshot.status)) {
+    return false;
+  }
+  if (!isLiveDeltaOnlyStream(stream)) {
+    return false;
+  }
+  if (!snapshotHasDesktopFirstDeltaMark(currentActiveSnapshot)) {
+    return false;
+  }
+  return !isSettledRunStatus(streamRunStatus(stream, streamSnapshot));
+}
+
+function snapshotHasDesktopFirstDeltaMark(snapshot: OraStateSnapshot): boolean {
+  return Boolean(
+    snapshot.latency?.marks.some(
+      (mark) => mark.source === "desktop" && mark.name === "firstMessageDeltaAt",
+    ),
+  );
+}
+
 function streamUpdatedAt(
   stream: OraRunEventStream,
   snapshot: OraStateSnapshot | undefined,
@@ -2909,6 +2947,34 @@ export function workbenchReducer(
       const streamBelongsToActiveTurn =
         streamMatchesActiveSession &&
         (streamReferencesActiveRun || matchesPendingRunBeforeSnapshot);
+      if (
+        streamBelongsToActiveTurn &&
+        streamCanUseLiveDeltaOverlay(
+          action.stream,
+          currentActiveSnapshot,
+          action.stream.snapshot,
+        )
+      ) {
+        const liveMessageDeltaBuffer = applyStreamToLiveMessageDeltaBuffer(
+          state.liveMessageDeltaBuffer,
+          action.stream,
+        );
+        const selectedTurnRunId = state.selectedTurnRunId ?? action.stream.runId;
+        const isLoading = true;
+        if (
+          liveMessageDeltaBuffer === state.liveMessageDeltaBuffer &&
+          selectedTurnRunId === state.selectedTurnRunId &&
+          state.isLoading === isLoading
+        ) {
+          return state;
+        }
+        return {
+          ...state,
+          selectedTurnRunId,
+          liveMessageDeltaBuffer,
+          isLoading,
+        };
+      }
       if (!streamMatchesActiveSession) {
         const streamStatus = streamRunStatus(action.stream, action.stream.snapshot);
         if (!isSettledRunStatus(streamStatus) && !action.stream.snapshot) {

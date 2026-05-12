@@ -4124,6 +4124,99 @@ describe("desktop session view model", () => {
     expect(timelineText).toEqual(["前一段。", "后一段。"]);
   });
 
+  it("keeps live same-message delta overlay as one timeline item", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-timeline-one-item";
+    const sessionId = "session-live-timeline-one-item";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "介绍 Ora", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-timeline-one-item-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "介绍 Ora",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const renderWithContent = (content: string) => adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${messageId}`]: {
+          runId,
+          messageId,
+          sessionId,
+          role: "assistant",
+          content,
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          updatedAt: createdAt + content.length,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+
+    const first = renderWithContent("Hi");
+    const second = renderWithContent("Hi there");
+    const firstTimelineText = first?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+    const secondTimelineText = second?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(firstTimelineText).toEqual(["Hi"]);
+    expect(secondTimelineText).toEqual(["Hi there"]);
+    expect(second?.content).toBe("Hi there");
+  });
+
   it("does not mutate cached base messages while overlaying live message delta text", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-live-buffer-cache";
