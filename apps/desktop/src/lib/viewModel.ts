@@ -1627,6 +1627,9 @@ function overlayLiveTimelineItems(
       if (existing?.kind !== "assistant_text" || existing.content === content) {
         continue;
       }
+      if (!shouldReplaceSnapshotAssistantTextWithLiveContent(existing.content, content)) {
+        continue;
+      }
       if (nextItems === existingItems) {
         nextItems = [...existingItems];
       }
@@ -1655,6 +1658,18 @@ function overlayLiveTimelineItems(
   }
 
   return nextItems === existingItems ? turn : { ...turn, timelineItems: nextItems };
+}
+
+function shouldReplaceSnapshotAssistantTextWithLiveContent(
+  existingContent: string,
+  liveContent: string,
+): boolean {
+  const existing = timelineTextExcludingProposedPlan(existingContent);
+  const live = timelineTextExcludingProposedPlan(liveContent);
+  if (!existing || !live || existing === live) {
+    return false;
+  }
+  return live.length > existing.length && live.startsWith(existing);
 }
 
 function findSnapshotAssistantTimelineItemIndexForLiveEntry(
@@ -2696,9 +2711,35 @@ function deriveTimelineItems(
     });
   }
 
-  return items
+  const sortedItems = items
     .sort((left, right) => left.rawTime - right.rawTime || left.eventSeq - right.eventSeq)
     .map(({ item }) => item);
+  return filterRunningTimelineItems(sortedItems, snapshot.status);
+}
+
+function filterRunningTimelineItems(
+  items: TurnTimelineItem[],
+  status: OraStateSnapshot["status"],
+): TurnTimelineItem[] {
+  if (status !== "running" && status !== "queued") {
+    return items;
+  }
+  const latestProgressIndex = findLatestProgressNarrationIndex(items);
+  if (latestProgressIndex < 0) {
+    return items;
+  }
+  return items.filter((item, index) =>
+    item.kind !== "progress_narration" || index === latestProgressIndex
+  );
+}
+
+function findLatestProgressNarrationIndex(items: TurnTimelineItem[]): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind === "progress_narration") {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function shouldCollectAssistantDeltaForTimeline(

@@ -4331,6 +4331,116 @@ describe("desktop session view model", () => {
     expect(timelineText).toEqual(["这是我根据之前与用户的互动经验整理出的说明。"]);
   });
 
+  it("does not downgrade merged snapshot text with shorter live same-message text", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-timeline-no-downgrade";
+    const sessionId = "session-live-timeline-no-downgrade";
+    const messageId = `${runId}:assistant:solo:solo:0`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "继续", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-no-downgrade-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId, content: "Let", delta: "Let", streaming: true, phase: "stream" },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "message.delta",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt: createdAt + 10,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId, content: " me continue.", delta: " me continue.", streaming: true, phase: "stream" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 100,
+    } as unknown as OraStateSnapshot;
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "继续",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${messageId}`]: {
+          runId,
+          messageId,
+          sessionId,
+          role: "assistant",
+          content: "Let",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          updatedAt: createdAt + 200,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(timelineText).toEqual(["Let me continue."]);
+    expect(assistant?.content).toBe("Let");
+  });
+
   it("does not mutate cached base messages while overlaying live message delta text", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-live-buffer-cache";
@@ -6024,5 +6134,113 @@ describe("desktop session view model", () => {
     expect(processSteps[0]?.label).toBe("读取文件");
     expect(processSteps[0]?.detail).toContain("已读取 10-Wiki/项目/西芒杜项目.md");
     expect(processSteps[0]?.contextLabel).toBe("10-Wiki/项目/西芒杜项目.md");
+  });
+
+  it("keeps only the latest progress narration in a running turn timeline", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-progress-latest-only",
+      sessionId: "session-progress-latest-only",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "继续执行", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-progress-latest-only-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-progress-latest-only:evt-0",
+          runId: "run-progress-latest-only",
+          seq: 0,
+          type: "task.progress",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            summary: "正在读取第一批文件。",
+          },
+        },
+        {
+          id: "run-progress-latest-only:evt-1",
+          runId: "run-progress-latest-only",
+          seq: 1,
+          type: "message.delta",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: "我会先整理上下文。", delta: "我会先整理上下文。", streaming: true },
+        },
+        {
+          id: "run-progress-latest-only:evt-2",
+          runId: "run-progress-latest-only",
+          seq: 2,
+          type: "task.progress",
+          createdAt: createdAt + 2_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            kind: "chat_progress",
+            source: "progress_narrator",
+            summary: "正在运行验证，下一步将汇总结论。",
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 2_000,
+    } as unknown as OraStateSnapshot;
+
+    const messages = adaptChatMessages(
+      [{
+        id: "run-progress-latest-only:user",
+        sessionId: "session-progress-latest-only",
+        runId: "run-progress-latest-only",
+        turnIndex: 1,
+        role: "user",
+        content: "继续执行",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-progress-latest-only": snapshot },
+    );
+    const assistant = messages.find((message) => message.role === "assistant");
+    const progressItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "progress_narration") ?? [];
+    const assistantItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "assistant_text") ?? [];
+
+    expect(progressItems).toHaveLength(1);
+    expect(progressItems[0]).toMatchObject({
+      content: "正在运行验证，下一步将汇总结论。",
+    });
+    expect(assistantItems).toHaveLength(1);
+    expect(assistantItems[0]).toMatchObject({
+      content: "我会先整理上下文。",
+    });
   });
 });
