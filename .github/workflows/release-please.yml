@@ -113,10 +113,4 @@ jobs:
           projectPath: apps/desktop
           releaseId: ${{ needs.release-please.outputs.release_id }}
           tagName: ${{ needs.release-please.outputs.tag_name }}
-          # 代码签名待后续配置：
-          # 1. 加入 Apple Developer Program ($99/年)
-          # 2. 设置 GitHub Secrets: APPLE_SIGNING_IDENTITY, APPLE_CERTIFICATE,
-          #    APPLE_CERTIFICATE_PASSWORD, APPLE_NOTARY_USER, APPLE_NOTARY_PASSWORD, APPLE_TEAM_ID
-          # 3. 取消下面注释启用签名：
-          # args: --sign
-          # tauriScript: pnpm tauri
+          args: --ci

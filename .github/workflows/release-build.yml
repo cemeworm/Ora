@@ -61,6 +61,7 @@ jobs:
           projectPath: apps/desktop
           releaseId: ${{ github.event.release.id }}
           tagName: ${{ github.event.release.tag_name }}
+          args: --ci
 
       - name: Re-sign DMG contents with ad-hoc identity and inject fix-quarantine helper
         shell: bash
