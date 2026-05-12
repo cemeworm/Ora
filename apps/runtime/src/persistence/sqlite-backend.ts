@@ -10,6 +10,7 @@ import {
   ProjectSummarySchema,
   RuntimeSessionEntrySchema,
   RuntimeSessionLedgerSchema,
+  RuntimeEventBatchSnapshotCompactionResultSchema,
   RuntimeStorageOptimizationResultSchema,
 } from "@cemeworm/shared";
 import type { ArtifactRef, RuntimeSessionEntry, RuntimeSessionLedger } from "@cemeworm/shared";
@@ -33,6 +34,19 @@ import {
 } from "./session-ledger-projections.js";
 
 const MANIFEST_SCHEMA_VERSION = 3;
+
+const SLIM_SESSION_ENTRY_DATA_SQL = `
+CASE
+  WHEN type = 'runtime.event_batch'
+  THEN json_set(
+    json_remove(data, '$.payload.events', '$.payload.snapshot'),
+    '$.payload.events', json('[]')
+  )
+  WHEN type = 'assistant.message'
+  THEN json_remove(data, '$.payload.snapshot')
+  ELSE data
+END
+`;
 
 const CREATE_MANIFEST_TABLE = `
 CREATE TABLE IF NOT EXISTS manifest (
@@ -238,29 +252,13 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     this.stmtLoadAllSessionEntriesExcludingEvents = this.db.prepare(`
       SELECT
         sessionId,
-        CASE
-          WHEN type = 'runtime.event_batch' AND json_type(data, '$.payload.snapshot') = 'object'
-          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'), '$.payload.snapshot.events', json('[]'))
-          WHEN type = 'runtime.event_batch'
-          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'))
-          WHEN type = 'assistant.message' AND json_type(data, '$.payload.snapshot') = 'object'
-          THEN json_set(data, '$.payload.snapshot.events', json('[]'))
-          ELSE data
-        END AS data
+        ${SLIM_SESSION_ENTRY_DATA_SQL} AS data
       FROM session_entries
       ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC
     `);
     this.stmtLoadSessionEntriesExcludingEvents = this.db.prepare(`
       SELECT
-        CASE
-          WHEN type = 'runtime.event_batch' AND json_type(data, '$.payload.snapshot') = 'object'
-          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'), '$.payload.snapshot.events', json('[]'))
-          WHEN type = 'runtime.event_batch'
-          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'))
-          WHEN type = 'assistant.message' AND json_type(data, '$.payload.snapshot') = 'object'
-          THEN json_set(data, '$.payload.snapshot.events', json('[]'))
-          ELSE data
-        END AS data
+        ${SLIM_SESSION_ENTRY_DATA_SQL} AS data
       FROM session_entries
       WHERE sessionId = ?
       ORDER BY seq ASC, createdAt ASC, entryId ASC
@@ -437,6 +435,41 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     });
   }
 
+  compactRuntimeEventBatchSnapshots() {
+    const stats = this.db.prepare(`
+      SELECT
+        COUNT(*) AS rowsScanned,
+        SUM(CASE WHEN json_type(data, '$.payload.snapshot') IS NOT NULL THEN 1 ELSE 0 END) AS rowsCompacted,
+        COALESCE(SUM(COALESCE(length(json_extract(data, '$.payload.snapshot')), 0)), 0) AS snapshotBytesBefore,
+        COALESCE(SUM(COALESCE(length(json_extract(data, '$.payload.output')), 0)), 0) AS outputBytesBefore
+      FROM session_entries
+      WHERE type = 'runtime.event_batch'
+        AND entryId LIKE '%:events-%'
+    `).get() as {
+      rowsScanned: number;
+      rowsCompacted: number | null;
+      snapshotBytesBefore: number | null;
+      outputBytesBefore: number | null;
+    };
+    const update = this.db.prepare(`
+      UPDATE session_entries
+      SET data = json_remove(data, '$.payload.snapshot')
+      WHERE type = 'runtime.event_batch'
+        AND entryId LIKE '%:events-%'
+        AND json_type(data, '$.payload.snapshot') IS NOT NULL
+    `);
+    update.run();
+    return RuntimeEventBatchSnapshotCompactionResultSchema.parse({
+      backend: "sqlite",
+      rowsScanned: stats.rowsScanned,
+      rowsCompacted: stats.rowsCompacted ?? 0,
+      snapshotBytesBefore: stats.snapshotBytesBefore ?? 0,
+      snapshotBytesAfter: 0,
+      outputBytesBefore: stats.outputBytesBefore ?? 0,
+      outputBytesAfter: stats.outputBytesBefore ?? 0,
+    });
+  }
+
   saveManifest(manifest: StoreManifest): void {
     this.stmtSaveManifest.run(
       manifest.schemaVersion,
@@ -553,15 +586,7 @@ export class SqliteRuntimePersistence implements RuntimePersistenceBackend {
     const stmt = this.db.prepare(`
       SELECT
         sessionId,
-        CASE
-          WHEN type = 'runtime.event_batch' AND json_type(data, '$.payload.snapshot') = 'object'
-          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'), '$.payload.snapshot.events', json('[]'))
-          WHEN type = 'runtime.event_batch'
-          THEN json_set(json_remove(data, '$.payload.events'), '$.payload.events', json('[]'))
-          WHEN type = 'assistant.message' AND json_type(data, '$.payload.snapshot') = 'object'
-          THEN json_set(data, '$.payload.snapshot.events', json('[]'))
-          ELSE data
-        END AS data
+        ${SLIM_SESSION_ENTRY_DATA_SQL} AS data
       FROM session_entries
       WHERE sessionId IN (${placeholders})
       ORDER BY sessionId ASC, seq ASC, createdAt ASC, entryId ASC

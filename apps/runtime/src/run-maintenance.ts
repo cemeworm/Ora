@@ -103,6 +103,9 @@ export function runRuntimeMaintenance(
   let rawPayloadsRemoved = 0;
   let estimatedSnapshotBytesBefore = 0;
   let estimatedSnapshotBytesAfter = 0;
+  const eventBatchSnapshotCompaction = parsed.compactRuntimeEventBatchSnapshots
+    ? deps.backend.compactRuntimeEventBatchSnapshots?.()
+    : undefined;
 
   if (parsed.compactStreamingEvents) {
     for (const [runId, snapshot] of deps.runs.entries()) {
@@ -202,6 +205,7 @@ export function runRuntimeMaintenance(
   const storage = parsed.vacuum ? deps.backend.optimizeStorage() : undefined;
   return RuntimeMaintenanceResultSchema.parse({
     compactStreamingEvents: parsed.compactStreamingEvents,
+    compactRuntimeEventBatchSnapshots: parsed.compactRuntimeEventBatchSnapshots,
     vacuum: parsed.vacuum,
     staleRunningMs: parsed.staleRunningMs,
     autoArchiveThresholdMs: parsed.autoArchiveThresholdMs,
@@ -213,6 +217,12 @@ export function runRuntimeMaintenance(
     rawPayloadsRemoved,
     estimatedSnapshotBytesBefore,
     estimatedSnapshotBytesAfter,
+    eventBatchSnapshotsCompacted: eventBatchSnapshotCompaction?.rowsCompacted ?? 0,
+    eventBatchSnapshotBytesBefore: eventBatchSnapshotCompaction?.snapshotBytesBefore ?? 0,
+    eventBatchSnapshotBytesAfter: eventBatchSnapshotCompaction?.snapshotBytesAfter ?? 0,
+    eventBatchOutputBytesBefore: eventBatchSnapshotCompaction?.outputBytesBefore ?? 0,
+    eventBatchOutputBytesAfter: eventBatchSnapshotCompaction?.outputBytesAfter ?? 0,
+    eventBatchSnapshotCompaction,
     storage,
   });
 }

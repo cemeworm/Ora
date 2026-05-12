@@ -126,8 +126,10 @@ describe("run store streaming ledger hot path", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
     expect((store as unknown as { runs: Map<string, StateSnapshot> }).runs.get(runId)).toBe(liveSnapshot);
     expect(store.getSession({ sessionId }).session.latestRunId).toBe(runId);
-    const ledger = (store as unknown as { backend: { getSessionLedger: (id: string) => { entries: Array<{ type: string }> } | undefined } }).backend.getSessionLedger(sessionId);
+    const ledger = (store as unknown as { backend: { getSessionLedger: (id: string) => { entries: Array<{ type: string; payload?: unknown }> } | undefined } }).backend.getSessionLedger(sessionId);
     expect(ledger?.entries.at(-1)?.type).toBe("runtime.event_batch");
+    const payload = ledger?.entries.at(-1)?.payload as { snapshot?: unknown; output?: unknown } | undefined;
+    expect(payload?.snapshot).toBeUndefined();
   });
 
   it("keeps terminal event batches on the full projection path", () => {

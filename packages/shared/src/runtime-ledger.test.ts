@@ -107,7 +107,7 @@ describe("buildVisibleLedger", () => {
     expect(payload.error).toBe("something went wrong");
   });
 
-  it("preserves snapshot in event_batch payloads", () => {
+  it("strips snapshot in event_batch payloads", () => {
     const snapshot = { status: "succeeded", runId: "r1" };
     const entries = [
       entry({ id: "root", type: "session.created" }),
@@ -122,7 +122,7 @@ describe("buildVisibleLedger", () => {
     const result = buildVisibleLedger(input);
     const batch = result.entries.find((e) => e.id === "batch1");
     const payload = batch!.payload as Record<string, unknown>;
-    expect(payload.snapshot).toEqual(snapshot);
+    expect(payload.snapshot).toBeUndefined();
   });
 
   it("keeps parentId chains intact", () => {

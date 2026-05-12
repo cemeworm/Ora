@@ -6,6 +6,7 @@ import type {
   ChannelDelivery,
   ChannelMessageRecord,
   ProjectSummary,
+  RuntimeEventBatchSnapshotCompactionResult,
   RuntimeSessionEntry,
   RuntimeSessionLedger,
   RuntimeStorageOptimizationResult,
@@ -51,6 +52,7 @@ export interface RuntimePersistenceBackend {
   load(options?: RuntimePersistenceLoadOptions): { manifest: StoreManifest; runs: RuntimeRunReadModel[]; sessions: RuntimeSessionReadModel[]; projects: StoredProject[] };
   ledgerRevision?(): string;
   optimizeStorage(): RuntimeStorageOptimizationResult;
+  compactRuntimeEventBatchSnapshots?(): RuntimeEventBatchSnapshotCompactionResult;
   appendSessionEntries(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSessionLedger;
   appendSessionEntriesFast?(sessionId: string, entries: RuntimeSessionEntry[], leafEntryId?: string): void;
   getSessionLedger(sessionId: string): RuntimeSessionLedger | undefined;

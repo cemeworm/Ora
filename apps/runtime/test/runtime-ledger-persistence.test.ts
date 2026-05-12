@@ -108,6 +108,22 @@ function largeEventBatchEntry(): RuntimeSessionEntry {
       events: [event],
       eventCount: 1,
       status: "running",
+      output: { text: "x".repeat(100_000) },
+      snapshot: {
+        runId: "run-1",
+        sessionId: "session-ledger",
+        turnIndex: 1,
+        status: "running",
+        input: { prompt: "Persist this session.", createdAt: BASE_TIME, context: {} },
+        config: runConfig(),
+        events: [event],
+        output: { text: "x".repeat(100_000) },
+        checkpoints: [],
+        toolResults: [],
+        gates: [],
+        planDecisions: [],
+        updatedAt: BASE_TIME + 3,
+      },
     },
   });
 }
@@ -286,6 +302,8 @@ describe("runtime session ledger persistence", () => {
     expect(eventBatch?.parentId).toBe("e-run");
     expect((eventBatch?.payload as { events?: unknown[] }).events).toEqual([]);
     expect((eventBatch?.payload as { eventCount?: number }).eventCount).toBe(1);
+    expect((eventBatch?.payload as { snapshot?: unknown }).snapshot).toBeUndefined();
+    expect((eventBatch?.payload as { output?: unknown }).output).toEqual({ text: "x".repeat(100_000) });
     expect(projection.session.latestRunId).toBe("run-1");
     expect(projection.session.status).toBe("succeeded");
   });

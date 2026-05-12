@@ -1009,11 +1009,23 @@ export type RunStreamParams = z.infer<typeof RunStreamParamsSchema>;
 
 export const RuntimeMaintenanceParamsSchema = z.object({
   compactStreamingEvents: z.boolean().default(true),
+  compactRuntimeEventBatchSnapshots: z.boolean().default(false),
   vacuum: z.boolean().default(true),
   staleRunningMs: z.number().int().nonnegative().default(0),
   autoArchiveThresholdMs: z.number().int().nonnegative().default(0),
 }).default({});
 export type RuntimeMaintenanceParams = z.infer<typeof RuntimeMaintenanceParamsSchema>;
+
+export const RuntimeEventBatchSnapshotCompactionResultSchema = z.object({
+  backend: z.enum(["sqlite", "json-file"]),
+  rowsScanned: z.number().int().nonnegative(),
+  rowsCompacted: z.number().int().nonnegative(),
+  snapshotBytesBefore: z.number().int().nonnegative(),
+  snapshotBytesAfter: z.number().int().nonnegative(),
+  outputBytesBefore: z.number().int().nonnegative(),
+  outputBytesAfter: z.number().int().nonnegative(),
+});
+export type RuntimeEventBatchSnapshotCompactionResult = z.infer<typeof RuntimeEventBatchSnapshotCompactionResultSchema>;
 
 export const RuntimeStorageOptimizationResultSchema = z.object({
   backend: z.enum(["sqlite", "json-file"]),
@@ -1025,6 +1037,7 @@ export type RuntimeStorageOptimizationResult = z.infer<typeof RuntimeStorageOpti
 
 export const RuntimeMaintenanceResultSchema = z.object({
   compactStreamingEvents: z.boolean(),
+  compactRuntimeEventBatchSnapshots: z.boolean().default(false),
   vacuum: z.boolean(),
   staleRunningMs: z.number().int().nonnegative(),
   autoArchiveThresholdMs: z.number().int().nonnegative().default(0),
@@ -1036,6 +1049,12 @@ export const RuntimeMaintenanceResultSchema = z.object({
   rawPayloadsRemoved: z.number().int().nonnegative(),
   estimatedSnapshotBytesBefore: z.number().int().nonnegative(),
   estimatedSnapshotBytesAfter: z.number().int().nonnegative(),
+  eventBatchSnapshotsCompacted: z.number().int().nonnegative().default(0),
+  eventBatchSnapshotBytesBefore: z.number().int().nonnegative().default(0),
+  eventBatchSnapshotBytesAfter: z.number().int().nonnegative().default(0),
+  eventBatchOutputBytesBefore: z.number().int().nonnegative().default(0),
+  eventBatchOutputBytesAfter: z.number().int().nonnegative().default(0),
+  eventBatchSnapshotCompaction: RuntimeEventBatchSnapshotCompactionResultSchema.optional(),
   storage: RuntimeStorageOptimizationResultSchema.optional(),
 });
 export type RuntimeMaintenanceResult = z.infer<typeof RuntimeMaintenanceResultSchema>;

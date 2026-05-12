@@ -13,6 +13,7 @@ import {
   ProjectSummarySchema,
   RuntimeSessionEntrySchema,
   RuntimeSessionLedgerSchema,
+  RuntimeEventBatchSnapshotCompactionResultSchema,
   RuntimeStorageOptimizationResultSchema,
 } from "@cemeworm/shared";
 import { OraRuntimeError } from "../runtime-errors.js";
@@ -96,6 +97,18 @@ export class JsonFileRuntimePersistenceBackend implements RuntimePersistenceBack
       vacuumed: false,
       beforeBytes: bytes,
       afterBytes: bytes,
+    });
+  }
+
+  compactRuntimeEventBatchSnapshots() {
+    return RuntimeEventBatchSnapshotCompactionResultSchema.parse({
+      backend: "json-file",
+      rowsScanned: 0,
+      rowsCompacted: 0,
+      snapshotBytesBefore: 0,
+      snapshotBytesAfter: 0,
+      outputBytesBefore: 0,
+      outputBytesAfter: 0,
     });
   }
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { OraEventEnvelope, RuntimeSessionEntry, StateSnapshot } from "@cemeworm/shared";
 import { deriveSessionProjection } from "@cemeworm/shared";
 import { JsonFileRuntimePersistenceBackend } from "./persistence/json-file-backend.js";
+import { SqliteRuntimePersistence } from "./persistence/sqlite-backend.js";
 import { compactStreamingDeltaPayloads, runRuntimeMaintenance } from "./run-maintenance.js";
 
 function snapshot(events: OraEventEnvelope[]): StateSnapshot {
@@ -145,6 +146,219 @@ describe("run maintenance", () => {
       error: "Run marked failed by runtime maintenance after 1000ms without progress.",
     });
     expect(projection.runs[0]?.events.at(-1)).toMatchObject({ type: "run.failed" });
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("compacts duplicated runtime event batch snapshots in SQLite maintenance", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-run-maintenance-sqlite-"));
+    const backend = new SqliteRuntimePersistence(path.join(tempDir, "runtime.db"));
+    const runSnapshot = {
+      ...snapshot([]),
+      runId: "run-sqlite-compact",
+      sessionId: "session-sqlite-compact",
+      output: { text: "done" },
+    };
+    const entries: RuntimeSessionEntry[] = [
+      {
+        id: "session",
+        sessionId: "session-sqlite-compact",
+        turnIndex: 0,
+        seq: 0,
+        type: "session.created",
+        createdAt: 1_714_000_000_000,
+        payload: { title: "SQLite Compact" },
+      },
+      {
+        id: "started",
+        sessionId: "session-sqlite-compact",
+        parentId: "session",
+        runId: "run-sqlite-compact",
+        turnIndex: 1,
+        seq: 1,
+        type: "run.started",
+        createdAt: 1_714_000_000_001,
+        payload: {
+          input: runSnapshot.input,
+          config: runSnapshot.config,
+          status: "running",
+        },
+      },
+      {
+        id: "run-sqlite-compact:events-0-0",
+        sessionId: "session-sqlite-compact",
+        parentId: "started",
+        runId: "run-sqlite-compact",
+        turnIndex: 1,
+        seq: 2,
+        type: "runtime.event_batch",
+        createdAt: 1_714_000_000_002,
+        payload: {
+          events: [{
+            id: "run-sqlite-compact:evt-0",
+            runId: "run-sqlite-compact",
+            seq: 0,
+            type: "run.done",
+            createdAt: 1_714_000_000_002,
+            payload: { status: "succeeded", output: { text: "done" } },
+          }],
+          eventCount: 1,
+          status: "succeeded",
+          output: { text: "duplicated" },
+          snapshot: runSnapshot,
+        },
+      },
+    ];
+    backend.appendSessionEntries("session-sqlite-compact", entries, "run-sqlite-compact:events-0-0");
+
+    const result = runRuntimeMaintenance(
+      { compactStreamingEvents: false, compactRuntimeEventBatchSnapshots: true, vacuum: false },
+      { runs: new Map(), backend, now: () => 1_714_000_000_003 },
+    );
+    const ledger = backend.getSessionLedger("session-sqlite-compact")!;
+    const eventBatchPayload = ledger.entries.find((entry) => entry.id === "run-sqlite-compact:events-0-0")?.payload as {
+      snapshot?: unknown;
+      output?: unknown;
+    };
+    const projection = deriveSessionProjection(ledger);
+
+    expect(result.eventBatchSnapshotsCompacted).toBe(1);
+    expect(result.eventBatchSnapshotBytesBefore).toBeGreaterThan(0);
+    expect(result.eventBatchSnapshotBytesAfter).toBe(0);
+    expect(result.eventBatchOutputBytesAfter).toBe(result.eventBatchOutputBytesBefore);
+    expect(eventBatchPayload.snapshot).toBeUndefined();
+    expect(eventBatchPayload.output).toEqual({ text: "duplicated" });
+    expect(projection.runs[0]?.status).toBe("succeeded");
+    expect(projection.runs[0]?.output).toEqual({ text: "done" });
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("does not compact runtime event batch snapshots unless explicitly requested", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-run-maintenance-sqlite-default-"));
+    const backend = new SqliteRuntimePersistence(path.join(tempDir, "runtime.db"));
+    const runSnapshot = {
+      ...snapshot([]),
+      runId: "run-sqlite-default",
+      sessionId: "session-sqlite-default",
+    };
+    backend.appendSessionEntries("session-sqlite-default", [
+      {
+        id: "session",
+        sessionId: "session-sqlite-default",
+        turnIndex: 0,
+        seq: 0,
+        type: "session.created",
+        createdAt: 1_714_000_000_000,
+        payload: { title: "SQLite Default" },
+      },
+      {
+        id: "started",
+        sessionId: "session-sqlite-default",
+        parentId: "session",
+        runId: "run-sqlite-default",
+        turnIndex: 1,
+        seq: 1,
+        type: "run.started",
+        createdAt: 1_714_000_000_001,
+        payload: {
+          input: runSnapshot.input,
+          config: runSnapshot.config,
+          status: "running",
+        },
+      },
+      {
+        id: "run-sqlite-default:events-0-0",
+        sessionId: "session-sqlite-default",
+        parentId: "started",
+        runId: "run-sqlite-default",
+        turnIndex: 1,
+        seq: 2,
+        type: "runtime.event_batch",
+        createdAt: 1_714_000_000_002,
+        payload: {
+          events: [],
+          eventCount: 0,
+          status: "running",
+          snapshot: runSnapshot,
+        },
+      },
+    ], "run-sqlite-default:events-0-0");
+
+    const result = runRuntimeMaintenance(
+      { compactStreamingEvents: false, vacuum: false },
+      { runs: new Map(), backend, now: () => 1_714_000_000_003 },
+    );
+    const eventBatchPayload = backend.getSessionLedger("session-sqlite-default")!
+      .entries.find((entry) => entry.id === "run-sqlite-default:events-0-0")?.payload as { snapshot?: unknown };
+
+    expect(result.compactRuntimeEventBatchSnapshots).toBe(false);
+    expect(result.eventBatchSnapshotsCompacted).toBe(0);
+    expect(eventBatchPayload.snapshot).toBeDefined();
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("leaves low-frequency snapshot update batches intact during compaction", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ora-run-maintenance-sqlite-update-"));
+    const backend = new SqliteRuntimePersistence(path.join(tempDir, "runtime.db"));
+    const runSnapshot = {
+      ...snapshot([]),
+      runId: "run-sqlite-update",
+      sessionId: "session-sqlite-update",
+    };
+    backend.appendSessionEntries("session-sqlite-update", [
+      {
+        id: "session",
+        sessionId: "session-sqlite-update",
+        turnIndex: 0,
+        seq: 0,
+        type: "session.created",
+        createdAt: 1_714_000_000_000,
+        payload: { title: "SQLite Update" },
+      },
+      {
+        id: "started",
+        sessionId: "session-sqlite-update",
+        parentId: "session",
+        runId: "run-sqlite-update",
+        turnIndex: 1,
+        seq: 1,
+        type: "run.started",
+        createdAt: 1_714_000_000_001,
+        payload: {
+          input: runSnapshot.input,
+          config: runSnapshot.config,
+          status: "running",
+        },
+      },
+      {
+        id: "run-sqlite-update:update-1714000000002-0",
+        sessionId: "session-sqlite-update",
+        parentId: "started",
+        runId: "run-sqlite-update",
+        turnIndex: 1,
+        seq: 2,
+        type: "runtime.event_batch",
+        createdAt: 1_714_000_000_002,
+        payload: {
+          events: [],
+          eventCount: 0,
+          status: "running",
+          snapshot: runSnapshot,
+        },
+      },
+    ], "run-sqlite-update:update-1714000000002-0");
+
+    const result = runRuntimeMaintenance(
+      { compactStreamingEvents: false, compactRuntimeEventBatchSnapshots: true, vacuum: false },
+      { runs: new Map(), backend, now: () => 1_714_000_000_003 },
+    );
+    const eventBatchPayload = backend.getSessionLedger("session-sqlite-update")!
+      .entries.find((entry) => entry.id === "run-sqlite-update:update-1714000000002-0")?.payload as { snapshot?: unknown };
+
+    expect(result.eventBatchSnapshotsCompacted).toBe(0);
+    expect(eventBatchPayload.snapshot).toBeDefined();
 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });

@@ -313,7 +313,7 @@ export function runtimeSessionEntryPath(
 /**
  * Build a ledger with reduced payload: keep all entries but strip the heavy
  * `events` array from runtime.event_batch payloads, preserving structural
- * fields (status, output, error, snapshot) and parent chains as-is.
+ * fields (status, output, error) and parent chains as-is.
  */
 export function buildVisibleLedger(ledger: RuntimeSessionLedger): RuntimeSessionLedger {
   const parsed = RuntimeSessionLedgerSchema.parse(ledger);
@@ -334,7 +334,6 @@ export function buildVisibleLedger(ledger: RuntimeSessionLedger): RuntimeSession
         status: payload.status,
         output: payload.output,
         error: payload.error,
-        snapshot: payload.snapshot,
       },
     };
   });
@@ -593,13 +592,17 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
     case "runtime.event_batch": {
       const payload = RuntimeEventBatchPayloadSchema.parse(entry.payload);
       const batchEventCount = payload.eventCount ?? payload.events.length;
+      const eventFacts = runtimeEventBatchFacts(payload.events);
       updateRun(state, entry, (run) => ({
         ...run,
         events: [...run.events, ...payload.events],
         eventCount: run.eventCount + batchEventCount,
-        status: payload.status ?? run.status,
-        output: payload.output ?? run.output,
-        error: payload.error ?? run.error,
+        status: eventFacts.status ?? payload.status ?? run.status,
+        output: eventFacts.output ?? payload.output ?? run.output,
+        error: eventFacts.error ?? payload.error ?? run.error,
+        checkpoints: eventFacts.checkpoints.length > 0
+          ? upsertCheckpoints(run.checkpoints, eventFacts.checkpoints)
+          : run.checkpoints,
         finalSnapshot: payload.snapshot ?? run.finalSnapshot,
       }));
       break;
@@ -804,6 +807,84 @@ function updateRun(
     ...update(run),
     updatedAt: Math.max(run.updatedAt, entry.createdAt),
   }));
+}
+
+function runtimeEventBatchFacts(events: readonly OraEventEnvelope[]): {
+  status?: RuntimeRunProjection["status"];
+  output?: unknown;
+  error?: string;
+  checkpoints: CheckpointMeta[];
+} {
+  let status: RuntimeRunProjection["status"] | undefined;
+  let output: unknown;
+  let error: string | undefined;
+  const checkpoints: CheckpointMeta[] = [];
+  for (const event of events) {
+    if (event.type === "checkpoint.created") {
+      const payload = event.payload && typeof event.payload === "object"
+        ? event.payload as Record<string, unknown>
+        : {};
+      const maybeCheckpoint = payload.checkpoint;
+      if (maybeCheckpoint && typeof maybeCheckpoint === "object") {
+        checkpoints.push(CheckpointMetaSchema.parse(maybeCheckpoint));
+      } else if (typeof payload.checkpointId === "string") {
+        checkpoints.push(CheckpointMetaSchema.parse({
+          id: payload.checkpointId,
+          runId: event.runId,
+          label: typeof payload.label === "string" ? payload.label : "Checkpoint",
+          createdAt: event.createdAt,
+          eventSeq: event.seq,
+        }));
+      }
+      continue;
+    }
+    if (
+      event.type !== "run.done" &&
+      event.type !== "run.failed" &&
+      event.type !== "run.cancelled"
+    ) {
+      continue;
+    }
+    const payload = event.payload && typeof event.payload === "object"
+      ? event.payload as Record<string, unknown>
+      : {};
+    if (
+      payload.status === "queued" ||
+      payload.status === "running" ||
+      payload.status === "interrupted" ||
+      payload.status === "succeeded" ||
+      payload.status === "failed" ||
+      payload.status === "cancelled"
+    ) {
+      status = payload.status;
+    } else if (event.type === "run.done") {
+      status = "succeeded";
+    } else if (event.type === "run.failed") {
+      status = "failed";
+    } else {
+      status = "cancelled";
+    }
+    if ("output" in payload) {
+      output = payload.output;
+    }
+    if (typeof payload.error === "string") {
+      error = payload.error;
+    } else if (typeof payload.reason === "string") {
+      error = payload.reason;
+    }
+  }
+  return { status, output, error, checkpoints };
+}
+
+function upsertCheckpoints(
+  existing: readonly CheckpointMeta[],
+  next: readonly CheckpointMeta[],
+): CheckpointMeta[] {
+  const byId = new Map(existing.map((checkpoint) => [checkpoint.id, checkpoint]));
+  for (const checkpoint of next) {
+    byId.set(checkpoint.id, checkpoint);
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 
 function upsertPlanDecision(decisions: readonly PlanDecisionGate[], decision: PlanDecisionGate): PlanDecisionGate[] {

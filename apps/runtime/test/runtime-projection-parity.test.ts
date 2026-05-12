@@ -234,11 +234,12 @@ describe("runtime projection parity guards", () => {
       (store as unknown as { backend: { getSessionLedger(sessionId: string): unknown } }).backend.getSessionLedger(session.sessionId),
     );
     const eventBatch = ledger.entries.find((entry) => entry.type === "runtime.event_batch");
-    const payload = eventBatch?.payload as { events?: unknown[]; snapshot?: { events?: unknown[] } };
+    const payload = eventBatch?.payload as { events?: unknown[]; snapshot?: unknown; output?: unknown };
     const projected = deriveRunSnapshot(ledger, runId);
 
     expect(payload.events).toHaveLength(2);
-    expect(payload.snapshot?.events).toEqual([]);
+    expect(payload.snapshot).toBeUndefined();
+    expect(payload.output).toEqual({ text: "hello" });
     expect(projected?.events).toEqual(live.events);
     expect(projected?.status).toBe("succeeded");
     expect(projected?.output).toEqual({ text: "hello" });

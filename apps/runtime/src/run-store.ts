@@ -876,7 +876,7 @@ export class LocalRunStore {
   private mergedSessionBranchGroups(sessionId: string): SessionBranchGroup[] {
     const runtimeGroups = branchGroupsForSession(sessionId, [...this.runs.values()]);
     const runtimeGroupIds = new Set(runtimeGroups.map((group) => group.branchGroupId));
-    const ledger = this.backend.getSessionLedger(sessionId);
+    const ledger = this.backend.getSessionLedgerExcludingEvents?.(sessionId) ?? this.backend.getSessionLedger(sessionId);
     const ledgerGroups = ledger
       ? deriveSessionProjection(ledger).branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
       : [];
@@ -2804,7 +2804,6 @@ export class LocalRunStore {
       return snapshot;
     }
     const useRunningHotPath = this.canBypassRuntimeEventBatchProjection(snapshot, events, status);
-    const ledgerSnapshot = compactRuntimeEventBatchSnapshot(snapshot, { validate: !useRunningHotPath });
     const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:events-${events[0]?.seq ?? snapshot.events.length}-${events.at(-1)?.seq ?? snapshot.events.length}`,
       type: "runtime.event_batch",
@@ -2817,7 +2816,6 @@ export class LocalRunStore {
         status,
         output: snapshot.output,
         error: snapshot.error,
-        snapshot: ledgerSnapshot,
       },
     });
     if (snapshot.config.metadata.branchRole === "candidate") {
@@ -5048,12 +5046,6 @@ function markLatencyForRunEvent(snapshot: StateSnapshot, event: OraEventEnvelope
       runLatencyMark("runtime", "firstUserReadableAssistantTextProduced", at, { seq: event.seq }),
     );
   }
-  if (event.type === "task.progress" && isRecord(event.payload) && event.payload.source === "progress_narrator") {
-    next = appendFirstRunLatencyMark(
-      next,
-      runLatencyMark("runtime", "firstProgressNarration", at, { seq: event.seq }),
-    );
-  }
   if (event.type === "node.updated" && isRecord(event.payload)) {
     const state = typeof event.payload.state === "string" ? event.payload.state : undefined;
     if (state === "running_model") {
@@ -5157,17 +5149,11 @@ function continuationSummary(snapshot: StateSnapshot) {
   };
 }
 
-function compactRuntimeEventBatchSnapshot(
-  snapshot: StateSnapshot,
-  options: { validate?: boolean } = {},
-): StateSnapshot {
-  const compacted = {
+function compactRuntimeEventBatchSnapshot(snapshot: StateSnapshot): StateSnapshot {
+  return StateSnapshotSchema.parse({
     ...snapshot,
     events: [],
-  };
-  return options.validate === false
-    ? compacted
-    : StateSnapshotSchema.parse(compacted);
+  });
 }
 
 function isPureRuntimeDeltaEvent(event: Pick<OraEventEnvelope, "type">): boolean {

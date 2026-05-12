@@ -1397,15 +1397,23 @@ class LocalJsonRpcRuntime {
       case "runtime.maintenance":
         return {
           compactStreamingEvents: true,
+          compactRuntimeEventBatchSnapshots: false,
           vacuum: false,
           staleRunningMs: 0,
+          autoArchiveThresholdMs: 0,
           runsScanned: 0,
           runsCompacted: 0,
           staleRunsFailed: 0,
+          sessionsArchived: 0,
           messageDeltaEventsCompacted: 0,
           rawPayloadsRemoved: 0,
           estimatedSnapshotBytesBefore: 0,
           estimatedSnapshotBytesAfter: 0,
+          eventBatchSnapshotsCompacted: 0,
+          eventBatchSnapshotBytesBefore: 0,
+          eventBatchSnapshotBytesAfter: 0,
+          eventBatchOutputBytesBefore: 0,
+          eventBatchOutputBytesAfter: 0,
           storage: {
             backend: "json-file",
             vacuumed: false,
