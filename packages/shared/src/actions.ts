@@ -174,6 +174,7 @@ export const RecoveryErrorTypeSchema = z.enum([
   "provider_busy",
   "provider_auth",
   "provider_quota",
+  "provider_finalization_unavailable",
   "provider_config_error",
   "provider_finalization_unavailable",
   "boundary_violation",
