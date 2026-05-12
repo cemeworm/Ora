@@ -1011,6 +1011,7 @@ export const RuntimeMaintenanceParamsSchema = z.object({
   compactStreamingEvents: z.boolean().default(true),
   vacuum: z.boolean().default(true),
   staleRunningMs: z.number().int().nonnegative().default(0),
+  autoArchiveThresholdMs: z.number().int().nonnegative().default(0),
 }).default({});
 export type RuntimeMaintenanceParams = z.infer<typeof RuntimeMaintenanceParamsSchema>;
 
@@ -1026,9 +1027,11 @@ export const RuntimeMaintenanceResultSchema = z.object({
   compactStreamingEvents: z.boolean(),
   vacuum: z.boolean(),
   staleRunningMs: z.number().int().nonnegative(),
+  autoArchiveThresholdMs: z.number().int().nonnegative().default(0),
   runsScanned: z.number().int().nonnegative(),
   runsCompacted: z.number().int().nonnegative(),
   staleRunsFailed: z.number().int().nonnegative().default(0),
+  sessionsArchived: z.number().int().nonnegative().default(0),
   messageDeltaEventsCompacted: z.number().int().nonnegative(),
   rawPayloadsRemoved: z.number().int().nonnegative(),
   estimatedSnapshotBytesBefore: z.number().int().nonnegative(),

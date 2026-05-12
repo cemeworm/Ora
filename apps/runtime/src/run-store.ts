@@ -51,6 +51,7 @@ import {
   ProjectSignalSchema,
   ProjectSummary,
   ProjectSummarySchema,
+  RuntimeMaintenanceParamsSchema,
   RuntimeWorkbenchBootstrapSchema,
   type RuntimeBootstrap,
   type RuntimeWorkbenchBootstrap,
@@ -314,6 +315,8 @@ export interface LocalRunStoreOptions {
   onChannelSessionUpdate?: (event: ChannelSessionUpdateEvent) => void;
   autoStartChannels?: boolean;
   autoStartAutomations?: boolean;
+  maxCachedSessions?: number;
+  autoArchiveThresholdDays?: number;
 }
 
 interface StreamingRunOptions {
@@ -350,12 +353,17 @@ export class LocalRunStore {
   private projects = new Map<string, StoredProject>();
   private sessions = new Map<string, RuntimeSessionReadModel>();
   private runs = new Map<string, RuntimeRunReadModel>();
+  private allSessionIds = new Set<string>();
+  private readonly maxCachedSessions: number;
+  private readonly autoArchiveThresholdDays: number;
   private manifest: StoreManifest;
   private sessionLedgerRevision: string | undefined;
   private sessionLedgerLeafEntryIds = new Map<string, string | undefined>();
   private sessionRunProjectionModes = new Map<string, "slim" | "full">();
 
   constructor(options: LocalRunStoreOptions = {}) {
+    this.maxCachedSessions = options.maxCachedSessions ?? 50;
+    this.autoArchiveThresholdDays = options.autoArchiveThresholdDays ?? 90;
     this.clock = options.clock ?? Date.now;
     const dataDir = options.dataDir ?? process.env.ORA_RUNTIME_STORE_DIR ?? path.join(process.cwd(), ".ora", "runtime.db");
 
@@ -465,11 +473,17 @@ export class LocalRunStore {
       appendRuntimeEventBatchToLedger: (snapshot, events, status) =>
         this.appendRuntimeEventBatchToLedger(snapshot, events, status),
     });
-    const loaded = this.backend.load(this.persistenceType === "sqlite" ? { includeRuns: false } : undefined);
+    const maxBootSessions = this.persistenceType === "sqlite" ? 50 : undefined;
+    const loaded = this.backend.load(
+      this.persistenceType === "sqlite" ? { includeRuns: false, maxSessions: maxBootSessions } : undefined,
+    );
     this.manifest = StoreManifestSchema.parse(loaded.manifest);
     this.projects = new Map(loaded.projects.map((project) => [project.projectId, project]));
     this.sessions = new Map(loaded.sessions.map((session) => [session.sessionId, session]));
     this.runs = new Map(loaded.runs.map((run) => [run.runId, run]));
+    // Track all session IDs (including those not loaded into memory)
+    const allIds = this.backend.listAllSessionIds?.() ?? loaded.sessions.map((s) => s.sessionId);
+    this.allSessionIds = new Set(allIds);
     migrateLegacyRunsIntoSessions(this.migrationState());
     migrateLegacyOraMvpProjectPlaceholder(this.migrationState());
     for (const projectId of this.projects.keys()) {
@@ -507,11 +521,20 @@ export class LocalRunStore {
   }
 
   runtimeMaintenance(params: unknown = {}) {
-    return runRuntimeMaintenance(params, {
-      runs: this.runs,
-      backend: this.backend,
-      now: () => this.now(),
-    });
+    const parsed = RuntimeMaintenanceParamsSchema.parse(params ?? {});
+    const autoArchiveThresholdMs = parsed.autoArchiveThresholdMs > 0
+      ? parsed.autoArchiveThresholdMs
+      : this.autoArchiveThresholdDays > 0
+        ? this.autoArchiveThresholdDays * 86400000
+        : 0;
+    return runRuntimeMaintenance(
+      { ...parsed, autoArchiveThresholdMs },
+      {
+        runs: this.runs,
+        backend: this.backend,
+        now: () => this.now(),
+      },
+    );
   }
 
   listPatterns(): PatternDefinition[] {
@@ -2930,6 +2953,7 @@ export class LocalRunStore {
     const projection = deriveSessionProjection(ledger, leafEntryId ?? ledger.leafEntryId);
     this.sessions.set(sessionId, projection.session);
     this.sessionLedgerLeafEntryIds.set(sessionId, projection.leafEntryId);
+    this.evictOldSessionsIfNeeded();
     const projectedRunIds = new Set(projection.runs.map((run) => run.runId));
     for (const [runId, snapshot] of this.runs.entries()) {
       if (snapshot.sessionId === sessionId && !projectedRunIds.has(runId)) {
@@ -3043,7 +3067,11 @@ export class LocalRunStore {
     if (revision && revision === this.sessionLedgerRevision) {
       return;
     }
-    const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
+    const cachedIds = [...this.sessions.keys()];
+    if (cachedIds.length === 0) return;
+    const ledgers = this.backend.listLedgersExcludingEventsForSessions?.(cachedIds)
+      ?? this.backend.listLedgersExcludingEvents?.()
+      ?? this.backend.listSessionLedgers();
     for (const ledger of ledgers) {
       this.applyLedgerSessionSummaryToStore(ledger.sessionId, ledger, ledger.leafEntryId);
     }
@@ -3055,7 +3083,12 @@ export class LocalRunStore {
     if (revision && revision === this.sessionLedgerRevision) {
       return;
     }
-    const ledgers = this.backend.listLedgersExcludingEvents?.() ?? this.backend.listSessionLedgers();
+    const cachedIds = [...this.sessions.keys()];
+    const ledgers = cachedIds.length > 0
+      ? (this.backend.listLedgersExcludingEventsForSessions?.(cachedIds)
+        ?? this.backend.listLedgersExcludingEvents?.()
+        ?? this.backend.listSessionLedgers())
+      : [];
     for (const ledger of ledgers) {
       this.applyLedgerToStore(ledger.sessionId, ledger, ledger.leafEntryId);
       this.sessionRunProjectionModes.set(ledger.sessionId, "slim");
@@ -3391,6 +3424,7 @@ export class LocalRunStore {
     }
     if (flush) {
       this.backend.saveManifest(this.manifest);
+      this.evictOldSessionsIfNeeded();
     }
   }
 
@@ -3514,10 +3548,12 @@ export class LocalRunStore {
 
   private getSessionOrThrow(sessionId: string): SessionSummary {
     const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new OraRuntimeError(`Session not found: ${sessionId}`, -32004, { sessionId });
+    if (session) return session;
+    // Lazy-load from ledger if the session exists but wasn't loaded at boot
+    if (this.allSessionIds.has(sessionId) && this.isLedgerBackedSession(sessionId)) {
+      return this.refreshSessionFromLedger(sessionId, undefined, { excludeEvents: true });
     }
-    return session;
+    throw new OraRuntimeError(`Session not found: ${sessionId}`, -32004, { sessionId });
   }
 
   private getProjectOrThrow(projectId: string): ProjectSummary {
@@ -3549,10 +3585,25 @@ export class LocalRunStore {
       return;
     }
     this.sessions.set(session.sessionId, session);
+    this.allSessionIds.add(session.sessionId);
     if (session.projectId) {
       this.syncProjectSummary(session.projectId);
     }
     this.backend.saveManifest(this.manifest);
+    this.evictOldSessionsIfNeeded();
+  }
+
+  private evictOldSessionsIfNeeded(): void {
+    if (this.sessions.size <= this.maxCachedSessions) return;
+    const maxCached = this.maxCachedSessions;
+    const sorted = [...this.sessions.entries()]
+      .sort(([, a], [, b]) => a.updatedAt - b.updatedAt);
+    const toEvict = sorted.slice(0, this.sessions.size - maxCached);
+    for (const [id] of toEvict) {
+      this.sessions.delete(id);
+      this.sessionRunProjectionModes.delete(id);
+      this.sessionLedgerLeafEntryIds.delete(id);
+    }
   }
 
   private persistProject(project: ProjectSummary): void {

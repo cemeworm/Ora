@@ -44,6 +44,7 @@ export interface SessionLedgerCursor {
 
 export interface RuntimePersistenceLoadOptions {
   includeRuns?: boolean;
+  maxSessions?: number;
 }
 
 export interface RuntimePersistenceBackend {
@@ -56,6 +57,9 @@ export interface RuntimePersistenceBackend {
   getSessionLedgerCursor?(sessionId: string): SessionLedgerCursor | undefined;
   listSessionLedgers(): RuntimeSessionLedger[];
   listLedgersExcludingEvents?(): RuntimeSessionLedger[];
+  getRecentSessionIds?(limit: number): string[];
+  listAllSessionIds?(): string[];
+  listLedgersExcludingEventsForSessions?(sessionIds: string[]): RuntimeSessionLedger[];
   getSessionLedgerExcludingEvents?(sessionId: string): RuntimeSessionLedger | undefined;
   getSessionLedgerLeafEntryId?(sessionId: string): string | null;
   getEventBatchesForRun?(sessionId: string, runId: string): RuntimeSessionEntry[];

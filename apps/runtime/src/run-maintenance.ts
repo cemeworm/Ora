@@ -98,6 +98,7 @@ export function runRuntimeMaintenance(
   let runsScanned = 0;
   let runsCompacted = 0;
   let staleRunsFailed = 0;
+  let sessionsArchived = 0;
   let messageDeltaEventsCompacted = 0;
   let rawPayloadsRemoved = 0;
   let estimatedSnapshotBytesBefore = 0;
@@ -172,14 +173,42 @@ export function runRuntimeMaintenance(
     staleRunsFailed = failedRunIds.size;
   }
 
+  if (parsed.autoArchiveThresholdMs > 0) {
+    for (const ledger of deps.backend.listSessionLedgers()) {
+      const projection = deriveSessionProjection(ledger);
+      const session = projection.session;
+      if (session.archivedAt) continue;
+      if (deps.now() - session.updatedAt < parsed.autoArchiveThresholdMs) continue;
+      const now = deps.now();
+      const entry = RuntimeSessionEntrySchema.parse({
+        id: `${session.sessionId}:archive-${now}`,
+        sessionId: session.sessionId,
+        parentId: ledger.leafEntryId,
+        turnIndex: 0,
+        seq: (ledger.entries.at(-1)?.seq ?? -1) + 1,
+        type: "session.info",
+        createdAt: now,
+        payload: {
+          title: session.title,
+          projectId: session.projectId,
+          archivedAt: now,
+        },
+      });
+      deps.backend.appendSessionEntries(session.sessionId, [entry], entry.id);
+      sessionsArchived += 1;
+    }
+  }
+
   const storage = parsed.vacuum ? deps.backend.optimizeStorage() : undefined;
   return RuntimeMaintenanceResultSchema.parse({
     compactStreamingEvents: parsed.compactStreamingEvents,
     vacuum: parsed.vacuum,
     staleRunningMs: parsed.staleRunningMs,
+    autoArchiveThresholdMs: parsed.autoArchiveThresholdMs,
     runsScanned,
     runsCompacted,
     staleRunsFailed,
+    sessionsArchived,
     messageDeltaEventsCompacted,
     rawPayloadsRemoved,
     estimatedSnapshotBytesBefore,
