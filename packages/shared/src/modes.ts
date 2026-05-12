@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ActionRiskLevelSchema, DEFAULT_MODE_RECOVERY_POLICY, ModeRecoveryPolicySchema } from "./actions.js";
 import { DEFAULT_AGENT_MODE_TOOL_IDS } from "./capabilities.js";
-import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
+import { AgentProfileSchema, BuiltInCoordinationPatternSchema, CODE_DEVELOPMENT_MODE_ID, COMPLETION_POLICY_PRESETS, CoordinationPatternSchema, DEBATE_MODE_ID, DEERFLOW_HARNESS_MODE_ID, DEFAULT_MODE_RUNTIME_POLICY, DYNAMIC_ORCHESTRATOR_MODE_ID, MODE_STUDIO_BUILDER_MODE_ID, ModeCompletionPolicySchema, ModeIdSchema, ModeRuntimePolicySchema, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_SELF_BUILDER_MODE_ID, ResourceBudgetSchema, SINGLE_AGENT_MODE_ID, completionPolicyForPreset } from "./primitives.js";
 import type { AgentProfile, BuiltInCoordinationPattern, CoordinationPattern, ModeCompletionPolicy, ModeRuntimePolicy, ResourceBudget } from "./primitives.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
 import type { TopologyEdge, TopologyNode } from "./topology.js";
@@ -130,6 +130,7 @@ export const BuiltInModeRuntimeAtomIdSchema = z.enum([
   "artifact_publish",
   "token_usage_trace",
   "dynamic_stage_skipping",
+  "dynamic_delegation",
 ]);
 export const ModeRuntimeAtomIdSchema = BuiltInModeRuntimeAtomIdSchema.or(z.string());
 export type ModeRuntimeAtomId = z.infer<typeof ModeRuntimeAtomIdSchema>;
@@ -989,6 +990,21 @@ export const MVP_MODE_RUNTIME_ATOMS: ModeRuntimeAtomDefinition[] = [
       presentation: "mode_capability",
       edgeKind: "control",
       edgeLabel: "skip",
+    },
+    defaultEnabled: false,
+  },
+  {
+    id: "dynamic_delegation",
+    scope: "mode",
+    label: "Dynamic Delegation",
+    description: "Let the orchestrator decide at runtime which subagents to activate and with what focus, based on task content.",
+    compatibleFamilies: ["orchestrator_subagent"],
+    requiresTools: [],
+    requiresFlags: [],
+    topology: {
+      presentation: "mode_capability",
+      edgeKind: "control",
+      edgeLabel: "delegate",
     },
     defaultEnabled: false,
   },
@@ -1960,6 +1976,114 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
   }));
 }
 
+function createDynamicOrchestratorModeSpec(): ModeSpec {
+  const now = 0;
+  return autoLayoutModeSpec(ModeSpecSchema.parse({
+    id: DYNAMIC_ORCHESTRATOR_MODE_ID,
+    family: "orchestrator_subagent",
+    label: "Dynamic Orchestrator",
+    summary: "An orchestrator evaluates each task and dynamically activates only the subagents that are actually needed.",
+    description: "Like the standard Orchestrator-Subagent pattern, but the lead agent decides at runtime which subagents to activate based on task content. Simple tasks skip directly to synthesis, saving tokens and latency.",
+    recommendedUse: "Use as the default mode for general-purpose work where task complexity varies significantly.",
+    failureMode: "The orchestrator may misjudge task complexity and skip a subagent that was actually needed, requiring a follow-up run.",
+    systemPreset: true,
+    nodes: [
+      {
+        id: "decompose",
+        template: "decompose",
+        label: "Plan & Decide",
+        title: "Plan and Decide",
+        ownerAgentId: "orchestrator",
+        enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "decompose"),
+        config: {},
+      },
+      {
+        id: "research",
+        template: "research",
+        label: "Research",
+        title: "Research subagent",
+        ownerAgentId: "researcher",
+        enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "research"),
+        config: { atoms: ["subagent_delegate"] },
+      },
+      {
+        id: "review",
+        template: "review",
+        label: "Review",
+        title: "Review subagent",
+        ownerAgentId: "reviewer",
+        enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "review"),
+        config: { atoms: ["subagent_delegate"] },
+      },
+      {
+        id: "synthesize",
+        template: "synthesize",
+        label: "Synthesize",
+        title: "Final synthesis",
+        ownerAgentId: "orchestrator",
+        enabled: true,
+        instructions: defaultNodeInstructions("orchestrator_subagent", "synthesize"),
+        config: {},
+      },
+    ],
+    edges: [
+      { id: "decompose-research", source: "decompose", target: "research", kind: "delegation", label: "delegate", enabled: true },
+      { id: "research-review", source: "research", target: "review", kind: "verification", label: "check", enabled: true },
+      { id: "review-synthesize", source: "review", target: "synthesize", kind: "control", label: "synthesize", enabled: true },
+    ],
+    stopPolicy: { type: "queue_drained", detail: "Stop when synthesis is complete or all needed subagents have finished." },
+    capabilityFlags: {
+      supportsPersistentWorkers: false,
+      supportsSharedState: false,
+      supportsEventRouting: false,
+      approvalMode: "high_risk_only",
+      skillIds: [],
+      toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
+    },
+    runtimeAtoms: [...defaultRuntimeAtomsForFamily("orchestrator_subagent"), "dynamic_delegation"],
+    editorConstraints: {
+      allowedNodeTemplates: MODE_FAMILY_RULES.orchestrator_subagent.allowedTemplates,
+      requiredNodeTemplates: ["decompose", "synthesize"],
+      readOnly: false,
+      allowReorder: true,
+      allowCreate: true,
+      allowDelete: false,
+      allowDisable: false,
+    },
+    defaultBudget: SINGLE_AGENT_RESOURCE_BUDGET,
+    completionPolicy: completionPolicyForPreset("persistent"),
+    runtimePolicy: runtimePolicyForPreset("delegated"),
+    profiles: [
+      profile(
+        "orchestrator",
+        "Orchestrator",
+        "Frame the task and decide which subagents are needed. Synthesize the final answer.",
+        "orchestrator_subagent",
+        ["session", "project"],
+      ),
+      profile(
+        "researcher",
+        "Researcher",
+        "Execute focused research when activated by the orchestrator.",
+        "orchestrator_subagent",
+        ["session", "project"],
+      ),
+      profile(
+        "reviewer",
+        "Reviewer",
+        "Review findings for gaps and risks when activated by the orchestrator.",
+        "orchestrator_subagent",
+        ["session", "artifact"],
+      ),
+    ],
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
 function createSingleAgentModeSpec(): ModeSpec {
   const now = 0;
   return autoLayoutModeSpec(ModeSpecSchema.parse({
@@ -2692,6 +2816,7 @@ const ORCHESTRATOR_MODE_INDEX = BUILTIN_PATTERN_MODES.findIndex((mode) => mode.i
 export const MVP_MODES = [
   ...BUILTIN_PATTERN_MODES.slice(0, ORCHESTRATOR_MODE_INDEX + 1),
   createDeerflowHarnessModeSpec(),
+  createDynamicOrchestratorModeSpec(),
   createSingleAgentModeSpec(),
   createDebateModeSpec(),
   createCodeDevelopmentModeSpec(),

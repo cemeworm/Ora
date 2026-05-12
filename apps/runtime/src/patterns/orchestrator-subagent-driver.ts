@@ -3,7 +3,7 @@ import type { PatternExecutionContext, PatternExecutionResult } from "./executio
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
 import { runGenericModeNode } from "./generic-node-executor.js";
-import { type ExecutionBag, type OrchestratorSubagentBag } from "./mode-driver-helpers.js";
+import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, type DelegationPlan } from "./mode-driver-helpers.js";
 
 function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
   return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
@@ -186,6 +186,9 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
     return executeStagedTranscriptMode(input);
   }
   const nodes = orderedEnabledModeNodes(modeSpec);
+  const enableDynamicDelegation = modeSpec.runtimeAtoms.includes("dynamic_delegation");
+  let delegationPlan: DelegationPlan | null = null;
+  const skipNodeIds = new Set<string>();
   const singleOwnerMode = modeUsesSingleOwner(modeSpec, nodes);
   const primaryAgentId = primaryOwnerAgentId(modeSpec, nodes);
   const totalActiveNodes = nodes.length;
@@ -196,23 +199,40 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   for (const node of nodes) {
       completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "decompose") {
+          let decomposePrompt = promptTemplate(
+            node,
+            runtimeFallbackPrompt(modeSpec.family, node.template),
+            bag,
+          );
+          if (enableDynamicDelegation) {
+            decomposePrompt += DELEGATION_PLAN_INSTRUCTION;
+          }
           bag.plan = await context.callAgent({
           agentId: node.ownerAgentId ?? "orchestrator",
           planItemId: node.id,
           title: titleForNode(node, "Decompose work"),
-          prompt: promptTemplate(
-            node,
-            runtimeFallbackPrompt(modeSpec.family, node.template),
-            bag,
-          ),
+          prompt: decomposePrompt,
           system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
+          if (enableDynamicDelegation) {
+            delegationPlan = parseDelegationPlan(bag.plan);
+            if (delegationPlan) {
+              if (!delegationPlan.researchEnabled) skipNodeIds.add("research");
+              if (!delegationPlan.reviewEnabled) skipNodeIds.add("review");
+              bag.researchFocus = delegationPlan.researchFocus;
+              bag.reviewFocus = delegationPlan.reviewFocus;
+            }
+          }
           return bag.plan;
         }
 
       if (node.template === "research") {
+        let system = nodeSystemPrompt(context, modeSpec, node, bag);
+        if (bag.researchFocus) {
+          system += `\n\n<orchestrator_focus>The orchestrator asks you to focus on: ${bag.researchFocus}</orchestrator_focus>`;
+        }
         bag.research = await context.callAgent({
           agentId: node.ownerAgentId ?? "researcher",
           planItemId: node.id,
@@ -222,7 +242,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          system,
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -230,6 +250,10 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         }
 
       if (node.template === "review") {
+        let system = nodeSystemPrompt(context, modeSpec, node, bag);
+        if (bag.reviewFocus) {
+          system += `\n\n<orchestrator_focus>The orchestrator asks you to focus on: ${bag.reviewFocus}</orchestrator_focus>`;
+        }
         bag.review = await context.callAgent({
           agentId: node.ownerAgentId ?? "reviewer",
           planItemId: node.id,
@@ -239,7 +263,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
             runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
-          system: nodeSystemPrompt(context, modeSpec, node, bag),
+          system,
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
@@ -251,6 +275,9 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           && bag.plan === undefined
           && bag.research === undefined
           && bag.review === undefined;
+        const allSubagentsSkipped = delegationPlan
+          && !delegationPlan.researchEnabled
+          && !delegationPlan.reviewEnabled;
         bag.synthesis = await context.callAgent({
           agentId: node.ownerAgentId ?? "orchestrator",
           planItemId: node.id,
@@ -259,7 +286,9 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
             node,
             directSoloResponse
               ? "Task: {{prompt}}\nProduce the final answer directly. Do not create a separate planning draft unless the task genuinely requires it."
-              : runtimeFallbackPrompt(modeSpec.family, node.template),
+              : allSubagentsSkipped
+                ? "Task: {{prompt}}\n{{plan}}\nThe orchestrator determined no subagents were needed for this task. Produce the final answer directly."
+                : runtimeFallbackPrompt(modeSpec.family, node.template),
             bag,
           ),
           system: nodeSystemPrompt(context, modeSpec, node, bag),
@@ -275,7 +304,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           title: titleForNode(node, node.label),
           fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
         });
-      }, bag);
+      }, bag, { skipNodeIds });
   }
 
   context.remember({

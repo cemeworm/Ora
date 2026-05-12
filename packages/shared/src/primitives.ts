@@ -18,6 +18,7 @@ export const SINGLE_AGENT_MODE_ID = "single_agent" as const;
 export const MODE_STUDIO_BUILDER_MODE_ID = "mode_studio_builder" as const;
 export const ORA_SELF_BUILDER_MODE_ID = "ora_self_builder" as const;
 export const CODE_DEVELOPMENT_MODE_ID = "code_development" as const;
+export const DYNAMIC_ORCHESTRATOR_MODE_ID = "dynamic_orchestrator" as const;
 export const ORA_ROOT_AGENT_ID = "ora" as const;
 export const ORA_ROOT_AGENT_LABEL = "Ora" as const;
 

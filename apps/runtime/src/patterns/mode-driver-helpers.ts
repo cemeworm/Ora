@@ -88,3 +88,43 @@ export function parseComplexityLevel(triageOutput: unknown): ComplexityLevel | n
   const match = /<complexity_assessment>\s*Level:\s*(L[0-3])/i.exec(asText(triageOutput));
   return (match?.[1] as ComplexityLevel) ?? null;
 }
+
+export const DELEGATION_PLAN_INSTRUCTION = `
+<delegation_plan>
+Based on the task above, decide which subagents are needed:
+- research: enabled|disabled
+  If enabled, what specific area should the researcher investigate?
+- review: enabled|disabled
+  If enabled, what risks or gaps should the reviewer check?
+
+Output format (one line per decision):
+research: enabled|disabled
+research_focus: <one sentence, only if enabled>
+review: enabled|disabled
+review_focus: <one sentence, only if enabled>
+
+Simple factual tasks may not need research or review.
+Complex architecture tasks likely need both.
+</delegation_plan>`;
+
+export interface DelegationPlan {
+  researchEnabled: boolean;
+  researchFocus?: string;
+  reviewEnabled: boolean;
+  reviewFocus?: string;
+}
+
+export function parseDelegationPlan(output: unknown): DelegationPlan | null {
+  const text = asText(output);
+  const researchMatch = /research:\s*(enabled|disabled)/i.exec(text);
+  const reviewMatch = /review:\s*(enabled|disabled)/i.exec(text);
+  if (!researchMatch || !reviewMatch) return null;
+  const researchFocusMatch = /research_focus:\s*(.+)/i.exec(text);
+  const reviewFocusMatch = /review_focus:\s*(.+)/i.exec(text);
+  return {
+    researchEnabled: researchMatch[1].toLowerCase() === "enabled",
+    researchFocus: researchFocusMatch?.[1]?.trim(),
+    reviewEnabled: reviewMatch[1].toLowerCase() === "enabled",
+    reviewFocus: reviewFocusMatch?.[1]?.trim(),
+  };
+}

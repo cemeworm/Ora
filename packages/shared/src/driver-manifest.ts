@@ -139,6 +139,7 @@ export const BUILT_IN_DRIVER_MANIFESTS: Record<string, DriverCapabilityManifest>
       "Staged transcripts are supported — each node can have multiple speaker/stance stages.",
       "Edge conditions are not consumed — every enabled edge is followed.",
       "Single-owner modes skip decomposition and deliver a direct solo response.",
+      "Dynamic Delegation atom lets the orchestrator skip subagents at runtime based on task assessment.",
       "Custom templates fall back to generic dispatch with bag-based key naming.",
     ],
   },

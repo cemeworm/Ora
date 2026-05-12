@@ -4821,6 +4821,7 @@ describe("Ora runtime smoke path", () => {
       "generator_verifier",
       "orchestrator_subagent",
       DEERFLOW_HARNESS_MODE_ID,
+      "dynamic_orchestrator",
       "single_agent",
       DEBATE_MODE_ID,
       CODE_DEVELOPMENT_MODE_ID,
