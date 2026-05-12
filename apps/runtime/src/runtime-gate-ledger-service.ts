@@ -11,7 +11,7 @@ export class RuntimeGateLedgerService {
 
   appendSnapshotOpenLifecycle(params: {
     snapshot: StateSnapshot;
-    existingEntryIds?: Iterable<string>;
+    existingEntryIds: Iterable<string>;
     appendAdapter: RuntimeGateAppendAdapter;
   }): void {
     const gateLifecycle = this.gateService.openSnapshotGateLifecycle({

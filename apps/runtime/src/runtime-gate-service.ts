@@ -67,12 +67,12 @@ export interface RuntimeGateOpenedEntriesParams {
   pendingApprovals: string[];
   toolCalls: OraToolCallEnvelope[];
   planDecisions: PlanDecisionGate[];
-  existingEntryIds?: Iterable<string>;
+  existingEntryIds: Iterable<string>;
 }
 
 export interface RuntimeGateSnapshotOpenParams {
   snapshot: StateSnapshot;
-  existingEntryIds?: Iterable<string>;
+  existingEntryIds: Iterable<string>;
 }
 
 export interface RuntimeGateResolvedParams {
@@ -132,7 +132,7 @@ export class RuntimeGateService {
 
   openedEntries(params: RuntimeGateOpenedEntriesParams): RuntimeGateLedgerEntry[] {
     const entries: RuntimeGateLedgerEntry[] = [];
-    const existingEntryIds = new Set(params.existingEntryIds ?? []);
+    const existingEntryIds = new Set(params.existingEntryIds);
     for (const clarification of params.pendingClarifications) {
       const entry = this.clarificationOpenedEntry({
         runId: params.runId,

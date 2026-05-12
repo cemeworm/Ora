@@ -2727,7 +2727,8 @@ export class LocalRunStore {
     if (!snapshot.sessionId || events.length === 0) {
       return snapshot;
     }
-    const ledgerSnapshot = compactRuntimeEventBatchSnapshot(snapshot);
+    const useRunningHotPath = this.canBypassRuntimeEventBatchProjection(snapshot, events, status);
+    const ledgerSnapshot = compactRuntimeEventBatchSnapshot(snapshot, { validate: !useRunningHotPath });
     const entry = this.appendRunLedgerEntry(snapshot, {
       id: `${snapshot.runId}:events-${events[0]?.seq ?? snapshot.events.length}-${events.at(-1)?.seq ?? snapshot.events.length}`,
       type: "runtime.event_batch",
@@ -2748,10 +2749,40 @@ export class LocalRunStore {
       this.runs.set(projected.runId, projected);
       return projected;
     }
+    if (useRunningHotPath) {
+      this.cacheRuntimeEventBatchHotPath(snapshot, entry.id);
+      return snapshot;
+    }
     this.refreshSessionFromLedger(snapshot.sessionId);
     const projected = this.ledgerSnapshotOrFallback(snapshot);
     this.runs.set(projected.runId, projected);
     return projected;
+  }
+
+  private canBypassRuntimeEventBatchProjection(
+    snapshot: StateSnapshot,
+    events: readonly OraEventEnvelope[],
+    status: StateSnapshot["status"],
+  ): boolean {
+    return Boolean(
+      snapshot.sessionId &&
+      snapshot.config.metadata.branchRole !== "candidate" &&
+      (snapshot.status === "queued" || snapshot.status === "running") &&
+      (status === "queued" || status === "running") &&
+      events.length > 0 &&
+      events.every(isPureRuntimeDeltaEvent),
+    );
+  }
+
+  private cacheRuntimeEventBatchHotPath(snapshot: StateSnapshot, leafEntryId: string): void {
+    if (!snapshot.sessionId) {
+      return;
+    }
+    this.runs.set(snapshot.runId, snapshot);
+    this.sessionLedgerLeafEntryIds.set(snapshot.sessionId, leafEntryId);
+    this.sessionRunProjectionModes.set(snapshot.sessionId, "full");
+    const session = this.upsertSessionFromRun(snapshot, { deferInitialTitle: true });
+    this.sessions.set(session.sessionId, session);
   }
 
   private appendRunSnapshotUpdateToLedger(snapshot: StateSnapshot): StateSnapshot {
@@ -2912,7 +2943,7 @@ export class LocalRunStore {
     const ledger = this.backend.getSessionLedger(snapshot.sessionId);
     this.runtimeGateLedgerService.appendSnapshotOpenLifecycle({
       snapshot,
-      existingEntryIds: ledger?.entries.map((entry) => entry.id),
+      existingEntryIds: ledger?.entries.map((entry) => entry.id) ?? [],
       appendAdapter: this.gateLifecycleAppendAdapter(snapshot),
     });
   }
@@ -3311,11 +3342,14 @@ export class LocalRunStore {
       payload,
       ...extra
     });
-    return StateSnapshotSchema.parse({
+    const next = {
       ...snapshot,
       events: [...snapshot.events, event],
       updatedAt
-    });
+    };
+    return isPureRuntimeDeltaEvent(event)
+      ? next
+      : StateSnapshotSchema.parse(next);
   }
 
   private syncSnapshotTodos(snapshot: StateSnapshot, reason: string): StateSnapshot {
@@ -5047,11 +5081,21 @@ function continuationSummary(snapshot: StateSnapshot) {
   };
 }
 
-function compactRuntimeEventBatchSnapshot(snapshot: StateSnapshot): StateSnapshot {
-  return StateSnapshotSchema.parse({
+function compactRuntimeEventBatchSnapshot(
+  snapshot: StateSnapshot,
+  options: { validate?: boolean } = {},
+): StateSnapshot {
+  const compacted = {
     ...snapshot,
     events: [],
-  });
+  };
+  return options.validate === false
+    ? compacted
+    : StateSnapshotSchema.parse(compacted);
+}
+
+function isPureRuntimeDeltaEvent(event: Pick<OraEventEnvelope, "type">): boolean {
+  return event.type === "message.delta" || event.type === "token.delta";
 }
 
 function previousMainlineRunBefore(

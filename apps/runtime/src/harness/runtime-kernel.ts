@@ -357,7 +357,9 @@ class KernelRuntimeContext {
     const canonicalPayload = type === "plan_list.updated"
       ? planListUpdatedPayload(payload as Record<string, unknown>)
       : payload;
-    const payloadSnapshot = this.cloneEventPayload(canonicalPayload);
+    const payloadSnapshot = type === "message.delta" || type === "token.delta"
+      ? this.cloneDeltaPayload(canonicalPayload)
+      : this.cloneEventPayload(canonicalPayload);
     const envelope = OraEventEnvelopeSchema.parse({
       id: `${this.params.runId}:evt-${this.eventsValue.length}`,
       runId: this.params.runId,
@@ -514,6 +516,13 @@ class KernelRuntimeContext {
       error: params.error,
       updatedAt: params.updatedAt,
     });
+  }
+
+  private cloneDeltaPayload<T>(value: T): T {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return value;
+    }
+    return { ...(value as Record<string, unknown>) } as T;
   }
 
   private cloneEventPayload<T>(value: T): T {

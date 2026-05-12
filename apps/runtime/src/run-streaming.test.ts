@@ -78,7 +78,8 @@ describe("run streaming", () => {
   });
 
   it("keeps delta payloads as independent events without requiring cumulative content", () => {
-    const first = applyStreamingRunEvent(snapshot(), event({
+    const base = snapshot();
+    const first = applyStreamingRunEvent(base, event({
       seq: 0,
       type: "message.delta",
       payload: { role: "assistant", content: "Hel", delta: "Hel", streaming: true },
@@ -89,6 +90,8 @@ describe("run streaming", () => {
       payload: { role: "assistant", content: "lo", delta: "lo", streaming: true },
     }));
 
+    expect(first).toBe(base);
+    expect(second).toBe(base);
     const text = second.events
       .filter((item: OraEventEnvelope) => item.type === "message.delta")
       .map((item: OraEventEnvelope) => (item.payload as { content?: string }).content ?? "")

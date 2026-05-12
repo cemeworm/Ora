@@ -62,6 +62,13 @@ export function applyStreamingRunEvent(
   liveSnapshot: StateSnapshot,
   event: OraEventEnvelope,
 ): StateSnapshot {
+  if (isPureDeltaEvent(event)) {
+    liveSnapshot.events.push(event);
+    liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
+    liveSnapshot.updatedAt = event.createdAt;
+    return liveSnapshot;
+  }
+
   const projected = projectStreamingEvent(liveSnapshot, event);
   const next = {
     ...projected,
@@ -70,9 +77,6 @@ export function applyStreamingRunEvent(
     agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
   };
-  if (isPureDeltaEvent(event)) {
-    return next;
-  }
   return normalizeRunAttention(StateSnapshotSchema.parse(next));
 }
 
