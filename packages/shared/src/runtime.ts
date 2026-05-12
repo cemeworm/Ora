@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ActionRecordSchema, OraToolCallEnvelopeSchema, PlanItemSchema, PlanListStepSchema, PolicyDecisionSchema, TodoItemSchema } from "./actions.js";
+import { RuntimeToolResultPreviewSchema } from "./actions.js";
+export { RuntimeToolResultPreviewSchema };
 import { SearchProviderConfigSchema } from "./capabilities.js";
 import { MemoryRecordSchema } from "./memory.js";
 import { ModeSpecSchema, ModeTranscriptLayoutSchema } from "./modes.js";
@@ -7,6 +9,7 @@ import { PermissionModeSchema } from "./config.js";
 import { AgentProfileSchema, CoordinationKindSchema, CoordinationPatternSchema, ModeBudgetProfileSchema, ModeCompletionPolicySchema, ModeDelegationSchema, ModeIdSchema, ModePlanningSchema, ModeReasoningEffortSchema, ModeThinkingSchema, ResourceBudgetSchema, RunStatusSchema } from "./primitives.js";
 import { ProviderConfigSchema } from "./providers.js";
 import { TopologyEdgeSchema, TopologyNodeSchema } from "./topology.js";
+import { projectAssistantTextFromSnapshot } from "./assistantTextProjection.js";
 
 export const UserTaskInputSchema = z.object({
   taskId: z.string().min(1).optional(),
@@ -819,6 +822,7 @@ export const RuntimeToolResultLedgerEntrySchema = z.object({
   status: z.enum(["succeeded", "failed", "interrupted", "denied"]),
   output: z.unknown().optional(),
   error: z.string().optional(),
+  resultPreview: RuntimeToolResultPreviewSchema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -1488,22 +1492,8 @@ function numberBranchMetadata(value: unknown): number | undefined {
 }
 
 function branchOutputPreviewForRun(run: StateSnapshot): string | undefined {
-  if (typeof run.output === "object" && run.output !== null && typeof (run.output as { text?: unknown }).text === "string") {
-    return (run.output as { text: string }).text.slice(0, 500);
-  }
-  if (typeof run.output === "string") {
-    return run.output.slice(0, 500);
-  }
-  const content = run.events
-    .filter((event) => event.type === "message.delta")
-    .map((event) =>
-      event.payload && typeof event.payload === "object" && typeof (event.payload as { content?: unknown }).content === "string"
-        ? (event.payload as { content: string }).content
-        : ""
-    )
-    .join("")
-    .trim();
-  return content ? content.slice(0, 500) : undefined;
+  const text = projectAssistantTextFromSnapshot(run, { maxChars: 500 });
+  return text || undefined;
 }
 
 export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapshot, "events">): boolean {
@@ -1511,44 +1501,10 @@ export function snapshotContainsCompleteProposedPlan(snapshot: Pick<StateSnapsho
 }
 
 export function extractCompleteProposedPlanContent(snapshot: Pick<StateSnapshot, "events"> & { output?: unknown }): string | undefined {
-  const candidates: string[] = [];
-  if (typeof snapshot.output === "string") {
-    candidates.push(snapshot.output);
-  } else if (
-    snapshot.output &&
-    typeof snapshot.output === "object" &&
-    typeof (snapshot.output as { text?: unknown }).text === "string"
-  ) {
-    candidates.push((snapshot.output as { text: string }).text);
-  }
-  candidates.push(snapshot.events
-    .filter((event) =>
-      event.type === "message.delta" &&
-      Boolean(event.payload) &&
-      typeof event.payload === "object" &&
-      (
-        typeof (event.payload as { content?: unknown }).content === "string" ||
-        typeof (event.payload as { delta?: unknown }).delta === "string"
-      )
-    )
-    .map((event) => {
-      const payload = event.payload as { content?: unknown; delta?: unknown };
-      return typeof payload.content === "string"
-        ? payload.content
-        : typeof payload.delta === "string"
-          ? payload.delta
-          : "";
-    })
-    .join(""));
-
-  for (const candidate of candidates) {
-    const match = candidate.match(/<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>/);
-    const content = match?.[1]?.trim();
-    if (content) {
-      return content;
-    }
-  }
-  return undefined;
+  const text = projectAssistantTextFromSnapshot(snapshot);
+  if (!text) return undefined;
+  const match = text.match(/<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>/);
+  return match?.[1]?.trim();
 }
 
 export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {

@@ -129,7 +129,7 @@ import type {
   ToolRegistry as OraToolRegistry,
   UserTaskInput as OraUserTaskInput,
 } from "@cemeworm/shared";
-import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractCompleteProposedPlanContent, legacySystemAgentIdsFor, modeSpecToPatternDefinition, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
+import { AutomationCreateParamsSchema, AutomationPreviewScheduleParamsSchema, AutomationSchema, AutomationUpdateParamsSchema, DEFAULT_AGENT_MODE_TOOL_IDS, DEFAULT_PROVIDERS, DEBATE_MODE_ID, FeedbackLoopActionApplyParamsSchema, FeedbackLoopActionResultSchema, FeedbackLoopCalibrationRuleSchema, FeedbackLoopRuleUpdateParamsSchema, LongTermMemoryProfileSchema, MVP_MODE_RUNTIME_ATOMS, MVP_MODES, MVP_PATTERNS, MVP_SKILLS, MVP_TOOLS, ORA_HOST_ABI_VERSION, ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, ORA_RUNTIME_ABI_VERSION, ProjectInsightSchema, ProjectSignalSchema, ProviderConfigSchema, SINGLE_AGENT_MODE_ID, SYSTEM_AGENT_ID_ALIASES, SelfIterationCandidateApplyParamsSchema, SelfIterationCandidateSchema, SelfIterationPolicySchema, SelfIterationScanResultSchema, SystemAgentOverrideUpdateParamsSchema, canonicalSystemAgentId, deriveRunAttention, deriveSessionBranchGroupsForSession, extractCompleteProposedPlanContent, legacySystemAgentIdsFor, modeSpecToPatternDefinition, projectAssistantTextFromSnapshot, snapshotContainsCompleteProposedPlan, validateModeSpec } from "@cemeworm/shared";
 import { PROVIDER_PRESETS } from "./providerPresets";
 
 export const USER_CANCELLED_MESSAGE = "Stopped processing as instructed.";
@@ -5235,15 +5235,7 @@ class LocalJsonRpcRuntime {
   }
 
   private assistantTextForRun(snapshot: OraStateSnapshot): string {
-    if (snapshot.output && typeof snapshot.output === "object" && "text" in snapshot.output && typeof snapshot.output.text === "string") {
-      return snapshot.output.text;
-    }
-    const lastMessage = [...snapshot.events].reverse().find((event) =>
-      event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string",
-    );
-    return lastMessage && isRecord(lastMessage.payload) && typeof lastMessage.payload.content === "string"
-      ? lastMessage.payload.content
-      : "";
+    return projectAssistantTextFromSnapshot(snapshot);
   }
 
   private syncProjectSummary(projectId: string) {
@@ -6322,15 +6314,7 @@ function defaultMockProjectLabel(rootPath: string): string {
 }
 
 function assistantTextFromMockSnapshot(snapshot: OraStateSnapshot): string {
-  if (snapshot.output && typeof snapshot.output === "object" && "text" in snapshot.output && typeof snapshot.output.text === "string") {
-    return snapshot.output.text;
-  }
-  const lastMessage = [...snapshot.events].reverse().find((event) =>
-    event.type === "message.delta" && isRecord(event.payload) && typeof event.payload.content === "string",
-  );
-  return lastMessage && isRecord(lastMessage.payload) && typeof lastMessage.payload.content === "string"
-    ? lastMessage.payload.content
-    : "";
+  return projectAssistantTextFromSnapshot(snapshot);
 }
 
 function buildMockFeedbackDraft(

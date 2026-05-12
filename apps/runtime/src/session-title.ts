@@ -1,4 +1,4 @@
-import { RunConfig, StateSnapshot } from "@cemeworm/shared";
+import { projectAssistantTextFromSnapshot, RunConfig, StateSnapshot } from "@cemeworm/shared";
 import { invokeRunProvider } from "./providers/index.js";
 
 export const DEFAULT_SESSION_TITLE = "New Chat";
@@ -92,37 +92,7 @@ function dedicatedToolProviderId(config: RunConfig): string | undefined {
 }
 
 export function assistantTextForRun(snapshot: StateSnapshot): string {
-  if (typeof snapshot.output === "string") {
-    return snapshot.output.trim();
-  }
-  if (snapshot.output && typeof snapshot.output === "object") {
-    const candidate = (snapshot.output as Record<string, unknown>).text;
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
-    const event = snapshot.events[index];
-    if (!event || event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
-      continue;
-    }
-    const payload = event.payload as Record<string, unknown>;
-    const content = payload.content;
-    if (typeof content === "string" && content.trim()) {
-      return content.trim();
-    }
-  }
-  const parts: string[] = [];
-  for (const event of snapshot.events) {
-    if (!event || event.type !== "message.delta" || !event.payload || typeof event.payload !== "object") {
-      continue;
-    }
-    const delta = (event.payload as Record<string, unknown>).delta;
-    if (typeof delta === "string") {
-      parts.push(delta);
-    }
-  }
-  return parts.join("").trim();
+  return projectAssistantTextFromSnapshot(snapshot);
 }
 
 export function defaultSessionTitle(prompt: string): string {
