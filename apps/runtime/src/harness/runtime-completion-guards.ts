@@ -1,8 +1,11 @@
-import type { ActionRecord, OraToolCallEnvelope, PlanListStep } from "@cemeworm/shared";
+import type { ActionRecord, OraToolCallEnvelope, PlanListStep, StateSnapshot } from "@cemeworm/shared";
 
 export interface RuntimeCompletionGuardState {
   actions: readonly ActionRecord[];
   planList: readonly PlanListStep[];
+  plan?: StateSnapshot["plan"];
+  todos?: StateSnapshot["todos"];
+  replayedActionIds?: readonly string[];
   toolCalls: readonly OraToolCallEnvelope[];
 }
 
@@ -22,6 +25,14 @@ export type RuntimeCompletionGuard = (
   state: RuntimeCompletionGuardState,
 ) => RuntimeCompletionGuardResult;
 
+const TERMINAL_APPROVED_REPLAY_TOOL_IDS = new Set<string>([
+  "file.write",
+  "file.patch",
+  "skills.create",
+  "skills.update",
+  "skills.setEnabled",
+]);
+
 export function evaluateRuntimeCompletionGuards(
   state: RuntimeCompletionGuardState,
   guards: readonly RuntimeCompletionGuard[] = DEFAULT_RUNTIME_COMPLETION_GUARDS,
@@ -37,6 +48,7 @@ export function evaluateRuntimeCompletionGuards(
 
 export const DEFAULT_RUNTIME_COMPLETION_GUARDS: readonly RuntimeCompletionGuard[] = [
   planListCompletionGuard,
+  legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
 ];
 
@@ -66,6 +78,75 @@ export function planListCompletionGuard(
       detail,
     ].join("\n"),
   };
+}
+
+export function legacyProgressCompletionGuard(
+  state: RuntimeCompletionGuardState,
+): RuntimeCompletionGuardResult {
+  const succeededActionIds = new Set(
+    state.actions.filter((action) => action.status === "succeeded").map((action) => action.id),
+  );
+  const autoCompletablePlanIds = new Set(
+    (state.plan ?? [])
+      .filter((item) => isAutoCompletableBlockedPlan(item, succeededActionIds))
+      .map((item) => item.id),
+  );
+  const rawUnfinishedPlans = (state.plan ?? []).filter((item) => item.status !== "done" && item.status !== "skipped");
+  const rawUnfinishedTodos = (state.todos ?? []).filter((item) => item.status !== "done" && item.status !== "skipped");
+  const unfinishedPlans = rawUnfinishedPlans.filter((item) => !autoCompletablePlanIds.has(item.id));
+  const unfinishedTodos = rawUnfinishedTodos.filter((item) =>
+    !(item.status === "blocked" && item.sourcePlanItemId && autoCompletablePlanIds.has(item.sourcePlanItemId))
+  );
+  if (unfinishedPlans.length === 0 && unfinishedTodos.length === 0) {
+    return { allowComplete: true };
+  }
+  const replayedActionIds = state.replayedActionIds ? new Set(state.replayedActionIds) : undefined;
+  const hasNonTerminalSucceededReplay = state.actions.some((action) =>
+    action.status === "succeeded" &&
+    (replayedActionIds ? replayedActionIds.has(action.id) : true) &&
+    !action.type.startsWith("agent.") &&
+    !TERMINAL_APPROVED_REPLAY_TOOL_IDS.has(action.type)
+  );
+  if (
+    [...unfinishedPlans, ...unfinishedTodos].every((item) => item.status === "blocked") &&
+    !hasNonTerminalSucceededReplay
+  ) {
+    return { allowComplete: true };
+  }
+
+  const planLines = unfinishedPlans.map((item, index) =>
+    `plan ${index + 1}. [${item.status}] ${item.title} (${item.id})`
+  );
+  const todoLines = unfinishedTodos.map((item, index) =>
+    `todo ${index + 1}. [${item.status}] ${item.label} (${item.id})`
+  );
+  const detail = [...planLines, ...todoLines].join("\n");
+
+  return {
+    allowComplete: false,
+    reason: "legacy_progress_incomplete",
+    progressTrigger: "legacy_progress.incomplete",
+    progressSummary: "Runtime plan or todo progress is still incomplete; continuing the run.",
+    detail,
+    followUpReason: "legacy_progress_incomplete_follow_up",
+    followUpContent: [
+      "The runtime plan/todo progress is not complete yet, so do not provide a final answer.",
+      "Continue the original task from the interrupted state before concluding.",
+      "Unfinished progress:",
+      detail,
+    ].join("\n"),
+  };
+}
+
+function isAutoCompletableBlockedPlan(
+  item: StateSnapshot["plan"][number],
+  succeededActionIds: ReadonlySet<string>,
+): boolean {
+  if (item.status !== "blocked") {
+    return false;
+  }
+  const actionIds = [...new Set(item.linkedActionIds ?? [])];
+  return actionIds.length > 0 && actionIds.every((actionId) => succeededActionIds.has(actionId));
 }
 
 export function pendingRuntimeWorkGuard(

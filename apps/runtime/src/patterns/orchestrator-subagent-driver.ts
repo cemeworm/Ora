@@ -193,10 +193,45 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   const primaryAgentId = primaryOwnerAgentId(modeSpec, nodes);
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
-  const bag: ExecutionBag = { prompt };
+  const bag: ExecutionBag = { prompt, ...(context.modeResume?.bag ?? {}) };
+  const resumedCompletedNodeIds = new Set(context.modeResume?.completedNodeIds ?? []);
+  const resumedActiveNodeId = context.modeResume?.activeNodeId;
+  if (enableDynamicDelegation && typeof bag.plan === "string") {
+    delegationPlan = parseDelegationPlan(bag.plan);
+    if (delegationPlan) {
+      if (!delegationPlan.researchEnabled) skipNodeIds.add("research");
+      if (!delegationPlan.reviewEnabled) skipNodeIds.add("review");
+      bag.researchFocus = delegationPlan.researchFocus;
+      bag.reviewFocus = delegationPlan.reviewFocus;
+    }
+  }
   let completedNodes = 0;
 
+  const resumeOrCallAgent = async (
+    node: typeof nodes[number],
+    params: Parameters<typeof context.callAgent>[0],
+  ): Promise<string> => {
+    const resumed = await context.resumeSuspendedNode?.({
+      nodeId: node.id,
+      agentId: params.agentId,
+      title: params.title,
+    });
+    if (resumed !== undefined) {
+      return asText(resumed);
+    }
+    return context.callAgent(params);
+  };
+
   for (const node of nodes) {
+    if (resumedCompletedNodeIds.has(node.id) && node.id !== resumedActiveNodeId) {
+      completedNodes += 1;
+      context.setQueueSummary({
+        pending: Math.max(0, totalActiveNodes - completedNodes),
+        inProgress: 0,
+        completed: completedNodes,
+      });
+      continue;
+    }
       completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "decompose") {
           let decomposePrompt = promptTemplate(
@@ -207,7 +242,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           if (enableDynamicDelegation) {
             decomposePrompt += DELEGATION_PLAN_INSTRUCTION;
           }
-          bag.plan = await context.callAgent({
+          bag.plan = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? "orchestrator",
           planItemId: node.id,
           title: titleForNode(node, "Decompose work"),
@@ -233,7 +268,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         if (bag.researchFocus) {
           system += `\n\n<orchestrator_focus>The orchestrator asks you to focus on: ${bag.researchFocus}</orchestrator_focus>`;
         }
-        bag.research = await context.callAgent({
+        bag.research = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? "researcher",
           planItemId: node.id,
           title: titleForNode(node, "Research context"),
@@ -254,7 +289,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         if (bag.reviewFocus) {
           system += `\n\n<orchestrator_focus>The orchestrator asks you to focus on: ${bag.reviewFocus}</orchestrator_focus>`;
         }
-        bag.review = await context.callAgent({
+        bag.review = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? "reviewer",
           planItemId: node.id,
           title: titleForNode(node, "Review risks"),
@@ -278,7 +313,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         const allSubagentsSkipped = delegationPlan
           && !delegationPlan.researchEnabled
           && !delegationPlan.reviewEnabled;
-        bag.synthesis = await context.callAgent({
+        bag.synthesis = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? "orchestrator",
           planItemId: node.id,
           title: titleForNode(node, "Synthesize result"),
@@ -298,10 +333,21 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           return bag.synthesis;
         }
         // Custom template fallback
+        const fallbackAgentId = node.ownerAgentId ?? primaryAgentId;
+        const fallbackTitle = titleForNode(node, node.label);
+        const resumed = await context.resumeSuspendedNode?.({
+          nodeId: node.id,
+          agentId: fallbackAgentId,
+          title: fallbackTitle,
+        });
+        if (resumed !== undefined) {
+          bag[node.template] = resumed;
+          return resumed;
+        }
         return dispatchNodeTemplate(context, modeSpec, node, bag, {
           bagKey: node.template,
-          agentId: node.ownerAgentId ?? primaryAgentId,
-          title: titleForNode(node, node.label),
+          agentId: fallbackAgentId,
+          title: fallbackTitle,
           fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
         });
       }, bag, { skipNodeIds });

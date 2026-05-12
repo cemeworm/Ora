@@ -341,6 +341,7 @@ export async function runNodeRuntimeLoop(
               content: chunk.delta,
               delta: chunk.delta,
               streaming: true,
+              phase: "stream",
               ...(visibility ? { visibility } : {}),
             },
             { agentId: params.agentId, nodeId: params.agentId },

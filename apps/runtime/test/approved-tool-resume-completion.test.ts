@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEERFLOW_HARNESS_MODE_ID,
   type ModeId,
   getModePreset,
   modeSpecToPatternDefinition,
@@ -213,6 +214,130 @@ describe("approved tool resume completion", () => {
     });
     expect(resumed.events.map((event) => event.type)).toContain("plan_list.updated");
     expect(resumed.events.map((event) => event.type)).toContain("run.done");
+  });
+
+  it("continues remaining orchestrator nodes after resuming a suspended approval frame", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-orchestrator-frame-resume-"));
+    const modeSpec = getModePreset(DEERFLOW_HARNESS_MODE_ID)!;
+    const definition = modeSpecToPatternDefinition(modeSpec);
+    const base = approvedFileWriteSnapshot(workspaceRoot, {
+      modeId: DEERFLOW_HARNESS_MODE_ID,
+      pattern: "orchestrator_subagent",
+      agentId: "researcher",
+      nodeId: "research",
+      toolIds: ["web.fetch", "plan.update"],
+    });
+    const snapshot = StateSnapshotSchema.parse({
+      ...base,
+      config: {
+        ...base.config,
+        modeId: DEERFLOW_HARNESS_MODE_ID,
+        toolIds: ["web.fetch", "plan.update"],
+      },
+      actions: base.actions.map((action) => ({
+        ...action,
+        status: "succeeded" as const,
+        output: { ok: true },
+      })),
+      toolCalls: base.toolCalls.map((call) => ({
+        ...call,
+        status: "succeeded" as const,
+        result: {
+          status: "succeeded" as const,
+          output: { ok: true },
+          content: "{\"ok\":true}",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      })),
+      pendingApprovals: [],
+      plan: [
+        { id: "run-approved:decompose", runId: base.runId, title: "Lead plan", status: "done", dependencies: [], linkedActionIds: [], checkpointIds: [] },
+        { id: "run-approved:research", runId: base.runId, title: "Research subagent", status: "blocked", dependencies: ["run-approved:decompose"], linkedActionIds: ["run-approved:action-write"], checkpointIds: [] },
+        { id: "run-approved:review", runId: base.runId, title: "Review subagent", status: "blocked", dependencies: ["run-approved:research"], linkedActionIds: [], checkpointIds: [] },
+        { id: "run-approved:synthesize", runId: base.runId, title: "Lead synthesis", status: "blocked", dependencies: ["run-approved:review"], linkedActionIds: [], checkpointIds: [] },
+      ],
+      todos: [
+        { id: "run-approved:decompose", runId: base.runId, sourcePlanItemId: "run-approved:decompose", label: "Lead plan", status: "done", createdAt: 1, updatedAt: 1 },
+        { id: "run-approved:research", runId: base.runId, sourcePlanItemId: "run-approved:research", label: "Research subagent", status: "blocked", createdAt: 1, updatedAt: 1 },
+        { id: "run-approved:review", runId: base.runId, sourcePlanItemId: "run-approved:review", label: "Review subagent", status: "blocked", createdAt: 1, updatedAt: 1 },
+        { id: "run-approved:synthesize", runId: base.runId, sourcePlanItemId: "run-approved:synthesize", label: "Lead synthesis", status: "blocked", createdAt: 1, updatedAt: 1 },
+      ],
+      continuation: {
+        activeFrameId: "run-approved:continuation:0",
+        frames: [{
+          ...base.continuation.frames[0]!,
+          status: "awaiting_model" as const,
+          reason: "approval_required" as const,
+          agentId: "researcher",
+          nodeId: "research",
+          planItemId: "research",
+          pendingActionIds: ["run-approved:action-write"],
+          pendingToolCallIds: ["run-approved:tool-call-write"],
+          nodeCheckpoint: {
+            modeId: DEERFLOW_HARNESS_MODE_ID,
+            agentId: "researcher",
+            nodeId: "research",
+            planItemId: "research",
+            eventSeq: 0,
+            conversationCursor: 0,
+            bag: { prompt: base.input.prompt, plan: "Existing lead plan" },
+          },
+        }],
+      },
+    });
+
+    const { snapshot: resumed } = await executeRuntimeKernel(
+      snapshot.runId,
+      snapshot.input,
+      snapshot.config,
+      {
+        modeSpec,
+        definition,
+        skillRegistry: new RuntimeSkillRegistry(),
+        conversationMessages: runtimeConversationToModelMessages(snapshot.conversation),
+        resumeContext: { approvedActionIds: ["run-approved:action-write"] },
+        resumeState: snapshot,
+      },
+    );
+    const eventTypes = resumed.events.map((event) => event.type);
+    const nodeUpdates = resumed.events.filter((event) => event.type === "node.updated");
+    const reviewCompletedIndex = resumed.events.findIndex((event) =>
+      event.type === "node.updated" &&
+      event.payload &&
+      typeof event.payload === "object" &&
+      (event.payload as { nodeId?: string; status?: string }).nodeId === "review" &&
+      (event.payload as { nodeId?: string; status?: string }).status === "completed"
+    );
+    const synthesizeCompletedIndex = resumed.events.findIndex((event) =>
+      event.type === "node.updated" &&
+      event.payload &&
+      typeof event.payload === "object" &&
+      (event.payload as { nodeId?: string; status?: string }).nodeId === "synthesize" &&
+      (event.payload as { nodeId?: string; status?: string }).status === "completed"
+    );
+    const runDoneIndex = resumed.events.findIndex((event) => event.type === "run.done");
+    const completedFrame = resumed.continuation.frames.find((frame) => frame.id === snapshot.continuation.activeFrameId);
+
+    expect(resumed.status).toBe("succeeded");
+    expect(eventTypes).toContain("run.done");
+    expect(nodeUpdates.some((event) =>
+      event.payload &&
+      typeof event.payload === "object" &&
+      (event.payload as { nodeId?: string; status?: string }).nodeId === "decompose" &&
+      (event.payload as { nodeId?: string; status?: string }).status === "started"
+    )).toBe(false);
+    expect(reviewCompletedIndex).toBeGreaterThan(-1);
+    expect(synthesizeCompletedIndex).toBeGreaterThan(reviewCompletedIndex);
+    expect(runDoneIndex).toBeGreaterThan(synthesizeCompletedIndex);
+    expect(completedFrame).toMatchObject({
+      status: "completed",
+      agentId: "researcher",
+      nodeId: "research",
+      approvedActionIds: ["run-approved:action-write"],
+    });
+    expect(resumed.plan.find((item) => item.id === "run-approved:review")?.status).toBe("done");
+    expect(resumed.plan.find((item) => item.id === "run-approved:synthesize")?.status).toBe("done");
   });
 
   it("continues a manual interrupted agent frame from the recorded owner", async () => {

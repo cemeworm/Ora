@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateRuntimeCompletionGuards,
+  legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
   planListCompletionGuard,
 } from "../src/harness/runtime-completion-guards.js";
@@ -60,6 +61,89 @@ describe("runtime completion guards", () => {
       allowComplete: false,
       reason: "plan_list_incomplete",
     });
+  });
+
+  it("allows terminal approved replay tools to finalize blocked legacy progress", () => {
+    const result = legacyProgressCompletionGuard({
+      actions: [{
+        id: "run-1:action-write",
+        runId: "run-1",
+        type: "file.write",
+        riskLevel: "high",
+        status: "succeeded",
+        input: {},
+        artifactIds: [],
+      }],
+      planList: [],
+      plan: [{
+        id: "run-1:respond",
+        runId: "run-1",
+        title: "Respond",
+        status: "blocked",
+        dependencies: [],
+        actionIds: [],
+        linkedActionIds: [],
+        checkpointIds: [],
+      }],
+      todos: [{
+        id: "run-1:respond",
+        runId: "run-1",
+        sourcePlanItemId: "run-1:respond",
+        label: "Respond",
+        status: "blocked",
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+      toolCalls: [],
+    });
+
+    expect(result).toEqual({ allowComplete: true });
+  });
+
+  it("blocks finalization after non-terminal approved replay tools while legacy progress is blocked", () => {
+    const result = legacyProgressCompletionGuard({
+      actions: [{
+        id: "run-1:action-shell",
+        runId: "run-1",
+        type: "shell.execute",
+        riskLevel: "high",
+        status: "succeeded",
+        input: {},
+        artifactIds: [],
+      }],
+      planList: [],
+      replayedActionIds: ["run-1:action-shell"],
+      plan: [{
+        id: "run-1:verify",
+        runId: "run-1",
+        title: "Verify command result",
+        status: "blocked",
+        dependencies: [],
+        actionIds: [],
+        linkedActionIds: [],
+        checkpointIds: [],
+      }],
+      todos: [{
+        id: "run-1:verify",
+        runId: "run-1",
+        sourcePlanItemId: "run-1:verify",
+        label: "Verify command result",
+        status: "blocked",
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+      toolCalls: [],
+    });
+
+    expect(result).toMatchObject({
+      allowComplete: false,
+      reason: "legacy_progress_incomplete",
+    });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.followUpContent).toContain("do not provide a final answer");
+      expect(result.detail).toContain("Verify command result");
+    }
   });
 
   it("blocks natural completion when actions are still pending", () => {

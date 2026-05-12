@@ -433,6 +433,9 @@ export async function completeApprovedToolContinuation(
   const guardResult = evaluateRuntimeCompletionGuards({
     actions: working.actions,
     planList: working.planList,
+    plan: working.plan,
+    todos: working.todos,
+    replayedActionIds: approvedTools.map((action) => action.id),
     toolCalls: working.toolCalls,
   });
   if (!guardResult.allowComplete) {

@@ -7,11 +7,20 @@ import type {
   SharedStateSummary,
 } from "@cemeworm/shared";
 
+export interface PatternModeResumeState {
+  activeFrameId?: string;
+  activeNodeId?: string;
+  activeAgentId?: string;
+  bag: Record<string, unknown>;
+  completedNodeIds: string[];
+}
+
 export interface PatternExecutionContext {
   projectId: string;
   queueSummary: QueueSummary;
   sharedStateSummary: SharedStateSummary;
   busStats: BusStats;
+  modeResume?: PatternModeResumeState;
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
   setQueueSummary(patch: Partial<QueueSummary>): void;
@@ -48,6 +57,11 @@ export interface PatternExecutionContext {
   claimWorker(agentId: string): void;
   releaseWorker(agentId: string): void;
   agentLabel(agentId: string): string;
+  resumeSuspendedNode?(params: {
+    nodeId: string;
+    agentId: string;
+    title: string;
+  }): Promise<unknown | undefined>;
   callAgent(params: {
     agentId: string;
     planItemId?: string;

@@ -533,6 +533,20 @@ class KernelRuntimeContext {
   }
 }
 
+function cloneRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+function completedNodeIdsFromPlan(plan: readonly PlanItem[] | undefined, runId: string): string[] {
+  const prefix = `${runId}:`;
+  return (plan ?? [])
+    .filter((item) => item.status === "done" || item.status === "skipped")
+    .map((item) => item.id.startsWith(prefix) ? item.id.slice(prefix.length) : item.id);
+}
+
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve();
@@ -738,6 +752,27 @@ export async function executeRuntimeKernel(
     profilesById.set(ORA_ROOT_AGENT_ID, rootProfile);
   }
   const agentLabel = (agentId: string): string => profilesById.get(agentId)?.label ?? agentId;
+  const suspendedFrameDispatch = options.resumeState ? classifyContinuationDispatch(options.resumeState) : undefined;
+  if (suspendedFrameDispatch?.kind === "diagnostic_failure") {
+    throw new Error(suspendedFrameDispatch.message);
+  }
+  const suspendedFrameDecision = suspendedFrameDispatch?.kind === "resume_suspended_node" && suspendedFrameDispatch.frame.status === "awaiting_model"
+    ? suspendedFrameDispatch
+    : undefined;
+  const shouldResumeSuspendedFrameInModeDriver = suspendedFrameDecision !== undefined &&
+    resolvedModeSpec.family === "orchestrator_subagent" &&
+    !resolvedModeSpec.stages?.length &&
+    resolvedModeSpec.nodes.length > 1;
+  const modeResume = shouldResumeSuspendedFrameInModeDriver && suspendedFrameDecision
+    ? {
+        activeFrameId: suspendedFrameDecision.frame.id,
+        activeNodeId: suspendedFrameDecision.nodeId,
+        activeAgentId: suspendedFrameDecision.agentId,
+        bag: cloneRecord(suspendedFrameDecision.frame.nodeCheckpoint?.bag),
+        completedNodeIds: completedNodeIdsFromPlan(options.resumeState?.plan, runId),
+      }
+    : undefined;
+  let suspendedFrameConsumedByMode = false;
 
   const emitAgentMessage = (params: {
     fromAgentId: string;
@@ -1701,23 +1736,21 @@ export async function executeRuntimeKernel(
     };
   };
 
-  const resumeSuspendedFrameIfNeeded = async (): Promise<StateSnapshot | undefined> => {
-    const resumeState = options.resumeState;
-    if (!resumeState) {
-      return undefined;
-    }
-    const decision = classifyContinuationDispatch(resumeState);
-    if (decision.kind === "diagnostic_failure") {
-      throw new Error(decision.message);
-    }
-    if (decision.kind !== "resume_suspended_node" || decision.frame.status !== "awaiting_model") {
+  const resumeSuspendedRuntimeFrame = async (params?: { title?: string }): Promise<{
+    frame: NonNullable<typeof suspendedFrameDecision>["frame"];
+    agentId: string;
+    nodeId: string;
+    text: string;
+  } | undefined> => {
+    const decision = suspendedFrameDecision;
+    if (!decision) {
       return undefined;
     }
 
     const frame = decision.frame;
     const agentId = decision.agentId;
     const nodeId = decision.nodeId;
-    const title = `Continue ${agentLabel(agentId)}`;
+    const title = params?.title ?? `Continue ${agentLabel(agentId)}`;
     kernelRuntimeContext.activateAgent(agentId);
     setTopologyStatus(agentId, "running");
     emit("agent.started", { title, planItemId: frame.planItemId }, { agentId, nodeId });
@@ -1752,21 +1785,14 @@ export async function executeRuntimeKernel(
         role: "assistant",
         messageId: assistantMessageId({ agentId, nodeId, suffix: "continuation" }),
         content: response.text,
+        streaming: false,
+        phase: "final",
       },
       { agentId, nodeId },
     );
     emit("agent.completed", { title }, { agentId, nodeId });
     kernelRuntimeContext.deactivateAgent(agentId);
     setTopologyStatus(agentId, "done");
-
-    const output = {
-      text: response.text,
-      pattern: resolvedModeSpec.family,
-      modeId: resolvedModeSpec.id,
-      ...(resolvedModeSpec.family === "orchestrator_subagent"
-        ? { orchestrator: { plan: response.text } }
-        : {}),
-    };
     const memoryRecord = memoryService.remember({
       id: `${agentId}-continuation-memory`,
       namespace: ["session", projectId, resolvedModeSpec.family, "continuation", agentId],
@@ -1774,6 +1800,27 @@ export async function executeRuntimeKernel(
       value: { summary: response.text, resumedFrameId: frame.id },
     });
     emit("memory.updated", { record: memoryRecord });
+    return { frame, agentId, nodeId, text: response.text };
+  };
+
+  const resumeSuspendedFrameIfNeeded = async (): Promise<StateSnapshot | undefined> => {
+    if (!suspendedFrameDecision || shouldResumeSuspendedFrameInModeDriver) {
+      return undefined;
+    }
+
+    const resumed = await resumeSuspendedRuntimeFrame();
+    if (!resumed) {
+      return undefined;
+    }
+    const { text } = resumed;
+    const output = {
+      text,
+      pattern: resolvedModeSpec.family,
+      modeId: resolvedModeSpec.id,
+      ...(resolvedModeSpec.family === "orchestrator_subagent"
+        ? { orchestrator: { plan: text } }
+        : {}),
+    };
     emit("run.done", { status: "succeeded", output });
     const checkpoint = createResumeCheckpoint({
       runId,
@@ -1809,6 +1856,28 @@ export async function executeRuntimeKernel(
       output,
       updatedAt: now(),
     });
+  };
+
+  const resumeSuspendedNode = async (params: { nodeId: string; agentId: string; title: string }): Promise<unknown | undefined> => {
+    if (!shouldResumeSuspendedFrameInModeDriver || !suspendedFrameDecision || suspendedFrameConsumedByMode) {
+      return undefined;
+    }
+    if (params.nodeId !== suspendedFrameDecision.nodeId) {
+      return undefined;
+    }
+    suspendedFrameConsumedByMode = true;
+    const resumed = await resumeSuspendedRuntimeFrame({ title: params.title });
+    if (!resumed) {
+      return undefined;
+    }
+    const completedContinuation = continuationWithActiveFrameStatus("completed");
+    if (options.resumeState && completedContinuation) {
+      options.resumeState = {
+        ...options.resumeState,
+        continuation: completedContinuation,
+      };
+    }
+    return resumed.text;
   };
 
   const remember = (params: {
@@ -2133,6 +2202,7 @@ export async function executeRuntimeKernel(
       queueSummary: () => kernelRuntimeContext.queueSummary,
       sharedStateSummary: () => kernelRuntimeContext.sharedStateSummary,
       busStats: () => kernelRuntimeContext.busStats,
+      modeResume,
       systemPrompt,
       setPlanStatus,
       setQueueSummary: (patch) => {
@@ -2146,6 +2216,7 @@ export async function executeRuntimeKernel(
       claimWorker,
       releaseWorker,
       agentLabel,
+      resumeSuspendedNode,
       callAgent,
       remember,
       captureMemory,
