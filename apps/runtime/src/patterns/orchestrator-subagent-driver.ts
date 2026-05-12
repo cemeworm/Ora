@@ -223,15 +223,6 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   };
 
   for (const node of nodes) {
-    if (resumedCompletedNodeIds.has(node.id) && node.id !== resumedActiveNodeId) {
-      completedNodes += 1;
-      context.setQueueSummary({
-        pending: Math.max(0, totalActiveNodes - completedNodes),
-        inProgress: 0,
-        completed: completedNodes,
-      });
-      continue;
-    }
       completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
         if (node.template === "decompose") {
           let decomposePrompt = promptTemplate(
@@ -350,7 +341,11 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           title: fallbackTitle,
           fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
         });
-      }, bag, { skipNodeIds });
+      }, bag, {
+        skipNodeIds,
+        alreadyCompletedNodeIds: resumedCompletedNodeIds,
+        activeResumeNodeId: resumedActiveNodeId,
+      });
   }
 
   context.remember({

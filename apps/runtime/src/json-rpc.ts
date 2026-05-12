@@ -183,7 +183,7 @@ export function createRuntimeMethodHandler(
       case "sessions.branchGroups.get":
         return store.getSessionBranchGroup(request.params);
       case "sessions.branchGroups.createAndRun":
-        return store.createAndRunSessionBranchGroup(request.params);
+        return store.createAndRunSessionBranchGroup(request.params, { onStream: options.onRunStream });
       case "sessions.branchGroups.adopt":
         return store.adoptSessionBranchGroup(request.params);
       case "sessions.branchGroups.dismiss":

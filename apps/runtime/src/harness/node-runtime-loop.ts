@@ -10,6 +10,7 @@ import type {
 } from "@cemeworm/shared";
 import { invokeRunProvider, invokeRunProviderStream } from "../providers/index.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
+import type { ModelStreamEvent } from "../providers/types.js";
 import {
   classifyRecoveryError,
   RecoveryExhaustedError,
@@ -69,6 +70,13 @@ type RuntimeLoopEmit = (
   payload: unknown,
   extra?: Partial<OraEventEnvelope>,
 ) => OraEventEnvelope;
+
+export function shouldEmitProviderStreamEvent(
+  event: Pick<ModelStreamEvent, "kind">,
+  emittedProviderStreamFrameForInvocation: boolean,
+): boolean {
+  return event.kind !== "sse_frame" || !emittedProviderStreamFrameForInvocation;
+}
 
 export interface RunNodeRuntimeLoopParams {
   runId: string;
@@ -320,9 +328,11 @@ export async function runNodeRuntimeLoop(
   let lastProviderRequestMessages: ModelMessage[] = [];
   let modelInvocationIndex = 0;
   let activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:0`;
+  let emittedProviderStreamFrameForInvocation = false;
   const nextAssistantMessageId = () => {
     activeAssistantMessageId = `${params.runId}:assistant:${params.agentId}:${params.nodeId}:${modelInvocationIndex}`;
     modelInvocationIndex += 1;
+    emittedProviderStreamFrameForInvocation = false;
     return activeAssistantMessageId;
   };
   const streamCallbacks = options.streamProvider
@@ -349,11 +359,13 @@ export async function runNodeRuntimeLoop(
             { agentId: params.agentId, nodeId: params.agentId },
           );
         },
-        onStreamEvent: (event: {
-          kind: string;
-          streamMode: string;
-          raw?: unknown;
-        }) => {
+        onStreamEvent: (event: ModelStreamEvent) => {
+          if (!shouldEmitProviderStreamEvent(event, emittedProviderStreamFrameForInvocation)) {
+            return;
+          }
+          if (event.kind === "sse_frame") {
+            emittedProviderStreamFrameForInvocation = true;
+          }
           emit(
             "node.updated",
             {

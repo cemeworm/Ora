@@ -17,6 +17,7 @@ import {
   nodeRuntimeStateSequence,
   transitionPairs,
 } from "../src/harness/node-loop-transitions.js";
+import { shouldEmitProviderStreamEvent as shouldEmitNodeRuntimeProviderStreamEvent } from "../src/harness/node-runtime-loop.js";
 
 function createTempStore() {
   return new LocalRunStore({
@@ -96,6 +97,14 @@ describe("node runtime loop transition contract", () => {
       "completed",
       "completed",
     ]);
+  });
+
+  it("emits only the first provider sse frame per model invocation", () => {
+    expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "sse_frame" }, false)).toBe(true);
+    expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "sse_frame" }, true)).toBe(false);
+    expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "fallback_started" }, true)).toBe(true);
+    expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "fallback_response" }, true)).toBe(true);
+    expect(shouldEmitNodeRuntimeProviderStreamEvent({ kind: "local_stream_started" }, true)).toBe(true);
   });
 
   it("routes production node state emissions through a transition controller", () => {
@@ -2054,7 +2063,7 @@ describe("node runtime loop transition contract", () => {
     }
   });
 
-  it("documents forced-final provider failures during recovery", async () => {
+  it("documents forced-final provider fallback recovery", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const previousFetch = globalThis.fetch;
     const previousKey = process.env.NODE_LOOP_FORCED_FINAL_FAILURE_KEY;
@@ -2131,17 +2140,25 @@ describe("node runtime loop transition contract", () => {
       }));
       const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
 
-      expect(run.status).toBe("failed");
-      expect(state.status).toBe("failed");
-      expect(providerCalls).toBeGreaterThanOrEqual(3);
+      expect(run.status).toBe("succeeded");
+      expect(state.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(4);
       expect(containsStateSubsequence(states, ["pending", "finalizing", "failed"])).toBe(true);
       expectCoreTransitions(states);
       expect(states).not.toContain("completed");
       expect(state.events.filter((event) => event.type === "recovery.retry_scheduled")).toHaveLength(2);
-      expect(state.events.filter((event) => event.type === "recovery.applied")).toHaveLength(0);
-      expect(state.events.map((event) => event.type)).toContain("run.failed");
-      expect(state.events.map((event) => event.type)).not.toContain("run.done");
+      expect(state.events.filter((event) => event.type === "recovery.applied")).toHaveLength(1);
+      expect(state.events.map((event) => event.type)).not.toContain("run.failed");
+      expect(state.events.map((event) => event.type)).toContain("run.done");
       expect(state.toolCalls.filter((call) => call.toolId === "web.fetch")).toHaveLength(0);
+      expect(state.output?.text).toContain("continued with limited context after forced-final provider recovery");
+      expect(state.artifacts.some((artifact) => artifact.kind === "log" && artifact.label.includes("Recovery"))).toBe(true);
+      expect(state.events.some((event) =>
+        event.type === "recovery.applied" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        ((event.payload as Record<string, unknown>).decision as { action?: unknown } | undefined)?.action === "fallback_artifact"
+      )).toBe(true);
       expect(state.events.some((event) =>
         event.type === "completion.updated" &&
         typeof event.payload === "object" &&

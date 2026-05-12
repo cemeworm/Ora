@@ -94,6 +94,7 @@ import {
   SkillSetEnabledParams,
   SkillUpdateParams,
   SelfIterationEnvironmentObserverPolicy,
+  deriveSessionBranchGroupStatus,
   extractCompleteProposedPlanContent,
   snapshotContainsCompleteProposedPlan,
   StateSnapshot,
@@ -879,8 +880,49 @@ export class LocalRunStore {
     const ledgerGroups = ledger
       ? deriveSessionProjection(ledger).branchGroups.filter((group) => !runtimeGroupIds.has(group.branchGroupId))
       : [];
-    return [...runtimeGroups, ...ledgerGroups];
+    const resolvedGroups = [...runtimeGroups, ...ledgerGroups.map((group) => {
+      // Ledger branch groups may carry stale creation-time status when all
+      // candidate runs have completed but main-line entries don't reflect it.
+      // Re-derive the status from actual candidate run states.
+      if (group.status !== "running") {
+        return group;
+      }
+      const derivedCandidates = group.candidateRunIds.map((runId) => {
+        const run = this.runs.get(runId);
+        if (!run) return undefined;
+        const existing = group.candidates.find((c) => c.runId === runId);
+        return {
+          runId,
+          status: run.status,
+          label: existing?.label,
+          modeId: run.modeId ?? existing?.modeId,
+          providerId: typeof run.config.providerId === "string" ? run.config.providerId : existing?.providerId,
+          modelRef: run.config.modelRef ?? existing?.modelRef,
+          adopted: run.config.metadata.branchRole === "adopted",
+          prompt: existing?.prompt ?? run.input.prompt,
+          outputPreview: existing?.outputPreview,
+          updatedAt: run.updatedAt,
+        };
+      }).filter((c): c is NonNullable<typeof c> => c !== undefined);
+      if (derivedCandidates.length === 0) {
+        return group;
+      }
+      const derivedStatus = deriveSessionBranchGroupStatus({
+        status: group.status,
+        adoptedRunId: group.adoptedRunId,
+        candidates: derivedCandidates,
+      });
+      return SessionBranchGroupSchema.parse({
+        ...group,
+        status: derivedStatus,
+        candidates: derivedCandidates,
+        updatedAt: Math.max(group.updatedAt, ...derivedCandidates.map((c) => c.updatedAt)),
+      });
+    })];
+    return resolvedGroups;
   }
+
+
 
   getSessionBranchGroup(params: unknown): SessionBranchGroup {
     const parsed = SessionBranchGroupGetParamsSchema.parse(params);
@@ -892,7 +934,7 @@ export class LocalRunStore {
     return group;
   }
 
-  async createAndRunSessionBranchGroup(params: unknown): Promise<SessionBranchGroup> {
+  async createAndRunSessionBranchGroup(params: unknown, options: StreamingRunOptions = {}): Promise<SessionBranchGroup> {
     const parsed = SessionBranchGroupCreateParamsSchema.parse(params);
     const session = this.getSessionOrThrow(parsed.sessionId);
     const latestRun = session.latestRunId ? this.getRunOrThrow(session.latestRunId) : undefined;
@@ -980,7 +1022,7 @@ export class LocalRunStore {
             ...(replaceRunId ? { branchReplaceRunId: replaceRunId } : {}),
           },
         },
-      });
+      }, options);
       projectedBranchGroup = SessionBranchGroupSchema.parse({
         ...projectedBranchGroup,
         candidateRunIds: [...projectedBranchGroup.candidateRunIds, handle.runId],

@@ -24,7 +24,23 @@ function methodBody(source: string, methodName: string): string {
   const markerMatch = new RegExp(`\\n\\s+(?:private\\s+)?(?:async\\s+)?${methodName}\\s*\\(`).exec(source);
   const marker = markerMatch?.index ?? -1;
   expect(marker, `${methodName} should exist`).toBeGreaterThanOrEqual(0);
-  const open = source.indexOf("{", marker);
+  const paramsOpen = source.indexOf("(", marker);
+  expect(paramsOpen, `${methodName} should have params`).toBeGreaterThanOrEqual(0);
+  let paramsDepth = 0;
+  let paramsClose = -1;
+  for (let index = paramsOpen; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "(") paramsDepth += 1;
+    if (char === ")") {
+      paramsDepth -= 1;
+      if (paramsDepth === 0) {
+        paramsClose = index;
+        break;
+      }
+    }
+  }
+  expect(paramsClose, `${methodName} should close params`).toBeGreaterThanOrEqual(0);
+  const open = source.indexOf("{", paramsClose);
   expect(open, `${methodName} should have a body`).toBeGreaterThanOrEqual(0);
   let depth = 0;
   for (let index = open; index < source.length; index += 1) {

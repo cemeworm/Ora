@@ -32,6 +32,7 @@ import {
   CODE_DEVELOPMENT_MODE_ID,
   DEBATE_MODE_ID,
   DEERFLOW_HARNESS_MODE_ID,
+  DYNAMIC_ORCHESTRATOR_MODE_ID,
   EvaluationAttemptSchema,
   EvaluationAnnotationListParamsSchema,
   EvaluationAnnotationSubmitParamsSchema,
@@ -196,7 +197,7 @@ import {
 describe("Ora shared contracts", () => {
   it("validates all MVP pattern fixtures", () => {
     expect(MVP_PATTERNS).toHaveLength(5);
-    expect(MVP_MODES).toHaveLength(11);
+    expect(MVP_MODES).toHaveLength(12);
     expect(MVP_PATTERNS.map((pattern) => pattern.id)).toEqual([
       "generator_verifier",
       "orchestrator_subagent",
@@ -208,6 +209,7 @@ describe("Ora shared contracts", () => {
       "generator_verifier",
       "orchestrator_subagent",
       DEERFLOW_HARNESS_MODE_ID,
+      DYNAMIC_ORCHESTRATOR_MODE_ID,
       "single_agent",
       DEBATE_MODE_ID,
       CODE_DEVELOPMENT_MODE_ID,
@@ -2637,7 +2639,7 @@ describe("RuntimeBootstrapSchema", () => {
 
     expect(parsed.health.mode).toBe("runtime");
     expect(parsed.patterns).toHaveLength(5);
-    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(10);
+    expect(parsed.modes.filter((mode) => mode.visibility !== "internal")).toHaveLength(11);
     expect(parsed.atoms.length).toBeGreaterThan(0);
     expect(parsed.tools.tools.length).toBeGreaterThan(0);
     expect(parsed.skills.skills[0]?.id).toBe("runtime.default.review");
