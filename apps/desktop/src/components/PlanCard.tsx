@@ -3,6 +3,8 @@ import type { TurnPlanListStep } from "../types";
 import { cn } from "../lib/utils";
 import { MarkdownContent } from "./MarkdownContent";
 
+const STREAMING_PLAN_PREVIEW_CHARS = 3600;
+
 interface PlanCardProps {
   planSteps: TurnPlanListStep[];
   planContent?: string;
@@ -10,6 +12,9 @@ interface PlanCardProps {
 }
 
 export function PlanCard({ planSteps, planContent, isStreaming = false }: PlanCardProps) {
+  const streamingPlanContent = isStreaming && planContent
+    ? streamingPlanPreview(planContent)
+    : undefined;
   return (
     <div className="space-y-2 rounded-2xl border border-border bg-card/96 px-4 py-3 shadow-lift backdrop-blur-sm transition-[background-color,border-color,box-shadow] duration-300">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -29,10 +34,16 @@ export function PlanCard({ planSteps, planContent, isStreaming = false }: PlanCa
       </div>
       {planContent ? (
         <div>
-          <MarkdownContent
-            content={planContent}
-            className="text-sm leading-6 text-foreground [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h1]:leading-6 [&_h2]:mb-1.5 [&_h2]:mt-3 [&_h2]:text-sm [&_h2]:leading-6 [&_h3]:mb-1 [&_h3]:mt-2.5 [&_h3]:text-sm [&_h3]:leading-6 [&_ol]:my-1.5 [&_p]:my-1.5 [&_ul]:my-1.5"
-          />
+          {streamingPlanContent ? (
+            <pre className="max-w-full whitespace-pre-wrap break-words font-sans text-sm leading-6 text-foreground">
+              {streamingPlanContent}
+            </pre>
+          ) : (
+            <MarkdownContent
+              content={planContent}
+              className="text-sm leading-6 text-foreground [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h1]:leading-6 [&_h2]:mb-1.5 [&_h2]:mt-3 [&_h2]:text-sm [&_h2]:leading-6 [&_h3]:mb-1 [&_h3]:mt-2.5 [&_h3]:text-sm [&_h3]:leading-6 [&_ol]:my-1.5 [&_p]:my-1.5 [&_ul]:my-1.5"
+            />
+          )}
         </div>
       ) : isStreaming ? (
         <p className="text-sm text-muted-foreground">正在生成计划内容...</p>
@@ -67,6 +78,15 @@ export function PlanCard({ planSteps, planContent, isStreaming = false }: PlanCa
       ) : null}
     </div>
   );
+}
+
+function streamingPlanPreview(content: string): string {
+  if (content.length <= STREAMING_PLAN_PREVIEW_CHARS) {
+    return content;
+  }
+  const preview = content.slice(-STREAMING_PLAN_PREVIEW_CHARS);
+  const boundary = preview.search(/\s/);
+  return boundary >= 0 ? preview.slice(boundary).trimStart() : preview;
 }
 
 function PlanStepStatusIcon({ status }: { status: TurnPlanListStep["status"] }) {

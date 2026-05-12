@@ -1359,6 +1359,67 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("先显示卡片");
   });
 
+  it("bounds streaming PlanCard content to the latest text window", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+      proposedPlanStatus: "streaming",
+      activeLoadingTarget: { kind: "proposed_plan" },
+    };
+    const content = [
+      "开头内容不应在长流式计划中持续渲染",
+      "x".repeat(5000),
+      "尾部计划步骤应保持可见",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={content} turn={turn} />,
+    );
+
+    expect(html).toContain("任务计划");
+    expect(html).toContain("正在生成");
+    expect(html).toContain("尾部计划步骤应保持可见");
+    expect(html).not.toContain("开头内容不应在长流式计划中持续渲染");
+  });
+
+  it("keeps a streaming PlanCard preview when the latest text window has no whitespace", () => {
+    const turn: AssistantTurnAttachment = {
+      runId: "run-1",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      processSteps: [],
+      agentMessages: [],
+      planList: [],
+      artifacts: [],
+      todos: [],
+      approvalCount: 0,
+      clarificationCount: 0,
+      hasProposedPlan: true,
+      proposedPlanStatus: "streaming",
+      activeLoadingTarget: { kind: "proposed_plan" },
+    };
+    const tail = "尾部计划步骤应保持可见".repeat(500);
+    const content = `开头内容不应在长流式计划中持续渲染\n${tail}`;
+
+    const html = renderToStaticMarkup(
+      <AssistantTurnCard content={content} turn={turn} />,
+    );
+
+    expect(html).toContain("尾部计划步骤应保持可见");
+    expect(html).not.toContain("开头内容不应在长流式计划中持续渲染");
+  });
+
   it("uses the proposed plan as the only active loading target while plan output streams", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
