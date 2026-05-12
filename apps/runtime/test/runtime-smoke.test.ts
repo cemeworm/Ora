@@ -6,7 +6,6 @@ import { CODE_DEVELOPMENT_MODE_ID, DEFAULT_SKILL_TOOL_IDS, DEFAULT_WEB_TOOL_IDS,
 import { LocalRunStore, createRuntimeMethodHandler, executeRuntimeKernel, handleJsonRpcLine } from "../src/index.js";
 import { nodeLoopTransitionDiagnostics } from "../src/harness/node-loop-transitions.js";
 import { createResumeApprovalMatcher } from "../src/harness/runtime-interrupts.js";
-import { summarizeNarratorProgressPayload } from "../src/harness/runtime-prompts.js";
 
 function createTempStore() {
   return new LocalRunStore({
@@ -1247,7 +1246,7 @@ describe("Ora runtime smoke path", () => {
     expect(snapshot.events.map((event) => event.type)).not.toContain("clarification.required");
   });
 
-  it("emits opt-in agent-authored chat progress narration", async () => {
+  it("ignores legacy progress narration opt-in metadata", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
     const { snapshot } = await executeRuntimeKernel(
@@ -1281,7 +1280,7 @@ describe("Ora runtime smoke path", () => {
       { modeSpec, definition },
     );
 
-    const progressEvents = snapshot.events.filter((event) =>
+    const narratorProgressEvents = snapshot.events.filter((event) =>
       event.type === "task.progress" &&
       typeof event.payload === "object" &&
       event.payload !== null &&
@@ -1289,73 +1288,45 @@ describe("Ora runtime smoke path", () => {
       (event.payload as Record<string, unknown>).source === "progress_narrator"
     );
 
-    expect(progressEvents.length).toBeGreaterThan(0);
-    for (const event of progressEvents) {
-      const payload = event.payload as Record<string, unknown>;
-      expect(payload.source).toBe("progress_narrator");
-      expect(typeof payload.summary).toBe("string");
-      expect((payload.summary as string).trim().length).toBeGreaterThan(0);
-      expect(payload.basedOnSeq).toBeLessThan(event.seq);
-    }
+    expect(narratorProgressEvents).toEqual([]);
   });
 
-  it("filters internal stage text out of progress narrator payloads", () => {
-    expect(summarizeNarratorProgressPayload("task.progress", {
-      title: "Route events to subscribers",
-      detail: "Router routes events to the subscribers that should handle the next piece of work.",
-      phase: "running",
-    })).toEqual({ phase: "running" });
-    expect(summarizeNarratorProgressPayload("tool.called", {
-      toolId: "web.search",
-      status: "succeeded",
-      input: { query: "西芒杜项目 2026年 最新进展" },
-      output: { query: "西芒杜项目 2026年 最新进展", results: [{ title: "result" }] },
-    })).toEqual({
-      toolId: "web.search",
-      status: "succeeded",
-      query: "西芒杜项目 2026年 最新进展",
-    });
-  });
-
-  it("asks progress narration to follow the user's language", async () => {
+  it("does not make a second provider call for progress narration", async () => {
     const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
     const definition = modeSpecToPatternDefinition(modeSpec);
     const previousFetch = globalThis.fetch;
-    const previousKey = process.env.PROGRESS_LANGUAGE_KEY;
-    process.env.PROGRESS_LANGUAGE_KEY = "test";
+    const previousKey = process.env.PROGRESS_DISABLED_KEY;
+    process.env.PROGRESS_DISABLED_KEY = "test";
     const providerBodies: string[] = [];
     globalThis.fetch = (async (_input, init) => {
       const body = String(init?.body ?? "");
       providerBodies.push(body);
-      const content = body.includes("Match the user's language")
-        ? "已经读取到用户要安装技能的请求，正在确认下一步需要执行的安装动作。"
-        : "最终答复。";
       return new Response(JSON.stringify({
-        choices: [{ message: { content } }],
+        choices: [{ message: { content: "最终答复。" } }],
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
     try {
-      const { snapshot } = await executeRuntimeKernel(
-        "run-progress-language",
+      await executeRuntimeKernel(
+        "run-progress-disabled",
         { prompt: "请帮我安装 Waza 的几个 skills。", createdAt: 1, context: {} },
         {
           pattern: "orchestrator_subagent",
           modeId: SINGLE_AGENT_MODE_ID,
-          providerId: "progress-language",
-          modelRef: "progress-language-model",
+          providerId: "progress-disabled",
+          modelRef: "progress-disabled-model",
           providerConfig: {
-            id: "progress-language",
+            id: "progress-disabled",
             type: "openai_compatible",
-            label: "Progress Language",
-            modelId: "progress-language-model",
-            baseUrl: "https://progress-language.test/v1",
-            apiKeyEnv: "PROGRESS_LANGUAGE_KEY",
+            label: "Progress Disabled",
+            modelId: "progress-disabled-model",
+            baseUrl: "https://progress-disabled.test/v1",
+            apiKeyEnv: "PROGRESS_DISABLED_KEY",
             capabilities: ["chat"],
             headers: {},
           },
           metadata: { progressNarration: true },
-          deterministicSeed: "progress-language-test",
+          deterministicSeed: "progress-disabled-test",
           profileIds: ["solo_agent"],
           skillIds: [],
           toolIds: [],
@@ -1369,27 +1340,15 @@ describe("Ora runtime smoke path", () => {
         { modeSpec, definition },
       );
 
-      const progressSummaries = snapshot.events
-        .filter((event) =>
-          event.type === "task.progress" &&
-          typeof event.payload === "object" &&
-          event.payload !== null &&
-          (event.payload as Record<string, unknown>).kind === "chat_progress"
-        )
-        .map((event) => (event.payload as Record<string, unknown>).summary);
-
-      expect(providerBodies.some((body) => body.includes("Match the user's language"))).toBe(true);
-      expect(providerBodies.some((body) => body.includes("languageInstruction"))).toBe(true);
-      const progressBodies = providerBodies.filter((body) => body.includes("Match the user's language"));
-      expect(progressBodies.some((body) => body.includes("\"modeId\""))).toBe(false);
-      expect(progressBodies.some((body) => body.includes("\"pattern\""))).toBe(false);
-      expect(progressSummaries).toContain("已经读取到用户要安装技能的请求，正在确认下一步需要执行的安装动作。");
+      expect(providerBodies).toHaveLength(1);
+      expect(providerBodies[0]).not.toContain("Match the user's language");
+      expect(providerBodies[0]).not.toContain("languageInstruction");
     } finally {
       globalThis.fetch = previousFetch;
       if (previousKey === undefined) {
-        delete process.env.PROGRESS_LANGUAGE_KEY;
+        delete process.env.PROGRESS_DISABLED_KEY;
       } else {
-        process.env.PROGRESS_LANGUAGE_KEY = previousKey;
+        process.env.PROGRESS_DISABLED_KEY = previousKey;
       }
     }
   });

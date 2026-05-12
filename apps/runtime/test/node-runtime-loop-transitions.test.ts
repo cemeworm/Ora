@@ -334,7 +334,6 @@ describe("node runtime loop transition contract", () => {
         emitted.push({ type, payload, extra, agentId: extra.agentId, nodeId: extra.nodeId });
         return { type, payload, ...extra } as never;
       },
-      emitProgressNarration: async () => undefined,
       emitRecoveryDecision: () => undefined,
       runForcedFinalProviderCall: async () => {
         throw new Error("forced final should not run");

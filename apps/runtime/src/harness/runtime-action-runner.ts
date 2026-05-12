@@ -21,14 +21,6 @@ type ResumeApprovalMatcher = {
   consume: (action: ActionRecord) => boolean;
 };
 
-type EmitProgressNarration = (params: {
-  trigger: string;
-  agentId?: string;
-  nodeId?: string;
-  title?: string;
-  detail?: string;
-}) => Promise<void>;
-
 type AppendToolCallStatus = (
   record: OraToolCallEnvelope,
   status: OraToolCallEnvelope["status"],
@@ -43,7 +35,6 @@ export interface RuntimeActionDeps {
   permissionMode: RunConfig["permissionMode"];
   resumeApprovals: ResumeApprovalMatcher;
   emit: RuntimeActionEmit;
-  emitProgressNarration: EmitProgressNarration;
   appendToolCallStatus?: AppendToolCallStatus;
   appendToolCall?: AppendToolCall;
 }
@@ -135,13 +126,6 @@ export async function resolveRuntimeActionApproval({
       },
       { agentId: context.agentId, nodeId: context.nodeId },
     );
-    await deps.emitProgressNarration({
-      trigger: "approval.required",
-      agentId: context.agentId,
-      nodeId: context.nodeId,
-      title: context.title,
-      detail: decision.reason,
-    });
     throw new ApprovalInterruptError(action.id);
   }
 

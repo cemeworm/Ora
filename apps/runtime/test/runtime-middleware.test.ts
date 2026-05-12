@@ -120,7 +120,6 @@ function responseContext(overrides: Partial<RuntimeModelResponseContext> = {}): 
     clarificationAnswer: () => undefined,
     ensureClarification: async () => undefined,
     ensureClarifications: async () => [],
-    emitProgressNarration: async () => {},
     completion: {
       markToolResultObserved: () => {},
       forcedFinalIsActive: () => false,

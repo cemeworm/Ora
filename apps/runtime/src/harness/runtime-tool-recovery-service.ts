@@ -64,13 +64,6 @@ interface RuntimeToolRecoveryServiceDeps {
     payload: unknown,
     extra?: Partial<OraEventEnvelope>,
   ) => OraEventEnvelope;
-  emitProgressNarration: (params: {
-    trigger: string;
-    agentId?: string;
-    nodeId?: string;
-    title?: string;
-    detail?: string;
-  }) => Promise<void>;
   emitRecoveryDecision: (
     incident: RecoveryIncident,
     decision: RecoveryDecision,
@@ -161,14 +154,6 @@ export class RuntimeToolRecoveryService {
       toolId: toolCall.tool,
       detail,
     });
-    await this.deps.emitProgressNarration({
-      trigger: "tool.failed",
-      agentId: this.deps.agentId,
-      nodeId: this.deps.agentId,
-      title: this.deps.title,
-      detail,
-    });
-
     const incident = classifyRecoveryError(error, {
       surface,
       nodeId: this.deps.agentId,
@@ -181,13 +166,6 @@ export class RuntimeToolRecoveryService {
     });
     const recoveryDecision = this.deps.recoveryCoordinator.resolve(incident);
     this.deps.emitRecoveryDecision(incident, recoveryDecision);
-    await this.deps.emitProgressNarration({
-      trigger: "recovery.updated",
-      agentId: this.deps.agentId,
-      nodeId: this.deps.agentId,
-      title: this.deps.title,
-      detail: recoveryDecision.summary,
-    });
 
     if (recoveryDecision.action === "retry") {
       await this.deps.sleep(recoveryDecision.retryDelayMs ?? 0);

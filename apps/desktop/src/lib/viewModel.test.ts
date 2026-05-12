@@ -3699,7 +3699,7 @@ describe("desktop session view model", () => {
     expect(assistant?.turn?.currentAgentLabel).toBe(ORA_ROOT_AGENT_LABEL);
   });
 
-  it("shows progress narration as assistant content without process steps", () => {
+  it("ignores progress narration in assistant content and process steps", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-deerflow-progress",
@@ -3784,16 +3784,9 @@ describe("desktop session view model", () => {
     const assistant = messages.find((message) => message.role === "assistant");
 
     expect(assistant?.content).toBe("");
-    expect(assistant?.turn?.liveProgressText).toBe("研究已完成，审核子代理正在运行，下一步将进行综合。");
+    expect(assistant?.turn?.liveProgressText).toBeUndefined();
     expect(assistant?.turn?.processSteps).toEqual([]);
-    expect(assistant?.turn?.timelineItems).toEqual([
-      expect.objectContaining({
-        kind: "progress_narration",
-        source: "progress_narrator",
-        label: "运行中",
-        content: "研究已完成，审核子代理正在运行，下一步将进行综合。",
-      }),
-    ]);
+    expect(assistant?.turn?.timelineItems).toEqual([]);
     expect(assistant?.turn?.timelineItems?.some((item) => item.kind === "assistant_text")).toBe(false);
   });
 
@@ -3924,19 +3917,12 @@ describe("desktop session view model", () => {
     }).find((message) => message.role === "assistant");
 
     expect(statusMessage?.content).toBe("");
-    expect(statusMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
-    expect(statusMessage?.turn?.timelineItems).toEqual([
-      expect.objectContaining({
-        kind: "progress_narration",
-        source: "runtime_status",
-        label: "运行中",
-        content: "已选择单智能体模式，我准备好了",
-      }),
-    ]);
+    expect(statusMessage?.turn?.liveProgressText).toBeUndefined();
+    expect(statusMessage?.turn?.timelineItems).toEqual([]);
     expect(deltaMessage?.content).toBe("我会先读取这些 skill。");
     expect(deltaMessage?.content).not.toBe(deltaMessage?.turn?.liveProgressText);
     expect(deltaMessage?.content).not.toContain("已选择单智能体模式");
-    expect(deltaMessage?.turn?.liveProgressText).toBe("已选择单智能体模式，我准备好了");
+    expect(deltaMessage?.turn?.liveProgressText).toBeUndefined();
     expect(placeholderMessage?.content).toBe("");
     expect(placeholderMessage?.turn?.liveProgressText).toBeUndefined();
     expect(internalStatusMessage?.content).toBe("");
@@ -5273,11 +5259,7 @@ describe("desktop session view model", () => {
       .join("\n") ?? "";
 
     expect(assistant?.content).toBe("");
-    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
-      kind: "progress_narration",
-      source: "runtime_status",
-      content: "正在检查决策 UI。",
-    }));
+    expect(assistant?.turn?.timelineItems).toEqual([]);
     expect(assistant?.content).not.toContain("tool_plan_mode_reminder");
     expect(assistant?.content).not.toContain("file_grep_policy");
     expect(assistant?.content).not.toContain("\"tool\":\"file.grep\"");
@@ -5437,17 +5419,11 @@ describe("desktop session view model", () => {
     const timeline = assistant?.turn?.timelineItems ?? [];
 
     expect(timeline.map((item) => item.kind)).toEqual([
-      "progress_narration",
       "status_group",
-      "progress_narration",
       "plan_update",
       "final_text",
     ]);
     expect(timeline[0]).toMatchObject({
-      content: "我会先追踪本地运行记录，确认问题链路。",
-      source: "progress_narrator",
-    });
-    expect(timeline[1]).toMatchObject({
       summary: "已探索 1 个文件，1 个列表，已运行 1 条命令",
       steps: expect.arrayContaining([
         expect.objectContaining({ label: "读取文件", contextLabel: ".ora/runtime.db" }),
@@ -5455,9 +5431,8 @@ describe("desktop session view model", () => {
         expect.objectContaining({ label: "运行命令" }),
       ]),
     });
-    expect(timeline[2]).toMatchObject({ content: "现在我会把 trace 的事件和最终状态拼起来。" });
-    expect(timeline[3]).toMatchObject({ summary: "已更新任务计划：1/2 完成，正在 汇总结论" });
-    expect(timeline[4]).toMatchObject({ content: "最终结论：run 没有停在计划阶段。" });
+    expect(timeline[1]).toMatchObject({ summary: "已更新任务计划：1/2 完成，正在 汇总结论" });
+    expect(timeline[2]).toMatchObject({ content: "最终结论：run 没有停在计划阶段。" });
     expect(assistant?.content).toBe("最终结论：run 没有停在计划阶段。");
   });
 
@@ -5574,9 +5549,9 @@ describe("desktop session view model", () => {
     const assistant = messages.find((message) => message.role === "assistant");
     const timeline = assistant?.turn?.timelineItems ?? [];
 
-    expect(timeline.map((item) => item.kind)).toEqual(["progress_narration", "progress_narration", "assistant_text"]);
-    expect(timeline.filter((item) => "content" in item && item.content === introOne)).toHaveLength(1);
-    expect(timeline.filter((item) => "content" in item && item.content === introTwo)).toHaveLength(1);
+    expect(timeline.map((item) => item.kind)).toEqual(["assistant_text"]);
+    expect(timeline.filter((item) => "content" in item && item.content === introOne)).toHaveLength(0);
+    expect(timeline.filter((item) => "content" in item && item.content === introTwo)).toHaveLength(0);
     expect(assistant?.content).toBe(planContent);
     expect(assistant?.content).toContain("Channel 项目关联与自然语言切换设计方案");
     expect(assistant?.content).not.toContain(introOne);
@@ -6006,7 +5981,7 @@ describe("desktop session view model", () => {
     expect(processSteps[0]?.detail).not.toContain("run-approval-node:action:tool-1");
   });
 
-  it("marks superseded progress narration complete while the run is still active", () => {
+  it("keeps progress narration out of process steps while the run is still active", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-deerflow-progress-running",
@@ -6120,12 +6095,9 @@ describe("desktop session view model", () => {
     const processSteps = assistant?.turn?.processSteps ?? [];
 
     expect(assistant?.content).toBe("");
-    expect(assistant?.turn?.liveProgressText).toBe("团队已读取项目文档，正在规划后续调研任务。");
-    expect(assistant?.turn?.timelineItems).toContainEqual(expect.objectContaining({
-      kind: "progress_narration",
-      source: "progress_narrator",
-      content: "团队已读取项目文档，正在规划后续调研任务。",
-    }));
+    expect(assistant?.turn?.liveProgressText).toBeUndefined();
+    expect(assistant?.turn?.timelineItems).toHaveLength(1);
+    expect(assistant?.turn?.timelineItems?.map((item) => item.kind)).toEqual(["status_group"]);
     expect(processSteps.map((step) => step.status)).toEqual([
       "complete",
     ]);
@@ -6136,7 +6108,7 @@ describe("desktop session view model", () => {
     expect(processSteps[0]?.contextLabel).toBe("10-Wiki/项目/西芒杜项目.md");
   });
 
-  it("keeps only the latest progress narration in a running turn timeline", () => {
+  it("keeps progress narration out of a running turn timeline", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
       runId: "run-progress-latest-only",
@@ -6231,13 +6203,9 @@ describe("desktop session view model", () => {
       { "run-progress-latest-only": snapshot },
     );
     const assistant = messages.find((message) => message.role === "assistant");
-    const progressItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "progress_narration") ?? [];
     const assistantItems = assistant?.turn?.timelineItems?.filter((item) => item.kind === "assistant_text") ?? [];
 
-    expect(progressItems).toHaveLength(1);
-    expect(progressItems[0]).toMatchObject({
-      content: "正在运行验证，下一步将汇总结论。",
-    });
+    expect(assistant?.turn?.timelineItems).toHaveLength(1);
     expect(assistantItems).toHaveLength(1);
     expect(assistantItems[0]).toMatchObject({
       content: "我会先整理上下文。",

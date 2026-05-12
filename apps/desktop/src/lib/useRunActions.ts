@@ -40,10 +40,6 @@ const FILE_MODIFICATION_TOOL_IDS = [
 type DesktopLatencyMark = NonNullable<OraStateSnapshot["latency"]>["marks"][number];
 export const ACCEPTED_PLAN_IMPLEMENT_PROMPT = "请按照上述计划开始执行";
 
-export function shouldEnableProgressNarration(taskIntent: WorkbenchState["taskIntent"]): boolean {
-  return taskIntent === "implement";
-}
-
 export function shouldEnableClarificationPreflight(taskIntent: WorkbenchState["taskIntent"]): boolean {
   void taskIntent;
   return false;
@@ -787,7 +783,6 @@ export function useRunActions() {
           metadata: {
             providerId: state.selectedProviderId,
             clarificationPreflight: shouldEnableClarificationPreflight(taskIntent),
-            progressNarration: shouldEnableProgressNarration(taskIntent),
             disableDefaultWebTools: modeDisablesDefaultWebTools(selectedMode?.capabilityFlags.toolIds),
             taskIntent,
             toolModelProviderId: toolModelSettings.providerId,

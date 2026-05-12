@@ -130,13 +130,6 @@ export interface RunNodeRuntimeLoopDeps {
       iteration?: number;
     },
   ) => void;
-  emitProgressNarration: (params: {
-    trigger: string;
-    agentId?: string;
-    nodeId?: string;
-    title?: string;
-    detail?: string;
-  }) => Promise<void>;
   emitRecoveryDecision: (
     incident: RecoveryIncident,
     decision: RecoveryDecision,
@@ -249,7 +242,6 @@ export async function runNodeRuntimeLoop(
     now,
     emit,
     emitNodeRuntimeState: emitNodeRuntimeStateEvent,
-    emitProgressNarration,
     emitRecoveryDecision,
     emitRejectedFinalToolIntent,
     clarificationAnswer,
@@ -426,23 +418,9 @@ export async function runNodeRuntimeLoop(
             throw error;
           }
           emitRecoveryDecision(incident, recoveryDecision);
-          await emitProgressNarration({
-            trigger: "recovery.updated",
-            agentId: params.agentId,
-            nodeId: params.agentId,
-            title: params.title,
-            detail: recoveryDecision.summary,
-          });
           throw new RecoveryExhaustedError(incident, recoveryDecision);
         }
         emitRecoveryDecision(incident, recoveryDecision);
-        await emitProgressNarration({
-          trigger: "recovery.updated",
-          agentId: params.agentId,
-          nodeId: params.agentId,
-          title: params.title,
-          detail: recoveryDecision.summary,
-        });
         await sleep(recoveryDecision.retryDelayMs ?? 0);
         if (options.emitRetryModelState) {
           nodeLoopController.emitTransitionResult("model_request", "running_model", {
@@ -567,7 +545,6 @@ export async function runNodeRuntimeLoop(
       messages = [...nextMessages];
     },
     emit,
-    emitProgressNarration,
     emitRecoveryDecision,
     runForcedFinalProviderCall,
     emitForcedFinalProviderState,
@@ -614,7 +591,6 @@ export async function runNodeRuntimeLoop(
       messages = [...nextMessages];
     },
     emit,
-    emitProgressNarration,
     runForcedFinalProviderCall,
     emitForcedFinalProviderState,
     invokeFollowUpModel,
@@ -625,7 +601,6 @@ export async function runNodeRuntimeLoop(
     ...toolExecutionContext,
     system: params.system,
     ensureClarifications,
-    emitProgressNarration,
     completion,
     runForcedFinalProviderCall: ({ messages: nextMessages, reason, nativeTools: nextNativeTools }) =>
       runForcedFinalProviderCall({

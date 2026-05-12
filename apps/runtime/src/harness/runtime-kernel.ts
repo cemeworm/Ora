@@ -101,7 +101,6 @@ import {
   type AppendRuntimeToolCallParams,
 } from "./runtime-tool-ledger.js";
 import { fileChangeArtifact } from "./file-change-artifact.js";
-import { emitRuntimeProgressNarration } from "./runtime-progress.js";
 import {
   runRecoverableRuntimeNode,
   runRuntimeDelegatedTask,
@@ -929,24 +928,6 @@ export async function executeRuntimeKernel(
     emit("todo.updated", { items: todoService.list() });
   };
 
-  const emitProgressNarration = async (params: {
-    trigger: string;
-    agentId?: string;
-    nodeId?: string;
-    title?: string;
-    detail?: string;
-  }) => {
-    await emitRuntimeProgressNarration(params, {
-      config,
-      userPrompt: input.prompt,
-      events: kernelRuntimeContext.events,
-      activeAgentCount: () => kernelRuntimeContext.activeAgentCount(),
-      planStatuses: () => planService.list().map((item) => item.status),
-      todoStatuses: () => todoService.list().map((item) => item.status),
-      emit,
-    });
-  };
-
   const appendToolCall = kernelRuntimeContext.appendToolCall;
   const actionDeps = () => ({
     actionLedger,
@@ -955,7 +936,6 @@ export async function executeRuntimeKernel(
     permissionMode: config.permissionMode,
     resumeApprovals,
     emit,
-    emitProgressNarration,
     appendToolCallStatus: (
       record: OraToolCallEnvelope,
       status: OraToolCallEnvelope["status"],
@@ -1371,7 +1351,6 @@ export async function executeRuntimeKernel(
     appendToolCall,
     emit,
     emitNodeRuntimeState,
-    emitProgressNarration,
     emitRecoveryDecision,
     emitRejectedFinalToolIntent,
     clarificationAnswer,
@@ -1414,13 +1393,6 @@ export async function executeRuntimeKernel(
       { title: params.title, planItemId: params.planItemId },
       { agentId: params.agentId, nodeId: params.agentId },
     );
-    await emitProgressNarration({
-      trigger: "agent.started",
-      agentId: params.agentId,
-      nodeId: params.agentId,
-      title: params.title,
-    });
-
     const actionType = `agent.${params.agentId}.invoke`;
     const expectedPlanItemId = params.planItemId
       ? `${runId}:${params.planItemId}`
@@ -1598,12 +1570,6 @@ export async function executeRuntimeKernel(
           { title: params.title },
           { agentId: params.agentId, nodeId: params.agentId },
         );
-        await emitProgressNarration({
-          trigger: "agent.completed",
-          agentId: params.agentId,
-          nodeId: params.agentId,
-          title: params.title,
-        });
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
         return response.text;
@@ -1652,14 +1618,6 @@ export async function executeRuntimeKernel(
           title: params.title,
           detail,
         });
-        await emitProgressNarration({
-          trigger: "tool.failed",
-          agentId: params.agentId,
-          nodeId: params.agentId,
-          title: params.title,
-          detail,
-        });
-
         const incident = classifyRecoveryError(error, {
           surface: "provider",
           nodeId: params.agentId,
@@ -1668,13 +1626,6 @@ export async function executeRuntimeKernel(
         });
         const recoveryDecision = recoveryCoordinator.resolve(incident);
         emitRecoveryDecision(incident, recoveryDecision);
-        await emitProgressNarration({
-          trigger: "recovery.updated",
-          agentId: params.agentId,
-          nodeId: params.agentId,
-          title: params.title,
-          detail: recoveryDecision.summary,
-        });
 
         if (recoveryDecision.action === "retry") {
           await sleep(recoveryDecision.retryDelayMs ?? 0);
@@ -1738,13 +1689,6 @@ export async function executeRuntimeKernel(
         );
         emitDelegatedAgentState("degraded", {
           agentId: params.agentId,
-          title: params.title,
-          detail,
-        });
-        await emitProgressNarration({
-          trigger: "agent.degraded",
-          agentId: params.agentId,
-          nodeId: params.agentId,
           title: params.title,
           detail,
         });
@@ -2010,7 +1954,6 @@ export async function executeRuntimeKernel(
       pendingClarifications: kernelRuntimeContext.pendingClarifications,
       now,
       emit,
-      emitProgressNarration,
       resumeClarifications: options.resumeContext?.clarifications,
     });
   };
@@ -2031,7 +1974,6 @@ export async function executeRuntimeKernel(
       pendingClarifications: kernelRuntimeContext.pendingClarifications,
       now,
       emit,
-      emitProgressNarration,
       resumeClarifications: options.resumeContext?.clarifications,
     });
   };
@@ -2068,7 +2010,6 @@ export async function executeRuntimeKernel(
   ): Promise<T> => {
     return runRuntimeDelegatedTask(params, execute, {
       emit,
-      emitProgressNarration,
     });
   };
 

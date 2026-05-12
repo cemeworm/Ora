@@ -167,13 +167,6 @@ export interface RuntimeModelResponseContext extends RuntimeToolExecutionContext
     question: string;
     options?: PendingClarificationOption[];
   }>) => Promise<unknown[]>;
-  emitProgressNarration: (params: {
-    trigger: string;
-    agentId?: string;
-    nodeId?: string;
-    title?: string;
-    detail?: string;
-  }) => Promise<void>;
   completion: RuntimeCompletionController;
   runForcedFinalProviderCall: (params: {
     messages: ModelMessage[];
@@ -786,14 +779,6 @@ export function createBatchClarificationResponseMiddleware(): RuntimeMiddleware 
           iteration: request.iteration,
         });
       }
-
-      await context.emitProgressNarration({
-        trigger: "tool.succeeded",
-        agentId: context.agentId,
-        nodeId: context.nodeId,
-        title: context.title,
-        detail: `${clarifyAnswers.length} clarification(s) answered.`,
-      });
 
       context.replaceMessages?.(nextMessages);
       context.completion.markToolResultObserved(request.selectedToolCall, false, {

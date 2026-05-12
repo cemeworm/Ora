@@ -107,12 +107,6 @@ export async function ensureRuntimeClarification(
     pendingClarifications: PendingClarification[];
     now: () => number;
     emit: RuntimeClarificationEmit;
-    emitProgressNarration: (params: {
-      trigger: string;
-      nodeId?: string;
-      title?: string;
-      detail?: string;
-    }) => Promise<void>;
     resumeClarifications?: Record<string, unknown>;
   },
 ): Promise<unknown> {
@@ -154,14 +148,6 @@ export async function ensureRuntimeClarification(
     },
     { nodeId: params.nodeId, agentId: params.nodeId },
   );
-  if (params.narrate !== false) {
-    await deps.emitProgressNarration({
-      trigger: "clarification.required",
-      nodeId: params.nodeId,
-      title: params.nodeLabel,
-      detail: params.question,
-    });
-  }
   throw new ClarificationInterruptError(clarification);
 }
 
@@ -180,12 +166,6 @@ export async function ensureRuntimeClarifications(
     pendingClarifications: PendingClarification[];
     now: () => number;
     emit: RuntimeClarificationEmit;
-    emitProgressNarration: (params: {
-      trigger: string;
-      nodeId?: string;
-      title?: string;
-      detail?: string;
-    }) => Promise<void>;
     resumeClarifications?: Record<string, unknown>;
   },
 ): Promise<unknown[]> {
@@ -246,25 +226,6 @@ export async function ensureRuntimeClarifications(
       },
       { nodeId: clarification.nodeId, agentId: clarification.nodeId },
     );
-  }
-
-  if (unanswered.length === 1) {
-    const req = unanswered[0]!;
-    if (req.narrate !== false) {
-      await deps.emitProgressNarration({
-        trigger: "clarification.required",
-        nodeId: req.nodeId,
-        title: req.nodeLabel,
-        detail: req.question,
-      });
-    }
-  } else {
-    await deps.emitProgressNarration({
-      trigger: "clarification.required",
-      nodeId: requests[0]!.nodeId,
-      title: requests[0]!.nodeLabel,
-      detail: `${unanswered.length} clarification questions pending`,
-    });
   }
 
   throw new ClarificationInterruptError(newClarifications);

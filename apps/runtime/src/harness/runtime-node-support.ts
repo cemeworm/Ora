@@ -116,13 +116,6 @@ export async function runRuntimeDelegatedTask<T>(
   execute: () => Promise<T>,
   deps: {
     emit: RuntimeNodeSupportEmit;
-    emitProgressNarration: (params: {
-      trigger: string;
-      agentId?: string;
-      nodeId?: string;
-      title?: string;
-      detail?: string;
-    }) => Promise<void>;
   },
 ): Promise<T> {
   deps.emit(
@@ -146,12 +139,6 @@ export async function runRuntimeDelegatedTask<T>(
     },
     { agentId: params.agentId, nodeId: params.nodeId },
   );
-  await deps.emitProgressNarration({
-    trigger: "task.progress",
-    agentId: params.agentId,
-    nodeId: params.nodeId,
-    title: params.title,
-  });
   try {
     const result = await execute();
     deps.emit(
@@ -164,12 +151,6 @@ export async function runRuntimeDelegatedTask<T>(
       },
       { agentId: params.agentId, nodeId: params.nodeId },
     );
-    await deps.emitProgressNarration({
-      trigger: "task.completed",
-      agentId: params.agentId,
-      nodeId: params.nodeId,
-      title: params.title,
-    });
     return result;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -184,13 +165,6 @@ export async function runRuntimeDelegatedTask<T>(
       },
       { agentId: params.agentId, nodeId: params.nodeId },
     );
-    await deps.emitProgressNarration({
-      trigger: "task.failed",
-      agentId: params.agentId,
-      nodeId: params.nodeId,
-      title: params.title,
-      detail,
-    });
     throw error;
   }
 }

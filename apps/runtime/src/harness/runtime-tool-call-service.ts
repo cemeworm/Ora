@@ -67,13 +67,6 @@ interface RuntimeToolCallServiceDeps {
     payload: unknown,
     extra?: Partial<OraEventEnvelope>,
   ) => OraEventEnvelope;
-  emitProgressNarration: (params: {
-    trigger: string;
-    agentId?: string;
-    nodeId?: string;
-    title?: string;
-    detail?: string;
-  }) => Promise<void>;
   runForcedFinalProviderCall: (params: {
     invokeProvider: typeof invokeRunProvider | typeof invokeRunProviderStream;
     config: RunConfig;
@@ -226,13 +219,6 @@ export class RuntimeToolCallService {
       actionId: action.id,
       toolId: toolCall.tool,
       iteration,
-    });
-    await this.deps.emitProgressNarration({
-      trigger: "tool.succeeded",
-      agentId: this.deps.agentId,
-      nodeId: this.deps.agentId,
-      title: this.deps.title,
-      detail: `${toolCall.tool} returned a result.`,
     });
     if (toolCall.tool === "plan.update") {
       actionDeps.emit("plan_list.updated", planListUpdatedPayload(toolCall.args));

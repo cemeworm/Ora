@@ -1845,45 +1845,12 @@ function normalizeClarificationOptions(value: unknown): ClarificationOption[] {
   });
 }
 
-function progressTextFromSnapshot(
-  snapshot: OraStateSnapshot,
-): string | undefined {
-  if (
-    snapshot.status === "cancelled" ||
-    snapshot.status === "failed" ||
-    snapshot.status === "succeeded"
-  ) {
-    return undefined;
-  }
-
-  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
-    const event = snapshot.events[index];
-    if (event?.type !== "task.progress" || !isRecord(event.payload)) {
-      continue;
-    }
-    if (
-      event.payload.kind !== "chat_progress" ||
-      !isVisibleChatProgress(event.payload)
-    ) {
-      continue;
-    }
-    const summary = event.payload.summary;
-    if (typeof summary === "string" && summary.trim()) {
-      const text = summary.trim();
-      if (!isPlaceholderProgressText(text)) {
-        return text;
-      }
-    }
-  }
-  return undefined;
-}
-
 function approvalPendingTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
   if (snapshotPendingApprovals(snapshot).length === 0) {
     return undefined;
   }
 
-  return approvalRequestTextFromSnapshot(snapshot) ?? approvalProgressTextFromSnapshot(snapshot);
+  return approvalRequestTextFromSnapshot(snapshot);
 }
 
 function approvalRequestTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
@@ -1893,27 +1860,6 @@ function approvalRequestTextFromSnapshot(snapshot: OraStateSnapshot): string | u
   return typeof summary === "string" && summary.trim()
     ? summary.trim()
     : undefined;
-}
-
-function approvalProgressTextFromSnapshot(snapshot: OraStateSnapshot): string | undefined {
-  for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
-    const event = snapshot.events[index];
-    if (event?.type !== "task.progress" || !isRecord(event.payload)) {
-      continue;
-    }
-    if (
-      event.payload.kind !== "chat_progress" ||
-      !isVisibleChatProgress(event.payload) ||
-      event.payload.trigger !== "approval.required"
-    ) {
-      continue;
-    }
-    const summary = event.payload.summary;
-    if (typeof summary === "string" && summary.trim()) {
-      return summary.trim();
-    }
-  }
-  return undefined;
 }
 
 function outputTextFromSnapshot(
@@ -2051,7 +1997,7 @@ function buildAssistantTurnAttachment(
     status,
     pattern: snapshot.pattern,
     currentAgentLabel: currentAgentLabelFromSnapshot(snapshot),
-    liveProgressText: progressTextFromSnapshot(snapshot),
+    liveProgressText: undefined,
     processSteps,
     timelineItems,
     clarificationExchanges: deriveClarificationExchanges(snapshot),
@@ -2543,28 +2489,7 @@ function deriveTimelineItems(
       continue;
     }
 
-    if (isChatProgressEvent(event) && isRecord(event.payload)) {
-      const eventAgentId = inferTimelineEventAgentId(snapshot, event);
-      const summary = typeof event.payload.summary === "string" ? event.payload.summary.trim() : "";
-      if (summary && !isPlaceholderProgressText(summary)) {
-        flushPendingText();
-        flushPendingSteps();
-        items.push({
-          rawTime: event.createdAt,
-          eventSeq: event.seq,
-          item: {
-            id: `${event.id}:progress-narration`,
-            kind: "progress_narration",
-            content: summary,
-            source: chatProgressSource(event.payload),
-            label: "运行中",
-            timestamp: formatElapsed(baseTime, event.createdAt),
-            agentId: eventAgentId,
-            agentLabel: agentLabelForTimeline(agentLabels, eventAgentId),
-            eventSeq: event.seq,
-          },
-        });
-      }
+    if (isChatProgressEvent(event)) {
       continue;
     }
 
@@ -2714,32 +2639,7 @@ function deriveTimelineItems(
   const sortedItems = items
     .sort((left, right) => left.rawTime - right.rawTime || left.eventSeq - right.eventSeq)
     .map(({ item }) => item);
-  return filterRunningTimelineItems(sortedItems, snapshot.status);
-}
-
-function filterRunningTimelineItems(
-  items: TurnTimelineItem[],
-  status: OraStateSnapshot["status"],
-): TurnTimelineItem[] {
-  if (status !== "running" && status !== "queued") {
-    return items;
-  }
-  const latestProgressIndex = findLatestProgressNarrationIndex(items);
-  if (latestProgressIndex < 0) {
-    return items;
-  }
-  return items.filter((item, index) =>
-    item.kind !== "progress_narration" || index === latestProgressIndex
-  );
-}
-
-function findLatestProgressNarrationIndex(items: TurnTimelineItem[]): number {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index]?.kind === "progress_narration") {
-      return index;
-    }
-  }
-  return -1;
+  return sortedItems;
 }
 
 function shouldCollectAssistantDeltaForTimeline(
@@ -2798,7 +2698,7 @@ function isTimelineTextAlreadyRepresented(text: string, items: TurnTimelineItem[
     return true;
   }
   const contentItems = items
-    .flatMap((item) => item.kind !== "progress_narration" && "content" in item ? [item.content] : [])
+    .flatMap((item) => "content" in item ? [item.content] : [])
     .map(normalizeTimelineText)
     .filter(Boolean);
   if (contentItems.some((content) => content === normalizedText)) {
@@ -3030,34 +2930,9 @@ function isChatProgressEvent(event: OraEventEnvelope): boolean {
   return (
     isRecord(event.payload) &&
     event.payload.kind === "chat_progress" &&
-    isVisibleChatProgress(event.payload) &&
     typeof event.payload.summary === "string" &&
     event.payload.summary.trim().length > 0
   );
-}
-
-function isVisibleChatProgress(payload: Record<string, unknown>): boolean {
-  return !isInternalProgressPayload(payload) && isVisibleChatProgressSource(payload.source);
-}
-
-function isInternalProgressPayload(payload: Record<string, unknown>): boolean {
-  return (
-    payload.visibility === "internal" ||
-    payload.audience === "internal" ||
-    payload.public === false
-  );
-}
-
-function isVisibleChatProgressSource(source: unknown): boolean {
-  return source === "progress_narrator" || source === "runtime_status";
-}
-
-function chatProgressSource(payload: Record<string, unknown>): "progress_narrator" | "runtime_status" {
-  return payload.source === "runtime_status" ? "runtime_status" : "progress_narrator";
-}
-
-function isPlaceholderProgressText(text: string): boolean {
-  return text === "正在努力";
 }
 
 function processStepLabel(event: OraEventEnvelope): string {
