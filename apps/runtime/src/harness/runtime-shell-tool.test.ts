@@ -101,4 +101,28 @@ describe("runtime shell tool", () => {
       login: true,
     }, TEST_LIMITS)).rejects.toThrow("login=true is not supported for cmd.exe");
   });
+
+  it("allows sed address regex patterns that look like absolute paths", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    const result = await executeWorkspaceShell(rootPath, {
+      command: "sed -n '/^# 8\\..*/,/^# 9\\..*/p' docs/ora-gates-and-resume.md",
+      shell: shellPath,
+    }, TEST_LIMITS);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout) as { argv: string[] };
+    expect(payload.argv).toEqual(["-c", "sed -n '/^# 8\\..*/,/^# 9\\..*/p' docs/ora-gates-and-resume.md"]);
+  });
+
+  it("still rejects real absolute paths outside the workspace", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    await expect(executeWorkspaceShell(rootPath, {
+      command: "cat /etc/passwd",
+      shell: shellPath,
+    }, TEST_LIMITS)).rejects.toThrow("shell.execute command paths must stay inside the project root.");
+  });
 });
