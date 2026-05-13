@@ -62,6 +62,54 @@ function runConfig(overrides: Partial<{ toolIds: string[] }> = {}) {
 }
 
 describe("agent.spawn integration", () => {
+  it("passes inherit_context and custom system_prompt to sub-agent", async () => {
+    process.env.NODE_LOOP_TOOL_KEY = "test";
+    const prevKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+    let calls = 0;
+    const prevFetch = globalThis.fetch;
+    let subAgentSystemPrompt = "";
+
+    globalThis.fetch = (async (_input, init) => {
+      calls += 1;
+      const body = JSON.parse(String((init as { body?: string })?.body ?? "{}"));
+      const messages = body?.messages as Array<{ role: string; content: string }> | undefined;
+
+      if (calls === 1) {
+        return jsonResponse(JSON.stringify({
+          tool: "agent.spawn",
+          args: {
+            description: "Research",
+            prompt: "Find the answer.",
+            inherit_context: true,
+            system_prompt: "You are a helpful research assistant.",
+          },
+        }));
+      }
+      if (calls === 2) {
+        subAgentSystemPrompt = messages?.find((m) => m.role === "system")?.content ?? "";
+        return jsonResponse("The answer is 42.");
+      }
+      return jsonResponse("Final: 42.");
+    }) as typeof fetch;
+
+    try {
+      const handle = createRuntimeMethodHandler(createTempStore());
+      const start = await handle({
+        jsonrpc: "2.0", id: 1, method: "runs.start",
+        params: { input: { prompt: "What is the answer?" }, config: runConfig() },
+      }) as { runId?: string; error?: unknown };
+      if (!start.runId) throw new Error(`Start failed: ${JSON.stringify(start)}`);
+
+      const result = await pollUntilDone(handle, start.runId);
+      expect(result.status).toBe("succeeded");
+      expect(subAgentSystemPrompt).toContain("You are a helpful research assistant.");
+    } finally {
+      globalThis.fetch = prevFetch;
+      process.env.OPENAI_API_KEY = prevKey;
+    }
+  });
+
   it("completes a full agent.spawn → sub-agent → synthesize flow through the kernel", async () => {
     process.env.NODE_LOOP_TOOL_KEY = "test";
     let calls = 0;

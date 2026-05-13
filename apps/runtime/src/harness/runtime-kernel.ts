@@ -1421,6 +1421,10 @@ export async function executeRuntimeKernel(
     customAgentId?: string;
     riskLevel?: ActionRiskLevel;
   }) => {
+    lastCallAgentId = params.agentId;
+    lastCallAgentPrompt = params.prompt;
+    lastCallAgentSystem = params.system;
+
     let effectivePrompt = params.prompt;
     const pendingMessages = kernelRuntimeContext.drainAgentMessages(params.agentId);
     if (pendingMessages.length > 0) {
@@ -1764,11 +1768,17 @@ export async function executeRuntimeKernel(
   const MAX_SPAWN_DEPTH = 3;
   let isNestedAgentSpawn = false;
   let subAgentCounter = 0;
+  let lastCallAgentPrompt = "";
+  let lastCallAgentSystem = "";
+  let lastCallAgentId = "";
 
   type AsyncSpawnEntry = {
     agentId: string;
     description: string;
     prompt: string;
+    inheritContext?: boolean;
+    customSystemPrompt?: string;
+    customToolIds?: string[];
   };
   const asyncSpawnQueue: AsyncSpawnEntry[] = [];
   let drainingAsync = false;
@@ -1777,14 +1787,14 @@ export async function executeRuntimeKernel(
     kernelRuntimeContext.enqueueAgentMessage(to, message);
   });
 
-  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground }) => {
+  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground, inheritContext, systemPrompt: customSystemPrompt, toolIds: customToolIds }) => {
     const agentId = agentType ?? ORA_ROOT_AGENT_ID;
     if (agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
       throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
     }
 
     if (runInBackground) {
-      asyncSpawnQueue.push({ agentId, description, prompt });
+      asyncSpawnQueue.push({ agentId, description, prompt, inheritContext, customSystemPrompt, customToolIds });
       return { status: "async_launched", agent_id: agentId, description };
     }
 
@@ -1801,7 +1811,19 @@ export async function executeRuntimeKernel(
     if (!profilesById.has(effectiveAgentId)) {
       const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
       if (rootProfile) {
-        profilesById.set(effectiveAgentId, { ...rootProfile, id: effectiveAgentId, label: `Sub-agent ${subAgentCounter}` });
+        const customLabel = description.length > 30 ? description.slice(0, 30) : description;
+        profilesById.set(effectiveAgentId, {
+          ...rootProfile,
+          id: effectiveAgentId,
+          label: customLabel || `Sub-agent ${subAgentCounter}`,
+          ...(customToolIds ? { toolIds: customToolIds } : {}),
+        });
+      }
+    } else if (customToolIds) {
+      // Override tool IDs on an existing profile
+      const existing = profilesById.get(effectiveAgentId);
+      if (existing) {
+        profilesById.set(effectiveAgentId, { ...existing, toolIds: customToolIds });
       }
     }
 
@@ -1814,16 +1836,31 @@ export async function executeRuntimeKernel(
     isNestedAgentSpawn = true;
     try {
       const wasAlreadyActive = kernelRuntimeContext.activeAgents.includes(effectiveAgentId);
-      const runtimeCtx = withAgentRuntimeContext("", { agentId: effectiveAgentId });
+      const runtimeCtx = withAgentRuntimeContext(customSystemPrompt ?? "", { agentId: effectiveAgentId });
       const MAX_TITLE_LENGTH = 200;
       const safeTitle = description.length > MAX_TITLE_LENGTH
         ? description.slice(0, MAX_TITLE_LENGTH)
         : description;
+
+      // Context inheritance: prepend parent's task context to sub-agent prompt
+      let effectiveSubPrompt = prompt;
+      if (inheritContext && lastCallAgentPrompt) {
+        effectiveSubPrompt = [
+          `<inherited-context>`,
+          `The parent agent was working on this task:`,
+          lastCallAgentPrompt,
+          `</inherited-context>`,
+          ``,
+          `Your specific subtask:`,
+          prompt,
+        ].join("\n");
+      }
+
       const result = await callAgent({
         agentId: effectiveAgentId,
         title: safeTitle,
-        prompt,
-        system: runtimeCtx.system,
+        prompt: effectiveSubPrompt,
+        system: customSystemPrompt || runtimeCtx.system,
         riskLevel: "low",
       });
       if (wasAlreadyActive) {
@@ -1851,16 +1888,39 @@ export async function executeRuntimeKernel(
         if (!profilesById.has(effectiveAgentId)) {
           const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
           if (rootProfile) {
-            profilesById.set(effectiveAgentId, { ...rootProfile, id: effectiveAgentId, label: `Async sub-agent ${subAgentCounter}` });
+            const customLabel = entry.description.length > 30 ? entry.description.slice(0, 30) : entry.description;
+            profilesById.set(effectiveAgentId, {
+              ...rootProfile,
+              id: effectiveAgentId,
+              label: customLabel || `Async sub-agent ${subAgentCounter}`,
+              ...(entry.customToolIds ? { toolIds: entry.customToolIds } : {}),
+            });
+          }
+        } else if (entry.customToolIds) {
+          const existing = profilesById.get(effectiveAgentId);
+          if (existing) {
+            profilesById.set(effectiveAgentId, { ...existing, toolIds: entry.customToolIds });
           }
         }
         try {
-          const runtimeCtx = withAgentRuntimeContext("", { agentId: effectiveAgentId });
+          const runtimeCtx = withAgentRuntimeContext(entry.customSystemPrompt ?? "", { agentId: effectiveAgentId });
+          let effectiveAsyncPrompt = entry.prompt;
+          if (entry.inheritContext && lastCallAgentPrompt) {
+            effectiveAsyncPrompt = [
+              `<inherited-context>`,
+              `The parent agent was working on this task:`,
+              lastCallAgentPrompt,
+              `</inherited-context>`,
+              ``,
+              `Your specific subtask:`,
+              entry.prompt,
+            ].join("\n");
+          }
           const result = await callAgent({
             agentId: effectiveAgentId,
             title: entry.description,
-            prompt: entry.prompt,
-            system: runtimeCtx.system,
+            prompt: effectiveAsyncPrompt,
+            system: entry.customSystemPrompt || runtimeCtx.system,
             riskLevel: "low",
           });
           const text = typeof result === "string" ? result : String(result ?? "");

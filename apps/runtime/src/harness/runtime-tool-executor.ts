@@ -122,7 +122,15 @@ export interface RuntimeToolExecutionContext {
   /** Workspace operations adapter — pluggable backend for file/shell operations. */
   operations: WorkspaceOperations;
   /** Spawn a sub-agent and run it to completion. Returns the agent's text output. */
-  spawnAgent?: (params: { description: string; prompt: string; agentType?: string; runInBackground?: boolean }) => Promise<unknown>;
+  spawnAgent?: (params: {
+    description: string;
+    prompt: string;
+    agentType?: string;
+    runInBackground?: boolean;
+    inheritContext?: boolean;
+    systemPrompt?: string;
+    toolIds?: string[];
+  }) => Promise<unknown>;
   /** Enqueue a message to be delivered to an agent on its next invocation. */
   enqueueMessage?: (params: { to: string; message: string }) => void;
 }
@@ -792,10 +800,15 @@ function agentSpawnToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinit
         : "Sub-agent task";
       const agentType = typeof args.agent_type === "string" ? args.agent_type : undefined;
       const runInBackground = args.run_in_background === true;
+      const inheritContext = args.inherit_context === true;
+      const systemPrompt = typeof args.system_prompt === "string" ? args.system_prompt : undefined;
+      const toolIds = Array.isArray(args.tool_ids) ? args.tool_ids.filter((t: unknown) => typeof t === "string") as string[] : undefined;
       if (!context.spawnAgent) {
         throw new Error("agent.spawn is not available in this runtime context.");
       }
-      const result = await context.spawnAgent({ description, prompt, agentType, runInBackground });
+      const result = await context.spawnAgent({
+        description, prompt, agentType, runInBackground, inheritContext, systemPrompt, toolIds,
+      });
       return { output: result };
     },
   };

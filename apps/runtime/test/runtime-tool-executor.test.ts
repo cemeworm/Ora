@@ -189,6 +189,47 @@ describe("RuntimeToolExecutor", () => {
     expect(messages).toEqual([{ to: "ora", message: "Please review the changes in src/auth.ts." }]);
   });
 
+  it("executes agent.spawn with inherit_context and custom system_prompt", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return `[sub-agent] result with inherit=${params.inheritContext}, systemPrompt=${Boolean(params.systemPrompt)}`;
+    });
+
+    const result = await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Test",
+        prompt: "Research the codebase.",
+        inherit_context: true,
+        system_prompt: "You are a researcher.",
+      },
+    });
+    expect(result).toBe("[sub-agent] result with inherit=true, systemPrompt=true");
+    expect(receivedParams.inheritContext).toBe(true);
+    expect(receivedParams.systemPrompt).toBe("You are a researcher.");
+  });
+
+  it("executes agent.spawn with custom tool_ids", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    let receivedParams: Record<string, unknown> = {};
+    executor.setSpawnAgent(async (params) => {
+      receivedParams = params as unknown as Record<string, unknown>;
+      return `tools: ${(params.toolIds as string[]).join(",")}`;
+    });
+
+    const result = await executor.execute({
+      tool: "agent.spawn" as never,
+      args: {
+        description: "Test",
+        prompt: "Do work.",
+        tool_ids: ["file.read", "file.grep"],
+      },
+    });
+    expect(result).toBe("tools: file.read,file.grep");
+  });
+
   it("rejects message.send when enqueueMessage callback is not set", async () => {
     const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
     await expect(executor.execute({
