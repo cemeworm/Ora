@@ -34,6 +34,11 @@ describe("ApprovedToolContinuationHandler", () => {
       expect(fileContinuationHandler.canReplay(action)).toBe(true);
     });
 
+    it("canReplay returns true for file.apply_patch", () => {
+      const action = makeAction({ type: "file.apply_patch", input: { patch: "--- a/x.ts\n+++ b/x.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n" } });
+      expect(fileContinuationHandler.canReplay(action)).toBe(true);
+    });
+
     it("canReplay returns false for file.read", () => {
       const action = makeAction({ type: "file.read" });
       expect(fileContinuationHandler.canReplay(action)).toBe(false);
@@ -104,6 +109,7 @@ describe("ApprovedToolContinuationHandler", () => {
       const ids = continuationHandlerRegistry.supportedToolIds;
       expect(ids).toContain("file.write");
       expect(ids).toContain("file.patch");
+      expect(ids).toContain("file.apply_patch");
       expect(ids).toContain("shell.execute");
       expect(ids).toContain("package.switch");
     });

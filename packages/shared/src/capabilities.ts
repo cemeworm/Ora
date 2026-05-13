@@ -700,6 +700,18 @@ const filePatchParameters = {
   additionalProperties: false,
 };
 
+const fileApplyPatchParameters = {
+  type: "object",
+  properties: {
+    patch: {
+      type: "string",
+      description: "Unified diff text compatible with git diff style output. May include one or more file hunks rooted inside the workspace.",
+    },
+  },
+  required: ["patch"],
+  additionalProperties: false,
+};
+
 const webFetchParameters = {
   type: "object",
   properties: {
@@ -1010,6 +1022,7 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "file.grep", label: "Search Files", description: "Search project file contents for a literal pattern.", category: "file", riskLevel: "safe", parameters: fileGrepParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "file.write", label: "Write File", description: "Write content to a local project file.", category: "file", riskLevel: "requires_approval", parameters: fileWriteParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.patch", label: "Patch File", description: "Replace exact strings in a local project file.", category: "file", riskLevel: "requires_approval", parameters: filePatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "file.apply_patch", label: "Apply Patch", description: "Apply a unified diff patch to one or more local project files.", category: "file", riskLevel: "requires_approval", parameters: fileApplyPatchParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "file.delete", label: "Delete File", description: "Delete a local file.", category: "file", riskLevel: "requires_approval", parameters: {}, requiresApproval: true, implemented: false, allowedForProfiles: [] },
   {
     id: "shell.execute",

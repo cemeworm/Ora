@@ -10,6 +10,7 @@ import type {
 const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
   "file.write",
   "file.patch",
+  "file.apply_patch",
   "file.delete",
   "modes.applyDraft",
   "selfIteration.apply",

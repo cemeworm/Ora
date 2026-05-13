@@ -17,7 +17,7 @@ export interface TerminalStateAssertionInput {
   actions: readonly ActionRecord[];
   toolCalls: readonly OraToolCallEnvelope[];
   pendingApprovals: readonly string[];
-  pendingClarifications: readonly StateSnapshot["pendingClarifications"];
+  pendingClarifications: StateSnapshot["pendingClarifications"];
   continuation: StateSnapshot["continuation"];
   planList: readonly PlanListStep[];
   plan?: StateSnapshot["plan"];
@@ -48,6 +48,7 @@ export type RuntimeCompletionGuard = (
 const TERMINAL_APPROVED_REPLAY_TOOL_IDS = new Set<string>([
   "file.write",
   "file.patch",
+  "file.apply_patch",
   "skills.create",
   "skills.update",
   "skills.setEnabled",

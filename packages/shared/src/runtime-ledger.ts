@@ -1324,6 +1324,7 @@ function upsertById<T extends { id: string }>(items: readonly T[], next: T): T[]
 function isDeterministicApprovedTool(toolId: string): boolean {
   return toolId === "file.write" ||
     toolId === "file.patch" ||
+    toolId === "file.apply_patch" ||
     toolId === "shell.execute" ||
     toolId === "skills.create" ||
     toolId === "skills.update" ||

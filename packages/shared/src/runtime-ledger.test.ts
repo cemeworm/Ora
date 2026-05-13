@@ -4,6 +4,7 @@ import {
   deriveSessionProjection,
   deriveLedgerRunAttention,
   RuntimeSessionLedgerSchema,
+  type RuntimeGateProjection,
   type RuntimeSessionEntry,
   type RuntimeSessionLedger,
 } from "./runtime-ledger.js";
@@ -29,6 +30,20 @@ function ledger(entries: RuntimeSessionEntry[], leafEntryId?: string): RuntimeSe
     leafEntryId,
     entries,
   });
+}
+
+function testGate(
+  overrides: Partial<RuntimeGateProjection> & Pick<RuntimeGateProjection, "gateId" | "kind" | "status">,
+): RuntimeGateProjection {
+  return {
+    runId: "run-test",
+    sessionId: "session-test",
+    openedAt: 0,
+    pendingActionIds: [],
+    pendingToolCallIds: [],
+    pendingClarificationIds: [],
+    ...overrides,
+  };
 }
 
 describe("buildVisibleLedger", () => {
@@ -539,7 +554,7 @@ describe("terminal state integrity", () => {
     const cleanSucceeded = deriveLedgerRunAttention({
       runId: "run-clean",
       status: "succeeded",
-      gates: [{ gateId: "g1", kind: "approval", status: "resolved" }],
+      gates: [testGate({ gateId: "g1", kind: "approval", status: "resolved" })],
       events: [],
     });
     expect(cleanSucceeded.kind).toBe("idle");
@@ -548,7 +563,7 @@ describe("terminal state integrity", () => {
     const runningApproval = deriveLedgerRunAttention({
       runId: "run-approval",
       status: "running",
-      gates: [{ gateId: "g1", kind: "approval", status: "open", pendingActionIds: ["a1"] }],
+      gates: [testGate({ gateId: "g1", kind: "approval", status: "open", pendingActionIds: ["a1"] })],
       events: [],
     });
     expect(runningApproval.kind).toBe("needs_approval");
@@ -557,7 +572,7 @@ describe("terminal state integrity", () => {
     const runningClarify = deriveLedgerRunAttention({
       runId: "run-clarify",
       status: "running",
-      gates: [{ gateId: "g1", kind: "clarification", status: "open", pendingClarificationIds: ["c1"] }],
+      gates: [testGate({ gateId: "g1", kind: "clarification", status: "open", pendingClarificationIds: ["c1"] })],
       events: [],
     });
     expect(runningClarify.kind).toBe("needs_clarification");
@@ -566,7 +581,7 @@ describe("terminal state integrity", () => {
     const runningPlan = deriveLedgerRunAttention({
       runId: "run-plan",
       status: "running",
-      gates: [{ gateId: "g1", kind: "plan_decision", status: "open" }],
+      gates: [testGate({ gateId: "g1", kind: "plan_decision", status: "open" })],
       events: [],
     });
     expect(runningPlan.kind).toBe("needs_plan_decision");

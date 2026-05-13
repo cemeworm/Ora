@@ -67,7 +67,7 @@ export function approvedFileWriteResumeActions(
   approvedActionIds: string[],
 ): ActionRecord[] {
   return approvedToolContinuationActions(snapshot, approvedActionIds)
-    .filter((action) => action.type === "file.write");
+    .filter((action) => action.type === "file.write" || action.type === "file.apply_patch");
 }
 
 export async function completeApprovedToolContinuation(

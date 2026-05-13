@@ -11,6 +11,7 @@ import {
 } from "./runtime-tool-utils.js";
 import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
 import { withWorkspaceFileMutationQueue } from "./runtime-file-mutation-queue.js";
+import { applyPatchToolRuntimeFields } from "./runtime-patch-tool.js";
 
 const SKIPPED_DIRS = new Set([".git", ".next", ".turbo", ".ora", "build", "coverage", "dist", "node_modules", "target"]);
 const SKIPPED_FILE_SUFFIXES = [
@@ -74,6 +75,8 @@ export function fileToolRuntimeFields(toolId: string): Partial<RuntimeToolDefini
         execute: (args, context) => patchWorkspaceFile(requireWorkspaceRoot(context.workspace), args, context.limits),
         resultPreview: (result, args) => filePatchResultPreview((result as { output: unknown; fileChange?: RuntimeFileChangeMetadata }).fileChange, args),
       };
+    case "file.apply_patch":
+      return applyPatchToolRuntimeFields();
     default:
       return {};
   }

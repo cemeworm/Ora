@@ -3482,6 +3482,7 @@ function toolNameAliases(toolName: string): string[] {
     "file.read": ["read_file"],
     "file.write": ["write_file"],
     "file.patch": ["patch_file"],
+    "file.apply_patch": ["apply_patch"],
     "file.delete": ["delete_file"],
     "file.list": ["list_files", "list_directory"],
     "file.search": ["search_files"],

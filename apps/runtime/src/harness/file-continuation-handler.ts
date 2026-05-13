@@ -8,6 +8,7 @@ import { continuationHandlerRegistry } from "./approved-tool-continuation-handle
 const FILE_CONTINUABLE_TOOL_IDS = new Set<string>([
   "file.write",
   "file.patch",
+  "file.apply_patch",
 ]);
 
 class FileContinuationHandler implements ApprovedToolContinuationHandler {

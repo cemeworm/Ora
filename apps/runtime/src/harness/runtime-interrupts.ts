@@ -85,7 +85,7 @@ function approvalComparableInput(input: unknown): unknown {
 }
 
 function stableSingleApprovalScopeKey(action: ApprovedResumeAction): string | undefined {
-  if (action.type !== "file.write") {
+  if (action.type !== "file.write" && action.type !== "file.apply_patch") {
     return undefined;
   }
   const targetPath = approvalInputPath(action.input);

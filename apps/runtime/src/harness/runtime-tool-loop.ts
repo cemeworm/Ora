@@ -99,6 +99,7 @@ export function cacheKeyForRuntimeTool(
 export function invalidatesRuntimeToolCache(call: RuntimeToolCall): boolean {
   return call.tool === "file.write"
     || call.tool === "file.patch"
+    || call.tool === "file.apply_patch"
     || call.tool === "shell.execute"
     || call.tool.startsWith("skills.")
     || call.tool.startsWith("package.")

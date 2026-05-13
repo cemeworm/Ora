@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MVP_TOOLS } from "@cemeworm/shared";
 import { RuntimeToolExecutor } from "./runtime-tool-executor.js";
+import "./runtime-patch-tool.js";
 
 function tempWorkspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ora-runtime-file-tools-"));
@@ -100,11 +101,110 @@ describe("runtime file tools", () => {
     expect(fs.readFileSync(path.join(rootPath, "overlap.txt"), "utf8")).toBe("abcdef");
   });
 
+  it("applies a unified diff across multiple files", async () => {
+    const rootPath = tempWorkspace();
+    fs.writeFileSync(path.join(rootPath, "a.txt"), "alpha\nbeta\n", "utf8");
+    fs.writeFileSync(path.join(rootPath, "b.txt"), "one\ntwo\n", "utf8");
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.apply_patch",
+      args: {
+        patch: [
+          "--- a/a.txt",
+          "+++ b/a.txt",
+          "@@ -1,2 +1,2 @@",
+          " alpha",
+          "-beta",
+          "+BETA",
+          "--- a/b.txt",
+          "+++ b/b.txt",
+          "@@ -1,2 +1,2 @@",
+          " one",
+          "-two",
+          "+TWO",
+          "",
+        ].join("\n"),
+      },
+    });
+
+    expect(fs.readFileSync(path.join(rootPath, "a.txt"), "utf8")).toBe("alpha\nBETA\n");
+    expect(fs.readFileSync(path.join(rootPath, "b.txt"), "utf8")).toBe("one\nTWO\n");
+    expect(result.output).toMatchObject({
+      fileCount: 2,
+      additions: 2,
+      deletions: 2,
+    });
+    expect(result.fileChange).toBeUndefined();
+  });
+
+  it("creates a new file from unified diff", async () => {
+    const rootPath = tempWorkspace();
+
+    const result = await executor(rootPath).executeWithMetadata({
+      tool: "file.apply_patch",
+      args: {
+        patch: [
+          "--- /dev/null",
+          "+++ b/nested/new.txt",
+          "@@ -0,0 +1,2 @@",
+          "+hello",
+          "+world",
+          "",
+        ].join("\n"),
+      },
+    });
+
+    expect(fs.readFileSync(path.join(rootPath, "nested", "new.txt"), "utf8")).toBe("hello\nworld\n");
+    expect(result.output).toMatchObject({
+      fileCount: 1,
+      createdCount: 1,
+    });
+    expect(result.fileChange?.metadata.created).toBe(true);
+  });
+
+  it("rejects unified diff context mismatches", async () => {
+    const rootPath = tempWorkspace();
+    fs.writeFileSync(path.join(rootPath, "mismatch.txt"), "alpha\nbeta\n", "utf8");
+
+    await expect(executor(rootPath).executeWithMetadata({
+      tool: "file.apply_patch",
+      args: {
+        patch: [
+          "--- a/mismatch.txt",
+          "+++ b/mismatch.txt",
+          "@@ -1,2 +1,2 @@",
+          " alpha",
+          "-gamma",
+          "+GAMMA",
+          "",
+        ].join("\n"),
+      },
+    })).rejects.toThrow("context mismatch");
+  });
+
+  it("rejects unified diff path escape attempts", async () => {
+    const rootPath = tempWorkspace();
+
+    await expect(executor(rootPath).executeWithMetadata({
+      tool: "file.apply_patch",
+      args: {
+        patch: [
+          "--- /dev/null",
+          "+++ b/../../../etc/passwd",
+          "@@ -0,0 +1,1 @@",
+          "+oops",
+          "",
+        ].join("\n"),
+      },
+    })).rejects.toThrow("inside the project root");
+  });
+
   it("exposes structured file, web, and document schemas in tool definitions", () => {
     const definitions = executor(tempWorkspace()).toolDefinitions([
       "file.read",
       "file.write",
       "file.patch",
+      "file.apply_patch",
       "web.fetch",
       "web.search",
       "document.extract",
@@ -121,6 +221,13 @@ describe("runtime file tools", () => {
       properties: {
         path: expect.any(Object),
         edits: expect.any(Object),
+        approvalRequest: expect.any(Object),
+      },
+    });
+    expect(byId.get("file.apply_patch")).toMatchObject({
+      required: ["patch"],
+      properties: {
+        patch: expect.any(Object),
         approvalRequest: expect.any(Object),
       },
     });
