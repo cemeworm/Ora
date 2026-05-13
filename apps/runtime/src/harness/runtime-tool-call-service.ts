@@ -26,6 +26,7 @@ import {
 } from "./runtime-tool-action-proposal.js";
 import { createScopedRuntimeEventEmitter } from "./runtime-scoped-emitter.js";
 import { planListUpdatedPayload } from "./runtime-plan-list-state.js";
+import { truncateToolResultForContext } from "./tool-result-truncation.js";
 import type {
   RuntimeToolAttempt,
 } from "./runtime-tool-loop.js";
@@ -224,6 +225,14 @@ export class RuntimeToolCallService {
       actionDeps.emit("plan_list.updated", planListUpdatedPayload(toolCall.args));
     }
 
+    // Truncate tool result text for context inclusion only.
+    // The full resultText is preserved in the ledger (via recordRuntimeToolActionSucceeded above)
+    // and in runtimeToolResultCache for downstream consumers; this truncation only shapes
+    // what the LLM sees in subsequent turns to prevent context explosion over long tool loops.
+    const contextResultText = truncateToolResultForContext(resultText, {
+      toolId: toolCall.tool,
+    });
+
     this.deps.replaceMessages(
       toolCall.source === "provider_native" && toolCall.providerCallId
         ? [
@@ -240,7 +249,7 @@ export class RuntimeToolCallService {
               role: "tool",
               toolCallId: toolCall.providerCallId,
               toolName: toolCall.tool,
-              content: resultText,
+              content: contextResultText,
             },
           ]
         : [
@@ -248,7 +257,7 @@ export class RuntimeToolCallService {
             { role: "assistant", content: response.text },
             {
               role: "user",
-              content: `Workspace tool result for ${toolCall.tool}:\n${resultText}`,
+              content: `Workspace tool result for ${toolCall.tool}:\n${contextResultText}`,
             },
           ],
     );

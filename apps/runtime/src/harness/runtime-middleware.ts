@@ -22,6 +22,7 @@ import type { RecoveryFailureSurface } from "./recovery-policy.js";
 import type { RuntimeToolAttempt } from "./runtime-tool-loop.js";
 import type { RuntimeFileChangeMetadata, RuntimeToolCall } from "./runtime-tool-executor.js";
 import type { AppendRuntimeToolCallParams } from "./runtime-tool-ledger.js";
+import { retroactivelyTruncateMessages } from "./message-context-truncation.js";
 
 export type RuntimeMiddlewareEmit = (
   type: OraEventEnvelope["type"],
@@ -550,19 +551,60 @@ export function createContextCompactionMiddleware(): RuntimeMiddleware {
         return next(request);
       }
 
+      // Retroactively truncate old tool-result messages in the volatile tail.
+      // This preserves the provider cache prefix while still reclaiming context space.
+      const stablePrefixCount = Math.max(
+        0,
+        Math.min(
+          request.providerCache?.stablePrefixMessageCount ?? 0,
+          messages.length,
+        ),
+      );
+      // Target: aim for 80% of the auto-compact limit, giving headroom before the next call.
+      const targetTokens = Math.floor(limit * 0.8);
+      const truncation = retroactivelyTruncateMessages(messages, {
+        stablePrefixCount,
+        targetTokens,
+        system: request.system,
+      });
+
+      if (truncation.truncatedCount === 0 || truncation.tokensAfter >= truncation.tokensBefore) {
+        // Nothing reclaimable (e.g. tail is all recent tool results, or no candidates).
+        context.emit(
+          "context.compaction.skipped",
+          {
+            phase: "mid_turn",
+            implementation: "local",
+            reason: "no_truncatable_candidates",
+            beforeTokens: usage.totalTokens,
+            limit,
+            contextWindow,
+          },
+          eventContext,
+        );
+        return next(request);
+      }
+
       context.emit(
-        "context.compaction.skipped",
+        "context.compaction.completed",
         {
           phase: "mid_turn",
           implementation: "local",
-          reason: "preserve_provider_cache_prefix",
-          beforeTokens: usage.totalTokens,
+          strategy: "retroactive_tool_result_truncation",
+          beforeTokens: truncation.tokensBefore,
+          afterTokens: truncation.tokensAfter,
+          truncatedCount: truncation.truncatedCount,
           limit,
           contextWindow,
         },
         eventContext,
       );
-      return next(request);
+
+      // Persist truncated messages back into the loop state so downstream iterations
+      // operate on the compacted history.
+      context.replaceMessages?.(truncation.messages);
+
+      return next({ ...request, messages: truncation.messages });
     },
   };
 }

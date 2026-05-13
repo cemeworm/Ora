@@ -976,7 +976,7 @@ rl.on("line", (line) => {
     await expect(executor.execute({ tool: "file.read", args: { path: "big.txt" } })).rejects.toThrow("too large");
   });
 
-  it("uses enlarged default file and shell output limits", async () => {
+  it("uses enlarged default file limits and capped shell output limits", async () => {
     const { rootPath, workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
     const content = "x".repeat(1_500_000);
@@ -986,11 +986,14 @@ rl.on("line", (line) => {
     const shellResult = await executor.execute({
       tool: "shell.execute",
       args: { command: "node -e \"process.stdout.write('x'.repeat(1500000))\"" },
-    }, { allowRisky: true }) as { exitCode: number; stdout: string };
+    }, { allowRisky: true }) as { exitCode: number; stdout: string; truncated: boolean; fullOutputPath?: string };
 
     expect(fileResult.content).toHaveLength(1_500_000);
     expect(shellResult.exitCode).toBe(0);
-    expect(shellResult.stdout).toHaveLength(1_500_000);
+    expect(shellResult.truncated).toBe(true);
+    expect(shellResult.stdout).toContain("[output truncated, exceeded 1MB]");
+    expect(Buffer.byteLength(shellResult.stdout)).toBeLessThanOrEqual(1_048_576);
+    expect(shellResult.fullOutputPath).toBeDefined();
   });
 
   it("falls back to hardcoded shell defaults when toolLimits is omitted", async () => {
