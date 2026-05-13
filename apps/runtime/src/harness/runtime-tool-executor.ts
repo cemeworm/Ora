@@ -69,6 +69,8 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "automations.delete",
   "automations.runNow",
   "plan.update",
+  "agent.spawn",
+  "message.send",
 ] as const;
 
 export type RuntimeToolId = typeof IMPLEMENTED_RUNTIME_TOOL_IDS[number];
@@ -119,6 +121,10 @@ export interface RuntimeToolExecutionContext {
   signal?: AbortSignal;
   /** Workspace operations adapter — pluggable backend for file/shell operations. */
   operations: WorkspaceOperations;
+  /** Spawn a sub-agent and run it to completion. Returns the agent's text output. */
+  spawnAgent?: (params: { description: string; prompt: string; agentType?: string; runInBackground?: boolean }) => Promise<unknown>;
+  /** Enqueue a message to be delivered to an agent on its next invocation. */
+  enqueueMessage?: (params: { to: string; message: string }) => void;
 }
 
 export interface RuntimePreToolPolicyRequest {
@@ -388,6 +394,8 @@ export class RuntimeToolExecutor {
   private readonly postToolPolicyHooks: RuntimePostToolPolicyHook[];
   private readonly signal?: AbortSignal;
   private readonly workspaceOperations: WorkspaceOperations;
+  private spawnAgentCallback?: RuntimeToolExecutionContext["spawnAgent"];
+  private enqueueMessageCallback?: RuntimeToolExecutionContext["enqueueMessage"];
 
   constructor(options: RuntimeToolExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -423,6 +431,16 @@ export class RuntimeToolExecutor {
   }
 
   private readonly workspace: unknown;
+
+  setSpawnAgent(callback: RuntimeToolExecutionContext["spawnAgent"]): void {
+    if (this.spawnAgentCallback) return;
+    this.spawnAgentCallback = callback;
+  }
+
+  setEnqueueMessage(callback: RuntimeToolExecutionContext["enqueueMessage"]): void {
+    if (this.enqueueMessageCallback) return;
+    this.enqueueMessageCallback = callback;
+  }
 
   enabledToolIds(toolIds: readonly string[] = []): RuntimeToolId[] {
     return toolIds.filter((toolId): toolId is RuntimeToolId =>
@@ -647,6 +665,8 @@ export class RuntimeToolExecutor {
       allowRisky: options.allowRisky,
       signal: this.signal,
       operations: this.workspaceOperations,
+      spawnAgent: this.spawnAgentCallback,
+      enqueueMessage: this.enqueueMessageCallback,
     };
   }
 }
@@ -716,6 +736,68 @@ function builtInToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition
     ...selfIterationToolRuntimeFields(toolId),
     ...automationToolRuntimeFields(toolId),
     ...planToolRuntimeFields(toolId),
+    ...agentSpawnToolRuntimeFields(toolId),
+    ...messageSendToolRuntimeFields(toolId),
+  };
+}
+
+function messageSendToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
+  if (toolId !== "message.send") return {};
+  return {
+    promptSnippet: "Use message.send to continue work with a sub-agent that already has context loaded.",
+    promptGuidelines: [
+      "Continue agents whose work is relevant to the next task.",
+      "Reference what the agent did previously in your message.",
+      "Spawn fresh agents for completely unrelated tasks.",
+    ],
+    requiresApprovalCopy: false,
+    riskLevel: () => "low_risk",
+    execute(args, context) {
+      const to = typeof args.to === "string" ? args.to.trim() : "";
+      if (!to) {
+        throw new Error("message.send requires a non-empty 'to' agent ID.");
+      }
+      const message = typeof args.message === "string" ? args.message.trim() : "";
+      if (!message) {
+        throw new Error("message.send requires a non-empty message string.");
+      }
+      if (!context.enqueueMessage) {
+        throw new Error("message.send is not available in this runtime context.");
+      }
+      context.enqueueMessage({ to, message });
+      return { output: { status: "queued", to, messageLength: message.length } };
+    },
+  };
+}
+
+function agentSpawnToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
+  if (toolId !== "agent.spawn") return {};
+  return {
+    promptSnippet: "Use agent.spawn to delegate complex subtasks to a fresh sub-agent. The sub-agent gets its own context window and tool loop. Write self-contained prompts — the sub-agent cannot see your conversation.",
+    promptGuidelines: [
+      "Delegate only substantial, self-contained subtasks that benefit from a fresh context window.",
+      "Write prompts that include all necessary context — file paths, line numbers, error messages.",
+      "State what \"done\" looks like for the sub-agent.",
+      "Do not spawn agents for trivial lookups that a single tool call can handle.",
+    ],
+    requiresApprovalCopy: false,
+    riskLevel: () => "low_risk",
+    async execute(args, context) {
+      const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+      if (!prompt) {
+        throw new Error("agent.spawn requires a non-empty prompt string.");
+      }
+      const description = typeof args.description === "string" && args.description.trim()
+        ? args.description.trim()
+        : "Sub-agent task";
+      const agentType = typeof args.agent_type === "string" ? args.agent_type : undefined;
+      const runInBackground = args.run_in_background === true;
+      if (!context.spawnAgent) {
+        throw new Error("agent.spawn is not available in this runtime context.");
+      }
+      const result = await context.spawnAgent({ description, prompt, agentType, runInBackground });
+      return { output: result };
+    },
   };
 }
 

@@ -655,6 +655,7 @@ export async function runNodeRuntimeLoop(
       actions: actionLedger.list(),
       planList: deps.planList(),
       toolCalls: deps.toolCalls(),
+      agentId: params.agentId,
     });
     if (guardResult.allowComplete) {
       // Final-output guard: refuse to complete when the candidate answer is empty.

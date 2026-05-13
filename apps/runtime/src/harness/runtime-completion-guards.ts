@@ -7,6 +7,7 @@ export interface RuntimeCompletionGuardState {
   todos?: StateSnapshot["todos"];
   replayedActionIds?: readonly string[];
   toolCalls: readonly OraToolCallEnvelope[];
+  agentId?: string;
 }
 
 /**
@@ -330,12 +331,24 @@ export function pendingRuntimeWorkGuard(
       item.status === "running"
     )
   );
-  const pendingToolCalls = state.toolCalls.filter((item) =>
-    item.status === "proposed" ||
-    item.status === "approval_required" ||
-    item.status === "approved" ||
-    item.status === "running"
-  );
+  const pendingToolCalls = state.toolCalls.filter((item) => {
+    if (
+      item.status !== "proposed" &&
+      item.status !== "approval_required" &&
+      item.status !== "approved" &&
+      item.status !== "running"
+    ) {
+      return false;
+    }
+    // When an agent spawns a sub-agent, the spawning tool call (agent.spawn)
+    // remains "running" while the sub-agent executes. Exclude tool calls
+    // owned by a different agent so the sub-agent's guard doesn't block on
+    // the parent's in-progress spawn.
+    if (state.agentId && item.agentId && item.agentId !== state.agentId) {
+      return false;
+    }
+    return true;
+  });
   if (pendingActions.length === 0 && pendingToolCalls.length === 0) {
     return { allowComplete: true };
   }

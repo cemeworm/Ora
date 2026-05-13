@@ -130,6 +130,73 @@ describe("RuntimeToolExecutor", () => {
     expect(registry.getActiveToolIds()).toEqual([]);
   });
 
+  it("executes agent.spawn with spawnAgent callback", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    executor.setSpawnAgent(async ({ description, prompt }) =>
+      `[sub-agent: ${description}] processed: ${prompt}`
+    );
+
+    const result = await executor.execute({
+      tool: "agent.spawn" as never,
+      args: { description: "Test agent", prompt: "Research the codebase." },
+    });
+    expect(result).toEqual("[sub-agent: Test agent] processed: Research the codebase.");
+  });
+
+  it("rejects agent.spawn when spawnAgent callback is not set", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    await expect(executor.execute({
+      tool: "agent.spawn" as never,
+      args: { description: "Test", prompt: "Do work." },
+    })).rejects.toThrow("agent.spawn is not available in this runtime context");
+  });
+
+  it("executes agent.spawn with run_in_background returning async_launched", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    executor.setSpawnAgent(async ({ runInBackground }) => {
+      if (runInBackground) {
+        return { status: "async_launched", agent_id: "ora", description: "Test" };
+      }
+      return "sync result";
+    });
+
+    const result = await executor.execute({
+      tool: "agent.spawn" as never,
+      args: { description: "Test", prompt: "Do background work.", run_in_background: true },
+    });
+    expect(result).toEqual({ status: "async_launched", agent_id: "ora", description: "Test" });
+  });
+
+  it("rejects agent.spawn with empty prompt", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    executor.setSpawnAgent(async () => "unreachable");
+    await expect(executor.execute({
+      tool: "agent.spawn" as never,
+      args: { description: "Test", prompt: "  " },
+    })).rejects.toThrow("agent.spawn requires a non-empty prompt string");
+  });
+
+  it("executes message.send and enqueues message via callback", async () => {
+    const messages: Array<{ to: string; message: string }> = [];
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    executor.setEnqueueMessage(({ to, message }) => { messages.push({ to, message }); });
+
+    const result = await executor.execute({
+      tool: "message.send" as never,
+      args: { to: "ora", message: "Please review the changes in src/auth.ts." },
+    });
+    expect(result).toEqual({ status: "queued", to: "ora", messageLength: 41 });
+    expect(messages).toEqual([{ to: "ora", message: "Please review the changes in src/auth.ts." }]);
+  });
+
+  it("rejects message.send when enqueueMessage callback is not set", async () => {
+    const executor = new RuntimeToolExecutor({ toolDescriptors: MVP_TOOLS });
+    await expect(executor.execute({
+      tool: "message.send" as never,
+      args: { to: "ora", message: "Hello" },
+    })).rejects.toThrow("message.send is not available in this runtime context");
+  });
+
   it("executes dynamically registered runtime tool definitions", async () => {
     const descriptor = {
       id: "test.echo",

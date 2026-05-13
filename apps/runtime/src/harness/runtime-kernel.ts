@@ -169,6 +169,7 @@ class KernelRuntimeContext {
   private readonly sharedEntriesValue: SharedStateSummary["entries"] = [];
   private readonly toolCallLedger: RuntimeToolCallLedger;
   private readonly topologyValue: StateSnapshot["topology"];
+  private readonly asyncAgentResultsValue = new Map<string, string>();
   private planListValue: PlanListStep[];
   private queueSummaryValue: QueueSummary;
   private busStatsValue: BusStats;
@@ -265,6 +266,34 @@ class KernelRuntimeContext {
 
   deactivateAgent(agentId: string): void {
     this.activeAgentsValue.delete(agentId);
+  }
+
+  enqueueAsyncAgentResult(agentId: string, result: string): void {
+    this.asyncAgentResultsValue.set(agentId, result);
+  }
+
+  drainAsyncAgentResults(): Array<{ agentId: string; result: string }> {
+    const results = [...this.asyncAgentResultsValue.entries()].map(([agentId, result]) => ({ agentId, result }));
+    this.asyncAgentResultsValue.clear();
+    return results;
+  }
+
+  hasAsyncAgentResults(): boolean {
+    return this.asyncAgentResultsValue.size > 0;
+  }
+
+  private readonly agentMessagesQueueValue = new Map<string, string[]>();
+
+  enqueueAgentMessage(toAgentId: string, message: string): void {
+    const messages = this.agentMessagesQueueValue.get(toAgentId) ?? [];
+    messages.push(message);
+    this.agentMessagesQueueValue.set(toAgentId, messages);
+  }
+
+  drainAgentMessages(toAgentId: string): string[] {
+    const messages = this.agentMessagesQueueValue.get(toAgentId) ?? [];
+    this.agentMessagesQueueValue.delete(toAgentId);
+    return messages;
   }
 
   setTopologyStatus(
@@ -1196,10 +1225,14 @@ export async function executeRuntimeKernel(
   };
 
   const restrictToolsForAgentBoundary = (agentId: string, toolIds: string[]): string[] => {
-    if (modeSpec.id !== "code_development" || agentId !== ORA_ROOT_AGENT_ID) {
-      return toolIds;
+    let restricted = toolIds;
+    if (isNestedAgentSpawn) {
+      restricted = restricted.filter((id) => id !== "agent.spawn");
     }
-    return toolIds.filter((toolId) => !CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(toolId));
+    if (modeSpec.id === "code_development" && agentId === ORA_ROOT_AGENT_ID) {
+      restricted = restricted.filter((toolId) => !CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(toolId));
+    }
+    return restricted;
   };
 
   const effectiveAgentSkillIds = (agentId: string, customAgentId?: string): string[] => {
@@ -1388,6 +1421,22 @@ export async function executeRuntimeKernel(
     customAgentId?: string;
     riskLevel?: ActionRiskLevel;
   }) => {
+    let effectivePrompt = params.prompt;
+    const pendingMessages = kernelRuntimeContext.drainAgentMessages(params.agentId);
+    if (pendingMessages.length > 0) {
+      const messageContext = pendingMessages.map((m, i) =>
+        `<agent-message seq="${i + 1}">\n${m}\n</agent-message>`
+      ).join("\n\n");
+      effectivePrompt = `${effectivePrompt}\n\n<agent-messages>\nThe following messages were sent to you:\n\n${messageContext}\n</agent-messages>`;
+    }
+    if (kernelRuntimeContext.hasAsyncAgentResults()) {
+      const results = kernelRuntimeContext.drainAsyncAgentResults();
+      const resultContext = results.map((r) =>
+        `<async-agent-result agent="${r.agentId}">\n${r.result}\n</async-agent-result>`
+      ).join("\n\n");
+      effectivePrompt = `${effectivePrompt}\n\n<async-results>\nThe following async sub-agent results are now available:\n\n${resultContext}\n</async-results>`;
+    }
+
     kernelRuntimeContext.activateAgent(params.agentId);
     setTopologyStatus(params.agentId, "running");
     emit(
@@ -1477,7 +1526,7 @@ export async function executeRuntimeKernel(
           agentId: params.agentId,
           nodeId: params.planItemId ?? params.agentId,
           title: params.title,
-          prompt: params.prompt,
+          prompt: effectivePrompt,
           system: runtimePromptContext.system,
           providerCache: runtimePromptContext.stablePrefix
             ? { stableSystemPrefix: runtimePromptContext.stablePrefix }
@@ -1578,6 +1627,9 @@ export async function executeRuntimeKernel(
         );
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
+        if (!drainingAsync) {
+          await drainAsyncSpawnQueue();
+        }
         return response.text;
       } catch (error) {
         if (isRecoveryExhaustedError(error)) {
@@ -1700,10 +1752,128 @@ export async function executeRuntimeKernel(
         });
         kernelRuntimeContext.deactivateAgent(params.agentId);
         setTopologyStatus(params.agentId, "done");
+        if (!drainingAsync) {
+          await drainAsyncSpawnQueue();
+        }
         return visibleFallback;
       }
     }
   };
+
+  let spawnDepth = 0;
+  const MAX_SPAWN_DEPTH = 3;
+  let isNestedAgentSpawn = false;
+  let subAgentCounter = 0;
+
+  type AsyncSpawnEntry = {
+    agentId: string;
+    description: string;
+    prompt: string;
+  };
+  const asyncSpawnQueue: AsyncSpawnEntry[] = [];
+  let drainingAsync = false;
+
+  runtimeToolExecutor.setEnqueueMessage(({ to, message }) => {
+    kernelRuntimeContext.enqueueAgentMessage(to, message);
+  });
+
+  runtimeToolExecutor.setSpawnAgent(async ({ description, prompt, agentType, runInBackground }) => {
+    const agentId = agentType ?? ORA_ROOT_AGENT_ID;
+    if (agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
+      throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
+    }
+
+    if (runInBackground) {
+      asyncSpawnQueue.push({ agentId, description, prompt });
+      return { status: "async_launched", agent_id: agentId, description };
+    }
+
+    // Assign a unique agent ID so the sub-agent's guard doesn't see the
+    // parent's in-progress agent.spawn tool call as pending work.
+    subAgentCounter += 1;
+    const effectiveAgentId = agentType
+      ? agentId
+      : `ora-sub-${subAgentCounter}`;
+    if (agentType && agentId !== ORA_ROOT_AGENT_ID && !profilesById.has(agentId)) {
+      throw new Error(`agent.spawn: unknown agent profile "${agentId}". Available: ${[...profilesById.keys()].join(", ")}`);
+    }
+    // Register synthetic sub-agent profile so profile lookups succeed
+    if (!profilesById.has(effectiveAgentId)) {
+      const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
+      if (rootProfile) {
+        profilesById.set(effectiveAgentId, { ...rootProfile, id: effectiveAgentId, label: `Sub-agent ${subAgentCounter}` });
+      }
+    }
+
+    spawnDepth += 1;
+    if (spawnDepth > MAX_SPAWN_DEPTH) {
+      spawnDepth -= 1;
+      throw new Error(`agent.spawn depth limit (${MAX_SPAWN_DEPTH}) exceeded.`);
+    }
+    const prevNestedSpawn = isNestedAgentSpawn;
+    isNestedAgentSpawn = true;
+    try {
+      const wasAlreadyActive = kernelRuntimeContext.activeAgents.includes(effectiveAgentId);
+      const runtimeCtx = withAgentRuntimeContext("", { agentId: effectiveAgentId });
+      const MAX_TITLE_LENGTH = 200;
+      const safeTitle = description.length > MAX_TITLE_LENGTH
+        ? description.slice(0, MAX_TITLE_LENGTH)
+        : description;
+      const result = await callAgent({
+        agentId: effectiveAgentId,
+        title: safeTitle,
+        prompt,
+        system: runtimeCtx.system,
+        riskLevel: "low",
+      });
+      if (wasAlreadyActive) {
+        kernelRuntimeContext.activateAgent(effectiveAgentId);
+      }
+      return typeof result === "string" ? result : String(result ?? "");
+    } finally {
+      spawnDepth -= 1;
+      isNestedAgentSpawn = prevNestedSpawn;
+    }
+  });
+
+  async function drainAsyncSpawnQueue(): Promise<void> {
+    if (drainingAsync || asyncSpawnQueue.length === 0) return;
+    drainingAsync = true;
+    const prevNestedSpawn = isNestedAgentSpawn;
+    isNestedAgentSpawn = true;
+    try {
+      while (asyncSpawnQueue.length > 0) {
+        const entry = asyncSpawnQueue.shift()!;
+        subAgentCounter += 1;
+        const effectiveAgentId = entry.agentId !== ORA_ROOT_AGENT_ID
+          ? entry.agentId
+          : `ora-sub-async-${subAgentCounter}`;
+        if (!profilesById.has(effectiveAgentId)) {
+          const rootProfile = profilesById.get(ORA_ROOT_AGENT_ID);
+          if (rootProfile) {
+            profilesById.set(effectiveAgentId, { ...rootProfile, id: effectiveAgentId, label: `Async sub-agent ${subAgentCounter}` });
+          }
+        }
+        try {
+          const runtimeCtx = withAgentRuntimeContext("", { agentId: effectiveAgentId });
+          const result = await callAgent({
+            agentId: effectiveAgentId,
+            title: entry.description,
+            prompt: entry.prompt,
+            system: runtimeCtx.system,
+            riskLevel: "low",
+          });
+          const text = typeof result === "string" ? result : String(result ?? "");
+          kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, text);
+        } catch (err) {
+          kernelRuntimeContext.enqueueAsyncAgentResult(effectiveAgentId, `Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      drainingAsync = false;
+      isNestedAgentSpawn = prevNestedSpawn;
+    }
+  }
 
   const continuationWithActiveFrameStatus = (status: "completed" | "failed" | "resuming" | "awaiting_model") => {
     const continuation = options.resumeState?.continuation;
