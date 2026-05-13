@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CODE_DEVELOPMENT_MODE_ID, MVP_MODES, ORA_ROOT_AGENT_ID, SINGLE_AGENT_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
-import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
+import { ActionLedger, LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 import { RecoveryCoordinator } from "../src/harness/recovery-policy.js";
 import { RuntimeToolRecoveryService } from "../src/harness/runtime-tool-recovery-service.js";
+import { RuntimeToolCallService } from "../src/harness/runtime-tool-call-service.js";
+import { ApprovalInterruptError } from "../src/harness/runtime-interrupts.js";
 import {
   containsStateSubsequence,
   CORE_NODE_RUNTIME_TRANSITIONS,
@@ -388,6 +390,230 @@ describe("node runtime loop transition contract", () => {
     }));
   });
 
+  it("rethrows approval interrupts from tool execution without recording failure state", async () => {
+    const runtimeEvents: Array<{ type: string; payload: any; extra?: any }> = [];
+    const nodeStates: string[] = [];
+    const toolCallRecords: Array<Record<string, unknown>> = [];
+    const actionLedger = new ActionLedger("run-tool-call-service");
+    const nodeLoopController = new NodeLoopController({
+      emit: (state) => {
+        nodeStates.push(state);
+      },
+      onInvalidTransition: "throw",
+    });
+    nodeLoopController.emitPending({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitModelRequest({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitToolRequested({ agentId: ORA_ROOT_AGENT_ID, title: "Root", toolId: "shell.execute" });
+    const invokeToolFailure = vi.fn();
+    const appendToolCall = (params: Record<string, unknown>) => {
+      const record = {
+        id: `tool-call-${toolCallRecords.length + 1}`,
+        runId: "run-tool-call-service",
+        toolId: params.toolId,
+        args: params.args,
+        source: params.source ?? "provider_native",
+        status: params.status,
+        requestedAt: 0,
+        updatedAt: 0,
+        actionId: params.actionId,
+        planStepId: params.planStepId,
+        agentId: params.agentId,
+        nodeId: params.nodeId,
+      };
+      toolCallRecords.push(record);
+      return record as never;
+    };
+    const expectedActionId = `run-tool-call-service:action:${ORA_ROOT_AGENT_ID}-tool-0`;
+    const service = new RuntimeToolCallService({
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+      title: "Root",
+      inputPrompt: "List files",
+      system: "system",
+      config: {} as never,
+      nativeTools: [],
+      invokeProvider: async () => {
+        throw new Error("provider should not be called");
+      },
+      completion: {
+        markToolResultObserved: () => undefined,
+        forcedFinalIsActive: () => false,
+        stopReasonForScope: () => undefined,
+      } as never,
+      completionScope: { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID },
+      nodeLoopController,
+      runtimeToolExecutor: {
+        riskLevel: () => "low",
+        approvalRequest: () => ({
+          title: "Need approval",
+          reason: "Need approval",
+          prompt: "Need approval",
+        }),
+      } as never,
+      actionDeps: () => ({
+        actionLedger,
+        policyService: {
+          evaluate: (action: { id: string }) => ({
+            id: `policy:${action.id}`,
+            runId: "run-tool-call-service",
+            actionId: action.id,
+            policyId: "default",
+            requiredApproval: false,
+            reason: "allowed",
+            createdAt: 0,
+          }),
+        },
+        approvalMode: "manual",
+        permissionMode: "default",
+        resumeApprovals: { consume: () => false },
+        emit: (type: string, payload: unknown, extra?: Record<string, unknown>) => {
+          runtimeEvents.push({ type, payload, extra });
+          return { id: `evt-${runtimeEvents.length}`, type, payload, seq: runtimeEvents.length, createdAt: runtimeEvents.length, runId: "run-tool-call-service", ...extra } as never;
+        },
+        appendToolCallStatus: (record: { status?: unknown; updatedAt?: number }, status: string) => {
+          record.status = status;
+          record.updatedAt = typeof record.updatedAt === "number" ? record.updatedAt + 1 : 1;
+        },
+        appendToolCall,
+      }),
+      actionLedger,
+      activePlanStepId: () => undefined,
+      now: () => 123,
+      eventsLength: () => runtimeEvents.length,
+      appendToolCall,
+      getMessages: () => [],
+      replaceMessages: () => undefined,
+      emit: (type, payload, extra = {}) => {
+        runtimeEvents.push({ type, payload, extra });
+        return { id: `evt-${runtimeEvents.length}`, type, payload, seq: runtimeEvents.length, createdAt: runtimeEvents.length, runId: "run-tool-call-service", ...extra } as never;
+      },
+      runForcedFinalProviderCall: async () => {
+        throw new Error("forced final should not run");
+      },
+      emitForcedFinalProviderState: () => undefined,
+      invokeFollowUpModel: async () => {
+        throw new Error("follow-up should not run");
+      },
+      invokeToolExecution: async () => {
+        throw new ApprovalInterruptError("tool-record-id");
+      },
+      invokeToolFailure,
+    });
+
+    await expect(service.runToolTurn({
+      toolCall: {
+        tool: "shell.execute",
+        args: { command: "pwd" },
+        source: "provider_native",
+        providerCallId: "provider-call-1",
+      },
+      response: {
+        providerId: "provider",
+        providerType: "openai_compatible",
+        modelId: "model",
+        text: "",
+        raw: {},
+      },
+      iteration: 0,
+    })).rejects.toMatchObject({
+      message: "Waiting for your approval before continuing.",
+      actionId: expectedActionId,
+    });
+
+    expect(invokeToolFailure).not.toHaveBeenCalled();
+    expect(nodeStates).toEqual(["pending", "running_model", "tool_requested", "tool_running", "interrupted"]);
+    expect(toolCallRecords[0]?.status).toBe("approval_required");
+    expect(actionLedger.list()[0]).toMatchObject({
+      id: expectedActionId,
+      status: "approval_required",
+    });
+    expect(runtimeEvents.filter((event) => event.type === "action.updated").map((event) => event.payload.status)).toEqual([
+      "proposed",
+      "running",
+      "approval_required",
+    ]);
+  });
+
+  it("passes approval interrupts through recovery service without degrading the node", async () => {
+    const emitted: Array<{ type: string; payload: any; extra?: any; agentId?: string; nodeId?: string }> = [];
+    const nodeLoopController = new NodeLoopController({
+      emit: (state, params) => {
+        emitted.push({ type: "node.updated", payload: { state }, extra: params, agentId: params.agentId, nodeId: params.nodeId });
+      },
+      onInvalidTransition: "throw",
+    });
+    nodeLoopController.emitPending({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitModelRequest({ agentId: ORA_ROOT_AGENT_ID, title: "Root" });
+    nodeLoopController.emitToolRequested({ agentId: ORA_ROOT_AGENT_ID, title: "Root", toolId: "file.list" });
+    nodeLoopController.emitToolRunning({ agentId: ORA_ROOT_AGENT_ID, title: "Root", toolId: "file.list" });
+    const modeSpec = MVP_MODES.find((mode) => mode.id === SINGLE_AGENT_MODE_ID)!;
+    const service = new RuntimeToolRecoveryService({
+      agentId: ORA_ROOT_AGENT_ID,
+      nodeId: ORA_ROOT_AGENT_ID,
+      title: "Root",
+      inputPrompt: "List files",
+      system: "system",
+      config: {} as never,
+      modeSpec,
+      nativeTools: [],
+      invokeProvider: async () => {
+        throw new Error("provider should not be invoked");
+      },
+      completion: {} as never,
+      completionScope: { agentId: ORA_ROOT_AGENT_ID, nodeId: ORA_ROOT_AGENT_ID },
+      recoveryCoordinator: new RecoveryCoordinator(modeSpec, []),
+      nodeLoopController,
+      runtimeToolExecutor: {} as never,
+      actionDeps: () => ({
+        actionLedger: {} as never,
+        emit: () => undefined,
+        appendToolCall: () => undefined as never,
+      }),
+      actionLedger: {} as never,
+      now: () => 123,
+      eventsLength: () => emitted.length,
+      getMessages: () => [],
+      replaceMessages: () => undefined,
+      emit: (type, payload, extra = {}) => {
+        emitted.push({ type, payload, extra, agentId: extra.agentId, nodeId: extra.nodeId });
+        return { type, payload, ...extra } as never;
+      },
+      emitRecoveryDecision: () => undefined,
+      runForcedFinalProviderCall: async () => {
+        throw new Error("forced final should not run");
+      },
+      emitForcedFinalProviderState: () => undefined,
+      invokeFollowUpModel: async () => {
+        throw new Error("follow-up should not run");
+      },
+      publishRecoveryArtifact: () => ({ id: "artifact-1" }),
+      publishFileChangeArtifact: () => ({ id: "file-artifact-1" }) as never,
+      sleep: async () => undefined,
+    });
+
+    const error = new ApprovalInterruptError("action-file-list");
+    const result = await service.recoverToolFailure({
+      error,
+      action: { id: "action-file-list", type: "file.list", riskLevel: "low", status: "running", input: {}, agentId: ORA_ROOT_AGENT_ID } as never,
+      toolCall: { tool: "file.list", args: { path: "apps/runtime/src" } },
+      toolCallRecord: { id: "tool-record-1" } as never,
+      allowRisky: false,
+      iteration: 0,
+      response: {
+        providerId: "provider",
+        providerType: "openai_compatible",
+        modelId: "model",
+        text: "",
+        raw: {},
+      },
+      surface: "tool",
+    });
+
+    expect(result).toEqual({ kind: "throw", error });
+    expect(nodeLoopController.state).toBe("tool_running");
+    expect(emitted.some((event) => event.type === "task.progress")).toBe(false);
+  });
+
   it("routes recovery and boundary-failure state emits through typed intents", () => {
     const source = readRuntimeSource("src/harness/node-runtime-loop.ts");
     const middlewareSource = readRuntimeSource("src/harness/runtime-middleware.ts");
@@ -415,7 +641,7 @@ describe("node runtime loop transition contract", () => {
     expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("degraded"');
     expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("repairing"');
     expect(toolRecoverySource).toContain('nodeLoopController.emitRecoveryState("tool_requested"');
-    expect(source).not.toContain('nodeLoopController.emitTransitionResult("recovery_decision"');
+    expect(source).toContain('nodeLoopController.emitTransitionResult("recovery_decision", "repairing"');
     expect(source).not.toContain('emitNodeRuntimeState("finalizing"');
     expect(toolCallSource).toContain('nodeLoopController.emitTransitionResult("tool_request", "tool_running"');
     expect(toolCallSource).toContain('nodeLoopController.emitTransitionResult("tool_result", "tool_result_observed"');

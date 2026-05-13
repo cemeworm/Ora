@@ -122,6 +122,14 @@ function detectProviderOrToolFailure(snapshot: StateSnapshot): DiagnosticSignal[
   const detail = firstTool
     ? `${firstTool.toolId} failed${toolError(firstTool) ? `: ${toolError(firstTool)}` : ""}`
     : snapshot.error ?? (firstEvent ? eventDetail(firstEvent) : "Run ended in failed status.");
+  const approvalLikeFailure =
+    failedToolCalls.length === 0 &&
+    exhaustedEvents.length === 0 &&
+    isApprovalInterruptDetail(detail) &&
+    hasApprovalGate(snapshot);
+  if (approvalLikeFailure) {
+    return [];
+  }
   return [{
     id: "diagnostic.provider-or-tool-failure",
     kind: "provider_or_tool_failure",
@@ -340,6 +348,20 @@ function eventDetail(event: OraEventEnvelope): string {
 
 function toolError(call: OraToolCallEnvelope): string | undefined {
   return call.error ?? call.result?.error;
+}
+
+function isApprovalInterruptDetail(detail: string | undefined): boolean {
+  if (!detail) {
+    return false;
+  }
+  return /waiting for your approval before continuing\.?/i.test(detail.trim());
+}
+
+function hasApprovalGate(snapshot: StateSnapshot): boolean {
+  return snapshot.attention?.kind === "needs_approval"
+    || snapshot.pendingApprovals.length > 0
+    || snapshot.actions.some((action) => action.status === "approval_required")
+    || snapshot.toolCalls.some((call) => call.status === "approval_required");
 }
 
 function stableStringify(value: unknown): string {

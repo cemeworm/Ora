@@ -155,6 +155,42 @@ describe("deriveRunDiagnostics", () => {
     expect(summary.suggestedActions.some((action) => action.kind === "resume")).toBe(true);
   });
 
+  it("does not promote approval-interrupt snapshots to provider failure when an approval gate is active", () => {
+    const summary = deriveRunDiagnostics(snapshot({
+      status: "failed",
+      error: "Waiting for your approval before continuing.",
+      pendingApprovals: ["action-1"],
+      actions: [{
+        id: "action-1",
+        runId: "run-diagnostics",
+        type: "shell.execute",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        pendingActionIds: ["action-1"],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        sourceRunId: "run-diagnostics",
+      },
+      events: [{
+        id: "evt-interrupted",
+        runId: "run-diagnostics",
+        seq: 1,
+        type: "run.interrupted",
+        createdAt: 2,
+        payload: { reason: "approval_required", actionId: "action-1" },
+      }],
+    }));
+
+    expect(summary.primaryFinding?.kind).toBe("blocking_gate");
+    expect(summary.signals.some((signal) => signal.kind === "provider_or_tool_failure")).toBe(false);
+  });
+
   it("detects mode mismatch from degraded provider policy", () => {
     const summary = deriveRunDiagnostics(snapshot({
       config: {

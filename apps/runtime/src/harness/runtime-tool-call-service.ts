@@ -186,6 +186,24 @@ export class RuntimeToolCallService {
         iteration,
       });
     } catch (error) {
+      if (error instanceof ApprovalInterruptError) {
+        transitionRuntimeAction({
+          action,
+          status: "approval_required",
+          context: { agentId: this.deps.agentId, nodeId: this.deps.agentId },
+          deps: actionDeps,
+          toolCallRecord,
+        });
+        this.deps.nodeLoopController.emitGateRequired({
+          agentId: this.deps.agentId,
+          title: this.deps.title,
+          actionId: action.id,
+          toolId: toolCall.tool,
+          detail: error.message,
+          iteration,
+        });
+        throw new ApprovalInterruptError(action.id);
+      }
       if (error instanceof ClarificationInterruptError) {
         throw error;
       }

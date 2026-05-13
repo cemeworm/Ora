@@ -222,9 +222,11 @@ export function buildTrailDebugSummary(
   const trace = trail?.trace ?? snapshot.trace;
   const liveMetrics = trail?.liveMetrics;
 
+  const approvalGate = isApprovalGateSnapshot(snapshot);
+
   return {
-    statusLabel: runStatusLabel(snapshot.status),
-    statusTone: runStatusTone(snapshot.status),
+    statusLabel: approvalGate ? "等待确认" : runStatusLabel(snapshot.status),
+    statusTone: approvalGate ? "warning" : runStatusTone(snapshot.status),
     currentStage: inferCurrentStage(snapshot, lastImportantEvent),
     blockingGate,
     recommendation: recommendedFinding
@@ -599,7 +601,7 @@ export function collectTrailFindings(
 
 function checkRunFailure(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
   const { snapshot } = ctx;
-  if (snapshot.status !== "failed") return [];
+  if (snapshot.status !== "failed" || isApprovalGateSnapshot(snapshot)) return [];
   const failureDetail = latestFailureDetail(snapshot);
   return [{
     id: "run.failed",
@@ -628,17 +630,21 @@ function checkStrategyDegradation(ctx: { snapshot: OraStateSnapshot }): TrailFin
 
 function checkToolFailures(ctx: { snapshot: OraStateSnapshot }): TrailFinding[] {
   const findings: TrailFinding[] = [];
+  const approvalGate = isApprovalGateSnapshot(ctx.snapshot);
   for (const call of ctx.snapshot.toolCalls ?? []) {
     if (call.status === "failed") {
-      findings.push({
-        id: `tool.failed:${call.id}`,
-        severity: "error",
-        title: "工具调用失败",
-        message: `${toolDisplayLabel(call.toolId)} 失败${call.error ?? call.result?.error ? `：${call.error ?? call.result?.error}` : "。"}`,
-        targetType: "tool",
-        targetId: call.id,
-        suggestedTab: "tools",
-      });
+      const detail = call.error ?? call.result?.error;
+      if (!(approvalGate && isApprovalInterruptDetail(detail))) {
+        findings.push({
+          id: `tool.failed:${call.id}`,
+          severity: "error",
+          title: "工具调用失败",
+          message: `${toolDisplayLabel(call.toolId)} 失败${detail ? `：${detail}` : "。"}`,
+          targetType: "tool",
+          targetId: call.id,
+          suggestedTab: "tools",
+        });
+      }
     }
     if (call.status === "repaired") {
       findings.push({
@@ -1472,6 +1478,9 @@ function currentBlockingGate(snapshot: OraStateSnapshot) {
 }
 
 function inferCurrentStage(snapshot: OraStateSnapshot, lastImportantEvent?: SemanticTimelineItem) {
+  if (isApprovalGateSnapshot(snapshot)) {
+    return "等待用户输入";
+  }
   if (snapshot.status === "failed") {
     return "在最新关键事件处失败";
   }
@@ -1479,7 +1488,6 @@ function inferCurrentStage(snapshot: OraStateSnapshot, lastImportantEvent?: Sema
     return stopReasonLabel(stopReasonFromSnapshot(snapshot)) ?? "已完成";
   }
   if (
-    snapshot.attention?.kind === "needs_approval" ||
     snapshot.attention?.kind === "needs_clarification"
   ) {
     return "等待用户输入";
@@ -1765,6 +1773,26 @@ function latestFailureDetail(snapshot: OraStateSnapshot): string | undefined {
     return reason.trim();
   }
   return undefined;
+}
+
+function isApprovalInterruptDetail(detail: string | undefined): boolean {
+  if (!detail) {
+    return false;
+  }
+  return /waiting for your approval before continuing\.?/i.test(detail.trim());
+}
+
+function isApprovalGateSnapshot(snapshot: OraStateSnapshot): boolean {
+  if (snapshot.attention?.kind === "needs_approval") {
+    return true;
+  }
+  const failureDetail = latestFailureDetail(snapshot);
+  if (!isApprovalInterruptDetail(failureDetail)) {
+    return false;
+  }
+  return snapshot.pendingApprovals.length > 0
+    || snapshot.actions.some((action) => action.status === "approval_required")
+    || snapshot.toolCalls.some((call) => call.status === "approval_required" || isApprovalInterruptDetail(call.error ?? call.result?.error));
 }
 
 function stopReasonFromSnapshot(snapshot: OraStateSnapshot): string | undefined {

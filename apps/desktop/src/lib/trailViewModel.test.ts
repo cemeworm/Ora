@@ -187,6 +187,54 @@ describe("trail debugger view model", () => {
     expect(findings.some((finding) => finding.id === "approval.pending")).toBe(true);
   });
 
+  it("treats approval-interrupt failure text as waiting-for-approval instead of failure", () => {
+    const snapshot = baseSnapshot({
+      status: "failed",
+      error: "Waiting for your approval before continuing.",
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: "run-test",
+        reason: "approval_required",
+        pendingActionIds: ["action-live"],
+        pendingToolCallIds: ["tool-live"],
+        pendingClarificationIds: [],
+      },
+      pendingApprovals: ["action-live"],
+      actions: [{
+        id: "action-live",
+        runId: "run-test",
+        type: "shell.execute",
+        riskLevel: "high",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+      toolCalls: [{
+        id: "tool-live",
+        runId: "run-test",
+        toolId: "shell.execute",
+        args: { command: "pwd" },
+        source: "provider_native",
+        status: "failed",
+        actionId: "action-live",
+        requestedAt: 1,
+        updatedAt: 2,
+        error: "Waiting for your approval before continuing.",
+      }],
+    });
+
+    const findings = collectTrailFindings(snapshot, undefined, undefined, []);
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], findings);
+
+    expect(summary.statusLabel).toBe("等待确认");
+    expect(summary.statusTone).toBe("warning");
+    expect(summary.currentStage).toBe("等待用户输入");
+    expect(findings.some((finding) => finding.id === "run.failed")).toBe(false);
+    expect(findings.some((finding) => finding.id === "approval.pending")).toBe(true);
+    expect(findings.some((finding) => finding.id === "tool.failed:tool-live")).toBe(false);
+  });
+
   it("builds semantic flow without high-frequency message deltas", () => {
     const snapshot = baseSnapshot({
       events: [
