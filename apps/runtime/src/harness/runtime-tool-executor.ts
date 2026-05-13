@@ -28,6 +28,7 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "file.grep",
   "file.write",
   "file.patch",
+  "file.apply_patch",
   "shell.execute",
   "web.fetch",
   "web.search",
@@ -235,7 +236,7 @@ const FILE_WRITE_MAX_BYTES = 10_000_000;
 const WEB_MAX_BYTES = 10_000_000;
 const DOCUMENT_EXTRACT_MAX_BYTES = 1_000_000;
 const DOCUMENT_SOURCE_MAX_BYTES = 25_000_000;
-const SHELL_MAX_OUTPUT_BYTES = 10_000_000;
+const SHELL_MAX_OUTPUT_BYTES = 1_048_576;
 const SHELL_TIMEOUT_MS = 300_000;
 
 export interface ResolvedToolLimits {
