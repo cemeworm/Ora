@@ -19,6 +19,7 @@
 | `ActionRiskLevel` | `packages/shared/src/actions.ts` | 运行时三级风险：low / medium / high |
 | `OraToolCallSource` | `packages/shared/src/actions.ts` | 工具调用的四种来源：provider_native、json_fallback、manual_repair、replay |
 | `WorkspaceOperations` | `apps/runtime/src/harness/workspace-operations.ts` | 工作区文件/搜索/shell 操作后端抽象，默认本地实现 |
+| `ShellSnapshot` | `apps/runtime/src/harness/shell-snapshot.ts` | 登录 shell 环境快照：捕获用户 shell 完整环境变量（含 nvm/fnm/volta PATH），30min 缓存，敏感变量过滤，失败回退 process.env |
 | `ApprovedToolContinuationHandler` | `apps/runtime/src/harness/approved-tool-continuation-handler.ts` | approved tool continuation 的 per-tool replay / artifact / continue 策略 |
 
 ### 核心服务
@@ -553,6 +554,12 @@ Boundary check 在 `RuntimeToolCallService.runToolTurn()` 中**先于** action p
 | 已完成 | Shell login shell 参数 | `shell.execute` 新增 `login` 和 `shell` 参数；bash/zsh login 路径增加 bootstrap + eval 策略保证 alias/function 可用 |
 | 已完成 | Shell 输出截断 | stdout/stderr 独立 1MB 硬截断，各自超限时追加 truncation notice，UTF-8 安全裁切；保留 `fullOutputPath` spill |
 | 已完成 | Workspace operations adapter | `WorkspaceOperations` + `localWorkspaceOperations` 已接入 executor context，为 remote/container backend 预留 |
+| 已完成 | `file.apply_patch` unified diff 工具 | 支持 multi-file unified diff patch 应用、context 校验、workspace path guard；不支持 rename/delete |
+| 已完成 | Shell snapshot 环境解析 | `shell.execute` 与 `workspace exec` 基于登录 shell 快照构建环境变量，不再依赖静态白名单 PATH |
+| 已完成 | Shell 输出截断收敛 | stdout/stderr 独立 1MB 截断、UTF-8 安全裁切、截断提示尾部注入 |
+| 已完成 | shell.execute login/shell 参数 | schema 暴露 `login`/`shell` 可选字段，支持 POSIX login shell、PowerShell、cmd 分支 |
+| 已完成 | 工具结果截断 | `tool-result-truncation.ts` 在 `runtime-tool-call-service.ts` 中对工具结果按 2000-token 预算做 50/50 头尾截断 |
+| 已完成 | 文件搜索 scoped path 语义 | `file.grep`/`file.glob` 的 bare glob/include 在非 root `path` 下回归 scoped 匹配 |
 | 已完成 | `agent.spawn` 工具 | agent 可通过 tool call 动态 spawn 子 agent（同步/异步），最大深度 3 层；支持上下文继承、内联 profile、`message.send` 通信 |
 | 部分完成 | result preview / renderer | file 和 shell definition 产出结构化 result preview；desktop 有 `toolRendererRegistry` 描述符，但 Trails/approval card 真实 React 渲染仍需继续接线 |
 
@@ -625,6 +632,8 @@ error
 | `apps/runtime/src/harness/runtime-file-tools.ts` | 文件工具实现体 |
 | `apps/runtime/src/harness/runtime-patch-tool.ts` | unified diff 应用工具（多文件 patch、context 校验、workspace path guard） |
 | `apps/runtime/src/harness/runtime-shell-tool.ts` | Shell 工具实现体 + 破坏性命令检测 |
+| `apps/runtime/src/harness/shell-snapshot.ts` | Shell 环境快照（登录 shell 捕获、缓存、敏感变量过滤、回退）|
+| `apps/runtime/src/harness/tool-result-truncation.ts` | 工具结果 2000-token 截断注入 runtime-tool-call-service |
 | `apps/runtime/src/harness/runtime-mcp-tools.ts` | MCP 工具实现体 |
 | `apps/runtime/src/harness/runtime-skill-tools.ts` | Skill 工具实现体 |
 | `apps/runtime/src/harness/runtime-tool-loop.ts` | Tool attempt 选择、重复调用检测、循环边界 |
@@ -640,15 +649,16 @@ error
 ### 当前实现的保守边界
 
 1. **预留工具仍可能没有 schema**：implemented tools 的 JSON Schema 已补齐；`file.delete`、`model.handoff`、`message.publish`、`shared_state.write`、`export.report` 等未实现预留工具仍为 `{}`。
-2. **RiskLevel 二值化**：当前 ActionRiskLevel 实际只有 low/high 两值在使用，medium 未启用。
-3. **Approval copy 从参数注入**：模型需要在 `args.approvalRequest` 中提供审批文案，这依赖模型理解——若模型不提供，回退到通用模板。
-4. **取消语义不是所有工具等价**：shell/web/MCP/document 已消费 AbortSignal；registry、skills、package、automation 这类同步或内部操作仍需按工具族判断是否有可中断边界。
-5. **Shell 环境依赖快照可用性**：shell snapshot 默认 30 分钟缓存 + 登录 shell 捕获；如果捕获失败回退 `process.env`，可能缺少 nvm/fnm/volta 等版本管理器的 PATH 注入。
-6. **`file.apply_patch` 不支持 rename/delete**：当前仅支持 unified diff 的修改和新文件创建；rename/delete patch 会被显式拒绝。
+2. **`file.apply_patch` 不等于完整 git patch**：当前支持 unified diff 修改与新文件创建，显式拒绝 rename/delete patch；多文件 patch 要求同目标文件只有一个 patch block。
+3. **RiskLevel 二值化**：当前 ActionRiskLevel 实际只有 low/high 两值在使用，medium 未启用。
+4. **Approval copy 从参数注入**：模型需要在 `args.approvalRequest` 中提供审批文案，这依赖模型理解——若模型不提供，回退到通用模板。
+5. **取消语义不是所有工具等价**：shell/web/MCP/document 已消费 AbortSignal；registry、skills、package、automation 这类同步或内部操作仍需按工具族判断是否有可中断边界。
+6. **Shell 环境依赖快照可用性**：shell snapshot 默认 30 分钟缓存 + 登录 shell 捕获；如果捕获失败回退 `process.env`，可能缺少 nvm/fnm/volta 等版本管理器的 PATH 注入。
 7. **WorkspaceOperations 尚未全面替换旧实现**：executor context 已携带 adapter，默认本地实现可用；部分 file tool 仍直接使用本地 fs/path helper，后续迁移应按工具族小步推进。
 8. **Renderer registry 只是描述层**：desktop 已有 tool renderer registry 和 approval preview shape，但具体 Trails/ApprovalCard 的富 UI 渲染仍需接线。
 9. **Recovery policy 仅基于 mode 的 runtime atom**：`recovery_policy` 和 `tool_error_boundary` 是两个独立的 atom，不在 mode 配置中显式可见。
 10. **`agent.spawn` 的递归边界**：最大深度 3 层 + `isNestedAgentSpawn` 双重保护；异步 spawn 队列无持久化，进程重启会丢失。
+11. **搜索路径作用域语义**：`file.grep`/`file.glob` 的 bare glob/include 在非 root `path` 下已做 scoped 匹配，但 `workspace-operations.ts` 尚未同步同语义；UI 在 `output.path` 存在时优先展示相对路径。
 
 ### 建议演进方向
 
@@ -656,4 +666,5 @@ error
 2. **扩大 resultPreview 消费面** → action ledger、tool result ledger、artifact preview 使用同一份结构化 preview metadata
 3. **继续迁移 WorkspaceOperations** → file/shell 工具逐步通过 adapter 执行，便于 remote/container workspace
 4. **补齐未实现预留工具 schema** → 当 `file.delete`、model/message/shared_state/export 工具实现时同步补 schema 和 policy 测试
-5. **Recovery policy Mode Studio 可视化** → 在 Mode Studio 中可视化编辑恢复规则
+5. **扩展 `file.apply_patch`** → 支持 rename/delete patch 和同文件多 patch block 兼容性
+6. **Recovery policy Mode Studio 可视化** → 在 Mode Studio 中可视化编辑恢复规则

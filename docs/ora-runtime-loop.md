@@ -424,6 +424,32 @@ flowchart TD
 
 `RunStreamingService` 还维护 per-run `AbortController`，`runs.interrupt` / `runs.cancel` 会 abort active controller，并把 signal 传给 kernel、node loop 和 provider request。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
 
+### Completion Guards 与 Final Output
+
+run 能否自然完成进入三阶段 completion guard 检查：
+
+1. **Plan-list lifecycle**：基于当前 agent/node 的 successful non-plan tool evidence 推进 active step，不从纯文本语义猜测完成状态。
+2. **Pending work guard**：验证无 pending action、approval、tool call、plan step 或 runtime work 残留。
+3. **Final output guard**（`finalOutputGuard`）：验证最新模型回复在修剪后包含非空用户可见文本；若 post-tool 回复为空，触发 one-shot `toolChoice: "none"` repair turn；若 repair 同样返回空结果，run 以 `failed`/degraded 终止并附带具体错误。
+
+Final output guard 为结构性检查，不依赖中文/英文的"未完成引言"短语匹配。同时，kernel 不再对空模型回复发出 `message.delta` / `token.delta`，避免把空响应误渲染为有意义的输出。
+
+### Terminal State Invariant
+
+所有 terminal writer（kernel finalization、resume finalization、non-kernel resume）必须通过共享的 `assertRunCanBecomeTerminal()` 断言门。该门验证：状态为 terminal（`succeeded`/`failed`/`cancelled`）时，不得有 open gate、pending action/tool-call/clarification 残留。违反时抛出 `TerminalStateIntegrityError`，并降级为 `run.failed` 带诊断信息。
+
+Ledger projection 层也有对应的非法状态处理：`deriveLedgerRunAttention` 在 terminal status 与 open gate 共存时，将 attention 降级为 `failed` 并附加 `terminal_run_with_open_gates:<status>` 诊断，防止 auto_review 权限模式切换等场景产生半解决状态但仍渲染为成功。
+
+### 长任务输出治理
+
+长任务（20+ 轮工具调用）后正文输出卡顿由三层问题叠加，治理方案也分三层：
+
+| 层 | 根因 | 治理 |
+| --- | --- | --- |
+| 上下文膨胀 | 工具结果全量 JSON 入上下文，无截断 | `tool-result-truncation.ts`：按 2000-token 预算做 50/50 头尾截断，注入到 `runtime-tool-call-service.ts` |
+| Mid-turn 无压缩 | `runtime-middleware.ts` 检测超限后跳过（仅 emit `compaction.skipped`） | `message-context-truncation.ts`：回溯截断历史工具结果（保留最近 3 条，其余按 800-token 预算截断） |
+| 前端放大慢感 | 每 delta 触发全量 timeline 投影 + ReactMarkdown 全量重解析 | `viewModel.ts` 对 `deriveRuntimeTimelineProjection` 用 WeakMap 缓存；`MarkdownRenderer` 200ms 流式节流 + 段落/收尾即时刷新 |
+
 最终 assistant text 的读取边界也在这一层收敛：终态 snapshot 的 `output.text` / string output 是权威最终文本；缺失时才通过 `packages/shared/src/assistantTextProjection.ts` 从 public `message.delta` 投影。投影 helper 同时处理 delta-sized chunk、cumulative content、重复片段和 internal/tool-protocol 文本过滤。runtime 的 session transcript/title/memory/feedback/channel outbound、shared 的 branch preview / proposed plan 提取、desktop fallback 都应复用这条规则，而不是各自扫描 `snapshot.events`。
 
 ## 特殊路径

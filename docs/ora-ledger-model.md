@@ -444,6 +444,9 @@ flowchart TD
 
 ```typescript
 function deriveLedgerRunAttention(run):
+  // 0. terminal state invariant（最高优先级，在 gate 检查前执行）
+  //    若 status 为 succeeded/failed/cancelled 但仍有 open gate
+  //    → 降级为 failed，附加诊断: terminal_run_with_open_gates:<status>
   // 1. 有 open 的 clarification gate → needs_clarification (blocking)
   // 2. 有 open 的 approval gate → needs_approval (blocking)
   // 3. 有 open 的 plan_decision gate → needs_plan_decision (blocking)
@@ -455,6 +458,8 @@ function deriveLedgerRunAttention(run):
   // 7. status = cancelled → cancelled
   // 8. otherwise → idle
 ```
+
+Terminal state invariant 位于 gate 检查之前，保证了：即使 ledger 中记录了 `run.done(status="succeeded")`，但 projection 仍有未解决的 open gate（例如 auto_review 权限模式切换产生的半解决状态），attention 也不会渲染为 `succeeded`，而是降级为 `failed` 并携带诊断信息。
 
 这种优先级确保了 attention 推导的一致性：即使 snapshot 中有多个状态线索（如同时有 pending approval 和 pending clarification），attention 总是按固定优先级返回最高优先级的阻塞状态。
 
@@ -708,32 +713,52 @@ sequenceDiagram
 - 如果 branch 被 adopt 并替换了旧 run，旧 run 被 `hiddenRunIds` 过滤
 - 所有 gate 决议都是幂等的（已 resolved 的 gate 不会被重新打开）
 
-## 10. Event Batch Slim 与 Projection 可重建性
+## 10. Event Batch Slim 与 Snapshot Compaction
 
-`runtime.event_batch` 的 `events` 数组可能非常庞大（包含所有流式增量事件如 `message.delta`）。`buildVisibleLedger` 函数将其 slim 化：
+Ora 的 event batch 持久化采用两层策略：写入时即区分高频与低频 batch，并支持历史 compaction。
+
+### 10.1 写入时压缩（Snapshot Compaction）
+
+`runtime.event_batch` 按频率分两类，写入策略不同：
+
+| Batch 类型 | type 前缀 | 写入行为 |
+| --- | --- | --- |
+| 高频 event batch | `:events-` | 只写 `events`/`eventCount`/`status`/`output`/`error`，**不写 `payload.snapshot`** |
+| 低频 snapshot update | `:update-` | 保留瘦身 compact snapshot（`events` 清空但结构字段完整），确保 external snapshot、fork/replay、continuation/report 语义不丢失 |
+
+这是因为高频 `:events-` 写入在长任务中会将越来越多的运行快照重复写入 SQLite（实测单 run 可累积 604MB snapshot），而 `payload.output` 和 `payload.error` 仅占极小体积。
+
+`buildVisibleLedger` 函数在读取时进一步 slim event batch（移除 `events` 数组并代以 `eventCount`）：
 
 ```typescript
 // 原始 entry
-{ type: "runtime.event_batch", payload: { events: [/* 数百个 event */], status: "running", snapshot: {...} } }
+{ type: "runtime.event_batch", payload: { events: [/* 数百个 event */], status: "running" } }
 
-// slim 后
-{ type: "runtime.event_batch", payload: { events: [], eventCount: 42, status: "running", snapshot: {...} } }
+// slim 后（events 移除，output/error/status 保留）
+{ type: "runtime.event_batch", payload: { events: [], eventCount: 42, status: "running" } }
 ```
 
-**Slim 不会丢失投影所需的关键信息**，因为：
+### 10.2 历史 Compaction（SQLite Maintenance）
 
-1. **低频 `:update-` batch 的 `payload.snapshot` 保留了 compact snapshot** — 在 `run.done`、`run.failed`、`checkpoint.created` 等 durable boundary 写入，供投影最终重建
-2. **`payload.status` 保留** — run 状态变化可追踪
-3. **`payload.output` 保留** — 输出内容不丢失
-4. **`payload.error` 保留** — 错误信息保留
-5. **独立的 entry 补充信息** — `tool.result`、`gate.opened`、`gate.resolved`、`assistant.message` 等 entry 提供了比流式事件更结构化的信息
+SQLite backend 提供 `compactRuntimeEventBatchSnapshots()` 方法，批量清理历史高频 `:events-` row 中的 `payload.snapshot`，返回 `{scanned, compacted, bytesBefore, bytesAfter}` 统计。此操作仅在显式 maintenance RPC 调用时触发，不会自动运行。
+
+### 10.3 投影可重建性
+
+Slim 和 compaction 都不会丢失投影所需的关键信息：
+
+1. **`payload.status` 保留** — run 状态变化可追踪
+2. **`payload.output` 保留** — 输出内容不丢失（约 0.02MB 量级）
+3. **`payload.error` 保留** — 错误信息保留
+4. **低频 `:update-` 边界 snapshot 保留** — fork/replay/continuation/report 等恢复语义依赖的 snapshot 事实不丢失
+5. **独立的 entry 补充信息** — `tool.result`、`gate.opened`、`gate.resolved`、`assistant.message`、`run.done`、`checkpoint.created` 等 entry 提供了比 snapshot 更结构化的信息
 
 注意：高频 `:events-` batch（流式运行期间定期 flush）不写入 `snapshot` 字段，仅保留 `events`/`eventCount`/`status`/`output`/`error`。投影从最近的 `:update-` snapshot 结合 gate/tool result 等独立 entry 重建状态。
 
 `runtimeRunProjectionToSnapshot` 在重建 snapshot 时：
 - 优先使用 `finalSnapshot`
 - 用 projection 中的最新 `gate`、`toolResult`、`planDecision` 状态覆盖
-- 通过 `reconcileSnapshotRuntimeFields` 将 gate 决议反向投影为 events
+- 通过 `reconcileSnapshotRuntimeFields` 将 gate 决议和 `checkpoint.created` 事件反向投影为 events
+- candidate replay 依赖的 checkpoint 现在从 `checkpoint.created` 事件重建，不再依赖 snapshot 中的 checkpoints 字段
 
 **可删除的 events**：纯流式展示用的事件（如 `message.delta`、`token.delta`）在 slim 后可以安全移除，因为最终内容已保留在 `assistant.message` 或 snapshot 的 output 中。
 
@@ -772,7 +797,7 @@ sequenceDiagram
 | 方面 | 当前状态 | 保守边界 |
 | --- | --- | --- |
 | Ledger 存储 | 通过 `RuntimePersistenceBackend` 抽象，支持 SQLite / JSON 文件 | 未实现 ledger 分片或归档，大 session 的完整 replay 可能影响性能 |
-| Slim 策略 | 分层 compaction：高频 `:events-` batch 不写 snapshot；低频 `:update-` batch 保留 compact snapshot | 未来可能对中间 `:update-` snapshot 做更激进的 compaction |
+| Slim / Compaction | 写入时高频 `:events-` batch 不写 snapshot，低频 `:update-` 保留 compact snapshot；`buildVisibleLedger` 移 events；SQLite maintenance 可清理历史 snapshot | Historical compaction 仅显式触发；JSON-file backend 实现为 no-op |
 | 终态完整性 | `assertRunCanBecomeTerminal()` 守卫所有 terminal writer；投影层检测矛盾组合（如 succeeded + open_gate）并降级 attention 为 failed | 依赖 writer 端守卫 + projection 端降级双重保护，但不修正已写入的非法 entry |
 | Branch 投影 | 通过 `hiddenRunIds` 过滤被替换的 run | 被替换的 run 仍在 `entries` 中，只是不在投影中。长期运行可能导致 ledger 膨胀 |
 | Gate 幂等 | `gate.opened` 在 resolved 后忽略 | 依赖 gateId 不变，不支持 gate 重开 |
