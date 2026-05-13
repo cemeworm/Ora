@@ -9,6 +9,26 @@ export interface RuntimeCompletionGuardState {
   toolCalls: readonly OraToolCallEnvelope[];
 }
 
+/**
+ * Full terminal-state assertion state that includes gates, pending arrays,
+ * and continuation frames — everything needed to prove a run is truly done.
+ */
+export interface TerminalStateAssertionInput {
+  actions: readonly ActionRecord[];
+  toolCalls: readonly OraToolCallEnvelope[];
+  pendingApprovals: readonly string[];
+  pendingClarifications: readonly StateSnapshot["pendingClarifications"];
+  continuation: StateSnapshot["continuation"];
+  planList: readonly PlanListStep[];
+  plan?: StateSnapshot["plan"];
+  todos?: StateSnapshot["todos"];
+  gates?: readonly {
+    gateId: string;
+    kind: "clarification" | "approval" | "plan_decision";
+    status: "open" | "resolved";
+  }[];
+}
+
 export type RuntimeCompletionGuardResult =
   | { allowComplete: true }
   | {
@@ -42,6 +62,39 @@ export function evaluateRuntimeCompletionGuards(
     if (!result.allowComplete) {
       return result;
     }
+  }
+  return { allowComplete: true };
+}
+
+/**
+ * Structural final-output guard — does not inspect language-specific phrases.
+ *
+ * Checks that the candidate final answer has non-empty user-visible text after
+ * trimming, without relying on any hard-coded "unfinished intro" patterns.
+ *
+ * This guard should run after work-state guards (plan list, legacy progress,
+ * pending runtime work) all pass, to prevent runs from completing with an
+ * empty final model response.
+ */
+export function finalOutputGuard(
+  responseText: string,
+  metadata?: { isPostTool?: boolean },
+): RuntimeCompletionGuardResult {
+  const trimmed = responseText.trim();
+  if (trimmed.length === 0) {
+    return {
+      allowComplete: false,
+      reason: "final_output_empty",
+      progressTrigger: "final_output.empty",
+      progressSummary: "Final model response is empty; refusing to complete.",
+      detail: "The latest model response has no user-visible text.",
+      followUpReason: metadata?.isPostTool
+        ? "final_output_empty_post_tool_repair"
+        : "final_output_empty_follow_up",
+      followUpContent: metadata?.isPostTool
+        ? "Your previous response after the tool result was empty. Produce the final user-facing answer now using the available conversation and tool results. Do not call tools."
+        : "The latest model response is empty. Produce the final user-facing answer now using the available conversation and tool results.",
+    };
   }
   return { allowComplete: true };
 }
@@ -147,6 +200,121 @@ function isAutoCompletableBlockedPlan(
   }
   const actionIds = [...new Set(item.linkedActionIds ?? [])];
   return actionIds.length > 0 && actionIds.every((actionId) => succeededActionIds.has(actionId));
+}
+
+/**
+ * Shared terminal finalization gate. No code path may emit or persist
+ * run.done / status: "succeeded" unless this assertion passes.
+ *
+ * If the assertion fails, an error is thrown with a diagnostic message
+ * listing every reason the run cannot yet be terminal. Callers in the
+ * kernel or resume paths must catch this error and either:
+ *  - downgrade to "interrupted", or
+ *  - mark the run "failed" with an integrity diagnostic.
+ */
+export function assertRunCanBecomeTerminal(
+  input: TerminalStateAssertionInput,
+): void {
+  const violations: string[] = [];
+
+  // 1. Open gates (approval, clarification, plan-decision)
+  if (input.gates) {
+    const openGates = input.gates.filter((gate) => gate.status === "open");
+    if (openGates.length > 0) {
+      violations.push(
+        `open gates: ${openGates.map((g) => `${g.kind}:${g.gateId}`).join(", ")}`,
+      );
+    }
+  }
+
+  // 2. Pending approvals
+  if (input.pendingApprovals.length > 0) {
+    violations.push(
+      `pending approvals: ${input.pendingApprovals.join(", ")}`,
+    );
+  }
+
+  // 3. Pending clarifications
+  if (input.pendingClarifications.length > 0) {
+    violations.push(
+      `pending clarifications: ${input.pendingClarifications.map((c) => c.id).join(", ")}`,
+    );
+  }
+
+  // 4. Non-agent actions in non-terminal states
+  const pendingActions = input.actions.filter((item) =>
+    !item.type.startsWith("agent.") &&
+    (
+      item.status === "proposed" ||
+      item.status === "approval_required" ||
+      item.status === "approved" ||
+      item.status === "running"
+    )
+  );
+  if (pendingActions.length > 0) {
+    violations.push(
+      `unresolved non-agent actions: ${pendingActions.map((a) => `${a.type}:${a.id}[${a.status}]`).join(", ")}`,
+    );
+  }
+
+  // 5. Tool calls in non-terminal states
+  const pendingToolCalls = input.toolCalls.filter((item) =>
+    item.status === "proposed" ||
+    item.status === "approval_required" ||
+    item.status === "approved" ||
+    item.status === "running"
+  );
+  if (pendingToolCalls.length > 0) {
+    violations.push(
+      `unresolved tool calls: ${pendingToolCalls.map((tc) => `${tc.toolId}:${tc.id}[${tc.status}]`).join(", ")}`,
+    );
+  }
+
+  // 6. Active approval/clarification continuation frames
+  const activeFrames = input.continuation.frames.filter((frame) =>
+    frame.status === "paused" || frame.status === "awaiting_model"
+  );
+  for (const frame of activeFrames) {
+    if (
+      frame.reason === "approval_required" &&
+      (frame.pendingActionIds.length > 0 || frame.pendingToolCallIds.length > 0)
+    ) {
+      violations.push(
+        `active approval continuation frame: ${frame.id} (pending actions: ${frame.pendingActionIds.join(", ")})`,
+      );
+    }
+    if (
+      frame.reason === "clarification_required" &&
+      frame.pendingClarificationIds.length > 0
+    ) {
+      violations.push(
+        `active clarification continuation frame: ${frame.id}`,
+      );
+    }
+  }
+
+  if (violations.length === 0) {
+    return;
+  }
+
+  throw new TerminalStateIntegrityError(
+    `Run cannot become terminal. Violations: ${violations.join("; ")}`,
+    violations,
+  );
+}
+
+/**
+ * Error thrown when a run cannot reach terminal state due to unresolved
+ * runtime work, gates, or continuation frames.
+ */
+export class TerminalStateIntegrityError extends Error {
+  constructor(
+    message: string,
+    public readonly violations: readonly string[],
+  ) {
+    super(message);
+    this.name = "TerminalStateIntegrityError";
+  }
 }
 
 export function pendingRuntimeWorkGuard(

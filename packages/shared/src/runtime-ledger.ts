@@ -452,6 +452,23 @@ export function deriveRunSnapshot(
 
 export function deriveLedgerRunAttention(run: Pick<RuntimeRunProjection, "runId" | "status" | "gates" | "error" | "events">): RunAttention {
   const openGates = run.gates.filter((gate) => gate.status === "open");
+
+  // Projection-level integrity guard: a terminal run (succeeded /
+  // failed / cancelled) must not carry open gates. If open gates
+  // exist alongside a terminal status, the projection has been
+  // corrupted and we surface an integrity diagnostic failure.
+  if (openGates.length > 0 && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled")) {
+    return RunAttentionSchema.parse({
+      kind: "failed",
+      blocking: false,
+      sourceRunId: run.runId,
+      reason: [
+        `terminal_run_with_open_gates:${run.status}`,
+        ...openGates.map((gate) => `${gate.kind}:${gate.gateId}`),
+      ].join(";"),
+    });
+  }
+
   const clarification = openGates.find((gate) => gate.kind === "clarification");
   if (clarification) {
     return RunAttentionSchema.parse({

@@ -87,6 +87,33 @@ describe("run store cancellation", () => {
     expect(interrupted.status).toBe("interrupted");
   });
 
+  it("preserves streamed assistant text as output when cancelling before a final answer", () => {
+    const source = snapshot("run-cancel-streamed-text");
+    const withText: StateSnapshot = {
+      ...source,
+      events: [{
+        id: "run-cancel-streamed-text:evt-0",
+        runId: "run-cancel-streamed-text",
+        seq: 0,
+        type: "message.delta",
+        createdAt: source.updatedAt + 1,
+        pattern: source.pattern,
+        payload: {
+          role: "assistant",
+          content: "我已经完成前半部分分析。",
+          streaming: true,
+        },
+      }],
+      updatedAt: source.updatedAt + 1,
+    };
+    const store = storeWithSnapshot(withText);
+
+    const cancelled = store.cancelRun({ runId: withText.runId, reason: "stop" });
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.output).toEqual({ text: "我已经完成前半部分分析。" });
+  });
+
   it("preserves pending continuation work when forking from a recovery checkpoint", async () => {
     const base = snapshot("run-recovery");
     const source: StateSnapshot = {

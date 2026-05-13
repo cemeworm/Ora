@@ -18,6 +18,7 @@ import {
   currentPendingApprovalActionIds,
   currentPendingClarifications,
 } from "./run-orchestration.js";
+import { pendingRuntimeWorkGuard } from "./harness/runtime-completion-guards.js";
 
 export type AppendRunEvent = (
   snapshot: StateSnapshot,
@@ -180,7 +181,22 @@ export function applyNonKernelResumeApprovals(
 
 export function nonKernelResumeNeedsInput(snapshot: StateSnapshot): boolean {
   return currentPendingClarifications(snapshot).length > 0
-    || currentPendingApprovalActionIds(snapshot).length > 0;
+    || currentPendingApprovalActionIds(snapshot).length > 0
+    || snapshot.actions.some((action) =>
+      !action.type.startsWith("agent.") &&
+      (
+        action.status === "proposed" ||
+        action.status === "approval_required" ||
+        action.status === "approved" ||
+        action.status === "running"
+      )
+    )
+    || snapshot.toolCalls.some((call) =>
+      call.status === "proposed" ||
+      call.status === "approval_required" ||
+      call.status === "approved" ||
+      call.status === "running"
+    );
 }
 
 export function interruptedNonKernelResumeSnapshot(snapshot: StateSnapshot, updatedAt: number): StateSnapshot {
@@ -195,6 +211,21 @@ export function completeNonKernelResumeMutation(
   snapshot: StateSnapshot,
   deps: Pick<NonKernelResumeMutationDeps, "appendEvent" | "now">,
 ): StateSnapshot {
+  const guardResult = pendingRuntimeWorkGuard({
+    actions: snapshot.actions,
+    planList: snapshot.planList,
+    plan: snapshot.plan,
+    todos: snapshot.todos,
+    toolCalls: snapshot.toolCalls,
+  });
+  if (!guardResult.allowComplete) {
+    return StateSnapshotSchema.parse({
+      ...snapshot,
+      status: "interrupted",
+      updatedAt: deps.now(),
+    });
+  }
+
   let working = snapshot;
   const checkpoint = createResumeCheckpoint({
     runId: working.runId,

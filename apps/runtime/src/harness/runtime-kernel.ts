@@ -119,6 +119,7 @@ import {
 } from "./node-runtime-loop.js";
 import { createKernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
 import { KernelRunner, createKernelRunnerDeps } from "./runtime-kernel-runner.js";
+import { assertRunCanBecomeTerminal } from "./runtime-completion-guards.js";
 import { activePlanStepId, advancePlanListFromLifecycle, planListUpdatedPayload } from "./runtime-plan-list-state.js";
 import { classifyContinuationDispatch } from "../run-continuation-dispatcher.js";
 import { createResumeCheckpoint } from "../run-resume-mutation.js";
@@ -1528,34 +1529,38 @@ export async function executeRuntimeKernel(
           },
           { agentId: params.agentId, nodeId: params.agentId },
         );
-        emit(
-          "message.delta",
-          {
-            role: "assistant",
-            messageId: assistantMessageId({
-              agentId: params.agentId,
-              nodeId: params.planItemId ?? params.agentId,
-              actionId: action.id,
-            }),
-            content: response.text,
-            ...(isInternalProviderAssistantText(response.text)
-              ? { visibility: "internal" }
-              : {}),
-          },
-          { agentId: params.agentId, nodeId: params.agentId },
-        );
-        emit(
-          "token.delta",
-          {
-            text: response.text.slice(0, 32),
-            tokenCount: Math.max(
-              1,
-              response.text.split(/\s+/).filter(Boolean).length,
-            ),
-            budget: config.budget,
-          },
-          { agentId: params.agentId, nodeId: params.agentId },
-        );
+        // Do not emit empty final message/token deltas — they mislead the
+        // transcript into treating an empty response as meaningful output.
+        if (response.text.trim().length > 0) {
+          emit(
+            "message.delta",
+            {
+              role: "assistant",
+              messageId: assistantMessageId({
+                agentId: params.agentId,
+                nodeId: params.planItemId ?? params.agentId,
+                actionId: action.id,
+              }),
+              content: response.text,
+              ...(isInternalProviderAssistantText(response.text)
+                ? { visibility: "internal" }
+                : {}),
+            },
+            { agentId: params.agentId, nodeId: params.agentId },
+          );
+          emit(
+            "token.delta",
+            {
+              text: response.text.slice(0, 32),
+              tokenCount: Math.max(
+                1,
+                response.text.split(/\s+/).filter(Boolean).length,
+              ),
+              budget: config.budget,
+            },
+            { agentId: params.agentId, nodeId: params.agentId },
+          );
+        }
 
         const succeeded = actionLedger.transition(action.id, "succeeded", {
           output: response.raw,
@@ -1813,6 +1818,23 @@ export async function executeRuntimeKernel(
         ? { orchestrator: { plan: text } }
         : {}),
     };
+    // Shared terminal-state integrity gate for the resumed-frame path:
+    // refuse to finalize if unresolved approvals, tool calls, or
+    // continuation frames remain.
+    const resumeAssertInput = {
+      actions: actionLedger.list(),
+      toolCalls: kernelRuntimeContext.toolCalls,
+      pendingApprovals: actionLedger.list()
+        .filter((action) => action.status === "approval_required")
+        .map((action) => action.id),
+      pendingClarifications: kernelRuntimeContext.pendingClarifications,
+      continuation: continuationWithActiveFrameStatus("completed") ?? options.resumeState?.continuation ?? { frames: [] },
+      planList: kernelRuntimeContext.planList,
+      plan: planService.list(),
+      todos: todoService.list(),
+    };
+    assertRunCanBecomeTerminal(resumeAssertInput);
+
     emit("run.done", { status: "succeeded", output });
     const checkpoint = createResumeCheckpoint({
       runId,
@@ -2269,6 +2291,32 @@ export async function executeRuntimeKernel(
       completionMetadata,
       finalizeAsOra,
       incompleteForcedFinalError,
+      assertTerminalState: () => {
+        const actions = actionLedger.list();
+        const pendingApprovalActions = actions.filter((action) => action.status === "approval_required");
+        const pendingApprovals = pendingApprovalActions.map((action) => action.id);
+        const pendingToolCalls = kernelRuntimeContext.toolCalls.filter((call) =>
+          call.actionId && pendingApprovals.includes(call.actionId)
+        );
+        const previousContinuation = options.resumeState?.continuation;
+        const { continuation } = kernelRuntimeContext.assembleContinuation({
+          previous: previousContinuation,
+          status: "running" as const,
+          actions,
+          conversationCursor: options.resumeState?.conversation.length ?? 0,
+          now: now(),
+        });
+        return {
+          actions,
+          toolCalls: kernelRuntimeContext.toolCalls,
+          pendingApprovals,
+          pendingClarifications: kernelRuntimeContext.pendingClarifications,
+          continuation,
+          planList: kernelRuntimeContext.planList,
+          plan: planService.list(),
+          todos: todoService.list(),
+        };
+      },
     },
     memory: {
       memoryCaptureQueue,

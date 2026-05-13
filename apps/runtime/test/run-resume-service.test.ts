@@ -14,6 +14,10 @@ import {
   classifyRunResumeStrategy,
   executeNonKernelResumeStrategy,
 } from "../src/run-resume-service.js";
+import {
+  assertRunCanBecomeTerminal,
+  TerminalStateIntegrityError,
+} from "../src/harness/runtime-completion-guards.js";
 
 const modeSpec = getModePreset(SINGLE_AGENT_MODE_ID)!;
 const definition = modeSpecToPatternDefinition(modeSpec);
@@ -257,5 +261,191 @@ describe("RunResumeService", () => {
     expect(result.snapshot.pendingClarifications).toHaveLength(1);
     expect(result.snapshot.events.map((event) => event.type)).toContain("run.resumed");
     expect(result.snapshot.events.map((event) => event.type)).not.toContain("run.done");
+  });
+
+  it("does not complete a half-resolved approval resume with an unfinished tool call", () => {
+    const pending = withApprovedTool();
+    const nonKernelSnapshot = StateSnapshotSchema.parse({
+      ...pending,
+      modeSpec: undefined,
+      status: "running",
+      pendingApprovals: [],
+      actions: pending.actions.map((action) =>
+        action.id === "action-write" ? { ...action, status: "approved" as const } : action
+      ),
+      attention: {
+        kind: "needs_approval",
+        blocking: true,
+        sourceRunId: pending.runId,
+        reason: "approval_required",
+        pendingActionIds: [],
+        pendingToolCallIds: ["tool-write"],
+        pendingClarificationIds: [],
+      },
+    });
+
+    const result = executeNonKernelResumeStrategy({
+      snapshot: nonKernelSnapshot,
+      reason: "Approved.",
+      patch: { approvedActionIds: ["action-write"] },
+      clarificationPatch: {},
+      deps: mutationDeps(),
+    });
+
+    expect(result.kind).toBe("needs_input");
+    expect(result.snapshot.status).toBe("interrupted");
+    expect(result.snapshot.events.map((event) => event.type)).toContain("run.resumed");
+    expect(result.snapshot.events.map((event) => event.type)).not.toContain("run.done");
+  });
+
+  it("rejects terminal completion when auto_review leaves tool calls unresolved after approval", () => {
+    // Regression for session-0020 / run-0019: permission mode switching to
+    // auto_review resolves the approval gate but the tool call remains
+    // unresolved. The terminal state guard must block completion.
+    const pending = withApprovedTool();
+    const autoReviewedSnapshot = StateSnapshotSchema.parse({
+      ...pending,
+      modeSpec: undefined,
+      status: "running",
+      pendingApprovals: [],
+      actions: pending.actions.map((action) =>
+        action.id === "action-write" ? { ...action, status: "approved" as const } : action
+      ),
+      toolCalls: pending.toolCalls.map((call) =>
+        call.id === "tool-write"
+          ? { ...call, status: "approved" as const }
+          : call
+      ),
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: pending.runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+
+    expect(() =>
+      assertRunCanBecomeTerminal({
+        actions: autoReviewedSnapshot.actions,
+        toolCalls: autoReviewedSnapshot.toolCalls,
+        pendingApprovals: autoReviewedSnapshot.pendingApprovals,
+        pendingClarifications: autoReviewedSnapshot.pendingClarifications,
+        continuation: autoReviewedSnapshot.continuation,
+        planList: autoReviewedSnapshot.planList,
+        gates: [{ gateId: "gate-approval", kind: "approval", status: "resolved" }],
+      }),
+    ).toThrow(TerminalStateIntegrityError);
+  });
+
+  it("allows terminal completion when all actions and tool calls are resolved", () => {
+    const pending = withApprovedTool();
+    const cleanSnapshot = StateSnapshotSchema.parse({
+      ...pending,
+      modeSpec: undefined,
+      status: "running",
+      pendingApprovals: [],
+      actions: pending.actions.map((action) =>
+        action.id === "action-write" ? { ...action, status: "succeeded" as const } : action
+      ),
+      toolCalls: pending.toolCalls.map((call) =>
+        call.id === "tool-write"
+          ? { ...call, status: "succeeded" as const, result: { status: "succeeded", output: { ok: true }, content: "ok", createdAt: 2_000, updatedAt: 2_000 } }
+          : call
+      ),
+      continuation: {
+        activeFrameId: pending.continuation.activeFrameId,
+        frames: pending.continuation.frames.map((frame) => ({
+          ...frame,
+          status: "completed" as const,
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          approvedActionIds: ["action-write"],
+        })),
+      },
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: pending.runId,
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+
+    expect(() =>
+      assertRunCanBecomeTerminal({
+        actions: cleanSnapshot.actions,
+        toolCalls: cleanSnapshot.toolCalls,
+        pendingApprovals: cleanSnapshot.pendingApprovals,
+        pendingClarifications: cleanSnapshot.pendingClarifications,
+        continuation: cleanSnapshot.continuation,
+        planList: cleanSnapshot.planList,
+        gates: [{ gateId: "gate-approval", kind: "approval", status: "resolved" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects terminal completion when an open clarification gate exists alongside succeeded status", () => {
+    const snapshot = withClarification();
+    const contradictory = StateSnapshotSchema.parse({
+      ...snapshot,
+      modeSpec: undefined,
+      status: "succeeded",
+      attention: {
+        kind: "needs_clarification",
+        blocking: true,
+        sourceRunId: snapshot.runId,
+        reason: "clarification_required",
+        pendingClarificationIds: ["clarify-scope"],
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+      },
+    });
+
+    expect(() =>
+      assertRunCanBecomeTerminal({
+        actions: contradictory.actions,
+        toolCalls: contradictory.toolCalls,
+        pendingApprovals: contradictory.pendingApprovals,
+        pendingClarifications: contradictory.pendingClarifications,
+        continuation: contradictory.continuation,
+        planList: contradictory.planList,
+        gates: [{ gateId: "gate-clarify", kind: "clarification", status: "open" }],
+      }),
+    ).toThrow(TerminalStateIntegrityError);
+  });
+
+  it("rejects terminal completion when an active approval continuation frame persists", () => {
+    const pending = withApprovedTool();
+    const withActiveFrame = StateSnapshotSchema.parse({
+      ...pending,
+      modeSpec: undefined,
+      status: "running",
+      pendingApprovals: [],
+      continuation: {
+        activeFrameId: pending.continuation.activeFrameId,
+        frames: [{
+          ...pending.continuation.frames[0]!,
+          status: "paused" as const,
+          reason: "approval_required" as const,
+          pendingActionIds: ["action-write"],
+          pendingToolCallIds: ["tool-write"],
+        }],
+      },
+    });
+
+    expect(() =>
+      assertRunCanBecomeTerminal({
+        actions: withActiveFrame.actions,
+        toolCalls: withActiveFrame.toolCalls,
+        pendingApprovals: withActiveFrame.pendingApprovals,
+        pendingClarifications: withActiveFrame.pendingClarifications,
+        continuation: withActiveFrame.continuation,
+        planList: withActiveFrame.planList,
+        gates: [{ gateId: "gate-approval", kind: "approval", status: "resolved" }],
+      }),
+    ).toThrow(TerminalStateIntegrityError);
   });
 });

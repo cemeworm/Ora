@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateRuntimeCompletionGuards,
+  finalOutputGuard,
   legacyProgressCompletionGuard,
   pendingRuntimeWorkGuard,
   planListCompletionGuard,
@@ -215,5 +216,74 @@ describe("runtime completion guards", () => {
     if (!result.allowComplete) {
       expect(result.detail).toContain("[proposed] file.read");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// finalOutputGuard — structural final-output completeness check
+// ---------------------------------------------------------------------------
+describe("finalOutputGuard", () => {
+  it("allows complete when response text is non-empty", () => {
+    expect(finalOutputGuard("Here is the final answer.")).toEqual({
+      allowComplete: true,
+    });
+  });
+
+  it("allows complete with minimal non-whitespace text", () => {
+    expect(finalOutputGuard("OK")).toEqual({ allowComplete: true });
+  });
+
+  it("blocks complete when response text is empty", () => {
+    const result = finalOutputGuard("");
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.reason).toBe("final_output_empty");
+      expect(result.detail).toBe("The latest model response has no user-visible text.");
+      expect(result.followUpContent).toBe(
+        "The latest model response is empty. Produce the final user-facing answer now using the available conversation and tool results.",
+      );
+    }
+  });
+
+  it("blocks complete when response text is whitespace only", () => {
+    const result = finalOutputGuard("   \n\t  ");
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.reason).toBe("final_output_empty");
+    }
+  });
+
+  it("uses post-tool repair prompt when isPostTool is true", () => {
+    const result = finalOutputGuard("", { isPostTool: true });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.followUpReason).toBe("final_output_empty_post_tool_repair");
+      expect(result.followUpContent).toBe(
+        "Your previous response after the tool result was empty. Produce the final user-facing answer now using the available conversation and tool results. Do not call tools.",
+      );
+    }
+  });
+
+  it("uses generic follow-up prompt when isPostTool is false", () => {
+    const result = finalOutputGuard("", { isPostTool: false });
+    expect(result.allowComplete).toBe(false);
+    if (!result.allowComplete) {
+      expect(result.followUpReason).toBe("final_output_empty_follow_up");
+      expect(result.followUpContent).toBe(
+        "The latest model response is empty. Produce the final user-facing answer now using the available conversation and tool results.",
+      );
+    }
+  });
+
+  it("does not inspect language-specific unfinished phrases", () => {
+    // The guard is purely structural: it only checks text length, not content.
+    // Even Chinese "unfinished" phrases like 以下是完整计划 should pass
+    // because they are non-empty text.
+    expect(finalOutputGuard("以下是完整计划。")).toEqual({
+      allowComplete: true,
+    });
+    expect(finalOutputGuard("Here is the complete plan.")).toEqual({
+      allowComplete: true,
+    });
   });
 });

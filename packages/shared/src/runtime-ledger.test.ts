@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildVisibleLedger,
   deriveSessionProjection,
+  deriveLedgerRunAttention,
   RuntimeSessionLedgerSchema,
   type RuntimeSessionEntry,
   type RuntimeSessionLedger,
@@ -396,5 +397,189 @@ describe("branch authority replay", () => {
       expect(slimmedRun).toBeDefined();
       expect(slimmedRun!.config.metadata).toEqual(run.config.metadata);
     }
+  });
+});
+
+describe("terminal state integrity", () => {
+  const runPayload = (prompt: string, status: string = "running", gates?: Array<{ gateId: string; kind: string; status: string }>) => ({
+    input: { prompt },
+    config: {
+      providerId: "openai",
+      modelRef: "gpt-4",
+      pattern: "orchestrator_subagent",
+    },
+    status,
+  });
+
+  it("downgrades succeeded+open_approval_gate to failed attention with integrity diagnostic", () => {
+    // Regression for session-0020 / run-0019: ledger replay must not
+    // silently render "succeeded" when an open approval gate exists.
+    const entries = [
+      entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
+      entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
+      entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-approval", kind: "approval", pendingActionIds: ["action-write"], pendingToolCallIds: ["tool-write"] } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries));
+    const run = projection.runs.find((r) => r.runId === "run-1");
+
+    expect(run).toBeDefined();
+    // The run status from the event batch is "succeeded"...
+    expect(run!.status).toBe("succeeded");
+    // ... but attention must detect the impossible combination and surface failure.
+    expect(run!.attention.kind).toBe("failed");
+    expect(run!.attention.reason).toContain("terminal_run_with_open_gates:succeeded");
+    expect(run!.attention.reason).toContain("approval:gate-approval");
+  });
+
+  it("downgrades succeeded+open_clarification_gate to failed attention", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
+      entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
+      entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-clarify", kind: "clarification", pendingClarificationIds: ["clarify-scope"] } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries));
+    const run = projection.runs.find((r) => r.runId === "run-1");
+
+    expect(run).toBeDefined();
+    expect(run!.attention.kind).toBe("failed");
+    expect(run!.attention.reason).toContain("terminal_run_with_open_gates:succeeded");
+    expect(run!.attention.reason).toContain("clarification:gate-clarify");
+  });
+
+  it("downgrades failed+open_gate to failed attention", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
+      entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
+      entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-approval", kind: "approval", pendingActionIds: ["action-write"] } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.failed", payload: { status: "failed", error: "crashed" } }], status: "failed" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries));
+    const run = projection.runs.find((r) => r.runId === "run-1");
+
+    expect(run).toBeDefined();
+    expect(run!.attention.kind).toBe("failed");
+    expect(run!.attention.reason).toContain("terminal_run_with_open_gates:failed");
+  });
+
+  it("downgrades cancelled+open_gate to failed attention", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
+      entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
+      entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-plan", kind: "plan_decision", pendingClarificationIds: ["plan-1"] } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { events: [{ type: "run.cancelled", payload: { status: "cancelled" } }], status: "cancelled" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries));
+    const run = projection.runs.find((r) => r.runId === "run-1");
+
+    expect(run).toBeDefined();
+    expect(run!.attention.kind).toBe("failed");
+    expect(run!.attention.reason).toContain("terminal_run_with_open_gates:cancelled");
+  });
+
+  it("preserves correct succeeded attention when gate is resolved before terminal event", () => {
+    // Happy path: gate is opened, then resolved, then run completes.
+    // Attention should correctly show idle (not needs_approval, not failed).
+    const entries = [
+      entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
+      entry({ id: "run1", type: "run.started", runId: "run-1", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("test") }),
+      entry({ id: "gate1", type: "gate.opened", runId: "run-1", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-approval", kind: "approval", pendingActionIds: ["action-write"] } }),
+      entry({ id: "resolve1", type: "gate.resolved", runId: "run-1", parentId: "gate1", turnIndex: 1, seq: 4, createdAt: 4, payload: { gateId: "gate-approval", status: "resolved", resolvedAt: 4 } }),
+      entry({ id: "batch1", type: "runtime.event_batch", runId: "run-1", parentId: "resolve1", turnIndex: 1, seq: 5, createdAt: 5, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded" } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries));
+    const run = projection.runs.find((r) => r.runId === "run-1");
+
+    expect(run).toBeDefined();
+    expect(run!.status).toBe("succeeded");
+    // With the gate resolved, attention should be idle — not failed, not needs_approval.
+    expect(run!.attention.kind).toBe("idle");
+  });
+
+  it("reproduces session-0020 scenario: succeeded status with open approval gate after auto_review", () => {
+    // Minimized ledger reproduction of the session-0020 / run-0019 incident.
+    // The incident sequence:
+    // 1. Run started normally under default permission mode.
+    // 2. An approval-required file.patch action (orchestrator-tool-102) was approved.
+    // 3. A second file.patch action (orchestrator-tool-28) needed approval.
+    // 4. Permission mode was switched to auto_review.
+    // 5. Ledger recorded run.done/succeeded but the gate for the second action
+    //    was still open.
+    //
+    const entries = [
+      entry({ id: "root", type: "session.created", seq: 1, createdAt: 1 }),
+      // First turn: normal run start under default permission mode
+      entry({ id: "run1", type: "run.started", runId: "run-0019", parentId: "root", turnIndex: 1, seq: 2, createdAt: 2, payload: runPayload("update docs") }),
+      // First approval gate opened for action-102
+      entry({ id: "gate102", type: "gate.opened", runId: "run-0019", parentId: "run1", turnIndex: 1, seq: 3, createdAt: 3, payload: { gateId: "gate-102", kind: "approval", pendingActionIds: ["action-102"], pendingToolCallIds: ["tool-102"] } }),
+      // First approval gate resolved (user approved via UI)
+      entry({ id: "resolve102", type: "gate.resolved", runId: "run-0019", parentId: "gate102", turnIndex: 1, seq: 4, createdAt: 4, payload: { gateId: "gate-102", status: "resolved", resolvedAt: 4 } }),
+      // Second approval gate opened for action-28 (after permission mode switch context)
+      entry({ id: "gate28", type: "gate.opened", runId: "run-0019", parentId: "resolve102", turnIndex: 1, seq: 5, createdAt: 5, payload: { gateId: "gate-28", kind: "approval", pendingActionIds: ["action-28"], pendingToolCallIds: ["tool-28"] } }),
+      // The bug: event batch records run.done/succeeded BEFORE gate-28 is resolved
+      entry({ id: "batchDone", type: "runtime.event_batch", runId: "run-0019", parentId: "gate28", turnIndex: 1, seq: 6, createdAt: 6, payload: { events: [{ type: "run.done", payload: { status: "succeeded" } }], status: "succeeded", output: { text: "Done." } } }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries));
+    const run = projection.runs.find((r) => r.runId === "run-0019");
+
+    expect(run).toBeDefined();
+    // The structural fix: even though the raw status is "succeeded",
+    // ledger projection MUST detect the contradiction between terminal
+    // status and open gates, and surface failed attention.
+    expect(run!.attention.kind).toBe("failed");
+    expect(run!.attention.reason).toContain("terminal_run_with_open_gates:succeeded");
+    expect(run!.attention.reason).toContain("approval:gate-28");
+  });
+
+  it("deriveLedgerRunAttention returns correct attention for clean terminal runs", () => {
+    // Direct unit test for deriveLedgerRunAttention on clean states.
+    
+    // Clean succeeded run (all gates resolved):
+    const cleanSucceeded = deriveLedgerRunAttention({
+      runId: "run-clean",
+      status: "succeeded",
+      gates: [{ gateId: "g1", kind: "approval", status: "resolved" }],
+      events: [],
+    });
+    expect(cleanSucceeded.kind).toBe("idle");
+
+    // Running run with open approval gate:
+    const runningApproval = deriveLedgerRunAttention({
+      runId: "run-approval",
+      status: "running",
+      gates: [{ gateId: "g1", kind: "approval", status: "open", pendingActionIds: ["a1"] }],
+      events: [],
+    });
+    expect(runningApproval.kind).toBe("needs_approval");
+
+    // Running run with open clarification gate:
+    const runningClarify = deriveLedgerRunAttention({
+      runId: "run-clarify",
+      status: "running",
+      gates: [{ gateId: "g1", kind: "clarification", status: "open", pendingClarificationIds: ["c1"] }],
+      events: [],
+    });
+    expect(runningClarify.kind).toBe("needs_clarification");
+
+    // Running run with open plan_decision gate:
+    const runningPlan = deriveLedgerRunAttention({
+      runId: "run-plan",
+      status: "running",
+      gates: [{ gateId: "g1", kind: "plan_decision", status: "open" }],
+      events: [],
+    });
+    expect(runningPlan.kind).toBe("needs_plan_decision");
+
+    // Failed run (clean, no open gates):
+    const cleanFailed = deriveLedgerRunAttention({
+      runId: "run-failed",
+      status: "failed",
+      gates: [],
+      error: "something crashed",
+      events: [],
+    });
+    expect(cleanFailed.kind).toBe("failed");
+    expect(cleanFailed.reason).toBe("something crashed");
   });
 });

@@ -28,6 +28,11 @@ import {
   INTENT_CLARIFICATION_NODE_LABEL,
 } from "./runtime-clarifications.js";
 import type { KernelPatternExecutionContextAdapter } from "./runtime-pattern-context.js";
+import {
+  assertRunCanBecomeTerminal,
+  TerminalStateIntegrityError,
+  type TerminalStateAssertionInput,
+} from "./runtime-completion-guards.js";
 
 type KernelEmit = (
   type: OraEventEnvelope["type"],
@@ -139,6 +144,11 @@ export interface KernelRunnerDeps {
     completionMetadata: () => RuntimeCompletionMetadata;
     finalizeAsOra: (modeOutput: unknown) => Promise<unknown>;
     incompleteForcedFinalError: (value: unknown, metadata: RuntimeCompletionMetadata) => string | undefined;
+    /**
+     * Assembles the terminal-state assertion input from the current kernel state.
+     * Called before emitting run.done to ensure no unresolved runtime work exists.
+     */
+    assertTerminalState: () => TerminalStateAssertionInput;
   };
   memory: {
     memoryCaptureQueue: MemoryCaptureQueue;
@@ -366,6 +376,36 @@ export class KernelRunner {
         completion: completionMetadata(),
       });
       return;
+    }
+
+    // Shared terminal-state integrity gate: refuse to emit run.done if any
+    // unresolved approvals, clarifications, tool calls, actions, or
+    // continuation frames remain.
+    const { assertTerminalState } = this.deps.finalization;
+    if (assertTerminalState) {
+      try {
+        assertRunCanBecomeTerminal(assertTerminalState());
+      } catch (caught) {
+        if (caught instanceof TerminalStateIntegrityError) {
+          const meta = completionMetadata();
+          this.status = "failed";
+          this.error = caught.message;
+          this.output = outputWithCompletionMetadata({
+            text: caught.message,
+            modeOutput: this.output,
+            violations: caught.violations,
+          }, meta);
+          emit("run.failed", {
+            status: this.status,
+            error: this.error,
+            output: this.output,
+            stopReason: meta.stopReason,
+            completion: meta,
+          });
+          return;
+        }
+        throw caught;
+      }
     }
 
     emit("run.done", {

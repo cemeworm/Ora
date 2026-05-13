@@ -4,6 +4,7 @@ import {
   PatternDefinition,
   RunConfig,
   normalizeRunAttention,
+  projectAssistantTextFromSnapshot,
   StateSnapshot,
   StateSnapshotSchema,
   UserTaskInput
@@ -177,9 +178,11 @@ export function cancelledRunSnapshot(params: {
     status: item.status === "done" || item.status === "skipped" ? item.status : "blocked" as const,
     updatedAt: params.updatedAt,
   }));
+  const assistantText = projectAssistantTextFromSnapshot(params.snapshot);
   return normalizeRunAttention(StateSnapshotSchema.parse({
     ...params.snapshot,
     status: "cancelled",
+    output: params.snapshot.output ?? (assistantText ? { text: assistantText } : undefined),
     topology: {
       nodes: params.snapshot.topology.nodes.map((node) => ({ ...node, status: "failed" as const })),
       edges: params.snapshot.topology.edges,

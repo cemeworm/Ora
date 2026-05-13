@@ -19,7 +19,7 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { RUNTIME_TOOL_LOOP_SAFETY_LIMIT, type RuntimeCompletionController } from "./runtime-completion.js";
-import { evaluateRuntimeCompletionGuards } from "./runtime-completion-guards.js";
+import { evaluateRuntimeCompletionGuards, finalOutputGuard } from "./runtime-completion-guards.js";
 import { forcedFinalSystemPrompt } from "./runtime-output.js";
 import type { RuntimeActionDeps } from "./runtime-action-runner.js";
 import {
@@ -629,9 +629,11 @@ export async function runNodeRuntimeLoop(
     });
   const guardCycleCounts = new Map<string, number>();
   let lastAutoAdvanceEvidenceKey = "";
+  let emptyFinalOutputRepairUsed = false;
   const continueOrCompleteNaturally = async (
     currentResponse: ModelResponse,
     iteration: number,
+    isPostTool = false,
   ): Promise<{ kind: "continue"; response: ModelResponse } | { kind: "complete"; response: ModelResponse }> => {
     const evidenceToolCallIds = lifecycleEvidenceToolCallIds(deps.toolCalls(), params);
     const evidencePlanStepId = lifecycleEvidencePlanStepId(deps.toolCalls(), evidenceToolCallIds);
@@ -655,6 +657,42 @@ export async function runNodeRuntimeLoop(
       toolCalls: deps.toolCalls(),
     });
     if (guardResult.allowComplete) {
+      // Final-output guard: refuse to complete when the candidate answer is empty.
+      const outputGuardResult = finalOutputGuard(currentResponse.text, { isPostTool });
+      if (!outputGuardResult.allowComplete) {
+        // Only allow one repair turn for empty post-tool responses.
+        if (!emptyFinalOutputRepairUsed) {
+          emptyFinalOutputRepairUsed = true;
+          nodeLoopController.emitTransitionResult("repairing", "repairing", {
+            agentId: params.agentId,
+            title: params.title,
+            reason: outputGuardResult.reason,
+            detail: outputGuardResult.detail,
+            iteration,
+          });
+          messages = [
+            ...messages,
+            { role: "assistant", content: currentResponse.text },
+            { role: "user", content: outputGuardResult.followUpContent },
+          ];
+          const repairResponse = await invokeFollowUpModel({
+            messages,
+            system: params.system,
+            maxTokens: config.budget?.maxTokens,
+            tools: nativeTools,
+            toolChoice: "none",
+          }, currentResponse, outputGuardResult.followUpReason);
+          // Re-check the repair response via natural completion.
+          return continueOrCompleteNaturally(repairResponse, iteration, false);
+        }
+        // Repair already used; fail the run.
+        throw new Error([
+          "Run cannot complete: final output is empty after repair attempt.",
+          `reason: ${outputGuardResult.reason}`,
+          outputGuardResult.detail,
+        ].join("\n"));
+      }
+
       nodeLoopController.emitTransitionResult("complete", "completed", {
         agentId: params.agentId,
         title: params.title,
@@ -795,6 +833,7 @@ export async function runNodeRuntimeLoop(
     Math.min(RUNTIME_TOOL_LOOP_SAFETY_LIMIT, remainingToolBudget),
   );
   let ignoredUnavailableToolCallFollowUps = 0;
+  let hasExecutedTool = false;
   for (let iteration = 0; iteration < toolLoopLimit; iteration += 1) {
     if (!completion.toolsAllowed(completionScope)) {
       return runForcedFinalProviderCall({
@@ -853,7 +892,7 @@ export async function runNodeRuntimeLoop(
         }, response, "unavailable_tool_follow_up");
         continue;
       }
-      const completionResult = await continueOrCompleteNaturally(response, iteration);
+      const completionResult = await continueOrCompleteNaturally(response, iteration, hasExecutedTool);
       if (completionResult.kind === "continue") {
         response = completionResult.response;
         continue;
@@ -946,6 +985,7 @@ export async function runNodeRuntimeLoop(
       return toolTurnResult.response;
     }
     if (toolTurnResult.kind === "continue") {
+      hasExecutedTool = true;
       response = toolTurnResult.response;
       continue;
     }
