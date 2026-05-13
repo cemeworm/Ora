@@ -3293,7 +3293,7 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         : undefined;
     case "file.glob": {
       const pattern = stringValue(output.pattern) ?? stringValue(input.pattern);
-      const basePath = stringValue(input.path);
+      const basePath = stringValue(output.path) ?? stringValue(input.path);
       if (!pattern) {
         return undefined;
       }
@@ -3304,7 +3304,7 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
       if (!pattern) {
         return undefined;
       }
-      const scope = stringValue(input.include) ?? stringValue(input.path);
+      const scope = fileSearchScopeLabel(output, input);
       const truncated = output.truncated === true ? "，结果已截断" : "";
       return `已搜索 "${pattern}"${scope ? `（${scope}）` : ""}${countSuffix(output.matches, "项")}${truncated}`;
     }
@@ -3445,6 +3445,18 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function fileSearchScopeLabel(
+  output: Record<string, unknown>,
+  input: Record<string, unknown>,
+): string | undefined {
+  const scopePath = stringValue(output.path) ?? stringValue(input.path);
+  const include = stringValue(input.include);
+  if (scopePath && include) {
+    return `${scopePath}，${include}`;
+  }
+  return scopePath ?? include;
+}
+
 function sizeSuffix(value: unknown): string {
   return typeof value === "number" ? ` (${formatBytes(value)})` : "";
 }
@@ -3583,6 +3595,12 @@ function processToolTargetLabel(
     : isRecord(payload.result)
       ? payload.result
       : {};
+  if (payload.toolId === "file.grep") {
+    return stringValue(output.path) ?? stringValue(input.path) ?? stringValue(input.include) ?? payload.toolId;
+  }
+  if (payload.toolId === "file.glob") {
+    return stringValue(output.path) ?? stringValue(input.path) ?? payload.toolId;
+  }
   return (
     stringValue(output.path) ??
     stringValue(input.path) ??

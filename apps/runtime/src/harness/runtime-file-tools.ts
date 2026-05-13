@@ -191,13 +191,38 @@ function isErrnoCode(error: unknown, code: string): error is NodeJS.ErrnoExcepti
   return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
 }
 
+function createWorkspaceSearchMatcher(rootPath: string, basePath: string, rawPattern: string): (filePath: string) => boolean {
+  const matcher = globToRegExp(rawPattern);
+  if (!shouldCompatMatchScopedBarePattern(rootPath, basePath, rawPattern)) {
+    return (filePath) => matcher.test(normalizeSearchPath(relativeWorkspacePath(rootPath, filePath)));
+  }
+  return (filePath) => {
+    const workspaceRelative = normalizeSearchPath(relativeWorkspacePath(rootPath, filePath));
+    return matcher.test(workspaceRelative) || matcher.test(path.posix.basename(workspaceRelative));
+  };
+}
+
+function shouldCompatMatchScopedBarePattern(rootPath: string, basePath: string, rawPattern: string): boolean {
+  const relativeBasePath = normalizeSearchPath(relativeWorkspacePath(rootPath, basePath));
+  if (relativeBasePath === ".") {
+    return false;
+  }
+  const normalizedPattern = normalizeSearchPath(rawPattern);
+  return !normalizedPattern.includes("/");
+}
+
+function normalizeSearchPath(value: string): string {
+  return value.split(path.sep).join("/");
+}
+
 function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
   const pattern = typeof args.pattern === "string" && args.pattern.trim() ? args.pattern : undefined;
   if (!pattern) {
     throw new Error("file.glob requires a non-empty pattern.");
   }
   const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
-  const matcher = globToRegExp(pattern);
+  const scopePath = relativeWorkspacePath(rootPath, basePath);
+  const matcher = createWorkspaceSearchMatcher(rootPath, basePath, pattern);
   const limit = readPositiveInt(args.limit, limits.fileListMaxEntries, limits.fileListMaxEntries);
   const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, pattern, args);
   const skipped: SkippedWorkspaceFile[] = [];
@@ -208,14 +233,14 @@ function globWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
       skipped.push({ path: relative, reason: "default_excluded" });
       continue;
     }
-    if (matcher.test(relative)) {
+    if (matcher(filePath)) {
       matches.push(relative);
       if (matches.length >= limit) {
         break;
       }
     }
   }
-  return { pattern, matches, skipped };
+  return { path: scopePath, pattern, matches, skipped };
 }
 
 function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
@@ -223,18 +248,21 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
   if (!pattern) {
     throw new Error("file.grep requires a non-empty pattern.");
   }
-  const include = typeof args.include === "string" && args.include.trim() ? globToRegExp(args.include) : undefined;
   const basePath = resolveWorkspacePath(rootPath, args.path ?? ".");
+  const scopePath = relativeWorkspacePath(rootPath, basePath);
+  const include = typeof args.include === "string" && args.include.trim()
+    ? createWorkspaceSearchMatcher(rootPath, basePath, args.include)
+    : undefined;
   const caseSensitive = args.caseSensitive !== false;
   const needle = caseSensitive ? pattern : pattern.toLowerCase();
   const limit = readPositiveInt(args.limit, limits.fileSearchMaxMatches, limits.fileSearchMaxMatches);
-  const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, include ? String(args.include) : undefined, args);
+  const explicitTarget = hasExplicitSearchTarget(rootPath, basePath, typeof args.include === "string" ? args.include : undefined, args);
   const matches: Array<{ path: string; line: number; text: string }> = [];
   const skipped: SkippedWorkspaceFile[] = [];
 
   for (const filePath of walkFiles(rootPath, basePath, limits.fileSearchMaxFiles, { includeDefaultExcluded: explicitTarget, skipped })) {
     const relative = relativeWorkspacePath(rootPath, filePath);
-    if (include && !include.test(relative)) {
+    if (include && !include(filePath)) {
       continue;
     }
     if (!explicitTarget && isDefaultExcludedFile(relative)) {
@@ -257,12 +285,12 @@ function grepWorkspaceFiles(rootPath: string, args: Record<string, unknown>, lim
       if (haystack.includes(needle)) {
         matches.push({ path: relative, line: index + 1, text: line });
         if (matches.length >= limit) {
-          return { pattern, matches, truncated: true, skipped };
+          return { path: scopePath, pattern, matches, truncated: true, skipped };
         }
       }
     }
   }
-  return { pattern, matches, truncated: false, skipped };
+  return { path: scopePath, pattern, matches, truncated: false, skipped };
 }
 
 async function writeWorkspaceFile(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {

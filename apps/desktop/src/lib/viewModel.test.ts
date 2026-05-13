@@ -6367,6 +6367,102 @@ describe("desktop session view model", () => {
     expect(processSteps[0]?.contextLabel).toBe("10-Wiki/项目/西芒杜项目.md");
   });
 
+  it("prefers normalized runtime search paths over raw absolute file search input paths", () => {
+    const createdAt = 1_714_000_000_000;
+    const snapshot = {
+      runId: "run-file-search-normalized-path",
+      sessionId: "session-file-search-normalized-path",
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "定位 message.delta 投影", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-file-search-normalized-path-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL },
+        { id: "orchestrator", label: "Orchestrator" },
+      ],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-file-search-normalized-path:evt-0",
+          runId: "run-file-search-normalized-path",
+          seq: 0,
+          type: "tool.called",
+          createdAt: createdAt + 1_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.grep",
+            status: "succeeded",
+            input: {
+              path: "/Users/quintenchen/developer/ora/apps/desktop/src",
+              pattern: "message.delta",
+              include: "*.ts",
+            },
+            output: {
+              path: "apps/desktop/src",
+              pattern: "message.delta",
+              matches: [{ path: "apps/desktop/src/lib/viewModel.ts", line: 123, text: "message.delta" }],
+            },
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-file-search-normalized-path:user",
+        sessionId: "session-file-search-normalized-path",
+        runId: "run-file-search-normalized-path",
+        turnIndex: 1,
+        role: "user",
+        content: "定位 message.delta 投影",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-file-search-normalized-path": snapshot },
+    ).find((message) => message.role === "assistant");
+    const processSteps = assistant?.turn?.processSteps ?? [];
+
+    expect(processSteps).toHaveLength(1);
+    expect(processSteps[0]?.label).toBe("搜索文件");
+    expect(processSteps[0]?.detail).toContain("已搜索 \"message.delta\"（apps/desktop/src，*.ts）（1 项）");
+    expect(processSteps[0]?.detail).not.toContain("/Users/quintenchen/developer/ora/apps/desktop/src");
+    expect(processSteps[0]?.contextLabel).toBe("apps/desktop/src");
+  });
+
   it("keeps progress narration out of a running turn timeline", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {

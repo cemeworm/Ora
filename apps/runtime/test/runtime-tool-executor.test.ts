@@ -306,6 +306,56 @@ describe("RuntimeToolExecutor", () => {
     ]));
   });
 
+  it("treats bare file search globs as scoped when path narrows traversal", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.mkdirSync(path.join(rootPath, "src", "nested"), { recursive: true });
+    fs.writeFileSync(path.join(rootPath, "src", "nested", "gamma.ts"), "export const gamma = alpha + beta;\n", "utf8");
+    fs.writeFileSync(path.join(rootPath, "src", "nested", "delta.tsx"), "export const delta = <div />;\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const scopedGlob = await executor.execute({
+      tool: "file.glob",
+      args: { path: "src", pattern: "*.ts" },
+    }) as { path: string; matches: string[] };
+    const recursiveGlob = await executor.execute({
+      tool: "file.glob",
+      args: { path: "src", pattern: "**/*.ts" },
+    }) as { path: string; matches: string[] };
+    const scopedGrep = await executor.execute({
+      tool: "file.grep",
+      args: { path: "src", pattern: "export const", include: "*.ts" },
+    }) as {
+      path: string;
+      matches: Array<{ path: string; line: number }>;
+    };
+
+    expect(scopedGlob.path).toBe("src");
+    expect(scopedGlob.matches.sort()).toEqual(["src/alpha.ts", "src/beta.ts", "src/nested/gamma.ts"]);
+    expect(recursiveGlob.path).toBe("src");
+    expect(recursiveGlob.matches.sort()).toEqual(["src/alpha.ts", "src/beta.ts", "src/nested/gamma.ts"]);
+    expect(scopedGrep.path).toBe("src");
+    expect(scopedGrep.matches.map((match) => match.path).sort()).toEqual(["src/alpha.ts", "src/beta.ts", "src/nested/gamma.ts"]);
+  });
+
+  it("keeps explicit scoped file search globs on workspace-relative semantics", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.mkdirSync(path.join(rootPath, "src", "nested"), { recursive: true });
+    fs.writeFileSync(path.join(rootPath, "src", "nested", "gamma.ts"), "export const gamma = 3;\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const scopedGlob = await executor.execute({
+      tool: "file.glob",
+      args: { path: "src", pattern: "src/*.ts" },
+    }) as { matches: string[] };
+    const scopedGrep = await executor.execute({
+      tool: "file.grep",
+      args: { path: "src", pattern: "export const", include: "src/*.ts" },
+    }) as { matches: Array<{ path: string }> };
+
+    expect(scopedGlob.matches.sort()).toEqual(["src/alpha.ts", "src/beta.ts"]);
+    expect(scopedGrep.matches.map((match) => match.path).sort()).toEqual(["src/alpha.ts", "src/beta.ts"]);
+  });
+
   it("reports missing file.list targets as ordinary empty results", async () => {
     const { workspace } = createWorkspace();
     const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });

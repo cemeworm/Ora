@@ -572,7 +572,7 @@ export type AgentCatalogResult = z.infer<typeof AgentCatalogResultSchema>;
 
 const workspacePathParameter = {
   type: "string",
-  description: "Path inside the selected project folder. Absolute paths and parent-directory escapes are rejected.",
+  description: "Path inside the selected project folder. Parent-directory escapes are rejected; absolute paths are allowed only when they still resolve inside the selected project.",
 };
 
 const positiveLimitParameter = (description: string) => ({
@@ -607,7 +607,7 @@ const fileGlobParameters = {
   properties: {
     pattern: {
       type: "string",
-      description: "Glob pattern matched against workspace-relative file paths, for example **/*.ts.",
+      description: "Glob pattern matched against workspace-relative file paths, for example **/*.ts. When path points to a subdirectory, bare patterns like *.ts are treated as scoped to that path while explicit path patterns keep their original semantics.",
     },
     path: {
       ...workspacePathParameter,
@@ -628,7 +628,7 @@ const fileGrepParameters = {
     },
     include: {
       type: "string",
-      description: "Optional glob pattern limiting searched files, for example **/*.ts.",
+      description: "Optional glob pattern limiting searched files, for example **/*.ts. When path points to a subdirectory, bare patterns like *.ts are treated as scoped to that path while explicit path patterns keep their original semantics.",
     },
     path: {
       ...workspacePathParameter,
