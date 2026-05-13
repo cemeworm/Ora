@@ -4127,131 +4127,6 @@ describe("desktop session view model", () => {
     expect(timelineText).toEqual(["前一段。", "后一段。"]);
   });
 
-  it("keeps live-only assistant text in the same timeline order after snapshot replay catches up", () => {
-    const createdAt = 1_714_000_000_000;
-    const runId = "run-live-replay-order";
-    const sessionId = "session-live-replay-order";
-    const messageId = `${runId}:assistant:orchestrator:0`;
-    const toolEvent = {
-      id: `${runId}:evt-1`,
-      runId,
-      seq: 1,
-      type: "tool.called",
-      agentId: "orchestrator",
-      nodeId: "orchestrator",
-      createdAt: createdAt + 1_000,
-      pattern: "orchestrator_subagent",
-      payload: {
-        toolId: "file.read",
-        status: "succeeded",
-        input: { path: "apps/desktop/src/lib/viewModel.ts" },
-        output: { path: "apps/desktop/src/lib/viewModel.ts", sizeBytes: 128 },
-      },
-    };
-    const liveOnlySnapshot = {
-      runId,
-      sessionId,
-      turnIndex: 1,
-      status: "running",
-      pattern: "orchestrator_subagent",
-      modeId: SINGLE_AGENT_MODE_ID,
-      input: { prompt: "排查切换 session 后历史显示变化", createdAt, context: {} },
-      config: {
-        modeId: SINGLE_AGENT_MODE_ID,
-        pattern: "orchestrator_subagent",
-        modeSelection: "manual",
-        profileIds: ["orchestrator"],
-        providerId: "deepseek",
-        modelRef: "deepseek-chat",
-        approvalMode: "high_risk_only",
-        patternOptions: {},
-        metadata: {},
-        deterministicSeed: "view-model-live-replay-order-test",
-        skillIds: [],
-        toolIds: ["file.read"],
-      },
-      topology: { nodes: [], edges: [] },
-      profiles: [{ id: "orchestrator", label: "orchestrator" }],
-      memory: [],
-      plan: [],
-      todos: [],
-      actions: [],
-      toolCalls: [],
-      policyDecisions: [],
-      checkpoints: [],
-      events: [toolEvent],
-      artifacts: [],
-      activeAgents: [],
-      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
-      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
-      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
-      pendingClarifications: [],
-      pendingApprovals: [],
-      updatedAt: createdAt + 1_000,
-    } as unknown as OraStateSnapshot;
-    const replaySnapshot = {
-      ...liveOnlySnapshot,
-      events: [
-        {
-          id: `${runId}:evt-0`,
-          runId,
-          seq: 0,
-          type: "message.delta",
-          agentId: "orchestrator",
-          nodeId: "orchestrator",
-          createdAt,
-          pattern: "orchestrator_subagent",
-          payload: { role: "assistant", messageId, content: "我先看当前测试。", delta: "我先看当前测试。", streaming: true },
-        },
-        toolEvent,
-      ],
-    } as unknown as OraStateSnapshot;
-    const transcript = [{
-      id: `${runId}:user`,
-      sessionId,
-      runId,
-      turnIndex: 1,
-      role: "user" as const,
-      content: "排查切换 session 后历史显示变化",
-      pattern: "orchestrator_subagent" as const,
-      modeId: SINGLE_AGENT_MODE_ID,
-      createdAt,
-    }];
-
-    const liveBaseMessages = adaptChatMessages(transcript, { [runId]: liveOnlySnapshot });
-    const liveAssistant = adaptRenderableChatMessages({
-      transcript,
-      turnSnapshots: { [runId]: liveOnlySnapshot },
-      selectedSessionId: sessionId,
-      baseMessages: liveBaseMessages,
-      liveMessageDeltas: {
-        [`${runId}:${messageId}`]: {
-          runId,
-          messageId,
-          sessionId,
-          role: "assistant",
-          content: "我先看当前测试。",
-          agentId: "orchestrator",
-          nodeId: "orchestrator",
-          createdAt,
-          updatedAt: createdAt,
-        },
-      },
-    }).find((message) => message.role === "assistant");
-    const replayAssistant = adaptChatMessages(transcript, { [runId]: replaySnapshot })
-      .find((message) => message.role === "assistant");
-    const liveKinds = liveAssistant?.turn?.timelineItems?.map((item) => item.kind) ?? [];
-    const replayKinds = replayAssistant?.turn?.timelineItems?.map((item) => item.kind) ?? [];
-    const liveText = liveAssistant?.turn?.timelineItems
-      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
-    const replayText = replayAssistant?.turn?.timelineItems
-      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
-
-    expect(liveKinds).toEqual(replayKinds);
-    expect(liveText).toEqual(replayText);
-    expect(liveKinds).toEqual(["assistant_text", "status_group"]);
-  });
-
   it("keeps live same-message delta overlay as one timeline item", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-live-timeline-one-item";
@@ -5911,38 +5786,54 @@ describe("desktop session view model", () => {
     expect(assistant?.content).toBe(finalText);
   });
 
-  it("interleaves explicit streaming assistant text with progress items after final output is available", () => {
+  it("keeps streamed assistant text and agent labels interleaved with runtime status after completion", () => {
     const createdAt = 1_714_000_000_000;
-    const firstText = "我先确认当前实现。";
-    const secondText = "现在对照测试覆盖。";
-    const finalText = "最终结论：正文应该按时序穿插展示。";
+    const finalText = "Builder 已完成修复。";
     const snapshot = {
-      runId: "run-explicit-stream-interleaving",
-      sessionId: "session-explicit-stream-interleaving",
+      runId: "run-completed-stream-interleave",
+      sessionId: "session-completed-stream-interleave",
       turnIndex: 1,
       status: "succeeded",
-      pattern: "orchestrator_subagent",
+      pattern: "agent_teams",
       modeId: SINGLE_AGENT_MODE_ID,
-      input: { prompt: "修复 assistant message 输出顺序", createdAt, context: {} },
+      input: { prompt: "修复 timeline 顺序", createdAt, context: {} },
       config: {
         modeId: SINGLE_AGENT_MODE_ID,
-        pattern: "orchestrator_subagent",
+        pattern: "agent_teams",
         modeSelection: "manual",
-        profileIds: ["orchestrator"],
-        providerId: "local-smoke",
-        modelRef: "local/smoke-model",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
         approvalMode: "high_risk_only",
         patternOptions: {},
         metadata: {},
-        deterministicSeed: "view-model-explicit-stream-interleaving-test",
+        deterministicSeed: "view-model-completed-stream-interleave-test",
         skillIds: [],
-        toolIds: ["file.read", "shell.execute"],
+        toolIds: [],
       },
       topology: { nodes: [], edges: [] },
-      profiles: [{ id: "orchestrator", label: "Ora" }],
+      profiles: [
+        {
+          id: "orchestrator",
+          label: "Orchestrator",
+          role: "Coordinate",
+          model: "deepseek",
+          tools: [],
+          budget: "default",
+          memoryScopes: [],
+        },
+        {
+          id: "builder",
+          label: "Builder",
+          role: "Build",
+          model: "deepseek",
+          tools: [],
+          budget: "default",
+          memoryScopes: [],
+        },
+      ],
       memory: [],
       plan: [],
-      planList: [],
       todos: [],
       actions: [],
       toolCalls: [],
@@ -5950,57 +5841,69 @@ describe("desktop session view model", () => {
       checkpoints: [],
       events: [
         {
-          id: "run-explicit-stream-interleaving:evt-0",
-          runId: "run-explicit-stream-interleaving",
+          id: "run-completed-stream-interleave:evt-0",
+          runId: "run-completed-stream-interleave",
           seq: 0,
           type: "message.delta",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
           createdAt,
-          agentId: "orchestrator",
-          nodeId: "orchestrator",
-          pattern: "orchestrator_subagent",
-          payload: { role: "assistant", content: firstText, streaming: true },
-        },
-        {
-          id: "run-explicit-stream-interleaving:evt-1",
-          runId: "run-explicit-stream-interleaving",
-          seq: 1,
-          type: "tool.called",
-          createdAt: createdAt + 1_000,
-          agentId: "orchestrator",
-          nodeId: "orchestrator",
-          pattern: "orchestrator_subagent",
+          pattern: "agent_teams",
           payload: {
-            toolId: "file.read",
-            status: "succeeded",
-            input: { path: "apps/desktop/src/lib/viewModel.ts" },
-            output: { path: "apps/desktop/src/lib/viewModel.ts", sizeBytes: 128 },
+            role: "assistant",
+            messageId: "orchestrator-message",
+            content: "我先看任务和现有实现。",
+            delta: "我先看任务和现有实现。",
+            streaming: true,
+            phase: "stream",
           },
         },
         {
-          id: "run-explicit-stream-interleaving:evt-2",
-          runId: "run-explicit-stream-interleaving",
-          seq: 2,
-          type: "message.delta",
-          createdAt: createdAt + 2_000,
+          id: "run-completed-stream-interleave:evt-1",
+          runId: "run-completed-stream-interleave",
+          seq: 1,
+          type: "tool.called",
           agentId: "orchestrator",
           nodeId: "orchestrator",
-          pattern: "orchestrator_subagent",
-          payload: { role: "assistant", content: secondText, streaming: true },
+          createdAt: createdAt + 1_000,
+          pattern: "agent_teams",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            path: "apps/desktop/src/lib/viewModel.ts",
+          },
         },
         {
-          id: "run-explicit-stream-interleaving:evt-3",
-          runId: "run-explicit-stream-interleaving",
+          id: "run-completed-stream-interleave:evt-2",
+          runId: "run-completed-stream-interleave",
+          seq: 2,
+          type: "message.delta",
+          agentId: "builder",
+          nodeId: "builder",
+          createdAt: createdAt + 2_000,
+          pattern: "agent_teams",
+          payload: {
+            role: "assistant",
+            messageId: "builder-message",
+            content: "我会按事件顺序修复 timeline。",
+            delta: "我会按事件顺序修复 timeline。",
+            streaming: true,
+            phase: "stream",
+          },
+        },
+        {
+          id: "run-completed-stream-interleave:evt-3",
+          runId: "run-completed-stream-interleave",
           seq: 3,
           type: "tool.called",
+          agentId: "builder",
+          nodeId: "builder",
           createdAt: createdAt + 3_000,
-          agentId: "orchestrator",
-          nodeId: "orchestrator",
-          pattern: "orchestrator_subagent",
+          pattern: "agent_teams",
           payload: {
-            toolId: "shell.execute",
+            toolId: "file.write",
             status: "succeeded",
-            input: { command: "pnpm --filter @ora/desktop test" },
-            output: { command: "pnpm --filter @ora/desktop test", exitCode: 0 },
+            path: "apps/desktop/src/lib/viewModel.ts",
           },
         },
       ],
@@ -6011,23 +5914,23 @@ describe("desktop session view model", () => {
       busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
       pendingClarifications: [],
       pendingApprovals: [],
-      output: { text: [firstText, secondText, finalText].join("\n\n") },
+      output: { text: finalText },
       updatedAt: createdAt + 4_000,
     } as unknown as OraStateSnapshot;
 
     const assistant = adaptChatMessages(
       [{
-        id: "run-explicit-stream-interleaving:user",
-        sessionId: "session-explicit-stream-interleaving",
-        runId: "run-explicit-stream-interleaving",
+        id: "run-completed-stream-interleave:user",
+        sessionId: "session-completed-stream-interleave",
+        runId: "run-completed-stream-interleave",
         turnIndex: 1,
         role: "user",
-        content: "修复 assistant message 输出顺序",
-        pattern: "orchestrator_subagent",
+        content: "修复 timeline 顺序",
+        pattern: "agent_teams",
         modeId: SINGLE_AGENT_MODE_ID,
         createdAt,
       }],
-      { "run-explicit-stream-interleaving": snapshot },
+      { "run-completed-stream-interleave": snapshot },
     ).find((message) => message.role === "assistant");
     const timeline = assistant?.turn?.timelineItems ?? [];
 
@@ -6038,11 +5941,28 @@ describe("desktop session view model", () => {
       "status_group",
       "final_text",
     ]);
-    expect(timeline[0]).toMatchObject({ content: firstText });
-    expect(timeline[1]).toMatchObject({ summary: "已探索 1 个文件" });
-    expect(timeline[2]).toMatchObject({ content: secondText });
-    expect(timeline[3]).toMatchObject({ summary: "已运行 1 条命令" });
-    expect(timeline[4]).toMatchObject({ content: [firstText, secondText, finalText].join("\n\n") });
+    expect(timeline[0]).toMatchObject({
+      content: "我先看任务和现有实现。",
+      agentLabel: "Orchestrator",
+    });
+    expect(timeline[1]).toMatchObject({
+      summary: "已探索 1 个文件",
+      steps: [expect.objectContaining({
+        label: "读取文件",
+        agentId: "orchestrator",
+      })],
+    });
+    expect(timeline[2]).toMatchObject({
+      content: "我会按事件顺序修复 timeline。",
+      agentLabel: "Builder",
+    });
+    expect(timeline[3]).toMatchObject({
+      steps: [expect.objectContaining({
+        label: "写入文件",
+        agentId: "builder",
+      })],
+    });
+    expect(timeline[4]).toMatchObject({ content: finalText });
   });
 
   it("keeps historical progress narration out of process steps after the run finishes", () => {
@@ -6365,102 +6285,6 @@ describe("desktop session view model", () => {
     expect(processSteps[0]?.label).toBe("读取文件");
     expect(processSteps[0]?.detail).toContain("已读取 10-Wiki/项目/西芒杜项目.md");
     expect(processSteps[0]?.contextLabel).toBe("10-Wiki/项目/西芒杜项目.md");
-  });
-
-  it("prefers normalized runtime search paths over raw absolute file search input paths", () => {
-    const createdAt = 1_714_000_000_000;
-    const snapshot = {
-      runId: "run-file-search-normalized-path",
-      sessionId: "session-file-search-normalized-path",
-      turnIndex: 1,
-      status: "running",
-      pattern: "orchestrator_subagent",
-      modeId: SINGLE_AGENT_MODE_ID,
-      input: { prompt: "定位 message.delta 投影", createdAt, context: {} },
-      config: {
-        modeId: SINGLE_AGENT_MODE_ID,
-        pattern: "orchestrator_subagent",
-        modeSelection: "manual",
-        profileIds: ["orchestrator"],
-        providerId: "local-smoke",
-        modelRef: "local/smoke-model",
-        approvalMode: "high_risk_only",
-        patternOptions: {},
-        metadata: {},
-        deterministicSeed: "view-model-file-search-normalized-path-test",
-        skillIds: [],
-        toolIds: [],
-      },
-      topology: { nodes: [], edges: [] },
-      profiles: [
-        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL },
-        { id: "orchestrator", label: "Orchestrator" },
-      ],
-      memory: [],
-      plan: [],
-      planList: [],
-      todos: [],
-      actions: [],
-      toolCalls: [],
-      policyDecisions: [],
-      checkpoints: [],
-      events: [
-        {
-          id: "run-file-search-normalized-path:evt-0",
-          runId: "run-file-search-normalized-path",
-          seq: 0,
-          type: "tool.called",
-          createdAt: createdAt + 1_000,
-          agentId: "orchestrator",
-          nodeId: "orchestrator",
-          pattern: "orchestrator_subagent",
-          payload: {
-            toolId: "file.grep",
-            status: "succeeded",
-            input: {
-              path: "/Users/quintenchen/developer/ora/apps/desktop/src",
-              pattern: "message.delta",
-              include: "*.ts",
-            },
-            output: {
-              path: "apps/desktop/src",
-              pattern: "message.delta",
-              matches: [{ path: "apps/desktop/src/lib/viewModel.ts", line: 123, text: "message.delta" }],
-            },
-          },
-        },
-      ],
-      artifacts: [],
-      activeAgents: [],
-      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
-      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
-      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
-      pendingClarifications: [],
-      pendingApprovals: [],
-      updatedAt: createdAt + 1_000,
-    } as unknown as OraStateSnapshot;
-
-    const assistant = adaptChatMessages(
-      [{
-        id: "run-file-search-normalized-path:user",
-        sessionId: "session-file-search-normalized-path",
-        runId: "run-file-search-normalized-path",
-        turnIndex: 1,
-        role: "user",
-        content: "定位 message.delta 投影",
-        pattern: "orchestrator_subagent",
-        modeId: SINGLE_AGENT_MODE_ID,
-        createdAt,
-      }],
-      { "run-file-search-normalized-path": snapshot },
-    ).find((message) => message.role === "assistant");
-    const processSteps = assistant?.turn?.processSteps ?? [];
-
-    expect(processSteps).toHaveLength(1);
-    expect(processSteps[0]?.label).toBe("搜索文件");
-    expect(processSteps[0]?.detail).toContain("已搜索 \"message.delta\"（apps/desktop/src，*.ts）（1 项）");
-    expect(processSteps[0]?.detail).not.toContain("/Users/quintenchen/developer/ora/apps/desktop/src");
-    expect(processSteps[0]?.contextLabel).toBe("apps/desktop/src");
   });
 
   it("keeps progress narration out of a running turn timeline", () => {

@@ -1780,10 +1780,6 @@ function isFinalAssistantDelta(event: OraEventEnvelope & { payload: Record<strin
   return event.payload.phase === "final" || event.payload.streaming === false;
 }
 
-function isExplicitStreamingAssistantDelta(event: OraEventEnvelope & { payload: Record<string, unknown> }): boolean {
-  return event.payload.phase === "stream" || event.payload.streaming === true;
-}
-
 function extractClarificationQuestions(
   snapshot: OraStateSnapshot,
 ): Array<{ id: string; question: string; requestedAt: number }> {
@@ -2453,7 +2449,11 @@ function deriveTimelineItems(
     const agentId = pendingTextAgentId && pendingTextAgentId !== "__default__"
       ? pendingTextAgentId
       : undefined;
-    if (!content || isInternalAssistantText(content)) {
+    if (
+      !content ||
+      isInternalAssistantText(content) ||
+      (finalText && isTimelineTextPrefixOfFinalOutput(content, finalText))
+    ) {
       pendingTextParts = [];
       pendingTextAgentId = undefined;
       pendingTextKey = undefined;
@@ -2778,6 +2778,12 @@ function isTimelineTextAlreadyRepresented(text: string, items: TurnTimelineItem[
     return true;
   }
   return normalizedText.includes(joinedContent) && joinedContent.length >= normalizedText.length * 0.8;
+}
+
+function isTimelineTextPrefixOfFinalOutput(text: string, finalText: string): boolean {
+  const normalizedText = normalizeTimelineText(timelineTextExcludingProposedPlan(text));
+  const normalizedFinalText = normalizeTimelineText(timelineTextExcludingProposedPlan(finalText));
+  return Boolean(normalizedText && normalizedFinalText && normalizedFinalText.startsWith(normalizedText));
 }
 
 function normalizeTimelineText(text: string): string {

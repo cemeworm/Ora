@@ -5,6 +5,8 @@ import {
   CustomAgentGeneratedDraft,
   DEFAULT_WEB_TOOL_IDS,
   DEFAULT_RESOURCE_BUDGETS,
+  ORA_ROOT_AGENT_ID,
+  ORA_ROOT_AGENT_LABEL,
   ModeStudioContextResult,
   ModeStudioDraftBundle,
   ModeStudioDraftBundleSchema,
@@ -296,7 +298,7 @@ export function modeStudioRolePlans(family: CoordinationPattern, text: string): 
   }
   if (family === "agent_teams") {
     return [
-      { profileId: "team_lead", label: "Team Lead", role: "Prioritize work and coordinate the agent roster.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "Prioritize work and coordinate the agent roster.", style: plannerStyle, toolIntent: "minimal" },
       { profileId: "builder", label: "Builder", role: "Complete assigned implementation or production work.", style: builderStyle, toolIntent: "code" },
       { profileId: "reviewer", label: "Reviewer", role: "Validate outputs, edge cases, and missing evidence.", style: reviewerStyle, toolIntent: "review" },
     ];
@@ -310,13 +312,13 @@ export function modeStudioRolePlans(family: CoordinationPattern, text: string): 
   }
   if (family === "shared_state") {
     return [
-      { profileId: "orchestrator", label: "Orchestrator", role: "Seed the shared board with the first hypothesis and plan.", style: plannerStyle, toolIntent: "minimal" },
+      { profileId: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "Seed the shared board with the first hypothesis and plan.", style: plannerStyle, toolIntent: "minimal" },
       { profileId: "researcher", label: "Researcher", role: "Add new evidence and alternatives to shared state.", style: "curious researcher", toolIntent: "research" },
       { profileId: "reviewer", label: "Reviewer", role: "Validate convergence and challenge weak assumptions.", style: reviewerStyle, toolIntent: "review" },
     ];
   }
   return [
-    { profileId: "orchestrator", label: "Orchestrator", role: "Plan, delegate, and synthesize the mode run.", style: plannerStyle, toolIntent: "minimal" },
+    { profileId: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, role: "Plan, delegate, and synthesize the mode run.", style: plannerStyle, toolIntent: "minimal" },
     { profileId: "researcher", label: "Research Subagent", role: "Gather focused context before execution.", style: "evidence-first researcher", toolIntent: "research" },
     { profileId: "reviewer", label: "Review Subagent", role: "Check completeness, risks, and acceptance criteria.", style: reviewerStyle, toolIntent: "review" },
   ];
@@ -450,8 +452,8 @@ export function modeStudioStagedDraft(mode: ModeSpec, text: string, rolePlans: M
   const profiles = [
     {
       ...(baseProfile ?? mode.profiles[0]!),
-      id: "moderator",
-      label: "Moderator",
+      id: ORA_ROOT_AGENT_ID,
+      label: ORA_ROOT_AGENT_LABEL,
       role: "Frame the staged exchange and synthesize the final decision.",
       toolPolicyId: baseProfile?.toolPolicyId ?? "orchestrator_subagent.default",
       toolIds: modeStudioToolIds("minimal", text),
@@ -524,9 +526,9 @@ export function modeStudioStagedDraft(mode: ModeSpec, text: string, rolePlans: M
       id: "moderator-synthesis",
       label: "Synthesis",
       nodeId: synthesisNode.id,
-      speakerId: "moderator",
-      speakerLabel: "Moderator",
-      stance: "moderator",
+      speakerId: ORA_ROOT_AGENT_ID,
+      speakerLabel: ORA_ROOT_AGENT_LABEL,
+      stance: ORA_ROOT_AGENT_ID,
       outputKey: "synthesis",
     },
   ];
@@ -541,16 +543,16 @@ export function modeStudioStagedDraft(mode: ModeSpec, text: string, rolePlans: M
     stanceLabels: {
       [duel.left.stance]: duel.left.label,
       [duel.right.stance]: duel.right.label,
-      moderator: "Moderator",
+      ora: ORA_ROOT_AGENT_LABEL,
       neutral: "Neutral",
     },
     stanceTones: {
       [duel.left.stance]: duel.left.stance === "red_team" ? "red" : "green",
       [duel.right.stance]: "blue",
-      moderator: "violet",
+      ora: "violet",
       neutral: "gray",
     },
-    summaryStances: ["moderator", "neutral"],
+    summaryStances: [ORA_ROOT_AGENT_ID, "neutral"],
     showStatus: true,
     showSpeaker: true,
   };
@@ -560,7 +562,7 @@ export function modeStudioStagedDraft(mode: ModeSpec, text: string, rolePlans: M
     profiles,
     nodes: mode.nodes.map((node) => ({
       ...node,
-      ownerAgentId: node.id === synthesisNode.id || node.id === frameNode.id ? "moderator" : node.ownerAgentId,
+      ownerAgentId: node.id === synthesisNode.id || node.id === frameNode.id ? ORA_ROOT_AGENT_ID : node.ownerAgentId,
       enabled: node.template === "review" && node.id !== exchangeNode.id ? false : node.enabled,
     })),
     stages,
@@ -757,11 +759,11 @@ export function ownerForModeStudioTemplate(template: ModeSpec["nodes"][number]["
   if ((template === "research" || template === "handle") && byId.has("researcher")) return "researcher";
   if ((template === "draft" || template === "build") && byId.has("generator")) return "generator";
   if ((template === "draft" || template === "build") && byId.has("builder")) return "builder";
-  if ((template === "decompose" || template === "synthesize") && byId.has("orchestrator")) return "orchestrator";
-  if ((template === "triage" || template === "handoff") && byId.has("team_lead")) return "team_lead";
+  if ((template === "decompose" || template === "synthesize") && byId.has(ORA_ROOT_AGENT_ID)) return ORA_ROOT_AGENT_ID;
+  if ((template === "triage" || template === "handoff") && byId.has(ORA_ROOT_AGENT_ID)) return ORA_ROOT_AGENT_ID;
   if ((template === "route" || template === "publish") && byId.has("router")) return "router";
   if ((template === "respond") && byId.has("responder")) return "responder";
-  if ((template === "seed") && byId.has("orchestrator")) return "orchestrator";
+  if ((template === "seed") && byId.has(ORA_ROOT_AGENT_ID)) return ORA_ROOT_AGENT_ID;
   return roles[0]?.profileId;
 }
 

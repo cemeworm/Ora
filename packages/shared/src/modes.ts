@@ -1330,7 +1330,7 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.orchestrator_subagent,
     profiles: [
-      profile("orchestrator", "Orchestrator", "Frame scope, coordinate stages, and synthesize results.", "orchestrator_subagent", [
+      profile(ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, "Frame scope, coordinate stages, and synthesize results.", "orchestrator_subagent", [
         "session",
         "project"
       ]),
@@ -1346,21 +1346,21 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     topology: {
       nodes: [
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "orchestrator", label: "Orchestrator", kind: "agent", agentId: "orchestrator", status: "idle", metadata: {} },
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, kind: "agent", agentId: ORA_ROOT_AGENT_ID, status: "idle", metadata: {} },
         { id: "researcher", label: "Research", kind: "agent", agentId: "researcher", status: "idle", metadata: {} },
         { id: "reviewer", label: "Review", kind: "agent", agentId: "reviewer", status: "idle", metadata: {} }
       ],
       edges: [
-        { id: "run-orchestrator", source: "run", target: "orchestrator", kind: "control", metadata: {} },
-        { id: "orchestrator-researcher", source: "orchestrator", target: "researcher", kind: "delegation", label: "research", metadata: {} },
-        { id: "orchestrator-reviewer", source: "orchestrator", target: "reviewer", kind: "delegation", label: "review", metadata: {} }
+        { id: "run-ora", source: "run", target: ORA_ROOT_AGENT_ID, kind: "control", metadata: {} },
+        { id: "ora-researcher", source: ORA_ROOT_AGENT_ID, target: "researcher", kind: "delegation", label: "research", metadata: {} },
+        { id: "ora-reviewer", source: ORA_ROOT_AGENT_ID, target: "reviewer", kind: "delegation", label: "review", metadata: {} }
       ]
     },
     planTemplate: [
-      { id: "decompose", title: "Decompose task into inspectable plan", ownerAgentId: "orchestrator", dependencies: [] },
+      { id: "decompose", title: "Decompose task into inspectable plan", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: [] },
       { id: "research", title: "Gather focused supporting context", ownerAgentId: "researcher", dependencies: ["decompose"] },
       { id: "review", title: "Review result and surface risks", ownerAgentId: "reviewer", dependencies: ["research"] },
-      { id: "synthesize", title: "Synthesize final response", ownerAgentId: "orchestrator", dependencies: ["review"] }
+      { id: "synthesize", title: "Synthesize final response", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: ["review"] }
     ]
   },
   agent_teams: {
@@ -1385,7 +1385,7 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.agent_teams,
     profiles: [
-      profile("team_lead", "Team Lead", "Prioritize backlog and coordinate persistent workers.", "agent_teams", [
+      profile(ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, "Prioritize backlog and coordinate persistent workers.", "agent_teams", [
         "session",
         "project"
       ]),
@@ -1404,21 +1404,21 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     topology: {
       nodes: [
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "team_lead", label: "Team Lead", kind: "agent", agentId: "team_lead", status: "idle", metadata: {} },
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, kind: "agent", agentId: ORA_ROOT_AGENT_ID, status: "idle", metadata: {} },
         { id: "builder", label: "Builder", kind: "agent", agentId: "builder", status: "idle", metadata: {} },
         { id: "reviewer", label: "Reviewer", kind: "agent", agentId: "reviewer", status: "idle", metadata: {} }
       ],
       edges: [
-        { id: "lead-builder", source: "team_lead", target: "builder", kind: "delegation", label: "assign", metadata: {} },
+        { id: "ora-builder", source: ORA_ROOT_AGENT_ID, target: "builder", kind: "delegation", label: "assign", metadata: {} },
         { id: "builder-reviewer", source: "builder", target: "reviewer", kind: "verification", label: "validate", metadata: {} },
-        { id: "reviewer-lead", source: "reviewer", target: "team_lead", kind: "control", label: "report", metadata: {} }
+        { id: "reviewer-ora", source: "reviewer", target: ORA_ROOT_AGENT_ID, kind: "control", label: "report", metadata: {} }
       ]
     },
     planTemplate: [
-      { id: "triage", title: "Triage work into team backlog", ownerAgentId: "team_lead", dependencies: [] },
+      { id: "triage", title: "Triage work into team backlog", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: [] },
       { id: "build", title: "Complete assigned task", ownerAgentId: "builder", dependencies: ["triage"] },
       { id: "check", title: "Validate output", ownerAgentId: "reviewer", dependencies: ["build"] },
-      { id: "handoff", title: "Record handoff and next action", ownerAgentId: "team_lead", dependencies: ["check"] }
+      { id: "handoff", title: "Record handoff and next action", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: ["check"] }
     ]
   },
   message_bus: {
@@ -1443,7 +1443,7 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.message_bus,
     profiles: [
-      profile("router", "Router", "Classify messages and route them to interested subscribers.", "message_bus", [
+      profile(ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, "Classify messages and route them to interested subscribers.", "message_bus", [
         "session",
         "project"
       ]),
@@ -1460,21 +1460,21 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     topology: {
       nodes: [
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "router", label: "Router", kind: "agent", agentId: "router", status: "idle", metadata: {} },
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, kind: "agent", agentId: ORA_ROOT_AGENT_ID, status: "idle", metadata: {} },
         { id: "triage_topic", label: "triage", kind: "capability", status: "idle", metadata: { role: "topic" } },
         { id: "researcher", label: "Researcher", kind: "agent", agentId: "researcher", status: "idle", metadata: {} },
         { id: "responder", label: "Responder", kind: "agent", agentId: "responder", status: "idle", metadata: {} }
       ],
       edges: [
-        { id: "run-router", source: "run", target: "router", kind: "control", label: "publish", metadata: {} },
-        { id: "router-topic", source: "router", target: "triage_topic", kind: "artifact", label: "route", metadata: {} },
+        { id: "run-ora", source: "run", target: ORA_ROOT_AGENT_ID, kind: "control", label: "publish", metadata: {} },
+        { id: "ora-topic", source: ORA_ROOT_AGENT_ID, target: "triage_topic", kind: "artifact", label: "route", metadata: {} },
         { id: "topic-researcher", source: "triage_topic", target: "researcher", kind: "delegation", label: "deliver", metadata: {} },
         { id: "researcher-responder", source: "researcher", target: "responder", kind: "verification", label: "finding", metadata: {} }
       ]
     },
     planTemplate: [
-      { id: "publish", title: "Publish the initial event", ownerAgentId: "router", dependencies: [] },
-      { id: "route", title: "Route events to subscribers", ownerAgentId: "router", dependencies: ["publish"] },
+      { id: "publish", title: "Publish the initial event", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: [] },
+      { id: "route", title: "Route events to subscribers", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: ["publish"] },
       { id: "handle", title: "Handle subscribed work", ownerAgentId: "researcher", dependencies: ["route"] },
       { id: "respond", title: "Publish the final response", ownerAgentId: "responder", dependencies: ["handle"] }
     ]
@@ -1502,7 +1502,7 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     ],
     defaultBudget: DEFAULT_RESOURCE_BUDGETS.shared_state,
     profiles: [
-      profile("orchestrator", "Orchestrator", "Seed the shared board with scope, initial hypotheses, and decision criteria.", "shared_state", [
+      profile(ORA_ROOT_AGENT_ID, ORA_ROOT_AGENT_LABEL, "Seed the shared board with scope, initial hypotheses, and decision criteria.", "shared_state", [
         "session",
         "project"
       ]),
@@ -1520,20 +1520,20 @@ export const MVP_PATTERN_DEFINITIONS: Record<CoordinationPattern, PatternDefinit
     topology: {
       nodes: [
         { id: "run", label: "Run", kind: "run", status: "idle", metadata: {} },
-        { id: "orchestrator", label: "Orchestrator", kind: "agent", agentId: "orchestrator", status: "idle", metadata: {} },
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL, kind: "agent", agentId: ORA_ROOT_AGENT_ID, status: "idle", metadata: {} },
         { id: "shared_board", label: "Shared Board", kind: "capability", status: "idle", metadata: { role: "blackboard" } },
         { id: "researcher", label: "Researcher", kind: "agent", agentId: "researcher", status: "idle", metadata: {} },
         { id: "reviewer", label: "Reviewer", kind: "agent", agentId: "reviewer", status: "idle", metadata: {} }
       ],
       edges: [
-        { id: "run-orchestrator", source: "run", target: "orchestrator", kind: "control", label: "seed", metadata: {} },
-        { id: "orchestrator-board", source: "orchestrator", target: "shared_board", kind: "memory", label: "write", metadata: {} },
+        { id: "run-ora", source: "run", target: ORA_ROOT_AGENT_ID, kind: "control", label: "seed", metadata: {} },
+        { id: "ora-board", source: ORA_ROOT_AGENT_ID, target: "shared_board", kind: "memory", label: "write", metadata: {} },
         { id: "researcher-board", source: "researcher", target: "shared_board", kind: "memory", label: "contribute", metadata: {} },
         { id: "reviewer-board", source: "reviewer", target: "shared_board", kind: "verification", label: "review", metadata: {} }
       ]
     },
     planTemplate: [
-      { id: "seed", title: "Seed the shared board", ownerAgentId: "orchestrator", dependencies: [] },
+      { id: "seed", title: "Seed the shared board", ownerAgentId: ORA_ROOT_AGENT_ID, dependencies: [] },
       { id: "research", title: "Contribute findings to the shared board", ownerAgentId: "researcher", dependencies: ["seed"] },
       { id: "converge", title: "Review board convergence and finalize", ownerAgentId: "reviewer", dependencies: ["research"] }
     ]
@@ -1861,7 +1861,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         template: "decompose",
         label: "Lead plan",
         title: "Lead plan",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "decompose"),
         config: {},
@@ -1891,7 +1891,7 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
         template: "synthesize",
         label: "Lead synthesis",
         title: "Lead synthesis",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "synthesize"),
         config: {},
@@ -1950,8 +1950,8 @@ function createDeerflowHarnessModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("delegated"),
     profiles: [
       profile(
-        "orchestrator",
-        "Orchestrator",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
         "Frame the task, coordinate delegated subagents, and synthesize the final answer.",
         "orchestrator_subagent",
         ["session", "project"],
@@ -1993,7 +1993,7 @@ function createDynamicOrchestratorModeSpec(): ModeSpec {
         template: "decompose",
         label: "Plan & Decide",
         title: "Plan and Decide",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "decompose"),
         config: {},
@@ -2023,7 +2023,7 @@ function createDynamicOrchestratorModeSpec(): ModeSpec {
         template: "synthesize",
         label: "Synthesize",
         title: "Final synthesis",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("orchestrator_subagent", "synthesize"),
         config: {},
@@ -2058,8 +2058,8 @@ function createDynamicOrchestratorModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("delegated"),
     profiles: [
       profile(
-        "orchestrator",
-        "Orchestrator",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
         "Frame the task and decide which subagents are needed. Synthesize the final answer.",
         "orchestrator_subagent",
         ["session", "project"],
@@ -2205,9 +2205,9 @@ function createDebateModeSpec(): ModeSpec {
       {
         id: "frame",
         template: "decompose",
-        label: "Moderator framing",
-        title: "Moderator framing",
-        ownerAgentId: "moderator",
+        label: "Ora framing",
+        title: "Ora framing",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "Frame the user's proposition, restate debate rules, and identify the burden of proof before dispatching the debate turns.",
         prompt: "Proposition or user request:\n{{prompt}}\n\nFrame the structured debate. Keep it concise and make the speaking order explicit.",
@@ -2226,9 +2226,9 @@ function createDebateModeSpec(): ModeSpec {
       {
         id: "synthesis",
         template: "synthesize",
-        label: "Moderator synthesis",
-        title: "Moderator synthesis",
-        ownerAgentId: "moderator",
+        label: "Ora synthesis",
+        title: "Ora synthesis",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "Synthesize the completed debate. Identify the strongest arguments on each side, unresolved factual dependencies, and the most defensible conclusion without pretending the debate resolved what it did not. Evaluate argument quality rigorously: if one side presented stronger evidence, cleaner logic, or fewer burden-of-proof gaps, say so explicitly. Do not default to 'both sides are equally valid' unless the evidence genuinely supports that rare conclusion.",
         prompt: "Proposition or user request:\n{{prompt}}\n\nModerator framing:\n{{frame}}\n\nDebate transcript:\n{{debateTranscript}}\n\nWrite the final moderated synthesis. Make an explicit judgment about which side presented the stronger case based on evidence quality, logic, and burden-of-proof gaps. Do not default to saying both sides are equally valid unless the debate evidence genuinely supports that rare conclusion.",
@@ -2245,9 +2245,9 @@ function createDebateModeSpec(): ModeSpec {
         id: "moderator-synthesis",
         label: "主持总结",
         nodeId: "synthesis",
-        speakerId: "moderator",
-        speakerLabel: "主持人总结",
-        stance: "moderator",
+        speakerId: ORA_ROOT_AGENT_ID,
+        speakerLabel: ORA_ROOT_AGENT_LABEL,
+        stance: ORA_ROOT_AGENT_ID,
         outputKey: "synthesis",
       },
     ],
@@ -2259,17 +2259,17 @@ function createDebateModeSpec(): ModeSpec {
         affirmative: "left",
         negative: "right",
       },
-      summaryStances: ["moderator", "neutral"],
+      summaryStances: [ORA_ROOT_AGENT_ID, "neutral"],
       stanceLabels: {
         affirmative: "正方",
         negative: "反方",
-        moderator: "主持",
+        ora: "Ora",
         neutral: "中立",
       },
       stanceTones: {
         affirmative: "green",
         negative: "blue",
-        moderator: "violet",
+        ora: "violet",
         neutral: "gray",
       },
       showStatus: true,
@@ -2302,8 +2302,8 @@ function createDebateModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("delegated"),
     profiles: [
       profile(
-        "moderator",
-        "Moderator",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
         "Frame the proposition, enforce debate order, and synthesize the final answer.",
         "orchestrator_subagent",
         ["session", "project"],
@@ -2341,7 +2341,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         template: "triage",
         label: "Understand builder context",
         title: "Understand builder context",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "triage"),
         config: {},
@@ -2371,7 +2371,7 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
         template: "handoff",
         label: "Return structured bundle",
         title: "Return structured bundle",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "handoff"),
         config: {},
@@ -2409,8 +2409,8 @@ function createModeStudioBuilderModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("team"),
     profiles: [
       profile(
-        "orchestrator",
-        "Orchestrator",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
         "Track the Mode Studio conversation, current draft, validation state, and requested refinement.",
         "agent_teams",
         ["session", "project"],
@@ -2477,7 +2477,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         template: "triage",
         label: "Plan development task",
         title: "Plan development task",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "Clarify the requested code change, invoke long-task-protocol for non-trivial development work, create or update the task journal, define acceptance criteria, identify risky files, and choose focused verification gates before implementation.",
         prompt: "User request:\n{{prompt}}\n\nCreate a compact development plan. For non-trivial code work, use long-task-protocol and make the task journal the source of truth. Include scope, out-of-scope items, changed surfaces, required approvals, verification commands, SAVEPOINT needs, and blocked assumptions. Do not implement in this stage.",
@@ -2524,7 +2524,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         template: "handoff",
         label: "Finalize handoff",
         title: "Finalize handoff",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: "Package the final development state with changed files, verification evidence, long-task-protocol TODO scan and DONE gates, unresolved risks, and the next useful action for the user.",
         prompt: "User request:\n{{prompt}}\n\nPlan:\n{{triage}}\n\nBuilder:\n{{build}}\n\nReviewer:\n{{review}}\n\nDebugger:\n{{debug}}\n\nWrite the final handoff. Include changed files, task journal path, TODO scan result, verification evidence, residual risks, and whether the long-task-protocol DONE gates passed or the task is blocked.",
@@ -2542,9 +2542,9 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         id: "plan",
         label: "Plan",
         nodeId: "triage",
-        speakerId: "orchestrator",
-        speakerLabel: "Orchestrator",
-        stance: "orchestrator",
+        speakerId: ORA_ROOT_AGENT_ID,
+        speakerLabel: ORA_ROOT_AGENT_LABEL,
+        stance: ORA_ROOT_AGENT_ID,
         outputKey: "triage",
       },
       {
@@ -2578,9 +2578,9 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
         id: "finalize",
         label: "Finalize",
         nodeId: "handoff",
-        speakerId: "orchestrator",
-        speakerLabel: "Orchestrator",
-        stance: "orchestrator",
+        speakerId: ORA_ROOT_AGENT_ID,
+        speakerLabel: ORA_ROOT_AGENT_LABEL,
+        stance: ORA_ROOT_AGENT_ID,
         outputKey: "handoff",
       },
     ],
@@ -2590,25 +2590,25 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
       groupLabel: "Code Development",
       groupBy: "speakerId",
       laneBySpeaker: {
-        orchestrator: "orchestrator",
+        ora: "ora",
         builder: "builder",
         reviewer: "reviewer",
         debugger: "debugger",
       },
       lanes: [
-        { id: "orchestrator", label: "Orchestrator" },
+        { id: ORA_ROOT_AGENT_ID, label: ORA_ROOT_AGENT_LABEL },
         { id: "builder", label: "Builder" },
         { id: "reviewer", label: "Reviewer" },
         { id: "debugger", label: "Debugger" },
       ],
       stanceLabels: {
-        orchestrator: "Orchestrator",
+        ora: ORA_ROOT_AGENT_LABEL,
         builder: "Builder",
         reviewer: "Reviewer",
         debugger: "Debugger",
       },
       stanceTones: {
-        orchestrator: "violet",
+        ora: "violet",
         builder: "blue",
         reviewer: "amber",
         debugger: "red",
@@ -2651,8 +2651,8 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("team"),
     profiles: [
       profile(
-        "orchestrator",
-        "Orchestrator",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
         "Clarify scope, coordinate implementation gates, and package final delivery evidence.",
         "agent_teams",
         ["session", "project"],
@@ -2705,7 +2705,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         template: "triage",
         label: "Plan task journal",
         title: "Plan task journal",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "triage"),
         prompt: "Create or update the task journal, clarify the requested Ora change, and define verification gates before edits.",
@@ -2740,7 +2740,7 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
         template: "handoff",
         label: "Promote or report",
         title: "Promote or report",
-        ownerAgentId: "orchestrator",
+        ownerAgentId: ORA_ROOT_AGENT_ID,
         enabled: true,
         instructions: defaultNodeInstructions("agent_teams", "handoff"),
         prompt: "Promote the verified slot only after final approval, otherwise report the candidate status and next fix.",
@@ -2784,8 +2784,8 @@ function createOraSelfBuilderModeSpec(): ModeSpec {
     runtimePolicy: runtimePolicyForPreset("team"),
     profiles: [
       profile(
-        "orchestrator",
-        "Orchestrator",
+        ORA_ROOT_AGENT_ID,
+        ORA_ROOT_AGENT_LABEL,
         "Own task scope, approval gates, package promotion, and rollback readiness.",
         "agent_teams",
         ["session", "project"],

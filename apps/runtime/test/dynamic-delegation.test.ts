@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DYNAMIC_ORCHESTRATOR_MODE_ID, StateSnapshotSchema } from "@cemeworm/shared";
+import { DYNAMIC_ORCHESTRATOR_MODE_ID, ORA_ROOT_AGENT_ID, StateSnapshotSchema } from "@cemeworm/shared";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
 import { parseDelegationPlan, type DelegationPlan } from "../src/patterns/mode-driver-helpers.js";
 
@@ -71,7 +71,7 @@ describe("dynamic_orchestrator mode preset", () => {
     expect(fetched.systemPreset).toBe(true);
     expect(fetched.family).toBe("orchestrator_subagent");
     expect(fetched.runtimeAtoms).toContain("dynamic_delegation");
-    expect(fetched.profiles.map((p) => p.id)).toEqual(["orchestrator", "researcher", "reviewer"]);
+    expect(fetched.profiles.map((p) => p.id)).toEqual([ORA_ROOT_AGENT_ID, "researcher", "reviewer"]);
     expect(fetched.nodes.map((n) => n.id)).toEqual(["decompose", "research", "review", "synthesize"]);
   });
 

@@ -1,4 +1,4 @@
-import { orderedEnabledModeNodes } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, orderedEnabledModeNodes } from "@cemeworm/shared";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { agentMessageContent, asText, correlationId, dispatchNodeTemplate, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
@@ -14,7 +14,7 @@ export async function executeMessageBus(input: ModeExecutionInput): Promise<Patt
     prompt,
     correlationId: correlationId("bus"),
   };
-  const routerId = ownerForTemplate(nodes, "route", ownerForTemplate(nodes, "publish", "router"));
+  const routerId = ownerForTemplate(nodes, "route", ownerForTemplate(nodes, "publish", ORA_ROOT_AGENT_ID));
   const researcherId = ownerForTemplate(nodes, "handle", "researcher");
   const responderId = ownerForTemplate(nodes, "respond", "responder");
   let completedNodes = 0;

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createModeSpecFromPattern } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, createModeSpecFromPattern } from "@cemeworm/shared";
 
 const providerResponses: string[] = [];
 
@@ -103,7 +103,7 @@ describe("Mode Studio guided builder", () => {
     expect(applied.mode.id).toBe(bundle.modeDraft.id);
     expect(applied.agents).toEqual([]);
     expect(store.getMode({ modeId: bundle.modeDraft.id }).profiles.map((profile) => profile.id)).toEqual([
-      "team_lead",
+      ORA_ROOT_AGENT_ID,
       "builder",
       "reviewer",
     ]);
@@ -123,13 +123,13 @@ describe("Mode Studio guided builder", () => {
     expect(bundle.needsInput).toBe(false);
     expect(bundle.validation.valid).toBe(true);
     expect(bundle.modeDraft.family).toBe("orchestrator_subagent");
-    expect(bundle.modeDraft.profiles.map((profile) => profile.id)).toEqual(["moderator", "red_team", "blue_team"]);
+    expect(bundle.modeDraft.profiles.map((profile) => profile.id)).toEqual([ORA_ROOT_AGENT_ID, "red_team", "blue_team"]);
     expect(bundle.modeDraft.stages?.map((stage) => stage.stance)).toEqual([
       "red_team",
       "blue_team",
       "red_team",
       "blue_team",
-      "moderator",
+      ORA_ROOT_AGENT_ID,
     ]);
     expect(bundle.modeDraft.stages?.every((stage) => bundle.modeDraft.nodes.some((node) => node.id === stage.nodeId))).toBe(true);
     expect(bundle.modeDraft.stages?.every((stage) => !stage.speakerId || bundle.modeDraft.profiles.some((profile) => profile.id === stage.speakerId))).toBe(true);
@@ -158,7 +158,7 @@ describe("Mode Studio guided builder", () => {
       "blue_team",
       "red_team",
       "blue_team",
-      "moderator",
+      ORA_ROOT_AGENT_ID,
     ]);
     expect(transcriptMessages[0]?.transcript?.layout?.style).toBe("two_sided_duel");
   });

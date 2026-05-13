@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CODE_DEVELOPMENT_MODE_ID } from "@cemeworm/shared";
+import { CODE_DEVELOPMENT_MODE_ID, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { LocalRunStore } from "../src/index.js";
 
@@ -22,7 +22,7 @@ describe("runtime built-in modes", () => {
     expect(fetched.visibility).toBe("user");
     expect(fetched.family).toBe("agent_teams");
     expect(fetched.profiles.map((profile) => profile.id)).toEqual([
-      "orchestrator",
+      ORA_ROOT_AGENT_ID,
       "builder",
       "reviewer",
       "debugger",

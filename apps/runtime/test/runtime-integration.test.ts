@@ -442,7 +442,7 @@ describe("AgentProfileRegistry", () => {
     const profiles = registry.list();
 
     expect(profiles.length).toBe(definition.profiles.length);
-    expect(profiles.map((p) => p.id)).toContain("orchestrator");
+    expect(profiles.map((p) => p.id)).toContain(ORA_ROOT_AGENT_ID);
     expect(profiles.map((p) => p.id)).toContain("researcher");
     expect(profiles.map((p) => p.id)).toContain("reviewer");
   });
@@ -591,12 +591,12 @@ describe("LocalRunStore", () => {
       "反方第二副辩",
       "正方主辩",
       "反方主辩",
-      "主持人总结",
+      "Ora",
     ]);
     expect(transcriptMessages.map((message) => message.transcript?.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(new Set(transcriptMessages.slice(0, 8).map((message) => message.fromAgentId))).toEqual(new Set(["debate_agent"]));
     expect(new Set(transcriptMessages.map((message) => message.transcript?.groupId))).toEqual(new Set(["debate"]));
-    expect(transcriptMessages.at(-1)?.fromAgentId).toBe("moderator");
+    expect(transcriptMessages.at(-1)?.fromAgentId).toBe(ORA_ROOT_AGENT_ID);
   });
 
   it("runs a custom non-Debate staged mode through the generic transcript executor", async () => {
@@ -723,7 +723,7 @@ describe("LocalRunStore", () => {
 
     const synthesisAction = state.actions.find((action) => {
       const input = action.input as { title?: unknown };
-      return action.type === "agent.moderator.invoke" && input.title === "Moderator synthesis";
+      return action.type === "agent.ora.invoke" && input.title === "Ora synthesis";
     });
     const synthesisInput = synthesisAction?.input as { prompt?: unknown } | undefined;
     const synthesisPrompt = String(synthesisInput?.prompt ?? "");
@@ -754,16 +754,14 @@ describe("LocalRunStore", () => {
 
     expect(state.topology.nodes.some((node) => node.id === ORA_ROOT_AGENT_ID)).toBe(true);
     expect(state.topology.edges.some((edge) =>
-      edge.id === "ora-handoff" &&
-      edge.source === ORA_ROOT_AGENT_ID &&
-      edge.target === "orchestrator"
-    )).toBe(true);
+      edge.id === "ora-handoff"
+    )).toBe(false);
     expect(state.agentMessages.some((message) =>
       message.fromAgentId === ORA_ROOT_AGENT_ID &&
       message.threadId === `${result.runId}:ora-handoff`
     )).toBe(false);
     expect(state.agentMessages.some((message) =>
-      message.fromAgentId === "orchestrator" &&
+      message.fromAgentId === ORA_ROOT_AGENT_ID &&
       message.toAgentIds.includes(ORA_ROOT_AGENT_ID) &&
       message.threadId === `${result.runId}:ora-handoff`
     )).toBe(false);
@@ -788,7 +786,7 @@ describe("LocalRunStore", () => {
       params: { runId: result.runId }
     }));
     const teamHandoff = state.agentMessages.find((message) =>
-      message.fromAgentId === "team_lead" &&
+      message.fromAgentId === ORA_ROOT_AGENT_ID &&
       message.kind === "handoff"
     );
 
@@ -819,7 +817,7 @@ describe("LocalRunStore", () => {
     const contents = messages.map((message) => message.content).join("\n");
 
     expect(messages.some((message) =>
-      message.fromAgentId === "orchestrator" &&
+      message.fromAgentId === ORA_ROOT_AGENT_ID &&
       message.toAgentIds.includes("builder") &&
       message.content.includes("接下来交给 Builder。")
     )).toBe(true);
@@ -835,11 +833,11 @@ describe("LocalRunStore", () => {
     )).toBe(true);
     expect(messages.some((message) =>
       message.fromAgentId === "debugger" &&
-      message.toAgentIds.includes("orchestrator") &&
-      message.content.includes("接下来交给 Orchestrator。")
+      message.toAgentIds.includes(ORA_ROOT_AGENT_ID) &&
+      message.content.includes("接下来交给 Ora。")
     )).toBe(true);
     expect(messages.some((message) =>
-      message.fromAgentId === "orchestrator" &&
+      message.fromAgentId === ORA_ROOT_AGENT_ID &&
       message.kind === "handoff" &&
       message.toAgentIds.length === 0 &&
       message.content.includes("最终交付已整理。")
@@ -956,7 +954,7 @@ describe("LocalRunStore", () => {
       expect(fs.readFileSync(path.join(workspaceRoot, "target.txt"), "utf8")).toBe("new value\n");
       expect(state.actions.some((action) =>
         action.type === "file.patch" &&
-        action.agentId === "orchestrator"
+        action.agentId === ORA_ROOT_AGENT_ID
       )).toBe(false);
       expect(state.actions.some((action) =>
         action.type === "file.patch" &&
@@ -998,7 +996,7 @@ describe("LocalRunStore", () => {
         ...node,
         config: {
           ...node.config,
-          ...(node.ownerAgentId === "team_lead" ? { customAgentId: "lead" } : {}),
+          ...(node.ownerAgentId === ORA_ROOT_AGENT_ID ? { customAgentId: "lead" } : {}),
         },
       })),
       createdAt: 0,
@@ -1027,7 +1025,7 @@ describe("LocalRunStore", () => {
       method: "runs.state",
       params: { runId: result.runId }
     }));
-    const leadAction = state.actions.find((action) => action.agentId === "team_lead");
+    const leadAction = state.actions.find((action) => action.agentId === ORA_ROOT_AGENT_ID);
 
     expect(JSON.stringify(leadAction?.output)).toContain("Custom Agent Persona: lead");
     expect(JSON.stringify(leadAction?.output)).toContain("Always mention the bound custom lead persona.");

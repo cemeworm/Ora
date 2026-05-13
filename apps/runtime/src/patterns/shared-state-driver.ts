@@ -1,4 +1,4 @@
-import { orderedEnabledModeLayers } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, orderedEnabledModeLayers } from "@cemeworm/shared";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { agentMessageContent, asText, dispatchNodeTemplate, initializeQueueSummary, mention, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, resolveConditionalSkips, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
@@ -12,7 +12,7 @@ export async function executeSharedState(input: ModeExecutionInput): Promise<Pat
   const totalActiveNodes = allNodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: SharedStateBag = { prompt };
-  const orchestratorId = ownerForTemplate(allNodes, "seed", "orchestrator");
+  const orchestratorId = ownerForTemplate(allNodes, "seed", ORA_ROOT_AGENT_ID);
   const researcherId = ownerForTemplate(allNodes, "research", "researcher");
   const reviewerId = ownerForTemplate(allNodes, "converge", "reviewer");
   let completedNodes = 0;

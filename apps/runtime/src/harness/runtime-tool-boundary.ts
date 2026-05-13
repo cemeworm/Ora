@@ -1,5 +1,6 @@
 import {
   CODE_DEVELOPMENT_MODE_ID,
+  ORA_ROOT_AGENT_ID,
   type ModeSpec,
 } from "@cemeworm/shared";
 import type {
@@ -25,7 +26,7 @@ export function codeDevelopmentToolBoundaryError(params: {
   toolCall: RuntimeToolCall;
   runtimeToolExecutor: RuntimeToolExecutor;
 }): string | undefined {
-  if (params.modeSpec.id !== CODE_DEVELOPMENT_MODE_ID || params.agentId !== "orchestrator") {
+  if (params.modeSpec.id !== CODE_DEVELOPMENT_MODE_ID || params.agentId !== ORA_ROOT_AGENT_ID) {
     return undefined;
   }
   const isBlockedStaticTool = CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(params.toolCall.tool);
