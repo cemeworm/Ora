@@ -1,4 +1,4 @@
-import { orderedEnabledModeNodes } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, orderedEnabledModeNodes } from "@cemeworm/shared";
 import type { PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, dispatchNodeTemplate, initializeQueueSummary, isInternalAgentMessageText, nodeCustomAgentId, nodeSystemPrompt, ownerForTemplate, promptTemplate, publicAgentMessageContent, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
@@ -11,7 +11,7 @@ export async function executeAgentTeams(input: ModeExecutionInput): Promise<Patt
   const totalActiveNodes = nodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: AgentTeamsBag = { prompt };
-  const leadId = ownerForTemplate(nodes, "triage", "team_lead");
+  const leadId = ownerForTemplate(nodes, "triage", ORA_ROOT_AGENT_ID);
   const builderId = ownerForTemplate(nodes, "build", "builder");
   const reviewerId = ownerForTemplate(nodes, "check", "reviewer");
   const planIntent = config.metadata.taskIntent === "plan";

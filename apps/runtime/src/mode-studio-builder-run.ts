@@ -6,6 +6,7 @@ import {
   ModeStudioDraftBundle,
   ModeStudioStartBuilderRunParams,
   ModeSpec,
+  ORA_ROOT_AGENT_ID,
   OraEventEnvelope,
   PatternDefinition,
   RunConfig,
@@ -78,9 +79,9 @@ export function startModeStudioBuilderSnapshot(params: {
     messageCount: params.builderParams.messages.length,
   });
   snapshot = params.appendEvent(snapshot, "agent.started", {
-    agentId: "orchestrator",
+    agentId: ORA_ROOT_AGENT_ID,
     title: "Read Mode Studio context",
-  }, { agentId: "orchestrator", nodeId: "triage" });
+  }, { agentId: ORA_ROOT_AGENT_ID, nodeId: "triage" });
   return snapshot;
 }
 
@@ -127,10 +128,10 @@ export function completeModeStudioBuilderSnapshot(params: {
     },
   });
   snapshot = params.appendEvent(snapshot, "agent.completed", {
-    agentId: "orchestrator",
+    agentId: ORA_ROOT_AGENT_ID,
     title: params.result.draftBundle?.needsInput ? "Needs more input" : "Draft bundle ready",
     issues: params.result.issues,
-  }, { agentId: "orchestrator", nodeId: "handoff" });
+  }, { agentId: ORA_ROOT_AGENT_ID, nodeId: "handoff" });
   if (params.result.draftBundle) {
     snapshot = params.appendEvent(snapshot, "artifact.exported", {
       artifact: snapshot.artifacts.at(-1),

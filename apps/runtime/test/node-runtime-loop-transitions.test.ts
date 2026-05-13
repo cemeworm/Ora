@@ -1908,7 +1908,7 @@ describe("node runtime loop transition contract", () => {
         method: "runs.state",
         params: { runId: run.runId },
       }));
-      const states = nodeRuntimeStateSequence(state.events, { agentId: "orchestrator" });
+      const states = nodeRuntimeStateSequence(state.events, { agentId: ORA_ROOT_AGENT_ID });
 
       expect(run.status).toBe("succeeded");
       expect(state.status).toBe("succeeded");
@@ -1927,8 +1927,8 @@ describe("node runtime loop transition contract", () => {
       expect(state.events.map((event) => event.type)).not.toContain("run.failed");
       expect(state.actions.some((action) => action.type === "shell.execute")).toBe(false);
       expect(state.actions.some((action) =>
-        action.type === "agent.orchestrator.invoke" &&
-        action.agentId === "orchestrator" &&
+        action.type === "agent.ora.invoke" &&
+        action.agentId === ORA_ROOT_AGENT_ID &&
         action.status === "failed"
       )).toBe(true);
       expect(state.toolCalls).toEqual([]);

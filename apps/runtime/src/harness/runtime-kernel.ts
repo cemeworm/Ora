@@ -1194,7 +1194,7 @@ export async function executeRuntimeKernel(
   };
 
   const restrictToolsForAgentBoundary = (agentId: string, toolIds: string[]): string[] => {
-    if (modeSpec.id !== "code_development" || agentId !== "orchestrator") {
+    if (modeSpec.id !== "code_development" || agentId !== ORA_ROOT_AGENT_ID) {
       return toolIds;
     }
     return toolIds.filter((toolId) => !CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS.has(toolId));

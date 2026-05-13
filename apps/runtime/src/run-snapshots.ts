@@ -50,7 +50,7 @@ export function createStandaloneRunSnapshot(params: BaseSnapshotParams): StateSn
     checkpoints: [],
     events: [],
     artifacts: [],
-    activeAgents: ["orchestrator"],
+    activeAgents: [ORA_ROOT_AGENT_ID],
     queueSummary: {
       mode: "backlog",
       pending: params.definition.planTemplate.length,

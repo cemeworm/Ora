@@ -92,14 +92,8 @@ export function rootAgentHandoffTarget(modeSpec: ModeSpec): string | undefined {
   if (modeSpec.id === SINGLE_AGENT_MODE_ID) {
     return undefined;
   }
-  if (modeSpec.family === "agent_teams" && hasProfile(modeSpec, "team_lead")) {
-    return "team_lead";
-  }
-  if (modeSpec.family === "message_bus" && hasProfile(modeSpec, "router")) {
-    return "router";
-  }
-  if ((modeSpec.family === "orchestrator_subagent" || modeSpec.family === "shared_state") && hasProfile(modeSpec, "orchestrator")) {
-    return "orchestrator";
+  if (hasProfile(modeSpec, ORA_ROOT_AGENT_ID)) {
+    return undefined;
   }
   const firstOwner = orderedEnabledModeNodes(modeSpec)
     .map((node) => node.ownerAgentId)

@@ -3235,17 +3235,17 @@ describe("Ora runtime smoke path", () => {
       expect(frame).toMatchObject({
         status: "paused",
         reason: "approval_required",
-        agentId: "team_lead",
+        agentId: ORA_ROOT_AGENT_ID,
         pendingActionIds: [blocked.pendingApprovals[0]],
       });
       expect(resumed.status).toBe("succeeded");
       expect(completedFrame).toMatchObject({
         status: "completed",
-        agentId: "team_lead",
+        agentId: ORA_ROOT_AGENT_ID,
         approvedActionIds: [blocked.pendingApprovals[0]],
       });
       expect(resumed.toolCalls.find((call) => call.toolId === "skills.create")).toMatchObject({
-        agentId: "team_lead",
+        agentId: ORA_ROOT_AGENT_ID,
         status: "succeeded",
       });
     } finally {
@@ -4222,8 +4222,8 @@ describe("Ora runtime smoke path", () => {
 
       expect(run.status).toBe("succeeded");
       expect(readCalls).toEqual([
-        expect.objectContaining({ agentId: "team_lead", status: "succeeded" }),
-        expect.objectContaining({ agentId: "team_lead", status: "succeeded" }),
+        expect.objectContaining({ agentId: ORA_ROOT_AGENT_ID, status: "succeeded" }),
+        expect.objectContaining({ agentId: ORA_ROOT_AGENT_ID, status: "succeeded" }),
         expect.objectContaining({ agentId: "builder", status: "succeeded" }),
         expect.objectContaining({ agentId: "builder", status: "succeeded" }),
       ]);
@@ -4231,7 +4231,7 @@ describe("Ora runtime smoke path", () => {
       expect(forceFinalEvents.map((event) => event.payload)).toEqual([
         expect.objectContaining({
         reason: "repeated_tool_blocked",
-        scopeKey: "agent:team_lead|node:triage",
+        scopeKey: `agent:${ORA_ROOT_AGENT_ID}|node:triage`,
         }),
         expect.objectContaining({
           reason: "repeated_tool_blocked",
@@ -5129,7 +5129,6 @@ describe("Ora runtime smoke path", () => {
     expect(state.pattern).toBe("orchestrator_subagent");
     expect(state.profiles.map((profile) => profile.id)).toEqual([
       ORA_ROOT_AGENT_ID,
-      "orchestrator",
       "researcher",
       "reviewer",
     ]);
@@ -6059,7 +6058,7 @@ describe("Ora runtime smoke path", () => {
     expect(deltaEvents.some((event) => typeof (event.payload as { delta?: unknown }).delta === "string")).toBe(true);
     const messageIds = deltaEvents.map((event) => (event.payload as { messageId?: unknown }).messageId);
     expect(messageIds.every((messageId) => typeof messageId === "string")).toBe(true);
-    expect(messageIds[0]).toMatch(new RegExp(`^${run.runId}:assistant:orchestrator:[^:]+:0$`));
+    expect(messageIds[0]).toMatch(new RegExp(`^${run.runId}:assistant:${ORA_ROOT_AGENT_ID}:[^:]+:0$`));
     const chunksByMessageId = new Map<unknown, number>();
     for (const messageId of messageIds) {
       chunksByMessageId.set(messageId, (chunksByMessageId.get(messageId) ?? 0) + 1);

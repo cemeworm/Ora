@@ -1,4 +1,4 @@
-import { orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
 import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
 import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
@@ -234,7 +234,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
             decomposePrompt += DELEGATION_PLAN_INSTRUCTION;
           }
           bag.plan = await resumeOrCallAgent(node, {
-          agentId: node.ownerAgentId ?? "orchestrator",
+          agentId: node.ownerAgentId ?? ORA_ROOT_AGENT_ID,
           planItemId: node.id,
           title: titleForNode(node, "Decompose work"),
           prompt: decomposePrompt,
@@ -305,7 +305,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           && !delegationPlan.researchEnabled
           && !delegationPlan.reviewEnabled;
         bag.synthesis = await resumeOrCallAgent(node, {
-          agentId: node.ownerAgentId ?? "orchestrator",
+          agentId: node.ownerAgentId ?? ORA_ROOT_AGENT_ID,
           planItemId: node.id,
           title: titleForNode(node, "Synthesize result"),
           prompt: promptTemplate(

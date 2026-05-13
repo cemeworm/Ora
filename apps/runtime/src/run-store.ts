@@ -888,9 +888,20 @@ export class LocalRunStore {
         return group;
       }
       const derivedCandidates = group.candidateRunIds.map((runId) => {
-        const run = this.runs.get(runId);
+        let run = this.runs.get(runId);
+        // Candidate runs are on side branches and may not be loaded into
+        // the main-line run cache after a restart. Try loading from any
+        // ledger leaf to recover the final candidate state.
+        if (!run) {
+          run = this.ledgerProjectedRunSnapshotFromAnyLeaf(runId) ?? undefined;
+        }
         if (!run) return undefined;
         const existing = group.candidates.find((c) => c.runId === runId);
+        let outputPreview = existing?.outputPreview;
+        if (!outputPreview) {
+          const text = assistantTextForRun(run);
+          outputPreview = text ? text.slice(0, 500) : undefined;
+        }
         return {
           runId,
           status: run.status,
@@ -900,7 +911,7 @@ export class LocalRunStore {
           modelRef: run.config.modelRef ?? existing?.modelRef,
           adopted: run.config.metadata.branchRole === "adopted",
           prompt: existing?.prompt ?? run.input.prompt,
-          outputPreview: existing?.outputPreview,
+          outputPreview,
           updatedAt: run.updatedAt,
         };
       }).filter((c): c is NonNullable<typeof c> => c !== undefined);

@@ -5786,6 +5786,185 @@ describe("desktop session view model", () => {
     expect(assistant?.content).toBe(finalText);
   });
 
+  it("keeps streamed assistant text and agent labels interleaved with runtime status after completion", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalText = "Builder 已完成修复。";
+    const snapshot = {
+      runId: "run-completed-stream-interleave",
+      sessionId: "session-completed-stream-interleave",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "agent_teams",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "修复 timeline 顺序", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-completed-stream-interleave-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        {
+          id: "orchestrator",
+          label: "Orchestrator",
+          role: "Coordinate",
+          model: "deepseek",
+          tools: [],
+          budget: "default",
+          memoryScopes: [],
+        },
+        {
+          id: "builder",
+          label: "Builder",
+          role: "Build",
+          model: "deepseek",
+          tools: [],
+          budget: "default",
+          memoryScopes: [],
+        },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-completed-stream-interleave:evt-0",
+          runId: "run-completed-stream-interleave",
+          seq: 0,
+          type: "message.delta",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          pattern: "agent_teams",
+          payload: {
+            role: "assistant",
+            messageId: "orchestrator-message",
+            content: "我先看任务和现有实现。",
+            delta: "我先看任务和现有实现。",
+            streaming: true,
+            phase: "stream",
+          },
+        },
+        {
+          id: "run-completed-stream-interleave:evt-1",
+          runId: "run-completed-stream-interleave",
+          seq: 1,
+          type: "tool.called",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt: createdAt + 1_000,
+          pattern: "agent_teams",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            path: "apps/desktop/src/lib/viewModel.ts",
+          },
+        },
+        {
+          id: "run-completed-stream-interleave:evt-2",
+          runId: "run-completed-stream-interleave",
+          seq: 2,
+          type: "message.delta",
+          agentId: "builder",
+          nodeId: "builder",
+          createdAt: createdAt + 2_000,
+          pattern: "agent_teams",
+          payload: {
+            role: "assistant",
+            messageId: "builder-message",
+            content: "我会按事件顺序修复 timeline。",
+            delta: "我会按事件顺序修复 timeline。",
+            streaming: true,
+            phase: "stream",
+          },
+        },
+        {
+          id: "run-completed-stream-interleave:evt-3",
+          runId: "run-completed-stream-interleave",
+          seq: 3,
+          type: "tool.called",
+          agentId: "builder",
+          nodeId: "builder",
+          createdAt: createdAt + 3_000,
+          pattern: "agent_teams",
+          payload: {
+            toolId: "file.write",
+            status: "succeeded",
+            path: "apps/desktop/src/lib/viewModel.ts",
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalText },
+      updatedAt: createdAt + 4_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-completed-stream-interleave:user",
+        sessionId: "session-completed-stream-interleave",
+        runId: "run-completed-stream-interleave",
+        turnIndex: 1,
+        role: "user",
+        content: "修复 timeline 顺序",
+        pattern: "agent_teams",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-completed-stream-interleave": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+
+    expect(timeline.map((item) => item.kind)).toEqual([
+      "assistant_text",
+      "status_group",
+      "assistant_text",
+      "status_group",
+      "final_text",
+    ]);
+    expect(timeline[0]).toMatchObject({
+      content: "我先看任务和现有实现。",
+      agentLabel: "Orchestrator",
+    });
+    expect(timeline[1]).toMatchObject({
+      summary: "已探索 1 个文件",
+      steps: [expect.objectContaining({
+        label: "读取文件",
+        agentId: "orchestrator",
+      })],
+    });
+    expect(timeline[2]).toMatchObject({
+      content: "我会按事件顺序修复 timeline。",
+      agentLabel: "Builder",
+    });
+    expect(timeline[3]).toMatchObject({
+      steps: [expect.objectContaining({
+        label: "写入文件",
+        agentId: "builder",
+      })],
+    });
+    expect(timeline[4]).toMatchObject({ content: finalText });
+  });
+
   it("keeps historical progress narration out of process steps after the run finishes", () => {
     const createdAt = 1_714_000_000_000;
     const snapshot = {
