@@ -722,11 +722,13 @@ sequenceDiagram
 
 **Slim 不会丢失投影所需的关键信息**，因为：
 
-1. **`payload.snapshot` 保留了完整快照** — 包含 status、attention、planDecisions、toolCalls、conversation 等所有结构字段
+1. **低频 `:update-` batch 的 `payload.snapshot` 保留了 compact snapshot** — 在 `run.done`、`run.failed`、`checkpoint.created` 等 durable boundary 写入，供投影最终重建
 2. **`payload.status` 保留** — run 状态变化可追踪
 3. **`payload.output` 保留** — 输出内容不丢失
 4. **`payload.error` 保留** — 错误信息保留
 5. **独立的 entry 补充信息** — `tool.result`、`gate.opened`、`gate.resolved`、`assistant.message` 等 entry 提供了比流式事件更结构化的信息
+
+注意：高频 `:events-` batch（流式运行期间定期 flush）不写入 `snapshot` 字段，仅保留 `events`/`eventCount`/`status`/`output`/`error`。投影从最近的 `:update-` snapshot 结合 gate/tool result 等独立 entry 重建状态。
 
 `runtimeRunProjectionToSnapshot` 在重建 snapshot 时：
 - 优先使用 `finalSnapshot`
@@ -770,7 +772,8 @@ sequenceDiagram
 | 方面 | 当前状态 | 保守边界 |
 | --- | --- | --- |
 | Ledger 存储 | 通过 `RuntimePersistenceBackend` 抽象，支持 SQLite / JSON 文件 | 未实现 ledger 分片或归档，大 session 的完整 replay 可能影响性能 |
-| Slim 策略 | `buildVisibleLedger` 移除 event batch 的 events 数组 | 仅移除 events，其他字段保留。未来可能需要更激进的 compaction（如移除中间 snapshot） |
+| Slim 策略 | 分层 compaction：高频 `:events-` batch 不写 snapshot；低频 `:update-` batch 保留 compact snapshot | 未来可能对中间 `:update-` snapshot 做更激进的 compaction |
+| 终态完整性 | `assertRunCanBecomeTerminal()` 守卫所有 terminal writer；投影层检测矛盾组合（如 succeeded + open_gate）并降级 attention 为 failed | 依赖 writer 端守卫 + projection 端降级双重保护，但不修正已写入的非法 entry |
 | Branch 投影 | 通过 `hiddenRunIds` 过滤被替换的 run | 被替换的 run 仍在 `entries` 中，只是不在投影中。长期运行可能导致 ledger 膨胀 |
 | Gate 幂等 | `gate.opened` 在 resolved 后忽略 | 依赖 gateId 不变，不支持 gate 重开 |
 | Event 反向投影 | `reconcileSnapshotRuntimeFields` 从 gate 决议生成事件 | 反向投影的事件标记为 `ledger-projected` 来源，但不回到 ledger 存储 |

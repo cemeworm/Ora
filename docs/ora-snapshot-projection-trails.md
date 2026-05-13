@@ -90,7 +90,7 @@ StateSnapshot {
   RuntimeSessionLedger → deriveSessionProjection → deriveRunSnapshot → snapshot 重建
 ```
 
-desktop UI 在 run 运行期间消费 live snapshot（路径 A），run 完成后切换到 ledger-backed snapshot（路径 B）。这两条路径的关键区别：
+desktop UI 在 run 运行期间消费 live snapshot（路径 A），run 完成后切换到 ledger-backed snapshot（路径 B）。Streaming 热路径已做分层优化：纯 delta（`message.delta`/`token.delta`）先 publish 再 cache/flush，确保可见流不被 ledger I/O 阻塞；desktop RAF 批次内合并同 run 的 live delta stream，减少 per-token reducer dispatch。这两条路径的关键区别：
 
 | 维度 | Live Snapshot | Ledger-backed Snapshot |
 | --- | --- | --- |

@@ -555,7 +555,7 @@ function suspendedFrameResumeSnapshot(snapshot: StateSnapshot): StateSnapshot | 
 
 ## 8. Resume 收敛：RunResumeFinalizationService
 
-无论走哪条 resume 路径，最终都需要通过 `RunResumeFinalizationService` 将结果收敛到持久状态。
+无论走哪条 resume 路径，最终都需要通过 `RunResumeFinalizationService` 将结果收敛到持久状态。所有写入 `run.done` / `run.failed` 的路径均经由 `assertRunCanBecomeTerminal()` 守卫：检查无 open gate、无 pending approval/clarification、无 unresolved action/tool call、无 active continuation frame；违反时降级为 `run.failed` 并附带 `TerminalStateIntegrityError`。Ledger projection 层同步检测矛盾组合（如 `succeeded + open_approval_gate`）并降级 attention 为 `failed`。
 
 ```mermaid
 flowchart TD

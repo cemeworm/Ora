@@ -293,6 +293,8 @@ stateDiagram-v2
 - 工具成功后，结果会被写回 messages，然后继续下一次模型调用。
 - 自然完成候选进入 completion guard 前，runtime 会先运行 plan-list lifecycle hook。它只基于当前 agent/node 的 successful non-plan tool evidence 推进 active step，不从纯文本语义猜测完成状态。
 - completion guard 会对 unchanged `plan_list.incomplete` 结果做 fingerprint 计数，重复无进展超过边界后失败，避免无限发出同一条继续运行提示。
+- **Final output guard**：所有工作状态守卫通过后，`finalOutputGuard` 检查最终回答的文本是否为空。如果 post-tool 响应为空，runtime 触发恰好一次 no-tools 修复轮次；修复后仍为空则 fail。这防止了"工具已完成但最终回答丢失"的静默完成。
+- **Terminal state integrity guard**：`assertRunCanBecomeTerminal()` 在所有写入 `run.done` / `run.failed` 的路径上检查不存在 open gate、pending approval、unresolved action/tool call 或 active continuation frame。违反时降级为 `run.failed` 并附加 `TerminalStateIntegrityError`。Ledger projection 层同步检测矛盾组合（如 `succeeded + open_approval_gate`），降级 attention 为 `failed` 并附带 integrity diagnostic。
 - 工具执行失败后进入 `RuntimeToolRecoveryService`：可 retry、alternate tool、fallback artifact，或最终 fail。这个 recovery surface 只允许从 `tool_running` 进入 `degraded`。
 - 工具结果已经记录后，follow-up model/provider 的 transient 或 busy failure 留在 `running_model` phase，由 provider recovery 重试同一个 model request，不会重跑已经成功的工具。
 - 如果非 tool-running phase 错误进入 tool recovery boundary，runtime 会发 `tool_recovery_boundary` diagnostic 并停止这条错误恢复路径，不会放宽成 `running_model -> degraded`。
@@ -389,27 +391,38 @@ Agent/tool context 里发出的 runtime event 应该带上执行上下文。`Run
 
 当 selected mode 返回结果后，`runtime-kernel.ts` 里的 Ora finalizer 会把 mode output 改写成最终面向用户的回答。两个场景会跳过这一步：`single_agent` mode 直接返回 node output；`taskIntent = "plan"` 且 mode output 已包含完整 `<proposed_plan>` 时，直接保留计划输出，避免 finalizer 破坏计划协议。
 
+**Fast Solo 终态收敛**：`single_agent` mode（Fast Solo）复用 `orchestrator_subagent` family 是设计选择，但 terminal event（`run.done` / `run.failed` / `run.cancelled`）会显式清空 `activeAgents`、收敛 `queueSummary` 的 `pending`/`inProgress` 为 0。Ledger fallback 不再为 `single_agent` 硬编码 `activeAgents: ["orchestrator"]`，而是根据 run config/modeId 推导。这确保回答完成后 UI/Trails 不会残留 orchestrator 仍在运行的假象。
+
 ## Ledger 和 streaming finalization
 
 ```mermaid
 flowchart TD
-  A["streaming runtime events"] --> B["runtime.event_batch"]
-  B --> C["payload.events stores incremental events"]
-  B --> D["compact payload.snapshot with events: []"]
-  C --> E["ledger projection reconstructs full snapshot.events"]
-  D --> E
+  A["streaming runtime events"] --> B{"event kind"}
+  B -->|"pure delta (message.delta / token.delta)"| C["publish first, then cache/flush"]
+  B -->|"non-delta (gate/tool/terminal)"| D["cache → flush → publish"]
 
-  F["provider SSE"] --> G{"terminal signal"}
-  G -->|"data: [DONE]"| H["finish provider stream"]
-  G -->|"idle watchdog timeout"| I["fail stream"]
-  H --> J["run.done / terminal snapshot"]
-  I --> K["run.failed projection"]
+  E["runtime.event_batch"] --> F{"flush tier"}
+  F -->|"high-freq :events-"| G["payload: events/eventCount/status/output/error; NO snapshot"]
+  F -->|"low-freq :update- (durable boundary)"| H["payload: + compact snapshot"]
 
-  L["maintenance staleRunningMs"] --> M["ledger-projected queued/running with no progress"]
-  M --> N["append terminal run.failed"]
+  G --> I["ledger projection reconstructs from nearest :update- snapshot"]
+  H --> I
+
+  J["provider SSE"] --> K{"terminal signal"}
+  K -->|"data: [DONE]"| L["finish provider stream"]
+  K -->|"idle watchdog timeout"| M["fail stream"]
+  L --> N["run.done / terminal snapshot"]
+  M --> O["run.failed projection"]
+
+  P["maintenance staleRunningMs"] --> Q["ledger-projected queued/running with no progress"]
+  Q --> R["append terminal run.failed"]
 ```
 
-新的 streaming event batch 不再存累计的 `snapshot.events`，完整事件历史由 ledger `payload.events` 重建。旧的 full snapshot row 仍然兼容。Provider stream 会把 SSE `[DONE]` 当作 terminal signal，即使 transport 没有关闭也会结束；idle/no-progress stream 会失败，不再无限等待。`RunStreamingService` 还维护 per-run `AbortController`，`runs.interrupt` / `runs.cancel` 会 abort active controller，并把 signal 传给 kernel、node loop 和 provider request。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
+**Event batch 分层 compaction**：高频 `:events-` batch（流式运行期间定期 flush）不再写入 `snapshot` 字段，仅保留 `events`/`eventCount`/`status`/`output`/`error`；低频 `:update-` batch（在 `run.done`、`run.failed`、`checkpoint.created` 等 durable boundary）携带 compact snapshot。投影从最近的 `:update-` snapshot 结合 gate/tool result 等独立 entry 重建必要状态。
+
+**Publish-before-flush**：纯 delta 事件（`message.delta`、`token.delta`）先 publish 到 subscriber，再 cache 和 flush ledger，确保可见流不被 flush I/O 阻塞。Non-delta 事件（gate、tool、terminal）保持 cache→flush→publish 顺序，确保状态完整性。
+
+`RunStreamingService` 还维护 per-run `AbortController`，`runs.interrupt` / `runs.cancel` 会 abort active controller，并把 signal 传给 kernel、node loop 和 provider request。Runtime maintenance 可以把超过 `staleRunningMs` 的 stale queued/running ledger projection 收敛成 terminal failed run。
 
 最终 assistant text 的读取边界也在这一层收敛：终态 snapshot 的 `output.text` / string output 是权威最终文本；缺失时才通过 `packages/shared/src/assistantTextProjection.ts` 从 public `message.delta` 投影。投影 helper 同时处理 delta-sized chunk、cumulative content、重复片段和 internal/tool-protocol 文本过滤。runtime 的 session transcript/title/memory/feedback/channel outbound、shared 的 branch preview / proposed plan 提取、desktop fallback 都应复用这条规则，而不是各自扫描 `snapshot.events`。
 
@@ -421,6 +434,7 @@ flowchart TD
 
 - `file.write`
 - `file.patch`
+- `file.apply_patch`
 - `file.delete`
 - `modes.applyDraft`
 - `selfIteration.apply`
@@ -443,6 +457,20 @@ orchestrator 负责计划和协调，实际代码修改必须落到 builder 阶�
 6. 解析失败或输出不完整时不跳过任何节点，保持原 orchestrator_subagent 的安全回退行为。
 
 这条机制只影响 mode driver 的节点执行选择，不改变 node 的 `ownerAgentId`、`riskLevel`、`approvalMode`，也不新增 ledger entry 类型。跳过结果仍通过已有 plan/todo/queue/topology/snapshot 事实对外呈现。
+
+### Agent-as-Tool 动态 spawn
+
+除了 mode driver 层面的 `subagent_delegate` 和 `dynamic_delegation`，Ora 支持 agent 在运行时通过 `agent.spawn` 工具动态创建子 agent：
+
+- `agent.spawn` 是一个普通 Runtime Tool，agent 可以在 model-tool loop 中直接调用。
+- 子 agent 复用现有 `callAgent()` / `runNodeRuntimeLoop()` 基础设施，与 mode driver 编排的 agent 使用相同的执行路径。
+- 同步模式（默认）：父 agent 等待子 agent 完成，子 agent 的输出文本作为 tool result 返回。
+- 异步模式（`run_in_background: true`）：父 agent 继续执行，子 agent 完成后通过通知注入。
+- 子 agent 也可以 spawn 自己的子 agent，最大深度 3 层（`MAX_SPAWN_DEPTH`）。
+- 子 agent 可继承父 agent 的上下文，或通过内联 profile 定制工具集和 persona。
+- Agent 间可通过 `message.send` 工具发送消息，实现通信协调。
+
+这与 mode driver delegation 是互补关系：mode driver 提供模式级别的结构性编排，`agent.spawn` 提供运行时级别的动态灵活性。
 
 ### Accepted plan handoff
 
