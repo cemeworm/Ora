@@ -42,7 +42,7 @@ import {
 } from "./lib/state";
 import type { AppView, ArtifactRecord, ChatMessage } from "./types";
 import { cn } from "./lib/utils";
-import { getRecords, clearRecords } from "./lib/debugTiming";
+import { getRecords, clearRecords, timeStart, timeEnd, recordTiming } from "./lib/debugTiming";
 import {
   adaptChatMessages,
   adaptRenderableChatMessages,
@@ -94,20 +94,11 @@ const MIN_MAIN_PANEL_WIDTH = 640;
 const WINDOW_TITLE_BASE = "Ora";
 const MAX_TURN_SNAPSHOTS = 40;
 
-interface BatchedStream {
-  stream: OraRunEventStream;
-  receivedAt: number;
-}
-
-function isLiveDeltaOnlyStream(stream: OraRunEventStream): boolean {
-  return (
-    !stream.snapshot &&
-    stream.events.length > 0 &&
-    stream.events.every(
-      (event) => event.type === "message.delta" || event.type === "token.delta",
-    )
-  );
-}
+import {
+  coalesceLiveDeltaStreams,
+  isLiveDeltaOnlyStream,
+  type BatchedStream,
+} from "./lib/streamCoalesce";
 
 function hasVerifiedRealProvider(
   providers: readonly { id: string; type: string }[] | undefined,
@@ -272,13 +263,36 @@ function WorkbenchInner() {
     if (entries.length === 0) return;
     streamBatchRef.current = [];
 
-    for (const { stream, receivedAt } of entries) {
+    const coalesced = coalesceLiveDeltaStreams(entries);
+    const deltaOnlyCount = entries.filter((e) => isLiveDeltaOnlyStream(e.stream)).length;
+    const mergedDeltaCount = coalesced.filter((e) => isLiveDeltaOnlyStream(e.stream)).length;
+    if (deltaOnlyCount > 0) {
+      timeStart("raf-batch");
+      recordTiming("raf-batch-entries", entries.length);
+      recordTiming("raf-delta-before", deltaOnlyCount);
+      recordTiming("raf-delta-after", mergedDeltaCount);
+      const firstEntry = entries[0];
+      const lastEntry = entries.at(-1);
+      if (firstEntry && lastEntry) {
+        const firstSeq = firstEntry.stream.events[0]?.seq;
+        const lastSeq = lastEntry.stream.events.at(-1)?.seq;
+        if (firstSeq !== undefined && lastSeq !== undefined) {
+          recordTiming("raf-seq-span", lastSeq - firstSeq);
+        }
+      }
+    }
+
+    for (const { stream, receivedAt } of coalesced) {
       dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
+    }
+
+    if (deltaOnlyCount > 0) {
+      timeEnd("raf-batch");
     }
 
     setTurnSnapshots((current) => {
       let next = current;
-      for (const { stream } of entries) {
+      for (const { stream } of coalesced) {
         if (isLiveDeltaOnlyStream(stream)) continue;
         const merged = mergeRunStreamSnapshot(next[stream.runId], stream);
         if (!merged) continue;

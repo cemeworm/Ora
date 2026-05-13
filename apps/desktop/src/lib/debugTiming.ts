@@ -21,6 +21,11 @@ export function getRecords() {
   return [...records];
 }
 
+export function recordTiming(label: string, elapsed: number) {
+  records.push({ label, elapsed });
+  if (records.length > 30) records.shift();
+}
+
 export function clearRecords() {
   records.length = 0;
 }
