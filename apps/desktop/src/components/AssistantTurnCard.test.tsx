@@ -78,6 +78,7 @@ describe("assistant turn display helpers", () => {
       status: "done",
       pattern: "agent_teams",
       currentAgentLabel: "Team Lead",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [],
@@ -102,6 +103,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "agent_teams",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [],
@@ -130,6 +132,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 2,
       status: "done",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       clarificationExchanges: [{
         id: "clarification:scope",
@@ -165,6 +168,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "clarification_required",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       clarificationExchanges: [{
         id: "clarification:scope",
@@ -196,6 +200,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "orchestrator_subagent",
       currentAgentLabel: "Orchestrator",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "run-1:timeline:assistant:2",
@@ -228,6 +233,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "agent_teams",
       currentAgentLabel: "Orchestrator",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -303,6 +309,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "orchestrator_subagent",
       currentAgentLabel: "Orchestrator",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "msg-handoff",
@@ -338,6 +345,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "agent_teams",
       currentAgentLabel: "Team Lead",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [],
@@ -371,6 +379,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "agent_teams",
+      sources: [],
       processSteps: [
         processStep("step-1", "complete", "已完成资料收集。"),
         processStep("step-2", "active", "正在综合专家观点。", { contextLabel: "analysis/report.md" }),
@@ -400,6 +409,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "progress-done",
@@ -434,6 +444,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -478,6 +489,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "orchestrator_subagent",
       liveProgressText: "正在努力",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [],
@@ -506,6 +518,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "orchestrator_subagent",
       liveProgressText: "已选择单智能体模式，我准备好了",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [],
@@ -535,6 +548,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -590,6 +604,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -633,6 +648,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -674,6 +690,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "failed",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -715,6 +732,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "agent_teams",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [
@@ -742,6 +760,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "agent_teams",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       artifacts: [
@@ -800,6 +819,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "agent_teams",
+      sources: [],
       processSteps: [
         processStep("step-1", "complete", "正在收集信息。"),
         processStep("step-2", "complete", "正在生成回答。"),
@@ -836,6 +856,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "agent_teams",
+      sources: [],
       processSteps: [processStep("step-1", "active", "正在规划回答。")],
       agentMessages: [
         agentMessage("message-1", "route", "@builder 请补充背景。", {
@@ -887,6 +908,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       agentMessages: [transcriptMessage],
       artifacts: [],
@@ -965,6 +987,7 @@ describe("assistant turn display helpers", () => {
           turnIndex: 1,
           status: "done",
           pattern: "orchestrator_subagent",
+          sources: [],
           processSteps: [],
           agentMessages: messages,
           planList: [],
@@ -1026,7 +1049,7 @@ describe("assistant turn display helpers", () => {
     ];
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Review done" turn={{
-        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent", sources: [],
         processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       hasProposedPlan: false,
       }} />,
@@ -1064,7 +1087,7 @@ describe("assistant turn display helpers", () => {
     ];
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Gate passed" turn={{
-        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent", sources: [],
         processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       hasProposedPlan: false,
       }} />,
@@ -1100,7 +1123,7 @@ describe("assistant turn display helpers", () => {
     ];
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Research done" turn={{
-        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent", sources: [],
         processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       hasProposedPlan: false,
       }} />,
@@ -1136,7 +1159,7 @@ describe("assistant turn display helpers", () => {
     ];
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Comparison done" turn={{
-        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent", sources: [],
         processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       hasProposedPlan: false,
       }} />,
@@ -1171,7 +1194,7 @@ describe("assistant turn display helpers", () => {
     ];
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="All done" turn={{
-        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent", sources: [],
         processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       hasProposedPlan: false,
       }} />,
@@ -1205,7 +1228,7 @@ describe("assistant turn display helpers", () => {
     ];
     const html = renderToStaticMarkup(
       <AssistantTurnCard content="Pipeline done" turn={{
-        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent",
+        runId: "run-1", turnIndex: 1, status: "done", pattern: "orchestrator_subagent", sources: [],
         processSteps: [], agentMessages: messages, planList: [], artifacts: [], todos: [], approvalCount: 0, clarificationCount: 0,
       hasProposedPlan: false,
       }} />,
@@ -1223,6 +1246,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "done",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       planList: [],
@@ -1260,6 +1284,7 @@ describe("assistant turn display helpers", () => {
       status: "done",
       pattern: "agent_teams",
       currentAgentLabel: "Orchestrator",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -1337,6 +1362,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       planList: [],
@@ -1365,6 +1391,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       planList: [],
@@ -1398,6 +1425,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "progress-1",
@@ -1436,6 +1464,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       planList: [],
@@ -1472,6 +1501,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       planList: [],
@@ -1501,6 +1531,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "text-1",
@@ -1533,6 +1564,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "progress-1",
@@ -1569,6 +1601,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [
         {
@@ -1616,6 +1649,7 @@ describe("assistant turn display helpers", () => {
       turnIndex: 1,
       status: "running",
       pattern: "orchestrator_subagent",
+      sources: [],
       processSteps: [],
       timelineItems: [{
         id: "progress-1",
@@ -1655,6 +1689,7 @@ describe("assistant turn display helpers", () => {
       status: "running",
       pattern: "orchestrator_subagent",
       currentAgentLabel: "Orchestrator",
+      sources: [],
       processSteps: [],
       agentMessages: [],
       planList: [],

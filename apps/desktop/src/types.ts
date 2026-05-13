@@ -338,6 +338,11 @@ export interface TurnAgentConversationMessage {
   timestamp: string;
 }
 
+export interface CitationSource {
+  url: string;
+  title?: string;
+}
+
 export type AssistantTurnActiveLoadingTarget =
   | { kind: "timeline"; itemId: string }
   | { kind: "proposed_plan" }
@@ -357,6 +362,7 @@ export interface AssistantTurnAttachment {
   agentMessages: TurnAgentConversationMessage[];
   artifacts: TurnArtifactAttachment[];
   fileChanges?: TurnFileChangeAttachment[];
+  sources: CitationSource[];
   todos: TurnTodoItem[];
   approvalCount: number;
   clarificationCount: number;

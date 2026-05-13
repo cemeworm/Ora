@@ -38,6 +38,7 @@ import {
 } from "./ai-elements/task";
 import { MarkdownContent } from "./MarkdownContent";
 import { PlanCard } from "./PlanCard";
+import { SourcesPopover } from "./SourcesPopover";
 import { StageTranscript } from "./StageTranscript";
 import {
   Dialog,
@@ -102,7 +103,8 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
     turn.status !== "running" &&
     bodyContent.trim(),
   );
-  const canShowActions = canCopyContent || canSubmitFeedback;
+  const sources = turn?.sources ?? [];
+  const canShowActions = canCopyContent || canSubmitFeedback || sources.length > 0;
   const currentAgentLabel = turn?.currentAgentLabel?.trim();
   const hasTimelineAgentLabel = timelineItems.some((item) => Boolean(timelineAgentLabel(item)));
   const timelineContainsAssistantBody = timelineItems.some((item) =>
@@ -231,6 +233,9 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
 
           {canShowActions ? (
             <div className="flex items-center gap-1">
+              {sources.length > 0 ? (
+                <SourcesPopover sources={sources} />
+              ) : null}
               {canCopyContent ? (
                 <button
                   type="button"
