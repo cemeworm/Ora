@@ -209,12 +209,30 @@ export function isInternalAgentMessageText(value: unknown): boolean {
   return /(?:^|\n)\s*\{"tool"\s*:\s*"[a-z0-9_.-]+"\s*,\s*"args"\s*:/i.test(trimmed);
 }
 
+const RECOVERY_FALLBACK_PATTERNS = [
+  /continued with limited context after a recoverable runtime issue\.?$/i,
+  /continued with limited context after forced-final provider recovery\.?$/i,
+];
+
+const DEGRADED_HANDOFF_MESSAGE = "这是一次降级交接：当前阶段已基于任务文件和已读材料继续推进，但完整临时上下文未完全保留；请优先复核首个失败点、关键结论与未完成项。";
+
+export function isRecoveryFallbackAgentMessageText(value: unknown): boolean {
+  const trimmed = asText(value).trim();
+  if (!trimmed) {
+    return false;
+  }
+  return RECOVERY_FALLBACK_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 export function publicAgentMessageContent(
   prefix: string,
   value: unknown,
   fallback: string,
 ): string {
   const text = asText(value).trim();
+  if (isRecoveryFallbackAgentMessageText(text)) {
+    return `${prefix}${DEGRADED_HANDOFF_MESSAGE}`;
+  }
   if (!text || isInternalAgentMessageText(text)) {
     return `${prefix}${fallback}`.trimEnd();
   }

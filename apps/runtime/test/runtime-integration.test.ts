@@ -42,6 +42,7 @@ import {
 import { FileLongTermMemoryStore, LongTermMemoryManager } from "../src/memory.js";
 import { shutdownLangfuseTelemetry } from "../src/telemetry/langfuse.js";
 import { LocalRunStore, createRuntimeMethodHandler } from "../src/index.js";
+import { isRecoveryFallbackAgentMessageText, publicAgentMessageContent } from "../src/patterns/driver-utils.js";
 
 // Fixed clock for deterministic assertions
 const FIXED_TIME = 1_700_000_000_000;
@@ -118,6 +119,47 @@ describe("ActionLedger", () => {
     });
     expect(withArtifact.artifactIds).toEqual(["artifact-1", "artifact-2"]);
     ActionRecordSchema.parse(withArtifact);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Handoff message wrapping
+// ---------------------------------------------------------------------------
+
+describe("handoff message wrapping", () => {
+  it("rewrites recovery fallback stage output into degraded handoff copy", () => {
+    const content = publicAgentMessageContent(
+      "接下来交给 Builder。\n\n",
+      "Build assigned work continued with limited context after a recoverable runtime issue.",
+      "实现阶段没有产出可公开展示的正文，已继续交接。",
+    );
+
+    expect(isRecoveryFallbackAgentMessageText(
+      "Build assigned work continued with limited context after a recoverable runtime issue.",
+    )).toBe(true);
+    expect(content).toContain("接下来交给 Builder。");
+    expect(content).toContain("这是一次降级交接");
+    expect(content).not.toContain("continued with limited context");
+  });
+
+  it("rewrites forced-final provider recovery fallback without changing normal text handling", () => {
+    const degraded = publicAgentMessageContent(
+      "最终交付已整理。\n\n",
+      "Record handoff continued with limited context after forced-final provider recovery.",
+      "最终阶段没有产出可公开展示的正文。",
+    );
+    const normal = publicAgentMessageContent(
+      "最终交付已整理。\n\n",
+      "已完成实现、验证与交付整理。",
+      "最终阶段没有产出可公开展示的正文。",
+    );
+
+    expect(isRecoveryFallbackAgentMessageText(
+      "Record handoff continued with limited context after forced-final provider recovery.",
+    )).toBe(true);
+    expect(degraded).toContain("这是一次降级交接");
+    expect(degraded).not.toContain("forced-final provider recovery");
+    expect(normal).toContain("已完成实现、验证与交付整理。");
   });
 });
 
