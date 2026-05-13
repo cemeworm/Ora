@@ -70,14 +70,39 @@ export function applyStreamingRunEvent(
   }
 
   const projected = projectStreamingEvent(liveSnapshot, event);
+  const status = statusForRunEvent(event.type, liveSnapshot.status);
   const next = {
-    ...projected,
-    status: statusForRunEvent(event.type, liveSnapshot.status),
+    ...finalizeTerminalRuntimeProjection(projected, status),
+    status,
     events: [...liveSnapshot.events, event],
     agentMessages: mergeStreamingAgentMessage(liveSnapshot.agentMessages, event),
     updatedAt: event.createdAt,
   };
   return normalizeRunAttention(StateSnapshotSchema.parse(next));
+}
+
+function finalizeTerminalRuntimeProjection(
+  snapshot: StateSnapshot,
+  status: StateSnapshot["status"],
+): StateSnapshot {
+  if (status !== "succeeded" && status !== "failed" && status !== "cancelled") {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    activeAgents: [],
+    queueSummary: {
+      ...snapshot.queueSummary,
+      pending: 0,
+      inProgress: 0,
+      completed: status === "succeeded"
+        ? Math.max(
+            snapshot.queueSummary.completed,
+            snapshot.queueSummary.completed + snapshot.queueSummary.inProgress + snapshot.queueSummary.pending,
+          )
+        : snapshot.queueSummary.completed,
+    },
+  };
 }
 
 function projectStreamingEvent(

@@ -246,6 +246,37 @@ describe("buildVisibleLedger replay parity", () => {
     expect(visibleProjection.latestSnapshot?.status).toBe(fullProjection.latestSnapshot?.status);
   });
 
+  it("does not synthesize orchestrator as active agent for running single_agent fallback snapshots", () => {
+    const entries = [
+      entry({ id: "root", type: "session.created", sessionId, seq: 1, createdAt: 1, payload: { title: "Chat" } }),
+      entry({
+        id: "run1",
+        type: "run.started",
+        sessionId,
+        runId: "run-1",
+        parentId: "root",
+        turnIndex: 1,
+        seq: 2,
+        createdAt: 2,
+        payload: {
+          input: { prompt: "hello" },
+          config: {
+            providerId: "openai",
+            modelRef: "gpt-4",
+            pattern: "orchestrator_subagent",
+            modeId: "single_agent",
+            profileIds: ["ora"],
+          },
+          status: "running",
+        },
+      }),
+    ];
+    const projection = deriveSessionProjection(ledger(entries, "run1"));
+
+    expect(projection.latestSnapshot?.status).toBe("running");
+    expect(projection.latestSnapshot?.activeAgents).toEqual(["ora"]);
+  });
+
   it("preserves run projections", () => {
     const entries = makeEntries();
     const full = ledger(entries, "msg1");

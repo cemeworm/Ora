@@ -77,6 +77,27 @@ describe("run streaming", () => {
     expect(shouldFlushStreamingEvent(event({ seq: 16, type: "action.updated" }))).toBe(true);
   });
 
+  it("clears live running participants when a terminal run event arrives", () => {
+    const base = {
+      ...snapshot(),
+      activeAgents: ["ora"],
+      queueSummary: { mode: "dag" as const, pending: 2, inProgress: 1, completed: 0, topics: [] },
+    };
+    const done = applyStreamingRunEvent(base, event({
+      seq: 9,
+      type: "run.done",
+      payload: { status: "succeeded" },
+    }));
+
+    expect(done.status).toBe("succeeded");
+    expect(done.activeAgents).toEqual([]);
+    expect(done.queueSummary).toMatchObject({
+      pending: 0,
+      inProgress: 0,
+      completed: 3,
+    });
+  });
+
   it("keeps delta payloads as independent events without requiring cumulative content", () => {
     const base = snapshot();
     const first = applyStreamingRunEvent(base, event({

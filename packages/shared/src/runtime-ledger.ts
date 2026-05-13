@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
   CoordinationPatternSchema,
+  ORA_ROOT_AGENT_ID,
   RunStatusSchema,
+  SINGLE_AGENT_MODE_ID,
   type RunStatus,
 } from "./primitives.js";
 import {
@@ -987,7 +989,7 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
     events: run.events,
     agentMessages: [],
     artifacts: [],
-    activeAgents: run.status === "running" ? ["orchestrator"] : [],
+    activeAgents: fallbackActiveAgentsForRun(run),
     queueSummary: { mode: "dag", pending: 0, inProgress: run.status === "running" ? 1 : 0, completed: run.status === "succeeded" ? 1 : 0, topics: [] },
     sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
     busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
@@ -998,6 +1000,17 @@ function runtimeRunProjectionToSnapshot(run: RuntimeRunProjection, contextState?
     updatedAt: run.updatedAt,
     snapshotSource: "ledger" as const,
   });
+}
+
+function fallbackActiveAgentsForRun(run: RuntimeRunProjection): string[] {
+  if (run.status !== "running") {
+    return [];
+  }
+  if (run.modeId === SINGLE_AGENT_MODE_ID || run.config.modeId === SINGLE_AGENT_MODE_ID) {
+    return [ORA_ROOT_AGENT_ID];
+  }
+  const firstProfileId = run.config.profileIds[0];
+  return firstProfileId ? [firstProfileId] : [];
 }
 
 function reconcileSnapshotRuntimeFields(snapshot: StateSnapshot, gates: readonly RuntimeGateProjection[]): StateSnapshot {
