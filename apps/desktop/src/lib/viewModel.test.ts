@@ -4127,6 +4127,131 @@ describe("desktop session view model", () => {
     expect(timelineText).toEqual(["前一段。", "后一段。"]);
   });
 
+  it("keeps live-only assistant text in the same timeline order after snapshot replay catches up", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-replay-order";
+    const sessionId = "session-live-replay-order";
+    const messageId = `${runId}:assistant:orchestrator:0`;
+    const toolEvent = {
+      id: `${runId}:evt-1`,
+      runId,
+      seq: 1,
+      type: "tool.called",
+      agentId: "orchestrator",
+      nodeId: "orchestrator",
+      createdAt: createdAt + 1_000,
+      pattern: "orchestrator_subagent",
+      payload: {
+        toolId: "file.read",
+        status: "succeeded",
+        input: { path: "apps/desktop/src/lib/viewModel.ts" },
+        output: { path: "apps/desktop/src/lib/viewModel.ts", sizeBytes: 128 },
+      },
+    };
+    const liveOnlySnapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "排查切换 session 后历史显示变化", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-replay-order-test",
+        skillIds: [],
+        toolIds: ["file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "orchestrator" }],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [toolEvent],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 1_000,
+    } as unknown as OraStateSnapshot;
+    const replaySnapshot = {
+      ...liveOnlySnapshot,
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId, content: "我先看当前测试。", delta: "我先看当前测试。", streaming: true },
+        },
+        toolEvent,
+      ],
+    } as unknown as OraStateSnapshot;
+    const transcript = [{
+      id: `${runId}:user`,
+      sessionId,
+      runId,
+      turnIndex: 1,
+      role: "user" as const,
+      content: "排查切换 session 后历史显示变化",
+      pattern: "orchestrator_subagent" as const,
+      modeId: SINGLE_AGENT_MODE_ID,
+      createdAt,
+    }];
+
+    const liveBaseMessages = adaptChatMessages(transcript, { [runId]: liveOnlySnapshot });
+    const liveAssistant = adaptRenderableChatMessages({
+      transcript,
+      turnSnapshots: { [runId]: liveOnlySnapshot },
+      selectedSessionId: sessionId,
+      baseMessages: liveBaseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${messageId}`]: {
+          runId,
+          messageId,
+          sessionId,
+          role: "assistant",
+          content: "我先看当前测试。",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          updatedAt: createdAt,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+    const replayAssistant = adaptChatMessages(transcript, { [runId]: replaySnapshot })
+      .find((message) => message.role === "assistant");
+    const liveKinds = liveAssistant?.turn?.timelineItems?.map((item) => item.kind) ?? [];
+    const replayKinds = replayAssistant?.turn?.timelineItems?.map((item) => item.kind) ?? [];
+    const liveText = liveAssistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+    const replayText = replayAssistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(liveKinds).toEqual(replayKinds);
+    expect(liveText).toEqual(replayText);
+    expect(liveKinds).toEqual(["assistant_text", "status_group"]);
+  });
+
   it("keeps live same-message delta overlay as one timeline item", () => {
     const createdAt = 1_714_000_000_000;
     const runId = "run-live-timeline-one-item";
@@ -5784,6 +5909,140 @@ describe("desktop session view model", () => {
     expect(timeline[4]).toMatchObject({ content: finalText });
     expect(timeline.filter((item) => "content" in item && item.content === finalText)).toHaveLength(1);
     expect(assistant?.content).toBe(finalText);
+  });
+
+  it("interleaves explicit streaming assistant text with progress items after final output is available", () => {
+    const createdAt = 1_714_000_000_000;
+    const firstText = "我先确认当前实现。";
+    const secondText = "现在对照测试覆盖。";
+    const finalText = "最终结论：正文应该按时序穿插展示。";
+    const snapshot = {
+      runId: "run-explicit-stream-interleaving",
+      sessionId: "session-explicit-stream-interleaving",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "修复 assistant message 输出顺序", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-explicit-stream-interleaving-test",
+        skillIds: [],
+        toolIds: ["file.read", "shell.execute"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [{ id: "orchestrator", label: "Ora" }],
+      memory: [],
+      plan: [],
+      planList: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-explicit-stream-interleaving:evt-0",
+          runId: "run-explicit-stream-interleaving",
+          seq: 0,
+          type: "message.delta",
+          createdAt,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: firstText, streaming: true },
+        },
+        {
+          id: "run-explicit-stream-interleaving:evt-1",
+          runId: "run-explicit-stream-interleaving",
+          seq: 1,
+          type: "tool.called",
+          createdAt: createdAt + 1_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            input: { path: "apps/desktop/src/lib/viewModel.ts" },
+            output: { path: "apps/desktop/src/lib/viewModel.ts", sizeBytes: 128 },
+          },
+        },
+        {
+          id: "run-explicit-stream-interleaving:evt-2",
+          runId: "run-explicit-stream-interleaving",
+          seq: 2,
+          type: "message.delta",
+          createdAt: createdAt + 2_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", content: secondText, streaming: true },
+        },
+        {
+          id: "run-explicit-stream-interleaving:evt-3",
+          runId: "run-explicit-stream-interleaving",
+          seq: 3,
+          type: "tool.called",
+          createdAt: createdAt + 3_000,
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "shell.execute",
+            status: "succeeded",
+            input: { command: "pnpm --filter @ora/desktop test" },
+            output: { command: "pnpm --filter @ora/desktop test", exitCode: 0 },
+          },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: [firstText, secondText, finalText].join("\n\n") },
+      updatedAt: createdAt + 4_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-explicit-stream-interleaving:user",
+        sessionId: "session-explicit-stream-interleaving",
+        runId: "run-explicit-stream-interleaving",
+        turnIndex: 1,
+        role: "user",
+        content: "修复 assistant message 输出顺序",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-explicit-stream-interleaving": snapshot },
+    ).find((message) => message.role === "assistant");
+    const timeline = assistant?.turn?.timelineItems ?? [];
+
+    expect(timeline.map((item) => item.kind)).toEqual([
+      "assistant_text",
+      "status_group",
+      "assistant_text",
+      "status_group",
+      "final_text",
+    ]);
+    expect(timeline[0]).toMatchObject({ content: firstText });
+    expect(timeline[1]).toMatchObject({ summary: "已探索 1 个文件" });
+    expect(timeline[2]).toMatchObject({ content: secondText });
+    expect(timeline[3]).toMatchObject({ summary: "已运行 1 条命令" });
+    expect(timeline[4]).toMatchObject({ content: [firstText, secondText, finalText].join("\n\n") });
   });
 
   it("keeps historical progress narration out of process steps after the run finishes", () => {

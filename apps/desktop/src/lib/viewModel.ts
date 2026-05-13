@@ -1610,6 +1610,9 @@ function overlayLiveTimelineItems(
   const existingItems = turn.timelineItems ?? [];
   let nextItems = existingItems;
   const projection = deriveRuntimeTimelineProjection(snapshot);
+  const eventTimeBySeq = new Map(
+    projection.events.map((event) => [event.seq, event.createdAt]),
+  );
 
   for (const entry of liveEntries) {
     const content = timelineTextExcludingProposedPlan(entry.content);
@@ -1647,7 +1650,7 @@ function overlayLiveTimelineItems(
     if (nextItems === existingItems) {
       nextItems = [...existingItems];
     }
-    nextItems.push({
+    nextItems = insertLiveTimelineItemByCreatedAt(nextItems, eventTimeBySeq, entry.createdAt, {
       id: `${snapshot.runId}:timeline:live:${entry.messageId}`,
       kind: "assistant_text",
       content,
@@ -1658,6 +1661,28 @@ function overlayLiveTimelineItems(
   }
 
   return nextItems === existingItems ? turn : { ...turn, timelineItems: nextItems };
+}
+
+function insertLiveTimelineItemByCreatedAt(
+  items: TurnTimelineItem[],
+  eventTimeBySeq: ReadonlyMap<number, number>,
+  createdAt: number,
+  item: TurnTimelineItem,
+): TurnTimelineItem[] {
+  const index = items.findIndex((existing) => {
+    const eventSeq = existing.eventSeq;
+    if (eventSeq === undefined) {
+      return existing.kind === "final_text";
+    }
+    const existingCreatedAt = eventTimeBySeq.get(eventSeq);
+    return existingCreatedAt !== undefined && existingCreatedAt > createdAt;
+  });
+  if (index < 0) {
+    items.push(item);
+  } else {
+    items.splice(index, 0, item);
+  }
+  return items;
 }
 
 function shouldReplaceSnapshotAssistantTextWithLiveContent(
@@ -2456,7 +2481,12 @@ function deriveTimelineItems(
   for (const event of projection.events) {
     if (isPublicAssistantDelta(snapshot, event)) {
       const text = assistantDeltaText(event);
-      const shouldCollectText = shouldCollectAssistantDeltaForTimeline(event, finalText, hasVisibleProcessSeparators);
+      const shouldCollectText = shouldCollectAssistantDeltaForTimeline(
+        event,
+        finalText,
+        hasVisibleProcessSeparators,
+        hasLaterVisibleProcessEvent(event, visibleEvents),
+      );
       if (shouldCollectText) {
         const agentId = event.agentId ?? "__default__";
         const textKey = assistantDeltaMessageKey(event);
@@ -2646,6 +2676,7 @@ function shouldCollectAssistantDeltaForTimeline(
   event: OraEventEnvelope & { payload: Record<string, unknown> },
   finalText: string | undefined,
   hasVisibleProcessSeparators: boolean,
+  hasLaterVisibleProcessSeparator: boolean,
 ): boolean {
   const text = assistantDeltaText(event);
   if (!text.trim()) {
@@ -2654,17 +2685,28 @@ function shouldCollectAssistantDeltaForTimeline(
   if (!finalText) {
     return true;
   }
-  if (isExplicitStreamingAssistantDelta(event)) {
-    return false;
-  }
   if (!hasVisibleProcessSeparators) {
     return false;
+  }
+  if (isExplicitStreamingAssistantDelta(event)) {
+    return hasLaterVisibleProcessSeparator;
   }
   const hasDelta = typeof event.payload.delta === "string" && event.payload.delta.length > 0;
   if (hasDelta) {
     return true;
   }
   return !isTimelineTextDuplicate(text, finalText);
+}
+
+function hasLaterVisibleProcessEvent(
+  event: OraEventEnvelope,
+  visibleEvents: OraEventEnvelope[],
+): boolean {
+  return visibleEvents.some((visibleEvent) =>
+    visibleEvent.runId === event.runId &&
+    (visibleEvent.createdAt > event.createdAt ||
+      (visibleEvent.createdAt === event.createdAt && visibleEvent.seq > event.seq))
+  );
 }
 
 function timelineTextExcludingProposedPlan(text: string): string {
