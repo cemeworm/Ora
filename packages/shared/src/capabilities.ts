@@ -1041,6 +1041,14 @@ export const MVP_TOOLS: ToolDescriptor[] = [
           type: "number",
           description: "Optional timeout in milliseconds, capped by the active mode's shell timeout limit.",
         },
+        login: {
+          type: "boolean",
+          description: "When true, run the command through a login shell when the selected shell supports it.",
+        },
+        shell: {
+          type: "string",
+          description: "Optional shell executable path or command name, for example /bin/zsh or pwsh.",
+        },
       },
       required: ["command"],
       additionalProperties: true,

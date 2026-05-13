@@ -1,6 +1,7 @@
 import { runStdioServer } from "./stdio.js";
 import { LocalRunStore } from "./run-store.js";
 import { shutdownLangfuseTelemetry } from "./telemetry/langfuse.js";
+import { warmShellSnapshot } from "./harness/shell-snapshot.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -8,6 +9,10 @@ import path from "node:path";
 console.log = console.error;
 console.info = console.error;
 console.warn = console.error;
+
+void warmShellSnapshot().catch((error) => {
+  process.stderr.write(`[ShellSnapshot] warmup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+});
 
 async function runChannelDaemon(): Promise<void> {
   const lock = acquireChannelDaemonLock();

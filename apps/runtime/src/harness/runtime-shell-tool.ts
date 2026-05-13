@@ -6,8 +6,9 @@ import type { RuntimeToolDefinition } from "./capability-registries.js";
 import type { RuntimeToolExecutionContext } from "./runtime-tool-executor.js";
 import type { ResolvedToolLimits } from "./runtime-tool-executor.js";
 import type { RuntimeToolResultPreview } from "./runtime-tool-definition-v2.js";
-import { readPositiveInt, requireWorkspaceRoot, truncateText } from "./runtime-tool-utils.js";
+import { readPositiveInt, requireWorkspaceRoot } from "./runtime-tool-utils.js";
 import { prefersChinese, stringArg } from "./runtime-tool-approval.js";
+import { getShellExecutionContext } from "./shell-snapshot.js";
 
 export function shellToolRuntimeFields(toolId: string): Partial<RuntimeToolDefinition<RuntimeToolExecutionContext>> {
   if (toolId !== "shell.execute") {
@@ -49,6 +50,7 @@ export interface ShellExecuteResult {
   command: string;
   cwd: string;
   shell: string;
+  login: boolean;
   exitCode: number;
   signal?: string;
   stdout: string;
@@ -67,6 +69,8 @@ function shellResultPreview(result: ShellExecuteResult): RuntimeToolResultPrevie
     detail: {
       command: result.command,
       cwd: result.cwd,
+      shell: result.shell,
+      login: result.login,
       exitCode: result.exitCode,
       signal: result.signal,
       truncated: result.truncated,
@@ -78,6 +82,160 @@ function shellResultPreview(result: ShellExecuteResult): RuntimeToolResultPrevie
       stderr: result.stderr.slice(0, 2000),
     },
   };
+}
+
+interface ShellOutputAccumulator {
+  content: string;
+  keptBytes: number;
+  truncated: boolean;
+}
+
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+function createShellOutputAccumulator(): ShellOutputAccumulator {
+  return {
+    content: "",
+    keptBytes: 0,
+    truncated: false,
+  };
+}
+
+function shellOutputTruncationNotice(maxBytes: number): string {
+  return `\n... [output truncated, exceeded ${formatShellOutputByteLimit(maxBytes)}]`;
+}
+
+function formatShellOutputByteLimit(maxBytes: number): string {
+  if (maxBytes % (1024 * 1024) === 0) {
+    return `${maxBytes / (1024 * 1024)}MB`;
+  }
+  if (maxBytes % 1024 === 0) {
+    return `${maxBytes / 1024}KB`;
+  }
+  return `${maxBytes} bytes`;
+}
+
+function truncateUtf8Content(text: string, maxBytes: number): { content: string; bytes: number; truncated: boolean } {
+  if (maxBytes <= 0 || text.length === 0) {
+    return { content: "", bytes: 0, truncated: text.length > 0 };
+  }
+  const encoded = Buffer.from(text, "utf8");
+  if (encoded.length <= maxBytes) {
+    return { content: text, bytes: encoded.length, truncated: false };
+  }
+  let end = Math.min(maxBytes, encoded.length);
+  while (end > 0) {
+    try {
+      return {
+        content: UTF8_FATAL_DECODER.decode(encoded.subarray(0, end)),
+        bytes: end,
+        truncated: true,
+      };
+    } catch {
+      end -= 1;
+    }
+  }
+  return { content: "", bytes: 0, truncated: true };
+}
+
+function appendShellStreamChunk(state: ShellOutputAccumulator, text: string, maxBytes: number): void {
+  if (!text || state.truncated) {
+    return;
+  }
+  const fullNotice = shellOutputTruncationNotice(maxBytes);
+  const notice = truncateUtf8Content(fullNotice, maxBytes).content || fullNotice;
+  const noticeBytes = Buffer.byteLength(notice);
+  const contentBudget = Math.max(0, maxBytes - noticeBytes);
+  const incomingBytes = Buffer.byteLength(text);
+  if (state.keptBytes + incomingBytes <= maxBytes) {
+    state.content += text;
+    state.keptBytes += incomingBytes;
+    return;
+  }
+  if (state.keptBytes > contentBudget) {
+    const trimmed = truncateUtf8Content(state.content, contentBudget);
+    state.content = trimmed.content;
+    state.keptBytes = trimmed.bytes;
+  }
+  const remainingContentBytes = Math.max(0, contentBudget - state.keptBytes);
+  if (remainingContentBytes > 0) {
+    const limited = truncateUtf8Content(text, remainingContentBytes);
+    state.content += limited.content;
+    state.keptBytes += limited.bytes;
+  }
+  state.content += notice;
+  state.truncated = true;
+}
+
+type ShellFlavor = "posix" | "powershell" | "cmd";
+
+function quoteForPosixShell(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function readShellExecutableArg(args: Record<string, unknown>): string | undefined {
+  const shell = typeof args.shell === "string" ? args.shell.trim() : "";
+  return shell.length > 0 ? shell : undefined;
+}
+
+function readShellLoginArg(args: Record<string, unknown>): boolean {
+  return args.login === true;
+}
+
+function detectShellFlavor(shell: string): ShellFlavor {
+  const shellName = normalizeShellName(shell);
+  if (shellName === "powershell" || shellName === "pwsh") {
+    return "powershell";
+  }
+  if (shellName === "cmd" || shellName === "command") {
+    return "cmd";
+  }
+  return "posix";
+}
+
+function normalizeShellName(shell: string): string {
+  return path.basename(shell).toLowerCase().replace(/\.exe$/, "");
+}
+
+function shellBootstrapCommand(shell: string, login: boolean): string[] {
+  if (!login) {
+    return [];
+  }
+  switch (normalizeShellName(shell)) {
+    case "zsh":
+      return ["[ -f ~/.zshrc ] && . ~/.zshrc >/dev/null 2>&1 || true"];
+    case "bash":
+      return [
+        "shopt -s expand_aliases",
+        "[ -f ~/.bashrc ] && . ~/.bashrc >/dev/null 2>&1 || true",
+      ];
+    case "fish":
+      return ["if test -f ~/.config/fish/config.fish; source ~/.config/fish/config.fish >/dev/null 2>&1; end"];
+    default:
+      return [];
+  }
+}
+
+function prepareShellCommand(shell: string, command: string, login: boolean): string {
+  const bootstrap = shellBootstrapCommand(shell, login);
+  if (!login || bootstrap.length === 0) {
+    return command;
+  }
+  return [...bootstrap, `eval -- ${quoteForPosixShell(command)}`].join("\n");
+}
+
+function buildShellArgs(shell: string, command: string, login: boolean): string[] {
+  const preparedCommand = prepareShellCommand(shell, command, login);
+  const flavor = detectShellFlavor(shell);
+  if (flavor === "powershell") {
+    return login ? ["-Login", "-Command", preparedCommand] : ["-Command", preparedCommand];
+  }
+  if (flavor === "cmd") {
+    if (login) {
+      throw new Error("shell.execute login=true is not supported for cmd.exe. Provide a POSIX shell or PowerShell via args.shell.");
+    }
+    return ["/d", "/s", "/c", preparedCommand];
+  }
+  return login ? ["-lc", preparedCommand] : ["-c", preparedCommand];
 }
 
 export async function executeWorkspaceShell(
@@ -92,20 +250,21 @@ export async function executeWorkspaceShell(
   }
   assertShellCommandStaysInWorkspace(rootPath, command);
   const timeoutMs = readPositiveInt(args.timeoutMs, limits.shellTimeoutMs, limits.shellTimeoutMs);
-  const shell = process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : (process.env.SHELL ?? "/bin/sh");
-  const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-lc", command];
+  const login = readShellLoginArg(args);
+  const { env, shellPath } = await getShellExecutionContext();
+  const shell = readShellExecutableArg(args) ?? (process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : shellPath);
+  const shellArgs = buildShellArgs(shell, command, login);
   const startedAt = Date.now();
-  let stdout = "";
-  let stderr = "";
+  const stdoutState = createShellOutputAccumulator();
+  const stderrState = createShellOutputAccumulator();
   let fullOutput = "";
-  let truncated = false;
   let timedOut = false;
   let interrupted = false;
 
   return await new Promise((resolve, reject) => {
     const child = spawn(shell, shellArgs, {
       cwd: rootPath,
-      env: sanitizeShellEnvironment(process.env),
+      env: process.platform === "win32" ? env : { ...env, SHELL: shell },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -130,19 +289,7 @@ export async function executeWorkspaceShell(
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer) => {
       const text = chunk.toString("utf8");
       fullOutput += text;
-      const currentBytes = Buffer.byteLength(stdout) + Buffer.byteLength(stderr);
-      const remainingBytes = Math.max(0, limits.shellMaxOutputBytes - currentBytes);
-      if (remainingBytes <= 0) {
-        truncated = true;
-        return;
-      }
-      const limited = truncateText(text, remainingBytes);
-      truncated = truncated || limited.truncated;
-      if (stream === "stdout") {
-        stdout += limited.content;
-      } else {
-        stderr += limited.content;
-      }
+      appendShellStreamChunk(stream === "stdout" ? stdoutState : stderrState, text, limits.shellMaxOutputBytes);
     };
 
     child.stdout.on("data", (chunk: Buffer) => appendOutput("stdout", chunk));
@@ -156,19 +303,23 @@ export async function executeWorkspaceShell(
       clearTimeout(timer);
       if (signal) signal.removeEventListener("abort", onAbort);
       const effectiveCode = timedOut ? 124 : interrupted ? 130 : code ?? 1;
+      const truncated = stdoutState.truncated || stderrState.truncated;
       const fullOutputPath = truncated ? writeFullShellOutput(command, fullOutput) : undefined;
+      const stdout = stdoutState.content;
+      const stderr = timedOut
+        ? [stderrState.content, `Command timed out after ${timeoutMs}ms.`].filter(Boolean).join("\n")
+        : interrupted
+          ? [stderrState.content, "Command interrupted by run cancellation."].filter(Boolean).join("\n")
+          : stderrState.content;
       resolve({
         command,
         cwd: rootPath,
         shell,
+        login,
         exitCode: effectiveCode,
         signal: signalVal ?? (interrupted ? "SIGTERM" : undefined),
         stdout,
-        stderr: timedOut
-          ? [stderr, `Command timed out after ${timeoutMs}ms.`].filter(Boolean).join("\n")
-          : interrupted
-            ? [stderr, "Command interrupted by run cancellation."].filter(Boolean).join("\n")
-            : stderr,
+        stderr,
         output: stdout || stderr,
         truncated,
         fullOutputPath,
@@ -194,21 +345,6 @@ function killProcessTree(child: ChildProcess): void {
   } catch {
     child.kill("SIGTERM");
   }
-}
-
-function sanitizeShellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const allowedKeys = new Set(["HOME", "LANG", "LC_ALL", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "USER"]);
-  const next: NodeJS.ProcessEnv = {};
-  for (const key of allowedKeys) {
-    const value = env[key];
-    if (value !== undefined) {
-      next[key] = value;
-    }
-  }
-  if (!next.PATH) {
-    next.PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-  }
-  return next;
 }
 
 function writeFullShellOutput(command: string, output: string): string {

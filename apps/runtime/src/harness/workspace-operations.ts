@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { relativeWorkspacePath, resolveWorkspacePath } from "./runtime-tool-utils.js";
+import { getShellExecutionContext } from "./shell-snapshot.js";
 
 /**
  * Abstract workspace operations interface.
@@ -170,6 +171,7 @@ export const localWorkspaceOperations: WorkspaceOperations = {
   },
 
   async exec(rootPath, command, options) {
+    const { env, shellPath } = await getShellExecutionContext();
     const startedAt = Date.now();
     let stdout = "";
     let stderr = "";
@@ -181,9 +183,9 @@ export const localWorkspaceOperations: WorkspaceOperations = {
     return new Promise((resolve, reject) => {
       const child = spawn(command, [], {
         cwd: rootPath,
-        env: process.env,
+        env,
         detached: process.platform !== "win32",
-        shell: true,
+        shell: process.platform === "win32" ? true : shellPath,
         stdio: ["ignore", "pipe", "pipe"],
       });
 
