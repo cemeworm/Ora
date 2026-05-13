@@ -12,6 +12,7 @@ import type {
   AssistantTurnAttachment,
   ArtifactRecord,
   ChatMessage,
+  CitationSource,
   ChatMessageAttachment,
   ClarificationOption,
   CheckpointRecord,
@@ -1780,6 +1781,10 @@ function isFinalAssistantDelta(event: OraEventEnvelope & { payload: Record<strin
   return event.payload.phase === "final" || event.payload.streaming === false;
 }
 
+function isExplicitStreamingAssistantDelta(event: OraEventEnvelope & { payload: Record<string, unknown> }): boolean {
+  return event.payload.phase === "stream" || event.payload.streaming === true;
+}
+
 function extractClarificationQuestions(
   snapshot: OraStateSnapshot,
 ): Array<{ id: string; question: string; requestedAt: number }> {
@@ -2022,6 +2027,57 @@ function shouldSuppressStoredAssistantFallback(snapshot: OraStateSnapshot): bool
 
 const turnAttachmentCache = new WeakMap<OraStateSnapshot, AssistantTurnAttachment>();
 
+function extractWebSources(snapshot: OraStateSnapshot): CitationSource[] {
+  const seen = new Set<string>();
+  const sources: CitationSource[] = [];
+
+  for (const call of snapshot.toolCalls) {
+    if (call.status !== "succeeded") continue;
+    const output = call.result?.output;
+    if (!isRecord(output)) continue;
+
+    if (call.toolId === "web.search") {
+      const results = Array.isArray(output.results) ? output.results : [];
+      for (const item of results) {
+        if (!isRecord(item)) continue;
+        const url = typeof item.url === "string" ? item.url.trim() : "";
+        if (!url) continue;
+        const normalized = normalizeUrl(url);
+        if (normalized && !seen.has(normalized)) {
+          seen.add(normalized);
+          sources.push({
+            url: normalized,
+            title: typeof item.title === "string" ? item.title : undefined,
+          });
+        }
+      }
+    } else if (call.toolId === "web.fetch") {
+      const url = typeof output.url === "string" ? output.url.trim() : "";
+      if (!url) continue;
+      const normalized = normalizeUrl(url);
+      if (normalized && !seen.has(normalized)) {
+        seen.add(normalized);
+        sources.push({
+          url: normalized,
+          title: typeof output.title === "string" ? output.title : undefined,
+        });
+      }
+    }
+  }
+
+  return sources;
+}
+
+function normalizeUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
 function buildAssistantTurnAttachment(
   snapshot: OraStateSnapshot,
   liveProposedPlan?: ReturnType<typeof parseProposedPlan>,
@@ -2053,6 +2109,7 @@ function buildAssistantTurnAttachment(
     agentMessages: deriveAgentMessages(snapshot),
     artifacts: userVisibleArtifacts(snapshot.artifacts).map(adaptTurnArtifact),
     fileChanges: userVisibleArtifacts(snapshot.artifacts).flatMap(adaptTurnFileChange),
+    sources: extractWebSources(snapshot),
     todos: [],
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
@@ -2688,6 +2745,34 @@ function deriveTimelineItems(
         agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
       },
     });
+  }
+
+  // Compensation: when timeline has visible items (status_groups etc.) but no
+  // assistant_text/final_text, promote the body text into the timeline surface
+  // so it renders inside TurnTimeline instead of as a bottom body fallback.
+  if (items.length > 0) {
+    const hasAssistantOrFinal = items.some(({ item }) =>
+      item.kind === "assistant_text" || item.kind === "final_text",
+    );
+    if (!hasAssistantOrFinal) {
+      const bodyText = !hasStartedProposedPlan
+        ? timelineTextExcludingProposedPlan(finalText ?? "")
+        : "";
+      if (bodyText) {
+        items.push({
+          rawTime: snapshot.updatedAt,
+          eventSeq: Number.MAX_SAFE_INTEGER,
+          item: {
+            id: `${snapshot.runId}:timeline:body`,
+            kind: "final_text",
+            content: bodyText,
+            timestamp: formatElapsed(baseTime, snapshot.updatedAt),
+            agentId: finalOutputAgentId(snapshot),
+            agentLabel: agentLabelForTimeline(agentLabels, finalOutputAgentId(snapshot)),
+          },
+        });
+      }
+    }
   }
 
   const sortedItems = items

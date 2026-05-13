@@ -2446,6 +2446,245 @@ describe("desktop workbench state", () => {
     expect(getActiveSnapshot(next.runLifecycle)?.attention?.kind).toBe("idle");
   });
 
+  describe("running session plan list preservation on hydrate", () => {
+    function planStep(step: string, status: "pending" | "in_progress" | "completed", id?: string) {
+      return { step, status, ...(id ? { id } : {}) };
+    }
+
+    it("preserves running planList when hydrate has no snapshot for the same session", () => {
+      const sessionId = "session-plan-hydrate";
+      const runId = "run-plan-hydrate";
+      const planList = [
+        planStep("Research approach", "completed", "step-1"),
+        planStep("Implement solution", "in_progress", "step-2"),
+        planStep("Write tests", "pending", "step-3"),
+      ];
+      const runningSnapshot: OraStateSnapshot = {
+        ...testSnapshot({ runId, sessionId, status: "running", updatedAt: 1_714_000_000_100 }),
+        planList,
+      };
+      const session: OraSessionSummary = {
+        ...sessionSummary(sessionId),
+        latestRunId: runId,
+        status: "running" as const,
+        turnCount: 1,
+        updatedAt: runningSnapshot.updatedAt,
+      };
+
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        sessions: [session],
+        runLifecycle: lifecycleFromSnapshot(runningSnapshot),
+        activeSessionDetail: {
+          session,
+          turns: [{ runId, sessionId, turnIndex: 1, status: "running", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: runningSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+          transcript: [],
+          latestSnapshot: runningSnapshot,
+        },
+      };
+
+      // Hydrate without snapshot — simulate includeLatestSnapshot: false
+      const next = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [session],
+        detail: {
+          session,
+          turns: [{ runId, sessionId, turnIndex: 1, status: "running", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: runningSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+          transcript: [],
+        },
+      });
+
+      expect(next.selectedSessionId).toBe(sessionId);
+      expect(getActiveSnapshot(next.runLifecycle)?.planList).toEqual(planList);
+      expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe(runId);
+      expect(next.runLifecycle.stage).toBe("streaming");
+    });
+
+    it("preserves planList after switching away and back to a running session", () => {
+      const planList = [
+        planStep("Research approach", "completed", "step-1"),
+        planStep("Implement solution", "in_progress", "step-2"),
+      ];
+      const runningSnapshot: OraStateSnapshot = {
+        ...testSnapshot({ runId: "run-a", sessionId: "session-a", status: "running", updatedAt: 1_714_000_000_100 }),
+        planList,
+      };
+      const sessionA: OraSessionSummary = {
+        ...sessionSummary("session-a"),
+        latestRunId: "run-a",
+        status: "running" as const,
+        turnCount: 1,
+        updatedAt: runningSnapshot.updatedAt,
+      };
+      const sessionB = sessionSummary("session-b");
+
+      // Start with session A running, cached in sessionDetailsById
+      let state: WorkbenchState = {
+        ...initialWorkbenchState,
+        sessions: [sessionA, sessionB],
+        sessionDetailsById: {
+          "session-a": {
+            session: sessionA,
+            turns: [{ runId: "run-a", sessionId: "session-a", turnIndex: 1, status: "running", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: runningSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+            transcript: [],
+            latestSnapshot: runningSnapshot,
+          },
+        },
+        selectedSessionId: "session-a",
+        selectedTurnRunId: "run-a",
+        activeSessionDetail: {
+          session: sessionA,
+          turns: [{ runId: "run-a", sessionId: "session-a", turnIndex: 1, status: "running", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: runningSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+          transcript: [],
+          latestSnapshot: runningSnapshot,
+        },
+        runLifecycle: lifecycleFromSnapshot(runningSnapshot),
+      };
+
+      // Switch to session B
+      state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-b" });
+
+      // Switch back to session A — SELECT_SESSION restores from cache
+      state = workbenchReducer(state, { type: "SELECT_SESSION", sessionId: "session-a" });
+      expect(getActiveSnapshot(state.runLifecycle)?.planList).toEqual(planList);
+
+      // Now HYDRATE_SESSION without snapshot (simulating includeLatestSnapshot: false response)
+      state = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [sessionA, sessionB],
+        detail: {
+          session: sessionA,
+          turns: [{ runId: "run-a", sessionId: "session-a", turnIndex: 1, status: "running", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: runningSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+          transcript: [],
+        },
+      });
+
+      expect(getActiveSnapshot(state.runLifecycle)?.planList).toEqual(planList);
+      expect(state.runLifecycle.stage).toBe("streaming");
+      expect(state.selectedSessionId).toBe("session-a");
+    });
+
+    it("replaces running planList with terminal snapshot on hydrate", () => {
+      const sessionId = "session-terminal-plan";
+      const runId = "run-terminal-plan";
+      const oldPlanList = [
+        planStep("Old step", "in_progress", "old-step"),
+      ];
+      const runningSnapshot: OraStateSnapshot = {
+        ...testSnapshot({ runId, sessionId, status: "running", updatedAt: 1_714_000_000_000 }),
+        planList: oldPlanList,
+      };
+      const terminalSnapshot: OraStateSnapshot = {
+        ...testSnapshot({ runId, sessionId, status: "succeeded", updatedAt: 1_714_000_000_100 }),
+        planList: [
+          planStep("Old step", "completed", "old-step"),
+        ],
+      };
+      const session: OraSessionSummary = {
+        ...sessionSummary(sessionId),
+        latestRunId: runId,
+        status: "succeeded" as const,
+        turnCount: 1,
+        updatedAt: terminalSnapshot.updatedAt,
+      };
+
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionId,
+        selectedTurnRunId: runId,
+        sessions: [session],
+        runLifecycle: lifecycleFromSnapshot(runningSnapshot),
+        activeSessionDetail: {
+          session,
+          turns: [{ runId, sessionId, turnIndex: 1, status: "running", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: terminalSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+          transcript: [],
+          latestSnapshot: runningSnapshot,
+        },
+      };
+
+      // Hydrate with terminal snapshot
+      const next = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [session],
+        detail: {
+          session,
+          turns: [{ runId, sessionId, turnIndex: 1, status: "succeeded", pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: terminalSnapshot.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+          transcript: [],
+          latestSnapshot: terminalSnapshot,
+        },
+        snapshot: terminalSnapshot,
+      });
+
+      expect(getActiveSnapshot(next.runLifecycle)?.planList).toEqual(terminalSnapshot.planList);
+      expect(next.runLifecycle.stage).toBe("settled");
+    });
+
+    it("does not carry planList from one session to another on hydrate", () => {
+      const sessionIdA = "session-a-plan";
+      const sessionIdB = "session-b-plan";
+      const planListA = [
+        planStep("Session A step", "in_progress", "step-a"),
+      ];
+      const runningSnapshotA: OraStateSnapshot = {
+        ...testSnapshot({ runId: "run-a", sessionId: sessionIdA, status: "running", updatedAt: 1_714_000_000_000 }),
+        planList: planListA,
+      };
+      const sessionA: OraSessionSummary = {
+        ...sessionSummary(sessionIdA),
+        latestRunId: "run-a",
+        status: "running" as const,
+        turnCount: 1,
+      };
+      const sessionB: OraSessionSummary = {
+        ...sessionSummary(sessionIdB),
+        turnCount: 0,
+      };
+
+      const sessionADetail = {
+        session: sessionA,
+        turns: [{ runId: "run-a", sessionId: sessionIdA, turnIndex: 1, status: "running" as const, pattern: "orchestrator_subagent", modeId: "debate", providerId: "local-smoke", modelRef: "local/smoke-model", prompt: "Plan this.", startedAt: 1_714_000_000_000, updatedAt: runningSnapshotA.updatedAt, eventCount: 0, checkpointCount: 0, artifactCount: 0 }],
+        transcript: [],
+        latestSnapshot: runningSnapshotA,
+      };
+      const state: WorkbenchState = {
+        ...initialWorkbenchState,
+        selectedSessionId: sessionIdA,
+        selectedTurnRunId: "run-a",
+        sessions: [sessionA, sessionB],
+        runLifecycle: lifecycleFromSnapshot(runningSnapshotA),
+        activeSessionDetail: sessionADetail,
+        sessionDetailsById: { [sessionIdA]: sessionADetail },
+      };
+
+      // Hydrate session B without snapshot
+      const next = workbenchReducer(state, {
+        type: "HYDRATE_SESSION",
+        projects: [],
+        sessions: [sessionA, sessionB],
+        detail: {
+          session: sessionB,
+          turns: [],
+          transcript: [],
+        },
+      });
+
+      expect(next.selectedSessionId).toBe(sessionIdB);
+      // Session B has no running snapshot, so runLifecycle should be idle
+      expect(next.runLifecycle.stage).toBe("idle");
+      expect(getActiveSnapshot(next.runLifecycle)).toBeUndefined();
+      // Session A's running snapshot should still be in the runLifecycle of its own session state
+      // (not carried over to session B)
+      const cachedA = next.sessionDetailsById[sessionIdA];
+      expect(cachedA).toBeDefined();
+      expect(cachedA?.latestSnapshot?.planList).toEqual(planListA);
+    });
+  });
+
   it("optimistically marks a running turn cancelled before the runtime responds", () => {
     const snapshot = testSnapshot({
       runId: "run-cancel",

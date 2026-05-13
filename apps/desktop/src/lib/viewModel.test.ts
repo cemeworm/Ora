@@ -6390,4 +6390,245 @@ describe("desktop session view model", () => {
       content: "我会先整理上下文。",
     });
   });
+
+  it("promotes assistant body into status-only timeline so answer renders inside timeline surface", () => {
+    const createdAt = 1_714_000_000_000;
+    const finalAnswer = [
+      "好的，我来仔细审查这个方案。",
+      "",
+      "先看一下相关的现有代码结构，然后检查组件模式。",
+    ].join("\n");
+    const snapshot = {
+      runId: "run-status-timeline-body",
+      sessionId: "session-status-timeline-body",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "审查方案", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["orchestrator"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-status-timeline-body-test",
+        skillIds: [],
+        toolIds: ["file.read", "file.grep"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", model: "deepseek", tools: [], budget: "default", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-status-timeline-body:evt-0",
+          runId: "run-status-timeline-body",
+          seq: 0,
+          type: "tool.called",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+          },
+        },
+        {
+          id: "run-status-timeline-body:evt-1",
+          runId: "run-status-timeline-body",
+          seq: 1,
+          type: "tool.called",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt: createdAt + 1_000,
+          pattern: "orchestrator_subagent",
+          payload: {
+            toolId: "file.grep",
+            status: "succeeded",
+            path: "apps/desktop/src/lib/viewModel.ts",
+          },
+        },
+      ],
+      artifacts: [],
+      agentMessages: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 2, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalAnswer },
+      updatedAt: createdAt + 5_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-status-timeline-body:user",
+        sessionId: "session-status-timeline-body",
+        runId: "run-status-timeline-body",
+        turnIndex: 1,
+        role: "user",
+        content: "审查方案",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-status-timeline-body": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    const timeline = assistant?.turn?.timelineItems ?? [];
+    const kinds = timeline.map((item) => item.kind);
+    const assistantTextItems = timeline.filter(
+      (item) => item.kind === "assistant_text" || item.kind === "final_text",
+    );
+
+    // Status items from tool calls exist
+    expect(kinds.filter((k) => k === "status_group")).toHaveLength(1);
+
+    // Body answer is represented in timeline as final_text
+    expect(assistantTextItems).toHaveLength(1);
+    expect(assistantTextItems[0]).toMatchObject({
+      kind: "final_text",
+      content: finalAnswer,
+    });
+
+    // Body content matches the answer
+    expect(assistant?.content).toBe(finalAnswer);
+  });
+
+  it("promotes body into status-only timeline even when agent messages contain overlapping content", () => {
+    const createdAt = 1_714_000_000_000;
+    // Agent messages contain text that is an 80%+ substring of final answer,
+    // causing isTimelineTextAlreadyRepresented to return true before the fix.
+    const agentDraft = [
+      "经过对代码结构的详细审查，发现 AssistantTurnCard 组件",
+      "中 body fallback 的渲染条件存在关键问题。",
+      "当 timeline 中包含 status_group 但缺少 assistant_text 时，",
+      "body 内容会被渲染在 timeline 下方而非内部，导致交错显示失效。",
+      "需要调整 viewModel 的 timeline 投影逻辑来修复。",
+    ].join("");
+    const finalAnswer = agentDraft + "建议修改 deriveTimelineItems。";
+    const snapshot = {
+      runId: "run-status-body-agent-overlap",
+      sessionId: "session-status-body-agent-overlap",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "agent_teams",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "分析渲染问题", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "agent_teams",
+        modeSelection: "manual",
+        profileIds: ["orchestrator", "builder"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-status-body-agent-overlap-test",
+        skillIds: [],
+        toolIds: ["file.read"],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [
+        { id: "orchestrator", label: "Orchestrator", role: "Coordinate", model: "deepseek", tools: [], budget: "default", memoryScopes: [] },
+        { id: "builder", label: "Builder", role: "Build", model: "deepseek", tools: [], budget: "default", memoryScopes: [] },
+      ],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: "run-status-body-agent-overlap:evt-0",
+          runId: "run-status-body-agent-overlap",
+          seq: 0,
+          type: "tool.called",
+          agentId: "orchestrator",
+          nodeId: "orchestrator",
+          createdAt,
+          pattern: "agent_teams",
+          payload: {
+            toolId: "file.read",
+            status: "succeeded",
+            path: "apps/desktop/src/components/AssistantTurnCard.tsx",
+          },
+        },
+      ],
+      artifacts: [],
+      agentMessages: [
+        {
+          id: "run-status-body-agent-overlap:agent-0",
+          runId: "run-status-body-agent-overlap",
+          fromAgentId: "orchestrator",
+          toAgentIds: ["builder"],
+          kind: "handoff",
+          status: "done",
+          content: agentDraft,
+          threadId: "thread-1",
+          artifactIds: [],
+          createdAt: createdAt + 1_000,
+        },
+      ],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 1, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      output: { text: finalAnswer },
+      updatedAt: createdAt + 5_000,
+    } as unknown as OraStateSnapshot;
+
+    const assistant = adaptChatMessages(
+      [{
+        id: "run-status-body-agent-overlap:user",
+        sessionId: "session-status-body-agent-overlap",
+        runId: "run-status-body-agent-overlap",
+        turnIndex: 1,
+        role: "user",
+        content: "分析方案",
+        pattern: "agent_teams",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { "run-status-body-agent-overlap": snapshot },
+    ).find((message) => message.role === "assistant");
+
+    const timeline = assistant?.turn?.timelineItems ?? [];
+    const assistantTextItems = timeline.filter(
+      (item) => item.kind === "assistant_text" || item.kind === "final_text",
+    );
+
+    // Has status items from tool calls
+    expect(timeline.some((item) => item.kind === "status_group")).toBe(true);
+
+    // Body answer is in timeline as final_text (not suppressed by agent message overlap)
+    expect(assistantTextItems).toHaveLength(1);
+    expect(assistantTextItems[0]).toMatchObject({
+      kind: "final_text",
+      content: finalAnswer,
+    });
+
+    // Body content is the answer
+    expect(assistant?.content).toBe(finalAnswer);
+  });
 });

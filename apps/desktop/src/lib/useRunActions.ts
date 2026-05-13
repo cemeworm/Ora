@@ -427,13 +427,14 @@ export function useRunActions() {
       refreshCollections?: boolean;
       shouldApply?: () => boolean;
       preserveSelection?: boolean;
+      includeLatestSnapshot?: boolean;
     } = {},
   ) {
     const refreshCollections = options.refreshCollections ?? true;
     const [projects, sessions, detail] = await Promise.all([
       refreshCollections ? runtimeClient.listProjects() : Promise.resolve(state.projects),
       refreshCollections ? runtimeClient.listSessions() : Promise.resolve(state.sessions),
-      runtimeClient.getSession(sessionId, { includeLatestSnapshot: false }),
+      runtimeClient.getSession(sessionId, { includeLatestSnapshot: options.includeLatestSnapshot ?? false }),
     ]);
     if (options.shouldApply && !options.shouldApply()) {
       return { projects, sessions, detail };
@@ -474,6 +475,7 @@ export function useRunActions() {
       await hydrateSession(sessionId, undefined, undefined, {
         refreshCollections: false,
         shouldApply: () => sessionRequestRef.current === requestId,
+        includeLatestSnapshot: true,
       });
       timeEnd("getSession RPC");
       cleanupPreviousSessionIfDisposable(previousSessionId, sessionId);

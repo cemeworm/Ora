@@ -10,7 +10,7 @@ import {
   type PermissionMode,
   type TaskIntent,
 } from "@cemeworm/shared";
-import { timeStart, timeEnd } from "./debugTiming";
+import { timeStart, timeEnd, recordTiming } from "./debugTiming";
 import {
   createContext,
   useContext,
@@ -2451,9 +2451,17 @@ export function workbenchReducer(
         state.selectedTurnRunId,
       );
       const normalizedSnapshot = snapshot ? normalizeDesktopSnapshot(snapshot) : undefined;
+      const currentActiveSnapshot = getActiveSnapshot(state.runLifecycle);
+      const effectiveSnapshot = normalizedSnapshot ?? (
+        currentActiveSnapshot &&
+        currentActiveSnapshot.sessionId === action.detail.session.sessionId &&
+        !isSettledRunStatus(currentActiveSnapshot.status)
+          ? currentActiveSnapshot
+          : undefined
+      );
       const latestTurn = action.detail.turns.at(-1);
-      const attention = normalizedSnapshot?.attention ?? action.detail.session.attention;
-      const status = normalizedSnapshot?.status ?? action.detail.session.status;
+      const attention = effectiveSnapshot?.attention ?? action.detail.session.attention;
+      const status = effectiveSnapshot?.status ?? action.detail.session.status;
       const normalizedDetail = {
         ...action.detail,
         session: {
@@ -2461,7 +2469,7 @@ export function workbenchReducer(
           status,
           attention,
         },
-        latestSnapshot: normalizedSnapshot ?? action.detail.latestSnapshot,
+        latestSnapshot: effectiveSnapshot ?? action.detail.latestSnapshot,
       };
       const sessions = reconcileSessionSummariesWithLocalAuthority(
         state,
@@ -2495,7 +2503,7 @@ export function workbenchReducer(
       ) || shouldPreserveHydratingPendingRun({
         pendingRun: currentPendingRun,
         detail: normalizedDetail,
-        snapshot: normalizedSnapshot,
+        snapshot: effectiveSnapshot,
       });
       const pendingRun = preservePendingRun ? currentPendingRun : undefined;
       const nextState = {
@@ -2515,26 +2523,26 @@ export function workbenchReducer(
           normalizedDetail,
         ),
         selectedSessionId: action.detail.session.sessionId,
-        selectedTurnRunId: normalizedSnapshot?.runId ?? latestTurn?.runId,
+        selectedTurnRunId: effectiveSnapshot?.runId ?? latestTurn?.runId,
         selectedPattern:
-          normalizedSnapshot?.pattern ??
+          effectiveSnapshot?.pattern ??
           latestTurn?.pattern ??
           state.selectedPattern,
         selectedModeId: preserveComposerMode(
           state,
-          normalizedSnapshot?.modeId ?? latestTurn?.modeId,
+          effectiveSnapshot?.modeId ?? latestTurn?.modeId,
         ),
         selectedModeSelection:
-          normalizedSnapshot?.config.modeSelection ?? state.selectedModeSelection,
+          effectiveSnapshot?.config.modeSelection ?? state.selectedModeSelection,
         selectedProviderId:
-          normalizedSnapshot?.config.providerId ??
+          effectiveSnapshot?.config.providerId ??
           latestTurn?.providerId ??
           state.selectedProviderId,
         selectedNodeId:
-          normalizedSnapshot?.topology.nodes[1]?.id ??
-          normalizedSnapshot?.topology.nodes[0]?.id ??
+          effectiveSnapshot?.topology.nodes[1]?.id ??
+          effectiveSnapshot?.topology.nodes[0]?.id ??
           "run",
-        selectedBeatId: normalizedSnapshot?.events.at(-1)?.id,
+        selectedBeatId: effectiveSnapshot?.events.at(-1)?.id,
         promptText: sessionPromptText(state, action.detail.session.sessionId),
         selectedSkillIds: sessionSkillIds(
           state,
@@ -2548,7 +2556,7 @@ export function workbenchReducer(
         commandFeedback: action.feedback ?? state.commandFeedback,
         runLifecycle: preservePendingRun
           ? runLifecycleFromPendingRun(pendingRun)
-          : runLifecycleFromSnapshot(normalizedSnapshot, {
+          : runLifecycleFromSnapshot(effectiveSnapshot, {
               previous: state.runLifecycle,
               fallbackSessionId: action.detail.session.sessionId,
             }),
@@ -3023,14 +3031,17 @@ export function workbenchReducer(
       const streamBelongsToActiveTurn =
         streamMatchesActiveSession &&
         (streamReferencesActiveRun || matchesPendingRunBeforeSnapshot);
-      if (
+      const canUseOverlay =
         streamBelongsToActiveTurn &&
         streamCanUseLiveDeltaOverlay(
           action.stream,
           currentActiveSnapshot,
           action.stream.snapshot,
-        )
-      ) {
+        );
+      if (isLiveDeltaOnlyStream(action.stream) && !canUseOverlay) {
+        recordTiming("stream-full-merge-fallback", 0);
+      }
+      if (canUseOverlay) {
         const liveMessageDeltaBuffer = applyStreamToLiveMessageDeltaBuffer(
           state.liveMessageDeltaBuffer,
           action.stream,
