@@ -9,7 +9,7 @@ import {
   stableViewModelCacheKey,
   toolIdsForRun,
 } from "./useRunActions";
-import type { OraSessionSummary } from "./runtimeClient";
+import type { OraSessionSummary, OraStateSnapshot } from "./runtimeClient";
 
 describe("desktop run actions", () => {
   it("keeps clarification preflight off by default for all task intents", () => {
@@ -211,6 +211,44 @@ describe("desktop run actions", () => {
 
   it("preserves sessions that already have turns", () => {
     const state = stateWithSession({}, { turnCount: 1 });
+
+    expect(isDisposableEmptySession(state, "session-empty")).toBe(false);
+  });
+
+  it("preserves a running session even when active detail still looks empty", () => {
+    const staleEmptyDetail = {
+      session: sessionSummary("session-empty"),
+      turns: [],
+      transcript: [],
+    };
+    const state = stateWithSession({
+      activeSessionDetail: staleEmptyDetail,
+      sessions: [sessionSummary("session-empty", {
+        latestRunId: "run-empty",
+        status: "running",
+      })],
+    });
+
+    expect(isDisposableEmptySession(state, "session-empty")).toBe(false);
+  });
+
+  it("preserves a selected non-terminal active snapshot even before session detail catches up", () => {
+    const state = stateWithSession({
+      runLifecycle: {
+        stage: "streaming",
+        runId: "run-empty",
+        sessionId: "session-empty",
+        prompt: "Run this",
+        createdAt: 1_714_000_000_001,
+        snapshot: {
+          runId: "run-empty",
+          sessionId: "session-empty",
+          status: "running",
+          input: { prompt: "Run this" },
+          updatedAt: 1_714_000_000_002,
+        } as OraStateSnapshot,
+      },
+    });
 
     expect(isDisposableEmptySession(state, "session-empty")).toBe(false);
   });

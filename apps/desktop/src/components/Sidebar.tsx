@@ -496,6 +496,36 @@ export interface SidebarState {
   settingsOpen: WorkbenchState["settingsOpen"];
 }
 
+function shouldPinVisibleSession(status: RunStatus): boolean {
+  return (
+    status === "running" ||
+    status === "approval_required" ||
+    status === "clarification_required" ||
+    status === "decision_needed" ||
+    status === "paused"
+  );
+}
+
+export function visibleSidebarSessions<T extends { id: string; status: RunStatus }>(
+  sessions: readonly T[],
+  limit: number,
+  selectedSessionId?: string,
+): T[] {
+  if (sessions.length <= limit) {
+    return [...sessions];
+  }
+  const visible = sessions.slice(0, limit);
+  for (const session of sessions.slice(limit)) {
+    if (
+      session.id === selectedSessionId ||
+      shouldPinVisibleSession(session.status)
+    ) {
+      visible.push(session);
+    }
+  }
+  return visible;
+}
+
 export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: SidebarState }) {
   const dispatch = useWorkbenchDispatch();
   const { actions } = useRunActions();
@@ -550,7 +580,13 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
     for (const project of projects) {
       if (!project.expanded) continue;
       const showAllSessions = expandedSessionLists[project.projectId] ?? false;
-      const visibleSessions = showAllSessions ? project.sessions : project.sessions.slice(0, MAX_VISIBLE_PROJECT_SESSIONS);
+      const visibleSessions = showAllSessions
+        ? project.sessions
+        : visibleSidebarSessions(
+            project.sessions,
+            MAX_VISIBLE_PROJECT_SESSIONS,
+            sidebarState.selectedSessionId,
+          );
       for (const session of visibleSessions) {
         ids.add(session.id);
         if (ids.size >= MAX_VISIBLE_PREFETCH_SESSIONS) return [...ids];
@@ -755,7 +791,13 @@ export const Sidebar = memo(function Sidebar({ sidebarState }: { sidebarState: S
                 <div className="flex flex-col gap-0.5">
                   {projects.map((project) => {
                     const showAllSessions = expandedSessionLists[project.projectId] ?? false;
-                    const visibleSessions = showAllSessions ? project.sessions : project.sessions.slice(0, MAX_VISIBLE_PROJECT_SESSIONS);
+                    const visibleSessions = showAllSessions
+                      ? project.sessions
+                      : visibleSidebarSessions(
+                          project.sessions,
+                          MAX_VISIBLE_PROJECT_SESSIONS,
+                          sidebarState.selectedSessionId,
+                        );
                     const hiddenSessionCount = Math.max(0, project.sessions.length - visibleSessions.length);
                     return (
                       <div key={project.projectId} className="group/project rounded-lg">

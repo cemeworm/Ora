@@ -422,6 +422,96 @@ describe("desktop workbench state", () => {
     expect(getActiveSnapshot(next.runLifecycle)?.status).toBe("succeeded");
   });
 
+  it("preserves locally running sessions that are missing from a collection refresh", () => {
+    const runningSession: OraSessionSummary = {
+      ...sessionSummary("session-running-local"),
+      latestRunId: "run-running-local",
+      status: "running",
+      updatedAt: 300,
+    };
+    const olderSession = sessionSummary("session-older");
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      sessions: [runningSession, olderSession],
+    };
+
+    const next = workbenchReducer(state, {
+      type: "SET_COLLECTIONS",
+      projects: [],
+      sessions: [olderSession],
+    });
+
+    expect(next.sessions.map((session) => session.sessionId)).toContain("session-running-local");
+    expect(next.sessions.find((session) => session.sessionId === "session-running-local")?.status).toBe("running");
+  });
+
+  it("updates inactive running session summaries without taking over the active run", () => {
+    const activeSnapshot = testSnapshot({
+      runId: "run-active",
+      sessionId: "session-active",
+      status: "running",
+      updatedAt: 100,
+    });
+    const inactiveSession: OraSessionSummary = {
+      ...sessionSummary("session-inactive"),
+      latestRunId: "run-inactive",
+      status: "running",
+      updatedAt: 100,
+    };
+    const state: WorkbenchState = {
+      ...initialWorkbenchState,
+      selectedSessionId: "session-active",
+      selectedTurnRunId: "run-active",
+      sessions: [sessionSummary("session-active"), inactiveSession],
+      runLifecycle: lifecycleFromSnapshot(activeSnapshot),
+      activeSessionDetail: {
+        session: sessionSummary("session-active"),
+        turns: [{
+          runId: "run-active",
+          sessionId: "session-active",
+          turnIndex: 1,
+          status: "running",
+          pattern: activeSnapshot.pattern,
+          prompt: activeSnapshot.input.prompt,
+          startedAt: 100,
+          updatedAt: 100,
+          eventCount: 0,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: activeSnapshot,
+      },
+    };
+    const stream: OraRunEventStream = {
+      runId: "run-inactive",
+      sessionId: "session-inactive",
+      status: "running",
+      events: [{
+        id: "run-inactive:event:1",
+        runId: "run-inactive",
+        seq: 1,
+        type: "message.delta",
+        createdAt: 250,
+        payload: {
+          role: "assistant",
+          messageId: "message-inactive",
+          content: "Background text",
+          delta: "Background text",
+          streaming: true,
+        },
+      } as unknown as OraRunEventStream["events"][number]],
+    } as OraRunEventStream;
+
+    const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 260 });
+
+    expect(getActiveSnapshot(next.runLifecycle)?.runId).toBe("run-active");
+    expect(next.selectedSessionId).toBe("session-active");
+    expect(next.sessions.find((session) => session.sessionId === "session-inactive")?.updatedAt).toBe(250);
+    expect(next.sessions.find((session) => session.sessionId === "session-inactive")?.status).toBe("running");
+    expect(next.liveMessageDeltaBuffer["run-inactive:message-inactive"]?.content).toBe("Background text");
+  });
+
   it("hydrates a selected session from turn summaries without loading the latest snapshot", () => {
     const session = {
       ...sessionSummary("session-summary"),
@@ -841,6 +931,7 @@ describe("desktop workbench state", () => {
     const staleSnapshot = testSnapshot({
       runId: "run-stale",
       sessionId: "session-stale",
+      status: "succeeded",
       events: Array.from({ length: 100 }, (_, index) => ({
         id: `run-stale:event:${index}`,
         runId: "run-stale",
@@ -878,6 +969,66 @@ describe("desktop workbench state", () => {
 
     expect(Object.keys(pruned)).toEqual(["run-active"]);
     expect(pruned["run-active"].events).toHaveLength(1);
+  });
+
+  it("preserves running turn snapshots from inactive sessions during active-session pruning", () => {
+    const activeSnapshot = testSnapshot({
+      runId: "run-active",
+      sessionId: "session-active",
+      status: "succeeded",
+    });
+    const inactiveRunningSnapshot = testSnapshot({
+      runId: "run-inactive-running",
+      sessionId: "session-inactive-running",
+      status: "running",
+      events: [{
+        id: "run-inactive-running:event:0",
+        runId: "run-inactive-running",
+        seq: 0,
+        type: "message.delta",
+        createdAt: 1_714_000_000_050,
+        payload: {
+          role: "assistant",
+          messageId: "message-inactive",
+          content: "Still streaming",
+          delta: "Still streaming",
+          streaming: true,
+        },
+      } as unknown as OraStateSnapshot["events"][number]],
+    });
+
+    const pruned = pruneTurnSnapshotsForActiveSession(
+      {
+        [activeSnapshot.runId]: activeSnapshot,
+        [inactiveRunningSnapshot.runId]: inactiveRunningSnapshot,
+      },
+      {
+        session: sessionSummary("session-active"),
+        turns: [{
+          runId: activeSnapshot.runId,
+          sessionId: "session-active",
+          turnIndex: 1,
+          status: "succeeded",
+          pattern: activeSnapshot.pattern,
+          prompt: activeSnapshot.input.prompt,
+          startedAt: activeSnapshot.updatedAt,
+          updatedAt: activeSnapshot.updatedAt,
+          eventCount: activeSnapshot.events.length,
+          checkpointCount: 0,
+          artifactCount: 0,
+        }],
+        transcript: [],
+        latestSnapshot: activeSnapshot,
+      },
+    );
+
+    expect(Object.keys(pruned)).toEqual([
+      "run-active",
+      "run-inactive-running",
+    ]);
+    expect(pruned["run-inactive-running"]?.events[0]?.payload).toMatchObject({
+      content: "Still streaming",
+    });
   });
 
   it("compacts cached session details so prefetch does not retain heavyweight snapshots", () => {

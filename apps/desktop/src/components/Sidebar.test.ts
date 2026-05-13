@@ -5,6 +5,7 @@ import {
   SessionStatusBadge,
   sidebarStatusForSession,
   statusFromSession,
+  visibleSidebarSessions,
 } from "./Sidebar";
 import { translateCopy } from "../lib/i18n";
 import { checkOraReleaseUpdate, isReleaseNewer } from "../lib/releaseUpdate";
@@ -126,6 +127,31 @@ describe("sidebar session status", () => {
         },
       }),
     ).toBe("running");
+  });
+
+  it("pins running and selected project sessions beyond the collapsed visible limit", () => {
+    const sessions = [
+      { id: "session-1", status: "done" as const },
+      { id: "session-2", status: "done" as const },
+      { id: "session-3", status: "done" as const },
+      { id: "session-4", status: "done" as const },
+      { id: "session-running", status: "running" as const },
+      { id: "session-selected", status: "done" as const },
+      { id: "session-done", status: "done" as const },
+    ];
+
+    expect(
+      visibleSidebarSessions(sessions, 4, "session-selected").map(
+        (session) => session.id,
+      ),
+    ).toEqual([
+      "session-1",
+      "session-2",
+      "session-3",
+      "session-4",
+      "session-running",
+      "session-selected",
+    ]);
   });
 });
 

@@ -231,16 +231,51 @@ export function waitForPendingRunPaint(): Promise<void> {
   });
 }
 
+function sessionSummaryHasRuntimeState(session: OraSessionSummary | undefined): boolean {
+  return Boolean(
+    session &&
+      (
+        session.status ||
+        session.latestRunId ||
+        session.attention?.kind && session.attention.kind !== "idle" ||
+        session.turnCount !== 0
+      ),
+  );
+}
+
 export function isDisposableEmptySession(state: WorkbenchState, sessionId: string | undefined): boolean {
   if (!sessionId || getPendingRunState(state.runLifecycle)?.sessionId === sessionId) {
     return false;
   }
 
-  const session = state.activeSessionDetail?.session.sessionId === sessionId
-    ? state.activeSessionDetail.session
-    : state.sessionDetailsById[sessionId]?.session
-      ?? state.sessions.find((candidate) => candidate.sessionId === sessionId);
-  if (!session || session.archivedAt !== undefined || session.status || session.turnCount !== 0) {
+  const activeSnapshot = getActiveSnapshot(state.runLifecycle);
+  if (activeSnapshot?.sessionId === sessionId) {
+    return false;
+  }
+
+  const activeDetail = state.activeSessionDetail?.session.sessionId === sessionId
+    ? state.activeSessionDetail
+    : undefined;
+  const cachedDetail = state.sessionDetailsById[sessionId];
+  const listedSession = state.sessions.find((candidate) => candidate.sessionId === sessionId);
+  const candidates = [
+    activeDetail?.session,
+    cachedDetail?.session,
+    listedSession,
+  ].filter((session): session is OraSessionSummary => Boolean(session));
+  if (candidates.length === 0) {
+    return false;
+  }
+  if (candidates.some((session) => session.archivedAt !== undefined)) {
+    return false;
+  }
+  if (activeDetail && activeDetail.turns.length > 0) {
+    return false;
+  }
+  if (cachedDetail && cachedDetail.turns.length > 0) {
+    return false;
+  }
+  if (candidates.some(sessionSummaryHasRuntimeState)) {
     return false;
   }
 

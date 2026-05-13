@@ -560,13 +560,45 @@ function reconcileSessionSummaryWithLocalAuthority(
   return next;
 }
 
+function shouldPreserveMissingLocalSessionSummary(session: OraSessionSummary): boolean {
+  if (session.archivedAt !== undefined) {
+    return false;
+  }
+  if (
+    session.status === "queued" ||
+    session.status === "running" ||
+    session.status === "interrupted"
+  ) {
+    return true;
+  }
+  switch (session.attention?.kind) {
+    case "running":
+    case "needs_approval":
+    case "needs_clarification":
+    case "needs_plan_decision":
+    case "paused":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function reconcileSessionSummariesWithLocalAuthority(
   state: WorkbenchState,
   sessions: OraSessionSummary[],
 ): OraSessionSummary[] {
-  return sessions.map((session) =>
+  const reconciled = sessions.map((session) =>
     reconcileSessionSummaryWithLocalAuthority(state, session),
   );
+  const incomingIds = new Set(reconciled.map((session) => session.sessionId));
+  const protectedLocalSessions = state.sessions.filter(
+    (session) =>
+      !incomingIds.has(session.sessionId) &&
+      shouldPreserveMissingLocalSessionSummary(session),
+  );
+  return protectedLocalSessions.length === 0
+    ? reconciled
+    : [...reconciled, ...protectedLocalSessions];
 }
 
 function selectedSnapshotFromDetail(
@@ -1170,7 +1202,14 @@ export function pruneTurnSnapshotsForActiveSession(
   detail: OraSessionDetail | undefined,
 ): Record<string, OraStateSnapshot> {
   if (!detail) {
-    return Object.keys(snapshots).length === 0 ? snapshots : {};
+    const runningSnapshots = Object.fromEntries(
+      Object.entries(snapshots).filter(
+        ([, snapshot]) => !isSettledRunStatus(snapshot.status),
+      ),
+    );
+    return Object.keys(runningSnapshots).length === Object.keys(snapshots).length
+      ? snapshots
+      : runningSnapshots;
   }
 
   const activeSessionId = detail.session.sessionId;
@@ -1183,8 +1222,9 @@ export function pruneTurnSnapshotsForActiveSession(
       !snapshot.sessionId || snapshot.sessionId === activeSessionId;
     const belongsToActiveSession =
       activeRunIds.has(runId) || snapshot.sessionId === activeSessionId;
+    const shouldKeepRunningSnapshot = !isSettledRunStatus(snapshot.status);
 
-    if (matchesActiveSession && belongsToActiveSession) {
+    if ((matchesActiveSession && belongsToActiveSession) || shouldKeepRunningSnapshot) {
       next[runId] = snapshot;
     } else {
       changed = true;
@@ -1824,53 +1864,81 @@ function streamUpdatedAt(
   return stream.events.at(-1)?.createdAt;
 }
 
-function syncSessionStateForSettledStream(
+function inferredStreamSessionStatus(
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+): OraStateSnapshot["status"] | undefined {
+  const explicitStatus = streamRunStatus(stream, snapshot);
+  if (explicitStatus) {
+    return explicitStatus;
+  }
+  return stream.events.length > 0 ? "running" : undefined;
+}
+
+function sessionSummaryMatchesStream(
+  session: OraSessionSummary,
+  stream: OraRunEventStream,
+  snapshot: OraStateSnapshot | undefined,
+): boolean {
+  const streamSessionId = snapshot?.sessionId ?? stream.sessionId;
+  if (session.latestRunId === stream.runId) {
+    return true;
+  }
+  return Boolean(
+    streamSessionId &&
+      session.sessionId === streamSessionId &&
+      session.latestRunId === undefined,
+  );
+}
+
+function syncSessionStateForStream(
   state: WorkbenchState,
   stream: OraRunEventStream,
   snapshot: OraStateSnapshot | undefined,
 ) {
-  const status = streamRunStatus(stream, snapshot);
-  if (!isSettledRunStatus(status)) {
-    return {
-      sessions: state.sessions,
-      activeSessionDetail: state.activeSessionDetail,
-    };
-  }
-
+  const status = inferredStreamSessionStatus(stream, snapshot);
   const updatedAt = streamUpdatedAt(stream, snapshot);
   const activeDetailHasRun =
     state.activeSessionDetail?.turns.some(
       (turn) => turn.runId === stream.runId,
     ) ?? false;
+  let sessionsChanged = false;
   const updateSession = (session: OraSessionSummary): OraSessionSummary => {
-    if (session.latestRunId !== stream.runId) {
+    if (!sessionSummaryMatchesStream(session, stream, snapshot)) {
       return session;
     }
-    return {
+    const nextSession = {
       ...session,
-      status,
+      status: status ?? session.status,
       attention: snapshot?.attention ?? session.attention,
-      latestRunId: snapshot?.runId ?? session.latestRunId,
+      latestRunId: snapshot?.runId ?? session.latestRunId ?? stream.runId,
       latestPattern: snapshot?.pattern ?? session.latestPattern,
       latestModeId: snapshot?.modeId ?? session.latestModeId,
       latestProviderId: snapshot?.config.providerId ?? session.latestProviderId,
       latestModelRef: snapshot?.config.modelRef ?? session.latestModelRef,
       updatedAt: updatedAt ?? session.updatedAt,
     };
+    if (nextSession !== session) {
+      sessionsChanged = true;
+    }
+    return nextSession;
   };
 
-  const sessions = state.sessions.map(updateSession);
+  const mappedSessions = state.sessions.map(updateSession);
+  const sessions = sessionsChanged ? mappedSessions : state.sessions;
   if (!state.activeSessionDetail || !activeDetailHasRun) {
     return { sessions, activeSessionDetail: state.activeSessionDetail };
   }
 
+  let turnsChanged = false;
   const turns = state.activeSessionDetail.turns.map((turn) => {
     if (turn.runId !== stream.runId) {
       return turn;
     }
+    turnsChanged = true;
     return {
       ...turn,
-      status,
+      status: status ?? turn.status,
       eventCount: snapshot?.events.length ?? turn.eventCount,
       checkpointCount: snapshot?.checkpoints.length ?? turn.checkpointCount,
       artifactCount: snapshot?.artifacts.length ?? turn.artifactCount,
@@ -1878,15 +1946,23 @@ function syncSessionStateForSettledStream(
       trace: snapshot?.trace ?? turn.trace,
     };
   });
+  const nextActiveSession = updateSession(state.activeSessionDetail.session);
+  const latestSnapshot = snapshot ?? state.activeSessionDetail.latestSnapshot;
+  const activeSessionDetail =
+    turnsChanged ||
+    nextActiveSession !== state.activeSessionDetail.session ||
+    latestSnapshot !== state.activeSessionDetail.latestSnapshot
+      ? {
+          ...state.activeSessionDetail,
+          session: nextActiveSession,
+          turns,
+          latestSnapshot,
+        }
+      : state.activeSessionDetail;
 
   return {
     sessions,
-    activeSessionDetail: {
-      ...state.activeSessionDetail,
-      session: updateSession(state.activeSessionDetail.session),
-      turns,
-      latestSnapshot: snapshot ?? state.activeSessionDetail.latestSnapshot,
-    },
+    activeSessionDetail,
   };
 }
 
@@ -2982,9 +3058,20 @@ export function workbenchReducer(
             state.liveMessageDeltaBuffer,
             action.stream,
           );
-          return liveMessageDeltaBuffer === state.liveMessageDeltaBuffer
-            ? state
-            : { ...state, liveMessageDeltaBuffer };
+          const synced = syncSessionStateForStream(state, action.stream, undefined);
+          if (
+            liveMessageDeltaBuffer === state.liveMessageDeltaBuffer &&
+            synced.sessions === state.sessions &&
+            synced.activeSessionDetail === state.activeSessionDetail
+          ) {
+            return state;
+          }
+          return {
+            ...state,
+            sessions: synced.sessions,
+            activeSessionDetail: synced.activeSessionDetail,
+            liveMessageDeltaBuffer,
+          };
         }
       }
       const activeSnapshot = streamBelongsToActiveTurn
@@ -3007,7 +3094,7 @@ export function workbenchReducer(
         : action.stream.snapshot
           ? normalizeDesktopSnapshot(action.stream.snapshot)
           : undefined;
-      const synced = syncSessionStateForSettledStream(
+      const synced = syncSessionStateForStream(
         state,
         action.stream,
         streamSnapshot,
