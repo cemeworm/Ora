@@ -200,15 +200,22 @@ Run 的出生证明。投影中初始化一个 `RuntimeRunProjection`，状态�
     "events": [ /* OraEventEnvelope[] */ ],
     "eventCount": 42,
     "status": "running",
-    "output": { "text": "partial..." },
-    "snapshot": { /* StateSnapshot */ }
+    "output": { "text": "partial..." }
+    // snapshot 字段在高频 :events- 批次中省略；
+    // 仅在低频 :update- 批次（即 durable boundary：run.done、
+    // run.failed、checkpoint.created 等时刻）携带 compact snapshot。
   }
 }
 ```
 
-这是最核心、也是 payload 最重的 entry 类型。运行时流式事件不会逐条写 ledger，而是批量 flush 到此 entry 中。`events` 数组存储增量事件；`snapshot` 存储该时间点的完整快照。
+这是最核心、也是 payload 最重的 entry 类型。运行时流式事件不会逐条写 ledger，而是批量 flush 到此 entry 中。`events` 数组存储增量事件。
 
-> **slim 策略**：`buildVisibleLedger` 会把 `events` 清空为 `[]`，但保留 `eventCount`、`status`、`output`、`snapshot` 等结构字段。投影可以从 snapshot 和 gate/tool result 等其他 entry 重建必要的事件，无需保存完整的原始事件历史。详见[第 10 章](#10-event-batch-slim-与-projection-可重建性)。
+> **分层 compaction 策略**：event batch 现在有两档写入频率：
+>
+> - **高频 `:events-` batch**：流式运行期间定期 flush。`events` 被 slim 为 `[]`，**且不写入 `snapshot` 字段**，仅保留 `eventCount`、`status`、`output`、`error`。
+> - **低频 `:update-` batch**：在 durable boundary（`run.done`、`run.failed`、`checkpoint.created` 等）写入，携带 compact `snapshot`。
+>
+> 投影可从最近的 `:update-` snapshot 结合 gate/tool result 等独立 entry 重建必要状态。详见[第 10 章](#10-event-batch-slim-与-projection-可重建性)。
 
 ### 3.6 `assistant.checkpoint`
 
