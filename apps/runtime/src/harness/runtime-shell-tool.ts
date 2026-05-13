@@ -354,11 +354,29 @@ function writeFullShellOutput(command: string, output: string): string {
   return fullOutputPath;
 }
 
+interface ShellToken {
+  text: string;
+  start: number;
+  end: number;
+  kind: "word" | "separator";
+}
+
+interface SourceRange {
+  start: number;
+  end: number;
+}
+
 function assertShellCommandStaysInWorkspace(rootPath: string, command: string): void {
+  const ignoredRanges = collectShellScriptExpressionRanges(command);
   const absolutePathPattern = /(?:^|[\s"'(=])((?:\/(?!\/)[^\s"'`|;&<>)]+)+)/g;
   for (const match of command.matchAll(absolutePathPattern)) {
     const candidate = match[1];
     if (!candidate) {
+      continue;
+    }
+    const candidateStart = match.index + match[0].lastIndexOf(candidate);
+    const candidateEnd = candidateStart + candidate.length;
+    if (sourceRangeContains(ignoredRanges, candidateStart, candidateEnd)) {
       continue;
     }
     const resolved = path.resolve(candidate);
@@ -367,6 +385,142 @@ function assertShellCommandStaysInWorkspace(rootPath: string, command: string): 
       throw new Error("shell.execute command paths must stay inside the project root.");
     }
   }
+}
+
+function collectShellScriptExpressionRanges(command: string): SourceRange[] {
+  const tokens = tokenizeShellCommand(command);
+  const ranges: SourceRange[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token || token.kind !== "word" || !isSedCommandName(token.text) || !isCommandPosition(tokens, index)) {
+      continue;
+    }
+    collectSedExpressionRanges(tokens, index + 1, ranges);
+  }
+  return ranges;
+}
+
+function collectSedExpressionRanges(tokens: ShellToken[], startIndex: number, ranges: SourceRange[]): void {
+  for (let index = startIndex; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token || token.kind === "separator") {
+      return;
+    }
+    if (token.text === "-e" || token.text === "--expression") {
+      const expression = nextWordToken(tokens, index + 1);
+      if (expression) {
+        ranges.push({ start: expression.start, end: expression.end });
+        index = tokens.indexOf(expression);
+      }
+      continue;
+    }
+    if (token.text === "-f" || token.text === "--file") {
+      const scriptFile = nextWordToken(tokens, index + 1);
+      if (scriptFile) {
+        index = tokens.indexOf(scriptFile);
+      }
+      continue;
+    }
+    if (token.text.startsWith("-") && token.text !== "-") {
+      continue;
+    }
+    ranges.push({ start: token.start, end: token.end });
+    return;
+  }
+}
+
+function tokenizeShellCommand(command: string): ShellToken[] {
+  const tokens: ShellToken[] = [];
+  let index = 0;
+  while (index < command.length) {
+    const char = command[index];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+    if (isShellSeparator(char)) {
+      const start = index;
+      index += 1;
+      if ((char === "&" || char === "|") && command[index] === char) {
+        index += 1;
+      }
+      tokens.push({ text: command.slice(start, index), start, end: index, kind: "separator" });
+      continue;
+    }
+    const start = index;
+    let text = "";
+    while (index < command.length) {
+      const current = command[index];
+      if (/\s/.test(current) || isShellSeparator(current)) {
+        break;
+      }
+      if (current === "'" || current === '"') {
+        const quote = current;
+        index += 1;
+        while (index < command.length && command[index] !== quote) {
+          if (quote === '"' && command[index] === "\\" && index + 1 < command.length) {
+            index += 1;
+          }
+          text += command[index];
+          index += 1;
+        }
+        if (command[index] === quote) {
+          index += 1;
+        }
+        continue;
+      }
+      if (current === "\\" && index + 1 < command.length) {
+        index += 1;
+        text += command[index];
+        index += 1;
+        continue;
+      }
+      text += current;
+      index += 1;
+    }
+    tokens.push({ text, start, end: index, kind: "word" });
+  }
+  return tokens;
+}
+
+function isShellSeparator(char: string): boolean {
+  return char === ";" || char === "|" || char === "&" || char === "\n" || char === "(" || char === ")";
+}
+
+function isSedCommandName(commandName: string): boolean {
+  const name = path.basename(commandName);
+  return name === "sed" || name === "gsed";
+}
+
+function isCommandPosition(tokens: ShellToken[], index: number): boolean {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const token = tokens[cursor];
+    if (!token) {
+      continue;
+    }
+    if (token.kind === "separator") {
+      return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+function nextWordToken(tokens: ShellToken[], startIndex: number): ShellToken | undefined {
+  for (let index = startIndex; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token || token.kind === "separator") {
+      return undefined;
+    }
+    if (token.kind === "word") {
+      return token;
+    }
+  }
+  return undefined;
+}
+
+function sourceRangeContains(ranges: SourceRange[], start: number, end: number): boolean {
+  return ranges.some((range) => start >= range.start && end <= range.end);
 }
 
 export function shellCommandRequiresHighRisk(args: Record<string, unknown>): boolean {
