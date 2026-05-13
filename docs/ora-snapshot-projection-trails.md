@@ -376,7 +376,29 @@ StateSnapshot + OraRunTrail
 - 每个 item 计算 `kind`（run/agent/tool/handoff/checkpoint/recovery/gate/artifact/state）、`severity`、`label`、`detail`
 - 从 `topology.nodes` 解析 `nodeLabel`，从 `profiles` 解析 `agentLabel`
 
-### 5.4 buildAgentLanes
+在 streaming 期间，`deriveRuntimeTimelineProjection(snapshot)` 基于 WeakMap 做按 snapshot 引用的 memo 化缓存：同 snapshot 引用不变时 projection 只算一次，避免 N 个 delta 触发 O(events) 重复计算。
+
+### 5.4 MarkdownRenderer 流式节流
+
+`MarkdownRenderer` 在 streaming 期间按 200ms 间隔节流更新，同时保留内容完整性：
+
+- 鉴别"非流式 settled"立即刷新
+- 内容缩短（snapshot 替换）立即刷新
+- 末尾 4 字符含 `\n\n`（段落边界）立即刷新
+- 否则按 200ms 间隔批量刷新
+- 非 streaming 状态零行为变化
+
+这使长任务后的最终正文渲染频率从 ~20-30/s 降到 ~5/s，缓解"顿一下再跳一下"的感知。
+
+### 5.5 Running Session Snapshot 跨切换保留
+
+Desktop 在 session 切换时保留非 terminal session 的 turn snapshots，确保切回 running session 时内容区能继续展示已流出的 assistant 内容：
+
+- `pruneTurnSnapshotsForActiveSession()` 不再删除其他 still-running session 的 snapshots
+- `deriveRenderableTurnSnapshots` 仍在渲染层按 session scope 过滤
+- Sidebar collapsed 项目列表在 `MAX_VISIBLE_PROJECT_SESSIONS` 内额外 pin 住 running / attention-required / selected session，避免"运行中但被 Show more 折叠隐藏"
+
+### 5.6 buildAgentLanes
 
 消费 `snapshot.profiles`、`snapshot.activeAgents`、`snapshot.agentMessages`、`snapshot.events`、`snapshot.toolCalls`、`snapshot.topology`，构建每个 agent 的泳道视图：
 
@@ -524,6 +546,7 @@ desktop UI 如果从自己的本地状态推断 runtime 状态（比如"上一�
 | node 是否阻塞 | `topology.nodes.find(n => n.agentId === id)?.status === "blocked"` | 不应从 UI 本地的 node 状态缓存推断 |
 | plan 是否已完成 | `planList.every(s => s.status === "completed")` | 不应从文本中猜测"看起来计划做完了" |
 | gate 是否已解决 | `snapshot.planDecisions` 的 `status`、`pendingClarifications` 的长度 | 不应从"之前见过 gate.opened"推断 |
+| approval-required 是否等于 failure | `snapshot.attention.kind === "needs_approval"`（不等于 failure） | 不应因 approval interrupt error text 存在而将其渲染为 run/tool failure；Trails summary / diagnostics 优先展示 gate 语义 |
 
 ### 7.3 snapshotSource 标记
 
@@ -571,6 +594,10 @@ trailViewModel 中的 builder 函数是纯函数，不产生副作用。但新�
 ### 8.6 "snapshot toolCalls 就是 tool result 的最终记录"
 
 `snapshot.toolCalls` 是内存中的 `OraToolCallEnvelope[]`。tool result 的耐久记录是独立的 `RuntimeToolResultLedgerEntry`（在 `snapshot.toolResults` 和 `tool.result` ledger entry 中）。两者可能因 slim/compaction 而不一致，ledger entry 是权威来源。
+
+### 8.7 "文件搜索的 input.path 可以直接展示"
+
+runtime 的 workspace path guard 接受工作区内绝对路径，desktop 的 tool detail 现在优先展示 `output.path`（runtime 输出的相对路径），而非原始 `input.path`（可能为绝对路径）。避免 UI 上出现 `/Users/xxx/developer/ora/...` 这种“奇怪绝对路径”。
 
 ## 9. 实现边界与演进方向
 

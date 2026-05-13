@@ -583,6 +583,10 @@ flowchart TD
 2. **normalizeSnapshotForPersistence**：标准化 snapshot 以写入持久存储
 3. **appendRunSnapshotUpdateToLedger**：将 snapshot 作为 ledger entry 追加
 
+所有 terminal writer（kernel finalization、resume finalization、non-kernel resume completion）在写入 `run.done` 前必须通过共享的 `assertRunCanBecomeTerminal()` 断言门。该门验证：状态为 terminal 时不得有 open gate、pending action/tool-call/clarification 残留。违反时抛出 `TerminalStateIntegrityError` 并降级为 `run.failed`。
+
+此外，`ApprovalInterruptError` 在 runtime tool call service 的 catch 路径中已被特殊处理，审批中断不再落入通用 tool failure handling。`buildTrailDebugSummary()` / `collectTrailFindings()` 对 stale approval-interrupt snapshot 渲染为 waiting-for-approval，而非 run/tool failure。
+
 ## 9. Plan Decision 的特殊性
 
 Plan decision 是最特殊的 gate 类型，它与 clarification/approval 的 resume 机制完全不同。
@@ -645,6 +649,9 @@ Session attention 是 UI/会话层看到的阻塞状态。它从 ledger-backed p
 
 ```typescript
 function deriveLedgerRunAttention(run):
+  // 0. terminal state invariant（最高优先级，在 gate 检查前执行）
+  //    若 status 为 succeeded/failed/cancelled 但仍有 open gate
+  //    → 降级为 failed，附加诊断: terminal_run_with_open_gates:<status>
   // 1. 有 open 的 clarification gate → needs_clarification (blocking)
   // 2. 有 open 的 approval gate → needs_approval (blocking)
   // 3. 有 open 的 plan_decision gate → needs_plan_decision (blocking)
@@ -657,9 +664,11 @@ function deriveLedgerRunAttention(run):
   // 8. otherwise → idle
 ```
 
+Terminal state invariant 位于 gate 检查之前，防止 auto_review 权限模式切换等场景产生的半解决状态（ledger 记录了 `run.done/succeeded` 但 projection 仍有 open gate）被渲染为成功。此 invariant 在 runtime 层（`assertRunCanBecomeTerminal`）和 projection 层（`deriveLedgerRunAttention`）两处同时实施。
+
 ### 10.2 优先级是严格序
 
-这个优先级列表是严格有序的。当 snapshot 中同时存在多个状态线索时（如同时有 pending clarification 和 running 状态），attention 总是返回最高优先级的阻塞状态。这保证了 attention 推导的一致性，不依赖各字段的检查顺序。
+这个优先级列表是严格有序的。当 snapshot 中同时存在多个状态线索时（如同时有 pending clarification 和 running 状态），attention 总是返回最高优先级的阻塞状态。Terminal state invariant 在 gate 检查之前执行，是最高优先级的安全网。这保证了 attention 推导的一致性，不依赖各字段的检查顺序。
 
 ### 10.3 Gate 决议如何改变 attention
 
