@@ -3549,9 +3549,18 @@ export class LocalRunStore {
 
   private cacheRunDelta(snapshot: StateSnapshot): void {
     this.runs.set(snapshot.runId, snapshot);
-    if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
+    if (!snapshot.sessionId || isUnadoptedBranchCandidate(snapshot)) {
+      return;
+    }
+    const existing = this.sessions.get(snapshot.sessionId);
+    if (!existing || existing.latestRunId !== snapshot.runId || existing.status !== snapshot.status) {
       const session = this.upsertSessionFromRun(snapshot, { deferInitialTitle: true });
       this.sessions.set(session.sessionId, session);
+    } else {
+      // Light touch: bump updatedAt so session list ordering stays current
+      // without running upsertSessionFromRun (runsForSession, deriveRunAttention,
+      // SessionSummarySchema.parse) on every token.
+      this.sessions.set(snapshot.sessionId, { ...existing, updatedAt: snapshot.updatedAt });
     }
   }
 

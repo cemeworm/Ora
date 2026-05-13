@@ -313,6 +313,125 @@ describe("run streaming", () => {
     expect(streams[0]?.snapshot).toBeUndefined();
   });
 
+  it("publishes pure delta before cache so visible stream is not blocked by ledger flush", () => {
+    const callOrder: string[] = [];
+    const cacheRun = vi.fn(() => { callOrder.push("cacheRun"); });
+    const cacheRunDelta = vi.fn(() => { callOrder.push("cacheRunDelta"); });
+    const appendRuntimeEventBatchToLedger = vi.fn((liveSnapshot: StateSnapshot) => {
+      callOrder.push("flush");
+      return liveSnapshot;
+    });
+    const onStream = vi.fn(() => { callOrder.push("publish"); });
+    const service = new RunStreamingService({
+      cacheRun,
+      cacheRunDelta,
+      appendRuntimeEventBatchToLedger,
+    });
+    const session = service.createSession({
+      runId: "run-test",
+      liveSnapshot: snapshot(),
+      ledgeredEventCount: 0,
+      onStream,
+    });
+
+    session.applyLiveEvent(event({
+      seq: 1,
+      type: "message.delta",
+      payload: { role: "assistant", content: "hi", delta: "hi", streaming: true },
+    }));
+    // Pure delta, seq=1 (not flush boundary): publish → cacheRunDelta, no flush
+    expect(callOrder).toEqual(["publish", "cacheRunDelta"]);
+    callOrder.length = 0;
+
+    session.applyLiveEvent(event({
+      seq: 127,
+      type: "token.delta",
+      payload: { token: "h", streaming: true },
+    }));
+    // seq=127 not flush boundary: publish → cacheRunDelta
+    expect(callOrder).toEqual(["publish", "cacheRunDelta"]);
+    callOrder.length = 0;
+  });
+
+  it("publishes pure delta before cache even at flush boundaries", () => {
+    const callOrder: string[] = [];
+    const cacheRun = vi.fn(() => { callOrder.push("cacheRun"); });
+    const cacheRunDelta = vi.fn(() => { callOrder.push("cacheRunDelta"); });
+    const appendRuntimeEventBatchToLedger = vi.fn((liveSnapshot: StateSnapshot) => {
+      callOrder.push("flush");
+      return liveSnapshot;
+    });
+    const onStream = vi.fn(() => { callOrder.push("publish"); });
+    const service = new RunStreamingService({
+      cacheRun,
+      cacheRunDelta,
+      appendRuntimeEventBatchToLedger,
+    });
+    const session = service.createSession({
+      runId: "run-test",
+      liveSnapshot: snapshot(),
+      ledgeredEventCount: 0,
+      onStream,
+    });
+
+    session.applyLiveEvent(event({
+      seq: 128,
+      type: "message.delta",
+      payload: { role: "assistant", content: "x", delta: "x", streaming: true },
+    }));
+    // seq=128 is flush boundary: publish → cacheRun → flush
+    expect(callOrder).toEqual(["publish", "cacheRun", "flush"]);
+  });
+
+  it("keeps cache-before-publish order for non-delta events to preserve snapshot integrity", () => {
+    const callOrder: string[] = [];
+    const cacheRun = vi.fn(() => { callOrder.push("cacheRun"); });
+    const cacheRunDelta = vi.fn();
+    const appendRuntimeEventBatchToLedger = vi.fn((liveSnapshot: StateSnapshot) => {
+      callOrder.push("flush");
+      return liveSnapshot;
+    });
+    const onStream = vi.fn(() => { callOrder.push("publish"); });
+    const service = new RunStreamingService({
+      cacheRun,
+      cacheRunDelta,
+      appendRuntimeEventBatchToLedger,
+    });
+    const session = service.createSession({
+      runId: "run-test",
+      liveSnapshot: snapshot(),
+      ledgeredEventCount: 0,
+      onStream,
+    });
+
+    const planItem = {
+      id: "run-test:plan-1",
+      runId: "run-test",
+      status: "running",
+      title: "Investigate",
+      dependencies: [],
+      linkedActionIds: [],
+      checkpointIds: [],
+    } as const;
+
+    session.applyLiveEvent(event({
+      seq: 5,
+      type: "plan.updated",
+      payload: { items: [planItem] },
+    }));
+    // Durable boundary: cacheRun → flush → publish
+    expect(callOrder).toEqual(["cacheRun", "flush", "publish"]);
+    callOrder.length = 0;
+
+    session.applyLiveEvent(event({
+      seq: 6,
+      type: "approval.required",
+      payload: { actionId: "act-1", pending: 1 },
+    }));
+    // Another durable boundary: cacheRun → flush → publish
+    expect(callOrder).toEqual(["cacheRun", "flush", "publish"]);
+  });
+
   it("drains SSE frames before awaiting slow local callbacks", async () => {
     let controller: ReadableStreamDefaultController<Uint8Array>;
     const response = new Response(new ReadableStream<Uint8Array>({

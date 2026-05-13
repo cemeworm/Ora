@@ -28,6 +28,8 @@ export interface RunStreamingSessionParams {
   onStream?: (stream: RunEventStream) => void;
   applyEvent?: (snapshot: StateSnapshot, event: OraEventEnvelope) => StateSnapshot;
   shouldIgnoreEvent?: () => boolean;
+  /** Low-intrusion latency probe: called with timing records when enabled. */
+  debugLatency?: (record: { label: string; elapsedMs: number }) => void;
 }
 
 export class RunStreamingService {
@@ -125,18 +127,45 @@ export class RunStreamingSession {
 
   private publishAndMaybeFlush(event: OraEventEnvelope): void {
     const shouldFlush = shouldFlushStreamingEvent(event);
-    if (isPureDeltaEvent(event) && !shouldFlush && this.deps.cacheRunDelta) {
-      this.deps.cacheRunDelta(this.liveSnapshotValue);
+    const debugLatency = this.params.debugLatency;
+    if (isPureDeltaEvent(event)) {
+      // Pure delta: publish first so visible stream does not wait for cache/flush.
+      const publishStart = debugLatency ? Date.now() : 0;
+      this.publish([event]);
+      if (debugLatency) {
+        debugLatency({ label: "publish", elapsedMs: Date.now() - publishStart });
+      }
+      if (!shouldFlush && this.deps.cacheRunDelta) {
+        this.deps.cacheRunDelta(this.liveSnapshotValue);
+      } else {
+        this.deps.cacheRun(this.liveSnapshotValue, shouldFlush);
+      }
+      if (
+        shouldFlush ||
+        this.liveSnapshotValue.events.length - this.ledgeredEventCount >= MAX_UNLEDGERED_DELTA_EVENTS
+      ) {
+        const flushStart = debugLatency ? Date.now() : 0;
+        this.flushLedgerEvents();
+        if (debugLatency) {
+          debugLatency({ label: "flush", elapsedMs: Date.now() - flushStart });
+        }
+      }
     } else {
+      // Non-delta: cache and flush before publish so UI sees consistent snapshot.
       this.deps.cacheRun(this.liveSnapshotValue, shouldFlush);
+      if (shouldFlush) {
+        const flushStart = debugLatency ? Date.now() : 0;
+        this.flushLedgerEvents();
+        if (debugLatency) {
+          debugLatency({ label: "flush", elapsedMs: Date.now() - flushStart });
+        }
+      }
+      const publishStart = debugLatency ? Date.now() : 0;
+      this.publish([event]);
+      if (debugLatency) {
+        debugLatency({ label: "publish", elapsedMs: Date.now() - publishStart });
+      }
     }
-    if (
-      shouldFlush ||
-      this.liveSnapshotValue.events.length - this.ledgeredEventCount >= MAX_UNLEDGERED_DELTA_EVENTS
-    ) {
-      this.flushLedgerEvents();
-    }
-    this.publish([event]);
   }
 }
 
