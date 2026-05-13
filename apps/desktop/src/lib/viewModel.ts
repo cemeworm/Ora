@@ -1602,6 +1602,30 @@ function liveAssistantEntriesForSnapshot(
     );
 }
 
+/**
+ * Phase 3.1: memoize timeline projection per snapshot reference.
+ *
+ * During streaming, `overlayLiveMessageDeltas` is called for every delta (1-3 chars).
+ * Without caching, each call rebuilds the entire `deriveRuntimeTimelineProjection(snapshot)`
+ * which is O(events) — and at 1.25s/3char on long runs, this is the dominant cost in
+ * frame budget.
+ *
+ * Because snapshots are immutable when streaming (turnSnapshots is replaced wholesale,
+ * not mutated), keying by identity is safe.
+ */
+const projectionCache = new WeakMap<
+  OraStateSnapshot,
+  ReturnType<typeof deriveRuntimeTimelineProjection>
+>();
+
+function cachedTimelineProjection(snapshot: OraStateSnapshot) {
+  const cached = projectionCache.get(snapshot);
+  if (cached) return cached;
+  const fresh = deriveRuntimeTimelineProjection(snapshot);
+  projectionCache.set(snapshot, fresh);
+  return fresh;
+}
+
 function overlayLiveTimelineItems(
   turn: AssistantTurnAttachment,
   snapshot: OraStateSnapshot,
@@ -1609,7 +1633,7 @@ function overlayLiveTimelineItems(
 ): AssistantTurnAttachment {
   const existingItems = turn.timelineItems ?? [];
   let nextItems = existingItems;
-  const projection = deriveRuntimeTimelineProjection(snapshot);
+  const projection = cachedTimelineProjection(snapshot);
   const eventTimeBySeq = new Map(
     projection.events.map((event) => [event.seq, event.createdAt]),
   );

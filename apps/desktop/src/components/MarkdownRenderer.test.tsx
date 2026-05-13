@@ -48,4 +48,14 @@ describe("MarkdownRenderer", () => {
 
     expect(normalizeMarkdownContent(markdown)).toBe(markdown);
   });
+
+  it("renders initial content immediately under SSR (streaming defer effect doesn't run server-side)", () => {
+    // SSR doesn't run useEffect, so deferred = initial content = passed content.
+    // This verifies the SSR path remains intact and doesn't rely on the throttle hook
+    // for initial render correctness.
+    const html = renderToStaticMarkup(
+      <MarkdownRenderer content="hello" streaming />,
+    );
+    expect(html).toContain("hello");
+  });
 });

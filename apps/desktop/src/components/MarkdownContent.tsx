@@ -6,9 +6,14 @@ const MarkdownRenderer = lazy(() => import("./MarkdownRenderer"));
 interface MarkdownContentProps {
   content: string;
   className?: string;
+  /**
+   * Pass `true` when this content is currently being streamed (delta-by-delta).
+   * The renderer throttles re-parses to ~5 fps to avoid dominating frame budget.
+   */
+  streaming?: boolean;
 }
 
-export function MarkdownContent({ content, className }: MarkdownContentProps) {
+export function MarkdownContent({ content, className, streaming }: MarkdownContentProps) {
   return (
     <Suspense
       fallback={
@@ -17,7 +22,7 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
         </div>
       }
     >
-      <MarkdownRenderer content={content} className={className} />
+      <MarkdownRenderer content={content} className={className} streaming={streaming} />
     </Suspense>
   );
 }

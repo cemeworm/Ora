@@ -206,6 +206,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
               <MarkdownContent
                 content={bodyContent}
                 className={cn(isPlaceholder && "text-muted-foreground")}
+                streaming={turn?.status === "running" || isPlaceholder}
               />
             </MessageContent>
           )}

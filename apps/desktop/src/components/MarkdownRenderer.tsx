@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -6,6 +7,89 @@ import { cn } from "../lib/utils";
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /**
+   * Defer expensive re-parses while content is rapidly changing.
+   * When true (default), content updates are batched at ~5 fps during streaming so the
+   * ReactMarkdown pipeline doesn't re-run on every 1-3 char delta. Forced flushes still
+   * occur at paragraph boundaries (double newline) and when content stops changing.
+   */
+  streaming?: boolean;
+}
+
+/**
+ * Throttle live-streaming content to ~5 updates per second to limit how often
+ * the heavyweight ReactMarkdown + remarkGfm + remarkBreaks pipeline re-parses.
+ *
+ * Flushes immediately on:
+ *  - paragraph boundary (\n\n) detected in the latest tail
+ *  - content shrinking (snapshot reset)
+ *  - streaming -> false (final state)
+ */
+const STREAMING_UPDATE_INTERVAL_MS = 200;
+
+function useDeferredStreamingContent(content: string, streaming: boolean): string {
+  const [deferred, setDeferred] = useState(content);
+  const lastFlushAtRef = useRef<number>(Date.now());
+  const pendingRef = useRef<string>(content);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    pendingRef.current = content;
+
+    if (!streaming) {
+      // Settled: flush immediately and clear any pending timer.
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      lastFlushAtRef.current = Date.now();
+      setDeferred(content);
+      return;
+    }
+
+    // Force immediate flush on content shrink (snapshot replaced) or paragraph boundary.
+    const lastTail = content.slice(Math.max(0, content.length - 4));
+    const isParagraphBoundary = lastTail.includes("\n\n");
+    const isShrink = content.length < deferred.length;
+    if (isShrink || isParagraphBoundary) {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      lastFlushAtRef.current = Date.now();
+      setDeferred(content);
+      return;
+    }
+
+    // Streaming with no immediate-flush trigger: schedule next flush so we update at
+    // most every STREAMING_UPDATE_INTERVAL_MS.
+    const elapsed = Date.now() - lastFlushAtRef.current;
+    const wait = Math.max(0, STREAMING_UPDATE_INTERVAL_MS - elapsed);
+    if (timerRef.current) {
+      return;
+    }
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      lastFlushAtRef.current = Date.now();
+      setDeferred(pendingRef.current);
+    }, wait);
+
+    return () => {
+      // Cleanup is handled by the next effect run or unmount.
+    };
+  }, [content, streaming, deferred.length]);
+
+  // Cleanup on unmount.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  return deferred;
 }
 
 export function normalizeMarkdownContent(content: string): string {
@@ -117,11 +201,12 @@ const markdownComponents: Components = {
   td: ({ className, ...props }) => <td className={cn("border border-border px-2 py-1.5 align-top", className)} {...props} />,
 };
 
-export default function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
+export default function MarkdownRenderer({ content, className, streaming = false }: MarkdownRendererProps) {
+  const deferredContent = useDeferredStreamingContent(content, streaming);
   return (
     <div className={cn("max-w-full break-words", className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
-        {normalizeMarkdownContent(content)}
+        {normalizeMarkdownContent(deferredContent)}
       </ReactMarkdown>
     </div>
   );
