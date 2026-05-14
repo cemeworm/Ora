@@ -1162,6 +1162,148 @@ describe("node runtime loop transition contract", () => {
     }
   });
 
+  it("allows grep broadening from a file path to a directory path without false repeated blocking", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-node-loop-grep-broadening-"));
+    fs.mkdirSync(path.join(workspaceRoot, "src", "lib"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, "src", "lib", "viewModel.ts"), "export const viewModel = true;\n", "utf8");
+    fs.writeFileSync(path.join(workspaceRoot, "src", "components.ts"), "export const chatMessages = [];\n", "utf8");
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.NODE_LOOP_GREP_BROADENING_KEY;
+    process.env.NODE_LOOP_GREP_BROADENING_KEY = "test";
+    let providerCalls = 0;
+
+    globalThis.fetch = (async (_input, init) => {
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role?: string; tool_call_id?: string; content?: string }>;
+      };
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-grep-file",
+                type: "function",
+                function: {
+                  name: "file__grep",
+                  arguments: "{\"path\":\"src/lib/viewModel.ts\",\"pattern\":\"chatMessages\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (providerCalls === 2) {
+        expect(body.messages?.some((message) =>
+          message.role === "tool" && message.tool_call_id === "call-grep-file"
+        )).toBe(true);
+        return new Response(JSON.stringify({
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "call-grep-dir",
+                type: "function",
+                function: {
+                  name: "file__grep",
+                  arguments: "{\"path\":\"src\",\"pattern\":\"chatMessages\"}",
+                },
+              }],
+            },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      expect(body.messages?.some((message) =>
+        message.role === "tool" && message.tool_call_id === "call-grep-dir"
+      )).toBe(true);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "Expanded grep found chatMessages in src/components.ts." } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: {
+            prompt: "Find chatMessages, broadening the search if needed.",
+            context: {
+              projectWorkspace: { label: "Node Loop Grep Broadening Workspace", rootPath: workspaceRoot },
+            },
+          },
+          config: {
+            modeId: SINGLE_AGENT_MODE_ID,
+            providerId: "node-loop-grep-broadening",
+            modelRef: "node-loop-grep-broadening-model",
+            providerConfig: {
+              id: "node-loop-grep-broadening",
+              label: "Node Loop Grep Broadening",
+              type: "openai_compatible",
+              modelId: "node-loop-grep-broadening-model",
+              baseUrl: "https://node-loop-grep-broadening.test/v1",
+              apiKeyEnv: "NODE_LOOP_GREP_BROADENING_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["file.grep"],
+            completionPolicy: {
+              preset: "balanced",
+              maxRepeatedToolCalls: 2,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: true,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const grepCalls = state.toolCalls.filter((call) => call.toolId === "file.grep");
+      const forceFinalEvents = state.events.filter((event) =>
+        event.type === "completion.updated" &&
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        (event.payload as Record<string, unknown>).state === "force_final"
+      );
+
+      expect(run.status).toBe("succeeded");
+      expect(providerCalls).toBeGreaterThanOrEqual(3);
+      expect(grepCalls).toHaveLength(2);
+      expect(grepCalls[0]?.args).toEqual({ path: "src/lib/viewModel.ts", pattern: "chatMessages" });
+      expect(grepCalls[0]?.result?.output).toMatchObject({ path: "src/lib/viewModel.ts", matches: [] });
+      expect(grepCalls[0]?.result?.output).not.toMatchObject({ path: "src" });
+      expect(grepCalls[1]?.args).toEqual({ path: "src", pattern: "chatMessages" });
+      expect(grepCalls[1]?.result?.output).toMatchObject({
+        path: "src",
+        matches: [expect.objectContaining({ path: "src/components.ts", text: expect.stringContaining("chatMessages") })],
+      });
+      expect(forceFinalEvents).toEqual([]);
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Expanded grep found chatMessages"),
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      if (previousKey === undefined) {
+        delete process.env.NODE_LOOP_GREP_BROADENING_KEY;
+      } else {
+        process.env.NODE_LOOP_GREP_BROADENING_KEY = previousKey;
+      }
+    }
+  });
+
   it("continues OpenAI Responses follow-ups with an append-only delta payload", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-node-loop-responses-cache-"));
