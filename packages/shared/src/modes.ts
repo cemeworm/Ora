@@ -2626,7 +2626,7 @@ function createCodeDevelopmentModeSpec(): ModeSpec {
       supportsSharedState: false,
       supportsEventRouting: false,
       approvalMode: "high_risk_only",
-      skillIds: ["long-task-protocol", "hunt", "check"],
+      skillIds: ["long-task-protocol"],
       toolIds: [...DEFAULT_AGENT_MODE_TOOL_IDS],
     },
     runtimeAtoms: [...defaultRuntimeAtomsForFamily("agent_teams"), "dynamic_stage_skipping"],
