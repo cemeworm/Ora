@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getComposerTrayVisibility,
   getContextRingState,
+  getCurrentLineInfo,
   scrollComposerTextareaToBottom,
 } from "./ChatInput";
 
@@ -171,5 +172,49 @@ describe("chat input textarea scrolling", () => {
     scrollComposerTextareaToBottom(textarea);
 
     expect(textarea.scrollTop).toBe(640);
+  });
+});
+
+describe("getCurrentLineInfo", () => {
+  it("returns empty line at the start of text", () => {
+    expect(getCurrentLineInfo("hello", 0)).toEqual({
+      lineStart: 0,
+      lineText: "",
+    });
+  });
+
+  it("returns the current line text before cursor", () => {
+    expect(getCurrentLineInfo("hello world", 5)).toEqual({
+      lineStart: 0,
+      lineText: "hello",
+    });
+  });
+
+  it("handles multi-line text with cursor on the second line", () => {
+    expect(getCurrentLineInfo("first\nsecond\nthird", 11)).toEqual({
+      lineStart: 6,
+      lineText: "secon",
+    });
+  });
+
+  it("returns empty lineText when cursor is right after a newline", () => {
+    expect(getCurrentLineInfo("first\n", 6)).toEqual({
+      lineStart: 6,
+      lineText: "",
+    });
+  });
+
+  it("handles slash prefix for skill triggering", () => {
+    expect(getCurrentLineInfo("/commit", 7)).toEqual({
+      lineStart: 0,
+      lineText: "/commit",
+    });
+  });
+
+  it("returns empty when text is empty", () => {
+    expect(getCurrentLineInfo("", 0)).toEqual({
+      lineStart: 0,
+      lineText: "",
+    });
   });
 });
