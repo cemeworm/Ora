@@ -35,6 +35,7 @@ function snapshotCacheFingerprint(
   return [
     runId,
     snapshot.status,
+    snapshot.turnIndex,
     snapshot.updatedAt,
     snapshot.events.length,
     latestEvent?.seq ?? "none",

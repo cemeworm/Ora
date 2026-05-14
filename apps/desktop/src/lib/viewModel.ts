@@ -2061,7 +2061,7 @@ function extractWebSources(snapshot: OraStateSnapshot): CitationSource[] {
   const seen = new Set<string>();
   const sources: CitationSource[] = [];
 
-  for (const call of snapshot.toolCalls) {
+  for (const call of snapshot.toolCalls ?? []) {
     if (call.status !== "succeeded") continue;
     const output = call.result?.output;
     if (!isRecord(output)) continue;

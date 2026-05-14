@@ -79,7 +79,7 @@ describe("runtime projection risk helpers", () => {
         runId: "run-projection-risk",
         type: "file.write",
         riskLevel: "high",
-        status: "approval_required",
+        status: "succeeded",
         input: {},
         artifactIds: [],
       }],

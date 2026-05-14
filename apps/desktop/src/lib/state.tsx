@@ -1035,6 +1035,7 @@ export function mergeStateSnapshot(
   return {
     ...normalizedExisting,
     ...normalizedIncoming,
+    turnIndex: normalizedIncoming.turnIndex ?? normalizedExisting.turnIndex,
     sessionId: normalizedIncoming.sessionId ?? normalizedExisting.sessionId,
     status: preserveFinalStatus
       ? normalizedExisting.status
@@ -1262,9 +1263,7 @@ export function deriveRenderableTurnSnapshots(params: {
   }
 
   if (latestSnapshot && latestSnapshot.sessionId === activeSessionId) {
-    if (!scopedSnapshots[latestSnapshot.runId]) {
-      scopedSnapshots[latestSnapshot.runId] = latestSnapshot;
-    }
+    scopedSnapshots[latestSnapshot.runId] = latestSnapshot;
     for (const turn of detail.turns) {
       if (scopedSnapshots[turn.runId]) continue;
       if (latestSnapshot.runId === turn.runId) {

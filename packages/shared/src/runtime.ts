@@ -1488,9 +1488,20 @@ export interface GateProjectionOptions {
 export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: GateProjectionOptions = {}): GateProjection | undefined {
   const attention = snapshot.attention;
   if (attention?.kind === "needs_clarification") {
+    const rawIds = new Set((snapshot.pendingClarifications ?? []).map((c) => c.id));
+    const effectiveIds = (attention.pendingClarificationIds ?? []).filter((id) => rawIds.has(id));
+    if (effectiveIds.length === 0) {
+      const rawGate = clarificationGateProjection({
+        source: "pending_clarifications",
+        pendingClarificationIds: [...rawIds],
+        staleRisk: true,
+      });
+      if (rawGate) return rawGate;
+      return undefined;
+    }
     return clarificationGateProjection({
       source: "attention",
-      pendingClarificationIds: attention.pendingClarificationIds,
+      pendingClarificationIds: effectiveIds,
     }) ?? {
       kind: "clarification",
       source: "attention",
@@ -1503,10 +1514,27 @@ export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: G
     };
   }
   if (attention?.kind === "needs_approval") {
+    const rawActionIds = new Set([
+      ...(snapshot.pendingApprovals ?? []),
+      ...(snapshot.actions ?? []).filter((a) => a.status === "approval_required").map((a) => a.id),
+    ]);
+    const effectiveActionIds = (attention.pendingActionIds ?? []).filter((id) => rawActionIds.has(id));
+    const rawToolIds = new Set((snapshot.toolCalls ?? []).filter((c) => c.status === "approval_required").map((c) => c.id));
+    const effectiveToolIds = (attention.pendingToolCallIds ?? []).filter((id) => rawToolIds.has(id));
+    if (effectiveActionIds.length === 0 && effectiveToolIds.length === 0) {
+      const rawGate = approvalGateProjection({
+        source: "pending_approvals",
+        pendingActionIds: [...rawActionIds],
+        pendingToolCallIds: [...rawToolIds],
+        staleRisk: true,
+      });
+      if (rawGate) return rawGate;
+      return undefined;
+    }
     return approvalGateProjection({
       source: "attention",
-      pendingActionIds: attention.pendingActionIds,
-      pendingToolCallIds: attention.pendingToolCallIds,
+      pendingActionIds: effectiveActionIds,
+      pendingToolCallIds: effectiveToolIds,
     }) ?? {
       kind: "approval",
       source: "attention",
@@ -1519,7 +1547,7 @@ export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: G
     };
   }
 
-  if (!attention) {
+  if (!attention || attention.kind === "running") {
     const activeFrame = activePausedContinuationFrame(snapshot);
     if (activeFrame?.reason === "clarification_required") {
       const projected = clarificationGateProjection({
