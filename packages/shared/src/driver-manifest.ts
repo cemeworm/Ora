@@ -22,8 +22,9 @@ export interface DriverCapabilityManifest {
    * - `sequential`: nodes execute one at a time in topological order.
    * - `layered_parallel`: independent nodes within a layer execute in parallel (Promise.all).
    * - `loop_retry`: nodes are re-executed in a loop until a stop condition is met.
+   * - `dag_parallel`: layers execute sequentially, but nodes within a layer execute in parallel (Promise.all).
    */
-  execution: "sequential" | "layered_parallel" | "loop_retry";
+  execution: "sequential" | "layered_parallel" | "loop_retry" | "dag_parallel";
 
   /**
    * Whether the driver evaluates `ModeEdgeSpec.condition` to skip or route execution.
@@ -121,9 +122,9 @@ export const BUILT_IN_DRIVER_MANIFESTS: Record<string, DriverCapabilityManifest>
   orchestrator_subagent: {
     family: "orchestrator_subagent",
     label: "Orchestrator–Subagent",
-    execution: "sequential",
+    execution: "dag_parallel",
     consumesConditions: false,
-    supportsParallelLayers: false,
+    supportsParallelLayers: true,
     singleOwnerTopology: "compressed",
     executedEdgeKinds: [],
     unsupportedAtoms: [
@@ -135,7 +136,7 @@ export const BUILT_IN_DRIVER_MANIFESTS: Record<string, DriverCapabilityManifest>
     supportsStaging: true,
     nodeCheckpoints: true,
     constraints: [
-      "Nodes execute sequentially in topological order.",
+      "Nodes execute in topological layers — independent nodes within a layer run in parallel.",
       "Staged transcripts are supported — each node can have multiple speaker/stance stages.",
       "Edge conditions are not consumed — every enabled edge is followed.",
       "Single-owner modes skip decomposition and deliver a direct solo response.",
@@ -147,9 +148,9 @@ export const BUILT_IN_DRIVER_MANIFESTS: Record<string, DriverCapabilityManifest>
   agent_teams: {
     family: "agent_teams",
     label: "Agent Teams",
-    execution: "sequential",
+    execution: "dag_parallel",
     consumesConditions: false,
-    supportsParallelLayers: false,
+    supportsParallelLayers: true,
     singleOwnerTopology: "compressed",
     executedEdgeKinds: [],
     unsupportedAtoms: [
@@ -161,7 +162,7 @@ export const BUILT_IN_DRIVER_MANIFESTS: Record<string, DriverCapabilityManifest>
     supportsStaging: false,
     nodeCheckpoints: true,
     constraints: [
-      "Nodes execute sequentially in topological order.",
+      "Nodes execute in topological layers — independent nodes within a layer run in parallel.",
       "Edge conditions are not consumed — every enabled edge is followed.",
       "Supports persistent worker agents with identity across tasks.",
       "Complexity assessment (L0–L3) can skip nodes based on triage output.",
@@ -171,9 +172,9 @@ export const BUILT_IN_DRIVER_MANIFESTS: Record<string, DriverCapabilityManifest>
   message_bus: {
     family: "message_bus",
     label: "Message Bus",
-    execution: "sequential",
+    execution: "dag_parallel",
     consumesConditions: false,
-    supportsParallelLayers: false,
+    supportsParallelLayers: true,
     singleOwnerTopology: "compressed",
     executedEdgeKinds: [],
     unsupportedAtoms: [

@@ -1,5 +1,6 @@
 export type {
   FetchLike,
+  ModelImageBlock,
   ModelMessage,
   ModelProvider,
   ModelRequest,

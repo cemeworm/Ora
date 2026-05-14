@@ -7,7 +7,7 @@ import {
   type ModeSpec,
   type QueueSummary,
 } from "@cemeworm/shared";
-import type { PatternExecutionContext } from "./execution-context.js";
+import type { EvidenceBoard, PatternExecutionContext } from "./execution-context.js";
 
 export function correlationId(base: string): string {
   return `${base}-${Math.random().toString(36).slice(2, 8)}`;
@@ -76,14 +76,56 @@ export function promptTemplate(
   const unresolved = new Set<string>();
   const resolved = template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
     const value = values[key as string];
-    if (value === undefined) unresolved.add(key as string);
+    if (value === undefined) {
+      unresolved.add(key as string);
+      return `{{UNRESOLVED:${key}}}`;
+    }
     return asText(value);
   });
   if (unresolved.size > 0) {
-    console.error(
+    const msg =
       `[driver-utils] Unresolved mustache placeholder(s) in prompt for node "${node.id}" (template: ${node.template}): ` +
-      `${[...unresolved].join(", ")}. Replaced with empty strings.`,
-    );
+      `${[...unresolved].join(", ")}.`;
+    if (process.env.NODE_ENV === "development") {
+      throw new Error(msg);
+    }
+    console.error(msg);
+  }
+  return resolved;
+}
+
+/**
+ * Like promptTemplate, but wraps every injected bag value in an XML boundary
+ * so downstream LLMs can distinguish upstream context from their own
+ * instructions.  Unresolved keys are handled the same way as promptTemplate.
+ */
+export function safePromptTemplate(
+  node: ModeNodeSpec,
+  fallback: string,
+  values: Record<string, unknown>,
+): string {
+  const template = node.prompt ?? fallback;
+  const unresolved = new Set<string>();
+  const wrapped = Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [
+      key,
+      `<upstream-output key="${key}">\n${asText(value)}\n</upstream-output>`,
+    ]),
+  );
+  const resolved = template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
+    if (wrapped[key] !== undefined) return wrapped[key];
+    if (values[key] !== undefined) return asText(values[key]);
+    unresolved.add(key);
+    return `{{UNRESOLVED:${key}}}`;
+  });
+  if (unresolved.size > 0) {
+    const msg =
+      `[driver-utils] Unresolved mustache placeholder(s) in safePromptTemplate for node "${node.id}" (template: ${node.template}): ` +
+      `${[...unresolved].join(", ")}.`;
+    if (process.env.NODE_ENV === "development") {
+      throw new Error(msg);
+    }
+    console.error(msg);
   }
   return resolved;
 }
@@ -287,6 +329,107 @@ export function modeUsesSingleOwner(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): 
 
 export function primaryOwnerAgentId(modeSpec: ModeSpec, nodes: ModeNodeSpec[]): string {
   return nodes.find((node) => node.ownerAgentId)?.ownerAgentId ?? modeSpec.profiles[0]?.id ?? "agent";
+}
+
+/**
+ * Wraps a bag in a Proxy that logs every read and write at debug level.
+ * Only active when `debug` is true (typically gated on NODE_ENV === "development").
+ */
+export function createObservableBag(debug?: boolean): Record<string, unknown> {
+  if (!debug) return {};
+  return new Proxy({} as Record<string, unknown>, {
+    set(_target, key, value) {
+      if (typeof key === "symbol") return true;
+      console.debug(`[bag:write] ${key} = ${asText(value).slice(0, 200)}`);
+      return Reflect.set(_target, key, value);
+    },
+    get(_target, key) {
+      if (typeof key === "symbol") return Reflect.get(_target, key);
+      console.debug(`[bag:read] ${key}`);
+      return Reflect.get(_target, key);
+    },
+  });
+}
+
+/**
+ * Serializes the evidence board into a compact prompt context block.
+ * Entries are ordered by relevance (critical first) and each entry is
+ * limited to a one-line summary + source reference to avoid token bloat.
+ */
+export function evidenceBoardContext(board: EvidenceBoard): string {
+  const entries = board.entries;
+  if (entries.length === 0) return "";
+
+  const order = { critical: 0, supporting: 1, background: 2 } as const;
+  const sorted = [...entries].sort((a, b) => order[a.relevance] - order[b.relevance]);
+
+  const lines = sorted.map((e) =>
+    `- [${e.kind}] ${e.summary} (source: ${e.source}, by ${e.agentId})`,
+  );
+
+  return `<evidence-board>\n${lines.join("\n")}\n</evidence-board>`;
+}
+
+/**
+ * Rough token estimate: ~4 chars per token for English text.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Produces a compacted copy of the bag suitable for prompt injection.
+ *
+ * Keys listed in `preserveKeys` are never truncated.  All other string
+ * values are capped at `maxTokens` tokens total across the bag.
+ * When a value is truncated, a truncation marker with the original
+ * length is appended so the downstream agent knows context is partial.
+ *
+ * Returns a new bag — the original is not mutated.
+ */
+export function compactBagForPrompt(
+  bag: Record<string, unknown>,
+  options: {
+    maxTokens: number;
+    preserveKeys: string[];
+  },
+): Record<string, unknown> {
+  const { maxTokens, preserveKeys } = options;
+  const preserveSet = new Set(preserveKeys);
+  const compacted: Record<string, unknown> = {};
+  let remaining = maxTokens;
+
+  for (const [key, value] of Object.entries(bag)) {
+    if (preserveSet.has(key)) {
+      compacted[key] = value;
+      const tokens = typeof value === "string" ? estimateTokens(value) : 0;
+      remaining = Math.max(0, remaining - tokens);
+    }
+  }
+
+  for (const [key, value] of Object.entries(bag)) {
+    if (preserveSet.has(key) || compacted[key] !== undefined) continue;
+    const text = asText(value);
+    if (!text) {
+      compacted[key] = value;
+      continue;
+    }
+    const tokens = estimateTokens(text);
+    if (tokens <= remaining) {
+      compacted[key] = value;
+      remaining -= tokens;
+    } else if (remaining > 100) {
+      const charBudget = remaining * 4;
+      const truncated = text.slice(0, charBudget);
+      const originalLen = text.length;
+      compacted[key] = `${truncated}\n\n[...truncated — ${originalLen - charBudget} more chars. Use read_output("${key}") to retrieve full content.]`;
+      remaining = 0;
+    } else {
+      compacted[key] = `[content omitted — token budget exhausted. Use read_output("${key}") to retrieve full content.]`;
+    }
+  }
+
+  return compacted;
 }
 
 export function initializeQueueSummary(

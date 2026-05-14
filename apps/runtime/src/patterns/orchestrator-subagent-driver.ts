@@ -1,9 +1,9 @@
-import { ORA_ROOT_AGENT_ID, orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
+import { ORA_ROOT_AGENT_ID, orderedEnabledModeLayers, orderedEnabledModeNodes, type ModeNodeSpec, type ModeSpec, type ModeStageSpec } from "@cemeworm/shared";
 import type { PatternExecutionContext, PatternExecutionResult } from "./execution-context.js";
 import type { ModeExecutionInput } from "./mode-driver-registry.js";
-import { asText, dispatchNodeTemplate, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
-import { runGenericModeNode } from "./generic-node-executor.js";
-import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, type DelegationPlan } from "./mode-driver-helpers.js";
+import { asText, dispatchNodeTemplate, evidenceBoardContext, initializeQueueSummary, interpolate, modeUsesSingleOwner, nodeCustomAgentId, nodeInstructions, nodeSystemPrompt, primaryOwnerAgentId, promptTemplate, runtimeFallbackPrompt, titleForNode } from "./driver-utils.js";
+import { runGenericModeNode, runModeLayer } from "./generic-node-executor.js";
+import { type ExecutionBag, type OrchestratorSubagentBag, DELEGATION_PLAN_INSTRUCTION, parseDelegationPlan, type DelegationPlan, writeBag } from "./mode-driver-helpers.js";
 
 function stageTranscriptLine(entry: { speakerLabel: string; content: unknown }): string {
   return `${entry.speakerLabel}: ${asText(entry.content).trim()}`;
@@ -185,13 +185,14 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   if (modeSpec.stages?.length) {
     return executeStagedTranscriptMode(input);
   }
-  const nodes = orderedEnabledModeNodes(modeSpec);
+  const layers = orderedEnabledModeLayers(modeSpec);
+  const allNodes = layers.flat();
   const enableDynamicDelegation = modeSpec.runtimeAtoms.includes("dynamic_delegation");
   let delegationPlan: DelegationPlan | null = null;
   const skipNodeIds = new Set<string>();
-  const singleOwnerMode = modeUsesSingleOwner(modeSpec, nodes);
-  const primaryAgentId = primaryOwnerAgentId(modeSpec, nodes);
-  const totalActiveNodes = nodes.length;
+  const singleOwnerMode = modeUsesSingleOwner(modeSpec, allNodes);
+  const primaryAgentId = primaryOwnerAgentId(modeSpec, allNodes);
+  const totalActiveNodes = allNodes.length;
   initializeQueueSummary(context, modeSpec.family, totalActiveNodes);
   const bag: ExecutionBag = { prompt, ...(context.modeResume?.bag ?? {}) };
   const resumedCompletedNodeIds = new Set(context.modeResume?.completedNodeIds ?? []);
@@ -208,7 +209,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
   let completedNodes = 0;
 
   const resumeOrCallAgent = async (
-    node: typeof nodes[number],
+    node: ModeNodeSpec,
     params: Parameters<typeof context.callAgent>[0],
   ): Promise<string> => {
     const resumed = await context.resumeSuspendedNode?.({
@@ -222,9 +223,8 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
     return context.callAgent(params);
   };
 
-  for (const node of nodes) {
-      completedNodes = await runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, async () => {
-        if (node.template === "decompose") {
+  const executeNode = async (node: ModeNodeSpec): Promise<unknown> => {
+    if (node.template === "decompose") {
           let decomposePrompt = promptTemplate(
             node,
             runtimeFallbackPrompt(modeSpec.family, node.template),
@@ -233,7 +233,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           if (enableDynamicDelegation) {
             decomposePrompt += DELEGATION_PLAN_INSTRUCTION;
           }
-          bag.plan = await resumeOrCallAgent(node, {
+          const planOutput = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? ORA_ROOT_AGENT_ID,
           planItemId: node.id,
           title: titleForNode(node, "Decompose work"),
@@ -242,8 +242,9 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
           });
+          writeBag(bag, "plan", planOutput, node.template);
           if (enableDynamicDelegation) {
-            delegationPlan = parseDelegationPlan(bag.plan);
+            delegationPlan = parseDelegationPlan(planOutput);
             if (delegationPlan) {
               if (!delegationPlan.researchEnabled) skipNodeIds.add("research");
               if (!delegationPlan.reviewEnabled) skipNodeIds.add("review");
@@ -251,7 +252,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
               bag.reviewFocus = delegationPlan.reviewFocus;
             }
           }
-          return bag.plan;
+          return planOutput;
         }
 
       if (node.template === "research") {
@@ -304,19 +305,24 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
         const allSubagentsSkipped = delegationPlan
           && !delegationPlan.researchEnabled
           && !delegationPlan.reviewEnabled;
+        const synthesizePrompt = promptTemplate(
+          node,
+          directSoloResponse
+            ? "Task: {{prompt}}\nProduce the final answer directly. Do not create a separate planning draft unless the task genuinely requires it."
+            : allSubagentsSkipped
+              ? "Task: {{prompt}}\n{{plan}}\nThe orchestrator determined no subagents were needed for this task. Produce the final answer directly."
+              : runtimeFallbackPrompt(modeSpec.family, node.template),
+          bag,
+        );
+        const evidenceBlock = evidenceBoardContext(context.evidenceBoard);
+        const effectivePrompt = evidenceBlock
+          ? `${synthesizePrompt}\n\n${evidenceBlock}\n\nUse the evidence above to ground your synthesis in facts the team discovered.`
+          : synthesizePrompt;
         bag.synthesis = await resumeOrCallAgent(node, {
           agentId: node.ownerAgentId ?? ORA_ROOT_AGENT_ID,
           planItemId: node.id,
           title: titleForNode(node, "Synthesize result"),
-          prompt: promptTemplate(
-            node,
-            directSoloResponse
-              ? "Task: {{prompt}}\nProduce the final answer directly. Do not create a separate planning draft unless the task genuinely requires it."
-              : allSubagentsSkipped
-                ? "Task: {{prompt}}\n{{plan}}\nThe orchestrator determined no subagents were needed for this task. Produce the final answer directly."
-                : runtimeFallbackPrompt(modeSpec.family, node.template),
-            bag,
-          ),
+          prompt: effectivePrompt,
           system: nodeSystemPrompt(context, modeSpec, node, bag),
           customAgentId: nodeCustomAgentId(node),
           riskLevel: node.riskLevel,
@@ -341,12 +347,15 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
           title: fallbackTitle,
           fallbackPrompt: runtimeFallbackPrompt(modeSpec.family, node.template),
         });
-      }, bag, {
-        skipNodeIds,
-        alreadyCompletedNodeIds: resumedCompletedNodeIds,
-        activeResumeNodeId: resumedActiveNodeId,
-      });
-  }
+    };
+
+    for (const layer of layers) {
+      completedNodes = await runModeLayer(
+        context, modeSpec, layer, totalActiveNodes, completedNodes,
+        executeNode, bag,
+        { skipNodeIds, alreadyCompletedNodeIds: resumedCompletedNodeIds, activeResumeNodeId: resumedActiveNodeId },
+      );
+    }
 
   context.remember({
     id: `mode-${modeSpec.id}-result`,
@@ -376,7 +385,7 @@ export async function executeOrchestratorSubagent(input: ModeExecutionInput): Pr
       pattern: modeSpec.family,
       modeId: modeSpec.id,
       orchestrator: {
-        decomposition: nodes.map((node) => node.template),
+        decomposition: allNodes.map((node) => node.template),
         plan: bag.plan,
       },
       subagents: {

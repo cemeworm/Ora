@@ -1,9 +1,43 @@
 import type { ModeNodeSpec } from "@cemeworm/shared";
+import { BAG_OUTPUT_SCHEMAS } from "@cemeworm/shared";
 import type { PatternExecutionContext } from "./execution-context.js";
 import { asText } from "./driver-utils.js";
 export { runGenericModeNode, runModeNode } from "./generic-node-executor.js";
 
 export type ExecutionBag = Record<string, unknown>;
+
+/**
+ * Write a value into the ExecutionBag with optional schema validation.
+ *
+ * When a Zod schema is registered for the template, the raw text is parsed
+ * as JSON and validated.  On success the parsed object is stored; on failure
+ * the raw text is wrapped as { text, _degraded: true }.
+ * The raw text is always preserved under `<key>_raw`.
+ */
+export function writeBag(
+  bag: ExecutionBag,
+  key: string,
+  raw: string,
+  template?: ModeNodeSpec["template"],
+): void {
+  bag[`${key}_raw`] = raw;
+
+  const schema = template ? BAG_OUTPUT_SCHEMAS[template] : undefined;
+  if (!schema) {
+    bag[key] = raw;
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    bag[key] = schema.parse(parsed);
+  } catch {
+    bag[key] = { text: raw, _degraded: true } satisfies { text: string; _degraded: true };
+    console.warn(
+      `[bag] schema validation failed for key "${key}" (template: ${template}), stored as degraded text`,
+    );
+  }
+}
 
 /** Bag keys for orchestrator-subagent pattern: decompose → research → review → synthesize. */
 export interface OrchestratorSubagentBag extends ExecutionBag {

@@ -7,6 +7,26 @@ import type {
   SharedStateSummary,
 } from "@cemeworm/shared";
 
+// ── Evidence Board ────────────────────────────────────────────────
+
+export interface EvidenceEntry {
+  id: string;
+  agentId: string;
+  nodeId: string;
+  timestamp: number;
+  kind: "file_read" | "search_result" | "tool_output" | "finding";
+  summary: string;
+  /** Key excerpt, not full content — keep under ~2KB per entry. */
+  content: string;
+  /** File path / URL / tool name. */
+  source: string;
+  relevance: "critical" | "supporting" | "background";
+}
+
+export interface EvidenceBoard {
+  entries: EvidenceEntry[];
+}
+
 export interface PatternModeResumeState {
   activeFrameId?: string;
   activeNodeId?: string;
@@ -21,6 +41,8 @@ export interface PatternExecutionContext {
   sharedStateSummary: SharedStateSummary;
   busStats: BusStats;
   modeResume?: PatternModeResumeState;
+  /** Evidence accumulated during mode execution (shared across agents). */
+  evidenceBoard: EvidenceBoard;
   systemPrompt(extra: string): string;
   setPlanStatus(templateId: string, status: "planned" | "ready" | "running" | "blocked" | "done" | "failed" | "skipped"): void;
   setQueueSummary(patch: Partial<QueueSummary>): void;
@@ -92,6 +114,14 @@ export interface PatternExecutionContext {
     mimeType?: string;
     payload: unknown;
   }): void;
+  /** Append an evidence entry to the shared board. Called after tool-use. */
+  writeEvidence(entry: Omit<EvidenceEntry, "id" | "timestamp">): void;
+  /**
+   * Request an upstream agent to clarify or re-execute based on a downstream
+   * finding.  The runtime will re-invoke the upstream agent with the clarification
+   * question injected into its prompt.  Limited to 1 round-trip per mode execution.
+   */
+  requestClarification(req: ClarificationRequest): Promise<ClarificationResult>;
   publishMessage(params: {
     agentId: string;
     topic: string;
@@ -132,6 +162,30 @@ export interface PatternExecutionContext {
 
 export interface PatternExecutionResult {
   output: unknown;
+}
+
+// ── Clarification Request (feedback loop) ───────────────────────────
+
+export interface ClarificationRequest {
+  /** The node that is requesting clarification. */
+  fromNodeId: string;
+  /** The upstream node being asked to clarify. */
+  toNodeId: string;
+  /** The question the downstream agent needs answered. */
+  question: string;
+  /** The context in which the downstream agent discovered the issue. */
+  context: string;
+}
+
+/**
+ * Result of processing a clarification request.
+ * `revisedOutput` contains the upstream agent's response to the question.
+ */
+export interface ClarificationResult {
+  fromNodeId: string;
+  toNodeId: string;
+  question: string;
+  revisedOutput: unknown;
 }
 
 export interface PatternDriver {
