@@ -836,7 +836,8 @@ export const RunEventStreamSchema = z.object({
   events: z.array(OraEventEnvelopeSchema),
   nextSeq: z.number().int().nonnegative(),
   status: RunStatusSchema.optional(),
-  snapshot: z.lazy(() => StateSnapshotSchema).optional()
+  snapshot: z.lazy(() => StateSnapshotSchema).optional(),
+  latency: z.lazy(() => RunLatencyDiagnosticsSchema).optional(),
 });
 export type RunEventStream = z.infer<typeof RunEventStreamSchema>;
 
@@ -949,12 +950,36 @@ export const SessionArchiveParamsSchema = z.object({
 });
 export type SessionArchiveParams = z.infer<typeof SessionArchiveParamsSchema>;
 
+export const GateProjectionKindSchema = z.enum(["clarification", "approval", "plan_decision"]);
+export type GateProjectionKind = z.infer<typeof GateProjectionKindSchema>;
+export const GateProjectionSourceSchema = z.enum([
+  "attention",
+  "plan_decisions",
+  "pending_clarifications",
+  "pending_approvals",
+  "continuation",
+]);
+export type GateProjectionSource = z.infer<typeof GateProjectionSourceSchema>;
+export const GateProjectionSchema = z.object({
+  kind: GateProjectionKindSchema,
+  source: GateProjectionSourceSchema,
+  durable: z.boolean(),
+  staleRisk: z.boolean(),
+  gateIds: z.array(z.string().min(1)).default([]),
+  pendingActionIds: z.array(z.string().min(1)).default([]),
+  pendingToolCallIds: z.array(z.string().min(1)).default([]),
+  pendingClarificationIds: z.array(z.string().min(1)).default([]),
+  planDecisionId: z.string().min(1).optional(),
+});
+export type GateProjection = z.infer<typeof GateProjectionSchema>;
+
 export const SessionSummarySchema = z.object({
   sessionId: z.string().min(1),
   title: z.string().min(1),
   projectId: z.string().min(1).optional(),
   status: RunStatusSchema.optional(),
   attention: RunAttentionSchema.optional(),
+  interactionGate: GateProjectionSchema.optional(),
   latestRunId: z.string().min(1).optional(),
   latestPattern: CoordinationPatternSchema.optional(),
   latestModeId: ModeIdSchema.optional(),
@@ -1179,7 +1204,7 @@ export type RunTraceMetadata = z.infer<typeof RunTraceMetadataSchema>;
 export const RunLatencyMarkSchema = z.object({
   name: z.string().min(1),
   at: z.number().int().nonnegative(),
-  source: z.enum(["desktop", "runtime", "provider"]),
+  source: z.enum(["desktop", "runtime", "provider", "bridge"]),
   detail: z.record(z.unknown()).default({}),
 });
 export type RunLatencyMark = z.infer<typeof RunLatencyMarkSchema>;
@@ -1398,6 +1423,160 @@ export const StateSnapshotSchema = z.object({
 });
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 
+function activePausedContinuationFrame(snapshot: StateSnapshot): RunContinuationFrame | undefined {
+  return snapshot.status === "interrupted"
+    ? (snapshot.continuation?.frames ?? []).find((frame) =>
+        frame.id === snapshot.continuation?.activeFrameId &&
+        frame.status === "paused"
+      )
+    : undefined;
+}
+
+function uniqueStrings(values: readonly (string | undefined)[]): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+function approvalGateProjection(params: {
+  source: GateProjectionSource;
+  pendingActionIds?: readonly string[];
+  pendingToolCallIds?: readonly string[];
+  staleRisk?: boolean;
+}): GateProjection | undefined {
+  const pendingActionIds = uniqueStrings(params.pendingActionIds ?? []);
+  const pendingToolCallIds = uniqueStrings(params.pendingToolCallIds ?? []);
+  if (pendingActionIds.length === 0 && pendingToolCallIds.length === 0) {
+    return undefined;
+  }
+  return {
+    kind: "approval",
+    source: params.source,
+    durable: params.source === "attention" || params.source === "continuation",
+    staleRisk: params.staleRisk ?? false,
+    gateIds: [...pendingActionIds, ...pendingToolCallIds],
+    pendingActionIds,
+    pendingToolCallIds,
+    pendingClarificationIds: [],
+  };
+}
+
+function clarificationGateProjection(params: {
+  source: GateProjectionSource;
+  pendingClarificationIds?: readonly string[];
+  staleRisk?: boolean;
+}): GateProjection | undefined {
+  const pendingClarificationIds = uniqueStrings(params.pendingClarificationIds ?? []);
+  if (pendingClarificationIds.length === 0) {
+    return undefined;
+  }
+  return {
+    kind: "clarification",
+    source: params.source,
+    durable: params.source === "attention" || params.source === "continuation",
+    staleRisk: params.staleRisk ?? false,
+    gateIds: pendingClarificationIds,
+    pendingActionIds: [],
+    pendingToolCallIds: [],
+    pendingClarificationIds,
+  };
+}
+
+export interface GateProjectionOptions {
+  includeRawPending?: boolean;
+}
+
+export function deriveSnapshotGateProjection(snapshot: StateSnapshot, options: GateProjectionOptions = {}): GateProjection | undefined {
+  const attention = snapshot.attention;
+  if (attention?.kind === "needs_clarification") {
+    return clarificationGateProjection({
+      source: "attention",
+      pendingClarificationIds: attention.pendingClarificationIds,
+    }) ?? {
+      kind: "clarification",
+      source: "attention",
+      durable: true,
+      staleRisk: false,
+      gateIds: [],
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    };
+  }
+  if (attention?.kind === "needs_approval") {
+    return approvalGateProjection({
+      source: "attention",
+      pendingActionIds: attention.pendingActionIds,
+      pendingToolCallIds: attention.pendingToolCallIds,
+    }) ?? {
+      kind: "approval",
+      source: "attention",
+      durable: true,
+      staleRisk: false,
+      gateIds: [],
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    };
+  }
+
+  if (!attention) {
+    const activeFrame = activePausedContinuationFrame(snapshot);
+    if (activeFrame?.reason === "clarification_required") {
+      const projected = clarificationGateProjection({
+        source: "continuation",
+        pendingClarificationIds: activeFrame.pendingClarificationIds,
+      });
+      if (projected) return projected;
+    }
+    if (options.includeRawPending) {
+      const rawClarification = clarificationGateProjection({
+        source: "pending_clarifications",
+        pendingClarificationIds: (snapshot.pendingClarifications ?? []).map((clarification) => clarification.id),
+        staleRisk: true,
+      });
+      if (rawClarification) return rawClarification;
+    }
+
+    if (activeFrame?.reason === "approval_required") {
+      const projected = approvalGateProjection({
+        source: "continuation",
+        pendingActionIds: activeFrame.pendingActionIds,
+        pendingToolCallIds: activeFrame.pendingToolCallIds,
+      });
+      if (projected) return projected;
+    }
+    if (options.includeRawPending) {
+      const rawApproval = approvalGateProjection({
+        source: "pending_approvals",
+        pendingActionIds: [
+          ...(snapshot.pendingApprovals ?? []),
+          ...(snapshot.actions ?? []).filter((action) => action.status === "approval_required").map((action) => action.id),
+        ],
+        pendingToolCallIds: (snapshot.toolCalls ?? []).filter((call) => call.status === "approval_required").map((call) => call.id),
+        staleRisk: true,
+      });
+      if (rawApproval) return rawApproval;
+    }
+  }
+
+  const pendingPlanDecision = (snapshot.planDecisions ?? []).find((decision) => decision.status === "pending");
+  if (pendingPlanDecision || attention?.kind === "needs_plan_decision") {
+    const planDecisionId = pendingPlanDecision?.id ?? attention?.planDecisionId;
+    return {
+      kind: "plan_decision",
+      source: pendingPlanDecision ? "plan_decisions" : "attention",
+      durable: Boolean(pendingPlanDecision),
+      staleRisk: !pendingPlanDecision,
+      gateIds: planDecisionId ? [planDecisionId] : [],
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+      ...(planDecisionId ? { planDecisionId } : {}),
+    };
+  }
+
+  return undefined;
+}
+
 export const SessionBranchCandidateSchema = z.object({
   runId: z.string().min(1),
   status: RunStatusSchema,
@@ -1530,69 +1709,43 @@ export function extractCompleteProposedPlanContent(snapshot: Pick<StateSnapshot,
 }
 
 export function deriveRunInteraction(snapshot: StateSnapshot): RunInteraction {
-  const activeFrame = snapshot.status === "interrupted"
-    ? snapshot.continuation.frames.find((frame) =>
-        frame.id === snapshot.continuation.activeFrameId &&
-        frame.status === "paused"
-      )
-    : undefined;
-  const pendingClarificationIds = [
-    ...new Set([
-      ...snapshot.pendingClarifications.map((clarification) => clarification.id),
-      ...(activeFrame?.reason === "clarification_required" ? activeFrame.pendingClarificationIds : []),
-    ]),
-  ];
-  if (pendingClarificationIds.length > 0) {
+  const gate = deriveSnapshotGateProjection(snapshot, { includeRawPending: true });
+  if (gate?.kind === "clarification") {
     return RunInteractionSchema.parse({
       attention: {
         kind: "needs_clarification",
         blocking: true,
         sourceRunId: snapshot.runId,
         reason: "clarification_required",
-        pendingClarificationIds,
+        pendingClarificationIds: gate.pendingClarificationIds,
       },
     });
   }
-
-  const pendingActionIds = [
-    ...new Set([
-      ...snapshot.pendingApprovals,
-      ...snapshot.actions.filter((action) => action.status === "approval_required").map((action) => action.id),
-      ...(activeFrame?.reason === "approval_required" ? activeFrame.pendingActionIds : []),
-    ]),
-  ];
-  const pendingToolCallIds = [
-    ...new Set([
-      ...snapshot.toolCalls.filter((call) => call.status === "approval_required").map((call) => call.id),
-      ...(activeFrame?.reason === "approval_required" ? activeFrame.pendingToolCallIds : []),
-    ]),
-  ];
-  if (pendingActionIds.length > 0 || pendingToolCallIds.length > 0) {
+  if (gate?.kind === "approval") {
     return RunInteractionSchema.parse({
       attention: {
         kind: "needs_approval",
         blocking: true,
         sourceRunId: snapshot.runId,
         reason: "approval_required",
-        pendingActionIds,
-        pendingToolCallIds,
+        pendingActionIds: gate.pendingActionIds,
+        pendingToolCallIds: gate.pendingToolCallIds,
       },
     });
   }
-
-  const planDecision = snapshot.planDecisions.find((decision) => decision.status === "pending");
-  if (planDecision) {
+  if (gate?.kind === "plan_decision") {
     return RunInteractionSchema.parse({
       attention: {
         kind: "needs_plan_decision",
         blocking: true,
         sourceRunId: snapshot.runId,
         reason: "plan_decision_required",
-        planDecisionId: planDecision.id,
+        planDecisionId: gate.planDecisionId ?? gate.gateIds[0],
       },
     });
   }
 
+  const activeFrame = activePausedContinuationFrame(snapshot);
   if (snapshot.status === "queued" || snapshot.status === "running") {
     return RunInteractionSchema.parse({
       attention: {

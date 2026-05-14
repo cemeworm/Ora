@@ -2740,6 +2740,14 @@ describe("Session thread contracts", () => {
       title: "New Chat",
       projectId: "ora-mvp",
       turnCount: 0,
+      interactionGate: {
+        kind: "plan_decision",
+        source: "plan_decisions",
+        durable: true,
+        staleRisk: false,
+        gateIds: ["run-1:plan-decision"],
+        planDecisionId: "run-1:plan-decision",
+      },
       createdAt: 1000,
       updatedAt: 1000,
       archivedAt: 2000,
@@ -2749,6 +2757,13 @@ describe("Session thread contracts", () => {
     expect(summary.turnCount).toBe(0);
     expect(summary.title).toBe("New Chat");
     expect(summary.archivedAt).toBe(2000);
+    expect(summary.interactionGate).toMatchObject({
+      kind: "plan_decision",
+      gateIds: ["run-1:plan-decision"],
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    });
   });
 
   it("accepts session detail with transcript and latest snapshot", () => {
