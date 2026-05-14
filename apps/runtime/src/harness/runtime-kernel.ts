@@ -66,6 +66,7 @@ import {
   type RecoveryIncident,
 } from "./recovery-policy.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
+import type { ClarificationRequest, EvidenceBoard, PatternExecutionContext } from "../patterns/execution-context.js";
 import type { ModelMessage, ModelRequest, ModelResponse } from "../providers/index.js";
 import { RuntimeCompletionController } from "./runtime-completion.js";
 import {
@@ -2447,6 +2448,48 @@ export async function executeRuntimeKernel(
     }
   };
 
+  const evidenceBoard: EvidenceBoard = { entries: [] };
+  const writeEvidence: PatternExecutionContext["writeEvidence"] = (entry) => {
+    evidenceBoard.entries.push({
+      ...entry,
+      id: `${entry.agentId}-evidence-${evidenceBoard.entries.length}`,
+      timestamp: Date.now(),
+    });
+  };
+
+  let clarificationUsed = false;
+  const requestClarification: PatternExecutionContext["requestClarification"] = async (req) => {
+    if (clarificationUsed) {
+      throw new Error("Clarification already used — only 1 round-trip allowed per mode execution.");
+    }
+    clarificationUsed = true;
+
+    const clarificationPrompt = [
+      `<clarification-request from="${req.fromNodeId}">`,
+      `The downstream agent needs clarification on your previous output.`,
+      `Question: ${req.question}`,
+      `Context: ${req.context}`,
+      `</clarification-request>`,
+      "",
+      "Please revise your previous output to address the question above. Return the revised output directly.",
+    ].join("\n");
+
+    const revised = await callAgent({
+      agentId: req.toNodeId,
+      title: `Clarification from ${req.fromNodeId}`,
+      prompt: `${lastCallAgentPrompt ?? input.prompt}\n\n${clarificationPrompt}`,
+      system: lastCallAgentSystem ?? systemPrompt(""),
+      riskLevel: "medium",
+    });
+
+    return {
+      fromNodeId: req.fromNodeId,
+      toNodeId: req.toNodeId,
+      question: req.question,
+      revisedOutput: revised,
+    };
+  };
+
   const kernelPatternExecutionContextAdapter =
     createKernelPatternExecutionContextAdapter({
       projectId,
@@ -2454,6 +2497,7 @@ export async function executeRuntimeKernel(
       sharedStateSummary: () => kernelRuntimeContext.sharedStateSummary,
       busStats: () => kernelRuntimeContext.busStats,
       modeResume,
+      evidenceBoard,
       systemPrompt,
       setPlanStatus,
       setQueueSummary: (patch) => {
@@ -2476,6 +2520,8 @@ export async function executeRuntimeKernel(
       routeMessage,
       emitAgentMessage,
       writeSharedState,
+      writeEvidence,
+      requestClarification,
       currentSharedState: () => kernelRuntimeContext.sharedStateSummary,
     });
 

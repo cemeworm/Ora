@@ -147,6 +147,55 @@ export function attachedProjectFilesSystemPrompt(attachedFiles: unknown): string
   ].join("\n");
 }
 
+export function attachedImagesSystemPrompt(attachedImages: unknown): string | undefined {
+  if (!Array.isArray(attachedImages) || attachedImages.length === 0) {
+    return undefined;
+  }
+
+  const images = attachedImages
+    .map(readAttachedImage)
+    .filter((img): img is AttachedImagePromptEntry => Boolean(img))
+    .slice(0, 20);
+  if (images.length === 0) {
+    return undefined;
+  }
+
+  return [
+    "<attached_images>",
+    "The user attached these images to this message:",
+    "",
+    ...images.flatMap((img) => [
+      `- Image (${img.mimeType}, ${img.sizeBytes} bytes)`,
+    ]),
+    "",
+    "Use the `understand_image` tool to analyze these images when their content is relevant to the request.",
+    "These images are already available in the current message; do not ask the user to upload them again.",
+    "</attached_images>",
+  ].join("\n");
+}
+
+interface AttachedImagePromptEntry {
+  mimeType: string;
+  sizeBytes: number;
+}
+
+function readAttachedImage(value: unknown): AttachedImagePromptEntry | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const mimeType = typeof record.mimeType === "string" && record.mimeType.trim()
+    ? record.mimeType.trim()
+    : "image/png";
+  const dataUrl = typeof record.dataUrl === "string" ? record.dataUrl : "";
+  const sizeBytes = dataUrl
+    ? Math.ceil(dataUrl.length * 0.75)
+    : (typeof record.sizeBytes === "number" && Number.isFinite(record.sizeBytes) && record.sizeBytes >= 0
+      ? Math.floor(record.sizeBytes)
+      : 0);
+  return { mimeType, sizeBytes };
+}
+
 export function attachedLocalFilesSystemPrompt(attachedFiles: unknown): string | undefined {
   if (!Array.isArray(attachedFiles)) {
     return undefined;

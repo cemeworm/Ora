@@ -19,6 +19,11 @@ export interface ModelToolCall {
   raw?: unknown;
 }
 
+export interface ModelImageBlock {
+  mediaType: string;
+  data: string;
+}
+
 export interface ModelMessage {
   role: ModelRole;
   content: string;

@@ -184,14 +184,15 @@ export async function runModeLayer(
   completedNodes: number,
   executeNode: (node: ModeNodeSpec) => Promise<unknown>,
   bag: Record<string, unknown>,
+  options?: { skipNodeIds?: Set<string>; alreadyCompletedNodeIds?: Set<string>; activeResumeNodeId?: string },
 ): Promise<number> {
   if (nodes.length === 0) return completedNodes;
   if (nodes.length === 1) {
-    return runGenericModeNode(context, modeSpec, nodes[0]!, totalActiveNodes, completedNodes, () => executeNode(nodes[0]!), bag);
+    return runGenericModeNode(context, modeSpec, nodes[0]!, totalActiveNodes, completedNodes, () => executeNode(nodes[0]!), bag, options);
   }
   const results = await Promise.all(
     nodes.map((node) =>
-      runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, () => executeNode(node), bag),
+      runGenericModeNode(context, modeSpec, node, totalActiveNodes, completedNodes, () => executeNode(node), bag, options),
     ),
   );
   return Math.max(...results);
