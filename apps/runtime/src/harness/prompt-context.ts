@@ -158,25 +158,94 @@ function profileSection(
   ].filter(Boolean).join("\n");
 }
 
+const SKILL_METADATA_BUDGET_CHARS = 8000;
+const SKILL_DESCRIPTION_TRUNCATED_WARNING =
+  "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter.";
+
 function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined): string | undefined {
-  const entries = (skills ?? [])
-    .filter((skill) => skill.enabled)
-    .map((skill) => [
-      "  <skill>",
-      `    <name>${escapeXml(skill.name)}</name>`,
-      `    <description>${escapeXml(skill.description)}</description>`,
-      `    <location>${escapeXml(skill.path ?? skill.category)}</location>`,
-      "  </skill>",
-    ].join("\n"));
-  if (entries.length === 0) {
+  const enabled = (skills ?? []).filter((skill) => skill.enabled);
+  if (enabled.length === 0) {
     return undefined;
   }
 
+  const usageRule = [
+    "  <usage_rule>",
+    "When a user request matches an available skill, inspect that skill before answering or acting.",
+    "Users can explicitly request a skill by typing $skill-name (e.g. $frontend-design).",
+    "If the full instructions are not already present in Skill Instructions, use skills.get with the skill name before applying it.",
+    "Load supporting files only when needed.",
+    "  </usage_rule>",
+  ].join("\n");
+
+  const fullEntries = enabled.map((skill) => renderSkillEntry(skill, skill.description));
+  const fullBody = fullEntries.join("\n");
+  const fullCost = new TextEncoder().encode(fullBody).length;
+
+  if (fullCost <= SKILL_METADATA_BUDGET_CHARS) {
+    return buildSkillSystemBlock(usageRule, fullBody);
+  }
+
+  // Level 2: truncated descriptions — distribute budget equally
+  const overhead = fullCost - fullBody.length + fullBody.length - enabled.reduce((sum, s) => sum + s.description.length, 0);
+  const availableForDescriptions = SKILL_METADATA_BUDGET_CHARS - overhead;
+  const perSkillChars = Math.max(20, Math.floor(availableForDescriptions / enabled.length));
+
+  let truncatedBody = enabled
+    .map((skill) => renderSkillEntry(skill, truncateDescription(skill.description, perSkillChars)))
+    .join("\n");
+  let truncatedCost = new TextEncoder().encode(truncatedBody).length;
+
+  if (truncatedCost <= SKILL_METADATA_BUDGET_CHARS) {
+    return buildSkillSystemBlock(usageRule, truncatedBody);
+  }
+
+  // Level 3: minimal — name + location only
+  const minimalEntries = enabled.map((skill) => renderSkillEntry(skill, ""));
+  let minimalBody = minimalEntries.join("\n");
+  let minimalCost = new TextEncoder().encode(minimalBody).length;
+
+  if (minimalCost <= SKILL_METADATA_BUDGET_CHARS) {
+    return buildSkillSystemBlock(usageRule, minimalBody);
+  }
+
+  // Level 4: omit skills that don't fit
+  const kept: string[] = [];
+  for (const entry of minimalEntries) {
+    const tentative = kept.length > 0 ? kept.join("\n") + "\n" + entry : entry;
+    if (new TextEncoder().encode(tentative).length <= SKILL_METADATA_BUDGET_CHARS) {
+      kept.push(entry);
+    } else {
+      break;
+    }
+  }
+
+  return buildSkillSystemBlock(usageRule, kept.join("\n"));
+}
+
+function renderSkillEntry(skill: SkillDescriptor, description: string): string {
+  const descLine = description ? `    <description>${escapeXml(description)}</description>` : "";
+  return [
+    "  <skill>",
+    `    <name>${escapeXml(skill.name)}</name>`,
+    descLine,
+    `    <location>${escapeXml(skill.path ?? skill.category)}</location>`,
+    "  </skill>",
+  ].filter(Boolean).join("\n");
+}
+
+function truncateDescription(desc: string, maxChars: number): string {
+  if (desc.length <= maxChars) return desc;
+  const truncated = desc.slice(0, maxChars - 3);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return (lastSpace > maxChars / 2 ? truncated.slice(0, lastSpace) : truncated) + "...";
+}
+
+function buildSkillSystemBlock(usageRule: string, body: string): string {
   return [
     "<skill_system>",
-    "  <usage_rule>When a user request matches an available skill, inspect that skill before answering or acting. If the full instructions are not already present in Skill Instructions, use skills.get with the skill name before applying it. Load supporting files only when needed.</usage_rule>",
+    usageRule,
     "  <available_skills>",
-    entries.join("\n"),
+    body,
     "  </available_skills>",
     "</skill_system>",
   ].join("\n");
