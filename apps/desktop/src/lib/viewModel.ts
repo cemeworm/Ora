@@ -3360,12 +3360,18 @@ function toolCallLabel(payload: Record<string, unknown>): string {
       return "修改文件";
     case "shell.execute":
       return "运行命令";
+    case "skills.get":
+      return "加载技能";
+    case "skills.list":
+      return "查找技能";
     case "skills.create":
       return "安装技能";
+    case "skills.update":
+      return "更新技能";
+    case "skills.setEnabled":
+      return "切换技能状态";
     case "skills.checkName":
       return "检查技能名称";
-    case "skills.list":
-      return "列出技能";
     case "mcp.listTools":
       return "列出 MCP 工具";
     case "mcp.readResource":
@@ -3483,8 +3489,38 @@ function toolCallDetail(payload: Record<string, unknown>): string | undefined {
         ? `已调用 MCP 工具 ${name}${server ? `（${server}）` : ""}`
         : undefined;
     }
-    case "skills.list":
-      return "已检查已安装技能";
+    case "skills.get": {
+      const skillName = stringValue(output.name) ?? stringValue(input.name);
+      return skillName
+        ? `已加载技能 "${skillName}"`
+        : "已加载技能";
+    }
+    case "skills.list": {
+      const query = stringValue(input.query);
+      const count = typeof output.count === "number" ? output.count : undefined;
+      if (query && count !== undefined) {
+        return `搜索技能 "${query}"，找到 ${count} 个`;
+      }
+      if (query) {
+        return `搜索技能 "${query}"`;
+      }
+      return count !== undefined
+        ? `已列出 ${count} 个可用技能`
+        : "已检查可用技能";
+    }
+    case "skills.update": {
+      const skillName = stringValue(output.name) ?? stringValue(input.name);
+      return skillName
+        ? `已更新技能 "${skillName}"`
+        : "已更新技能";
+    }
+    case "skills.setEnabled": {
+      const skillName = stringValue(output.name) ?? stringValue(input.name);
+      const enabled = input.enabled === false ? "停用" : "启用";
+      return skillName
+        ? `已${enabled}技能 "${skillName}"`
+        : "已切换技能状态";
+    }
     case "skills.checkName": {
       const name = stringValue(output.name) ?? stringValue(input.name);
       return name
