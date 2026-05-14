@@ -88,7 +88,9 @@ import {
   resolveClarificationAnswer,
 } from "./runtime-clarifications.js";
 import { buildAgentPromptContext, temporalContextPrompt, userClarificationContextPrompt } from "./prompt-context.js";
+import { extractSkillMentions, resolveSkillMentions } from "./skill-mention.js";
 import {
+  attachedImagesSystemPrompt,
   attachedLocalFilesSystemPrompt,
   attachedProjectFilesSystemPrompt,
   channelProjectGuidancePrompt,
@@ -1264,6 +1266,7 @@ export async function executeRuntimeKernel(
     channelProjectGuidancePrompt(input.context, input.context?.projectWorkspace),
     attachedProjectFilesSystemPrompt(input.context?.attachedProjectFiles),
     attachedLocalFilesSystemPrompt(input.context?.attachedLocalFiles),
+    attachedImagesSystemPrompt(input.context?.attachedImages),
   ].filter(Boolean).join("\n\n") || undefined;
   const clarificationContext = userClarificationContextPrompt(input.context);
   const temporalContext = temporalContextPrompt({
@@ -1332,9 +1335,14 @@ export async function executeRuntimeKernel(
     const customOverlay = customAgentOverlayFor(params.customAgentId);
     const systemOverlay = params.customAgentId ? undefined : options.systemAgentOverlays?.[params.agentId];
     const toolIds = effectiveAgentToolIds(params.agentId, params.customAgentId);
-    const skillIds = effectiveAgentSkillIds(params.agentId, params.customAgentId);
+    const configSkillIds = effectiveAgentSkillIds(params.agentId, params.customAgentId);
     const toolPrompt = runtimeToolExecutor.systemPrompt(toolIds);
     const availableSkills = skillRegistry.list({ enabledOnly: true });
+    const mentionedSkillIds = resolveSkillMentions(
+      extractSkillMentions(input.prompt),
+      availableSkills,
+    );
+    const skillIds = [...new Set([...configSkillIds, ...mentionedSkillIds])];
     const snippets = skillRegistry.promptSnippets(skillIds);
     return buildAgentPromptContext({
       agentId: params.agentId,
@@ -1596,6 +1604,7 @@ export async function executeRuntimeKernel(
                 actionId: action.id,
               }),
               content: response.text,
+              ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
               ...(isInternalProviderAssistantText(response.text)
                 ? { visibility: "internal" }
                 : {}),

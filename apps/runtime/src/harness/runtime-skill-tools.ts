@@ -146,6 +146,12 @@ function listRuntimeSkills(skillRegistry: SkillRegistryTools | undefined, args: 
   const limit = readPositiveInt(args.limit, 25, 100);
   const allSkills = skillRegistry.list(params);
   const skills = allSkills.slice(0, limit);
+  console.info("[skills] list", {
+    query: params.query ?? null,
+    category: params.category ?? null,
+    total: allSkills.length,
+    returned: skills.length,
+  });
   return {
     skills,
     count: skills.length,
@@ -161,6 +167,7 @@ function getRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Re
   if (!name) {
     throw new Error("skills.get requires a skill name.");
   }
+  console.info("[skills] get", { name });
   const detail = skillRegistry.get({ name });
   const localDirectory = detail.path ? path.dirname(detail.path) : undefined;
   return {
