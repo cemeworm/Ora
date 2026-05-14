@@ -417,6 +417,40 @@ describe("deriveRunInteractionState", () => {
     });
   });
 
+  it("pending plan decision wins over succeeded raw run status", () => {
+    const result = derive({
+      selectedSessionId: "session-1",
+      activeSnapshot: activeSnapshot({
+        status: "succeeded",
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "pending",
+          createdAt: 2000,
+        }],
+        attention: {
+          kind: "needs_plan_decision",
+          blocking: true,
+          sourceRunId: "run-1",
+          reason: "plan_decision_required",
+          planDecisionId: "decision-1",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: "decision_needed",
+      gateKind: "plan_decision",
+      isProcessing: true,
+      canSubmit: false,
+      canResume: true,
+    });
+  });
+
   it("raw pending approval without projection attention is not actionable", () => {
     const result = derive({
       selectedSessionId: "session-1",

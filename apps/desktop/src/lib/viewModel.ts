@@ -54,6 +54,7 @@ import type {
   OraTopologyNode,
 } from "./runtimeClient";
 import { USER_CANCELLED_MESSAGE, USER_INTERRUPTED_MESSAGE, USER_RESUMED_MESSAGE } from "./runtimeClient";
+import { deriveSnapshotInteractionProjection, attentionGateKind } from "./runInteractionState";
 import { parseProposedPlan } from "./proposedPlanParser";
 import { mergeAssistantMessageTextProjection } from "./assistantMessageProjection";
 
@@ -464,17 +465,7 @@ function adaptAttentionStatus(attention: OraRunAttention | undefined): RunStatus
 }
 
 function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
-  if (snapshotPendingClarifications(snapshot).length > 0) {
-    return "clarification_required";
-  }
-  if (snapshotPendingApprovals(snapshot).length > 0) {
-    return "approval_required";
-  }
-  const attentionStatus = adaptAttentionStatus(snapshot.attention);
-  if (snapshot.status === "queued" || snapshot.status === "running") {
-    return attentionStatus && attentionStatus !== "running" ? attentionStatus : "running";
-  }
-  return adaptRunStatus(snapshot.status, { hasPendingClarifications: false });
+  return deriveSnapshotInteractionProjection(snapshot).status as RunStatus;
 }
 
 function adaptStatusWithAttention(
@@ -482,6 +473,9 @@ function adaptStatusWithAttention(
   attention: OraRunAttention | undefined,
 ): RunStatus {
   const attentionStatus = adaptAttentionStatus(attention);
+  if (attentionGateKind(attention)) {
+    return attentionStatus ?? adaptRunStatus(status);
+  }
   if (status === "queued" || status === "running") {
     return attentionStatus && attentionStatus !== "running"
       ? attentionStatus

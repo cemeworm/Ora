@@ -82,7 +82,7 @@ function snapshotStatusToInteractionStatus(
   }
 }
 
-function attentionGateKind(
+export function attentionGateKind(
   attention: OraStateSnapshot["attention"],
 ): DesktopRunInteractionState["gateKind"] | undefined {
   if (!attention) return undefined;
@@ -98,7 +98,7 @@ function attentionGateKind(
   }
 }
 
-function attentionStatus(
+export function attentionStatus(
   attention: OraStateSnapshot["attention"],
 ): DesktopRunInteractionState["status"] | undefined {
   if (!attention) return undefined;
@@ -122,6 +122,44 @@ function attentionStatus(
   }
 }
 
+export interface SnapshotInteractionProjection {
+  status: DesktopRunInteractionState["status"];
+  gateKind?: DesktopRunInteractionState["gateKind"];
+}
+
+export function snapshotPendingPlanDecision(snapshot: OraStateSnapshot) {
+  const decisions = snapshot.planDecisions ?? [];
+  if (snapshot.attention?.kind === "needs_plan_decision") {
+    return decisions.find((decision) => decision.id === snapshot.attention?.planDecisionId)
+      ?? decisions.find((decision) => decision.status === "pending");
+  }
+  if (!snapshot.attention) {
+    return decisions.find((decision) => decision.status === "pending");
+  }
+  return undefined;
+}
+
+export function deriveSnapshotInteractionProjection(
+  snapshot: OraStateSnapshot,
+): SnapshotInteractionProjection {
+  const gateKind = attentionGateKind(snapshot.attention);
+  if (gateKind) {
+    return {
+      status: attentionStatus(snapshot.attention) ?? snapshotStatusToInteractionStatus(snapshot.status),
+      gateKind,
+    };
+  }
+  if (snapshotPendingPlanDecision(snapshot)) {
+    return {
+      status: "decision_needed",
+      gateKind: "plan_decision",
+    };
+  }
+  return {
+    status: snapshotStatusToInteractionStatus(snapshot.status),
+  };
+}
+
 function deriveFromPendingRun(
   pendingRun: PendingRunState,
 ): DesktopRunInteractionState {
@@ -141,12 +179,7 @@ function deriveFromPendingRun(
 function deriveFromSnapshot(
   snapshot: OraStateSnapshot,
 ): DesktopRunInteractionState {
-  const attention = snapshot.attention;
-  const gateKind = attentionGateKind(attention);
-  const baseStatus = snapshotStatusToInteractionStatus(snapshot.status);
-  const status = gateKind
-    ? attentionStatus(attention) ?? baseStatus
-    : baseStatus;
+  const { status, gateKind } = deriveSnapshotInteractionProjection(snapshot);
 
   return {
     sourceRunId: snapshot.runId,
