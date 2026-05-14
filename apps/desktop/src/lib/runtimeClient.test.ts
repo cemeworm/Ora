@@ -1,5 +1,15 @@
+import { MVP_MODES, ORA_ROOT_AGENT_ID } from "@cemeworm/shared";
 import { describe, expect, it } from "vitest";
 import { createRuntimeClient } from "./runtimeClient";
+
+function expectedBrowserFallbackSystemAgentIds(): string[] {
+  return [...new Set([
+    ORA_ROOT_AGENT_ID,
+    ...MVP_MODES
+      .filter((mode) => mode.visibility !== "internal")
+      .flatMap((mode) => mode.profiles.map((profile) => profile.id)),
+  ])].sort();
+}
 
 describe("desktop runtime client agent catalog", () => {
   it("bootstraps the workbench in one browser-fallback call", async () => {
@@ -131,22 +141,10 @@ describe("desktop runtime client agent catalog", () => {
     const ora = catalog.systemAgents.find((agent) => agent.id === "ora");
     const reviewer = catalog.systemAgents.find((agent) => agent.id === "reviewer");
 
-    expect(catalog.systemAgents.map((agent) => agent.id).sort()).toEqual([
-      "builder",
-      "debate_agent",
-      "debugger",
-      "generator",
-      "moderator",
-      "ora",
-      "orchestrator",
-      "release_reviewer",
-      "researcher",
-      "responder",
-      "reviewer",
-      "router",
-      "team_lead",
-      "verifier",
-    ]);
+    expect(catalog.systemAgents.map((agent) => agent.id).sort()).toEqual(
+      expectedBrowserFallbackSystemAgentIds(),
+    );
+    expect(catalog.systemAgents.map((agent) => agent.id)).not.toContain("solo_agent");
     expect(builder).toBeDefined();
     expect(ora?.usages.some((usage) => usage.modeId === "global_entry")).toBe(true);
     expect(ora?.usages.some((usage) => usage.modeId === "single_agent")).toBe(true);
