@@ -1,6 +1,6 @@
 import type { OraToolCallEnvelope } from "./actions.js";
 import type { RunStatus } from "./primitives.js";
-import type { OraEventEnvelope, RunContinuationFrame, StateSnapshot } from "./runtime.js";
+import { deriveSnapshotGateProjection, type OraEventEnvelope, type RunContinuationFrame, type StateSnapshot } from "./runtime.js";
 
 export type DiagnosticSignalKind =
   | "provider_or_tool_failure"
@@ -210,14 +210,11 @@ function detectCostOrEventBlowup(snapshot: StateSnapshot): DiagnosticSignal[] {
 }
 
 function detectBlockingGate(snapshot: StateSnapshot): DiagnosticSignal[] {
-  const gateRefs = [
-    ...snapshot.pendingApprovals.map((id) => ({ id, type: "approval" as const })),
-    ...snapshot.pendingClarifications.map((clarification) => ({ id: clarification.id, type: "clarification" as const })),
-    ...snapshot.planDecisions.filter((gate) => gate.status === "pending").map((gate) => ({ id: gate.id, type: "plan_decision" as const })),
-  ];
-  if (gateRefs.length === 0) {
+  const gate = deriveSnapshotGateProjection(snapshot);
+  if (!gate) {
     return [];
   }
+  const gateRefs = gate.gateIds.map((id) => ({ id }));
   const gateEvents = snapshot.events.filter((event) =>
     event.type === "approval.required" ||
     event.type === "clarification.required" ||
@@ -228,12 +225,12 @@ function detectBlockingGate(snapshot: StateSnapshot): DiagnosticSignal[] {
     kind: "blocking_gate",
     severity: "warning",
     title: "Blocking gate",
-    summary: `${gateRefs.length} gate${gateRefs.length === 1 ? " is" : "s are"} waiting for user input.`,
+    summary: `${Math.max(1, gateRefs.length)} gate${gateRefs.length === 1 ? " is" : "s are"} waiting for user input.`,
     traceRefs: [
-      ...gateRefs.map((gate) => ({ type: "gate" as const, id: gate.id })),
+      ...gateRefs.map((gateRef) => ({ type: "gate" as const, id: gateRef.id })),
       ...gateEvents.map(eventTraceRef),
     ],
-    count: gateRefs.length,
+    count: Math.max(1, gateRefs.length),
   }];
 }
 

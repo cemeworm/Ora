@@ -155,6 +155,56 @@ describe("deriveRunDiagnostics", () => {
     expect(summary.suggestedActions.some((action) => action.kind === "resume")).toBe(true);
   });
 
+  it("detects pending plan decisions even when terminal attention drifted to idle", () => {
+    const summary = deriveRunDiagnostics(snapshot({
+      status: "succeeded",
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-diagnostics",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      planDecisions: [{
+        id: "run-diagnostics:plan-decision",
+        runId: "run-diagnostics",
+        sessionId: "session-diagnostics",
+        status: "pending",
+        createdAt: 1,
+      }],
+    }));
+
+    expect(summary.primaryFinding?.kind).toBe("blocking_gate");
+    expect(summary.traceRefs).toContainEqual({ type: "gate", id: "run-diagnostics:plan-decision" });
+  });
+
+  it("does not treat raw pending approval fields as blocking when non-gate attention is current", () => {
+    const summary = deriveRunDiagnostics(snapshot({
+      status: "running",
+      attention: {
+        kind: "running",
+        blocking: false,
+        sourceRunId: "run-diagnostics",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      pendingApprovals: ["action-stale"],
+      actions: [{
+        id: "action-stale",
+        runId: "run-diagnostics",
+        type: "file.write",
+        riskLevel: "low",
+        status: "approval_required",
+        input: {},
+        artifactIds: [],
+      }],
+    }));
+
+    expect(summary.signals.some((signal) => signal.kind === "blocking_gate")).toBe(false);
+  });
+
   it("does not promote approval-interrupt snapshots to provider failure when an approval gate is active", () => {
     const summary = deriveRunDiagnostics(snapshot({
       status: "failed",
