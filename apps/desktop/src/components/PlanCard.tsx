@@ -30,9 +30,11 @@ export function PlanCard({ planSteps, planContent, isStreaming = false }: PlanCa
       {planContent ? (
         <div>
           {isStreaming ? (
-            <pre className="max-w-full whitespace-pre-wrap break-words font-sans text-sm leading-6 text-foreground">
-              {planContent}
-            </pre>
+            <MarkdownContent
+              content={planContent}
+              streaming={isStreaming}
+              className="max-w-full text-sm leading-6 text-foreground [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h1]:leading-6 [&_h2]:mb-1.5 [&_h2]:mt-3 [&_h2]:text-sm [&_h2]:leading-6 [&_h3]:mb-1 [&_h3]:mt-2.5 [&_h3]:text-sm [&_h3]:leading-6 [&_ol]:my-1.5 [&_p]:my-1.5 [&_ul]:my-1.5"
+            />
           ) : (
             <MarkdownContent
               content={planContent}
