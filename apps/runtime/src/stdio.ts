@@ -6,10 +6,13 @@ export async function runStdioServer(): Promise<void> {
   let responseWritten = false;
   let queuedStreams: unknown[] = [];
   const writeStream = (stream: unknown) => {
+    const payload = appendRuntimeTransportLatencyMark(stream, "streamStdoutWriteAt", {
+      transport: "stdio",
+    });
     process.stdout.write(`${JSON.stringify({
       jsonrpc: "2.0",
       method: "runs.stream",
-      params: stream,
+      params: payload,
     })}\n`);
   };
   const handler = createRuntimeMethodHandler(undefined, undefined, {
@@ -43,4 +46,38 @@ export async function runStdioServer(): Promise<void> {
   } finally {
     await shutdownLangfuseTelemetry();
   }
+}
+
+function appendRuntimeTransportLatencyMark(
+  stream: unknown,
+  name: string,
+  detail: Record<string, unknown> = {},
+): unknown {
+  if (!isRecord(stream)) {
+    return stream;
+  }
+  const latency = isRecord(stream.latency) ? stream.latency : {};
+  const marks = Array.isArray(latency.marks) ? latency.marks.filter(isRecord) : [];
+  if (marks.some((mark) => mark.source === "runtime" && mark.name === name)) {
+    return stream;
+  }
+  return {
+    ...stream,
+    latency: {
+      ...latency,
+      marks: [
+        ...marks,
+        {
+          source: "runtime",
+          name,
+          at: Date.now(),
+          detail,
+        },
+      ],
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
 }

@@ -137,49 +137,46 @@ export class RuntimeCompletionController {
       return { allowed: false, reason: "tool_budget_exhausted" };
     }
 
-    const toolKey = stableKeyForRuntimeTool(call);
-    const scopeKey = this.scopeKey(scope);
-    const key = scopeKey ? `${scopeKey}:${toolKey}` : toolKey;
-    const repeatCount = (this.repeatedToolCounts.get(key) ?? 0) + 1;
-    if (repeatCount === this.repeatedToolLimit && repeatCount > 1 && !this.warnedRepeatedToolKeys.has(key)) {
-      this.warnedRepeatedToolKeys.add(key);
+    const repeatDecision = this.decideRepeatedToolAttempt(call, scope);
+    if (repeatDecision.shouldWarn && !this.warnedRepeatedToolKeys.has(repeatDecision.key)) {
+      this.warnedRepeatedToolKeys.add(repeatDecision.key);
       this.emit("completion.updated", {
         state: "loop_warning",
         reason: "repeated_tool_blocked",
         toolId: call.tool,
-        repeatCount,
+        repeatCount: repeatDecision.repeatCount,
         repeatedToolLimit: this.repeatedToolLimit,
-        key,
-        toolKey,
-        ...(scopeKey ? { scopeKey } : {}),
+        key: repeatDecision.key,
+        toolKey: repeatDecision.toolKey,
+        ...(repeatDecision.scopeKey ? { scopeKey: repeatDecision.scopeKey } : {}),
       });
     }
-    if (repeatCount > this.repeatedToolLimit && this.policy.forceFinalOnRepeatedTool) {
-      if (!this.warnedRepeatedToolKeys.has(key)) {
-        this.warnedRepeatedToolKeys.add(key);
+    if (repeatDecision.shouldBlock && this.policy.forceFinalOnRepeatedTool) {
+      if (!this.warnedRepeatedToolKeys.has(repeatDecision.key)) {
+        this.warnedRepeatedToolKeys.add(repeatDecision.key);
         this.emit("completion.updated", {
           state: "loop_warning",
           reason: "repeated_tool_blocked",
           toolId: call.tool,
-          repeatCount,
+          repeatCount: repeatDecision.repeatCount,
           repeatedToolLimit: this.repeatedToolLimit,
-          key,
-          toolKey,
-          ...(scopeKey ? { scopeKey } : {}),
+          key: repeatDecision.key,
+          toolKey: repeatDecision.toolKey,
+          ...(repeatDecision.scopeKey ? { scopeKey: repeatDecision.scopeKey } : {}),
         });
       }
       this.forceFinalAnswer("repeated_tool_blocked", {
         toolId: call.tool,
-        repeatCount,
+        repeatCount: repeatDecision.repeatCount,
         repeatedToolLimit: this.repeatedToolLimit,
-        key,
-        toolKey,
-        ...(scopeKey ? { scopeKey } : {}),
-      }, scopeKey ? { scope } : {});
-      return { allowed: false, reason: "repeated_tool_blocked", key, repeatCount };
+        key: repeatDecision.key,
+        toolKey: repeatDecision.toolKey,
+        ...(repeatDecision.scopeKey ? { scopeKey: repeatDecision.scopeKey } : {}),
+      }, repeatDecision.scopeKey ? { scope } : {});
+      return { allowed: false, reason: "repeated_tool_blocked", key: repeatDecision.key, repeatCount: repeatDecision.repeatCount };
     }
 
-    this.repeatedToolCounts.set(key, repeatCount);
+    this.repeatedToolCounts.set(repeatDecision.key, repeatDecision.repeatCount);
     const toolTypeCount = (this.toolTypeCounts.get(call.tool) ?? 0) + 1;
     this.toolTypeCounts.set(call.tool, toolTypeCount);
     this.toolAttemptsValue += 1;
@@ -189,7 +186,13 @@ export class RuntimeCompletionController {
         toolTypeCount,
         toolTypeHardLimit: this.toolTypeHardLimit,
       });
-      return { allowed: false, reason: "tool_frequency_exhausted", key, repeatCount, toolTypeCount };
+      return {
+        allowed: false,
+        reason: "tool_frequency_exhausted",
+        key: repeatDecision.key,
+        repeatCount: repeatDecision.repeatCount,
+        toolTypeCount,
+      };
     }
     if (toolTypeCount >= this.toolTypeWarnLimit && !this.warnedToolTypes.has(call.tool)) {
       this.warnedToolTypes.add(call.tool);
@@ -202,30 +205,34 @@ export class RuntimeCompletionController {
         toolTypeHardLimit: this.toolTypeHardLimit,
       });
     }
-    return { allowed: true, key, repeatCount, toolTypeCount };
+    return { allowed: true, key: repeatDecision.key, repeatCount: repeatDecision.repeatCount, toolTypeCount };
   }
 
-  markToolResultObserved(call: RuntimeToolCall, cacheHit: boolean, scope?: RuntimeToolScope): void {
+  private decideRepeatedToolAttempt(call: RuntimeToolCall, scope?: RuntimeToolScope): {
+    toolKey: string;
+    scopeKey: string | undefined;
+    key: string;
+    repeatCount: number;
+    shouldWarn: boolean;
+    shouldBlock: boolean;
+  } {
+    const toolKey = stableKeyForRuntimeTool(call);
+    const scopeKey = this.scopeKey(scope);
+    const key = scopeKey ? `${scopeKey}:${toolKey}` : toolKey;
+    const repeatCount = (this.repeatedToolCounts.get(key) ?? 0) + 1;
+    return {
+      toolKey,
+      scopeKey,
+      key,
+      repeatCount,
+      shouldWarn: repeatCount === this.repeatedToolLimit && repeatCount > 1,
+      shouldBlock: repeatCount > this.repeatedToolLimit,
+    };
+  }
+
+  markToolResultObserved(call: RuntimeToolCall, _cacheHit: boolean, _scope?: RuntimeToolScope): void {
     if (this.toolAttemptsValue >= this.runToolBudget && this.policy.forceFinalOnBudgetExhausted) {
       this.forceFinalAnswer("tool_budget_exhausted", { toolId: call.tool });
-      return;
-    }
-    if (cacheHit && this.policy.forceFinalOnRepeatedTool) {
-      const toolKey = stableKeyForRuntimeTool(call);
-      const scopeKey = this.scopeKey(scope);
-      const key = scopeKey ? `${scopeKey}:${toolKey}` : toolKey;
-      const repeatCount = this.repeatedToolCounts.get(key) ?? 0;
-      if (repeatCount >= this.repeatedToolLimit && repeatCount > 1) {
-        this.forceFinalAnswer("repeated_tool_blocked", {
-          toolId: call.tool,
-          cacheHit,
-          repeatCount,
-          repeatedToolLimit: this.repeatedToolLimit,
-          key,
-          toolKey,
-          ...(scopeKey ? { scopeKey } : {}),
-        }, scopeKey ? { scope } : {});
-      }
     }
   }
 

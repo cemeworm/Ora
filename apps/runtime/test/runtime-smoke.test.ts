@@ -4120,6 +4120,128 @@ describe("Ora runtime smoke path", () => {
     }
   });
 
+  it("allows second cached repeat and blocks the third repeated tool attempt", async () => {
+    const handle = createRuntimeMethodHandler(createTempStore());
+    const previousFetch = globalThis.fetch;
+    const previousKey = process.env.DUPLICATE_TOOL_THREE_STRIKES_KEY;
+    process.env.DUPLICATE_TOOL_THREE_STRIKES_KEY = "test";
+    let providerCalls = 0;
+    let webFetchCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/duplicate-three-strikes") {
+        webFetchCalls += 1;
+        return new Response("Duplicate content for three strikes", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+
+      providerCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { tool_choice?: string };
+      if (body.tool_choice === "none") {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "Stopped after third repeated tool intent." } }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call-duplicate-three-strikes-${providerCalls}`,
+              type: "function",
+              function: {
+                name: "web__fetch",
+                arguments: "{\"url\":\"https://example.com/duplicate-three-strikes\"}",
+              },
+            }],
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      const run = await handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "runs.start",
+        params: {
+          input: { prompt: "Keep fetching the same URL until blocked." },
+          config: {
+            modeId: "single_agent",
+            providerId: "duplicate-tool-three-strikes",
+            modelRef: "duplicate-tool-three-strikes-model",
+            providerConfig: {
+              id: "duplicate-tool-three-strikes",
+              label: "Duplicate Tool Three Strikes",
+              type: "openai_compatible",
+              modelId: "duplicate-tool-three-strikes-model",
+              baseUrl: "https://duplicate-tool-three-strikes.test/v1",
+              apiKeyEnv: "DUPLICATE_TOOL_THREE_STRIKES_KEY",
+              capabilities: ["chat", "tool_use"],
+              headers: {},
+            },
+            toolIds: ["web.fetch"],
+            completionPolicy: {
+              preset: "balanced",
+              maxRepeatedToolCalls: 2,
+              forceFinalOnBudgetExhausted: true,
+              forceFinalOnRepeatedTool: true,
+              allowToolCallsAfterUsefulResult: true,
+            },
+          },
+        },
+      }) as { runId: string; status: string };
+
+      const state = StateSnapshotSchema.parse(await handle({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runs.state",
+        params: { runId: run.runId },
+      }));
+      const fetchEvents = state.events.filter((event) =>
+        event.type === "tool.called"
+        && typeof event.payload === "object"
+        && event.payload !== null
+        && (event.payload as Record<string, unknown>).toolId === "web.fetch"
+      );
+      const completionEvents = state.events.filter((event) => event.type === "completion.updated");
+
+      expect(run.status).toBe("succeeded");
+      expect(webFetchCalls).toBe(1);
+      expect(fetchEvents).toHaveLength(2);
+      expect(fetchEvents[0]?.payload).toMatchObject({ cacheHit: false });
+      expect(fetchEvents[1]?.payload).toMatchObject({ cacheHit: true });
+      expect(completionEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            state: "loop_warning",
+            reason: "repeated_tool_blocked",
+            repeatCount: 2,
+          }),
+        }),
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            state: "force_final",
+            reason: "repeated_tool_blocked",
+            repeatCount: 3,
+          }),
+        }),
+      ]));
+      expect(state.output).toMatchObject({
+        text: expect.stringContaining("Stopped after third repeated tool intent."),
+        metadata: { completion: expect.objectContaining({ stopReason: "repeated_tool_blocked" }) },
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousKey === undefined) {
+        delete process.env.DUPLICATE_TOOL_THREE_STRIKES_KEY;
+      } else {
+        process.env.DUPLICATE_TOOL_THREE_STRIKES_KEY = previousKey;
+      }
+    }
+  });
+
   it("scopes repeated tool blocking to the current agent node", async () => {
     const handle = createRuntimeMethodHandler(createTempStore());
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ora-agent-team-tools-"));
@@ -4225,24 +4347,19 @@ describe("Ora runtime smoke path", () => {
         expect.objectContaining({ agentId: ORA_ROOT_AGENT_ID, status: "succeeded" }),
         expect.objectContaining({ agentId: ORA_ROOT_AGENT_ID, status: "succeeded" }),
         expect.objectContaining({ agentId: "builder", status: "succeeded" }),
-        expect.objectContaining({ agentId: "builder", status: "succeeded" }),
       ]);
-      expect(forceFinalEvents).toHaveLength(2);
+      expect(forceFinalEvents).toHaveLength(1);
       expect(forceFinalEvents.map((event) => event.payload)).toEqual([
         expect.objectContaining({
-        reason: "repeated_tool_blocked",
-        scopeKey: `agent:${ORA_ROOT_AGENT_ID}|node:triage`,
-        }),
-        expect.objectContaining({
           reason: "repeated_tool_blocked",
-          scopeKey: "agent:builder|node:build",
+          scopeKey: `agent:${ORA_ROOT_AGENT_ID}|node:triage`,
         }),
       ]);
       expect(forceFinalEvents.some((event) =>
         typeof event.payload === "object"
         && event.payload !== null
         && (event.payload as Record<string, unknown>).scopeKey === "agent:builder|node:build"
-      )).toBe(true);
+      )).toBe(false);
     } finally {
       globalThis.fetch = previousFetch;
       fs.rmSync(workspaceRoot, { recursive: true, force: true });

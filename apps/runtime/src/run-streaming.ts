@@ -32,6 +32,7 @@ export function publishRunStream(params: {
         ? params.events.at(-1)!.seq + 1
         : params.liveSnapshot.events.length,
       status: params.liveSnapshot.status,
+      latency: params.liveSnapshot.latency,
     }));
     return;
   }
@@ -55,6 +56,7 @@ export function publishRunStream(params: {
       : liveSnapshot.events.length,
     status: streamSnapshot?.status ?? liveSnapshot.status,
     snapshot: streamSnapshot,
+    latency: streamSnapshot?.latency ?? liveSnapshot.latency,
   }));
 }
 

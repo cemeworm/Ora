@@ -3425,6 +3425,13 @@ fn run_process_json_rpc_internal(
                     Ok(0) => break,
                     Ok(_) => {
                         if let Some(payload) = parse_runtime_notification(line.trim()) {
+                            let payload = append_latency_mark_to_stream_payload(
+                                payload,
+                                "bridge",
+                                "tauriRunEventEmittedAt",
+                                now_ms(),
+                                json!({ "transport": "tauri_event" }),
+                            );
                             on_notification(payload);
                         }
                     }
@@ -3566,9 +3573,59 @@ fn read_runtime_response(
 fn parse_runtime_notification(line: &str) -> Option<Value> {
     let value = serde_json::from_str::<Value>(line).ok()?;
     if value.get("method").and_then(Value::as_str) == Some("runs.stream") {
-        return value.get("params").cloned();
+        return value
+            .get("params")
+            .cloned()
+            .map(|payload| {
+                append_latency_mark_to_stream_payload(
+                    payload,
+                    "bridge",
+                    "tauriRunEventReceivedAt",
+                    now_ms(),
+                    json!({ "transport": "stdio_bridge" }),
+                )
+            });
     }
     None
+}
+
+fn append_latency_mark_to_stream_payload(
+    payload: Value,
+    source: &str,
+    name: &str,
+    at: u64,
+    detail: Value,
+) -> Value {
+    let mut payload_object = match payload {
+        Value::Object(map) => map,
+        other => return other,
+    };
+
+    let mut latency_object = payload_object
+        .remove("latency")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut marks = latency_object
+        .remove("marks")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+
+    let already_exists = marks.iter().any(|mark| {
+        mark.get("source").and_then(Value::as_str) == Some(source)
+            && mark.get("name").and_then(Value::as_str) == Some(name)
+    });
+    if !already_exists {
+        marks.push(json!({
+            "source": source,
+            "name": name,
+            "at": at,
+            "detail": detail,
+        }));
+    }
+
+    latency_object.insert("marks".to_string(), Value::Array(marks));
+    payload_object.insert("latency".to_string(), Value::Object(latency_object));
+    Value::Object(payload_object)
 }
 
 fn dev_runtime_command() -> Option<RuntimeCommandSpec> {
@@ -5634,6 +5691,26 @@ mod tests {
 
     fn unique_custom_agent_name() -> String {
         format!("test-agent-{}-{}", std::process::id(), now_ms())
+    }
+
+    #[test]
+    fn parse_runtime_notification_appends_bridge_latency_mark() {
+        let payload = parse_runtime_notification(
+            r#"{"jsonrpc":"2.0","method":"runs.stream","params":{"runId":"run-1","fromSeq":0,"events":[],"nextSeq":0,"status":"running","latency":{"marks":[{"source":"runtime","name":"streamStdoutWriteAt","at":10,"detail":{}}]}}}"#,
+        )
+        .expect("runs.stream payload should parse");
+
+        let marks = payload["latency"]["marks"]
+            .as_array()
+            .expect("latency marks should be present");
+        assert!(marks.iter().any(|mark| {
+            mark["source"] == json!("bridge")
+                && mark["name"] == json!("tauriRunEventReceivedAt")
+        }));
+        assert!(marks.iter().any(|mark| {
+            mark["source"] == json!("runtime")
+                && mark["name"] == json!("streamStdoutWriteAt")
+        }));
     }
 
     #[test]
