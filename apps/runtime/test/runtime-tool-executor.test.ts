@@ -414,6 +414,38 @@ describe("RuntimeToolExecutor", () => {
     ]));
   });
 
+  it("reads a file range with line offset and limit", async () => {
+    const { rootPath, workspace } = createWorkspace();
+    fs.writeFileSync(path.join(rootPath, "src", "range.ts"), [
+      "line 1",
+      "line 2",
+      "line 3",
+      "line 4",
+    ].join("\n") + "\n", "utf8");
+    const executor = new RuntimeToolExecutor({ workspace, toolDescriptors: MVP_TOOLS });
+
+    const range = await executor.execute({
+      tool: "file.read",
+      args: { path: "src/range.ts", offset: 2, limit: 2 },
+    }) as {
+      content: string;
+      offset: number;
+      limit: number;
+      returnedLines: number;
+      totalLines: number;
+      truncated: boolean;
+    };
+
+    expect(range).toMatchObject({
+      content: "line 2\nline 3\n",
+      offset: 2,
+      limit: 2,
+      returnedLines: 2,
+      totalLines: 4,
+      truncated: true,
+    });
+  });
+
   it("treats bare file search globs as scoped when path narrows traversal", async () => {
     const { rootPath, workspace } = createWorkspace();
     fs.mkdirSync(path.join(rootPath, "src", "nested"), { recursive: true });

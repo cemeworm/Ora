@@ -37,6 +37,18 @@ describe("MVP_TOOLS parameter schemas", () => {
     }
   });
 
+  it("file.read exposes optional line range parameters", () => {
+    const fileRead = implementedTools.find((t) => t.id === "file.read");
+    const params = fileRead?.parameters as Record<string, unknown> | undefined;
+    const props = params?.properties as Record<string, unknown> | undefined;
+
+    expect(fileRead).toBeDefined();
+    expect(props?.path).toBeDefined();
+    expect(props?.offset).toMatchObject({ type: "number", minimum: 1 });
+    expect(props?.limit).toMatchObject({ type: "number", minimum: 1 });
+    expect(params?.additionalProperties).toBe(false);
+  });
+
   it("skills tools have name-based schemas", () => {
     const skillsTools = implementedTools.filter((t) => t.id.startsWith("skills."));
     for (const tool of skillsTools) {

@@ -144,11 +144,79 @@ function readWorkspaceFile(rootPath: string, args: Record<string, unknown>, limi
       skippedReason: "binary_file",
     };
   }
+  const content = fs.readFileSync(absolutePath, "utf8");
+  const range = readLineRange(content, args);
+  if (range) {
+    return {
+      path: relativeWorkspacePath(rootPath, absolutePath),
+      sizeBytes: stat.size,
+      content: range.content,
+      offset: range.offset,
+      ...(range.limit !== undefined ? { limit: range.limit } : {}),
+      returnedLines: range.returnedLines,
+      totalLines: range.totalLines,
+      truncated: range.truncated,
+    };
+  }
   return {
     path: relativeWorkspacePath(rootPath, absolutePath),
     sizeBytes: stat.size,
-    content: fs.readFileSync(absolutePath, "utf8"),
+    content,
   };
+}
+
+type FileReadLineRange = {
+  content: string;
+  offset: number;
+  limit?: number;
+  returnedLines: number;
+  totalLines: number;
+  truncated: boolean;
+};
+
+function readLineRange(content: string, args: Record<string, unknown>): FileReadLineRange | undefined {
+  const hasOffset = args.offset !== undefined;
+  const hasLimit = args.limit !== undefined;
+  if (!hasOffset && !hasLimit) {
+    return undefined;
+  }
+  const lines = splitPreservingLineEndings(content);
+  const offset = readPositiveIntLike(args.offset, 1);
+  const limit = hasLimit ? readPositiveIntLike(args.limit, Math.max(lines.length - offset + 1, 1)) : undefined;
+  const start = Math.max(offset - 1, 0);
+  const selected = limit === undefined ? lines.slice(start) : lines.slice(start, start + limit);
+  return {
+    content: selected.join(""),
+    offset,
+    ...(limit !== undefined ? { limit } : {}),
+    returnedLines: selected.length,
+    totalLines: lines.length,
+    truncated: start > 0 || start + selected.length < lines.length,
+  };
+}
+
+function splitPreservingLineEndings(content: string): string[] {
+  if (!content) {
+    return [];
+  }
+  const lines = content.match(/.*(?:\r\n|\n|\r|$)/g) ?? [];
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+function readPositiveIntLike(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isSafeInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return fallback;
 }
 
 function listWorkspaceFiles(rootPath: string, args: Record<string, unknown>, limits: ResolvedToolLimits) {
@@ -685,6 +753,11 @@ interface FileReadOutput {
   content?: string;
   binary?: boolean;
   skippedReason?: string;
+  offset?: number;
+  limit?: number;
+  returnedLines?: number;
+  totalLines?: number;
+  truncated?: boolean;
 }
 
 function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
@@ -695,11 +768,24 @@ function fileReadResultPreview(output: unknown): RuntimeToolResultPreview {
   if (o.binary) {
     return { kind: "file.read", summary: `Binary file: ${o.path} (${o.sizeBytes} bytes)`, detail: { path: o.path, sizeBytes: o.sizeBytes, binary: true } };
   }
-  const lines = (o.content ?? "").split(/\r?\n/).length;
+  const lines = o.returnedLines ?? splitPreservingLineEndings(o.content ?? "").length;
+  const rangeSuffix = o.offset !== undefined
+    ? ` (lines ${o.offset}-${Math.max(o.offset + lines - 1, o.offset - 1)}${o.truncated ? ", partial" : ""})`
+    : "";
   return {
     kind: "file.read",
-    summary: `${o.path} — ${lines} lines, ${o.sizeBytes} bytes`,
-    detail: { path: o.path, sizeBytes: o.sizeBytes, lines, binary: false },
+    summary: `${o.path} — ${lines} lines, ${o.sizeBytes} bytes${rangeSuffix}`,
+    detail: {
+      path: o.path,
+      sizeBytes: o.sizeBytes,
+      lines,
+      binary: false,
+      offset: o.offset,
+      limit: o.limit,
+      returnedLines: o.returnedLines,
+      totalLines: o.totalLines,
+      truncated: o.truncated,
+    },
     preview: (o.content ?? "").slice(0, 2000),
   };
 }
