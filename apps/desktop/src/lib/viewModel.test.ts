@@ -239,6 +239,100 @@ describe("desktop session view model", () => {
     expect(viewModel.sessions[0]?.status).toBe("approval_required");
   });
 
+  it("shows decision needed for a succeeded snapshot with a pending plan decision", () => {
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      sessionId: "session-plan-decision",
+      title: "Needs decision",
+      status: "failed",
+      latestRunId: "run-plan-decision",
+      latestPattern: "orchestrator_subagent",
+      latestModeId: SINGLE_AGENT_MODE_ID,
+      turnCount: 1,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const snapshot = {
+      runId: "run-plan-decision",
+      sessionId: "session-plan-decision",
+      turnIndex: 1,
+      status: "succeeded",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "Draft a plan.", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "local-smoke",
+        modelRef: "local/smoke-model",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: { taskIntent: "plan" },
+        deterministicSeed: "view-model-plan-decision-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      planDecisions: [{
+        id: "run-plan-decision:plan-decision",
+        runId: "run-plan-decision",
+        sessionId: "session-plan-decision",
+        status: "pending",
+        createdAt,
+      }],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      continuation: { frames: [] },
+      conversation: [],
+      toolResults: [],
+      events: [],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 0, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-plan-decision",
+        reason: "plan_decision_required",
+        planDecisionId: "run-plan-decision:plan-decision",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      updatedAt: createdAt,
+    } as unknown as OraStateSnapshot;
+    const detail: OraSessionDetail = {
+      session,
+      turns: [],
+      transcript: [],
+      latestSnapshot: snapshot,
+    };
+
+    const viewModel = buildWorkbenchViewModel(
+      MVP_PATTERNS,
+      MVP_MODES,
+      [session],
+      detail,
+      snapshot,
+      "orchestrator_subagent",
+      SINGLE_AGENT_MODE_ID,
+    );
+
+    expect(viewModel.sessions[0]?.status).toBe("decision_needed");
+  });
+
   it("does not show approval required from raw action state without projection attention", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {

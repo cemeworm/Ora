@@ -108,6 +108,43 @@ describe("sidebar session status", () => {
     ).toBe("done");
   });
 
+  it("keeps selected succeeded plan runs in decision_needed when a plan gate is pending", () => {
+    expect(
+      sidebarStatusForSession(sessionSummary({ status: "failed" }), {
+        selectedSessionId: "session-1",
+        selectedTurnRunId: "run-1",
+        activeSessionDetail: undefined,
+        runLifecycle: {
+          stage: "settled",
+          runId: "run-1",
+          sessionId: "session-1",
+          prompt: "test",
+          createdAt: 1,
+          snapshot: activeSnapshot({
+            status: "succeeded",
+            planDecisions: [{
+              id: "run-1:plan-decision",
+              runId: "run-1",
+              sessionId: "session-1",
+              status: "pending",
+              createdAt: 2,
+            }],
+            attention: {
+              kind: "needs_plan_decision",
+              blocking: true,
+              sourceRunId: "run-1",
+              reason: "plan_decision_required",
+              planDecisionId: "run-1:plan-decision",
+              pendingActionIds: [],
+              pendingToolCallIds: [],
+              pendingClarificationIds: [],
+            },
+          }),
+        },
+      }),
+    ).toBe("decision_needed");
+  });
+
   it("keeps non-selected rows on session summary state", () => {
     expect(
       sidebarStatusForSession(sessionSummary({

@@ -187,6 +187,36 @@ describe("trail debugger view model", () => {
     expect(findings.some((finding) => finding.id === "approval.pending")).toBe(true);
   });
 
+  it("shows pending plan decisions as blocking interaction instead of completed terminal state", () => {
+    const snapshot = baseSnapshot({
+      status: "succeeded",
+      planDecisions: [{
+        id: "run-test:plan-decision",
+        runId: "run-test",
+        sessionId: "session-test",
+        status: "pending",
+        createdAt: 5,
+      }],
+      attention: {
+        kind: "needs_plan_decision",
+        blocking: true,
+        sourceRunId: "run-test",
+        reason: "plan_decision_required",
+        planDecisionId: "run-test:plan-decision",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
+
+    expect(summary.statusLabel).toBe("需要决策");
+    expect(summary.statusTone).toBe("warning");
+    expect(summary.currentStage).toBe("等待用户输入");
+    expect(summary.blockingGate).toBe("决策 · 计划确认");
+  });
+
   it("treats approval-interrupt failure text as waiting-for-approval instead of failure", () => {
     const snapshot = baseSnapshot({
       status: "failed",

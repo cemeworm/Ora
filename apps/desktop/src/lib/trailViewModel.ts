@@ -7,6 +7,7 @@
 import type { OraRunTrail, OraStateSnapshot } from "./runtimeClient";
 import type { ActionRecord, AgentProfile } from "../types";
 import type { DebuggerTrailTab } from "./debuggerSurface";
+import { deriveSnapshotInteractionProjection, snapshotPendingPlanDecision, type SnapshotInteractionProjection } from "./runInteractionState";
 
 export type TrailDebuggerTab = "overview" | "flow" | "agents" | "tools" | "latency" | "evidence" | "compare";
 export type TrailFindingSeverity = "error" | "warning" | "info";
@@ -215,19 +216,18 @@ export function buildTrailDebugSummary(
 ): TrailDebugSummary {
   const timeline = buildSemanticTimeline(snapshot);
   const lastImportantEvent = [...timeline].reverse().find((item) => item.kind !== "state");
-  const blockingGate = currentBlockingGate(snapshot);
+  const interaction = deriveSnapshotInteractionProjection(snapshot);
+  const blockingGate = currentBlockingGate(snapshot, interaction);
   const firstError = findings.find((finding) => finding.severity === "error");
   const firstWarning = findings.find((finding) => finding.severity === "warning");
   const recommendedFinding = firstError ?? firstWarning;
   const trace = trail?.trace ?? snapshot.trace;
   const liveMetrics = trail?.liveMetrics;
 
-  const approvalGate = isApprovalGateSnapshot(snapshot);
-
   return {
-    statusLabel: approvalGate ? "等待确认" : runStatusLabel(snapshot.status),
-    statusTone: approvalGate ? "warning" : runStatusTone(snapshot.status),
-    currentStage: inferCurrentStage(snapshot, lastImportantEvent),
+    statusLabel: interactionStatusLabel(interaction.status),
+    statusTone: interactionStatusTone(interaction.status),
+    currentStage: inferCurrentStage(snapshot, lastImportantEvent, interaction),
     blockingGate,
     recommendation: recommendedFinding
       ? `建议查看：${tabLabel(recommendedFinding.suggestedTab)} · ${recommendedFinding.title}`
@@ -1455,7 +1455,10 @@ function snapshotHasReadableAssistantOutput(snapshot: OraStateSnapshot): boolean
   return snapshotOutputHasReadableText(snapshot) || snapshotEventsHaveReadableDelta(snapshot);
 }
 
-function currentBlockingGate(snapshot: OraStateSnapshot) {
+function currentBlockingGate(
+  snapshot: OraStateSnapshot,
+  interaction: SnapshotInteractionProjection = deriveSnapshotInteractionProjection(snapshot),
+) {
   const attention = snapshot.attention;
   const clarification = attention?.kind === "needs_clarification"
     ? snapshotPendingClarifications(snapshot).find((item) =>
@@ -1474,11 +1477,19 @@ function currentBlockingGate(snapshot: OraStateSnapshot) {
   if (approval) {
     return `确认 · ${approval.nodeLabel}`;
   }
+  const planDecision = snapshotPendingPlanDecision(snapshot);
+  if (interaction.gateKind === "plan_decision" || planDecision) {
+    return "决策 · 计划确认";
+  }
   return "无";
 }
 
-function inferCurrentStage(snapshot: OraStateSnapshot, lastImportantEvent?: SemanticTimelineItem) {
-  if (isApprovalGateSnapshot(snapshot)) {
+function inferCurrentStage(
+  snapshot: OraStateSnapshot,
+  lastImportantEvent?: SemanticTimelineItem,
+  interaction: SnapshotInteractionProjection = deriveSnapshotInteractionProjection(snapshot),
+) {
+  if (interaction.gateKind) {
     return "等待用户输入";
   }
   if (snapshot.status === "failed") {
@@ -1831,27 +1842,35 @@ function stopReasonLabel(reason?: string): string | undefined {
   }
 }
 
-function runStatusLabel(status: OraStateSnapshot["status"]) {
+function interactionStatusLabel(status: SnapshotInteractionProjection["status"]) {
   switch (status) {
-    case "succeeded":
+    case "decision_needed":
+      return "需要决策";
+    case "approval_required":
+      return "等待确认";
+    case "clarification_required":
+      return "等待补充";
+    case "done":
       return "已完成";
     case "failed":
       return "失败";
-    case "interrupted":
+    case "paused":
       return "等待中";
     case "cancelled":
       return "已取消";
     case "queued":
       return "排队中";
-    default:
+    case "running":
       return "运行中";
+    case "idle":
+      return "空闲";
   }
 }
 
-function runStatusTone(status: OraStateSnapshot["status"]): TrailDebugSummary["statusTone"] {
-  if (status === "succeeded") return "success";
+function interactionStatusTone(status: SnapshotInteractionProjection["status"]): TrailDebugSummary["statusTone"] {
+  if (status === "done") return "success";
   if (status === "failed") return "error";
-  if (status === "interrupted" || status === "cancelled") return "warning";
+  if (status === "approval_required" || status === "clarification_required" || status === "decision_needed" || status === "paused" || status === "cancelled") return "warning";
   return "neutral";
 }
 
