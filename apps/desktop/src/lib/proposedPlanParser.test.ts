@@ -92,4 +92,12 @@ describe("parseProposedPlan", () => {
     expect(result.displayText).toBe("前置说明");
     expect(result.planContent).toBe("## 未完成的计划\n内容...");
   });
+
+  it("reuses cached parse results for identical proposed plan text", () => {
+    const first = parseProposedPlan(PLAN);
+    const second = parseProposedPlan(PLAN);
+
+    expect(second).toBe(first);
+    expect(second.planContent).toContain("计划标题");
+  });
 });

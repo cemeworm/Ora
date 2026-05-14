@@ -1,3 +1,4 @@
+import { deriveSnapshotGateProjection, type GateProjection } from "@cemeworm/shared";
 import type {
   OraSessionDetail,
   OraSessionSummary,
@@ -125,34 +126,49 @@ export function attentionStatus(
 export interface SnapshotInteractionProjection {
   status: DesktopRunInteractionState["status"];
   gateKind?: DesktopRunInteractionState["gateKind"];
+  gate?: GateProjection;
+}
+
+function gateKindToInteractionGateKind(kind: GateProjection["kind"]): DesktopRunInteractionState["gateKind"] {
+  switch (kind) {
+    case "approval":
+      return "approval";
+    case "clarification":
+      return "clarification";
+    case "plan_decision":
+      return "plan_decision";
+  }
+}
+
+function gateKindToInteractionStatus(kind: GateProjection["kind"]): DesktopRunInteractionState["status"] {
+  switch (kind) {
+    case "approval":
+      return "approval_required";
+    case "clarification":
+      return "clarification_required";
+    case "plan_decision":
+      return "decision_needed";
+  }
 }
 
 export function snapshotPendingPlanDecision(snapshot: OraStateSnapshot) {
-  const decisions = snapshot.planDecisions ?? [];
-  if (snapshot.attention?.kind === "needs_plan_decision") {
-    return decisions.find((decision) => decision.id === snapshot.attention?.planDecisionId)
-      ?? decisions.find((decision) => decision.status === "pending");
+  const gate = deriveSnapshotGateProjection(snapshot);
+  if (gate?.kind !== "plan_decision") {
+    return undefined;
   }
-  if (!snapshot.attention) {
-    return decisions.find((decision) => decision.status === "pending");
-  }
-  return undefined;
+  return snapshot.planDecisions.find((decision) => decision.id === gate.planDecisionId)
+    ?? snapshot.planDecisions.find((decision) => decision.status === "pending");
 }
 
 export function deriveSnapshotInteractionProjection(
   snapshot: OraStateSnapshot,
 ): SnapshotInteractionProjection {
-  const gateKind = attentionGateKind(snapshot.attention);
-  if (gateKind) {
+  const gate = deriveSnapshotGateProjection(snapshot);
+  if (gate) {
     return {
-      status: attentionStatus(snapshot.attention) ?? snapshotStatusToInteractionStatus(snapshot.status),
-      gateKind,
-    };
-  }
-  if (snapshotPendingPlanDecision(snapshot)) {
-    return {
-      status: "decision_needed",
-      gateKind: "plan_decision",
+      status: gateKindToInteractionStatus(gate.kind),
+      gateKind: gateKindToInteractionGateKind(gate.kind),
+      gate,
     };
   }
   return {

@@ -4,6 +4,7 @@ import {
   ModeTranscriptLayoutSchema,
   SINGLE_AGENT_MODE_ID,
   deriveSessionBranchGroupStatus,
+  deriveSnapshotGateProjection,
   PlanListStepSchema,
   type RunAttention,
   type ModeSelection,
@@ -334,7 +335,7 @@ export type WorkbenchAction =
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "SELECT_TURN"; runId: string; snapshot?: OraStateSnapshot }
   | { type: "REQUEST_RUN_CANCEL"; runId: string; reason: string; updatedAt: number }
-  | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream; receivedAt?: number }
+  | { type: "APPLY_RUN_STREAM"; stream: OraRunEventStream; receivedAt?: number; flushedAt?: number }
   | {
       type: "BEGIN_RUN_RESUME";
       runId: string;
@@ -507,6 +508,7 @@ function applySnapshotAuthorityToSessionSummary(
     ...session,
     status: normalizedSnapshot.status,
     attention: normalizedSnapshot.attention,
+    interactionGate: deriveSnapshotGateProjection(normalizedSnapshot),
     latestRunId: normalizedSnapshot.runId,
     latestPattern: normalizedSnapshot.pattern,
     latestModeId: normalizedSnapshot.modeId ?? session.latestModeId,
@@ -535,6 +537,7 @@ function preserveFinalSessionSummary(
     ...incoming,
     status: existing.status,
     attention: existing.attention,
+    interactionGate: existing.interactionGate,
     updatedAt: Math.max(incoming.updatedAt, existing.updatedAt),
   };
 }
@@ -1169,7 +1172,7 @@ export function mergeRunStreamSnapshot(
 ): OraStateSnapshot | undefined {
   if (stream.snapshot) {
     const merged = mergeStateSnapshot(snapshot, stream.snapshot);
-    return merged ? normalizeDesktopSnapshot(merged) : undefined;
+    return merged ? normalizeDesktopSnapshot(mergeStreamLatency(merged, stream)) : undefined;
   }
   if (!snapshot || snapshot.runId !== stream.runId) {
     return snapshot;
@@ -1184,7 +1187,7 @@ export function mergeRunStreamSnapshot(
   );
   const planList = mergeStreamPlanListUpdates(snapshot, stream);
   const agentMessages = mergeStreamAgentMessages(snapshot, stream);
-  return normalizeDesktopSnapshot({
+  return normalizeDesktopSnapshot(mergeStreamLatency({
     ...snapshot,
     status: streamRunStatus(stream, snapshot) ?? snapshot.status,
     planList,
@@ -1194,7 +1197,7 @@ export function mergeRunStreamSnapshot(
     agentMessages,
     events,
     updatedAt: stream.events.at(-1)?.createdAt ?? snapshot.updatedAt,
-  });
+  }, stream));
 }
 
 export function pruneTurnSnapshotsForActiveSession(
@@ -1311,35 +1314,47 @@ function markDesktopLatencyForStream(
   snapshot: OraStateSnapshot | undefined,
   stream: OraRunEventStream,
   receivedAt: number | undefined,
+  flushedAt: number | undefined,
 ): OraStateSnapshot | undefined {
-  if (!snapshot || receivedAt === undefined) {
+  if (!snapshot) {
     return snapshot;
   }
-  let next = appendFirstDesktopLatencyMark(snapshot, "firstRunStreamReceivedAt", receivedAt, streamLatencyDetail(stream));
-  if (
-    stream.events.some(
-      (event) => event.type === "message.delta" || event.type === "token.delta",
-    )
-  ) {
-    next = appendFirstDesktopLatencyMark(
-      next,
-      "firstMessageDeltaAt",
-      receivedAt,
-    );
+  let next = mergeStreamLatency(snapshot, stream);
+  if (receivedAt !== undefined) {
+    next = appendFirstDesktopLatencyMark(next, "firstRunStreamReceivedAt", receivedAt, streamLatencyDetail(stream));
+    if (
+      stream.events.some(
+        (event) => event.type === "message.delta" || event.type === "token.delta",
+      )
+    ) {
+      next = appendFirstDesktopLatencyMark(
+        next,
+        "firstMessageDeltaAt",
+        receivedAt,
+      );
+    }
+    if (
+      stream.events.some(
+        (event) =>
+          event.type === "message.delta" &&
+          isRecord(event.payload) &&
+          typeof event.payload.content === "string" &&
+          event.payload.content.trim(),
+      )
+    ) {
+      next = appendFirstDesktopLatencyMark(
+        next,
+        "firstNonProgressAssistantTextAt",
+        receivedAt,
+      );
+    }
   }
-  if (
-    stream.events.some(
-      (event) =>
-        event.type === "message.delta" &&
-        isRecord(event.payload) &&
-        typeof event.payload.content === "string" &&
-        event.payload.content.trim(),
-    )
-  ) {
+  if (flushedAt !== undefined) {
     next = appendFirstDesktopLatencyMark(
       next,
-      "firstNonProgressAssistantTextAt",
-      receivedAt,
+      "firstRunStreamBatchFlushedAt",
+      flushedAt,
+      streamLatencyDetail(stream),
     );
   }
   return next;
@@ -1349,33 +1364,45 @@ function markPendingRunLatencyForStream(
   pendingRun: PendingRunState | undefined,
   stream: OraRunEventStream,
   receivedAt: number | undefined,
+  flushedAt: number | undefined,
 ): PendingRunState | undefined {
-  if (!pendingRun || receivedAt === undefined) {
+  if (!pendingRun) {
     return pendingRun;
   }
-  let latency = appendFirstDesktopLatencyToDiagnostics(
-    pendingRun.latency,
-    "firstRunStreamReceivedAt",
-    receivedAt,
-    streamLatencyDetail(stream),
-  );
-  if (
-    stream.events.some(
-      (event) => event.type === "message.delta" || event.type === "token.delta",
-    )
-  ) {
-    latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstMessageDeltaAt", receivedAt);
+  let latency = mergeLatencyDiagnostics(pendingRun.latency, stream.latency);
+  if (receivedAt !== undefined) {
+    latency = appendFirstDesktopLatencyToDiagnostics(
+      latency,
+      "firstRunStreamReceivedAt",
+      receivedAt,
+      streamLatencyDetail(stream),
+    );
+    if (
+      stream.events.some(
+        (event) => event.type === "message.delta" || event.type === "token.delta",
+      )
+    ) {
+      latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstMessageDeltaAt", receivedAt);
+    }
+    if (
+      stream.events.some(
+        (event) =>
+          event.type === "message.delta" &&
+          isRecord(event.payload) &&
+          typeof event.payload.content === "string" &&
+          event.payload.content.trim(),
+      )
+    ) {
+      latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstNonProgressAssistantTextAt", receivedAt);
+    }
   }
-  if (
-    stream.events.some(
-      (event) =>
-        event.type === "message.delta" &&
-        isRecord(event.payload) &&
-        typeof event.payload.content === "string" &&
-        event.payload.content.trim(),
-    )
-  ) {
-    latency = appendFirstDesktopLatencyToDiagnostics(latency, "firstNonProgressAssistantTextAt", receivedAt);
+  if (flushedAt !== undefined) {
+    latency = appendFirstDesktopLatencyToDiagnostics(
+      latency,
+      "firstRunStreamBatchFlushedAt",
+      flushedAt,
+      streamLatencyDetail(stream),
+    );
   }
   return latency === pendingRun.latency ? pendingRun : { ...pendingRun, latency };
 }
@@ -1460,6 +1487,20 @@ function streamLatencyDetail(stream: OraRunEventStream): Record<string, unknown>
   return {
     eventType: stream.events[0]?.type,
     eventCount: stream.events.length,
+  };
+}
+
+function mergeStreamLatency(
+  snapshot: OraStateSnapshot,
+  stream: OraRunEventStream,
+): OraStateSnapshot {
+  const latency = mergeLatencyDiagnostics(snapshot.latency, stream.latency);
+  if (latency === snapshot.latency) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    latency,
   };
 }
 
@@ -3098,6 +3139,7 @@ export function workbenchReducer(
             ),
             action.stream,
             action.receivedAt,
+            action.flushedAt,
           )
         : currentActiveSnapshot;
       const streamSnapshot = streamBelongsToActiveTurn
@@ -3126,7 +3168,7 @@ export function workbenchReducer(
         streamSnapshot,
       );
       const pendingRun = matchesPendingRun
-        ? markPendingRunLatencyForStream(currentPendingRun, action.stream, action.receivedAt)
+        ? markPendingRunLatencyForStream(currentPendingRun, action.stream, action.receivedAt, action.flushedAt)
         : currentPendingRun;
       const shouldClearPendingRun = shouldClearPendingRunForStream(
         matchesPendingRun,

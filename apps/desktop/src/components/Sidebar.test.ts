@@ -60,6 +60,27 @@ describe("sidebar session status", () => {
     })).toBe("paused");
   });
 
+  it("uses summary interaction gate before stale attention and status", () => {
+    expect(statusFromSession("failed", {
+      kind: "idle",
+      blocking: false,
+      sourceRunId: "run-plan",
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+    }, {
+      kind: "plan_decision",
+      source: "plan_decisions",
+      durable: true,
+      staleRisk: false,
+      gateIds: ["run-plan:plan-decision"],
+      pendingActionIds: [],
+      pendingToolCallIds: [],
+      pendingClarificationIds: [],
+      planDecisionId: "run-plan:plan-decision",
+    })).toBe("decision_needed");
+  });
+
   it("uses legacy status only when runtime attention is absent", () => {
     expect(statusFromSession("interrupted")).toBe("paused");
     expect(statusFromSession("running")).toBe("running");
@@ -130,11 +151,9 @@ describe("sidebar session status", () => {
               createdAt: 2,
             }],
             attention: {
-              kind: "needs_plan_decision",
-              blocking: true,
+              kind: "idle",
+              blocking: false,
               sourceRunId: "run-1",
-              reason: "plan_decision_required",
-              planDecisionId: "run-1:plan-decision",
               pendingActionIds: [],
               pendingToolCallIds: [],
               pendingClarificationIds: [],

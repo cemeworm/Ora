@@ -24,9 +24,14 @@ export function planDecisionOptionLabel(
   return option === "confirm" ? "是，按该计划实施" : "否，需要调整计划";
 }
 
+type PlanDecisionSubmitHandler = () =>
+  | void
+  | boolean
+  | Promise<void | boolean>;
+
 interface PlanDecisionPanelProps {
-  onConfirm: () => void;
-  onDecline: () => void;
+  onConfirm: PlanDecisionSubmitHandler;
+  onDecline: PlanDecisionSubmitHandler;
   disabled?: boolean;
 }
 
@@ -40,14 +45,18 @@ export function PlanDecisionPanel({
   const [submittingOption, setSubmittingOption] =
     useState<PlanDecisionOption | undefined>();
 
-  function submitOption(option: PlanDecisionOption) {
+  async function submitOption(option: PlanDecisionOption) {
     if (disabled || submittingOption) return;
     setSubmittingOption(option);
-    if (option === "confirm") {
-      onConfirm();
-      return;
+    try {
+      const result =
+        option === "confirm" ? await onConfirm() : await onDecline();
+      if (result === false) {
+        setSubmittingOption(undefined);
+      }
+    } catch {
+      setSubmittingOption(undefined);
     }
-    onDecline();
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
@@ -60,7 +69,7 @@ export function PlanDecisionPanel({
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      submitOption(activeOption);
+      void submitOption(activeOption);
     }
   }
 
@@ -83,7 +92,9 @@ export function PlanDecisionPanel({
       <div className="flex flex-col gap-2">
         <button
           type="button"
-          onClick={() => submitOption("confirm")}
+          onClick={() => {
+            void submitOption("confirm");
+          }}
           onFocus={() => setActiveOption("confirm")}
           onMouseEnter={() => setActiveOption("confirm")}
           disabled={controlsDisabled}
@@ -94,7 +105,9 @@ export function PlanDecisionPanel({
         </button>
         <button
           type="button"
-          onClick={() => submitOption("decline")}
+          onClick={() => {
+            void submitOption("decline");
+          }}
           onFocus={() => setActiveOption("decline")}
           onMouseEnter={() => setActiveOption("decline")}
           disabled={controlsDisabled}

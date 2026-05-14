@@ -1227,6 +1227,41 @@ const LATENCY_SEGMENT_DEFINITIONS = [
     note: "JSON-RPC response 与 stream 通知到达 UI 的间隔。",
   },
   {
+    id: "first-text-to-stdout",
+    label: "首文本 → stdio 写出",
+    from: "runtime:firstTextDelta",
+    to: "runtime:streamStdoutWriteAt",
+    note: "runtime 已产出首个可见文本后，到 stdio 真正写出 runs.stream 的间隔。",
+  },
+  {
+    id: "stdout-to-bridge-read",
+    label: "stdio 写出 → Tauri 读入",
+    from: "runtime:streamStdoutWriteAt",
+    to: "bridge:tauriRunEventReceivedAt",
+    note: "Node stdout 到 Rust line reader 的跨进程桥接耗时。",
+  },
+  {
+    id: "bridge-read-to-emit",
+    label: "Tauri 读入 → emit",
+    from: "bridge:tauriRunEventReceivedAt",
+    to: "bridge:tauriRunEventEmittedAt",
+    note: "Rust sidecar 解析 runs.stream 并发出桌面事件的耗时。",
+  },
+  {
+    id: "bridge-emit-to-listener",
+    label: "Tauri emit → Desktop listener",
+    from: "bridge:tauriRunEventEmittedAt",
+    to: "desktop:firstRunStreamReceivedAt",
+    note: "Tauri 事件总线到 webview listener 的投递耗时。",
+  },
+  {
+    id: "listener-to-batch-flush",
+    label: "Desktop listener → batch flush",
+    from: "desktop:firstRunStreamReceivedAt",
+    to: "desktop:firstRunStreamBatchFlushedAt",
+    note: "进入 listener 后到首个 RAF batch flush 的桌面端调度耗时。",
+  },
+  {
     id: "runtime-enter-to-first-text",
     label: "Runtime 入口 → 首个文本",
     from: "runtime:startStreamingRun.enter",
@@ -1352,6 +1387,8 @@ function latencyMarkLabel(key: string): string {
       return "收到 handle";
     case "firstRunStreamReceivedAt":
       return "首个 stream";
+    case "firstRunStreamBatchFlushedAt":
+      return "batch flush";
     case "firstMessageDeltaAt":
     case "firstTextDelta":
       return "首个文本";
@@ -1376,6 +1413,12 @@ function latencyMarkLabel(key: string): string {
       return "模型调用";
     case "firstProviderStreamFrame":
       return "供应商首帧";
+    case "streamStdoutWriteAt":
+      return "stdio 写出";
+    case "tauriRunEventReceivedAt":
+      return "Tauri 读入";
+    case "tauriRunEventEmittedAt":
+      return "Tauri emit";
     case "firstProgressNarration":
       return "进度叙述";
     default:

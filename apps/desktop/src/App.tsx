@@ -282,8 +282,9 @@ function WorkbenchInner() {
       }
     }
 
+    const flushedAt = Date.now();
     for (const { stream, receivedAt } of coalesced) {
-      dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
+      dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt, flushedAt });
     }
 
     if (deltaOnlyCount > 0) {
@@ -558,7 +559,7 @@ function WorkbenchInner() {
             });
           }
         } else {
-          dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt });
+          dispatch({ type: "APPLY_RUN_STREAM", stream, receivedAt, flushedAt: receivedAt });
         }
       })
       .then((nextUnsubscribe) => {

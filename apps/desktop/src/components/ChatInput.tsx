@@ -90,8 +90,8 @@ interface ChatInputProps {
   onTaskIntentChange: (taskIntent: TaskIntent) => void;
   planDecisionPending?: boolean;
   planSteps?: TurnPlanListStep[];
-  onConfirmPlanDecision?: () => void;
-  onDeclinePlanDecision?: () => void;
+  onConfirmPlanDecision?: () => void | boolean | Promise<void | boolean>;
+  onDeclinePlanDecision?: () => void | boolean | Promise<void | boolean>;
   onOverlayHeightChange?: (height: number) => void;
   onStartRun: () => void;
   onStopRun: () => void;
