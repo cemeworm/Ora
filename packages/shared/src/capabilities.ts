@@ -585,6 +585,8 @@ const fileReadParameters = {
   type: "object",
   properties: {
     path: workspacePathParameter,
+    offset: positiveLimitParameter("Optional 1-based line number to start reading from. Defaults to 1 when limit is provided."),
+    limit: positiveLimitParameter("Optional maximum number of lines to return from the file."),
   },
   required: ["path"],
   additionalProperties: false,

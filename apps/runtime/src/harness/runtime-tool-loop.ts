@@ -69,7 +69,15 @@ export function cacheKeyForRuntimeTool(
   const readOnlyFileTools = options.readOnlyFileTools !== false;
   if (readOnlyFileTools && call.tool === "file.read") {
     const filePath = typeof call.args.path === "string" ? call.args.path.trim() : "";
-    return filePath ? `${call.tool}:${filePath}` : undefined;
+    if (!filePath) {
+      return undefined;
+    }
+    if (call.args.offset !== undefined || call.args.limit !== undefined) {
+      const offset = positiveIntLike(call.args.offset) ?? 1;
+      const limit = positiveIntLike(call.args.limit);
+      return `${call.tool}:${filePath}:offset=${offset}:limit=${limit ?? "rest"}`;
+    }
+    return `${call.tool}:${filePath}`;
   }
   if (readOnlyFileTools && call.tool === "file.list") {
     const filePath = typeof call.args.path === "string" ? call.args.path.trim() : ".";
@@ -92,6 +100,17 @@ export function cacheKeyForRuntimeTool(
     const query = typeof call.args.query === "string" ? call.args.query.trim().replace(/\s+/g, " ").toLowerCase() : "";
     const limit = typeof call.args.limit === "number" ? call.args.limit : "";
     return query ? `${call.tool}:${query}:${limit}` : undefined;
+  }
+  return undefined;
+}
+
+function positiveIntLike(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
   }
   return undefined;
 }

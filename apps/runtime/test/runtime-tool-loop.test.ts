@@ -7,6 +7,8 @@ import {
 describe("runtime tool loop scheduling helpers", () => {
   it("builds same-run cache keys for deterministic read-only tools", () => {
     expect(cacheKeyForRuntimeTool({ tool: "file.read", args: { path: "src/index.ts" } })).toBe("file.read:src/index.ts");
+    expect(cacheKeyForRuntimeTool({ tool: "file.read", args: { path: "src/index.ts", offset: 1, limit: 200 } })).toBe("file.read:src/index.ts:offset=1:limit=200");
+    expect(cacheKeyForRuntimeTool({ tool: "file.read", args: { path: "src/index.ts", offset: "200" } })).toBe("file.read:src/index.ts:offset=200:limit=rest");
     expect(cacheKeyForRuntimeTool({ tool: "file.list", args: {} })).toBe("file.list:.");
     expect(cacheKeyForRuntimeTool({ tool: "file.glob", args: { pattern: "**/*.ts" } })).toBe("file.glob:**/*.ts");
     expect(cacheKeyForRuntimeTool({ tool: "file.grep", args: { pattern: "needle", include: "src/**/*.ts" } })).toBe("file.grep:needle:src/**/*.ts");
