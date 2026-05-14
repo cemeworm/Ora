@@ -119,6 +119,23 @@ export function projectAssistantTextFromEvents(
   return text;
 }
 
+export function projectAssistantReasoningContentFromSnapshot(
+  snapshot: {
+    output?: unknown;
+    events: ReadonlyArray<{
+      type: string;
+      payload?: unknown;
+      agentId?: string | null;
+    }>;
+  },
+): string | undefined {
+  const outputReasoning = extractOutputReasoningContent(snapshot.output);
+  if (outputReasoning) {
+    return outputReasoning;
+  }
+  return projectAssistantReasoningContentFromEvents(snapshot.events);
+}
+
 export function projectAssistantTextFromSnapshot(
   snapshot: {
     output?: unknown;
@@ -153,6 +170,31 @@ function extractOutputText(output: unknown): string | undefined {
   if (isRecord(output) && typeof (output as Record<string, unknown>).text === "string") {
     const text = (output as Record<string, unknown>).text as string;
     return text.trim() || undefined;
+  }
+  return undefined;
+}
+
+function extractOutputReasoningContent(output: unknown): string | undefined {
+  if (isRecord(output) && typeof (output as Record<string, unknown>).reasoningContent === "string") {
+    const rc = (output as Record<string, unknown>).reasoningContent as string;
+    return rc.trim() || undefined;
+  }
+  return undefined;
+}
+
+function projectAssistantReasoningContentFromEvents(
+  events: ReadonlyArray<{
+    type: string;
+    payload?: unknown;
+    agentId?: string | null;
+  }>,
+): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type !== "message.delta") continue;
+    if (!isRecord(event.payload)) continue;
+    const rc = (event.payload as Record<string, unknown>).reasoningContent;
+    if (typeof rc === "string" && rc.trim()) return rc.trim();
   }
   return undefined;
 }

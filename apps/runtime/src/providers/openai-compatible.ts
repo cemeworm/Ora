@@ -276,6 +276,9 @@ function createChatCompletionsPayload(config: ProviderConfig, request: Parameter
       return {
         role: message.role === "developer" ? "system" : message.role,
         content: message.content,
+        ...(deepseek
+          ? { reasoning_content: message.reasoningContent ?? "" }
+          : message.reasoningContent !== undefined ? { reasoning_content: message.reasoningContent } : {}),
       };
     }).filter(Boolean),
   ];

@@ -760,6 +760,7 @@ export const RuntimeConversationEntrySchema = z.discriminatedUnion("role", [
     content: z.string(),
     toolCalls: z.array(RuntimeConversationToolCallRefSchema).default([]),
     providerMessageId: z.string().min(1).optional(),
+    reasoningContent: z.string().optional(),
     createdAt: z.number().int().nonnegative(),
   }),
   z.object({
