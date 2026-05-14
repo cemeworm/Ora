@@ -1,4 +1,4 @@
-import type { ModeSelection } from "@cemeworm/shared";
+import { deriveSnapshotGateProjection, type ModeSelection } from "@cemeworm/shared";
 import { useCallback, useMemo, useState } from "react";
 import { GitBranchPlus } from "lucide-react";
 import { ChatHeader } from "./ChatHeader";
@@ -55,8 +55,14 @@ interface ChatViewProps {
   onInterruptRun: () => void;
   onReplaySelection: () => void;
   onResumeRun: () => void;
-  onAcceptPlanDecisionAndStartImplementation: () => void;
-  onResolvePlanDecision: (status: "accepted" | "declined") => void;
+  onAcceptPlanDecisionAndStartImplementation: () =>
+    | void
+    | boolean
+    | Promise<void | boolean>;
+  onResolvePlanDecision: (status: "accepted" | "declined") =>
+    | void
+    | boolean
+    | Promise<void | boolean>;
   onOpenArtifact: (artifactId: string) => void;
   onSubmitFeedback: (
     message: ChatMessage,
@@ -145,6 +151,36 @@ export function deriveCurrentComposerPlanSteps({
   }));
 }
 
+export function deriveComposerPlanDecisionState({
+  activeSnapshot,
+  pendingResolution,
+  sessionId,
+}: {
+  activeSnapshot?: OraStateSnapshot;
+  pendingResolution?: { sessionId: string; decisionId: string };
+  sessionId: string;
+}) {
+  if (!activeSnapshot) {
+    return {
+      pendingPlanDecisionId: undefined,
+      planDecisionPending: false,
+    };
+  }
+  const gate = deriveSnapshotGateProjection(activeSnapshot);
+  const pendingPlanDecisionId = gate?.kind === "plan_decision"
+    ? gate.planDecisionId ?? gate.gateIds[0]
+    : undefined;
+  const resolvingPlanDecision = Boolean(
+    pendingPlanDecisionId &&
+      pendingResolution?.sessionId === sessionId &&
+      pendingResolution.decisionId === pendingPlanDecisionId,
+  );
+  return {
+    pendingPlanDecisionId,
+    planDecisionPending: Boolean(pendingPlanDecisionId && !resolvingPlanDecision),
+  };
+}
+
 export function ChatView({
   activeMode,
   activeSnapshot,
@@ -202,25 +238,11 @@ export function ChatView({
     actionRecords,
     pendingClarifications: activeSnapshot?.pendingClarifications ?? [],
   });
-  const pendingPlanDecisionId =
-    attention?.kind === "needs_plan_decision"
-      ? attention.planDecisionId
-      : undefined;
-  const hasPendingPlanDecisionEntity = Boolean(
-    pendingPlanDecisionId &&
-      activeSnapshot?.planDecisions?.some((decision) =>
-        decision.id === pendingPlanDecisionId && decision.status === "pending"
-      )
-  );
-  const resolvingPlanDecision = Boolean(
-    pendingPlanDecisionId &&
-      state.pendingPlanDecisionResolution?.sessionId === selectedSession.id &&
-      state.pendingPlanDecisionResolution.decisionId === pendingPlanDecisionId
-  );
-  const planDecisionPending =
-    attention?.kind === "needs_plan_decision" &&
-    hasPendingPlanDecisionEntity &&
-    !resolvingPlanDecision;
+  const { planDecisionPending } = deriveComposerPlanDecisionState({
+    activeSnapshot,
+    pendingResolution: state.pendingPlanDecisionResolution,
+    sessionId: selectedSession.id,
+  });
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const handleOverlayHeightChange = useCallback((height: number) => {
     setComposerOverlayHeight((current) => current === height ? current : height);
@@ -390,9 +412,7 @@ export function ChatView({
           planDecisionPending={planDecisionPending}
           planSteps={currentPlanSteps}
           onConfirmPlanDecision={onAcceptPlanDecisionAndStartImplementation}
-          onDeclinePlanDecision={() => {
-            onResolvePlanDecision("declined");
-          }}
+          onDeclinePlanDecision={() => onResolvePlanDecision("declined")}
           onOverlayHeightChange={handleOverlayHeightChange}
           onOpenLocalFiles={() => void openLocalFiles()}
           onFilesDropped={handleFilesDropped}

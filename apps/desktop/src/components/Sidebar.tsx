@@ -15,6 +15,7 @@ import {
   Settings,
   Sparkles,
 } from "lucide-react";
+import type { GateProjection } from "@cemeworm/shared";
 import { useWorkbenchDispatch, type WorkbenchState } from "../lib/state";
 import {
   getSharedRuntimeClient,
@@ -44,10 +45,25 @@ const SIDEBAR_ACTION_BUTTON_CLASS = cn(
   "rounded-md text-muted-foreground transition hover:bg-sidebar-accent/65 hover:text-sidebar-accent-foreground active:scale-95",
 );
 
+function statusFromGateProjection(gate?: GateProjection): RunStatus | undefined {
+  if (!gate) return undefined;
+  switch (gate.kind) {
+    case "approval":
+      return "approval_required";
+    case "clarification":
+      return "clarification_required";
+    case "plan_decision":
+      return "decision_needed";
+  }
+}
+
 export function statusFromSession(
   status: string | undefined,
   attention?: OraRunAttention,
+  interactionGate?: GateProjection,
 ): RunStatus {
+  const gateStatus = statusFromGateProjection(interactionGate);
+  if (gateStatus) return gateStatus;
   if (attention) {
     switch (attention.kind) {
       case "needs_clarification":
@@ -111,7 +127,7 @@ export function sidebarStatusForSession(
   >,
 ): RunStatus {
   if (session.sessionId !== state.selectedSessionId) {
-    return statusFromSession(session.status, session.attention);
+    return statusFromSession(session.status, session.attention, session.interactionGate);
   }
 
   return statusFromRunInteractionState(

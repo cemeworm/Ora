@@ -1108,7 +1108,7 @@ describe("desktop workbench state", () => {
     ]);
   });
 
-  it("records desktop latency marks from received run streams", () => {
+  it("records stream latency marks from bridge receive through desktop batch flush", () => {
     const snapshot = testSnapshot({ runId: "run-latency" });
     const state: WorkbenchState = {
       ...initialWorkbenchState,
@@ -1139,6 +1139,13 @@ describe("desktop workbench state", () => {
       fromSeq: 0,
       nextSeq: 1,
       status: "running",
+      latency: {
+        marks: [
+          { source: "runtime", name: "streamStdoutWriteAt", at: 170, detail: { transport: "stdio" } },
+          { source: "bridge", name: "tauriRunEventReceivedAt", at: 180, detail: { transport: "stdio_bridge" } },
+          { source: "bridge", name: "tauriRunEventEmittedAt", at: 190, detail: { transport: "tauri_event" } },
+        ],
+      },
       events: [{
         id: "run-latency:event:0",
         runId: snapshot.runId,
@@ -1149,10 +1156,14 @@ describe("desktop workbench state", () => {
       }],
     } as unknown as OraRunEventStream;
 
-    const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 200 });
+    const next = workbenchReducer(state, { type: "APPLY_RUN_STREAM", stream, receivedAt: 200, flushedAt: 220 });
 
     expect(getActiveSnapshot(next.runLifecycle)?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual(expect.arrayContaining([
+      "runtime:streamStdoutWriteAt",
+      "bridge:tauriRunEventReceivedAt",
+      "bridge:tauriRunEventEmittedAt",
       "desktop:firstRunStreamReceivedAt",
+      "desktop:firstRunStreamBatchFlushedAt",
       "desktop:firstMessageDeltaAt",
       "desktop:firstNonProgressAssistantTextAt",
     ]));
@@ -2058,6 +2069,39 @@ describe("desktop workbench state", () => {
     expect(merged).toBeDefined();
     expect(merged?.events.map((event) => event.seq)).toEqual([0, 1]);
     expect(merged?.status).toBe("running");
+  });
+
+  it("merges stream latency diagnostics into snapshots without attached snapshots", () => {
+    const snapshot = testSnapshot({
+      runId: "run-stream-latency-merge",
+      latency: {
+        marks: [{ source: "runtime", name: "firstTextDelta", at: 120, detail: {} }],
+      },
+    });
+    const stream: OraRunEventStream = {
+      runId: "run-stream-latency-merge",
+      fromSeq: 1,
+      nextSeq: 2,
+      status: "running",
+      latency: {
+        marks: [{ source: "bridge", name: "tauriRunEventReceivedAt", at: 140, detail: {} }],
+      },
+      events: [{
+        id: "run-stream-latency-merge:event:1",
+        runId: "run-stream-latency-merge",
+        seq: 1,
+        type: "token.delta",
+        createdAt: 141,
+        payload: { text: "x", tokenCount: 1, streaming: true },
+      } as unknown as OraRunEventStream["events"][number]],
+    };
+
+    const merged = mergeRunStreamSnapshot(snapshot, stream);
+
+    expect(merged?.latency?.marks.map((mark) => `${mark.source}:${mark.name}`)).toEqual([
+      "runtime:firstTextDelta",
+      "bridge:tauriRunEventReceivedAt",
+    ]);
   });
 
   it("does not regress a final snapshot to running when a stale same-run snapshot arrives", () => {

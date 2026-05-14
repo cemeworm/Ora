@@ -217,6 +217,34 @@ describe("trail debugger view model", () => {
     expect(summary.blockingGate).toBe("决策 · 计划确认");
   });
 
+  it("shows pending plan decisions as blocking even when attention drifted to idle", () => {
+    const snapshot = baseSnapshot({
+      status: "succeeded",
+      planDecisions: [{
+        id: "run-test:plan-decision",
+        runId: "run-test",
+        sessionId: "session-test",
+        status: "pending",
+        createdAt: 5,
+      }],
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-test",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+    });
+
+    const summary = buildTrailDebugSummary(snapshot, undefined, [], []);
+
+    expect(summary.statusLabel).toBe("需要决策");
+    expect(summary.statusTone).toBe("warning");
+    expect(summary.currentStage).toBe("等待用户输入");
+    expect(summary.blockingGate).toBe("决策 · 计划确认");
+  });
+
   it("treats approval-interrupt failure text as waiting-for-approval instead of failure", () => {
     const snapshot = baseSnapshot({
       status: "failed",
@@ -471,6 +499,11 @@ describe("trail debugger view model", () => {
           { source: "runtime", name: "providerCallStarted", at: 320, detail: {} },
           { source: "provider", name: "firstProviderStreamFrame", at: 520, detail: { streamMode: "sse" } },
           { source: "runtime", name: "firstTextDelta", at: 560, detail: {} },
+          { source: "runtime", name: "streamStdoutWriteAt", at: 575, detail: { transport: "stdio" } },
+          { source: "bridge", name: "tauriRunEventReceivedAt", at: 590, detail: { transport: "stdio_bridge" } },
+          { source: "bridge", name: "tauriRunEventEmittedAt", at: 600, detail: { transport: "tauri_event" } },
+          { source: "desktop", name: "firstRunStreamReceivedAt", at: 620, detail: {} },
+          { source: "desktop", name: "firstRunStreamBatchFlushedAt", at: 650, detail: {} },
           { source: "runtime", name: "firstUserReadableAssistantTextProduced", at: 560, detail: {} },
           { source: "runtime", name: "firstProgressNarration", at: 700, detail: {} },
         ],
@@ -496,6 +529,26 @@ describe("trail debugger view model", () => {
     });
     expect(diagnostics.segments.find((segment) => segment.id === "snapshot-to-handle")).toMatchObject({
       duration: "35ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "first-text-to-stdout")).toMatchObject({
+      duration: "15ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "stdout-to-bridge-read")).toMatchObject({
+      duration: "15ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "bridge-read-to-emit")).toMatchObject({
+      duration: "10ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "bridge-emit-to-listener")).toMatchObject({
+      duration: "20ms",
+      status: "ok",
+    });
+    expect(diagnostics.segments.find((segment) => segment.id === "listener-to-batch-flush")).toMatchObject({
+      duration: "30ms",
       status: "ok",
     });
     expect(diagnostics.segments.find((segment) => segment.id === "first-text-to-progress")).toMatchObject({

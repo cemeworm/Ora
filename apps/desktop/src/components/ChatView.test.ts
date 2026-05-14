@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveComposerPlanDecisionState,
   deriveCurrentComposerPlanSteps,
   deriveProjectedGateTrays,
   getActiveChatProvider,
@@ -135,6 +136,57 @@ describe("chat view projected gate trays", () => {
       clarificationQuestions: [{ id: "clarification-1" }],
       hasApprovalTray: false,
       hasClarificationTray: true,
+    });
+  });
+});
+
+describe("chat view composer plan decision state", () => {
+  it("shows plan decision panel from durable planDecision even when attention drifted to idle", () => {
+    expect(deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      activeSnapshot: {
+        runId: "run-1",
+        status: "succeeded",
+        attention: {
+          kind: "idle",
+          blocking: false,
+          sourceRunId: "run-1",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "pending",
+          createdAt: 1,
+        }],
+      } as any,
+    })).toEqual({
+      pendingPlanDecisionId: "decision-1",
+      planDecisionPending: true,
+    });
+  });
+
+  it("hides plan decision panel while that decision is resolving", () => {
+    expect(deriveComposerPlanDecisionState({
+      sessionId: "session-1",
+      pendingResolution: { sessionId: "session-1", decisionId: "decision-1" },
+      activeSnapshot: {
+        runId: "run-1",
+        status: "succeeded",
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "pending",
+          createdAt: 1,
+        }],
+      } as any,
+    })).toEqual({
+      pendingPlanDecisionId: "decision-1",
+      planDecisionPending: false,
     });
   });
 });

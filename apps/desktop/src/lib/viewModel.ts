@@ -4,6 +4,7 @@ import {
   ORA_ROOT_AGENT_ID,
   ORA_ROOT_AGENT_LABEL,
   runtimeStatusForRunAttention,
+  type GateProjection,
 } from "@cemeworm/shared";
 import type {
   ActionRecord,
@@ -435,7 +436,7 @@ function adaptSession(
     projectId: session.projectId,
     status: snapshot
       ? adaptSnapshotRunStatus(snapshot)
-      : adaptStatusWithAttention(status, attention),
+      : adaptStatusWithAttention(status, attention, session.interactionGate),
     pattern: snapshot?.pattern ?? session.latestPattern ?? fallbackPattern,
     modeId: snapshot?.modeId ?? session.latestModeId,
     updatedAt: formatClock(snapshot?.updatedAt ?? session.updatedAt),
@@ -468,10 +469,25 @@ function adaptSnapshotRunStatus(snapshot: OraStateSnapshot): RunStatus {
   return deriveSnapshotInteractionProjection(snapshot).status as RunStatus;
 }
 
+function adaptGateProjectionStatus(gate: GateProjection | undefined): RunStatus | undefined {
+  if (!gate) return undefined;
+  switch (gate.kind) {
+    case "approval":
+      return "approval_required";
+    case "clarification":
+      return "clarification_required";
+    case "plan_decision":
+      return "decision_needed";
+  }
+}
+
 function adaptStatusWithAttention(
   status: OraStateSnapshot["status"],
   attention: OraRunAttention | undefined,
+  interactionGate?: GateProjection,
 ): RunStatus {
+  const gateStatus = adaptGateProjectionStatus(interactionGate);
+  if (gateStatus) return gateStatus;
   const attentionStatus = adaptAttentionStatus(attention);
   if (attentionGateKind(attention)) {
     return attentionStatus ?? adaptRunStatus(status);
@@ -1613,12 +1629,50 @@ const projectionCache = new WeakMap<
   ReturnType<typeof deriveRuntimeTimelineProjection>
 >();
 
+type SnapshotAssistantOverlayIndex = {
+  eventTimeBySeq: ReadonlyMap<number, number>;
+  firstAssistantEventSeqByMessageKey: ReadonlyMap<string, number>;
+};
+
+const snapshotAssistantOverlayIndexCache = new WeakMap<
+  OraStateSnapshot,
+  SnapshotAssistantOverlayIndex
+>();
+
 function cachedTimelineProjection(snapshot: OraStateSnapshot) {
   const cached = projectionCache.get(snapshot);
   if (cached) return cached;
   const fresh = deriveRuntimeTimelineProjection(snapshot);
   projectionCache.set(snapshot, fresh);
   return fresh;
+}
+
+function cachedSnapshotAssistantOverlayIndex(
+  snapshot: OraStateSnapshot,
+  projection = cachedTimelineProjection(snapshot),
+): SnapshotAssistantOverlayIndex {
+  const cached = snapshotAssistantOverlayIndexCache.get(snapshot);
+  if (cached) {
+    return cached;
+  }
+  const eventTimeBySeq = new Map<number, number>();
+  const firstAssistantEventSeqByMessageKey = new Map<string, number>();
+  for (const event of projection.events) {
+    eventTimeBySeq.set(event.seq, event.createdAt);
+    if (!isPublicAssistantDelta(snapshot, event)) {
+      continue;
+    }
+    const messageKey = assistantDeltaMessageKey(event);
+    if (!firstAssistantEventSeqByMessageKey.has(messageKey)) {
+      firstAssistantEventSeqByMessageKey.set(messageKey, event.seq);
+    }
+  }
+  const index = {
+    eventTimeBySeq,
+    firstAssistantEventSeqByMessageKey,
+  } satisfies SnapshotAssistantOverlayIndex;
+  snapshotAssistantOverlayIndexCache.set(snapshot, index);
+  return index;
 }
 
 function overlayLiveTimelineItems(
@@ -1629,9 +1683,7 @@ function overlayLiveTimelineItems(
   const existingItems = turn.timelineItems ?? [];
   let nextItems = existingItems;
   const projection = cachedTimelineProjection(snapshot);
-  const eventTimeBySeq = new Map(
-    projection.events.map((event) => [event.seq, event.createdAt]),
-  );
+  const overlayIndex = cachedSnapshotAssistantOverlayIndex(snapshot, projection);
 
   for (const entry of liveEntries) {
     const content = timelineTextExcludingProposedPlan(entry.content);
@@ -1640,9 +1692,9 @@ function overlayLiveTimelineItems(
     }
     const snapshotItemIndex = findSnapshotAssistantTimelineItemIndexForLiveEntry(
       snapshot,
-      projection.events,
       nextItems,
       entry,
+      overlayIndex.firstAssistantEventSeqByMessageKey,
     );
     if (snapshotItemIndex >= 0) {
       const existing = nextItems[snapshotItemIndex];
@@ -1669,7 +1721,7 @@ function overlayLiveTimelineItems(
     if (nextItems === existingItems) {
       nextItems = [...existingItems];
     }
-    nextItems = insertLiveTimelineItemByCreatedAt(nextItems, eventTimeBySeq, entry.createdAt, {
+    nextItems = insertLiveTimelineItemByCreatedAt(nextItems, overlayIndex.eventTimeBySeq, entry.createdAt, {
       id: `${snapshot.runId}:timeline:live:${entry.messageId}`,
       kind: "assistant_text",
       content,
@@ -1718,11 +1770,11 @@ function shouldReplaceSnapshotAssistantTextWithLiveContent(
 
 function findSnapshotAssistantTimelineItemIndexForLiveEntry(
   snapshot: OraStateSnapshot,
-  events: readonly OraEventEnvelope[],
   items: readonly TurnTimelineItem[],
   entry: LiveMessageDeltaPreview,
+  firstAssistantEventSeqByMessageKey: ReadonlyMap<string, number>,
 ): number {
-  const firstSnapshotEventSeq = firstSnapshotAssistantEventSeqForLiveEntry(snapshot, events, entry);
+  const firstSnapshotEventSeq = firstAssistantEventSeqByMessageKey.get(entry.messageId);
   if (firstSnapshotEventSeq === undefined) {
     return -1;
   }
@@ -1731,22 +1783,6 @@ function findSnapshotAssistantTimelineItemIndexForLiveEntry(
     item.kind === "assistant_text" &&
     (item.eventSeq === firstSnapshotEventSeq || item.id === expectedItemId)
   );
-}
-
-function firstSnapshotAssistantEventSeqForLiveEntry(
-  snapshot: OraStateSnapshot,
-  events: readonly OraEventEnvelope[],
-  entry: LiveMessageDeltaPreview,
-): number | undefined {
-  for (const event of events) {
-    if (!isPublicAssistantDelta(snapshot, event)) {
-      continue;
-    }
-    if (assistantDeltaMessageKey(event) === entry.messageId) {
-      return event.seq;
-    }
-  }
-  return undefined;
 }
 
 function assistantTimelineItemId(runId: string, eventSeq: number): string {
@@ -2081,7 +2117,7 @@ function buildAssistantTurnAttachment(
     if (cached) return cached;
   }
 
-  const timelineProjection = deriveRuntimeTimelineProjection(snapshot);
+  const timelineProjection = cachedTimelineProjection(snapshot);
   const processSteps = deriveProcessSteps(snapshot, timelineProjection);
   const proposedPlan = liveProposedPlan ?? proposedPlanFromSnapshot(snapshot);
   const status = adaptSnapshotRunStatus(snapshot);

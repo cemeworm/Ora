@@ -119,6 +119,61 @@ describe("desktop session view model", () => {
     });
   });
 
+  it("uses summary interaction gate for summary-only sessions", () => {
+    const createdAt = 1_714_000_000_000;
+    const session: OraSessionSummary = {
+      sessionId: "session-summary-gate",
+      title: "Needs decision",
+      status: "failed",
+      attention: {
+        kind: "idle",
+        blocking: false,
+        sourceRunId: "run-summary-gate",
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+      },
+      interactionGate: {
+        kind: "plan_decision",
+        source: "plan_decisions",
+        durable: true,
+        staleRisk: false,
+        gateIds: ["run-summary-gate:plan-decision"],
+        pendingActionIds: [],
+        pendingToolCallIds: [],
+        pendingClarificationIds: [],
+        planDecisionId: "run-summary-gate:plan-decision",
+      },
+      turnCount: 1,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const activeSession: OraSessionSummary = {
+      sessionId: "session-active",
+      title: "Active Session",
+      turnCount: 0,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const detail: OraSessionDetail = {
+      session: activeSession,
+      turns: [],
+      transcript: [],
+    };
+
+    const viewModel = buildWorkbenchViewModel(
+      MVP_PATTERNS,
+      MVP_MODES,
+      [session, activeSession],
+      detail,
+      undefined,
+      "generator_verifier",
+      SINGLE_AGENT_MODE_ID,
+    );
+
+    expect(viewModel.sessions.find((item) => item.id === session.sessionId)?.status).toBe("decision_needed");
+  });
+
   it("does not treat a newly-created empty session preview as running", () => {
     const createdAt = 1_714_000_000_000;
     const session: OraSessionSummary = {
@@ -302,11 +357,9 @@ describe("desktop session view model", () => {
       pendingClarifications: [],
       pendingApprovals: [],
       attention: {
-        kind: "needs_plan_decision",
-        blocking: true,
+        kind: "idle",
+        blocking: false,
         sourceRunId: "run-plan-decision",
-        reason: "plan_decision_required",
-        planDecisionId: "run-plan-decision:plan-decision",
         pendingActionIds: [],
         pendingToolCallIds: [],
         pendingClarificationIds: [],
@@ -4409,6 +4462,117 @@ describe("desktop session view model", () => {
 
     expect(assistant?.content).toBe("这是我根据之前与用户的互动经验整理出的说明。");
     expect(timelineText).toEqual(["这是我根据之前与用户的互动经验整理出的说明。"]);
+  });
+
+  it("updates the matching timeline item when live text targets a later assistant message id", () => {
+    const createdAt = 1_714_000_000_000;
+    const runId = "run-live-timeline-multi-message";
+    const sessionId = "session-live-timeline-multi-message";
+    const firstMessageId = `${runId}:assistant:solo:solo:0`;
+    const secondMessageId = `${runId}:assistant:solo:solo:1`;
+    const snapshot = {
+      runId,
+      sessionId,
+      turnIndex: 1,
+      status: "running",
+      pattern: "orchestrator_subagent",
+      modeId: SINGLE_AGENT_MODE_ID,
+      input: { prompt: "继续", createdAt, context: {} },
+      config: {
+        modeId: SINGLE_AGENT_MODE_ID,
+        pattern: "orchestrator_subagent",
+        modeSelection: "manual",
+        profileIds: ["solo_agent"],
+        providerId: "deepseek",
+        modelRef: "deepseek-chat",
+        approvalMode: "high_risk_only",
+        patternOptions: {},
+        metadata: {},
+        deterministicSeed: "view-model-live-multi-message-test",
+        skillIds: [],
+        toolIds: [],
+      },
+      topology: { nodes: [], edges: [] },
+      profiles: [],
+      memory: [],
+      plan: [],
+      todos: [],
+      actions: [],
+      toolCalls: [],
+      policyDecisions: [],
+      checkpoints: [],
+      events: [
+        {
+          id: `${runId}:evt-0`,
+          runId,
+          seq: 0,
+          type: "message.delta",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: firstMessageId, content: "第一段说明。", delta: "第一段说明。", streaming: true, phase: "stream" },
+        },
+        {
+          id: `${runId}:evt-1`,
+          runId,
+          seq: 1,
+          type: "message.delta",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt: createdAt + 10,
+          pattern: "orchestrator_subagent",
+          payload: { role: "assistant", messageId: secondMessageId, content: "第二段", delta: "第二段", streaming: true, phase: "stream" },
+        },
+      ],
+      artifacts: [],
+      activeAgents: [],
+      queueSummary: { mode: "dag", pending: 0, inProgress: 1, completed: 0, topics: [] },
+      sharedStateSummary: { enabled: false, storeKind: "none", version: 0, entries: [] },
+      busStats: { enabled: false, publishedCount: 0, routedCount: 0, topicCounts: {} },
+      pendingClarifications: [],
+      pendingApprovals: [],
+      updatedAt: createdAt + 100,
+    } as unknown as OraStateSnapshot;
+    const baseMessages = adaptChatMessages(
+      [{
+        id: `${runId}:user`,
+        sessionId,
+        runId,
+        turnIndex: 1,
+        role: "user",
+        content: "继续",
+        pattern: "orchestrator_subagent",
+        modeId: SINGLE_AGENT_MODE_ID,
+        createdAt,
+      }],
+      { [runId]: snapshot },
+    );
+
+    const assistant = adaptRenderableChatMessages({
+      transcript: [],
+      turnSnapshots: { [runId]: snapshot },
+      selectedSessionId: sessionId,
+      baseMessages,
+      liveMessageDeltas: {
+        [`${runId}:${secondMessageId}`]: {
+          runId,
+          messageId: secondMessageId,
+          sessionId,
+          role: "assistant",
+          content: "第二段已经补全。",
+          agentId: "solo",
+          nodeId: "solo",
+          createdAt: createdAt + 10,
+          updatedAt: createdAt + 200,
+        },
+      },
+    }).find((message) => message.role === "assistant");
+    const timelineText = assistant?.turn?.timelineItems
+      ?.flatMap((item) => item.kind === "assistant_text" ? [item.content] : []) ?? [];
+
+    expect(timelineText).toEqual(["第一段说明。", "第二段已经补全。"]);
+    expect(assistant?.content).toBe("第二段已经补全。");
   });
 
   it("does not downgrade merged snapshot text with shorter live same-message text", () => {

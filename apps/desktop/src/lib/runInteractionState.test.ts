@@ -451,6 +451,37 @@ describe("deriveRunInteractionState", () => {
     });
   });
 
+  it("pending plan decision wins when terminal attention has drifted to idle", () => {
+    const result = derive({
+      selectedSessionId: "session-1",
+      activeSnapshot: activeSnapshot({
+        status: "succeeded",
+        planDecisions: [{
+          id: "decision-1",
+          runId: "run-1",
+          sessionId: "session-1",
+          status: "pending",
+          createdAt: 2000,
+        }],
+        attention: {
+          kind: "idle",
+          blocking: false,
+          sourceRunId: "run-1",
+          pendingActionIds: [],
+          pendingToolCallIds: [],
+          pendingClarificationIds: [],
+        },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: "decision_needed",
+      gateKind: "plan_decision",
+      isProcessing: true,
+      canSubmit: false,
+    });
+  });
+
   it("raw pending approval without projection attention is not actionable", () => {
     const result = derive({
       selectedSessionId: "session-1",
