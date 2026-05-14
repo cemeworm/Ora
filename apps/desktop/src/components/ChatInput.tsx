@@ -175,6 +175,14 @@ export function scrollComposerTextareaToBottom(
   target.scrollTop = target.scrollHeight;
 }
 
+export function getCurrentLineInfo(text: string, cursor: number) {
+  const beforeCursor = text.slice(0, cursor);
+  const lastNewline = beforeCursor.lastIndexOf("\n");
+  const lineStart = lastNewline + 1;
+  const lineText = text.slice(lineStart, cursor);
+  return { lineStart, lineText };
+}
+
 export function ChatInput({
   sessionId,
   composerPrompt,
@@ -237,6 +245,8 @@ export function ChatInput({
   >();
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [cursorPos, setCursorPos] = useState(0);
+
   const interactivity = getComposerInteractivity({
     composerPrompt,
     runInteractionState,
@@ -256,9 +266,15 @@ export function ChatInput({
         .filter((skill): skill is SkillDescriptor => Boolean(skill)),
     [selectedSkillIds, skillOptions],
   );
-  const slashQuery = composerPrompt.startsWith("/")
-    ? composerPrompt.slice(1).trim().toLowerCase()
-    : "";
+  const currentLineInfo = useMemo(
+    () => getCurrentLineInfo(composerPrompt, cursorPos),
+    [composerPrompt, cursorPos],
+  );
+  const slashQuery =
+    currentLineInfo.lineText.startsWith("/") &&
+    currentLineInfo.lineStart === cursorPos - currentLineInfo.lineText.length
+      ? currentLineInfo.lineText.slice(1).trim().toLowerCase()
+      : "";
   const filteredSkillOptions = useMemo(() => {
     return skillOptions
       .filter((skill) => skill.enabled)
@@ -287,12 +303,11 @@ export function ChatInput({
     filteredSkillOptions.length - visibleSkillOptions.length;
   const showSkillPicker =
     openPicker === "skills" &&
-    composerPrompt.startsWith("/") &&
+    currentLineInfo.lineText.startsWith("/") &&
+    currentLineInfo.lineStart === cursorPos - currentLineInfo.lineText.length &&
     filteredSkillOptions.length > 0;
-  const hasTopChips =
-    selectedSkills.length > 0 ||
-    projectFileAttachments.length > 0 ||
-    localFileAttachments.length > 0;
+  const hasFileChips =
+    projectFileAttachments.length > 0 || localFileAttachments.length > 0;
   const showApprovalTray =
     approvalActions.length > 0 && Boolean(onApprove && onCancelApproval);
   const { showClarificationTray, showPlanDecisionTray, hideComposer } =
@@ -353,7 +368,7 @@ export function ChatInput({
     showClarificationTray,
     showPlanDecisionTray,
     hideComposer,
-    hasTopChips,
+    hasFileChips,
     composerPrompt,
     clarificationQuestions,
     approvalActions,
@@ -387,11 +402,17 @@ export function ChatInput({
 
   function updatePrompt(nextPrompt: string) {
     onPromptChange(nextPrompt);
-    const nextQuery = nextPrompt.startsWith("/")
-      ? nextPrompt.slice(1).trim().toLowerCase()
-      : "";
+    const pos = textareaRef.current?.selectionStart ?? nextPrompt.length;
+    setCursorPos(pos);
+    const { lineStart, lineText } = getCurrentLineInfo(nextPrompt, pos);
+    const isAtLineStart = lineStart === pos - lineText.length;
+    const nextQuery =
+      lineText.startsWith("/") && isAtLineStart
+        ? lineText.slice(1).trim().toLowerCase()
+        : "";
     const hasMatches =
-      nextPrompt.startsWith("/") &&
+      lineText.startsWith("/") &&
+      isAtLineStart &&
       skillOptions
         .filter((skill) => skill.enabled)
         .filter(
@@ -417,7 +438,16 @@ export function ChatInput({
   function selectSkill(skill: SkillDescriptor) {
     const nextSkillIds = [...selectedSkillIds, skill.id];
     onSelectedSkillIdsChange([...new Set(nextSkillIds)]);
-    onPromptChange(composerPrompt.startsWith("/") ? "" : composerPrompt);
+    const pos = textareaRef.current?.selectionStart ?? composerPrompt.length;
+    const { lineStart, lineText } = getCurrentLineInfo(composerPrompt, pos);
+    const isAtLineStart =
+      lineText.startsWith("/") && lineStart === pos - lineText.length;
+    if (isAtLineStart) {
+      const afterCursor = composerPrompt.slice(pos);
+      onPromptChange(composerPrompt.slice(0, lineStart) + afterCursor);
+    } else {
+      onPromptChange(composerPrompt);
+    }
     setOpenPicker(undefined);
     setSkillListExpanded(false);
     window.requestAnimationFrame(() => textareaRef.current?.focus());
@@ -587,24 +617,11 @@ export function ChatInput({
             <div
               className={cn(
                 "relative",
-                hasTopChips ? "min-h-[148px]" : "min-h-[96px]",
+                hasFileChips ? "min-h-[148px]" : "min-h-[96px]",
               )}
             >
-              {hasTopChips && (
+              {hasFileChips && (
                 <div className="absolute left-3 right-3 top-3 z-10 flex max-h-16 flex-wrap items-center gap-1.5 overflow-y-auto pr-1">
-                  {selectedSkills.map((skill) => (
-                    <button
-                      key={skill.id}
-                      type="button"
-                      onClick={() => removeSkill(skill.id)}
-                      className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 text-xs font-medium text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
-                      title={`Remove ${skill.name}`}
-                    >
-                      <Check size={12} />
-                      <span className="truncate">{skill.name}</span>
-                      <X size={11} className="text-violet-500" />
-                    </button>
-                  ))}
                   {projectFileAttachments.map((file) => (
                     <button
                       key={`${file.projectId}:${file.path}`}
@@ -637,28 +654,57 @@ export function ChatInput({
                   ))}
                 </div>
               )}
-              <textarea
-                ref={textareaRef}
-                value={composerPrompt}
-                onChange={(e) => updatePrompt(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  runInteractionState.isProcessing ? "" : "Message Ora"
-                }
-                disabled={!interactivity.canEditText}
-                rows={2}
-                className={cn(
-                  "max-h-[220px] w-full resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
-                  hasTopChips ? "min-h-[148px] pt-20" : "min-h-[96px] pt-4",
+              <div className="flex items-start">
+                {selectedSkills.length > 0 && (
+                  <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 pl-3 pt-4">
+                    {selectedSkills.map((skill) => (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        onClick={() => removeSkill(skill.id)}
+                        className="inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 text-xs font-medium text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                        title={`Remove ${skill.name}`}
+                      >
+                        <Check size={12} />
+                        <span className="truncate">{skill.name}</span>
+                        <X size={11} className="text-violet-500" />
+                      </button>
+                    ))}
+                  </div>
                 )}
-                style={{ height: "auto", overflowY: "auto" }}
-                onInput={(e) => {
-                  resizeComposerTextarea(e.target as HTMLTextAreaElement);
-                }}
-                onPaste={() => {
-                  shouldScrollPastedTextRef.current = true;
-                }}
-              />
+                <textarea
+                  ref={textareaRef}
+                  value={composerPrompt}
+                  onChange={(e) => updatePrompt(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  onClick={(e) =>
+                    setCursorPos(
+                      (e.target as HTMLTextAreaElement).selectionStart,
+                    )
+                  }
+                  onKeyUp={(e) =>
+                    setCursorPos(
+                      (e.target as HTMLTextAreaElement).selectionStart,
+                    )
+                  }
+                  placeholder={
+                    runInteractionState.isProcessing ? "" : "Message Ora"
+                  }
+                  disabled={!interactivity.canEditText}
+                  rows={2}
+                  className={cn(
+                    "max-h-[220px] min-w-0 flex-1 resize-none bg-transparent px-4 pb-14 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60",
+                    hasFileChips ? "min-h-[148px] pt-20" : "min-h-[96px] pt-4",
+                  )}
+                  style={{ height: "auto", overflowY: "auto" }}
+                  onInput={(e) => {
+                    resizeComposerTextarea(e.target as HTMLTextAreaElement);
+                  }}
+                  onPaste={() => {
+                    shouldScrollPastedTextRef.current = true;
+                  }}
+                />
+              </div>
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-1">
                   <Button
