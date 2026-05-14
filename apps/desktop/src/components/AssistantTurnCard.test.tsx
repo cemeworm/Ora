@@ -1385,7 +1385,7 @@ describe("assistant turn display helpers", () => {
     expect(html).toContain("先显示卡片");
   });
 
-  it("renders full streaming PlanCard content as plain text", () => {
+  it("renders full streaming PlanCard content with MarkdownContent during streaming", () => {
     const turn: AssistantTurnAttachment = {
       runId: "run-1",
       turnIndex: 1,
