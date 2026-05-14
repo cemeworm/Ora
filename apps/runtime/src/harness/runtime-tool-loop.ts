@@ -68,40 +68,60 @@ export function cacheKeyForRuntimeTool(
 ): string | undefined {
   const readOnlyFileTools = options.readOnlyFileTools !== false;
   if (readOnlyFileTools && call.tool === "file.read") {
-    const filePath = typeof call.args.path === "string" ? call.args.path.trim() : "";
+    const filePath = stringArg(call.args.path);
     if (!filePath) {
       return undefined;
     }
     if (call.args.offset !== undefined || call.args.limit !== undefined) {
       const offset = positiveIntLike(call.args.offset) ?? 1;
       const limit = positiveIntLike(call.args.limit);
-      return `${call.tool}:${filePath}:offset=${offset}:limit=${limit ?? "rest"}`;
+      return `${call.tool}:path=${filePath}:offset=${offset}:limit=${limit ?? "rest"}`;
     }
     return `${call.tool}:${filePath}`;
   }
   if (readOnlyFileTools && call.tool === "file.list") {
-    const filePath = typeof call.args.path === "string" ? call.args.path.trim() : ".";
-    return `${call.tool}:${filePath}`;
+    const filePath = stringArg(call.args.path) || ".";
+    const limit = positiveIntLike(call.args.limit);
+    return `${call.tool}:path=${filePath}:limit=${limit ?? "default"}`;
   }
   if (readOnlyFileTools && call.tool === "file.glob") {
-    const pattern = typeof call.args.pattern === "string" ? call.args.pattern.trim() : "";
-    return pattern ? `${call.tool}:${pattern}` : undefined;
+    const pattern = stringArg(call.args.pattern);
+    if (!pattern) {
+      return undefined;
+    }
+    const filePath = stringArg(call.args.path) || ".";
+    const limit = positiveIntLike(call.args.limit);
+    return `${call.tool}:path=${filePath}:pattern=${pattern}:limit=${limit ?? "default"}`;
   }
   if (readOnlyFileTools && call.tool === "file.grep") {
-    const pattern = typeof call.args.pattern === "string" ? call.args.pattern.trim() : "";
-    const include = typeof call.args.include === "string" ? call.args.include.trim() : "";
-    return pattern ? `${call.tool}:${pattern}:${include}` : undefined;
+    const pattern = stringArg(call.args.pattern);
+    if (!pattern) {
+      return undefined;
+    }
+    const include = stringArg(call.args.include);
+    const filePath = stringArg(call.args.path) || ".";
+    const caseSensitive = call.args.caseSensitive === false ? "false" : "true";
+    const limit = positiveIntLike(call.args.limit);
+    return `${call.tool}:path=${filePath}:pattern=${pattern}:include=${include}:caseSensitive=${caseSensitive}:limit=${limit ?? "default"}`;
   }
   if (call.tool === "web.fetch") {
-    const url = typeof call.args.url === "string" ? call.args.url.trim() : "";
-    return url ? `${call.tool}:${url}` : undefined;
+    const url = stringArg(call.args.url);
+    if (!url) {
+      return undefined;
+    }
+    const maxBytes = positiveIntLike(call.args.maxBytes);
+    return `${call.tool}:url=${url}:maxBytes=${maxBytes ?? "default"}`;
   }
   if (call.tool === "web.search") {
     const query = typeof call.args.query === "string" ? call.args.query.trim().replace(/\s+/g, " ").toLowerCase() : "";
-    const limit = typeof call.args.limit === "number" ? call.args.limit : "";
-    return query ? `${call.tool}:${query}:${limit}` : undefined;
+    const limit = positiveIntLike(call.args.limit);
+    return query ? `${call.tool}:${query}:${limit ?? "default"}` : undefined;
   }
   return undefined;
+}
+
+function stringArg(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function positiveIntLike(value: unknown): number | undefined {
