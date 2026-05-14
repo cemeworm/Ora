@@ -248,7 +248,7 @@ export async function executeWorkspaceShell(
   if (!command) {
     throw new Error("shell.execute requires a non-empty command.");
   }
-  assertShellCommandStaysInWorkspace(rootPath, command);
+  assertShellWriteStaysInWorkspace(rootPath, command);
   const timeoutMs = readPositiveInt(args.timeoutMs, limits.shellTimeoutMs, limits.shellTimeoutMs);
   const login = readShellLoginArg(args);
   const { env, shellPath } = await getShellExecutionContext();
@@ -361,72 +361,51 @@ interface ShellToken {
   kind: "word" | "separator";
 }
 
-interface SourceRange {
-  start: number;
-  end: number;
-}
-
-function assertShellCommandStaysInWorkspace(rootPath: string, command: string): void {
-  const ignoredRanges = collectShellScriptExpressionRanges(command);
-  const absolutePathPattern = /(?:^|[\s"'(=])((?:\/(?!\/)[^\s"'`|;&<>)]+)+)/g;
-  for (const match of command.matchAll(absolutePathPattern)) {
-    const candidate = match[1];
-    if (!candidate) {
-      continue;
-    }
-    const candidateStart = match.index + match[0].lastIndexOf(candidate);
-    const candidateEnd = candidateStart + candidate.length;
-    if (sourceRangeContains(ignoredRanges, candidateStart, candidateEnd)) {
-      continue;
-    }
-    const resolved = path.resolve(candidate);
-    const relative = path.relative(rootPath, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw new Error("shell.execute command paths must stay inside the project root.");
-    }
-  }
-}
-
-function collectShellScriptExpressionRanges(command: string): SourceRange[] {
+function assertShellWriteStaysInWorkspace(rootPath: string, command: string): void {
   const tokens = tokenizeShellCommand(command);
-  const ranges: SourceRange[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (!token || token.kind !== "word" || !isSedCommandName(token.text) || !isCommandPosition(tokens, index)) {
+    if (!token || token.kind !== "word") {
       continue;
     }
-    collectSedExpressionRanges(tokens, index + 1, ranges);
+    // Case 1: standalone redirect operator (> or >>)
+    if (token.text === ">" || token.text === ">>") {
+      const target = nextWordToken(tokens, index + 1);
+      if (target && isWritablePathOutsideWorkspace(rootPath, target.text)) {
+        throw new Error("shell.execute cannot write to paths outside the project root.");
+      }
+      continue;
+    }
+    // Case 2: combined redirect with target (2>/tmp/file, &>/tmp/file, etc.)
+    const redirectWithTarget = /^(\d*|&)>{1,2}(.+)$/.exec(token.text);
+    if (redirectWithTarget && redirectWithTarget[2] && isWritablePathOutsideWorkspace(rootPath, redirectWithTarget[2])) {
+      throw new Error("shell.execute cannot write to paths outside the project root.");
+    }
+    // Case 3: combined redirect without target (2> /tmp/file with space after >)
+    const redirectNoTarget = /^(\d*|&)>{1,2}$/.exec(token.text);
+    if (redirectNoTarget) {
+      const target = nextWordToken(tokens, index + 1);
+      if (target && isWritablePathOutsideWorkspace(rootPath, target.text)) {
+        throw new Error("shell.execute cannot write to paths outside the project root.");
+      }
+    }
   }
-  return ranges;
 }
 
-function collectSedExpressionRanges(tokens: ShellToken[], startIndex: number, ranges: SourceRange[]): void {
-  for (let index = startIndex; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (!token || token.kind === "separator") {
-      return;
-    }
-    if (token.text === "-e" || token.text === "--expression") {
-      const expression = nextWordToken(tokens, index + 1);
-      if (expression) {
-        ranges.push({ start: expression.start, end: expression.end });
-        index = tokens.indexOf(expression);
-      }
-      continue;
-    }
-    if (token.text === "-f" || token.text === "--file") {
-      const scriptFile = nextWordToken(tokens, index + 1);
-      if (scriptFile) {
-        index = tokens.indexOf(scriptFile);
-      }
-      continue;
-    }
-    if (token.text.startsWith("-") && token.text !== "-") {
-      continue;
-    }
-    ranges.push({ start: token.start, end: token.end });
-    return;
+function isWritablePathOutsideWorkspace(rootPath: string, candidate: string): boolean {
+  if (!candidate.startsWith("/") || candidate.startsWith("//")) {
+    return false;
   }
+  if (candidate.startsWith("/dev/")) {
+    return false;
+  }
+  const resolved = path.resolve(candidate);
+  const relative = path.relative(rootPath, resolved);
+  return relative.startsWith("..") || path.isAbsolute(relative);
+}
+
+function isShellSeparator(char: string): boolean {
+  return char === ";" || char === "|" || char === "&" || char === "\n" || char === "(" || char === ")";
 }
 
 function tokenizeShellCommand(command: string): ShellToken[] {
@@ -483,29 +462,6 @@ function tokenizeShellCommand(command: string): ShellToken[] {
   return tokens;
 }
 
-function isShellSeparator(char: string): boolean {
-  return char === ";" || char === "|" || char === "&" || char === "\n" || char === "(" || char === ")";
-}
-
-function isSedCommandName(commandName: string): boolean {
-  const name = path.basename(commandName);
-  return name === "sed" || name === "gsed";
-}
-
-function isCommandPosition(tokens: ShellToken[], index: number): boolean {
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const token = tokens[cursor];
-    if (!token) {
-      continue;
-    }
-    if (token.kind === "separator") {
-      return true;
-    }
-    return false;
-  }
-  return true;
-}
-
 function nextWordToken(tokens: ShellToken[], startIndex: number): ShellToken | undefined {
   for (let index = startIndex; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -517,10 +473,6 @@ function nextWordToken(tokens: ShellToken[], startIndex: number): ShellToken | u
     }
   }
   return undefined;
-}
-
-function sourceRangeContains(ranges: SourceRange[], start: number, end: number): boolean {
-  return ranges.some((range) => start >= range.start && end <= range.end);
 }
 
 export function shellCommandRequiresHighRisk(args: Record<string, unknown>): boolean {

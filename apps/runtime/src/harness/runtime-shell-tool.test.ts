@@ -116,13 +116,69 @@ describe("runtime shell tool", () => {
     expect(payload.argv).toEqual(["-c", "sed -n '/^# 8\\..*/,/^# 9\\..*/p' docs/ora-gates-and-resume.md"]);
   });
 
-  it("still rejects real absolute paths outside the workspace", async () => {
+  it("allows reading absolute paths outside the workspace", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    const result = await executeWorkspaceShell(rootPath, {
+      command: "find /usr/local -name pnpm 2>/dev/null | head -5 || ls /etc/passwd",
+      shell: shellPath,
+    }, TEST_LIMITS);
+
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("allows searching system directories", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    const result = await executeWorkspaceShell(rootPath, {
+      command: "ls ~/.local/share/pnpm 2>/dev/null || ls ~/Library/pnpm 2>/dev/null || find /usr/local -name pnpm 2>/dev/null | head -5 || find /opt -name pnpm 2>/dev/null | head -5",
+      shell: shellPath,
+    }, TEST_LIMITS);
+
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("rejects redirect to absolute paths outside the workspace", async () => {
     const rootPath = tempWorkspace();
     const shellPath = createFakeShell(rootPath, "zsh");
 
     await expect(executeWorkspaceShell(rootPath, {
-      command: "cat /etc/passwd",
+      command: "echo foo > /tmp/ora-shell-guard-test/outside.txt",
       shell: shellPath,
-    }, TEST_LIMITS)).rejects.toThrow("shell.execute command paths must stay inside the project root.");
+    }, TEST_LIMITS)).rejects.toThrow("shell.execute cannot write to paths outside the project root.");
+  });
+
+  it("rejects append redirect to absolute paths outside the workspace", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    await expect(executeWorkspaceShell(rootPath, {
+      command: "echo bar >> /var/log/ora-test.log",
+      shell: shellPath,
+    }, TEST_LIMITS)).rejects.toThrow("shell.execute cannot write to paths outside the project root.");
+  });
+
+  it("rejects fd redirect to absolute paths outside the workspace", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    await expect(executeWorkspaceShell(rootPath, {
+      command: "echo baz 2>/tmp/ora-shell-guard-test/stderr.log",
+      shell: shellPath,
+    }, TEST_LIMITS)).rejects.toThrow("shell.execute cannot write to paths outside the project root.");
+  });
+
+  it("allows redirect to relative paths inside the workspace", async () => {
+    const rootPath = tempWorkspace();
+    const shellPath = createFakeShell(rootPath, "zsh");
+
+    const result = await executeWorkspaceShell(rootPath, {
+      command: "echo ok > output.txt",
+      shell: shellPath,
+    }, TEST_LIMITS);
+
+    expect(result.exitCode).toBe(0);
   });
 });
