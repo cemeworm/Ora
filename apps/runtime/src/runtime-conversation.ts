@@ -13,6 +13,7 @@ export function runtimeConversationToModelMessages(
         return {
           role: "assistant",
           content: entry.content,
+          reasoningContent: entry.reasoningContent,
           toolCalls: entry.toolCalls.map((call) => ({
             id: call.providerCallId ?? call.id,
             toolId: call.toolId,

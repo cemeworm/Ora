@@ -1,4 +1,4 @@
-import { projectAssistantTextFromSnapshot, RunConfig, StateSnapshot } from "@cemeworm/shared";
+import { projectAssistantTextFromSnapshot, projectAssistantReasoningContentFromSnapshot, RunConfig, StateSnapshot } from "@cemeworm/shared";
 import { invokeRunProvider } from "./providers/index.js";
 
 export const DEFAULT_SESSION_TITLE = "New Chat";
@@ -93,6 +93,10 @@ function dedicatedToolProviderId(config: RunConfig): string | undefined {
 
 export function assistantTextForRun(snapshot: StateSnapshot): string {
   return projectAssistantTextFromSnapshot(snapshot);
+}
+
+export function assistantReasoningContentForRun(snapshot: StateSnapshot): string | undefined {
+  return projectAssistantReasoningContentFromSnapshot(snapshot);
 }
 
 export function defaultSessionTitle(prompt: string): string {

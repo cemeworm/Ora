@@ -166,7 +166,7 @@ import type {
   RuntimeRunReadModel,
   RuntimeSessionReadModel
 } from "./persistence/types.js";
-import type { ModelMessage } from "./providers/index.js";
+import type { ModelImageBlock, ModelMessage } from "./providers/index.js";
 import { invokeRunProvider } from "./providers/index.js";
 import { readLangfuseRunTrace } from "./telemetry/langfuse.js";
 import { mergeTrailObservations, synthesizeLocalTrail } from "./telemetry/trails.js";
@@ -230,6 +230,7 @@ import {
 } from "./runtime-store-paths.js";
 import {
   DEFAULT_SESSION_TITLE,
+  assistantReasoningContentForRun,
   assistantTextForRun,
   defaultSessionTitle,
   generateSessionTitleFromPrompt,
@@ -289,6 +290,22 @@ import {
   type FeedbackSourceContextDeps
 } from "./feedback-curation.js";
 import { generateEvaluationBlueprintDraftWithProvider } from "./evaluation-blueprint-draft.js";
+
+function extractImageBlocksFromContext(context: unknown): ModelImageBlock[] | undefined {
+  const images = (context as Record<string, unknown> | undefined)?.attachedImages;
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+  const blocks: ModelImageBlock[] = [];
+  for (const img of images) {
+    if (!img || typeof img !== "object") continue;
+    const record = img as Record<string, unknown>;
+    const dataUrl = typeof record.dataUrl === "string" ? record.dataUrl : "";
+    const mimeType = typeof record.mimeType === "string" ? record.mimeType : "image/png";
+    const parts = dataUrl.split(",");
+    if (parts.length < 2) continue;
+    blocks.push({ mediaType: mimeType, data: parts[1] });
+  }
+  return blocks.length > 0 ? blocks : undefined;
+}
 
 const StartRunParamsSchema = z.object({
   input: UserTaskInputSchema,
@@ -1419,6 +1436,7 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      extractImageBlocksFromContext(input.context),
     );
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
@@ -1529,6 +1547,7 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      extractImageBlocksFromContext(input.context),
     );
     markRuntimeLatency("conversationMessages.done", { messageCount: conversationMessages.length });
     let liveSnapshot = createRunningRunSnapshot({
@@ -1906,6 +1925,7 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      extractImageBlocksFromContext(input.context),
     );
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
@@ -1968,6 +1988,7 @@ export class LocalRunStore {
       fullConfig,
       turnIndex,
       runId,
+      extractImageBlocksFromContext(input.context),
     );
     this.appendRunStartedToLedger({
       sessionId: session.sessionId,
@@ -3895,6 +3916,7 @@ export class LocalRunStore {
     config: RunConfig,
     turnIndex: number,
     runId: string,
+    imageBlocks?: ModelImageBlock[],
   ): Promise<ModelMessage[]> {
     const session = this.getSessionOrThrow(sessionId);
     const provider = resolveRunProviderConfig(config);
@@ -3912,7 +3934,7 @@ export class LocalRunStore {
     const priorMessages = this.buildConversationMessages(sessionId, "", excludeRunId);
     const contextState = normalizeContextState(this.contextStateForModelContext(sessionId));
     const currentPromptMessage = currentPrompt.trim()
-      ? [{ role: "user" as const, content: currentPrompt.trim() }]
+      ? [{ role: "user" as const, content: currentPrompt.trim(), ...(imageBlocks?.length ? { imageBlocks } : {}) }]
       : [];
     const handoffMessages = acceptedPlanHandoff
       ? [acceptedPlanHandoffMessage(acceptedPlanHandoff)]
@@ -4111,7 +4133,12 @@ export class LocalRunStore {
     }
     const assistant = assistantTextForRun(snapshot);
     if (assistant) {
-      messages.push({ role: "assistant", content: assistant });
+      const reasoningContent = assistantReasoningContentForRun(snapshot);
+      messages.push({
+        role: "assistant",
+        content: assistant,
+        ...(reasoningContent ? { reasoningContent } : {}),
+      });
     }
     return messages;
   }
@@ -4149,7 +4176,12 @@ export class LocalRunStore {
       }
       const assistant = assistantTextForRun(turn);
       if (assistant) {
-        messages.push({ role: "assistant", content: assistant });
+        const reasoningContent = assistantReasoningContentForRun(turn);
+        messages.push({
+          role: "assistant",
+          content: assistant,
+          ...(reasoningContent ? { reasoningContent } : {}),
+        });
       }
     }
     if (currentPrompt.trim()) {
@@ -4186,7 +4218,12 @@ export class LocalRunStore {
       }
       const assistant = assistantTextForRun(snapshot);
       if (assistant) {
-        messages.push({ role: "assistant", content: assistant });
+        const reasoningContent = assistantReasoningContentForRun(snapshot);
+        messages.push({
+          role: "assistant",
+          content: assistant,
+          ...(reasoningContent ? { reasoningContent } : {}),
+        });
       }
     }
     if (currentPrompt.trim()) {
