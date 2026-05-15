@@ -17,7 +17,7 @@ export const SessionConfigSchema = z.object({
   defaultProviderId: z.string().min(1).optional(),
   defaultBudget: ResourceBudgetSchema.optional(),
   approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
-  permissionMode: PermissionModeSchema.default("default"),
+  permissionMode: PermissionModeSchema.default("auto_review"),
   tools: z.array(z.string().min(1)).default([]),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
