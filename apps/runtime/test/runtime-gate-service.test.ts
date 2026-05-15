@@ -164,7 +164,7 @@ describe("RuntimeGateService", () => {
 
     const entries = gateService.openSnapshotGates({
       snapshot: currentSnapshot,
-      existingEntryIds: ["run-gates-1:gate:approval"],
+      existingEntryIds: ["run-gates-1:gate:approval-1500"],
     });
 
     expect(entries.map((entry) => entry.id)).toEqual([
@@ -210,7 +210,7 @@ describe("RuntimeGateService", () => {
           },
         },
         {
-          id: "run-gates-1:gate:approval",
+          id: "run-gates-1:gate:approval-1500",
           type: "gate.opened",
           runId: "run-gates-1",
           turnIndex: 4,
@@ -256,7 +256,7 @@ describe("RuntimeGateService", () => {
       planDecisions: [decision],
       existingEntryIds: [
         "run-gates-1:gate:clarify-scope",
-        "run-gates-1:gate:approval",
+        "run-gates-1:gate:approval-1500",
       ],
     });
 
@@ -303,7 +303,7 @@ describe("RuntimeGateService", () => {
       pendingActionIds: currentSnapshot.pendingApprovals,
       pendingToolCallIds: ["tool-write"],
     })).toEqual({
-      id: "run-gates-1:gate:approval",
+      id: "run-gates-1:gate:approval-1500",
       type: "gate.opened",
       runId: "run-gates-1",
       turnIndex: 4,

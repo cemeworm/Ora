@@ -150,8 +150,25 @@ export class RunStreamingSession {
           debugLatency({ label: "flush", elapsedMs: Date.now() - flushStart });
         }
       }
+    } else if (isPassiveAccumulationEvent(event)) {
+      // Passive accumulation (node.updated, context.usage.updated):
+      // publish immediately, lightweight cache, defer ledger flush.
+      const publishStart = debugLatency ? Date.now() : 0;
+      this.publish([event]);
+      if (debugLatency) {
+        debugLatency({ label: "publish", elapsedMs: Date.now() - publishStart });
+      }
+      this.deps.cacheRunDelta?.(this.liveSnapshotValue)
+        ?? this.deps.cacheRun(this.liveSnapshotValue, false);
+      if (this.liveSnapshotValue.events.length - this.ledgeredEventCount >= 64) {
+        const flushStart = debugLatency ? Date.now() : 0;
+        this.flushLedgerEvents();
+        if (debugLatency) {
+          debugLatency({ label: "flush", elapsedMs: Date.now() - flushStart });
+        }
+      }
     } else {
-      // Non-delta: cache and flush before publish so UI sees consistent snapshot.
+      // Durable projection: cache and flush before publish so UI sees consistent snapshot.
       this.deps.cacheRun(this.liveSnapshotValue, shouldFlush);
       if (shouldFlush) {
         const flushStart = debugLatency ? Date.now() : 0;
@@ -171,4 +188,8 @@ export class RunStreamingSession {
 
 function isPureDeltaEvent(event: OraEventEnvelope): boolean {
   return event.type === "message.delta" || event.type === "token.delta";
+}
+
+function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
+  return event.type === "node.updated" || event.type === "context.usage.updated";
 }

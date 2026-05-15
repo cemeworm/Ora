@@ -198,3 +198,22 @@ export function createFailedRunEvent(params: {
     payload: { status: "failed", error: params.error },
   });
 }
+
+export function createInterruptedRunEvent(params: {
+  runId: string;
+  seq: number;
+  createdAt: number;
+  pattern: StateSnapshot["pattern"];
+  reason: string;
+  error?: string;
+}): OraEventEnvelope {
+  return OraEventEnvelopeSchema.parse({
+    id: `${params.runId}:evt-${params.seq}`,
+    runId: params.runId,
+    seq: params.seq,
+    type: "run.interrupted",
+    createdAt: params.createdAt,
+    pattern: params.pattern,
+    payload: { status: "interrupted", reason: params.reason, error: params.error },
+  });
+}

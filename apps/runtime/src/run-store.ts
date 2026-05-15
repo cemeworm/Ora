@@ -130,6 +130,7 @@ import {
 import { CustomAgentFileStore } from "./custom-agents.js";
 import { SystemAgentOverrideFileStore } from "./custom-agents.js";
 import { RuntimeSkillRegistry, RuntimeToolRegistry } from "./harness/capability-registries.js";
+import { ApprovalInterruptError, ClarificationInterruptError, isApprovalInterruptError, isClarificationInterruptError } from "./harness/runtime-interrupts.js";
 import {
   approvedToolContinuationActions,
   type ApprovedFileWriteResumeDeps
@@ -199,6 +200,7 @@ import { RunPersistenceService } from "./run-persistence-service.js";
 import {
   applyStreamingRunEvent,
   createStreamingFailure,
+  createStreamingInterrupt,
   publishRunStream
 } from "./run-streaming.js";
 import { RunStreamingService } from "./run-streaming-service.js";
@@ -1638,19 +1640,34 @@ export class LocalRunStore {
         streamingSession.publish([], cancelled);
         return;
       }
-      const failure = createStreamingFailure({
-        liveSnapshot,
-        runId,
-        pattern: fullConfig.pattern,
-        error,
-        failedAt: this.now(),
-      });
-      liveSnapshot = streamingSession.replaceSnapshot(attachTraceMetadata(failure.snapshot));
+      const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
+      const reason = isClarificationInterruptError(error)
+        ? "clarification_required"
+        : isApprovalInterruptError(error)
+          ? "approval_required"
+          : undefined;
+      const result = isInterrupt
+        ? createStreamingInterrupt({
+            liveSnapshot,
+            runId,
+            pattern: fullConfig.pattern,
+            reason: reason!,
+            error: error instanceof Error ? error.message : String(error),
+            interruptedAt: this.now(),
+          })
+        : createStreamingFailure({
+            liveSnapshot,
+            runId,
+            pattern: fullConfig.pattern,
+            error,
+            failedAt: this.now(),
+          });
+      liveSnapshot = streamingSession.replaceSnapshot(attachTraceMetadata(result.snapshot));
       liveSnapshot = streamingSession.flushLedgerEvents(liveSnapshot.status);
       const projectedSnapshot = this.appendAssistantMessageToLedger(liveSnapshot);
       await this.persistRunWithGeneratedTitle(projectedSnapshot);
       liveSnapshot = streamingSession.replaceSnapshot(projectedSnapshot);
-      streamingSession.publish([failure.event], projectedSnapshot);
+      streamingSession.publish([result.event], projectedSnapshot);
       });
     }, 0);
 
@@ -1823,16 +1840,31 @@ export class LocalRunStore {
           streamingSession.publish([], cancelled);
           return;
         }
-        const failure = createStreamingFailure({
-          liveSnapshot,
-          runId: snapshot.runId,
-          pattern: snapshot.config.pattern,
-          error,
-          failedAt: this.now(),
-        });
+        const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
+        const reason = isClarificationInterruptError(error)
+          ? "clarification_required"
+          : isApprovalInterruptError(error)
+            ? "approval_required"
+            : undefined;
+        const result = isInterrupt
+          ? createStreamingInterrupt({
+              liveSnapshot,
+              runId: snapshot.runId,
+              pattern: snapshot.config.pattern,
+              reason: reason!,
+              error: error instanceof Error ? error.message : String(error),
+              interruptedAt: this.now(),
+            })
+          : createStreamingFailure({
+              liveSnapshot,
+              runId: snapshot.runId,
+              pattern: snapshot.config.pattern,
+              error,
+              failedAt: this.now(),
+            });
         liveSnapshot = await this.runResumeFinalizationService.persistStreamingFailure({
-          snapshot: attachTraceMetadata(failure.snapshot),
-          events: [failure.event],
+          snapshot: attachTraceMetadata(result.snapshot),
+          events: [result.event],
           stream: streamingSession,
         });
       });
@@ -1881,16 +1913,31 @@ export class LocalRunStore {
         streamingSession.publish([], cancelled);
         return;
       }
-      const failure = createStreamingFailure({
-        liveSnapshot,
-        runId: snapshot.runId,
-        pattern: snapshot.config.pattern,
-        error,
-        failedAt: this.now(),
-      });
+      const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
+      const reason = isClarificationInterruptError(error)
+        ? "clarification_required"
+        : isApprovalInterruptError(error)
+          ? "approval_required"
+          : undefined;
+      const result = isInterrupt
+        ? createStreamingInterrupt({
+            liveSnapshot,
+            runId: snapshot.runId,
+            pattern: snapshot.config.pattern,
+            reason: reason!,
+            error: error instanceof Error ? error.message : String(error),
+            interruptedAt: this.now(),
+          })
+        : createStreamingFailure({
+            liveSnapshot,
+            runId: snapshot.runId,
+            pattern: snapshot.config.pattern,
+            error,
+            failedAt: this.now(),
+          });
       liveSnapshot = await this.runResumeFinalizationService.persistStreamingFailure({
-        snapshot: attachTraceMetadata(failure.snapshot),
-        events: [failure.event],
+        snapshot: attachTraceMetadata(result.snapshot),
+        events: [result.event],
         stream: streamingSession,
       });
     });
@@ -2150,6 +2197,27 @@ export class LocalRunStore {
         approvedActionIds,
       });
     } catch (error) {
+      const isInterrupt = isApprovalInterruptError(error) || isClarificationInterruptError(error);
+      if (isInterrupt) {
+        const reason = isClarificationInterruptError(error)
+          ? "clarification_required"
+          : "approval_required";
+        const interrupt = createStreamingInterrupt({
+          liveSnapshot,
+          runId: snapshot.runId,
+          pattern: snapshot.config.pattern,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+          interruptedAt: this.now(),
+        });
+        liveSnapshot = await this.runResumeFinalizationService.persistInterrupted({
+          snapshot: attachTraceMetadata(interrupt.snapshot),
+          original: snapshot,
+          clarificationPatch,
+          approvedActionIds,
+        });
+        return liveSnapshot;
+      }
       const failure = createStreamingFailure({
         liveSnapshot,
         runId: snapshot.runId,
@@ -3544,7 +3612,9 @@ export class LocalRunStore {
     flush: boolean,
     options: { titleOverride?: string; deferInitialTitle?: boolean } = {}
   ): void {
-    snapshot = this.normalizeSnapshotForPersistence(snapshot);
+    snapshot = flush
+      ? this.normalizeSnapshotForPersistence(snapshot)
+      : snapshot;
     this.runs.set(snapshot.runId, snapshot);
     if (snapshot.sessionId && !isUnadoptedBranchCandidate(snapshot)) {
       const useLedgerHotPathBypass = this.isLedgerBackedSession(snapshot.sessionId)
