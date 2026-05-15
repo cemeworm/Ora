@@ -1904,6 +1904,7 @@ describe("desktop workbench state", () => {
       activeSnapshot: getActiveSnapshot(selected.runLifecycle),
       turnSnapshots: {},
       selectedSessionId: sessionId,
+      preservedSettledSnapshot: undefined,
     })[runId]?.input.prompt).toBe(prompt);
   });
 
@@ -3588,6 +3589,7 @@ describe("deriveRenderableTurnSnapshots", () => {
       activeSnapshot: snapshot,
       turnSnapshots: {},
       selectedSessionId: sessionId,
+      preservedSettledSnapshot: undefined,
     });
 
     expect(result[runId]).toBeDefined();
@@ -3602,6 +3604,7 @@ describe("deriveRenderableTurnSnapshots", () => {
       activeSnapshot: snapshot,
       turnSnapshots: {},
       selectedSessionId: sessionId,
+      preservedSettledSnapshot: undefined,
     });
 
     expect(result[runId]).toBeUndefined();
@@ -3615,6 +3618,7 @@ describe("deriveRenderableTurnSnapshots", () => {
       activeSnapshot: snapshot,
       turnSnapshots: {},
       selectedSessionId: sessionId,
+      preservedSettledSnapshot: undefined,
     });
 
     expect(result[runId]).toBeDefined();
@@ -3629,6 +3633,7 @@ describe("deriveRenderableTurnSnapshots", () => {
       activeSnapshot: snapshot,
       turnSnapshots: {},
       selectedSessionId: sessionId,
+      preservedSettledSnapshot: undefined,
     });
 
     expect(result[runId]).toBeUndefined();

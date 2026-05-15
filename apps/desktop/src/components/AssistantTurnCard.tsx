@@ -1,4 +1,4 @@
-import { memo, useState, type ReactNode } from "react";
+import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Check,
@@ -7,6 +7,7 @@ import {
   Copy,
   FileImage,
   FileText,
+  FolderOpen,
   ListTodo,
   LoaderCircle,
   MessageSquareWarning,
@@ -47,6 +48,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { ContextMenu, type ContextMenuItem } from "./ui/context-menu";
 
 interface AssistantTurnCardProps {
   content: string;
@@ -198,12 +200,12 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
           {turn?.hasProposedPlan ? (
             <PlanCard
               planSteps={planList}
-              planContent={content}
+              planContent={turn?.proposedPlanStatus ? content : undefined}
               isStreaming={turn.activeLoadingTarget?.kind === "proposed_plan"}
             />
           ) : null}
 
-          {turn?.hasProposedPlan || (hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
+          {turn?.proposedPlanStatus || (hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={bodyContent}
@@ -762,50 +764,97 @@ function StepStatusIcon({ step }: { step: TurnProcessStep }) {
 
 function ArtifactCard({
   artifact,
+  filePath,
+  rootPath,
   onOpenArtifact,
 }: {
   artifact: TurnArtifactAttachment;
+  filePath?: string;
+  rootPath?: string;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
+  const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number }>({
+    open: false,
+    x: 0,
+    y: 0,
+  });
+
+  const absolutePath = useMemo(() => {
+    if (!rootPath || !filePath) return undefined;
+    return rootPath.replace(/\/+$/, "") + "/" + filePath.replace(/^\/+/, "");
+  }, [rootPath, filePath]);
+
+  const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!absolutePath) return [];
+    return [
+      {
+        label: "复制文件绝对路径",
+        icon: <FolderOpen size={14} />,
+        onClick: () => {
+          void navigator.clipboard.writeText(absolutePath);
+        },
+      },
+    ];
+  }, [absolutePath]);
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      if (!absolutePath) return;
+      e.preventDefault();
+      setContextMenu({ open: true, x: e.clientX, y: e.clientY });
+    },
+    [absolutePath],
+  );
+
   return (
-    <button
-      type="button"
-      onClick={() => onOpenArtifact?.(artifact.id)}
-      className="block w-full text-left"
-      disabled={!onOpenArtifact}
-    >
-      <Artifact
-        className={cn(
-          "transition",
-          onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]",
-        )}
+    <>
+      <button
+        type="button"
+        onClick={() => onOpenArtifact?.(artifact.id)}
+        onContextMenu={handleContextMenu}
+        className="block w-full text-left"
+        disabled={!onOpenArtifact}
       >
-        <ArtifactHeader>
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground">
-              {artifact.previewable ? (
-                <FileImage size={18} />
-              ) : (
-                <FileText size={18} />
-              )}
+        <Artifact
+          className={cn(
+            "transition",
+            onOpenArtifact && "hover:bg-accent/25 active:scale-[0.995]",
+          )}
+        >
+          <ArtifactHeader>
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted/35 text-muted-foreground">
+                {artifact.previewable ? (
+                  <FileImage size={18} />
+                ) : (
+                  <FileText size={18} />
+                )}
+              </div>
+              <div className="min-w-0">
+                <ArtifactTitle className="truncate">
+                  {artifact.label}
+                </ArtifactTitle>
+                <ArtifactDescription>
+                  {artifact.kind} - {artifact.mimeType}
+                </ArtifactDescription>
+              </div>
             </div>
-            <div className="min-w-0">
-              <ArtifactTitle className="truncate">
-                {artifact.label}
-              </ArtifactTitle>
-              <ArtifactDescription>
-                {artifact.kind} - {artifact.mimeType}
-              </ArtifactDescription>
-            </div>
-          </div>
-          <ArtifactActions>
-            <span className="inline-flex items-center rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground">
-              Preview
-            </span>
-          </ArtifactActions>
-        </ArtifactHeader>
-      </Artifact>
-    </button>
+            <ArtifactActions>
+              <span className="inline-flex items-center rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground">
+                Preview
+              </span>
+            </ArtifactActions>
+          </ArtifactHeader>
+        </Artifact>
+      </button>
+      <ContextMenu
+        open={contextMenu.open}
+        x={contextMenu.x}
+        y={contextMenu.y}
+        items={contextMenuItems}
+        onClose={() => setContextMenu((prev) => ({ ...prev, open: false }))}
+      />
+    </>
   );
 }
 

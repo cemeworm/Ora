@@ -159,10 +159,63 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 
+function contentHash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function writeToolContentKey(call: RuntimeToolCall): string | undefined {
+  const filePath = stringArg(call.args.path);
+
+  if (call.tool === "file.patch") {
+    const edits = call.args.edits;
+    if (Array.isArray(edits) && edits.length > 0) {
+      const payload = edits
+        .map((e: unknown) => {
+          const edit = e as Record<string, unknown>;
+          return typeof edit?.oldText === "string" ? edit.oldText : "";
+        })
+        .join("\0");
+      return `file.patch:path=${filePath || "?"}:h=${contentHash(payload)}`;
+    }
+    // legacy search + replace
+    const search = stringArg(call.args.search);
+    if (search) {
+      return `file.patch:path=${filePath || "?"}:h=${contentHash(search)}`;
+    }
+    return undefined;
+  }
+
+  if (call.tool === "file.write") {
+    const content = stringArg(call.args.content);
+    if (content) {
+      return `file.write:path=${filePath || "?"}:h=${contentHash(content)}`;
+    }
+    return undefined;
+  }
+
+  if (call.tool === "file.apply_patch") {
+    const patch = stringArg(call.args.patch);
+    if (patch) {
+      return `file.apply_patch:h=${contentHash(patch)}`;
+    }
+    return undefined;
+  }
+
+  return undefined;
+}
+
 export function stableKeyForRuntimeTool(call: RuntimeToolCall): string {
   const cacheKey = cacheKeyForRuntimeTool(call);
   if (cacheKey) {
     return cacheKey;
+  }
+  const writeKey = writeToolContentKey(call);
+  if (writeKey) {
+    return writeKey;
   }
   const salientArgs = Object.fromEntries(
     ["path", "url", "query", "command", "pattern", "glob", "cmd", "name", "include"]

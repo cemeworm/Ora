@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cacheKeyForRuntimeTool,
   invalidatesRuntimeToolCache,
+  stableKeyForRuntimeTool,
 } from "../src/harness/runtime-tool-loop.js";
 
 describe("runtime tool loop scheduling helpers", () => {
@@ -45,5 +46,72 @@ describe("runtime tool loop scheduling helpers", () => {
     expect(invalidatesRuntimeToolCache({ tool: "skills.update", args: {} })).toBe(true);
     expect(invalidatesRuntimeToolCache({ tool: "file.read", args: {} })).toBe(false);
     expect(invalidatesRuntimeToolCache({ tool: "web.search", args: {} })).toBe(false);
+  });
+});
+
+describe("stableKeyForRuntimeTool", () => {
+  it("produces different keys for same-file file.patch with different oldText", () => {
+    const key1 = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/state.tsx", edits: [{ oldText: "permissionMode", newText: "mode" }] },
+    });
+    const key2 = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/state.tsx", edits: [{ oldText: "sessionPermissionModes", newText: "modes" }] },
+    });
+    expect(key1).not.toBe(key2);
+  });
+
+  it("produces same key for identical edits (deterministic)", () => {
+    const key1 = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/state.tsx", edits: [{ oldText: "foo", newText: "bar" }] },
+    });
+    const key2 = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/state.tsx", edits: [{ oldText: "foo", newText: "baz" }] },
+    });
+    expect(key1).toBe(key2);
+  });
+
+  it("produces different keys for file.write with different content", () => {
+    const key1 = stableKeyForRuntimeTool({
+      tool: "file.write",
+      args: { path: "src/a.ts", content: "console.log('a')" },
+    });
+    const key2 = stableKeyForRuntimeTool({
+      tool: "file.write",
+      args: { path: "src/a.ts", content: "console.log('b')" },
+    });
+    expect(key1).not.toBe(key2);
+  });
+
+  it("does not affect read-only tool keys", () => {
+    const key = stableKeyForRuntimeTool({
+      tool: "file.read",
+      args: { path: "src/index.ts" },
+    });
+    expect(key).toBe("file.read:src/index.ts");
+  });
+
+  it("falls back to salientArgs when no edit content present", () => {
+    const key = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/a.ts" },
+    });
+    expect(key).toContain("file.patch:");
+    expect(key).toContain("src/a.ts");
+  });
+
+  it("handles legacy search/replace format for file.patch", () => {
+    const key1 = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/a.ts", search: "oldCode", replace: "newCode" },
+    });
+    const key2 = stableKeyForRuntimeTool({
+      tool: "file.patch",
+      args: { path: "src/a.ts", search: "differentOldCode", replace: "newCode" },
+    });
+    expect(key1).not.toBe(key2);
   });
 });

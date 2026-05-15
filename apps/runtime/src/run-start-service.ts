@@ -44,7 +44,7 @@ export class RunStartService {
       createdAt: params.input.createdAt ?? this.deps.now(),
     }, session);
     const resolved = await resolveModeSelection(params.config, input, session, this.deps.modeSelectionDeps());
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.deps.modeSelectionDeps());
+    const fullConfig = await withMemoryPrompt(resolved.fullConfig, input, session, this.deps.modeSelectionDeps());
     const runId = this.deps.nextRunId();
     const turnIndex = this.deps.nextTurnIndex(session.sessionId);
     return {

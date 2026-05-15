@@ -65,6 +65,7 @@ export class FileLongTermMemoryStore {
   private readonly memoryPath: string;
   private cached: LongTermMemoryProfile | undefined;
   private cachedMtime: number | undefined;
+  private lastSavedLastUpdated: string | undefined;
 
   constructor(dataDir: string, projectId?: string) {
     this.dataDir = dataDir;
@@ -82,6 +83,7 @@ export class FileLongTermMemoryStore {
       const empty = createEmptyLongTermMemory();
       this.cached = empty;
       this.cachedMtime = undefined;
+      this.lastSavedLastUpdated = undefined;
       return empty;
     }
 
@@ -89,8 +91,23 @@ export class FileLongTermMemoryStore {
       const parsed = LongTermMemoryProfileSchema.parse(JSON.parse(fs.readFileSync(this.memoryPath, "utf8")));
       this.cached = parsed;
       this.cachedMtime = mtime;
+      this.lastSavedLastUpdated = parsed.lastUpdated;
       return parsed;
-    } catch {
+    } catch (primaryError) {
+      console.error(`[memory] Failed to parse ${this.memoryPath}:`, primaryError instanceof Error ? primaryError.message : primaryError);
+      // Try reading from backup file before falling back to empty
+      const backupPath = this.backupPath();
+      if (fs.existsSync(backupPath)) {
+        try {
+          const backupParsed = LongTermMemoryProfileSchema.parse(JSON.parse(fs.readFileSync(backupPath, "utf8")));
+          console.error(`[memory] Recovered from backup ${backupPath}`);
+          this.cached = backupParsed;
+          this.cachedMtime = mtime;
+          return backupParsed;
+        } catch (backupError) {
+          console.error(`[memory] Backup ${backupPath} also corrupted:`, backupError instanceof Error ? backupError.message : backupError);
+        }
+      }
       const empty = createEmptyLongTermMemory();
       this.cached = empty;
       this.cachedMtime = mtime;
@@ -101,9 +118,34 @@ export class FileLongTermMemoryStore {
   save(memory: LongTermMemoryProfile): LongTermMemoryProfile {
     const parsed = LongTermMemoryProfileSchema.parse(memory);
     fs.mkdirSync(path.dirname(this.memoryPath), { recursive: true });
+
+    // D11: CAS — check if file was modified externally since our last read
+    if (this.lastSavedLastUpdated && fs.existsSync(this.memoryPath)) {
+      try {
+        const onDisk = LongTermMemoryProfileSchema.parse(JSON.parse(fs.readFileSync(this.memoryPath, "utf8")));
+        if (onDisk.lastUpdated !== this.lastSavedLastUpdated) {
+          // File was modified externally — merge facts from on-disk version
+          const merged = mergeExternalFacts(parsed, onDisk);
+          parsed.facts = merged;
+        }
+      } catch {
+        // If we can't read on-disk, proceed with our version (best effort)
+      }
+    }
+
+    // Backup existing file before overwriting
+    const backupPath = this.backupPath();
+    if (fs.existsSync(this.memoryPath)) {
+      try {
+        fs.copyFileSync(this.memoryPath, backupPath);
+      } catch {
+        // Backup failure is non-fatal — best effort
+      }
+    }
     const tempPath = `${this.memoryPath}.${Math.random().toString(16).slice(2)}.tmp`;
     fs.writeFileSync(tempPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
     fs.renameSync(tempPath, this.memoryPath);
+    this.lastSavedLastUpdated = parsed.lastUpdated;
     this.cached = parsed;
     this.cachedMtime = this.fileMtime();
     return parsed;
@@ -119,6 +161,10 @@ export class FileLongTermMemoryStore {
     } catch {
       return undefined;
     }
+  }
+
+  private backupPath(): string {
+    return `${this.memoryPath}.bak`;
   }
 }
 
@@ -193,6 +239,10 @@ export class LongTermMemoryManager {
     return this.store.clear();
   }
 
+  saveProfile(profile: LongTermMemoryProfile): LongTermMemoryProfile {
+    return this.store.save(profile);
+  }
+
   private storeFor(projectId?: string): FileLongTermMemoryStore {
     if (!projectId) {
       return this.store;
@@ -246,13 +296,14 @@ export class LongTermMemoryManager {
     snapshot: StateSnapshot,
     assistantText = "",
     policy: Partial<ModeMemoryPolicy> = {},
+    conversationMessages?: MemoryConversationMessage[],
   ): { memory: LongTermMemoryProfile; factsAdded: LongTermMemoryFact[] } {
     if (snapshot.config.metadata.disableMemoryUpdate === true || snapshot.input.context?.disableMemoryUpdate === true) {
       return { memory: this.get(), factsAdded: [] };
     }
 
     const effectivePolicy = { factConfidenceThreshold: 0.7, maxFacts: MAX_FACTS, ...policy };
-    const candidates = memoryCandidatesFromRun(snapshot, assistantText, this.nowIso())
+    const candidates = memoryCandidatesFromRun(snapshot, assistantText, this.nowIso(), conversationMessages)
       .filter((fact) => fact.confidence >= effectivePolicy.factConfidenceThreshold);
     if (candidates.length === 0) {
       return { memory: this.get(), factsAdded: [] };
@@ -267,6 +318,19 @@ export class LongTermMemoryManager {
       if (!key || existing.has(key) || sourceSeen.has(key)) {
         continue;
       }
+      // D1: n-gram Jaccard similarity dedup against existing facts
+      const candidateNgrams = ngramSet(key, 2);
+      let isDuplicate = false;
+      for (const fact of current.facts) {
+        const existingNgrams = ngramSet(fact.content.trim().toLowerCase(), 2);
+        if (jaccardSimilarity(candidateNgrams, existingNgrams) > 0.7) {
+          isDuplicate = true;
+          break;
+        }
+      }
+      if (isDuplicate) {
+        continue;
+      }
       factsAdded.push(candidate);
       existing.add(key);
     }
@@ -277,7 +341,12 @@ export class LongTermMemoryManager {
 
     const now = this.nowIso();
     const facts = [...current.facts, ...factsAdded]
-      .sort((left, right) => right.confidence - left.confidence || right.createdAt.localeCompare(left.createdAt))
+      .sort((left, right) => {
+        const leftScore = evictionScore(left, now);
+        const rightScore = evictionScore(right, now);
+        if (rightScore !== leftScore) return rightScore - leftScore;
+        return right.createdAt.localeCompare(left.createdAt);
+      })
       .slice(0, effectivePolicy.maxFacts);
     const memory = LongTermMemoryProfileSchema.parse({
       ...current,
@@ -306,7 +375,7 @@ export class LongTermMemoryManager {
       return { memory: this.get(), factsAdded: [] };
     }
     if (task.policy.updater !== "provider" || !task.invokeModel) {
-      return this.updateFromRun(task.snapshot, task.assistantText, task.policy);
+      return this.updateFromRun(task.snapshot, task.assistantText, task.policy, task.conversationMessages);
     }
 
     const current = this.get();
@@ -315,19 +384,34 @@ export class LongTermMemoryManager {
       return { memory: current, factsAdded: [] };
     }
 
-    try {
-      const prompt = buildMemoryUpdatePrompt(current, conversation);
-      const responseText = await task.invokeModel({
-        prompt,
-        messages: [{ role: "user", content: prompt }],
-        system: "You are Ora's memory updater. Return only valid JSON.",
-        maxTokens: 1800,
-      });
-      const patch = parseMemoryPatch(responseText);
-      return this.applyProviderPatch(current, patch, task.snapshot.runId, task.policy);
-    } catch {
-      return this.updateFromRun(task.snapshot, task.assistantText, task.policy);
+    const MAX_RETRIES = 2;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const prompt = buildMemoryUpdatePrompt(current, conversation);
+        const responseText = await task.invokeModel({
+          prompt,
+          messages: [{ role: "user", content: prompt }],
+          system: "You are Ora's memory updater. Return only valid JSON.",
+          maxTokens: 1800,
+        });
+        const patch = parseMemoryPatch(responseText);
+        return this.applyProviderPatch(current, patch, task.snapshot.runId, task.policy);
+      } catch (error) {
+        lastError = error;
+        const isRetryable = isRetryableProviderError(error);
+        if (!isRetryable || attempt === MAX_RETRIES) {
+          console.error(
+            `[memory] Provider update failed (${isRetryable ? "retryable, exhausted retries" : "non-retryable"}):`,
+            error instanceof Error ? error.message : error,
+          );
+          break;
+        }
+        // Exponential backoff: 500ms, 1000ms
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
     }
+    return this.updateFromRun(task.snapshot, task.assistantText, task.policy);
   }
 
   createRunMemoryRecords(snapshot: StateSnapshot, facts: LongTermMemoryFact[]): MemoryRecord[] {
@@ -394,6 +478,19 @@ export class LongTermMemoryManager {
       if (!content || confidence < policy.factConfidenceThreshold || existingKeys.has(key) || TEMPORARY_RE.test(content)) {
         continue;
       }
+      // D1: n-gram Jaccard similarity dedup against existing facts
+      const candidateNgrams = ngramSet(key, 2);
+      let isDuplicate = false;
+      for (const existingFact of existingFacts) {
+        const existingNgrams = ngramSet(existingFact.content.trim().toLowerCase(), 2);
+        if (jaccardSimilarity(candidateNgrams, existingNgrams) > 0.7) {
+          isDuplicate = true;
+          break;
+        }
+      }
+      if (isDuplicate) {
+        continue;
+      }
       const category = normalizeCategory(fact.category);
       const nextFact = createFact({
         content,
@@ -410,34 +507,83 @@ export class LongTermMemoryManager {
     const memory = LongTermMemoryProfileSchema.parse({
       ...next,
       facts: [...existingFacts, ...factsAdded]
-        .sort((left, right) => right.confidence - left.confidence || right.createdAt.localeCompare(left.createdAt))
+        .sort((left, right) => {
+          const leftScore = evictionScore(left, now);
+          const rightScore = evictionScore(right, now);
+          if (rightScore !== leftScore) return rightScore - leftScore;
+          return right.createdAt.localeCompare(left.createdAt);
+        })
         .slice(0, policy.maxFacts),
     });
     return { memory: this.store.save(memory), factsAdded };
   }
 }
 
-function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string, now: string): LongTermMemoryFact[] {
+function isRetryableProviderError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    // Timeout and network errors are retryable
+    if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("econnreset") || msg.includes("econnrefused") || msg.includes("enotfound") || msg.includes("fetch failed") || msg.includes("network")) {
+      return true;
+    }
+  }
+  // JSON parse errors, schema validation errors, etc. are not retryable
+  return false;
+}
+
+function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string, now: string, conversationMessages?: MemoryConversationMessage[]): LongTermMemoryFact[] {
   const prompt = snapshot.input.prompt.trim();
   if (!prompt || TEMPORARY_RE.test(prompt)) {
     return [];
   }
   const candidates: LongTermMemoryFact[] = [];
+  const seenContent = new Set<string>();
+
+  const addCandidate = (sentence: string, category: LongTermMemoryFactCategory, isCorrection: boolean) => {
+    const content = normalizeFactContent(sentence);
+    const key = content.trim().toLowerCase();
+    if (seenContent.has(key)) return;
+    seenContent.add(key);
+    candidates.push(createFact({
+      content,
+      category,
+      confidence: isCorrection ? 0.95 : 0.85,
+      source: snapshot.runId,
+      now,
+      sourceError: isCorrection ? errorFromAssistant(assistantText) : undefined,
+    }));
+  };
+
+  // Extract from primary prompt
   const sentences = splitSentences(prompt).filter((sentence) => sentence.length >= 8);
   for (const sentence of sentences) {
     const category = categoryForText(sentence);
-    if (!category) {
-      continue;
-    }
-    candidates.push(createFact({
-      content: normalizeFactContent(sentence),
-      category,
-      confidence: category === "correction" ? 0.95 : 0.85,
-      source: snapshot.runId,
-      now,
-      sourceError: category === "correction" ? errorFromAssistant(assistantText) : undefined,
-    }));
+    if (!category) continue;
+    addCandidate(sentence, category, category === "correction");
   }
+
+  // D7: Extract from subsequent user messages in conversation
+  if (conversationMessages) {
+    const userMessages = conversationMessages.filter((m) => m.role === "user");
+    // Skip the first message if it matches the prompt (avoid double extraction)
+    const subsequentMessages = userMessages.length > 1 ? userMessages.slice(1) : [];
+    for (const message of subsequentMessages) {
+      const text = message.content.trim();
+      if (!text || TEMPORARY_RE.test(text)) continue;
+      const msgSentences = splitSentences(text).filter((s) => s.length >= 8);
+      for (const sentence of msgSentences) {
+        // Only extract corrections and reinforced preferences from subsequent messages
+        if (CORRECTION_RE.test(sentence)) {
+          addCandidate(sentence, "correction", true);
+        } else if (MEMORY_INTENT_RE.test(sentence) && REINFORCEMENT_RE.test(sentence)) {
+          addCandidate(sentence, "behavior", false);
+        } else if (MEMORY_INTENT_RE.test(sentence) && /偏好|希望|默认|prefer|always|never|不要|下次|以后/gim.test(sentence)) {
+          addCandidate(sentence, "preference", false);
+        }
+      }
+    }
+  }
+
   return candidates;
 }
 
@@ -610,4 +756,54 @@ function hashId(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+// D1: n-gram set for Jaccard similarity dedup
+function ngramSet(text: string, n: number): Set<string> {
+  if (text.length < n) return new Set([text]);
+  const ngrams = new Set<string>();
+  for (let i = 0; i <= text.length - n; i++) {
+    ngrams.add(text.slice(i, i + n));
+  }
+  return ngrams;
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const item of a) {
+    if (b.has(item)) intersection += 1;
+  }
+  const union = a.size + b.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+// D2: composite eviction score = confidence × recencyDecay
+function evictionScore(fact: LongTermMemoryFact, nowIso: string): number {
+  const updated = fact.updatedAt ?? fact.createdAt;
+  const recencyDecay = computeRecencyDecay(updated, nowIso);
+  return fact.confidence * recencyDecay;
+}
+
+function computeRecencyDecay(isoDate: string, nowIso: string): number {
+  const then = Date.parse(isoDate);
+  const now = Date.parse(nowIso);
+  if (!Number.isFinite(then) || !Number.isFinite(now)) return 0.5;
+  const ageDays = Math.max(0, (now - then) / 86_400_000);
+  // Exponential decay: half-life of ~90 days
+  return Math.exp(-0.0077 * ageDays);
+}
+
+// D11: merge facts from external write that happened between our read and save
+function mergeExternalFacts(ours: LongTermMemoryProfile, theirs: LongTermMemoryProfile): LongTermMemoryFact[] {
+  const ourIds = new Set(ours.facts.map((f) => f.id));
+  // Keep all our facts, plus any facts from external write that we don't have
+  const merged = [...ours.facts];
+  for (const fact of theirs.facts) {
+    if (!ourIds.has(fact.id)) {
+      merged.push(fact);
+    }
+  }
+  return merged;
 }
