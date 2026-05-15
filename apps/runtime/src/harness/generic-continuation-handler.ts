@@ -9,6 +9,7 @@ const GENERIC_CONTINUABLE_TOOL_IDS = new Set<string>([
   "skills.create",
   "skills.update",
   "skills.setEnabled",
+  "skills.patch",
   "mcp.call",
   "package.promote",
   "package.switch",

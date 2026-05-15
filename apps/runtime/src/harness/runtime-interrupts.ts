@@ -123,7 +123,7 @@ function stableSingleApprovalScopeKey(action: ApprovedResumeAction): string | un
 }
 
 function stableBatchApprovalScopeKey(action: ApprovedResumeAction): string | undefined {
-  if (action.type !== "skills.create") {
+  if (action.type !== "skills.create" && action.type !== "skills.patch") {
     return undefined;
   }
   return stableJson({

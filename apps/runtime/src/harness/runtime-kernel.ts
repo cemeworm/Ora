@@ -607,6 +607,7 @@ const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
   "skills.create",
   "skills.update",
   "skills.setEnabled",
+  "skills.patch",
 ]);
 
 function modeProgressFinalizationError(
@@ -2076,6 +2077,8 @@ export async function executeRuntimeKernel(
           actionId:
             isApprovalInterruptError(error) ? error.actionId : undefined,
         });
+        skillRegistry.flushTelemetry();
+        skillRegistry.evaluateCuratorIfDue();
         return kernelRuntimeContext.assembleFinalSnapshot({
           status: "interrupted",
           input,
@@ -2093,7 +2096,7 @@ export async function executeRuntimeKernel(
             index: 0,
             now: now(),
             eventSeq: kernelRuntimeContext.eventCount(),
-            stateHash: "",
+            stateHash: undefined,
           }),
           previousContinuation: continuationWithActiveFrameStatus("awaiting_model") ?? options.resumeState?.continuation,
           conversationCursor: options.resumeState?.conversation.length ?? 0,
@@ -2132,6 +2135,8 @@ export async function executeRuntimeKernel(
     };
     assertRunCanBecomeTerminal(resumeAssertInput);
 
+    skillRegistry.flushTelemetry();
+    skillRegistry.evaluateCuratorIfDue();
     emit("run.done", { status: "succeeded", output });
     const checkpoint = createResumeCheckpoint({
       runId,
@@ -2671,6 +2676,9 @@ export async function executeRuntimeKernel(
       actionLedger,
     },
   })).run();
+
+  skillRegistry.flushTelemetry();
+  skillRegistry.evaluateCuratorIfDue();
 
   return {
     snapshot,

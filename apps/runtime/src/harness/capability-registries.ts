@@ -26,6 +26,7 @@ import {
   type ToolRegistry,
 } from "@cemeworm/shared";
 import { SkillFileStore, type SkillFileStoreOptions } from "../skills.js";
+import { SkillCurator, DEFAULT_CURATOR_CONFIG, type SkillCuratorConfig } from "../skill-curator.js";
 
 export interface RuntimeToolResultPreview {
   kind: string;
@@ -154,6 +155,10 @@ export class RuntimeToolRegistry {
 
 export class RuntimeSkillRegistry {
   private readonly store: SkillFileStore;
+  private readonly telemetryBuffer = new Map<string, { useCount: number; viewCount: number; patchCount: number; lastUsedAt: number }>();
+  private readonly curatorConfig: SkillCuratorConfig;
+  private runCountSinceLastCuratorEval = 0;
+  private static readonly CURATOR_EVAL_INTERVAL = 10;
 
   constructor(options: Partial<SkillFileStoreOptions> | SkillFileStore = {}) {
     this.store = options instanceof SkillFileStore
@@ -165,6 +170,7 @@ export class RuntimeSkillRegistry {
         clock: options.clock,
         bundledSkills: options.bundledSkills ?? MVP_SKILLS,
       });
+    this.curatorConfig = { ...DEFAULT_CURATOR_CONFIG };
   }
 
   list(params?: SkillListParams | CoordinationPattern): SkillDescriptor[] {
@@ -213,7 +219,53 @@ export class RuntimeSkillRegistry {
     return this.store.setEnabled(params);
   }
 
+  patch(params: unknown): SkillDetail {
+    return this.store.patchContent(params);
+  }
+
+  recordTelemetry(name: string, event: "use" | "view" | "patch"): void {
+    const existing = this.telemetryBuffer.get(name) ?? { useCount: 0, viewCount: 0, patchCount: 0, lastUsedAt: 0 };
+    if (event === "use") existing.useCount++;
+    if (event === "view") existing.viewCount++;
+    if (event === "patch") existing.patchCount++;
+    existing.lastUsedAt = Date.now();
+    this.telemetryBuffer.set(name, existing);
+  }
+
+  flushTelemetry(): void {
+    if (this.telemetryBuffer.size === 0) return;
+    this.store.flushTelemetryBatch(this.telemetryBuffer);
+    this.telemetryBuffer.clear();
+  }
+
+  evaluateCurator(): void {
+    const curator = new SkillCurator({
+      config: this.curatorConfig,
+      applyTransition: (name, lifecycle) => {
+        this.store.transitionLifecycle(name, lifecycle);
+      },
+    });
+    const transitions = curator.evaluate(this.list());
+    curator.applyTransitions(transitions);
+  }
+
+  evaluateCuratorIfDue(): void {
+    this.runCountSinceLastCuratorEval++;
+    if (this.runCountSinceLastCuratorEval >= RuntimeSkillRegistry.CURATOR_EVAL_INTERVAL) {
+      this.runCountSinceLastCuratorEval = 0;
+      this.evaluateCurator();
+    }
+  }
+
   promptSnippets(skillIds: string[]): string[] {
+    if (skillIds.length === 0) {
+      return [];
+    }
+    const wanted = new Set(skillIds);
+    const matched = this.list().filter((skill) => skill.enabled && (wanted.has(skill.id) || wanted.has(skill.name)));
+    for (const skill of matched) {
+      this.recordTelemetry(skill.name, "use");
+    }
     return this.store.promptSnippets(skillIds);
   }
 

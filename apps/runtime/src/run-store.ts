@@ -1411,6 +1411,10 @@ export class LocalRunStore {
     return this.skillRegistry.setEnabled(params);
   }
 
+  patchSkill(params: unknown): SkillDetail {
+    return this.skillRegistry.patch(params);
+  }
+
   async startRun(params: unknown): Promise<RunHandle> {
     const parsed = StartRunParamsSchema.parse(params);
     const {

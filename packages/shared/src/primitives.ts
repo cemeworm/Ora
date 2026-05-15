@@ -63,7 +63,7 @@ export type CompletionStopReason = z.infer<typeof CompletionStopReasonSchema>;
 
 export const ModeCompletionPolicySchema = z.object({
   preset: CompletionPolicyPresetSchema.default("balanced"),
-  maxRepeatedToolCalls: z.number().int().positive().max(50).default(2),
+  maxRepeatedToolCalls: z.number().int().positive().max(50).default(3),
   forceFinalOnBudgetExhausted: z.boolean().default(true),
   forceFinalOnRepeatedTool: z.boolean().default(true),
   allowToolCallsAfterUsefulResult: z.boolean().default(true),
@@ -110,7 +110,7 @@ export const COMPLETION_POLICY_PRESETS: Record<CompletionPolicyPreset, ModeCompl
   }),
   balanced: ModeCompletionPolicySchema.parse({
     preset: "balanced",
-    maxRepeatedToolCalls: 2,
+    maxRepeatedToolCalls: 3,
     forceFinalOnBudgetExhausted: true,
     forceFinalOnRepeatedTool: true,
     allowToolCallsAfterUsefulResult: true,

@@ -12,6 +12,7 @@ export type AgentPromptSectionId =
   | "clarification_context"
   | "memory_context"
   | "task_intent_context"
+  | "skills_guidance"
   | "available_skills"
   | "tool_protocol"
   | "skills"
@@ -56,6 +57,7 @@ export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAg
     promptSection("agent_profile", "Agent Profile", profileSection(input.agentId, input.profile, input.customAgentId)),
     promptSection("operating_protocol", "Operating Protocol", operatingProtocolSection()),
     promptSection("tool_protocol", "Tool Protocol", input.toolProtocol),
+    promptSection("skills_guidance", "Skills Guidance", skillsGuidanceSection()),
     promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
     ...skillSections(input.skillSnippets),
     promptSection("mcp_deferred_tools", "MCP / Deferred Tools", mcpDeferredToolsSection(input.toolIds)),
@@ -251,6 +253,26 @@ function buildSkillSystemBlock(usageRule: string, body: string): string {
   ].join("\n");
 }
 
+function skillsGuidanceSection(): string {
+  return [
+    "<skills_guidance>",
+    "You can create skills to capture reusable workflows. Create a skill when:",
+    "1. You complete a complex task (5+ tool calls) with a repeatable pattern.",
+    "2. You recover from an error and discover an effective approach.",
+    "3. The user corrects your approach and you learn the correct way.",
+    "4. You discover a non-trivial workflow worth reusing.",
+    "",
+    "To create a skill:",
+    "- Use skills.checkName first, then skills.create with provenance=\"background_auto\".",
+    "- Include concrete steps, not abstract guidelines.",
+    "- Only background-created skills are subject to lifecycle management.",
+    "",
+    "To fix a background skill you find outdated during use:",
+    "- Use skills.patch with oldContent/newContent for targeted fixes.",
+    "</skills_guidance>",
+  ].join("\n");
+}
+
 function operatingProtocolSection(): string {
   return [
     "Ora operating protocol:",
@@ -284,6 +306,7 @@ const STABLE_PROMPT_PREFIX_SECTION_IDS = new Set<AgentPromptSectionId>([
   "agent_profile",
   "operating_protocol",
   "tool_protocol",
+  "skills_guidance",
   "available_skills",
   "skills",
   "mcp_deferred_tools",
