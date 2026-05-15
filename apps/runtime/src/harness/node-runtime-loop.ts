@@ -702,7 +702,11 @@ export async function runNodeRuntimeLoop(
       return { kind: "complete", response: currentResponse };
     }
 
-    const guardFingerprint = `${guardResult.reason}:${guardResult.detail}`;
+    // Strip parenthesized IDs (e.g. "(action-xxx)") from detail so the
+    // guard-cycle counter isn't reset when the model re-proposes the same
+    // logical action with a new action ID — which otherwise creates an
+    // unbounded approval→execute→guard→re-approval loop.
+    const guardFingerprint = `${guardResult.reason}:${guardResult.detail.replace(/\s*\([^)]+\)/g, "")}`;
     const guardCycleCount = (guardCycleCounts.get(guardFingerprint) ?? 0) + 1;
     guardCycleCounts.set(guardFingerprint, guardCycleCount);
     if (guardCycleCount > 3) {

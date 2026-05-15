@@ -373,20 +373,40 @@ export async function completeApprovedToolContinuation(
           ],
         });
       }
+      // Track the failure so the follow-up message and failure cap can reference it.
+      toolResults.push({
+        toolId: action.type,
+        path: (action.input as Record<string, unknown>)?.path,
+        output: detail,
+      });
       append("action.updated", { actionId: action.id, status: "failed", record: failed });
-      append("run.failed", { status: "failed", error: detail });
-      updateContinuationStatus("failed");
-      return {
-        kind: "completed",
-        snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
-          ...working,
-          status: "failed",
-          error: detail,
-          activeAgents: [],
-          updatedAt: deps.now(),
-        })),
-      };
+      // Do NOT emit run.failed here — instead fall through to the guard
+      // check so the model sees the failure context and can adjust its
+      // approach on the next kernel invocation. A hard per-run failure cap
+      // is enforced at the end of the for-loop.
+      continue;
     }
+  }
+
+  // After all approved tools have been attempted, enforce a hard failure
+  // cap: if ALL of them failed, refuse to continue and let the run terminate
+  // with an actionable diagnostic so the user can intervene.
+  const succeededTools = toolResults.filter((r) => r.toolId !== undefined && !String(r.output ?? "").includes("Error"));
+  if (toolResults.length > 0 && succeededTools.length === 0) {
+    const allFailures = toolResults.map((r) => `${r.toolId}: ${String(r.output).slice(0, 300)}`).join(" | ");
+    const detail = `All ${toolResults.length} approved tool(s) failed: ${allFailures}`;
+    append("run.failed", { status: "failed", error: detail });
+    updateContinuationStatus("failed");
+    return {
+      kind: "completed",
+      snapshot: deps.attachTraceMetadata(StateSnapshotSchema.parse({
+        ...working,
+        status: "failed",
+        error: detail,
+        activeAgents: [],
+        updatedAt: deps.now(),
+      })),
+    };
   }
 
   function completeInterruptedModeProgress(): void {
@@ -448,13 +468,28 @@ export async function completeApprovedToolContinuation(
       audience: "internal",
       basedOnSeq: Math.max(0, working.events.length - 1),
     });
+    const toolResultSummary = toolResults.length > 0
+      ? [
+          "",
+          "Just executed (results already applied):",
+          ...toolResults.map((r, i) =>
+            `  ${i + 1}. ${r.toolId} — ${
+              r.output !== undefined
+                ? typeof r.output === "string"
+                  ? r.output.slice(0, 400)
+                  : JSON.stringify(r.output).slice(0, 400)
+                : "ok"
+            }`
+          ),
+        ].join("\n")
+      : "";
     working = StateSnapshotSchema.parse({
       ...working,
       conversation: [
         ...working.conversation,
         {
           role: "user",
-          content: guardResult.followUpContent,
+          content: guardResult.followUpContent + toolResultSummary,
           createdAt: deps.now(),
         },
       ],

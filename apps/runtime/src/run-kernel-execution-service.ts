@@ -162,16 +162,41 @@ export class RunKernelExecutionService {
     onEvent?: (event: OraEventEnvelope, baseSeq: number) => void;
   }): Promise<StateSnapshot> {
     const baseSeq = params.continuationSnapshot.events.length;
+    // Locate the tool-result entries appended during the approved-tool
+    // continuation so we can remind the model what was just executed.
+    const approvedIdSet = new Set(params.approvedActionIds);
+    const recentToolCalls = params.continuationSnapshot.toolCalls
+      .filter((call) => call.actionId && approvedIdSet.has(call.actionId));
+    const conversationEntries = params.continuationSnapshot.conversation;
+    const conversationMessages = [
+      ...this.resumeConversationMessages(
+        params.continuationSnapshot,
+        params.clarificationPatch,
+        params.originalSnapshot.runId,
+      ),
+      ...runtimeConversationToModelMessages(conversationEntries),
+    ];
+    // Prepend a carry-over context message so the model knows what tool(s)
+    // were just executed and their outcomes before the kernel re-runs.
+    // This prevents the model from re-proposing the same tool when the
+    // guard follow-up message alone would not make the execution history
+    // sufficiently explicit.
+    if (recentToolCalls.length > 0) {
+      conversationMessages.unshift({
+        role: "user",
+        content: [
+          "[runtime] The user approved the pending tool action(s) and they have already been executed.",
+          "Results summary:",
+          ...recentToolCalls.map((call) =>
+            `  - ${call.toolId}: ${call.status}${call.result?.error ? ` (error: ${call.result.error.slice(0, 300)})` : ""}`
+          ),
+          "Continue the task based on these results. Do not re-request the same tool unless the args need to change."
+        ].join("\n"),
+      });
+    }
     const resumedSnapshot = await this.executePreparedResume({
       snapshot: params.continuationSnapshot,
-      conversationMessages: [
-        ...this.resumeConversationMessages(
-          params.continuationSnapshot,
-          params.clarificationPatch,
-          params.originalSnapshot.runId,
-        ),
-        ...runtimeConversationToModelMessages(params.continuationSnapshot.conversation),
-      ],
+      conversationMessages,
       clarificationPatch: params.clarificationPatch,
       approvedActionIds: params.approvedActionIds,
       approvedActions: [],
