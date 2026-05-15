@@ -9,6 +9,8 @@ import {
 import {
   ApprovalInterruptError,
   ClarificationInterruptError,
+  isApprovalInterruptError,
+  isClarificationInterruptError,
 } from "./runtime-interrupts.js";
 
 type RuntimeNodeSupportEmit = (
@@ -47,8 +49,8 @@ export async function runRecoverableRuntimeNode<T>(
       return { status: "completed", output };
     } catch (error) {
       if (
-        error instanceof ApprovalInterruptError ||
-        error instanceof ClarificationInterruptError
+        isApprovalInterruptError(error) ||
+        isClarificationInterruptError(error)
       ) {
         throw error;
       }

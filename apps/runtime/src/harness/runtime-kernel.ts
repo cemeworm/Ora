@@ -79,6 +79,8 @@ import {
 import {
   ApprovalInterruptError,
   ClarificationInterruptError,
+  isApprovalInterruptError,
+  isClarificationInterruptError,
   createResumeApprovalMatcher,
   type ApprovedResumeAction,
 } from "./runtime-interrupts.js";
@@ -1652,8 +1654,8 @@ export async function executeRuntimeKernel(
           throw error;
         }
         if (
-          error instanceof ApprovalInterruptError ||
-          error instanceof ClarificationInterruptError
+          isApprovalInterruptError(error) ||
+          isClarificationInterruptError(error)
         ) {
           emitDelegatedAgentState("interrupted", {
             agentId: params.agentId,
@@ -2046,7 +2048,61 @@ export async function executeRuntimeKernel(
       return undefined;
     }
 
-    const resumed = await resumeSuspendedRuntimeFrame();
+    let resumed;
+    try {
+      resumed = await resumeSuspendedRuntimeFrame();
+    } catch (error) {
+      if (
+        isApprovalInterruptError(error) ||
+        isClarificationInterruptError(error)
+      ) {
+        const reason =
+          isClarificationInterruptError(error)
+            ? "clarification_required"
+            : "approval_required";
+        setTopologyStatus(ORA_ROOT_AGENT_ID, "blocked");
+        emit("run.interrupted", {
+          error: error instanceof Error ? error.message : String(error),
+          status: "interrupted",
+          reason,
+          clarificationId:
+            isClarificationInterruptError(error) && error.clarifications.length === 1
+              ? error.clarification.id
+              : undefined,
+          clarificationIds:
+            isClarificationInterruptError(error)
+              ? error.clarifications.map((c) => c.id)
+              : undefined,
+          actionId:
+            isApprovalInterruptError(error) ? error.actionId : undefined,
+        });
+        return kernelRuntimeContext.assembleFinalSnapshot({
+          status: "interrupted",
+          input,
+          config,
+          modeSpec: resolvedModeSpec,
+          profiles,
+          memory: memoryService.list(),
+          plan: planService.list(),
+          todos: todoService.list(),
+          actions: actionLedger.list(),
+          conversation: options.resumeState?.conversation ?? [],
+          toolResults: options.resumeState?.toolResults ?? [],
+          checkpoint: createResumeCheckpoint({
+            runId,
+            index: 0,
+            now: now(),
+            eventSeq: kernelRuntimeContext.eventCount(),
+            stateHash: "",
+          }),
+          previousContinuation: continuationWithActiveFrameStatus("awaiting_model") ?? options.resumeState?.continuation,
+          conversationCursor: options.resumeState?.conversation.length ?? 0,
+          output: { text: "", pattern: resolvedModeSpec.family, modeId: resolvedModeSpec.id },
+          updatedAt: now(),
+        });
+      }
+      throw error;
+    }
     if (!resumed) {
       return undefined;
     }

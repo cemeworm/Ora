@@ -21,7 +21,7 @@ import {
   resolveRuntimeActionApproval,
   transitionRuntimeAction,
 } from "./runtime-action-runner.js";
-import { ApprovalInterruptError } from "./runtime-interrupts.js";
+import { ApprovalInterruptError, isApprovalInterruptError } from "./runtime-interrupts.js";
 import type { NodeLoopController } from "./node-loop-transitions.js";
 import type {
   RuntimeToolFailureRequest,
@@ -122,7 +122,7 @@ export class RuntimeToolRecoveryService {
     failure: RuntimeToolFailureRequest,
   ): Promise<RuntimeToolFailureResult> {
     const { action, toolCall, toolCallRecord, error, iteration } = failure;
-    if (error instanceof ApprovalInterruptError) {
+    if (isApprovalInterruptError(error)) {
       return {
         kind: "throw",
         error: error.actionId === action.id ? error : new ApprovalInterruptError(action.id),
