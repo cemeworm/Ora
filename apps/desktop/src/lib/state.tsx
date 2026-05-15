@@ -759,8 +759,8 @@ function sessionPermissionMode(
   sessionId: string | undefined,
 ): PermissionMode {
   return sessionId
-    ? (state.sessionPermissionModes[sessionId] ?? "default")
-    : "default";
+    ? (state.sessionPermissionModes[sessionId] ?? "auto_review")
+    : "auto_review";
 }
 
 function setSessionPermissionMode(

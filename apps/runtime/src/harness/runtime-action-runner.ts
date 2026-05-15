@@ -83,6 +83,26 @@ export async function resolveRuntimeActionApproval({
   }
 
   if (permissionMode === "auto_review") {
+    // Close any lingering approval gates left open by a previous mode switch
+    for (const record of deps.actionLedger.list()) {
+      if (record.status === "approval_required" && record.id !== action.id) {
+        deps.actionLedger.transition(record.id, "approved");
+        deps.emit(
+          "approval.resolved",
+          {
+            actionId: record.id,
+            decision: "approved",
+            mode: "auto_review",
+          },
+          { agentId: context.agentId, nodeId: context.nodeId },
+        );
+        deps.emit(
+          "action.updated",
+          { actionId: record.id, status: "approved", record },
+          { agentId: context.agentId, nodeId: context.nodeId },
+        );
+      }
+    }
     const approved = deps.actionLedger.transition(action.id, "approved");
     if (toolCallRecord) {
       deps.appendToolCallStatus?.(toolCallRecord, "approved");
