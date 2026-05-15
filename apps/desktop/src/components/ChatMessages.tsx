@@ -25,6 +25,7 @@ interface ChatMessagesProps {
   onOpenArtifact?: (artifactId: string) => void;
   onSubmitFeedback?: (message: ChatMessage, feedbackText: string) => Promise<void>;
   onAdoptBranchGroup?: (branchGroupId: string, runId: string) => void;
+  projectRootPath?: string;
 }
 
 export function messageBottomPaddingPx({
@@ -63,6 +64,7 @@ export function ChatMessages({
   onOpenArtifact,
   onSubmitFeedback,
   onAdoptBranchGroup,
+  projectRootPath,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -115,6 +117,7 @@ export function ChatMessages({
                   onSubmitFeedback={message.turn && onSubmitFeedback
                     ? ({ feedbackText }) => onSubmitFeedback(message, feedbackText)
                     : undefined}
+                  projectRootPath={projectRootPath}
                 />
               </div>
             );

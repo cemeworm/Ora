@@ -2143,9 +2143,9 @@ function buildAssistantTurnAttachment(
     todos: [],
     approvalCount: snapshotPendingApprovals(snapshot).length,
     clarificationCount: snapshotPendingClarifications(snapshot).length,
-    hasProposedPlan: Boolean(proposedPlan) || (snapshot.planList ?? []).length > 0,
+    hasProposedPlan: Boolean(proposedPlan),
     proposedPlanStatus: proposedPlan?.status === "streaming" ? "streaming" : proposedPlan ? "complete" : undefined,
-    activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, proposedPlan, timelineItems),
+    activeLoadingTarget: activeLoadingTargetFromSnapshot(snapshot, status, timelineItems),
   };
   if (!liveProposedPlan) {
     turnAttachmentCache.set(snapshot, result);
@@ -2156,14 +2156,10 @@ function buildAssistantTurnAttachment(
 function activeLoadingTargetFromSnapshot(
   snapshot: OraStateSnapshot,
   status: RunStatus,
-  proposedPlan: ReturnType<typeof parseProposedPlan> | undefined,
   timelineItems: TurnTimelineItem[],
 ): AssistantTurnActiveLoadingTarget | undefined {
   if (status !== "running") {
     return undefined;
-  }
-  if (proposedPlan?.status === "streaming") {
-    return { kind: "proposed_plan" };
   }
   if (
     snapshotPendingClarifications(snapshot).length > 0 ||

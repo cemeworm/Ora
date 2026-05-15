@@ -38,7 +38,6 @@ import {
   TaskListHeader,
 } from "./ai-elements/task";
 import { MarkdownContent } from "./MarkdownContent";
-import { PlanCard } from "./PlanCard";
 import { SourcesPopover } from "./SourcesPopover";
 import { StageTranscript } from "./StageTranscript";
 import {
@@ -59,6 +58,7 @@ interface AssistantTurnCardProps {
     turn: AssistantTurnAttachment;
     feedbackText: string;
   }) => Promise<void>;
+  projectRootPath?: string;
 }
 
 export const AssistantTurnCard = memo(function AssistantTurnCard({
@@ -67,6 +67,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   isPlaceholder = false,
   onOpenArtifact,
   onSubmitFeedback,
+  projectRootPath,
 }: AssistantTurnCardProps) {
   const processSteps = turn?.processSteps ?? [];
   const planList = turn?.planList ?? [];
@@ -95,6 +96,15 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
   const hasStageTranscript = stageTranscriptMessages.length > 0;
   const visibleArtifacts = turn?.artifacts.filter(isContentArtifact) ?? [];
   const fileChanges = turn?.fileChanges ?? [];
+  const artifactPathMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const fc of fileChanges) {
+      if (fc.artifactId) {
+        map.set(fc.artifactId, fc.path);
+      }
+    }
+    return map;
+  }, [fileChanges]);
   const canCopyContent = Boolean(
     !isPlaceholder && turn?.status !== "running" && bodyContent.trim(),
   );
@@ -197,15 +207,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
             <ClarificationExchangeList exchanges={clarificationExchanges} />
           ) : null}
 
-          {turn?.hasProposedPlan ? (
-            <PlanCard
-              planSteps={planList}
-              planContent={turn?.proposedPlanStatus ? content : undefined}
-              isStreaming={turn.activeLoadingTarget?.kind === "proposed_plan"}
-            />
-          ) : null}
-
-          {turn?.proposedPlanStatus || (hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
+          {(hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={bodyContent}
@@ -223,6 +225,8 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
                 <ArtifactCard
                   key={artifact.id}
                   artifact={artifact}
+                  filePath={artifactPathMap.get(artifact.id) ?? artifact.label}
+                  rootPath={projectRootPath}
                   onOpenArtifact={onOpenArtifact}
                 />
               ))}

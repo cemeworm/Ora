@@ -43,6 +43,7 @@ interface ChatViewProps {
   selectedSession: SessionRun;
   selectedCustomAgentId?: string;
   projectLabel?: string;
+  projectRootPath?: string;
   streamLines: StreamLine[];
   topologyEdges: TopologyEdge[];
   topologyNodes: TopologyNode[];
@@ -195,6 +196,7 @@ export function ChatView({
   selectedSession,
   selectedCustomAgentId,
   projectLabel,
+  projectRootPath,
   onStartRun,
   onComposerPromptChange,
   onClearSelectedCustomAgent,
@@ -355,6 +357,7 @@ export function ChatView({
             hasPlanDecisionTray={planDecisionPending}
             hasPlanStepsTray={currentPlanSteps.length > 0}
             bottomInsetPx={composerOverlayHeight}
+            projectRootPath={projectRootPath}
             onOpenArtifact={onOpenArtifact}
             onSubmitFeedback={onSubmitFeedback}
             onAdoptBranchGroup={onAdoptBranchGroup}
