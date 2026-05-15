@@ -20,7 +20,12 @@ import type {
 } from "../capabilities.js";
 import { executeModeSpec } from "../patterns/driver-registry.js";
 import type { RuntimeCompletionMetadata } from "./runtime-output.js";
-import { ApprovalInterruptError, ClarificationInterruptError } from "./runtime-interrupts.js";
+import {
+  ApprovalInterruptError,
+  ClarificationInterruptError,
+  isApprovalInterruptError,
+  isClarificationInterruptError,
+} from "./runtime-interrupts.js";
 import {
   INTENT_CLARIFICATION_ID,
   INTENT_CLARIFICATION_KEY,
@@ -430,8 +435,8 @@ export class KernelRunner {
 
     this.error = caught instanceof Error ? caught.message : String(caught);
     this.status =
-      caught instanceof ClarificationInterruptError ||
-      caught instanceof ApprovalInterruptError
+      isClarificationInterruptError(caught) ||
+      isApprovalInterruptError(caught)
         ? "interrupted"
         : "failed";
     setTopologyStatus(ORA_ROOT_AGENT_ID, this.status === "interrupted" ? "blocked" : "failed");
@@ -459,21 +464,21 @@ export class KernelRunner {
       error: this.error,
       status: this.status,
       reason:
-        caught instanceof ClarificationInterruptError
+        isClarificationInterruptError(caught)
           ? "clarification_required"
-          : caught instanceof ApprovalInterruptError
+          : isApprovalInterruptError(caught)
             ? "approval_required"
             : undefined,
       clarificationId:
-        caught instanceof ClarificationInterruptError && caught.clarifications.length === 1
+        isClarificationInterruptError(caught) && caught.clarifications.length === 1
           ? caught.clarification.id
           : undefined,
       clarificationIds:
-        caught instanceof ClarificationInterruptError
+        isClarificationInterruptError(caught)
           ? caught.clarifications.map((c) => c.id)
           : undefined,
       actionId:
-        caught instanceof ApprovalInterruptError ? caught.actionId : undefined,
+        isApprovalInterruptError(caught) ? caught.actionId : undefined,
     });
   }
 

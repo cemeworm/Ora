@@ -12,7 +12,7 @@ import {
   resolveRuntimeActionApproval,
   transitionRuntimeAction,
 } from "./runtime-action-runner.js";
-import { ApprovalInterruptError, ClarificationInterruptError } from "./runtime-interrupts.js";
+import { ApprovalInterruptError, ClarificationInterruptError, isApprovalInterruptError, isClarificationInterruptError } from "./runtime-interrupts.js";
 import type { NodeLoopController } from "./node-loop-transitions.js";
 import type { NodeRuntimeLoopState } from "./node-runtime-loop.js";
 import type {
@@ -148,7 +148,7 @@ export class RuntimeToolCallService {
       deps: actionDeps,
       toolCallRecord,
     }).catch((error) => {
-      if (error instanceof ApprovalInterruptError) {
+      if (isApprovalInterruptError(error)) {
         this.deps.nodeLoopController.emitGateRequired({
           agentId: this.deps.agentId,
           title: this.deps.title,
@@ -186,7 +186,7 @@ export class RuntimeToolCallService {
         iteration,
       });
     } catch (error) {
-      if (error instanceof ApprovalInterruptError) {
+      if (isApprovalInterruptError(error)) {
         transitionRuntimeAction({
           action,
           status: "approval_required",
@@ -204,7 +204,7 @@ export class RuntimeToolCallService {
         });
         throw new ApprovalInterruptError(action.id);
       }
-      if (error instanceof ClarificationInterruptError) {
+      if (isClarificationInterruptError(error)) {
         throw error;
       }
       const failureResult: RuntimeToolFailureResult = await this.deps.invokeToolFailure({

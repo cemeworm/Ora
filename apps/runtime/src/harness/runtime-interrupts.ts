@@ -1,11 +1,16 @@
 import type { ActionRecord, PendingClarification } from "@cemeworm/shared";
 import { stableJson } from "./runtime-tool-loop.js";
 
+const APPROVAL_INTERRUPT_SYMBOL = Symbol.for("ora.ApprovalInterrupt");
+const CLARIFICATION_INTERRUPT_SYMBOL = Symbol.for("ora.ClarificationInterrupt");
+
 export class ClarificationInterruptError extends Error {
+  public readonly [CLARIFICATION_INTERRUPT_SYMBOL] = true;
   public readonly clarifications: PendingClarification[];
   constructor(clarifications: PendingClarification[] | PendingClarification) {
     const list = Array.isArray(clarifications) ? clarifications : [clarifications];
     super(list.map((c) => c.question).join(" | "));
+    this.name = "ClarificationInterruptError";
     this.clarifications = list;
   }
 
@@ -15,9 +20,27 @@ export class ClarificationInterruptError extends Error {
 }
 
 export class ApprovalInterruptError extends Error {
+  public readonly [APPROVAL_INTERRUPT_SYMBOL] = true;
   constructor(public readonly actionId: string) {
     super("Waiting for your approval before continuing.");
+    this.name = "ApprovalInterruptError";
   }
+}
+
+export function isApprovalInterruptError(error: unknown): error is ApprovalInterruptError {
+  return error instanceof ApprovalInterruptError ||
+    (typeof error === "object" && error !== null &&
+      (error as Record<symbol, unknown>)[APPROVAL_INTERRUPT_SYMBOL] === true);
+}
+
+export function isClarificationInterruptError(error: unknown): error is ClarificationInterruptError {
+  return error instanceof ClarificationInterruptError ||
+    (typeof error === "object" && error !== null &&
+      (error as Record<symbol, unknown>)[CLARIFICATION_INTERRUPT_SYMBOL] === true);
+}
+
+export function isAnyInterruptError(error: unknown): error is ApprovalInterruptError | ClarificationInterruptError {
+  return isApprovalInterruptError(error) || isClarificationInterruptError(error);
 }
 
 export type ApprovedResumeAction = Pick<ActionRecord, "type" | "riskLevel" | "input" | "agentId">;
