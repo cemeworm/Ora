@@ -79,6 +79,9 @@ export function evaluateRuntimeCompletionGuards(
  * pending runtime work) all pass, to prevent runs from completing with an
  * empty final model response.
  */
+/** Minimum visible content length to guard against truncated model output. */
+const MIN_VISIBLE_CONTENT_LENGTH = 80;
+
 export function finalOutputGuard(
   responseText: string,
   metadata?: { isPostTool?: boolean },
@@ -97,6 +100,21 @@ export function finalOutputGuard(
       followUpContent: metadata?.isPostTool
         ? "Your previous response after the tool result was empty. Produce the final user-facing answer now using the available conversation and tool results. Do not call tools."
         : "The latest model response is empty. Produce the final user-facing answer now using the available conversation and tool results.",
+    };
+  }
+  if (trimmed.length < MIN_VISIBLE_CONTENT_LENGTH) {
+    return {
+      allowComplete: false,
+      reason: "final_output_too_short",
+      progressTrigger: "final_output.too_short",
+      progressSummary: `Final model response is too short (${trimmed.length} chars); refusing to complete.`,
+      detail: `The latest model response is only ${trimmed.length} characters. This may indicate the model stream was truncated before the full answer was generated.`,
+      followUpReason: "final_output_too_short_repair",
+      followUpContent: [
+        "Your previous response appears incomplete or truncated.",
+        "Continue with your full, detailed answer. Do not stop at an introduction or summary placeholder.",
+        "Produce the complete user-facing response now using the available conversation and tool results.",
+      ].join(" "),
     };
   }
   return { allowComplete: true };

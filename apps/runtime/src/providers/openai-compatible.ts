@@ -3,6 +3,7 @@ import {
   appendIfDefined,
   buildResponsesInput,
   extractOpenAiChatReasoningContent,
+  extractOpenAiChatStreamFinishReason,
   extractOpenAiChatStreamReasoningContent,
   extractOpenAiChatToolCalls,
   extractOpenAiChatStreamToolCalls,
@@ -467,6 +468,9 @@ export function createOpenAICompatibleProvider(
     const reasoningContent = protocol === "chat_completions"
       ? extractOpenAiChatStreamReasoningContent(rawEvents)
       : undefined;
+    const finishReason = protocol === "chat_completions"
+      ? extractOpenAiChatStreamFinishReason(rawEvents)
+      : undefined;
 
     return {
       providerId: config.id,
@@ -474,6 +478,7 @@ export function createOpenAICompatibleProvider(
       modelId: config.modelId,
       text,
       reasoningContent,
+      finishReason,
       raw: {
         streamMode: "sse",
         protocol,

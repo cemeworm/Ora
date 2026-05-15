@@ -485,6 +485,24 @@ export function extractOpenAiChatStreamReasoningContent(rawEvents: readonly unkn
   return parts.length > 0 ? parts.join("") : undefined;
 }
 
+export function extractOpenAiChatStreamFinishReason(rawEvents: readonly unknown[]): string | undefined {
+  for (const event of rawEvents) {
+    if (!event || typeof event !== "object" || !Array.isArray((event as Record<string, unknown>).choices)) {
+      continue;
+    }
+    for (const choice of (event as Record<string, unknown>).choices as unknown[]) {
+      if (!choice || typeof choice !== "object") {
+        continue;
+      }
+      const finishReason = (choice as Record<string, unknown>).finish_reason;
+      if (typeof finishReason === "string") {
+        return finishReason;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function extractOpenAiChatStreamToolCalls(rawEvents: readonly unknown[], tools: readonly ModelToolDefinition[] | undefined): ModelToolCall[] {
   const calls = new Map<number, {
     id?: string;
