@@ -207,7 +207,7 @@ export const AssistantTurnCard = memo(function AssistantTurnCard({
             <ClarificationExchangeList exchanges={clarificationExchanges} />
           ) : null}
 
-          {(hasTimeline && timelineContainsAssistantBody) || !bodyContent.trim() ? null : (
+          {(hasTimeline && timelineContainsAssistantBody && !turn?.hasProposedPlan) || !bodyContent.trim() ? null : (
             <MessageContent className="w-full">
               <MarkdownContent
                 content={bodyContent}
