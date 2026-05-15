@@ -795,6 +795,9 @@ export function createRuntimeClient() {
     async setSkillEnabled(params: OraSkillSetEnabledParams): Promise<OraSkillDetail> {
       return call<OraSkillDetail>("skills.setEnabled", params);
     },
+    async patchSkill(params: { name: string; oldContent: string; newContent: string }): Promise<OraSkillDetail> {
+      return call<OraSkillDetail>("skills.patch", params);
+    },
     async listModes(): Promise<OraModeSpec[]> {
       return call<OraModeSpec[]>("modes.list");
     },
@@ -1500,6 +1503,8 @@ class LocalJsonRpcRuntime {
         return this.checkSkillName(params);
       case "skills.setEnabled":
         return this.setSkillEnabled(params);
+      case "skills.patch":
+        return this.patchSkill(params);
       case "providers.list":
         return {
           providers: DEFAULT_PROVIDERS,
@@ -3080,6 +3085,8 @@ class LocalJsonRpcRuntime {
       tags: [],
       files: files.descriptors,
       content,
+      provenance: (params as Record<string, unknown>).provenance === "background_auto" ? "background_auto" : "foreground",
+      lifecycle: "active",
     };
     this.customSkills.set(name, skill);
     if (files.contents.size > 0) {
@@ -3187,6 +3194,37 @@ class LocalJsonRpcRuntime {
       enabled: params.enabled,
       updatedAt: Date.now(),
     };
+  }
+
+  private patchSkill(params: unknown): OraSkillDetail {
+    if (!isRecord(params) || typeof params.name !== "string") {
+      throw new Error("Skill name is required.");
+    }
+    const name = normalizeMockSkillName(params.name);
+    const skill = this.findSkill(name);
+    if (!skill) {
+      throw new Error(`Skill not found: ${name}`);
+    }
+    if (skill.provenance === "foreground") {
+      throw new Error("Cannot patch user-created skill. Use skills.update instead.");
+    }
+    const oldContent = typeof params.oldContent === "string" ? params.oldContent : "";
+    const newContent = typeof params.newContent === "string" ? params.newContent : "";
+    if (!oldContent || !newContent) {
+      throw new Error("skills.patch requires oldContent and newContent.");
+    }
+    const content = skill.content ?? "";
+    if (!content.includes(oldContent)) {
+      throw new Error(`Could not find oldContent in skill '${name}'.`);
+    }
+    const updatedContent = content.replace(oldContent, newContent);
+    const updated = {
+      ...skill,
+      content: updatedContent,
+      updatedAt: Date.now(),
+    };
+    this.customSkills.set(name, updated);
+    return updated;
   }
 
   private buildPackageCandidate(params: unknown): OraPackageManifest {

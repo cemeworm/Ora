@@ -18,6 +18,7 @@ const CODE_DEVELOPMENT_ORCHESTRATOR_BLOCKED_TOOLS = new Set([
   "skills.create",
   "skills.update",
   "skills.setEnabled",
+  "skills.patch",
 ]);
 
 export function codeDevelopmentToolBoundaryError(params: {

@@ -35,7 +35,9 @@ export function skillToolRuntimeFields(toolId: string): Partial<RuntimeToolDefin
           "When installing skill packages, pass SKILL.md as content and include optional package files with relative paths such as scripts/run.sh in args.files.",
         ],
         requiresApprovalCopy: true,
-        actionRiskLevel: () => "high",
+        actionRiskLevel: (args, _context) => {
+          return args.provenance === "background_auto" ? "low" : "high";
+        },
         approvalRequest: skillCreateApprovalRequest,
         execute: (args, context) => ({ output: createRuntimeSkill(context.skillRegistry, args) }),
       };
@@ -56,6 +58,15 @@ export function skillToolRuntimeFields(toolId: string): Partial<RuntimeToolDefin
         actionRiskLevel: () => "high",
         approvalRequest: skillSetEnabledApprovalRequest,
         execute: (args, context) => ({ output: setRuntimeSkillEnabled(context.skillRegistry, args) }),
+      };
+    case "skills.patch":
+      return {
+        promptExample: "{\"tool\":\"skills.patch\",\"args\":{\"name\":\"my-skill\",\"oldContent\":\"old step\",\"newContent\":\"fixed step\"}}",
+        promptGuidelines: [SKILL_FIRST_GUIDELINE],
+        requiresApprovalCopy: true,
+        actionRiskLevel: () => "high",
+        approvalRequest: skillPatchApprovalRequest,
+        execute: (args, context) => ({ output: patchRuntimeSkill(context.skillRegistry, args) }),
       };
     default:
       return {};
@@ -169,6 +180,7 @@ function getRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Re
   }
   console.info("[skills] get", { name });
   const detail = skillRegistry.get({ name });
+  skillRegistry.recordTelemetry(name, "view");
   const localDirectory = detail.path ? path.dirname(detail.path) : undefined;
   return {
     ...detail,
@@ -207,4 +219,52 @@ function setRuntimeSkillEnabled(skillRegistry: SkillRegistryTools | undefined, a
     throw new Error("A skill registry is required for skills.setEnabled.");
   }
   return skillRegistry.setEnabled(args);
+}
+
+function patchRuntimeSkill(skillRegistry: SkillRegistryTools | undefined, args: Record<string, unknown>) {
+  if (!skillRegistry) {
+    throw new Error("A skill registry is required for skills.patch.");
+  }
+  const name = typeof args.name === "string" && args.name.trim() ? args.name.trim() : undefined;
+  if (!name) {
+    throw new Error("skills.patch requires a skill name.");
+  }
+
+  // Front-end provenance check before execute
+  const detail = skillRegistry.get({ name });
+  if (detail.provenance === "foreground") {
+    throw new Error("Cannot patch user-created skill. Use skills.update instead.");
+  }
+
+  const oldContent = typeof args.oldContent === "string" ? args.oldContent : "";
+  const newContent = typeof args.newContent === "string" ? args.newContent : "";
+  if (!oldContent || !newContent) {
+    throw new Error("skills.patch requires oldContent and newContent.");
+  }
+
+  const result = skillRegistry.patch({ name, oldContent, newContent });
+  skillRegistry.recordTelemetry(name, "patch");
+  return result;
+}
+
+function skillPatchApprovalRequest(args: Record<string, unknown>, context: { userPrompt?: string }) {
+  const zh = prefersChinese(context.userPrompt);
+  const name = stringArg(args, "name", zh ? "这个技能" : "this skill");
+  return zh
+    ? {
+        title: "需要你确认修补技能",
+        summary: `我准备修补本地技能"${name}"的部分内容。`,
+        whatWillChange: "这个技能的部分内容会被替换为新内容。",
+        whyNeeded: "这是修正过时技能内容的必要步骤。",
+        riskNote: "修补会改变技能后续运行时遵循的规则。",
+        confirmLabel: "批准并继续",
+      }
+    : {
+        title: "Confirm skill patch",
+        summary: `I am ready to patch part of "${name}".`,
+        whatWillChange: "Part of the skill content will be replaced with new content.",
+        whyNeeded: "This is needed to fix outdated skill instructions.",
+        riskNote: "Patching changes the rules agents follow when they use this skill later.",
+        confirmLabel: "Approve and continue",
+      };
 }

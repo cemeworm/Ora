@@ -53,6 +53,7 @@ const TERMINAL_APPROVED_REPLAY_TOOL_IDS = new Set<string>([
   "skills.create",
   "skills.update",
   "skills.setEnabled",
+  "skills.patch",
 ]);
 
 export function evaluateRuntimeCompletionGuards(

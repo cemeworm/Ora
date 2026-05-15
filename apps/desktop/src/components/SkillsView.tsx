@@ -1,4 +1,4 @@
-import { Eye, FileCode2, FileText, Pencil, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
+import { Bot, Eye, FileCode2, FileText, Pencil, Plus, RefreshCcw, Save, Search, Trash2, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useWorkbenchDispatch } from "../lib/state";
 import type { OraSkillDetail, OraSkillPackageFileContent, OraSkillRegistry, RuntimeClient } from "../lib/runtimeClient";
@@ -36,6 +36,8 @@ const EMPTY_DETAIL: OraSkillDetail = {
   tags: [],
   files: [],
   content: "",
+  provenance: "foreground",
+  lifecycle: "active",
 };
 
 function syncSkillContentMetadata(content: string, name: string, description: string): string {
@@ -461,7 +463,12 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">{skill.name}</div>
+                    <div className="flex items-center gap-1.5">
+                      {skill.provenance === "background_auto" && (
+                        <Bot size={12} className="shrink-0 text-blue-500" />
+                      )}
+                      <span className="truncate text-sm font-semibold">{skill.name}</span>
+                    </div>
                     <p className="mt-1 line-clamp-2 text-xs leading-5 text-bench-700">{skill.description}</p>
                   </div>
                   <span className={cn(
@@ -476,6 +483,22 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                   <span className="rounded-full bg-bench-50 px-2 py-0.5 ring-1 ring-inset ring-bench-200">
                     {skill.editable ? "editable" : "read-only"}
                   </span>
+                  {skill.lifecycle && skill.lifecycle !== "active" && (
+                    <span className={cn(
+                      "rounded-full px-2 py-0.5 ring-1 ring-inset",
+                      skill.lifecycle === "stale"
+                        ? "bg-amber-50 text-amber-700 ring-amber-200"
+                        : "bg-bench-100 text-bench-500 ring-bench-200",
+                    )}>
+                      {skill.lifecycle}
+                    </span>
+                  )}
+                  {skill.telemetry && skill.telemetry.useCount > 0 && (
+                    <span className="flex items-center gap-1 rounded-full bg-bench-50 px-2 py-0.5 ring-1 ring-inset ring-bench-200">
+                      <Zap size={10} />
+                      {skill.telemetry.useCount}
+                    </span>
+                  )}
                 </div>
               </button>
             ))}
@@ -579,8 +602,37 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                       <span className="rounded-full bg-bench-50 px-2 py-0.5 text-[11px] font-semibold uppercase text-bench-700 ring-1 ring-inset ring-bench-200">
                         {selectedSkill.category}
                       </span>
+                      {selectedSkill.lifecycle && selectedSkill.lifecycle !== "active" && (
+                        <span className={cn(
+                          "rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase ring-1 ring-inset",
+                          selectedSkill.lifecycle === "stale"
+                            ? "bg-amber-50 text-amber-700 ring-amber-200"
+                            : "bg-bench-100 text-bench-500 ring-bench-200",
+                        )}>
+                          {selectedSkill.lifecycle}
+                        </span>
+                      )}
+                      {selectedSkill.provenance === "background_auto" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold uppercase text-blue-700 ring-1 ring-inset ring-blue-200">
+                          <Bot size={10} />
+                          auto
+                        </span>
+                      )}
                     </div>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-bench-700">{selectedSkill.description}</p>
+                    {selectedSkill.telemetry && (
+                      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-bench-500">
+                        {selectedSkill.telemetry.useCount > 0 && (
+                          <span className="inline-flex items-center gap-1"><Zap size={10} /> Used {selectedSkill.telemetry.useCount}×</span>
+                        )}
+                        {selectedSkill.telemetry.patchCount > 0 && (
+                          <span>Patched {selectedSkill.telemetry.patchCount}×</span>
+                        )}
+                        {selectedSkill.telemetry.lastUsedAt != null && selectedSkill.telemetry.lastUsedAt > 0 && (
+                          <span>Last used {formatRelativeTime(selectedSkill.telemetry.lastUsedAt)}</span>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -820,4 +872,17 @@ function SkillPackageFileIcon({ kind, path }: { kind?: SkillPackageFileEntry["ki
     return <FileCode2 size={16} className="text-muted-foreground" />;
   }
   return <FileText size={16} className="text-muted-foreground" />;
+}
+
+function formatRelativeTime(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
 }

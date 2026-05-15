@@ -15,6 +15,7 @@ import {
   SkillNameSchema,
   SkillPackageFileContentSchema,
   SkillPackageFileDescriptorSchema,
+  SkillPatchParamsSchema,
   SkillSetEnabledParamsSchema,
   SkillUpdateParamsSchema,
   type CoordinationPattern,
@@ -30,6 +31,7 @@ import {
   type SkillListParams,
   type SkillPackageFileContent,
   type SkillPackageFileDescriptor,
+  type SkillPatchParams,
   type SkillSetEnabledParams,
   type SkillUpdateParams,
 } from "@cemeworm/shared";
@@ -45,6 +47,13 @@ interface PersistedSkillState {
   createdAt?: number;
   updatedAt?: number;
   deleted?: boolean;
+  provenance?: "foreground" | "background_auto";
+  lifecycle?: "active" | "stale" | "archived";
+  useCount?: number;
+  lastUsedAt?: number;
+  viewCount?: number;
+  patchCount?: number;
+  autoCreateTrigger?: string;
 }
 
 const SKILL_FILE_NAME = "SKILL.md";
@@ -94,6 +103,9 @@ export class SkillFileStore {
       .filter((skill) => !parsed.category || skill.category === parsed.category)
       .filter((skill) => !parsed.enabledOnly || skill.enabled)
       .filter((skill) => !parsed.pattern || skill.allowedPatterns.length === 0 || skill.allowedPatterns.includes(parsed.pattern))
+      .filter((skill) => !parsed.lifecycle || skill.lifecycle === parsed.lifecycle)
+      .filter((skill) => !parsed.provenance || skill.provenance === parsed.provenance)
+      .filter((skill) => parsed.lifecycle !== undefined || skill.lifecycle !== "archived")
       .filter((skill) => {
         if (!query) {
           return true;
@@ -128,7 +140,14 @@ export class SkillFileStore {
     validateSkillContent(name, content);
     const now = this.clock();
     this.writeSkillPackage(this.privateSkillDir(name), content, parsed.files, true);
-    this.updateState(name, { enabled: parsed.enabled, createdAt: now, deleted: false, updatedAt: now });
+    this.updateState(name, {
+      enabled: parsed.enabled,
+      createdAt: now,
+      deleted: false,
+      updatedAt: now,
+      provenance: parsed.provenance,
+      autoCreateTrigger: parsed.autoCreateTrigger,
+    });
     return this.get({ name });
   }
 
@@ -208,6 +227,77 @@ export class SkillFileStore {
     this.get({ name });
     this.updateState(name, { enabled: parsed.enabled, updatedAt: this.clock() });
     return this.get({ name });
+  }
+
+  patchContent(params: SkillPatchParams | unknown): SkillDetail {
+    const parsed = SkillPatchParamsSchema.parse(params);
+    const name = normalizeSkillName(parsed.name);
+    const existing = this.get({ name });
+    if (!existing.editable) {
+      throw new Error(`Skill '${name}' cannot be edited.`);
+    }
+
+    const { oldContent, newContent } = parsed;
+    const content = existing.content;
+
+    // Layer 1: exact match
+    let newFileContent: string | undefined;
+    if (content.includes(oldContent)) {
+      newFileContent = content.replace(oldContent, newContent);
+    } else {
+      // Layer 2: whitespace-normalized match
+      const normalizeWs = (s: string) => s.replace(/\s+/g, " ").trim();
+      const normalizedContent = normalizeWs(content);
+      const normalizedOld = normalizeWs(oldContent);
+      const idx = normalizedContent.indexOf(normalizedOld);
+      if (idx >= 0) {
+        // Map back to original content positions
+        newFileContent = fuzzyReplace(content, oldContent, newContent);
+      }
+    }
+
+    if (newFileContent === undefined) {
+      const preview = content.slice(0, 500);
+      throw new Error(
+        `Could not find oldContent in skill '${name}'. Content preview:\n${preview}`,
+      );
+    }
+
+    validateSkillContent(name, newFileContent);
+    const packageDir = this.skillPackageDir(existing) ?? this.privateSkillDir(name);
+    this.writeSkillPackage(packageDir, newFileContent, undefined, false);
+    this.updateState(name, { deleted: false, updatedAt: this.clock() });
+    return this.get({ name });
+  }
+
+  transitionLifecycle(name: string, lifecycle: "active" | "stale" | "archived"): void {
+    const id = toSkillId(name);
+    const state = this.readState();
+    const current = state[id]?.lifecycle ?? "active";
+    const order: readonly string[] = ["active", "stale", "archived"];
+    const fromIdx = order.indexOf(current);
+    const toIdx = order.indexOf(lifecycle);
+    if (toIdx < fromIdx) {
+      throw new Error(`Invalid lifecycle transition: ${current} → ${lifecycle}. Only forward transitions are allowed.`);
+    }
+    this.updateState(name, { lifecycle });
+  }
+
+  flushTelemetryBatch(batch: ReadonlyMap<string, { useCount?: number; viewCount?: number; patchCount?: number; lastUsedAt?: number }>): void {
+    if (batch.size === 0) return;
+    const state = this.readState();
+    for (const [skillId, delta] of batch) {
+      const id = toSkillId(skillId);
+      const existing = state[id] ?? {};
+      state[id] = {
+        ...existing,
+        useCount: (existing.useCount ?? 0) + (delta.useCount ?? 0),
+        viewCount: (existing.viewCount ?? 0) + (delta.viewCount ?? 0),
+        patchCount: (existing.patchCount ?? 0) + (delta.patchCount ?? 0),
+        lastUsedAt: delta.lastUsedAt ?? existing.lastUsedAt,
+      };
+    }
+    this.writeState(state);
   }
 
   getFile(params: SkillFileGetParams | unknown): SkillPackageFileContent {
@@ -328,6 +418,11 @@ export class SkillFileStore {
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
         content: defaultSkillContent(skill.name, skill.promptSnippet ?? skill.description),
+        provenance: record.provenance ?? "foreground",
+        lifecycle: record.lifecycle ?? "active",
+        telemetry: (record.useCount || record.viewCount || record.patchCount || record.lastUsedAt)
+          ? { useCount: record.useCount ?? 0, viewCount: record.viewCount ?? 0, patchCount: record.patchCount ?? 0, lastUsedAt: record.lastUsedAt }
+          : undefined,
       }));
     }
 
@@ -396,6 +491,11 @@ export class SkillFileStore {
           tags: [],
           files: this.listPackageFiles(path.dirname(fullPath)),
           content,
+          provenance: record.provenance ?? "foreground",
+          lifecycle: record.lifecycle ?? "active",
+          telemetry: (record.useCount || record.viewCount || record.patchCount || record.lastUsedAt)
+            ? { useCount: record.useCount ?? 0, viewCount: record.viewCount ?? 0, patchCount: record.patchCount ?? 0, lastUsedAt: record.lastUsedAt }
+            : undefined,
         }));
       }
     }
@@ -711,6 +811,34 @@ function classifyPackageFile(filePath: string): "script" | "agent" | "template" 
     return "reference";
   }
   return "other";
+}
+
+/**
+ * Fuzzy find-and-replace: strips all whitespace sequences to single spaces for matching,
+ * then performs the replacement on the original content by tracking character positions.
+ */
+function fuzzyReplace(content: string, oldContent: string, newContent: string): string {
+  const normalizeWs = (s: string) => s.replace(/\s+/g, " ").trim();
+  const normalizedContent = normalizeWs(content);
+  const normalizedOld = normalizeWs(oldContent);
+  const idx = normalizedContent.indexOf(normalizedOld);
+  if (idx < 0) return content;
+
+  // Build a mapping from normalized index → original index
+  const origMap: number[] = [];
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    if (!/\s/.test(ch) || origMap.length === 0 || !/\s/.test(content[origMap[origMap.length - 1]!] as string)) {
+      origMap.push(i);
+    } else if (/\s/.test(ch) && /\s/.test(content[origMap[origMap.length - 1]!] as string)) {
+      // collapse consecutive whitespace: skip
+    }
+  }
+
+  const startOrigIdx = origMap[idx] ?? 0;
+  const endOrigIdx = (origMap[idx + normalizedOld.length] ?? content.length);
+
+  return content.slice(0, startOrigIdx) + newContent + content.slice(endOrigIdx);
 }
 
 function normalizeSkillName(name: string): string {

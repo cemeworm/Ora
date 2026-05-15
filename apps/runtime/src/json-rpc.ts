@@ -128,6 +128,8 @@ export function createRuntimeMethodHandler(
         return store.checkSkillName(request.params);
       case "skills.setEnabled":
         return store.setSkillEnabled(request.params);
+      case "skills.patch":
+        return store.patchSkill(request.params);
       case "providers.list":
         return providerRegistry;
       case "memory.get":

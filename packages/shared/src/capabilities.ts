@@ -4,7 +4,7 @@ import { ProviderConfigSchema } from "./providers.js";
 
 export const DEFAULT_WEB_TOOL_IDS = ["web.fetch", "web.search"] as const;
 export type DefaultWebToolId = typeof DEFAULT_WEB_TOOL_IDS[number];
-export const DEFAULT_SKILL_TOOL_IDS = ["skills.list", "skills.get", "skills.checkName", "skills.create", "skills.update", "skills.setEnabled"] as const;
+export const DEFAULT_SKILL_TOOL_IDS = ["skills.list", "skills.get", "skills.checkName", "skills.create", "skills.update", "skills.setEnabled", "skills.patch"] as const;
 
 export function withDefaultWebToolIds(toolIds: readonly string[] = [], options: { disabled?: boolean } = {}): string[] {
   const withSkillTools = [...new Set([...toolIds, ...DEFAULT_SKILL_TOOL_IDS])];
@@ -240,6 +240,20 @@ export const SkillPackageFileContentSchema = SkillPackageFileDescriptorSchema.ex
 });
 export type SkillPackageFileContent = z.infer<typeof SkillPackageFileContentSchema>;
 
+export const SkillProvenanceSchema = z.enum(["foreground", "background_auto"]);
+export type SkillProvenance = z.infer<typeof SkillProvenanceSchema>;
+
+export const SkillLifecycleSchema = z.enum(["active", "stale", "archived"]);
+export type SkillLifecycle = z.infer<typeof SkillLifecycleSchema>;
+
+export const SkillTelemetrySchema = z.object({
+  useCount: z.number().int().nonnegative().default(0),
+  lastUsedAt: z.number().int().nonnegative().optional(),
+  viewCount: z.number().int().nonnegative().default(0),
+  patchCount: z.number().int().nonnegative().default(0),
+});
+export type SkillTelemetry = z.infer<typeof SkillTelemetrySchema>;
+
 export const SkillDescriptorSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -255,6 +269,9 @@ export const SkillDescriptorSchema = z.object({
   allowedPatterns: z.array(CoordinationPatternSchema).default([]),
   tags: z.array(z.string().min(1)).default([]),
   files: z.array(SkillPackageFileDescriptorSchema).optional(),
+  provenance: SkillProvenanceSchema.default("foreground"),
+  lifecycle: SkillLifecycleSchema.default("active"),
+  telemetry: SkillTelemetrySchema.optional(),
 });
 export type SkillDescriptor = z.infer<typeof SkillDescriptorSchema>;
 
@@ -273,6 +290,8 @@ export const SkillListParamsSchema = z.object({
   enabledOnly: z.boolean().optional(),
   query: z.string().optional(),
   pattern: CoordinationPatternSchema.optional(),
+  lifecycle: SkillLifecycleSchema.optional(),
+  provenance: SkillProvenanceSchema.optional(),
 }).default({});
 export type SkillListParams = z.infer<typeof SkillListParamsSchema>;
 
@@ -291,6 +310,8 @@ export const SkillCreateParamsSchema = z.object({
     executable: z.boolean().optional(),
   })).optional(),
   enabled: z.boolean().default(true),
+  provenance: SkillProvenanceSchema.optional(),
+  autoCreateTrigger: z.string().optional(),
 });
 export type SkillCreateParams = z.infer<typeof SkillCreateParamsSchema>;
 
@@ -326,6 +347,13 @@ export const SkillSetEnabledParamsSchema = z.object({
   name: SkillNameSchema,
   enabled: z.boolean(),
 });
+
+export const SkillPatchParamsSchema = z.object({
+  name: SkillNameSchema,
+  oldContent: z.string().min(1),
+  newContent: z.string().min(1),
+});
+export type SkillPatchParams = z.infer<typeof SkillPatchParamsSchema>;
 export type SkillSetEnabledParams = z.infer<typeof SkillSetEnabledParamsSchema>;
 
 export const SkillFileGetParamsSchema = z.object({
@@ -1114,6 +1142,7 @@ export const MVP_TOOLS: ToolDescriptor[] = [
   { id: "skills.create", label: "Create Skill", description: "Create or install a private Ora skill package from validated SKILL.md content plus optional supporting files.", category: "internal", riskLevel: "requires_approval", parameters: skillsCreateParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "skills.update", label: "Update Skill", description: "Update an editable Ora skill package with validated SKILL.md content while preserving or replacing supporting files.", category: "internal", riskLevel: "requires_approval", parameters: skillsUpdateParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "skills.setEnabled", label: "Enable Skill", description: "Enable or disable an installed Ora skill.", category: "internal", riskLevel: "requires_approval", parameters: skillsSetEnabledParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
+  { id: "skills.patch", label: "Patch Skill", description: "Patch part of a background-created Ora skill using fuzzy find-and-replace. Only works on skills with provenance=background_auto.", category: "internal", riskLevel: "requires_approval", parameters: { type: "object", properties: { name: { ...skillNameParameter, description: "Name of the background skill to patch." }, oldContent: { type: "string", description: "The exact text to find and replace in the skill content." }, newContent: { type: "string", description: "The replacement text." } }, required: ["name", "oldContent", "newContent"], additionalProperties: false }, requiresApproval: true, implemented: true, allowedForProfiles: [] },
   { id: "mcp.listTools", label: "List MCP Tools", description: "List tools exposed by configured MCP servers.", category: "mcp", riskLevel: "low_risk", parameters: mcpListToolsParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "mcp.readResource", label: "Read MCP Resource", description: "Read a resource from a configured MCP server.", category: "mcp", riskLevel: "low_risk", parameters: mcpReadResourceParameters, requiresApproval: false, implemented: true, allowedForProfiles: [] },
   { id: "mcp.call", label: "MCP Tool Call", description: "Invoke a tool on a configured MCP server.", category: "mcp", riskLevel: "requires_approval", parameters: mcpCallParameters, requiresApproval: true, implemented: true, allowedForProfiles: [] },
@@ -1283,6 +1312,8 @@ export const MVP_SKILLS: SkillDescriptor[] = [
     description: "Keep complex work resumable with a task journal, checkpoints, and strict verification gates.",
     category: "public",
     editable: false,
+    provenance: "foreground",
+    lifecycle: "active",
     promptSnippet: "Use a task journal for complex multi-step work and keep verification evidence explicit.",
     path: "skills/long-task-protocol/SKILL.md",
     allowedPatterns: [

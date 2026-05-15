@@ -40,6 +40,7 @@ export const IMPLEMENTED_RUNTIME_TOOL_IDS = [
   "skills.create",
   "skills.update",
   "skills.setEnabled",
+  "skills.patch",
   "mcp.listTools",
   "mcp.readResource",
   "mcp.call",
@@ -202,6 +203,11 @@ export interface SkillRegistryTools {
   create(params: unknown): SkillDetail;
   update(params: unknown): SkillDetail;
   setEnabled(params: unknown): SkillDetail;
+  patch(params: unknown): SkillDetail;
+  recordTelemetry(name: string, event: "use" | "view" | "patch"): void;
+  flushTelemetry(): void;
+  evaluateCurator(): void;
+  evaluateCuratorIfDue(): void;
 }
 
 export interface ModeRegistryTools {
