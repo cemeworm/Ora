@@ -36,6 +36,7 @@ export class MemoryDreamingScheduler {
     this.timer = setInterval(() => {
       void this.tick();
     }, TICK_INTERVAL_MS);
+    this.timer.unref?.();
   }
 
   stop(): void {
