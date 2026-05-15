@@ -9,7 +9,7 @@ import {
   StateSnapshotSchema,
   type AgentConversationMessage
 } from "@cemeworm/shared";
-import { createFailedRunEvent, statusForRunEvent } from "./run-orchestration.js";
+import { createFailedRunEvent, createInterruptedRunEvent, statusForRunEvent } from "./run-orchestration.js";
 
 export function publishRunStream(params: {
   onStream?: (stream: RunEventStream) => void;
@@ -65,6 +65,13 @@ export function applyStreamingRunEvent(
   event: OraEventEnvelope,
 ): StateSnapshot {
   if (isPureDeltaEvent(event)) {
+    liveSnapshot.events.push(event);
+    liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
+    liveSnapshot.updatedAt = event.createdAt;
+    return liveSnapshot;
+  }
+
+  if (isPassiveAccumulationEvent(event)) {
     liveSnapshot.events.push(event);
     liveSnapshot.status = statusForRunEvent(event.type, liveSnapshot.status);
     liveSnapshot.updatedAt = event.createdAt;
@@ -253,7 +260,7 @@ function mergeStreamingAgentMessage(
 ): AgentConversationMessage[] {
   const message = agentMessageFromEvent(event);
   if (!message) {
-    return [...agentMessages];
+    return agentMessages as AgentConversationMessage[];
   }
   const messageById = new Map(agentMessages.map((entry) => [entry.id, entry]));
   messageById.set(message.id, message);
@@ -276,6 +283,10 @@ function isPureDeltaEvent(event: OraEventEnvelope): boolean {
   return event.type === "message.delta" || event.type === "token.delta";
 }
 
+function isPassiveAccumulationEvent(event: OraEventEnvelope): boolean {
+  return event.type === "node.updated" || event.type === "context.usage.updated";
+}
+
 function isPureDeltaStream(events: readonly OraEventEnvelope[]): boolean {
   return events.length > 0 && events.every(isPureDeltaEvent);
 }
@@ -283,6 +294,10 @@ function isPureDeltaStream(events: readonly OraEventEnvelope[]): boolean {
 export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {
   if (event.type === "message.delta" || event.type === "token.delta") {
     return event.seq % 128 === 0;
+  }
+  if (event.type === "action.updated" && isRecord(event.payload) && isRecord(event.payload.record)) {
+    const status = (event.payload.record as { status?: string }).status;
+    return status === "approval_required" || status === "completed" || status === "failed";
   }
   if (isDurableStateBoundaryEvent(event)) {
     return true;
@@ -292,7 +307,6 @@ export function shouldFlushStreamingEvent(event: OraEventEnvelope): boolean {
 
 function isDurableStateBoundaryEvent(event: OraEventEnvelope): boolean {
   return event.type.startsWith("run.") ||
-    event.type === "action.updated" ||
     event.type === "tool.called" ||
     event.type === "approval.required" ||
     event.type === "approval.resolved" ||
@@ -301,7 +315,6 @@ function isDurableStateBoundaryEvent(event: OraEventEnvelope): boolean {
     event.type === "plan.updated" ||
     event.type === "todo.updated" ||
     event.type === "plan_list.updated" ||
-    event.type === "node.updated" ||
     event.type === "checkpoint.created" ||
     event.type === "shared_state.updated" ||
     event.type === "artifact.exported" ||
@@ -371,6 +384,36 @@ export function createStreamingFailure(params: {
       error: detail,
       events: [...params.liveSnapshot.events, event],
       updatedAt: params.failedAt,
+    })),
+  };
+}
+
+export function createStreamingInterrupt(params: {
+  liveSnapshot: StateSnapshot;
+  runId: string;
+  pattern: StateSnapshot["pattern"];
+  reason: string;
+  error?: string;
+  interruptedAt: number;
+}): { detail: string; event: OraEventEnvelope; snapshot: StateSnapshot } {
+  const detail = params.error ?? params.reason;
+  const event = createInterruptedRunEvent({
+    runId: params.runId,
+    seq: params.liveSnapshot.events.length,
+    createdAt: params.interruptedAt,
+    pattern: params.pattern,
+    reason: params.reason,
+    error: params.error,
+  });
+  return {
+    detail,
+    event,
+    snapshot: normalizeRunAttention(StateSnapshotSchema.parse({
+      ...params.liveSnapshot,
+      status: "interrupted",
+      error: detail,
+      events: [...params.liveSnapshot.events, event],
+      updatedAt: params.interruptedAt,
     })),
   };
 }

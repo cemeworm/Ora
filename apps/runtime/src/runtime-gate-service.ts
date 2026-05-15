@@ -283,7 +283,7 @@ export class RuntimeGateService {
 
   approvalOpenedEntry(params: ApprovalGateOpenedParams): RuntimeGateLedgerEntry {
     return {
-      id: `${params.runId}:gate:approval`,
+      id: `${params.runId}:gate:approval-${params.createdAt}`,
       type: "gate.opened",
       runId: params.runId,
       turnIndex: params.turnIndex ?? 1,
