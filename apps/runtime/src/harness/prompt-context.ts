@@ -1,4 +1,5 @@
 import type { AgentProfile, SkillDescriptor, UserTaskInput } from "@cemeworm/shared";
+import type { PromptSectionCache } from "./prompt-cache.js";
 
 export type AgentPromptSectionId =
   | "custom_persona"
@@ -40,6 +41,7 @@ export interface AgentPromptContextInput {
   toolProtocol?: string;
   skillSnippets?: string[];
   toolIds?: readonly string[];
+  cache?: PromptSectionCache;
 }
 
 export interface BuiltAgentPromptContext {
@@ -49,18 +51,20 @@ export interface BuiltAgentPromptContext {
 }
 
 export function buildAgentPromptContext(input: AgentPromptContextInput): BuiltAgentPromptContext {
+  const cache = input.cache;
+
   // Order sections from the most reusable prompt prefix to the highest-churn run-local context.
   const sections = [
-    promptSection("custom_persona", "Custom Agent Persona", input.customPersona),
-    promptSection("system_agent_override", "System Agent Override", input.systemAgentOverride),
-    promptSection("agent_system_prompt", "Agent System Prompt", input.profile?.systemPrompt),
-    promptSection("agent_profile", "Agent Profile", profileSection(input.agentId, input.profile, input.customAgentId)),
-    promptSection("operating_protocol", "Operating Protocol", operatingProtocolSection()),
-    promptSection("tool_protocol", "Tool Protocol", input.toolProtocol),
-    promptSection("skills_guidance", "Skills Guidance", skillsGuidanceSection()),
-    promptSection("available_skills", "Available Skills", availableSkillsSection(input.availableSkills)),
+    cachedSection(cache, "custom_persona", "Custom Agent Persona", cache?.hashInput(input.customPersona), () => input.customPersona),
+    cachedSection(cache, "system_agent_override", "System Agent Override", cache?.hashInput(input.systemAgentOverride), () => input.systemAgentOverride),
+    cachedSection(cache, "agent_system_prompt", "Agent System Prompt", cache?.hashInput(input.profile?.systemPrompt), () => input.profile?.systemPrompt),
+    cachedSection(cache, "agent_profile", "Agent Profile", cache?.hashInput({ agentId: input.agentId, profile: input.profile, customAgentId: input.customAgentId }), () => profileSection(input.agentId, input.profile, input.customAgentId)),
+    cachedSection(cache, "operating_protocol", "Operating Protocol", "static:v1", () => operatingProtocolSection()),
+    cachedSection(cache, "tool_protocol", "Tool Protocol", cache?.hashInput(input.toolProtocol), () => input.toolProtocol),
+    cachedSection(cache, "skills_guidance", "Skills Guidance", "static:v1", () => skillsGuidanceSection()),
+    cachedSection(cache, "available_skills", "Available Skills", cache?.hashInput(input.availableSkills), () => availableSkillsSection(input.availableSkills)),
     ...skillSections(input.skillSnippets),
-    promptSection("mcp_deferred_tools", "MCP / Deferred Tools", mcpDeferredToolsSection(input.toolIds)),
+    cachedSection(cache, "mcp_deferred_tools", "MCP / Deferred Tools", cache?.hashInput(input.toolIds), () => mcpDeferredToolsSection(input.toolIds)),
     promptSection("task_intent_context", "Task Intent", input.taskIntentContext),
     promptSection("workspace_context", "Workspace Context", input.workspaceContext),
     promptSection("stage_instructions", "Stage Instructions", input.stageSystem),
@@ -140,6 +144,27 @@ function promptSection(
   return { id, title, content: trimmed };
 }
 
+function cachedSection(
+  cache: PromptSectionCache | undefined,
+  sectionId: AgentPromptSectionId,
+  title: string,
+  inputHash: string | undefined,
+  compute: () => string | undefined,
+): AgentPromptSection | undefined {
+  if (!cache || inputHash === undefined) {
+    return promptSection(sectionId, title, compute());
+  }
+  const cached = cache.get(sectionId, inputHash);
+  if (cached !== undefined) {
+    return { id: sectionId, title, content: cached };
+  }
+  const content = compute();
+  if (content !== undefined) {
+    cache.set(sectionId, inputHash, content);
+  }
+  return content ? { id: sectionId, title, content } : undefined;
+}
+
 function profileSection(
   agentId: string,
   profile: AgentProfile | undefined,
@@ -164,11 +189,17 @@ const SKILL_METADATA_BUDGET_CHARS = 8000;
 const SKILL_DESCRIPTION_TRUNCATED_WARNING =
   "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter.";
 
+function sortByTelemetry(skills: SkillDescriptor[]): SkillDescriptor[] {
+  return [...skills].sort((a, b) => (b.telemetry?.useCount ?? 0) - (a.telemetry?.useCount ?? 0));
+}
+
 function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined): string | undefined {
   const enabled = (skills ?? []).filter((skill) => skill.enabled);
   if (enabled.length === 0) {
     return undefined;
   }
+
+  const budget = SKILL_METADATA_BUDGET_CHARS;
 
   const usageRule = [
     "  <usage_rule>",
@@ -179,42 +210,63 @@ function availableSkillsSection(skills: readonly SkillDescriptor[] | undefined):
     "  </usage_rule>",
   ].join("\n");
 
+  // Level 1: full descriptions — all skills with complete descriptions
   const fullEntries = enabled.map((skill) => renderSkillEntry(skill, skill.description));
   const fullBody = fullEntries.join("\n");
-  const fullCost = new TextEncoder().encode(fullBody).length;
+  const fullCost = byteLength(fullBody);
 
-  if (fullCost <= SKILL_METADATA_BUDGET_CHARS) {
+  if (fullCost <= budget) {
     return buildSkillSystemBlock(usageRule, fullBody);
   }
 
-  // Level 2: truncated descriptions — distribute budget equally
-  const overhead = fullCost - fullBody.length + fullBody.length - enabled.reduce((sum, s) => sum + s.description.length, 0);
-  const availableForDescriptions = SKILL_METADATA_BUDGET_CHARS - overhead;
-  const perSkillChars = Math.max(20, Math.floor(availableForDescriptions / enabled.length));
+  // From L2 onward: sort by telemetry useCount (descending)
+  const ranked = sortByTelemetry(enabled);
 
-  let truncatedBody = enabled
+  // Level 2: truncated descriptions — distribute budget equally, telemetry-ordered
+  // overhead includes all XML tags (including <description></description> wrapping)
+  const descChars = enabled.reduce((sum, s) => sum + s.description.length, 0);
+  const overhead = fullCost - descChars;
+  const availableForDescriptions = budget - overhead;
+  const perSkillChars = Math.max(20, Math.floor(availableForDescriptions / ranked.length));
+
+  const truncatedBody = ranked
     .map((skill) => renderSkillEntry(skill, truncateDescription(skill.description, perSkillChars)))
     .join("\n");
-  let truncatedCost = new TextEncoder().encode(truncatedBody).length;
 
-  if (truncatedCost <= SKILL_METADATA_BUDGET_CHARS) {
+  if (byteLength(truncatedBody) <= budget) {
     return buildSkillSystemBlock(usageRule, truncatedBody);
   }
 
-  // Level 3: minimal — name + location only
-  const minimalEntries = enabled.map((skill) => renderSkillEntry(skill, ""));
-  let minimalBody = minimalEntries.join("\n");
-  let minimalCost = new TextEncoder().encode(minimalBody).length;
+  // Level 3: telemetry-priority top-N — only active skills, truncated descriptions, by useCount
+  const active = ranked.filter((s) => s.lifecycle !== "stale" && s.lifecycle !== "archived");
+  const l3Skills = active.length > 0 ? active : ranked;
+  const l3FullBody = l3Skills.map((skill) => renderSkillEntry(skill, skill.description)).join("\n");
+  const l3FullCost = byteLength(l3FullBody);
+  const l3DescChars = l3Skills.reduce((sum, s) => sum + s.description.length, 0);
+  const l3Overhead = l3FullCost - l3DescChars;
+  const l3Available = budget - l3Overhead;
+  const l3PerSkill = Math.max(20, Math.floor(l3Available / l3Skills.length));
+  const l3Body = l3Skills
+    .map((skill) => renderSkillEntry(skill, truncateDescription(skill.description, l3PerSkill)))
+    .join("\n");
 
-  if (minimalCost <= SKILL_METADATA_BUDGET_CHARS) {
+  if (byteLength(l3Body) <= budget) {
+    return buildSkillSystemBlock(usageRule, l3Body);
+  }
+
+  // Level 4: minimal — name + location only, telemetry-ordered
+  const minimalEntries = ranked.map((skill) => renderSkillEntry(skill, ""));
+  const minimalBody = minimalEntries.join("\n");
+
+  if (byteLength(minimalBody) <= budget) {
     return buildSkillSystemBlock(usageRule, minimalBody);
   }
 
-  // Level 4: omit skills that don't fit
+  // Level 5: omit skills that don't fit (highest telemetry first)
   const kept: string[] = [];
   for (const entry of minimalEntries) {
     const tentative = kept.length > 0 ? kept.join("\n") + "\n" + entry : entry;
-    if (new TextEncoder().encode(tentative).length <= SKILL_METADATA_BUDGET_CHARS) {
+    if (byteLength(tentative) <= budget) {
       kept.push(entry);
     } else {
       break;
@@ -240,6 +292,10 @@ function truncateDescription(desc: string, maxChars: number): string {
   const truncated = desc.slice(0, maxChars - 3);
   const lastSpace = truncated.lastIndexOf(" ");
   return (lastSpace > maxChars / 2 ? truncated.slice(0, lastSpace) : truncated) + "...";
+}
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
 }
 
 function buildSkillSystemBlock(usageRule: string, body: string): string {

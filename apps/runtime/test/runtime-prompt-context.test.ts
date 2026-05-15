@@ -69,6 +69,7 @@ describe("buildAgentPromptContext", () => {
       "agent_profile",
       "operating_protocol",
       "tool_protocol",
+      "skills_guidance",
       "available_skills",
       "skills",
       "mcp_deferred_tools",
@@ -109,7 +110,7 @@ describe("buildAgentPromptContext", () => {
       skillSnippets: ["  "],
     });
 
-    expect(context.sections.map((section) => section.id)).toEqual(["operating_protocol", "stage_instructions"]);
+    expect(context.sections.map((section) => section.id)).toEqual(["operating_protocol", "skills_guidance", "stage_instructions"]);
     expect(context.stablePrefix).toContain("Ora operating protocol:");
     expect(context.system).toContain("Ora operating protocol:");
     expect(context.system).toContain("You are the solo agent.");
