@@ -1,5 +1,9 @@
 # Ora
 
+<p align="center">
+  <img src="apps/desktop/public/fox_logo.png" alt="Ora Logo" width="200">
+</p>
+
 简体中文 | [English](README.en.md)
 
 Ora 是一个桌面端 AI 工作台。它把模式、智能体、技能和模型提供商放在同一个界面里，让你先选怎么跑，再交给对应的智能体。
