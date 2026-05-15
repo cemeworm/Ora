@@ -1035,6 +1035,7 @@ function WorkbenchInner() {
             actionRecords={actionRecords}
             selectedCustomAgentId={state.selectedCustomAgentId}
             projectLabel={selectedProject?.label}
+            projectRootPath={selectedProject?.rootPath}
             activeSnapshot={getActiveSnapshot(state.runLifecycle)}
             agents={agents}
             busyCommand={state.busyCommand}
