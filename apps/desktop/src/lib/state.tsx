@@ -3102,6 +3102,21 @@ export function workbenchReducer(
           isLoading,
         };
       }
+      // Passive-only stream early exit: skip full merge for node.updated/context.usage.updated
+      // events that don't change any visible projection.
+      const isPassiveOnlyStream =
+        streamBelongsToActiveTurn &&
+        !action.stream.snapshot &&
+        action.stream.events.length > 0 &&
+        action.stream.events.every(e =>
+          e.type === "node.updated" || e.type === "context.usage.updated");
+      if (isPassiveOnlyStream) {
+        const selectedBeatId = action.stream.events.at(-1)?.id ?? state.selectedBeatId;
+        if (selectedBeatId === state.selectedBeatId && state.isLoading) {
+          return state;
+        }
+        return { ...state, selectedBeatId, isLoading: true };
+      }
       if (!streamMatchesActiveSession) {
         const streamStatus = streamRunStatus(action.stream, action.stream.snapshot);
         if (!isSettledRunStatus(streamStatus) && !action.stream.snapshot) {
