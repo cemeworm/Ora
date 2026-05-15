@@ -1,3 +1,5 @@
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   type ActionRiskLevel,
   type ActionRecord,
@@ -91,6 +93,7 @@ import {
   resolveClarificationAnswer,
 } from "./runtime-clarifications.js";
 import { buildAgentPromptContext, temporalContextPrompt, userClarificationContextPrompt } from "./prompt-context.js";
+import { PromptSectionCache } from "./prompt-cache.js";
 import { extractSkillMentions, resolveSkillMentions } from "./skill-mention.js";
 import {
   attachedImagesSystemPrompt,
@@ -162,6 +165,7 @@ export interface RuntimeKernelOptions {
   streamProvider?: boolean;
   signal?: AbortSignal;
   onEvent?: (event: OraEventEnvelope) => void;
+  promptCache?: PromptSectionCache;
 }
 
 class KernelRuntimeContext {
@@ -704,6 +708,10 @@ export async function executeRuntimeKernel(
   const projectId = input.projectId ?? "local-project";
   const skillRegistry = options.skillRegistry ?? new RuntimeSkillRegistry();
   const toolRegistry = options.toolRegistry ?? new RuntimeToolRegistry();
+  const promptCache = options.promptCache ?? new PromptSectionCache({
+    maxEntries: 200,
+    snapshotPath: path.join(os.homedir(), ".ora", "prompt-cache.json"),
+  });
   const packageManager = new PackageManager();
   const tools = toolRegistry.snapshot();
   const taskIntent = config.metadata.taskIntent as TaskIntent | undefined;
@@ -1364,6 +1372,7 @@ export async function executeRuntimeKernel(
       toolProtocol: toolPrompt,
       skillSnippets: snippets,
       toolIds,
+      cache: promptCache,
     });
   };
 
@@ -2079,6 +2088,7 @@ export async function executeRuntimeKernel(
         });
         skillRegistry.flushTelemetry();
         skillRegistry.evaluateCuratorIfDue();
+        promptCache.saveSnapshot();
         return kernelRuntimeContext.assembleFinalSnapshot({
           status: "interrupted",
           input,
@@ -2137,6 +2147,7 @@ export async function executeRuntimeKernel(
 
     skillRegistry.flushTelemetry();
     skillRegistry.evaluateCuratorIfDue();
+    promptCache.saveSnapshot();
     emit("run.done", { status: "succeeded", output });
     const checkpoint = createResumeCheckpoint({
       runId,
@@ -2679,6 +2690,7 @@ export async function executeRuntimeKernel(
 
   skillRegistry.flushTelemetry();
   skillRegistry.evaluateCuratorIfDue();
+  promptCache.saveSnapshot();
 
   return {
     snapshot,
