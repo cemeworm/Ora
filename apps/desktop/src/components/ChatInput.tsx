@@ -377,6 +377,15 @@ export function ChatInput({
   ]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      e.key === "Backspace" &&
+      textareaRef.current?.selectionStart === 0 &&
+      selectedSkills.length > 0
+    ) {
+      e.preventDefault();
+      removeSkill(selectedSkills[selectedSkills.length - 1].id);
+      return;
+    }
     if (e.key === "Escape" && openPicker === "skills") {
       setOpenPicker(undefined);
       return;
@@ -658,17 +667,13 @@ export function ChatInput({
                 {selectedSkills.length > 0 && (
                   <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 pl-3 pt-4">
                     {selectedSkills.map((skill) => (
-                      <button
+                      <span
                         key={skill.id}
-                        type="button"
-                        onClick={() => removeSkill(skill.id)}
-                        className="inline-flex h-6 max-w-[220px] items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 text-xs font-medium text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
-                        title={`Remove ${skill.name}`}
+                        className="inline-flex h-6 max-w-[220px] items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 text-xs font-medium text-violet-700"
                       >
                         <Check size={11} />
                         <span className="truncate">{skill.name}</span>
-                        <X size={10} className="text-violet-500" />
-                      </button>
+                      </span>
                     ))}
                   </div>
                 )}
