@@ -322,7 +322,7 @@ export const RunConfigSchema = z.object({
   toolIds: z.array(z.string().min(1)).default([]),
   searchProvider: SearchProviderConfigSchema.optional(),
   approvalMode: z.enum(["auto", "manual", "high_risk_only"]).default("high_risk_only"),
-  permissionMode: PermissionModeSchema.default("default"),
+  permissionMode: PermissionModeSchema.default("auto_review"),
   permissionProfileId: z.string().min(1).optional(),
   patternOptions: z.record(z.unknown()).default({}),
   metadata: z.record(z.unknown()).default({}),
@@ -1862,11 +1862,10 @@ export function runtimeStatusForRunAttention(attention: RunAttention | undefined
 }
 
 export function normalizeRunAttention(snapshot: StateSnapshot): StateSnapshot {
-  const normalized = StateSnapshotSchema.parse(snapshot);
-  return StateSnapshotSchema.parse({
-    ...normalized,
-    attention: deriveRunAttention(normalized),
-  });
+  return {
+    ...snapshot,
+    attention: deriveRunAttention(snapshot),
+  };
 }
 
 export const SessionDetailSchema = z.object({

@@ -670,10 +670,6 @@ function applyEntryToProjection(state: ProjectionState, entry: RuntimeSessionEnt
     case "gate.opened": {
       const payload = GateOpenedPayloadSchema.parse(entry.payload);
       if (!entry.runId) break;
-      const existing = state.gates.get(payload.gateId);
-      if (existing?.status === "resolved") {
-        break;
-      }
       const gate = RuntimeGateProjectionSchema.parse({
         gateId: payload.gateId,
         kind: payload.kind,
