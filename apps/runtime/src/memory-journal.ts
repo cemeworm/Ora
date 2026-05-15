@@ -36,6 +36,9 @@ function redactContent(content: string): { redacted: string; wasRedacted: boolea
 
 export class ShortTermMemoryJournal {
   private readonly journalPath: string;
+  // D13: in-memory cache to avoid O(n) file reads on every operation
+  private cache: ShortTermSignal[] | undefined;
+  private cacheIds: Set<string> | undefined;
 
   constructor(dataDir: string, projectId?: string) {
     const dir = projectId ? path.join(dataDir, "projects", projectId) : dataDir;
@@ -54,12 +57,11 @@ export class ShortTermMemoryJournal {
   }): ShortTermSignal {
     const { redacted, wasRedacted } = redactContent(params.content);
     const now = new Date().toISOString();
-    const existing = this.readAll();
     const eventKey = `${params.runId}:${params.type}:${hashId(redacted)}`;
 
-    if (existing.some((s) => s.id === eventKey)) {
-      const found = existing.find((s) => s.id === eventKey)!;
-      return found;
+    this.ensureCache();
+    if (this.cacheIds!.has(eventKey)) {
+      return this.cache!.find((s) => s.id === eventKey)!;
     }
 
     const signal = ShortTermSignalSchema.parse({
@@ -76,36 +78,63 @@ export class ShortTermMemoryJournal {
       metadata: params.metadata ?? {},
     });
 
-    const all = [...existing, signal].slice(-MAX_JOURNAL_ENTRIES);
-    this.writeAll(all);
+    // Append single line directly — no full rewrite
+    fs.mkdirSync(path.dirname(this.journalPath), { recursive: true });
+    fs.appendFileSync(this.journalPath, `${JSON.stringify(signal)}\n`, "utf8");
+
+    this.cache!.push(signal);
+    this.cacheIds!.add(eventKey);
+
+    // Compact only when exceeding limit
+    if (this.cache!.length > MAX_JOURNAL_ENTRIES) {
+      const trimmed = this.cache!.slice(-MAX_JOURNAL_ENTRIES);
+      this.cache = trimmed;
+      this.cacheIds = new Set(trimmed.map((s) => s.id));
+      this.writeAll(trimmed);
+    }
+
     return signal;
   }
 
   readRecent(maxEntries: number = 50): ShortTermSignal[] {
-    return this.readAll().slice(-maxEntries);
+    this.ensureCache();
+    return this.cache!.slice(-maxEntries);
   }
 
   readByRun(runId: string): ShortTermSignal[] {
-    return this.readAll().filter((s) => s.runId === runId);
+    this.ensureCache();
+    return this.cache!.filter((s) => s.runId === runId);
   }
 
   readBySession(sessionId: string): ShortTermSignal[] {
-    return this.readAll().filter((s) => s.sessionId === sessionId);
+    this.ensureCache();
+    return this.cache!.filter((s) => s.sessionId === sessionId);
   }
 
   readByType(type: ShortTermSignalType, maxEntries: number = 50): ShortTermSignal[] {
-    return this.readAll().filter((s) => s.type === type).slice(-maxEntries);
+    this.ensureCache();
+    return this.cache!.filter((s) => s.type === type).slice(-maxEntries);
   }
 
   count(): number {
-    return this.readAll().length;
+    this.ensureCache();
+    return this.cache!.length;
   }
 
   clear(): void {
+    this.cache = [];
+    this.cacheIds = new Set();
     this.writeAll([]);
   }
 
-  private readAll(): ShortTermSignal[] {
+  private ensureCache(): void {
+    if (this.cache !== undefined) return;
+    const signals = this.readAllFromFile();
+    this.cache = signals;
+    this.cacheIds = new Set(signals.map((s) => s.id));
+  }
+
+  private readAllFromFile(): ShortTermSignal[] {
     try {
       if (!fs.existsSync(this.journalPath)) return [];
       const text = fs.readFileSync(this.journalPath, "utf8").trim();

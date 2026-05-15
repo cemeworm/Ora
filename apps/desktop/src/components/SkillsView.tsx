@@ -110,6 +110,15 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
     });
   }, [enabledFilter, registry.skills]);
 
+  const maxUseCount = useMemo(() => {
+    let max = 0;
+    for (const skill of visibleSkills) {
+      const count = skill.telemetry?.useCount ?? 0;
+      if (count > max) max = count;
+    }
+    return max;
+  }, [visibleSkills]);
+
   async function loadSkills(nextQuery = query, nextCategory = category, activeName = selectedSkill?.name) {
     setBusy("refresh");
     setError("");
@@ -500,6 +509,14 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                     </span>
                   )}
                 </div>
+                {maxUseCount > 0 && (skill.telemetry?.useCount ?? 0) > 0 && (
+                  <div className="mt-2 h-[2px] rounded-full bg-bench-100">
+                    <div
+                      className="h-full rounded-full bg-bench-400 transition-all"
+                      style={{ width: `${Math.min(100, ((skill.telemetry?.useCount ?? 0) / maxUseCount) * 100)}%` }}
+                    />
+                  </div>
+                )}
               </button>
             ))}
           </div>
@@ -620,19 +637,22 @@ export function SkillsView({ runtimeClient }: { runtimeClient: RuntimeClient }) 
                       )}
                     </div>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-bench-700">{selectedSkill.description}</p>
-                    {selectedSkill.telemetry && (
-                      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-bench-500">
-                        {selectedSkill.telemetry.useCount > 0 && (
-                          <span className="inline-flex items-center gap-1"><Zap size={10} /> Used {selectedSkill.telemetry.useCount}×</span>
-                        )}
-                        {selectedSkill.telemetry.patchCount > 0 && (
-                          <span>Patched {selectedSkill.telemetry.patchCount}×</span>
-                        )}
-                        {selectedSkill.telemetry.lastUsedAt != null && selectedSkill.telemetry.lastUsedAt > 0 && (
-                          <span>Last used {formatRelativeTime(selectedSkill.telemetry.lastUsedAt)}</span>
-                        )}
-                      </div>
-                    )}
+                    {selectedSkill.telemetry && (() => {
+                      const t = selectedSkill.telemetry;
+                      const hasData = (t.useCount ?? 0) > 0 || (t.viewCount ?? 0) > 0 || (t.patchCount ?? 0) > 0 || (t.lastUsedAt ?? 0) > 0;
+                      if (!hasData) return null;
+                      return (
+                        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <TelemetryCard icon={<Zap size={12} />} label="Uses" value={t.useCount} />
+                          <TelemetryCard icon={<Eye size={12} />} label="Views" value={t.viewCount} />
+                          <TelemetryCard icon={<FileCode2 size={12} />} label="Patches" value={t.patchCount} />
+                          <TelemetryCard
+                            label="Last used"
+                            value={t.lastUsedAt && t.lastUsedAt > 0 ? formatRelativeTime(t.lastUsedAt) : undefined}
+                          />
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -885,4 +905,17 @@ function formatRelativeTime(timestamp: number): string {
   if (days < 30) return `${days}d ago`;
   const months = Math.floor(days / 30);
   return `${months}mo ago`;
+}
+
+function TelemetryCard({ icon, label, value }: { icon?: React.ReactNode; label: string; value: number | string | undefined }) {
+  if (value === undefined || value === 0) return null;
+  return (
+    <div className="rounded-md border border-bench-150 bg-bench-25 px-2.5 py-1.5">
+      <div className="flex items-center gap-1 text-bench-600">
+        {icon}
+        <span className="text-[10px] font-semibold uppercase tracking-wide">{label}</span>
+      </div>
+      <div className="mt-0.5 text-sm font-semibold tabular-nums text-bench-900">{value}</div>
+    </div>
+  );
 }

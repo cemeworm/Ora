@@ -23,7 +23,8 @@ export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
 
 export const LongTermMemorySectionSchema = z.object({
   summary: z.string().default(""),
-  updatedAt: z.string().default("")
+  updatedAt: z.string().default(""),
+  previousSummary: z.string().optional()
 });
 export type LongTermMemorySection = z.infer<typeof LongTermMemorySectionSchema>;
 
