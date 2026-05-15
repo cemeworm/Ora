@@ -262,6 +262,7 @@ export interface WorkbenchState {
   >;
   sessionLocalFileAttachments: Record<string, ComposerLocalFileAttachment[]>;
   runLifecycle: RunLifecycle;
+  preservedSettledSnapshot: OraStateSnapshot | undefined;
   liveMessageDeltaBuffer: LiveMessageDeltaBuffer;
   pendingPlanDecisionResolution: PendingPlanDecisionResolution | undefined;
   isLoading: boolean;
@@ -446,13 +447,14 @@ export const initialWorkbenchState: WorkbenchState = {
   sessionPromptTexts: {},
   selectedSkillIds: [],
   sessionSkillIds: {},
-  permissionMode: "default",
+  permissionMode: "auto_review",
   sessionPermissionModes: {},
   taskIntent: "chat",
   sessionTaskIntents: {},
   sessionProjectFileAttachments: {},
   sessionLocalFileAttachments: {},
   runLifecycle: { stage: "idle" },
+  preservedSettledSnapshot: undefined,
   liveMessageDeltaBuffer: {},
   pendingPlanDecisionResolution: undefined,
   isLoading: false,
@@ -1243,8 +1245,9 @@ export function deriveRenderableTurnSnapshots(params: {
   activeSnapshot: OraStateSnapshot | undefined;
   turnSnapshots: Record<string, OraStateSnapshot>;
   selectedSessionId: string | undefined;
+  preservedSettledSnapshot: OraStateSnapshot | undefined;
 }): Record<string, OraStateSnapshot> {
-  const { detail, activeSnapshot: latestSnapshot, turnSnapshots, selectedSessionId } = params;
+  const { detail, activeSnapshot: latestSnapshot, turnSnapshots, selectedSessionId, preservedSettledSnapshot } = params;
   if (!detail) {
     if (latestSnapshot && latestSnapshot.sessionId === selectedSessionId) {
       return { [latestSnapshot.runId]: latestSnapshot };
@@ -1274,6 +1277,13 @@ export function deriveRenderableTurnSnapshots(params: {
           scopedSnapshots[turn.runId] = { ...latestSnapshot, runId: turn.runId, turnIndex: turn.turnIndex, events: turnEvents };
         }
       }
+    }
+  }
+
+  if (preservedSettledSnapshot) {
+    const { sessionId, runId } = preservedSettledSnapshot;
+    if ((!sessionId || sessionId === activeSessionId) && !scopedSnapshots[runId]) {
+      scopedSnapshots[runId] = preservedSettledSnapshot;
     }
   }
 
@@ -3202,6 +3212,9 @@ export function workbenchReducer(
         ...state,
         sessions,
         activeSessionDetail,
+        preservedSettledSnapshot: streamBelongsToActiveTurn
+          ? undefined
+          : state.preservedSettledSnapshot,
         sessionDetailsById: (() => {
           let next = activeSessionDetail
             ? cacheSessionDetail(state.sessionDetailsById, activeSessionDetail)
@@ -3377,6 +3390,7 @@ export function workbenchReducer(
         : state;
 
     case "BEGIN_RUN_REQUEST": {
+      const currentSnapshot = getActiveSnapshot(state.runLifecycle);
       return {
         ...state,
         runLifecycle: {
@@ -3386,6 +3400,9 @@ export function workbenchReducer(
           createdAt: action.createdAt,
         },
         liveMessageDeltaBuffer: {},
+        preservedSettledSnapshot: currentSnapshot && isSettledRunStatus(currentSnapshot.status)
+          ? currentSnapshot
+          : state.preservedSettledSnapshot,
         pendingPlanDecisionResolution: undefined,
         selectedSkillIds: [],
         sessionSkillIds: clearSessionSkillIds(state, action.sessionId),
@@ -3406,6 +3423,7 @@ export function workbenchReducer(
       return {
         ...state,
         selectedTurnRunId: action.runId,
+        preservedSettledSnapshot: undefined,
         runLifecycle:
           state.runLifecycle.stage === "pending"
             ? { ...state.runLifecycle, runId: action.runId }

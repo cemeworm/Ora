@@ -735,12 +735,14 @@ function WorkbenchInner() {
         activeSnapshot: getActiveSnapshot(state.runLifecycle),
         turnSnapshots,
         selectedSessionId: state.selectedSessionId,
+        preservedSettledSnapshot: state.preservedSettledSnapshot,
       }),
     [
       state.activeSessionDetail,
       turnSnapshots,
       getActiveSnapshot(state.runLifecycle),
       state.selectedSessionId,
+      state.preservedSettledSnapshot,
     ],
   );
 

@@ -247,6 +247,10 @@ import {
   scheduleLongTermMemoryUpdate,
   type MemoryUpdateDeps
 } from "./memory-updates.js";
+import { ShortTermMemoryJournal } from "./memory-journal.js";
+import { MemoryDreamingService } from "./memory-dreaming.js";
+import { MemoryDreamingScheduler } from "./memory-dreaming-scheduler.js";
+import { MemoryIndexStore, type EmbeddingProvider } from "./memory-index.js";
 import {
   migrateLegacyOraMvpProjectPlaceholder,
   migrateLegacyRunsIntoSessions
@@ -365,6 +369,10 @@ export class LocalRunStore {
   private readonly skillRegistry: RuntimeSkillRegistry;
   private readonly longTermMemory: LongTermMemoryManager;
   private readonly longTermMemoryQueue: LongTermMemoryUpdateQueue;
+  private readonly journal: ShortTermMemoryJournal;
+  private readonly dreamingScheduler: MemoryDreamingScheduler;
+  private readonly memoryIndexStore: MemoryIndexStore;
+  private cachedEmbeddingProvider: EmbeddingProvider | undefined | null = null;
   private readonly channelService: ChannelService;
   private readonly automationService: AutomationService;
   private readonly planDecisionService: PlanDecisionService;
@@ -445,6 +453,15 @@ export class LocalRunStore {
     this.longTermMemoryQueue = new LongTermMemoryUpdateQueue((task) =>
       processLongTermMemoryUpdate(task, this.memoryUpdateDeps())
     );
+    this.journal = new ShortTermMemoryJournal(defaultMemoryDir(dataDir));
+    this.memoryIndexStore = new MemoryIndexStore(defaultMemoryDir(dataDir));
+    this.dreamingScheduler = new MemoryDreamingScheduler({
+      journal: this.journal,
+      dreaming: new MemoryDreamingService(this.journal),
+      memoryManager: this.longTermMemory,
+      memoryIndexStore: this.memoryIndexStore,
+      clock: this.clock,
+    });
     this.channelService = new ChannelService(this.backend, this, {
       clock: this.clock,
       fetchImpl: options.fetchImpl,
@@ -535,6 +552,7 @@ export class LocalRunStore {
     if (options.autoStartAutomations) {
       this.automationService.start();
     }
+    this.dreamingScheduler.start();
     this.cleanupOrphanedImpactResources();
   }
 
@@ -1961,7 +1979,7 @@ export class LocalRunStore {
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
+    const fullConfig = await withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     if (turnIndex === 1 && fullConfig.metadata.branchRole !== "candidate") {
@@ -2030,7 +2048,7 @@ export class LocalRunStore {
     }), session);
     const resolved = await resolveModeSelection(parsed.config, input, session, this.modeSelectionDeps());
     const { modeSpec, definition } = resolved;
-    const fullConfig = withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
+    const fullConfig = await withMemoryPrompt(resolved.fullConfig, input, session, this.modeSelectionDeps());
     const runId = this.nextRunId();
     const turnIndex = this.nextTurnIndex(session.sessionId);
     const conversationMessages = await this.prepareConversationMessagesForRun(
@@ -2780,7 +2798,40 @@ export class LocalRunStore {
       applySystemAgentOverridesToMode: (modeSpec) => this.applySystemAgentOverridesToMode(modeSpec),
       buildConversationMessages: (sessionId, currentPrompt) =>
         this.buildConversationMessages(sessionId, currentPrompt),
+      memoryIndexStore: this.memoryIndexStore,
+      embeddingProvider: this.cachedEmbeddingProvider ?? undefined,
     };
+  }
+
+  private resolveEmbeddingProvider(): EmbeddingProvider | undefined {
+    if (this.cachedEmbeddingProvider !== null) return this.cachedEmbeddingProvider ?? undefined;
+    try {
+      const defaultMode = this.modeStore.resolve(undefined as unknown as string, "single_agent");
+      const policy = defaultMode.memoryPolicy;
+      if (policy.retrievalMode === "lexical" || !policy.semanticProviderId) {
+        this.cachedEmbeddingProvider = undefined;
+        return undefined;
+      }
+      const { createEmbeddingProvider } = require("./embedding-provider.js") as typeof import("./embedding-provider.js");
+      const provider = createEmbeddingProvider({
+        providerConfig: {
+          id: policy.semanticProviderId,
+          type: "openai_compatible",
+          modelId: policy.semanticModelId ?? "text-embedding-3-small",
+          label: policy.semanticProviderId,
+          enabled: true,
+          capabilities: [],
+          dropParams: [],
+          headers: {},
+        },
+        modelId: policy.semanticModelId,
+      });
+      this.cachedEmbeddingProvider = provider;
+      return provider;
+    } catch {
+      this.cachedEmbeddingProvider = undefined;
+      return undefined;
+    }
   }
 
   private runStateOperationDeps(): RunStateOperationDeps {
@@ -3665,6 +3716,7 @@ export class LocalRunStore {
     return {
       longTermMemory: this.longTermMemory,
       longTermMemoryQueue: this.longTermMemoryQueue,
+      journal: this.journal,
       modeSelectionDeps: () => this.modeSelectionDeps(),
       buildConversationMessages: (sessionId, currentPrompt, excludeRunId) =>
         this.buildConversationMessages(sessionId, currentPrompt, excludeRunId),

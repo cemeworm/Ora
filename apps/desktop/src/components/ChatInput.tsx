@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -246,6 +247,7 @@ export function ChatInput({
   const [skillListExpanded, setSkillListExpanded] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [cursorPos, setCursorPos] = useState(0);
+  const [skillPickerIndex, setSkillPickerIndex] = useState(0);
 
   const interactivity = getComposerInteractivity({
     composerPrompt,

@@ -4,10 +4,12 @@ import type { LongTermMemoryUpdateTask } from "./memory.js";
 import { ModeSelectionDeps, resolveMemoryPolicy } from "./mode-selection.js";
 import { invokeRunProvider, type ModelMessage } from "./providers/index.js";
 import { assistantTextForRun } from "./session-title.js";
+import type { ShortTermMemoryJournal } from "./memory-journal.js";
 
 export interface MemoryUpdateDeps {
   longTermMemory: LongTermMemoryManager;
   longTermMemoryQueue: LongTermMemoryUpdateQueue;
+  journal?: ShortTermMemoryJournal;
   modeSelectionDeps: () => ModeSelectionDeps;
   buildConversationMessages: (sessionId: string, currentPrompt: string, excludeRunId?: string) => ModelMessage[];
   getCachedRun: (runId: string) => StateSnapshot | undefined;
@@ -59,6 +61,23 @@ export async function processLongTermMemoryUpdate(
   const projectId = task.snapshot.input.projectId;
   const manager = projectId ? deps.longTermMemory.forProject(projectId) : deps.longTermMemory;
   const { factsAdded } = await manager.updateFromRunWithProvider(task);
+
+  // Write journal signals for dreaming pipeline
+  if (deps.journal && factsAdded.length > 0) {
+    const runId = task.snapshot.runId;
+    const sessionId = task.snapshot.sessionId ?? undefined;
+    for (const fact of factsAdded) {
+      deps.journal.append({
+        runId,
+        sessionId,
+        type: fact.category === "correction" ? "correction" : "memory_intent",
+        content: fact.content,
+        category: fact.category,
+        confidence: fact.confidence,
+      });
+    }
+  }
+
   const snapshot = deps.getCachedRun(task.snapshot.runId) ?? task.snapshot;
   const records = manager.createRunMemoryRecords(snapshot, factsAdded);
   if (records.length === 0) {

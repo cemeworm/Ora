@@ -65,7 +65,12 @@ export class MemoryIndexStore {
   private ensureSchema(): void {
     this.db.exec(CHUNK_TABLE);
     this.db.exec(FTS_TABLE);
-    // FTS maintained manually in upsertChunk / removeChunk for reliability
+    // Migration: add embedding column if not exists
+    try {
+      this.db.exec("ALTER TABLE memory_chunks ADD COLUMN embedding BLOB");
+    } catch {
+      // Column already exists — ignore
+    }
   }
 
   // === Index Management ===
@@ -155,7 +160,11 @@ export class MemoryIndexStore {
     const lexicalEnabled = request.lexicalEnabled !== false;
     const decayEnabled = request.decayEnabled !== false;
 
-    if (!lexicalEnabled || !query.trim()) {
+    if (!query.trim()) {
+      return [];
+    }
+
+    if (!lexicalEnabled) {
       return [];
     }
 
@@ -226,6 +235,89 @@ export class MemoryIndexStore {
     }
     const row = this.db.prepare("SELECT COUNT(*) as cnt FROM memory_chunks").get() as { cnt: number } | undefined;
     return row?.cnt ?? 0;
+  }
+
+  // === Embedding Indexing ===
+
+  async indexEmbeddings(provider: EmbeddingProvider): Promise<number> {
+    const rows = this.db.prepare(
+      "SELECT id, content, embeddingCacheKey FROM memory_chunks WHERE embeddingStatus = 'none' OR embeddingStatus = 'pending'"
+    ).all() as { id: string; content: string; embeddingCacheKey: string | null }[];
+
+    if (rows.length === 0) return 0;
+
+    const texts = rows.map((r) => r.content.slice(0, 800));
+    const cacheKey = `${provider.id}:${provider.modelId}:${provider.dimensions}`;
+
+    // Skip chunks already embedded with same cache key
+    const toEmbed = rows.filter((r) => r.embeddingCacheKey !== cacheKey);
+    if (toEmbed.length === 0) {
+      // Mark all as ready
+      this.db.prepare("UPDATE memory_chunks SET embeddingStatus = 'ready' WHERE embeddingStatus = 'none' OR embeddingStatus = 'pending'").run();
+      return 0;
+    }
+
+    const embedTexts = toEmbed.map((r) => r.content.slice(0, 800));
+    const embeddings = await provider.embedTexts(embedTexts);
+
+    const updateStmt = this.db.prepare(
+      "UPDATE memory_chunks SET embedding = ?, embeddingStatus = 'ready', embeddingCacheKey = ? WHERE id = ?"
+    );
+    const transaction = this.db.transaction(() => {
+      for (let i = 0; i < toEmbed.length; i++) {
+        const row = toEmbed[i]!;
+        const embedding = embeddings[i];
+        if (embedding) {
+          updateStmt.run(Buffer.from(new Float64Array(embedding).buffer), cacheKey, row.id);
+        }
+      }
+    });
+    transaction();
+
+    return toEmbed.length;
+  }
+
+  // === Semantic Search ===
+
+  async searchSemantic(
+    query: string,
+    provider: EmbeddingProvider,
+    options?: { maxResults?: number; minScore?: number },
+  ): Promise<MemorySearchResult[]> {
+    const maxResults = options?.maxResults ?? 12;
+    const minScore = options?.minScore ?? 0.3;
+    const now = isoNow();
+
+    const [queryEmbedding] = await provider.embedTexts([query]);
+    if (!queryEmbedding) return [];
+
+    const rows = this.db.prepare(
+      "SELECT id, sourceId, sourceKind, scopeJson, content, category, confidence, createdAt, updatedAt, sourceRunId, embedding FROM memory_chunks WHERE embeddingStatus = 'ready' AND embedding IS NOT NULL"
+    ).all() as (ChunkRow & { embedding: Buffer })[];
+
+    const scored: MemorySearchResult[] = [];
+    for (const row of rows) {
+      const embedding = bufferToVector(row.embedding);
+      const similarity = cosineSimilarity(queryEmbedding, embedding);
+      if (similarity < minScore) continue;
+
+      const freshnessScore = computeFreshnessScore(row.createdAt, row.updatedAt ?? undefined, now);
+      const semanticScore = similarity;
+      const finalScore = computeFinalScore(0, semanticScore, freshnessScore);
+
+      scored.push({
+        chunk: parseChunkRow(row),
+        lexicalScore: 0,
+        semanticScore,
+        freshnessScore,
+        finalScore,
+        scoreReasons: buildScoreReasons(0, semanticScore, freshnessScore),
+      });
+    }
+
+    return scored
+      .sort((a, b) => b.finalScore - a.finalScore)
+      .slice(0, maxResults);
   }
 
   close(): void {
@@ -530,6 +622,25 @@ function tokenize(text: string): Set<string> {
     tokens.filter((t) => t.length > 1 || /[\p{Script=Han}]/u.test(t))
       .filter((t) => !STOP_WORDS.has(t)),
   );
+}
+
+function bufferToVector(buf: Buffer): number[] {
+  const float64 = new Float64Array(buf.buffer, buf.byteOffset, buf.byteLength / 8);
+  return Array.from(float64);
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
 }
 
 function candidateToChunk(candidate: ActiveMemoryCandidate): MemoryChunk {
