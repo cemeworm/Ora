@@ -12,8 +12,9 @@ import {
 } from "@cemeworm/shared";
 
 const MEMORY_VERSION = "1.0";
-const MAX_FACTS = 120;
-const MAX_INJECTION_FACTS = 24;
+// D14: Fallback defaults — ModeMemoryPolicy.maxFacts / injectionMaxFacts take precedence
+const DEFAULT_MAX_FACTS = 120;
+const DEFAULT_MAX_INJECTION_FACTS = 24;
 
 export interface MemoryConversationMessage {
   role: "system" | "developer" | "user" | "assistant";
@@ -40,7 +41,9 @@ export interface LongTermMemoryUpdateTask {
 const CORRECTION_RE = /\b(wrong|incorrect|misunderstood|redo|try again|instead)\b|不对|理解错|理解有误|不是这样|重试|重新来|改用|不要/im;
 const REINFORCEMENT_RE = /\b(exactly|perfect|that'?s right|keep doing that|just like this)\b|完全正确|就是这样|正是我想要的|继续保持/im;
 const MEMORY_INTENT_RE = /\b(remember|prefer|always|never|next time|from now on)\b|记住|记下来|以后|下次|默认|偏好|我希望|我需要|不要/im;
-const TEMPORARY_RE = /<uploaded_files>|file upload|上传文件|临时|这次会话/im;
+const TEMPORARY_RE = /<uploaded_files>|file upload|上传文件|上传了|附件|临时|这次会话|这次聊天|当前对话|本次会话|本会话|这一次|刚才|刚刚|你发的|发来的|打开那个|看那个|这个文件|那个文件|这段代码|这个会话|本次聊天/im;
+// D12: penalty applied when temporary keywords detected — downgrades instead of hard filtering
+const TEMPORARY_CONFIDENCE_PENALTY = 0.35;
 
 export function createEmptyLongTermMemory(nowIso = new Date().toISOString()): LongTermMemoryProfile {
   return LongTermMemoryProfileSchema.parse({
@@ -254,7 +257,7 @@ export class LongTermMemoryManager {
     return new LongTermMemoryManager(this.storeFor(projectId), this.clock);
   }
 
-  formatForInjection(maxFacts = MAX_INJECTION_FACTS): string {
+  formatForInjection(maxFacts = DEFAULT_MAX_INJECTION_FACTS): string {
     const memory = this.get();
     const sections: string[] = [];
     const user = memory.user;
@@ -302,7 +305,7 @@ export class LongTermMemoryManager {
       return { memory: this.get(), factsAdded: [] };
     }
 
-    const effectivePolicy = { factConfidenceThreshold: 0.7, maxFacts: MAX_FACTS, ...policy };
+    const effectivePolicy = { factConfidenceThreshold: 0.7, maxFacts: DEFAULT_MAX_FACTS, ...policy };
     const candidates = memoryCandidatesFromRun(snapshot, assistantText, this.nowIso(), conversationMessages)
       .filter((fact) => fact.confidence >= effectivePolicy.factConfidenceThreshold);
     if (candidates.length === 0) {
@@ -454,13 +457,25 @@ export class LongTermMemoryManager {
     for (const section of ["workContext", "personalContext", "topOfMind"] as const) {
       const update = patch.user?.[section];
       if (update?.shouldUpdate && typeof update.summary === "string" && update.summary.trim()) {
-        next.user[section] = { summary: update.summary.trim(), updatedAt: now };
+        const newSummary = update.summary.trim();
+        const oldSummary = current.user[section].summary;
+        if (!passesSectionQualityGate(newSummary, oldSummary, section)) {
+          continue;
+        }
+        console.info(`[memory] Section user.${section} updated (${oldSummary.length} → ${newSummary.length} chars)`);
+        next.user[section] = { summary: newSummary, updatedAt: now, previousSummary: oldSummary || undefined };
       }
     }
     for (const section of ["recentMonths", "earlierContext", "longTermBackground"] as const) {
       const update = patch.history?.[section];
       if (update?.shouldUpdate && typeof update.summary === "string" && update.summary.trim()) {
-        next.history[section] = { summary: update.summary.trim(), updatedAt: now };
+        const newSummary = update.summary.trim();
+        const oldSummary = current.history[section].summary;
+        if (!passesSectionQualityGate(newSummary, oldSummary, section)) {
+          continue;
+        }
+        console.info(`[memory] Section history.${section} updated (${oldSummary.length} → ${newSummary.length} chars)`);
+        next.history[section] = { summary: newSummary, updatedAt: now, previousSummary: oldSummary || undefined };
       }
     }
 
@@ -475,7 +490,14 @@ export class LongTermMemoryManager {
       const confidence = coerceConfidence(fact.confidence);
       const content = fact.content.trim();
       const key = content.toLowerCase();
-      if (!content || confidence < policy.factConfidenceThreshold || existingKeys.has(key) || TEMPORARY_RE.test(content)) {
+      if (!content || confidence < policy.factConfidenceThreshold || existingKeys.has(key)) {
+        continue;
+      }
+      // D12: lower confidence for temporary-sounding content instead of hard filtering
+      const effectiveConfidence = TEMPORARY_RE.test(content)
+        ? Math.max(0, confidence - TEMPORARY_CONFIDENCE_PENALTY)
+        : confidence;
+      if (effectiveConfidence < policy.factConfidenceThreshold) {
         continue;
       }
       // D1: n-gram Jaccard similarity dedup against existing facts
@@ -495,7 +517,7 @@ export class LongTermMemoryManager {
       const nextFact = createFact({
         content,
         category,
-        confidence,
+        confidence: effectiveConfidence,
         source,
         now,
         sourceError: category === "correction" && typeof fact.sourceError === "string" ? fact.sourceError : undefined,
@@ -531,9 +553,25 @@ function isRetryableProviderError(error: unknown): boolean {
   return false;
 }
 
+// D9: Section summary quality gate — rejects low-quality LLM patch updates
+const MIN_SECTION_SUMMARY_LENGTH = 10;
+
+function passesSectionQualityGate(newSummary: string, oldSummary: string, sectionName: string): boolean {
+  // Reject too-short summaries (likely LLM truncation or hallucination)
+  if (newSummary.length < MIN_SECTION_SUMMARY_LENGTH) {
+    console.warn(`[memory] Section ${sectionName} update rejected: too short (${newSummary.length} chars < ${MIN_SECTION_SUMMARY_LENGTH})`);
+    return false;
+  }
+  // Reject if new summary is identical or a subset of existing
+  if (oldSummary && (newSummary === oldSummary || oldSummary.includes(newSummary))) {
+    return false;
+  }
+  return true;
+}
+
 function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string, now: string, conversationMessages?: MemoryConversationMessage[]): LongTermMemoryFact[] {
   const prompt = snapshot.input.prompt.trim();
-  if (!prompt || TEMPORARY_RE.test(prompt)) {
+  if (!prompt) {
     return [];
   }
   const candidates: LongTermMemoryFact[] = [];
@@ -544,10 +582,15 @@ function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string,
     const key = content.trim().toLowerCase();
     if (seenContent.has(key)) return;
     seenContent.add(key);
+    // D12: lower confidence for temporary-sounding content instead of hard filtering
+    const baseConfidence = isCorrection ? 0.95 : 0.85;
+    const confidence = TEMPORARY_RE.test(content)
+      ? Math.max(0, baseConfidence - TEMPORARY_CONFIDENCE_PENALTY)
+      : baseConfidence;
     candidates.push(createFact({
       content,
       category,
-      confidence: isCorrection ? 0.95 : 0.85,
+      confidence,
       source: snapshot.runId,
       now,
       sourceError: isCorrection ? errorFromAssistant(assistantText) : undefined,
@@ -569,7 +612,7 @@ function memoryCandidatesFromRun(snapshot: StateSnapshot, assistantText: string,
     const subsequentMessages = userMessages.length > 1 ? userMessages.slice(1) : [];
     for (const message of subsequentMessages) {
       const text = message.content.trim();
-      if (!text || TEMPORARY_RE.test(text)) continue;
+      if (!text) continue;
       const msgSentences = splitSentences(text).filter((s) => s.length >= 8);
       for (const sentence of msgSentences) {
         // Only extract corrections and reinforced preferences from subsequent messages

@@ -28,10 +28,11 @@ export interface ActiveMemoryRequest {
 
 const DEFAULT_MAX_CANDIDATES = 12;
 const DEFAULT_MAX_CHARS = 1800;
-const MAX_SELECTED_CARDS = 6;
+const MAX_SELECTED_CANDIDATES = 6;
 const MAX_CARD_CONTENT_CHARS = 420;
 const ADMISSION_SCORE_THRESHOLD = 0.55;
 const ADMISSION_CONFIDENCE_THRESHOLD = 0.45;
+const MIN_SECTION_CONTENT_LENGTH = 10;
 const STOP_WORDS = new Set([
   "a",
   "an",
@@ -109,7 +110,8 @@ export function collectActiveMemoryCandidates(memory: LongTermMemoryProfile, now
   const candidates: ActiveMemoryCandidate[] = [];
   const addSection = (id: string, category: string, content: string, updatedAt: string, confidence: number) => {
     const trimmed = truncate(content, MAX_CARD_CONTENT_CHARS);
-    if (!trimmed) {
+    // D10: Skip sections with too little content — wastes token budget
+    if (!trimmed || trimmed.length < MIN_SECTION_CONTENT_LENGTH) {
       return;
     }
     candidates.push(ActiveMemoryCandidateSchema.parse({
@@ -156,7 +158,7 @@ export function admitActiveMemoryCandidates(
       candidate.confidence >= ADMISSION_CONFIDENCE_THRESHOLD
       && candidate.score >= ADMISSION_SCORE_THRESHOLD
     )
-    .slice(0, MAX_SELECTED_CARDS);
+    .slice(0, MAX_SELECTED_CANDIDATES);
   const cards = boundCardsByChars(selected.map((candidate) => ({
     id: candidate.id,
     kind: candidate.kind,
@@ -251,6 +253,20 @@ function candidateFromFact(fact: LongTermMemoryFact, nowIso: string): ActiveMemo
   });
 }
 
+// === D4: Admission scoring weights (documented for calibration) ===
+// Confidence base weight — anchors the candidate's self-reported reliability into the score.
+const SCORE_CONFIDENCE_WEIGHT = 0.25;
+// Per-token keyword overlap weight — each overlapping query token adds this much.
+const SCORE_KEYWORD_PER_TOKEN = 0.15;
+// Cap on total keyword overlap contribution — prevents very long queries from dominating.
+const SCORE_KEYWORD_MAX = 0.45;
+// Bonus for preference/correction categories — these are the most actionable facts.
+const SCORE_CATEGORY_PREF_CORRECTION_BONUS = 0.15;
+// Freshness bonus/penalty — fresh candidates get a lift, stale ones get a discount.
+const SCORE_FRESHNESS_DELTA = 0.08;
+// Bonus when the query contains explicit memory-intent language (e.g. "remember", "prefer").
+const SCORE_EXPLICIT_MEMORY_INTENT_BONUS = 0.35;
+
 function scoreCandidate(
   candidate: ActiveMemoryCandidate,
   queryTokens: Set<string>,
@@ -259,25 +275,25 @@ function scoreCandidate(
   const candidateTokens = tokenize(candidate.content);
   const overlaps = [...queryTokens].filter((token) => candidateTokens.has(token));
   const scoreReasons: string[] = [`confidence:${candidate.confidence.toFixed(2)}`];
-  let score = candidate.confidence * 0.25;
+  let score = candidate.confidence * SCORE_CONFIDENCE_WEIGHT;
 
   if (overlaps.length > 0) {
-    score += Math.min(0.45, overlaps.length * 0.15);
+    score += Math.min(SCORE_KEYWORD_MAX, overlaps.length * SCORE_KEYWORD_PER_TOKEN);
     scoreReasons.push(...overlaps.slice(0, 3).map((token) => `keyword:${token}`));
   }
   if (candidate.category === "preference" || candidate.category === "correction") {
-    score += 0.15;
+    score += SCORE_CATEGORY_PREF_CORRECTION_BONUS;
     scoreReasons.push(`category:${candidate.category}`);
   }
   if (candidate.freshness === "fresh") {
-    score += 0.08;
+    score += SCORE_FRESHNESS_DELTA;
     scoreReasons.push("freshness:fresh");
   } else if (candidate.freshness === "stale") {
-    score -= 0.08;
+    score -= SCORE_FRESHNESS_DELTA;
     scoreReasons.push("freshness:stale");
   }
   if (explicitMemoryIntent && overlaps.length > 0) {
-    score += 0.35;
+    score += SCORE_EXPLICIT_MEMORY_INTENT_BONUS;
     scoreReasons.push("intent:memory");
   }
 

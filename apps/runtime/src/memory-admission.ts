@@ -74,7 +74,54 @@ function parseAdmissionResponse(text: string): ProviderAdmissionResponse {
   return ProviderAdmissionResponseSchema.parse(parsed);
 }
 
-// === Provider-Backed Admission ===
+// === D15: EWMA adaptive timeout tracker ===
+
+const EWMA_ALPHA = 0.3; // weight given to latest observation
+const EWMA_WARMUP_COUNT = 3; // use conservative timeout for first N calls
+const EWMA_BUFFER_FACTOR = 2.5; // adaptiveTimeout = ewma * bufferFactor
+const MIN_ADAPTIVE_TIMEOUT_MS = 1_500; // floor to prevent aggressive timeouts
+
+interface AdmissionLatencyTracker {
+  ewmaMs: number;
+  count: number;
+  lastUpdated: number;
+}
+
+let latencyTracker: AdmissionLatencyTracker = {
+  ewmaMs: 0,
+  count: 0,
+  lastUpdated: 0,
+};
+
+export function resetAdmissionLatencyTracker(): void {
+  latencyTracker = { ewmaMs: 0, count: 0, lastUpdated: 0 };
+}
+
+function computeAdaptiveTimeout(configuredTimeoutMs: number): number {
+  const tracker = latencyTracker;
+  // Warmup: use conservative timeout (min of configured timeout and 8s)
+  if (tracker.count < EWMA_WARMUP_COUNT || tracker.ewmaMs <= 0) {
+    return Math.min(configuredTimeoutMs, 8_000);
+  }
+  // Adaptive: ewma * buffer, bounded by min floor and configured max
+  const adaptive = Math.round(tracker.ewmaMs * EWMA_BUFFER_FACTOR);
+  return Math.max(MIN_ADAPTIVE_TIMEOUT_MS, Math.min(adaptive, configuredTimeoutMs));
+}
+
+function recordAdmissionLatency(elapsedMs: number): void {
+  const tracker = latencyTracker;
+  if (tracker.ewmaMs <= 0) {
+    tracker.ewmaMs = elapsedMs;
+  } else {
+    tracker.ewmaMs = EWMA_ALPHA * elapsedMs + (1 - EWMA_ALPHA) * tracker.ewmaMs;
+  }
+  tracker.count += 1;
+  tracker.lastUpdated = Date.now();
+}
+
+export function getAdmissionLatencyStats(): { ewmaMs: number; count: number } {
+  return { ewmaMs: latencyTracker.ewmaMs, count: latencyTracker.count };
+}
 
 export async function admitWithProvider(
   candidates: ActiveMemoryCandidate[],
@@ -96,6 +143,9 @@ export async function admitWithProvider(
 
   const prompt = buildAdmissionPrompt(request);
 
+  // D15: adaptive timeout based on EWMA of recent admission latencies
+  const adaptiveTimeout = computeAdaptiveTimeout(timeoutMs);
+
   try {
     const responseText = await withTimeout(
       invokeModel({
@@ -104,8 +154,11 @@ export async function admitWithProvider(
         system: "You are Ora's memory admission gate. Return only valid JSON.",
         maxTokens: 600,
       }),
-      timeoutMs,
+      adaptiveTimeout,
     );
+
+    const elapsedMs = Date.now() - start;
+    recordAdmissionLatency(elapsedMs);
 
     const response = parseAdmissionResponse(responseText);
     const selectedSet = new Set(response.selectedIds);
@@ -137,10 +190,11 @@ export async function admitWithProvider(
       cards,
       decision,
       providerUsed: true,
-      elapsedMs: Date.now() - start,
+      elapsedMs,
     };
   } catch {
     // Fallback to deterministic admission
+    // Note: timeout failures do NOT update EWMA to avoid polluting the estimate
     const deterministic = admitActiveMemoryCandidates(candidates);
     return {
       cards: deterministic.cards,
